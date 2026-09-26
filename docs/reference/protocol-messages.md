@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-26 · commit `b1aac01b5`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -21,6 +21,8 @@ This does not add a message type or change the public error code.
 The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 
 App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds both fields. `ready` replies may also carry optional `launch_session`, `boot_time` and `operation_stalled_seconds`; `coordinator/protocol/app_attest_runtime_diagnostic.go` (`SanitizeRuntimeDiagnostics`) strips invalid values without rejecting the frame. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).
+
+`ready` replies may also carry optional deep diagnostics (`process_started_at`, `previous_exit`, `start_reason`, `console_user_active`, `sip_enabled`, `authenticated_root`, `preflight`, `key_history`, `push_history`), and failed `attestation`/`assertion` replies with result `apple_error` or `apple_invalid_key` may carry `native_error_chain`; `coordinator/protocol/app_attest_deep_diagnostic.go` strips each invalid or misplaced member without rejecting the frame. See [Provider diagnostics](app-attest-shadow.md#provider-diagnostics).
 
 ## Provider lifecycle drain
 

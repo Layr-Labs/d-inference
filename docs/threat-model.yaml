@@ -1,5 +1,8 @@
 version: "1.0"
 created: "2026-05-14"
+# Optional App Attest diagnostic boundary re-checked 2026-09-26 against cf5982227:
+# the added TB-002 paragraph covers diagnostic metadata only; it does not
+# re-verify the older threat entries or change the serving-trust assumptions.
 # Partially re-verified 2026-09-03 against commit 5d400cf75: A-001, A-003, T-003
 # and T-011 were corrected to the shipped design (the coordinator is a plaintext
 # endpoint on every request; the provider X25519 key is per-process and never on
@@ -386,6 +389,22 @@ trust_boundaries:
       covered by a separate status_signature over a canonical JSON payload. For providers
       that omit status_signature, negative reports (SIP=false) are still acted on
       immediately, but positive reports are treated as advisory only.
+
+      Optional App Attest ready/proof diagnostics (process and boot history,
+      signing preflight, local SIP/root observations, key/push history and native
+      error chains) are untrusted context, excluded from AppAttestShadowHash and
+      the provider clientHash. A provider may forge or omit them. The coordinator
+      strips invalid optional members independently; they do not grant, extend,
+      revoke or fence serving authorization and are distinct from verified status
+      evidence. Private diagnostic events/archives and admin views must not be
+      treated as consumer verification. Local marker files and doctor verdicts
+      are also not trust evidence. Operator-initiated reports retain OS log
+      redaction and bounded, closed-pattern device-wide DeviceCheck observations;
+      those observations cannot be attributed to this provider's key. No new
+      consumer trust claim or attestation-policy exception follows from this data.
+      Code: coordinator/protocol/app_attest_deep_diagnostic.go,
+      coordinator/appattest/service/ready_diagnostics.go; contract:
+      docs/reference/app-attest-shadow.md, docs/consumer/verification.md.
     current_limitations:
       - "No pre-authentication rate limiting or per-IP connection caps before WebSocket
         upgrade. Any client can open arbitrary connections and attempt registration

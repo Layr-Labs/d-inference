@@ -18,9 +18,11 @@ public enum AuthTokenStore: Sendable {
         if let override = tokenPathOverride() {
             return URL(fileURLWithPath: override)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom")
-            .appendingPathComponent("auth_token")
+        return canonicalTokenPath(home: FileManager.default.homeDirectoryForCurrentUser)
+    }
+
+    private static func canonicalTokenPath(home: URL) -> URL {
+        home.appendingPathComponent(".darkbloom").appendingPathComponent("auth_token")
     }
 
     private static func tokenPathOverride() -> String? {
@@ -31,11 +33,12 @@ public enum AuthTokenStore: Sendable {
     }
 
     static func legacyTokenPaths() -> [URL] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first
+        legacyTokenPaths(
+            home: FileManager.default.homeDirectoryForCurrentUser,
+            appSupport: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first)
+    }
+
+    private static func legacyTokenPaths(home: URL, appSupport: URL?) -> [URL] {
 
         var paths = [
             home
@@ -58,14 +61,26 @@ public enum AuthTokenStore: Sendable {
         load(canonicalPath: tokenPath(), legacyPaths: tokenPathOverride() == nil ? legacyTokenPaths() : [])
     }
 
-    static func load(canonicalPath: URL, legacyPaths: [URL]) -> String? {
+    /// Read another user's credentials without migrating or writing auth files.
+    /// An explicit override disables fallback, just as it does for `load()`.
+    public static func loadReadOnly(home: URL, overridePath: String? = nil) -> String? {
+        if let overridePath, !overridePath.isEmpty {
+            return readToken(from: URL(fileURLWithPath: overridePath))
+        }
+        return load(
+            canonicalPath: canonicalTokenPath(home: home),
+            legacyPaths: legacyTokenPaths(home: home, appSupport: home.appendingPathComponent("Library/Application Support")),
+            migrateLegacy: false)
+    }
+
+    static func load(canonicalPath: URL, legacyPaths: [URL], migrateLegacy: Bool = true) -> String? {
         if let token = readToken(from: canonicalPath) {
             return token
         }
 
         for legacyPath in legacyPaths where legacyPath != canonicalPath {
             if let token = readToken(from: legacyPath) {
-                try? save(token, to: canonicalPath)
+                if migrateLegacy { try? save(token, to: canonicalPath) }
                 return token
             }
         }

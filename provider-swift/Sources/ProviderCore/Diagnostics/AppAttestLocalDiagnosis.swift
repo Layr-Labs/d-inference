@@ -11,19 +11,21 @@ public enum AppAttestLocalDiagnosis {
         + "then `darkbloom restart`; enable automatic login so the session exists after reboots. Also confirm "
         + "SIP is enabled (`csrutil status`) and Startup Security Utility in Recovery is set to Full Security."
 
-    /// Pure verdict over the published status. Empty below macOS 27, where the
-    /// provider does not use App Attest.
+    /// App Attest verdicts require macOS 27; persisted APNs history is useful
+    /// on every supported OS, including without an App Attest observation.
+    /// `pushHistory` is the local `apns-push-history.json`, read by the CLI.
     public static func evaluate(_ status: AppAttestLocalStatus?, daemonRunning: Bool,
-                                macOSMajorVersion: Int, now: Double) -> [Diagnostic] {
-        guard ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) else { return [] }
+                                macOSMajorVersion: Int, now: Double, pushHistory: APNsPushHistory? = nil) -> [Diagnostic] {
+        let pushes = AppAttestDeepDiagnosis.pushDiagnostic(pushHistory, now: now).map { [$0] } ?? []
+        guard ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) else { return pushes }
         guard daemonRunning, let status else {
-            return [Diagnostic(section: .appAttest, name: "app attest key", level: .warn,
+            return pushes + [Diagnostic(section: .appAttest, name: "app attest key", level: .warn,
                                message: daemonRunning
                                    ? "the provider has not reported its local App Attest state yet (it does so on each coordinator App Attest exchange)."
                                    : "the provider daemon isn't running, so its local App Attest state is unavailable.",
                                fix: daemonRunning ? "wait a minute and re-run `darkbloom doctor`." : "run `darkbloom start`, then `darkbloom doctor`.")]
         }
-        var out = [launchSession(status.launchSession)]
+        var out = pushes + [launchSession(status.launchSession)]
         if let reason = status.availabilityReason {
             out.append(reason == .isSupportedFalse
                 ? Diagnostic(section: .appAttest, name: "app attest support", level: .fail,
@@ -41,6 +43,7 @@ public enum AppAttestLocalDiagnosis {
         }
         // Unavailable App Attest never reads Keychain, so there is no key state.
         if status.availabilityReason == nil { out.append(keyDiagnostic(status.key, now: now)) }
+        out.append(contentsOf: AppAttestDeepDiagnosis.evaluate(status, pushHistory: nil, now: now))
         return out
     }
 

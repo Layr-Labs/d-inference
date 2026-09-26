@@ -7,6 +7,9 @@ struct ShadowKeyGeneration {
     let storage: any ShadowKeyStorage
     let budgetScope: String
     let keyScope: String
+    /// Diagnostics stamped on the new key; never used for policy.
+    var bootTime: Int64? = nil
+    var appVersion: String? = nil
 
     /// `previous` is the retired/failed record in `keyScope`, if any.
     func generate(replacing previous: ShadowKeyRecord?) async throws -> ShadowKeyRecord {
@@ -19,12 +22,15 @@ struct ShadowKeyGeneration {
         // first so its failure cannot leave a new empty key marker
         // that strands an otherwise healthy device for an hour.
         var pending = ShadowKeyRecord(keyID: "", attested: false, createdAt: Date())
+        pending.createdBootTime = bootTime
+        pending.createdAppVersion = appVersion.map { String($0.prefix(AppAttestKeyHistory.maxVersionLength)) }
         // Persist a shared budget across account scopes as well as the
         // per-key cooldown, so account churn cannot bypass it.
         var budget = try storage.load(scope: budgetScope) ?? ShadowKeyRecord(keyID: "budget", attested: false, createdAt: Date())
         if Date().timeIntervalSince(budget.createdAt) >= KeyGenerationBudget.window { budget.createdAt = Date(); budget.generationCount = 0 }
         guard (budget.generationCount ?? 0) < KeyGenerationBudget.limit else { throw ShadowFailure.busy }
         budget.generationCount = (budget.generationCount ?? 0) + 1
+        budget.generationHistory = KeyGenerationHistory.appending(pending.createdAt, to: budget.generationHistory)
         try storage.save(budget, scope: budgetScope)
         try storage.save(pending, scope: keyScope)
         let id: String
@@ -41,7 +47,10 @@ struct ShadowKeyGeneration {
             }
             throw error
         }
-        let key = ShadowKeyRecord(keyID: id, attested: false, createdAt: pending.createdAt)
+        var key = ShadowKeyRecord(keyID: id, attested: false, createdAt: pending.createdAt)
+        key.createdBootTime = pending.createdBootTime
+        key.createdAppVersion = pending.createdAppVersion
+        key.consecutiveAssertionFailures = 0
         try storage.save(key, scope: keyScope)
         return key
     }

@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-26 · commit `10fb4b7c1`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -68,6 +68,13 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `console session`, `automatic login`, `auto-logout on idle`, `sleep prevention` | Attestation readiness (`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`) | A real console user must be logged in; enable automatic login; disable auto-logout; the daemon self-caffeinates while serving |
 | `active se key` | Secure Enclave signing key self-test | `darkbloom-enclave info`; hardware without SE runs at reduced trust |
 | `launch session`, `app attest support`, `apple operation`, `app attest key` | macOS 27+ only: the daemon's last local App Attest observation (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`) — GUI session, `is_supported_false`, a stalled DeviceCheck call, stored/enrolled key and generation cooldown | Run the provider inside the logged-in GUI session (`darkbloom restart` after logging in) and keep SIP and Full Security; a stall clears when the provider restarts ([attestation](./attestation.md#app-attest-without-darkbloom-mdm)); never delete the Keychain item |
+| `gui session` | macOS 27+: the provider runs outside the GUI session. Either a user is logged in at the console but the provider was launched elsewhere (SSH, system daemon), or nobody is logged in (`AppAttestDeepDiagnosis.swift`) | Run `darkbloom restart` from the logged-in desktop (Terminal or Screen Sharing). If nobody is logged in, log in and enable automatic login |
+| `boot security` | SIP or authenticated root is not confirmed enabled. Apple requires Full Security for App Attest | In Recovery: `csrutil enable`, `csrutil authenticated-root enable`, Startup Security Utility → Full Security, restart |
+| `app signing` | A known missing opt-in, invalid environment entitlement, or missing/expired profile fails. Unavailable signing data or unknown expiry warns instead of passing; an explicitly absent environment entitlement can be legitimate | Reinstall a known-bad release (`curl -fsSL https://api.darkbloom.dev/install.sh \| bash`), then restart; for indeterminate evidence, collect a report |
+| `process start` | Why this provider process started (launchd, watchdog, update, stall restart, manual) and whether the previous one shut down cleanly (`provider-run.json`) | Unclean exits come from a crash, force-kill, power loss or a reboot without a drain. If App Attest broke right after one, run `darkbloom report` |
+| `key history`, `last apple failure` | Key generations in 24 h, key age and boot, last Apple success, consecutive assertion failures, and the last native error chain. CryptoTokenKit `-3` with an `aks` code means the Secure Enclave refused to sign. Doctor distinguishes a latest error eligible for coordinator dead-key checks from timeouts or `serverUnavailable`; the aggregate failure count alone cannot establish a dead key or promise rotation | The coordinator decides whether replacement is due. For repeated `invalidKey` on brand-new keys, run `darkbloom report` from an administrator account (or `sudo darkbloom report` if this account can use sudo) |
+| `apns pushes` | APNs code-identity pushes received and answered in 24 h, and whether APNs registration produced a device token (`apns-push-history.json`) | No token: APNs registration failed, so stay in the GUI session and restart. None received while the coordinator says it pushed: an APNs delivery problem, so keep the Mac awake and online. Received but unanswered: `darkbloom restart` |
+| `devicecheckd log` | Device-wide system App Attest patterns, potentially from other apps; they cannot be attributed to Darkbloom or establish this provider's key failure. Administrator log access is required | Use an explicit administrator-run report for supporting context; do not infer provider key loss or rotate a key from these observations alone |
 | `coordinator health`, `minimum version`, `coordinator trust` | Coordinator reachable, this version is accepted, trust verdict with reasons | `darkbloom update`; reasons are explained in [attestation](./attestation.md) |
 | `trust level` stuck at `self_signed` | The MDM `SecurityInfo` cross-check has not passed for this connection | `darkbloom enroll` if not enrolled; otherwise wait — see [Reaching and keeping `hardware` trust](./attestation.md#troubleshooting) |
 | `daemon`, `daemon connected`, `daemon state freshness` | Daemon process alive, WebSocket connected, snapshot refreshed | See [service lifecycle](#the-service-does-not-stay-running); a stale snapshot ⇒ `darkbloom restart` |
@@ -210,7 +217,13 @@ darkbloom report --last 24h             # upload; prints report_id
 `Report` (`provider-swift/Sources/darkbloom/ReportCommand.swift`) collects
 subsystem `dev.darkbloom.provider` at info level with macOS privacy redaction
 intact, uploads only when you run it, and prints the `report_id` to quote to
-support.
+support. It appends the provider's closed App Attest snapshot, APNs push history
+and device-wide `devicecheckd` pattern matches; see
+[`cli-reference.md`](./cli-reference.md#darkbloom-report) for scope and fields.
+macOS lets only administrator accounts read the system log. Run the report from
+an administrator account, or run `sudo darkbloom report` if this account is
+allowed to use sudo. Otherwise only the App Attest snapshot is sent, without
+provider logs or `devicecheckd` evidence.
 
 ## Related
 

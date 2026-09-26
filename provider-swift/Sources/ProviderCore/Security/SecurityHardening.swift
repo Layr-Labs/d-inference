@@ -124,6 +124,12 @@ public func checkSecureBootEnabled(runner: SecurityCommandRunner = .live) -> Boo
 /// sealed result returns true. "Broken" remains unconfirmed rather than being
 /// treated as healthy.
 public func checkAuthenticatedRootEnabled(runner: SecurityCommandRunner = .live) -> Bool {
+    authenticatedRootStatus(runner: runner) ?? false
+}
+
+/// Tri-state form of `checkAuthenticatedRootEnabled`: nil when neither
+/// `csrutil` nor `diskutil` produced a usable reading.
+public func authenticatedRootStatus(runner: SecurityCommandRunner = .live) -> Bool? {
     // csrutil primary: check "disabled" before "enabled" to prefer the explicit
     // downgrade reading and guard against any substring overlap.
     if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
@@ -145,7 +151,7 @@ public func checkAuthenticatedRootEnabled(runner: SecurityCommandRunner = .live)
         }
     }
 
-    return false
+    return nil
 }
 
 // MARK: - Hardened Runtime Check

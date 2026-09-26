@@ -197,6 +197,9 @@ func (s *Server) codeAttestLoopForGeneration(
 		return
 	}
 	defer s.codeAttestThrottle.endLoop(seKey, loopGeneration)
+	// Finalize only this loop's accepted pushes, leaving a replacement loop alone.
+	// Nonces remain valid for late verified replies. Diagnostics never revoke trust.
+	defer s.recordUnansweredCodeAttestPushes(providerID, seKey, loopGeneration)
 
 	// Wait for the initial fresh process/posture challenge before deciding
 	// whether a genuine prior APNs proof can be composed with its release fact.
@@ -299,6 +302,9 @@ func (s *Server) codeAttestLoopForGeneration(
 					s.logger.Warn("code-attest: no valid reply within the push budget; retrying",
 						"attempt", schedule.pushes)
 				}
+				// Per device, not prevSent: a push accepted before the provider
+				// reconnected is counted by this replacement loop.
+				s.recordUnansweredCodeAttestPushes(providerID, seKey)
 				if schedule.slow {
 					s.codeAttestMetric("slow_retry")
 					s.logger.Info("code-attest: slow retry push",
@@ -646,7 +652,7 @@ func (s *Server) sendCodeIdentityChallengeForReservation(
 		sePubKey, nonceB64, deviceToken, pubKey)
 
 	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	err := s.codeAttestor.SendCodeChallenge(sendCtx, deviceToken, env, pubKey, nonceB64)
+	err := s.sendCodeChallengeRecorded(sendCtx, provider.ID, deviceToken, env, pubKey, nonceB64)
 	cancel()
 	if err != nil {
 		// The push never went out — drop the outstanding challenge so no stale
@@ -657,6 +663,7 @@ func (s *Server) sendCodeIdentityChallengeForReservation(
 		return false
 	}
 	s.codeAttestMetric("push_sent")
+	s.codeAttestThrottle.markChallengeAccepted(sePubKey, nonceB64, loopGeneration)
 	// No blocking wait: the reply is verified in handleCodeAttestationResponse on
 	// whichever live connection it lands.
 	return true
@@ -685,11 +692,8 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	if resp == nil {
 		return
 	}
-	if provider.GetCodeAttested() &&
-		(!provider.RequiresFreshRuntimeCodeProof() ||
-			provider.GetFreshCodeAttested()) {
-		return // already holds every proof required by this connection
-	}
+	alreadyAttested := provider.GetCodeAttested() &&
+		(!provider.RequiresFreshRuntimeCodeProof() || provider.GetFreshCodeAttested())
 
 	provider.Mu().Lock()
 	var sePubKey, attestedBinaryHash string
@@ -722,6 +726,11 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	apnsProof := !resumeProof && resp.Nonce != "" &&
 		s.codeAttestThrottle.matchChallengeForIdentity(
 			sePubKey, resp.Nonce, apnsToken, nodeKey)
+	// Once authorized, only an outstanding APNs nonce has diagnostic work left.
+	// Preserve the previous no-op for resume proofs and unrelated/replayed frames.
+	if alreadyAttested && !apnsProof {
+		return
+	}
 	if !resumeProof && !apnsProof {
 		s.codeAttestMetric("nonce_mismatch")
 		s.logger.Warn("code-attest response nonce mismatch or expired proof")
@@ -740,9 +749,17 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 		) {
 			return // timeout/disconnect/racing response consumed it first
 		}
-	} else if !s.codeAttestThrottle.consumeChallengeForIdentity(
-		sePubKey, resp.Nonce, apnsToken, nodeKey,
-	) {
+	} else {
+		if !s.codeAttestThrottle.consumeChallengeForIdentity(
+			sePubKey, resp.Nonce, apnsToken, nodeKey,
+		) {
+			return
+		}
+		s.recordCodeAttestPushReply(providerID, "answered")
+	}
+
+	// Counted a late APNs reply; never re-grant or refresh reuse.
+	if alreadyAttested {
 		return
 	}
 

@@ -19,6 +19,31 @@ struct AppAttestLocalDiagnosisTests {
         #expect(AppAttestLocalDiagnosis.evaluate(status(), daemonRunning: true, macOSMajorVersion: 26, now: 100).isEmpty)
     }
 
+    @Test func apnsHistoryRendersAcrossOSAndMissingAppAttestStatesWithoutDuplicates() {
+        let history = APNsPushHistory(receivedAt: [90], repliedAt: [91], deviceTokenPresent: true)
+        for os in [26, 27] {
+            for running in [false, true] {
+                for observation in [nil, status()] as [AppAttestLocalStatus?] {
+                    let diagnostics = AppAttestLocalDiagnosis.evaluate(observation, daemonRunning: running,
+                        macOSMajorVersion: os, now: 100, pushHistory: history)
+                    let pushes = diagnostics.filter { $0.name == "apns pushes" }
+                    #expect(pushes.count == 1)
+                    #expect(pushes.first?.section == .attestationReadiness)
+                    #expect(pushes.first?.level == .pass)
+                    if os == 26 { #expect(diagnostics.count == 1) }
+                }
+            }
+        }
+        for history in [APNsPushHistory(deviceTokenPresent: false),
+                        APNsPushHistory(receivedAt: [90], deviceTokenPresent: true)] {
+            let diagnostics = AppAttestLocalDiagnosis.evaluate(nil, daemonRunning: true,
+                macOSMajorVersion: 26, now: 100, pushHistory: history)
+            #expect(diagnostics.count == 1 && diagnostics.first?.level == .warn)
+        }
+        #expect(AppAttestLocalDiagnosis.evaluate(nil, daemonRunning: true, macOSMajorVersion: 26,
+            now: 100, pushHistory: APNsPushHistory()).isEmpty, "a missing history file is not proof of no delivery")
+    }
+
     @Test func healthyGuiProviderWithEnrolledKeyPasses() {
         let d = AppAttestLocalDiagnosis.evaluate(status(), daemonRunning: true, macOSMajorVersion: 27, now: 100)
         #expect(d.allSatisfy { $0.section == .appAttest && $0.level == .pass })

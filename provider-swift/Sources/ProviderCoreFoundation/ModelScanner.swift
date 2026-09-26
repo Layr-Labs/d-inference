@@ -6,7 +6,11 @@ import Logging
 /// Scans the local HuggingFace cache for downloaded MLX models.
 ///
 /// The HuggingFace cache layout is:
-///   ~/.cache/huggingface/hub/models--{org}--{name}/snapshots/{hash}/
+///   {cache}/models--{org}--{name}/snapshots/{hash}/
+///
+/// where `{cache}` is the explicitly saved directory, or the unchanged
+/// `~/.cache/huggingface/hub` default. Ambient HuggingFace variables never
+/// select a serving cache; the location command can import them explicitly.
 ///
 /// A valid MLX model has config.json and at least one .safetensors weight file.
 ///
@@ -53,42 +57,41 @@ public struct ModelScanner: Sendable {
     ]
 
     // MARK: - Public API
-
-    /// Returns the default HuggingFace cache directory.
-    public static func defaultCacheDirectory() -> URL? {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
-    }
+    //
+    // Saved-location and legacy-default resolution lives in
+    // ModelScanner+CacheDirectory.swift.
 
     /// Resolve a model ID to its local snapshot path on disk.
     ///
     /// Checks the HuggingFace cache for a directory matching the model ID.
     /// Returns the snapshot path so the backend can load directly from disk.
+    public static func resolveLocalPath(modelID: String) -> URL? {
+        resolveLocalPath(
+            modelID: modelID,
+            environment: ProcessInfo.processInfo.environment,
+            configuredDirectory: configuredCacheDirectory)
+    }
+
     public static func resolveLocalPath(
-        modelID: String, environment: [String: String] = ProcessInfo.processInfo.environment
+        modelID: String,
+        environment: [String: String],
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        configuredDirectory: String? = nil
     ) -> URL? {
         if modelID == ModelMediaPolicy.ownedQwen4ModelID, Qwen4LocalModelPath.isConfigured(environment: environment) {
             // Invalid explicit staging must not silently serve the old cache.
             return Qwen4LocalModelPath.directory(environment: environment)
         }
-        guard let cacheDir = defaultCacheDirectory() else { return nil }
+        let cacheDir = cacheDirectory(
+            homeDirectory: homeDirectory,
+            configuredDirectory: configuredDirectory)
         let fm = FileManager.default
 
         // Try exact match: models--{id with / replaced by --}
-        let dirName = "models--\(modelID.replacingOccurrences(of: "/", with: "--"))"
-        let modelDir = cacheDir.appendingPathComponent(dirName, isDirectory: true)
+        let modelDir = cacheDir.appendingPathComponent(
+            cacheDirectoryName(for: modelID), isDirectory: true)
         if fm.fileExists(atPath: modelDir.path) {
             let snapshotsDir = modelDir.appendingPathComponent("snapshots", isDirectory: true)
-            if let snapshot = findLatestSnapshot(in: snapshotsDir) {
-                return snapshot
-            }
-        }
-
-        // Try without org prefix (for models like "qwen3.5-27b-claude-opus-8bit")
-        let dirNamePlain = "models--\(modelID)"
-        let modelDirPlain = cacheDir.appendingPathComponent(dirNamePlain, isDirectory: true)
-        if fm.fileExists(atPath: modelDirPlain.path) {
-            let snapshotsDir = modelDirPlain.appendingPathComponent("snapshots", isDirectory: true)
             if let snapshot = findLatestSnapshot(in: snapshotsDir) {
                 return snapshot
             }
@@ -100,6 +103,13 @@ public struct ModelScanner: Sendable {
     // MARK: - Snapshot Discovery
 
     /// Find the latest snapshot directory by modification time.
+    ///
+    /// The returned URL is symlink-resolved. `contentsOfDirectory(at:)`
+    /// canonicalises the paths it hands back (on macOS a `/var/...` input
+    /// yields `/private/var/...` entries), so without this the snapshot path
+    /// could come back in a different textual form than the cache directory it
+    /// was found under -- and callers that compare or key on those paths would
+    /// treat one directory as two.
     public static func findLatestSnapshot(in snapshotsDir: URL) -> URL? {
         let fm = FileManager.default
         let entries: [URL]
@@ -128,7 +138,8 @@ public struct ModelScanner: Sendable {
             }
         }
 
-        return latest?.url
+        guard let latest else { return nil }
+        return resolved(latest.url)
     }
 
     // MARK: - MLX Detection

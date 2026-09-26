@@ -84,6 +84,89 @@ struct DoctorChecksTests {
         #expect(describeMDMEnrollment(.checkFailed) == "unknown (profiles tool failed)")
     }
 
+    @Test("hfCacheCheck warns when the cache path is a regular file")
+    func hfCacheCheckRejectsFile() throws {
+        let base = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("doctor-cache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let file = base.appendingPathComponent("hub")
+        try "not a directory".write(to: file, atomically: true, encoding: .utf8)
+
+        let check = hfCacheCheck(
+            homeDirectory: base, configuredDirectory: file.path
+        )
+        // A plain fileExists() check called this PASS while the scanner found
+        // nothing.
+        #expect(check.status == .warn)
+    }
+
+    @Test("hfCacheCheck warns when a missing cache path is configured")
+    func hfCacheCheckMissingPath() throws {
+        let base = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("doctor-missing-\(UUID().uuidString)", isDirectory: true)
+
+        let check = hfCacheCheck(
+            homeDirectory: base, configuredDirectory: base.appendingPathComponent("hub").path
+        )
+        #expect(check.status == .warn)
+    }
+
+    /// Selecting an empty cache must warn when the old cache still holds models.
+    @Test("hfCacheCheck warns when the redirected cache is empty but home is not")
+    func hfCacheCheckEmptyRedirect() throws {
+        let root = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("doctor-empty-\(UUID().uuidString)", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let redirected = root.appendingPathComponent("elsewhere", isDirectory: true)
+        let fm = FileManager.default
+        let defaultModel = home.appendingPathComponent(".cache/huggingface/hub/models--acme--Tiny/snapshots/local")
+        try makeCachedModel(at: defaultModel)
+        try fm.createDirectory(at: redirected.appendingPathComponent("hub", isDirectory: true),
+                               withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let check = hfCacheCheck(
+            homeDirectory: home, configuredDirectory: redirected.appendingPathComponent("hub").path
+        )
+        #expect(check.status == .warn)
+
+        // An empty download directory does not make the cache healthy.
+        let modelDir = redirected.appendingPathComponent("hub/models--acme--Other")
+        try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        #expect(hfCacheCheck(homeDirectory: home,
+                            configuredDirectory: redirected.appendingPathComponent("hub").path).status == .warn)
+        try makeCachedModel(at: modelDir.appendingPathComponent("snapshots/local"))
+        let ok = hfCacheCheck(
+            homeDirectory: home, configuredDirectory: redirected.appendingPathComponent("hub").path
+        )
+        #expect(ok.status == .pass)
+    }
+
+    @Test("hfCacheCheck passes on the legacy default cache")
+    func hfCacheCheckDefault() throws {
+        let home = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("doctor-default-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: home.appendingPathComponent(".cache/huggingface/hub", isDirectory: true),
+            withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let check = hfCacheCheck(homeDirectory: home)
+        #expect(check.status == .pass)
+    }
+
+    private func makeCachedModel(at snapshot: URL) throws {
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try Data("{\"model_type\":\"qwen2\"}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
+        try Data([1, 2, 3, 4]).write(to: snapshot.appendingPathComponent("model.safetensors"))
+    }
+
     @Test("CheckStatus markers and boot verdict mapping are stable")
     func statusMarkers() {
         #expect(CheckStatus.pass.marker == "[PASS]")

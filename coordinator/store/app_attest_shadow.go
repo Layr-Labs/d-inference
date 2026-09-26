@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"time"
 )
 
 // AppAttestShadowStore is observation-only storage, discovered through As so
@@ -24,6 +25,10 @@ type AppAttestShadowKey struct {
 	BundleVersion      string  `json:"bundle_version"`
 	ValidationCategory *uint32 `json:"validation_category,omitempty"`
 	Counter            uint32  `json:"counter"`
+	// UpdatedAt is the row's insert time or its last accepted counter advance,
+	// i.e. the key's last verified assertion. It is never serialized into the
+	// evidence JSON and never authorizes anything.
+	UpdatedAt time.Time `json:"-"`
 }
 
 const appAttestShadowDDL = `CREATE TABLE IF NOT EXISTS app_attest_shadow_keys (

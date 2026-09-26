@@ -182,6 +182,12 @@ public actor ProviderLoop {
     internal var appAttestShadowClient: AppAttestShadowClient?
     internal var appAttestShadowTask: Task<Void, Never>?
     internal var appAttestShadowGeneration: UInt64 = 0
+    /// Last local App Attest observation, published in the daemon state file.
+    internal var appAttestLocalStatus: AppAttestLocalStatus?
+    /// Watches a stalled DeviceCheck operation until a restart is safe.
+    internal var appAttestStallMonitorTask: Task<Void, Never>?
+    /// Last logged reason for deferring the stall restart (log on change only).
+    internal var appAttestStallLastSkip: AppAttestStallRestartPolicy.SkipReason?
     internal let loopConfig: ProviderLoopConfig
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?

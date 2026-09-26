@@ -82,6 +82,9 @@ func (x *Session) observeWithClientDiagnostics(stage, outcome string, metadata *
 			fields["apple_error_source"] = reply.AppleErrorSource
 		}
 	}
+	for key, value := range reply.RuntimeDiagnosticFields(time.Now()) {
+		fields[key] = value
+	}
 	if stage == "prospective_policy" {
 		for key, value := range x.policyFields {
 			fields[key] = value

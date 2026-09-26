@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-25 · commit `b6f9574ed`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -135,8 +135,9 @@ vetoes (`provider-swift/Sources/darkbloom/DoctorCommand.swift`,
 [guard recovery](./troubleshooting.md#kv-backend-crash-loop-guard).
 
 Exit 1 when any detailed check or diagnosis line is FAIL (or WARN with
-`--strict`). The check names are listed in
-[troubleshooting](./troubleshooting.md#doctor-checks).
+`--strict`). On macOS 27 or later the diagnosis includes an `APP ATTEST`
+section with the daemon's local key state and launch session. The check names
+are listed in [troubleshooting](./troubleshooting.md#doctor-checks).
 
 ### `darkbloom verify`
 
@@ -880,6 +881,7 @@ manual use.
 | Warm-model journal | `~/.darkbloom/loaded-models.json` (`DARKBLOOM_LOADED_MODELS_FILE`) | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` |
 | Watchdog state | `~/.darkbloom/watchdog-state.json` (`DARKBLOOM_WATCHDOG_STATE`) | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` |
 | KV-backend crash-loop guard | `~/.darkbloom/kv-backend-guard.json` (`DARKBLOOM_KV_BACKEND_GUARD`) | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
+| App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic restart for a stalled DeviceCheck call (at most one per 6 h) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |
 | Provider LaunchAgent | label `io.darkbloom.provider`; `~/Library/LaunchAgents/io.darkbloom.provider.plist`; `RunAtLoad = true`, `KeepAlive = false`; stdout/stderr → `~/.darkbloom/provider.log` | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`label`, `plistPath`, `logPath`) |
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |

@@ -36,6 +36,11 @@ type AppAttestShadowPayload struct {
 	AppleErrorSource   string               `json:"apple_error_source,omitempty"`
 	Proof              string               `json:"proof,omitempty"`
 	EncryptedChallenge *EncryptedPayload    `json:"encrypted_challenge,omitempty"`
+	// Optional provider runtime diagnostics on ready replies. They are never
+	// part of the signed transcript; see SanitizeRuntimeDiagnostics.
+	LaunchSession           string `json:"launch_session,omitempty"`
+	BootTime                int64  `json:"boot_time,omitempty"`
+	OperationStalledSeconds int    `json:"operation_stalled_seconds,omitempty"`
 }
 
 // AppAttestShadowHash is length-prefixed UTF-8 to avoid JSON canonicalization ambiguity.

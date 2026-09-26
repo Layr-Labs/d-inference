@@ -38,12 +38,20 @@ extension ProviderLoop {
             cpuEfficiency: String(loopConfig.hardware.cpuCores.efficiency), gpuCores: String(loopConfig.hardware.gpuCores), attestationPublicKey: signer?.publicKeyBase64)
         appAttestShadowTask = Task.detached(priority: .utility) { [weak self] in
             let reply = await client.respond(to: message, publicKey: publicKey, status: status)
+            let localStatus = message.action == "prepare" ? await client.currentLocalStatus() : nil
             guard !Task.isCancelled else { return }
-            await self?.finishAppAttestShadow(reply, generation: generation, send: send)
+            await self?.finishAppAttestShadow(reply, localStatus: localStatus, generation: generation, send: send)
         }
     }
 
-    private func finishAppAttestShadow(_ reply: AppAttestShadowPayload, generation: UInt64, send: SendHandle) {
+    private func finishAppAttestShadow(_ reply: AppAttestShadowPayload, localStatus: AppAttestLocalStatus?,
+                                       generation: UInt64, send: SendHandle) {
+        if let localStatus {
+            appAttestLocalStatus = localStatus
+            writeDaemonState()
+        }
+        // Only these results can leave an unanswered Apple call holding admission.
+        if reply.result == "busy" || reply.result == "operation_timeout" { startAppAttestStallMonitorIfNeeded() }
         guard generation == appAttestShadowGeneration else { return }
         appAttestShadowTask = nil
         send.send(.appAttestShadow(reply))

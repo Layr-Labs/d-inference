@@ -20,6 +20,7 @@ func (x *Session) runRecovering(ctx context.Context, attempt func(context.Contex
 	for failures := 0; ctx.Err() == nil; failures++ {
 		previousSuccess := x.assertionAt
 		x.lastOutcome = ""
+		x.rotationRequested, x.readyDiagnostics = false, nil
 		attempt(ctx)
 		failure := x.lastOutcome
 		if ctx.Err() != nil {
@@ -33,6 +34,14 @@ func (x *Session) runRecovering(ctx context.Context, attempt func(context.Contex
 			failures = 0
 		}
 		delay := appAttestExchangeRetryDelay(failure, failures)
+		switch {
+		case x.rotationRetryDue(failure):
+			// A dead key is about to be (or was just) retired; the next
+			// prepare either sends attest or enrolls the replacement.
+			delay = keyRotationRetryDelay()
+		case x.enrollmentBackoffDue(failure):
+			delay = enrollmentInvalidKeyBackoff
+		}
 		x.observe("recovery", "retry_scheduled", nil)
 		if !wait(ctx, delay) {
 			return

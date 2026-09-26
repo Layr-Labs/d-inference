@@ -19,6 +19,7 @@ public enum ProviderProcessRun {
         var context: StartContext?
         var marker: ProviderRunMarker?
         var lifecycleCommand = false
+        var relaunchCause: ProviderRunMarker.ExitCause?
     }
 
     private static let state = State()
@@ -52,6 +53,7 @@ public enum ProviderProcessRun {
             state.context = context
             state.marker = marker
             state.lifecycleCommand = false
+            state.relaunchCause = nil
         }
         return context
     }
@@ -61,19 +63,26 @@ public enum ProviderProcessRun {
         state.lock.withLock { state.lifecycleCommand = true }
     }
 
-    /// Marks the run clean. `cause` nil picks lifecycle_command or shutdown.
+    /// An explicit relaunch cause survives later AppKit/signal cleanup. Serialize
+    /// cause selection and the write so concurrent finish calls cannot erase it.
     public static func finish(cause: ProviderRunMarker.ExitCause? = nil) {
-        let (marker, context, lifecycle) = state.lock.withLock { (state.marker, state.context, state.lifecycleCommand) }
-        guard let marker else { return }
-        try? marker.markClean(processStartMicros: context?.processStartMicros,
-                              cause: cause ?? (lifecycle ? .lifecycleCommand : .shutdown))
+        state.lock.withLock {
+            guard let marker = state.marker else { return }
+            if cause == .update || cause == .stallRestart {
+                state.relaunchCause = state.relaunchCause ?? cause
+            }
+            let resolved = state.relaunchCause ?? cause ?? (state.lifecycleCommand ? .lifecycleCommand : .shutdown)
+            try? marker.markClean(processStartMicros: state.context?.processStartMicros, cause: resolved)
+        }
     }
 
     /// A relaunch hand-off failed and this process keeps serving.
     public static func resume() {
-        let (marker, context) = state.lock.withLock { (state.marker, state.context) }
-        guard let marker else { return }
-        try? marker.markRunning(processStartMicros: context?.processStartMicros, version: ProviderCore.version,
-                                previousExit: context?.previousExit)
+        state.lock.withLock {
+            state.relaunchCause = nil
+            guard let marker = state.marker else { return }
+            try? marker.markRunning(processStartMicros: state.context?.processStartMicros, version: ProviderCore.version,
+                                    previousExit: state.context?.previousExit)
+        }
     }
 }

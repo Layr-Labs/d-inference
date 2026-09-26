@@ -9,7 +9,7 @@ private func tempDirectory() throws -> URL {
     return url
 }
 
-@Suite("Provider run marker and start reason")
+@Suite("Provider run marker and start reason", .serialized)
 struct ProviderRunMarkerTests {
     @Test func cleanRunningUncleanTransitions() throws {
         let dir = try tempDirectory()
@@ -82,6 +82,37 @@ struct ProviderRunMarkerTests {
         #expect(written?.state == .running)
         #expect(written?.processStartMicros == 2_000_500_000)
         #expect(written?.previousExit == .unclean)
+    }
+
+    @Test func explicitRelaunchCauseSurvivesGenericCleanupAndResetsOnResume() throws {
+        let dir = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        for cause in [ProviderRunMarker.ExitCause.update, .stallRestart] {
+            ProviderProcessRun.begin(directory: dir, version: "test", processStartMicros: 100_000_000)
+            ProviderProcessRun.finish(cause: cause)
+            ProviderProcessRun.noteLifecycleCommand()
+            ProviderProcessRun.finish()
+            ProviderProcessRun.finish(cause: .shutdown)
+            #expect(ProviderRunMarker(directory: dir).read()?.exitCause == cause)
+            ProviderProcessRun.resume()
+            #expect(ProviderRunMarker(directory: dir).read()?.state == .running)
+            ProviderProcessRun.finish()
+            #expect(ProviderRunMarker(directory: dir).read()?.exitCause == .lifecycleCommand)
+        }
+        ProviderProcessRun.begin(directory: dir, version: "test", processStartMicros: 200_000_000)
+        ProviderProcessRun.finish()
+        #expect(ProviderRunMarker(directory: dir).read()?.exitCause == .shutdown, "new runs cannot inherit a relaunch cause")
+    }
+
+    @Test func concurrentCleanupCannotOverwriteAnUpdateCause() async throws {
+        let dir = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ProviderProcessRun.begin(directory: dir, version: "test", processStartMicros: 100_000_000)
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { ProviderProcessRun.finish(cause: .update) }
+            for _ in 0..<20 { group.addTask { ProviderProcessRun.finish() } }
+        }
+        #expect(ProviderRunMarker(directory: dir).read()?.exitCause == .update)
     }
 
     // MARK: - start_reason precedence

@@ -3169,3 +3169,7 @@ Exercise the API, funding and settlement contracts with
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Telemetry archive validation
+
+In `scripts/telemetry_archive`, run `uv run ruff check src tests`, `uv run ruff format --check src tests`, and `uv run pytest -q`. Set `TEST_ARCHIVE_DATABASE_URL` only to a disposable local database named `archive_test` for PostgreSQL restoration, snapshot-isolation, and nested-outcome tests. The tests reject remote databases. Production copy/BigQuery verification is a separate gate in [telemetry history](../operations/telemetry-history.md).

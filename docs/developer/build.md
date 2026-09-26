@@ -1017,3 +1017,7 @@ Exercise the API, funding and settlement contracts with
 Set `DATABASE_URL` to a disposable local PostgreSQL database to run transaction,
 concurrency and rollback coverage. Never point tests at production. Console
 migration coverage runs with `npm test` in `console-ui`.
+
+## Telemetry archive worker
+
+The independent Python worker uses `scripts/telemetry_archive/Dockerfile` and hash-pinned `requirements.lock`. Run `uv sync --locked` in that directory for local tooling; build the container for Linux/amd64. It does not rebuild or deploy the coordinator. See [telemetry history](../operations/telemetry-history.md).

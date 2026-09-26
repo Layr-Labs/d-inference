@@ -3,13 +3,9 @@ import Foundation
 import ProviderCore
 
 extension ServiceDrain {
-    static func publishWithRecoveryRollback(prepare: () throws -> Void = {},
-                                            disable: () throws -> Void,
+    static func publishWithRecoveryRollback(disable: () throws -> Void,
                                             publish: () throws -> Void,
                                             restore: () throws -> Void) throws {
-        // Persistence failure must leave the current provider and recovery
-        // untouched. Only failures after disabling need recovery rollback.
-        try prepare()
         do { try disable(); try publish() }
         catch {
             let setupError = error

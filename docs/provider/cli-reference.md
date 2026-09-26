@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `02048322b`
+> Last updated: 2026-09-26 · commit `e0d2da6d0`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -96,6 +96,14 @@ an explicitly pinned `enabled_models` takes precedence over old `--model` plist
 arguments. A directly invoked foreground `--model` still overrides config
 (`Start.usesPinnedModelSelection`, `Start.launchDaemon`).
 
+The config sidecar lock spans persistence and synchronous drain setup. If
+disabling recovery or publishing the request fails, the exact previous TOML
+bytes (or original file absence) are restored, including whether the model key
+was pinned. Restoration failures are reported. Once publication succeeds, a
+later drain timeout retains the replacement intent; no config lock is held while
+waiting (`ProviderModelSelection.withReplacement`,
+`provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift`).
+
 ### `darkbloom switch`
 
 | Flag | Type | Default | Effect |
@@ -131,6 +139,13 @@ consumed, so a later scheduled window in the same process cannot replay it.
 Sources: `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSwitch.swift`
 (`drainForModelSwitch`, `cancelModelSwitchAndWait`),
 `provider-swift/Sources/ProviderCore/Service/LifecycleMailbox.swift` (`claimSwitchRequest`).
+
+Validation carries each snapshot's pre-hash fingerprint into the live model
+state. Where load policy permits hash reuse, unchanged snapshots avoid a second
+full weight read; metadata changes and mandatory fresh/SSD checks still rehash.
+Rollback restores the previous hash/fingerprint pair
+(`ProviderModelSwitchValidation`,
+`provider-swift/Sources/ProviderCore/Service/ProviderModelSwitchValidation.swift`).
 
 Eligible local off-catalog models can remain in the selection for owner-only
 inference, just as at registration. They do not become publicly routable; tracked

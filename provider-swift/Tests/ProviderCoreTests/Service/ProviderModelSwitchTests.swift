@@ -36,9 +36,12 @@ private extension ProviderLoop {
     func holdSwitchRequest(_ id: String) { acceptedLifecycleRequests.insert(id) }
     func finishSwitchRequest(_ id: String) { acceptedLifecycleRequests.remove(id) }
     func failSwitchModel(_ model: ModelInfo) { failedSelfTestHashes[model.id] = model.weightHash ?? "" }
-    func useSwitchSnapshot(_ snapshot: URL, gate: SwitchHashGate? = nil) {
+    func useSwitchSnapshot(
+        _ snapshot: URL,
+        hashSnapshot: @escaping @Sendable (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
+    ) {
         modelSwitchSnapshotResolver = { _ in snapshot }
-        if let gate { modelSwitchWeightHasher = { gate.hash(snapshot: $0, modelID: $1) } }
+        modelSwitchWeightHasher = hashSnapshot
     }
     func stopSwitchForTeardown() async {
         isShuttingDown = true
@@ -132,7 +135,8 @@ struct ProviderModelSwitchTests {
         defer { Task { await mock.shutdown() } }
         let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
         defer { try? FileManager.default.removeItem(at: root) }
-        await loop.useSwitchSnapshot(try switchSnapshot(in: root))
+        let snapshot = try switchSnapshot(in: root)
+        await loop.useSwitchSnapshot(snapshot)
         let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await client.shutdown() } }
         let request = ProviderModelSwitchRequest(target: try #require(ProcessIdentity.current()),
@@ -146,6 +150,22 @@ struct ProviderModelSwitchTests {
         #expect(mock.snapshot().registers.count == 1)
         #expect(await !loop.state.refusingNewWork)
         #expect(try ConfigManager.load(from: root.appendingPathComponent("provider.toml")).backend.enabledModels == ["new-model"])
+
+        let verifiedHash = try #require(WeightHasher.computeHash(snapshotDir: snapshot, modelID: "new-model"))
+        let reused = try await loop.captureWeightHashForTesting(modelId: "new-model", modelPath: snapshot)
+        #expect(reused.hash == verifiedHash)
+        #expect(!reused.recomputed)
+        let fresh = try await loop.captureWeightHashForTesting(
+            modelId: "new-model", modelPath: snapshot, requireFreshCryptographicHash: true)
+        #expect(fresh.hash == verifiedHash)
+        #expect(fresh.recomputed)
+
+        try Data(repeating: 0x62, count: 2048).write(to: snapshot.appendingPathComponent("model.safetensors"))
+        let updatedHash = try #require(WeightHasher.computeHash(snapshotDir: snapshot, modelID: "new-model"))
+        let changed = try await loop.captureWeightHashForTesting(modelId: "new-model", modelPath: snapshot)
+        #expect(updatedHash != verifiedHash)
+        #expect(changed.hash == updatedHash)
+        #expect(changed.recomputed)
     }
 
     @Test(arguments: [false, true])
@@ -188,7 +208,7 @@ struct ProviderModelSwitchTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let gate = SwitchHashGate()
         defer { gate.release() }
-        await loop.useSwitchSnapshot(try switchSnapshot(in: root), gate: gate)
+        await loop.useSwitchSnapshot(try switchSnapshot(in: root), hashSnapshot: { gate.hash(snapshot: $0, modelID: $1) })
         let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
         defer { reader.cancel(); Task { await client.shutdown() } }
         let identity = try #require(ProcessIdentity.current())
@@ -286,7 +306,9 @@ struct ProviderModelSwitchTests {
         try await loop.validateModelSwitchSelfTests([candidate])
         await loop.beginServingDrain(owner: .modelSwitch)
         await loop.failSwitchModel(candidate)
-        await #expect(throws: (any Error).self) { try await loop.applyModelSelection([candidate]) }
+        await #expect(throws: (any Error).self) {
+            try await loop.applyModelSelection(.init(models: [candidate], fingerprints: [:]))
+        }
         #expect(await loop.advertisedLocalModelIds() == ["old-model"])
         #expect(await !loop.isModelAdvertised("new-model"))
     }
@@ -329,10 +351,10 @@ struct ProviderModelSwitchTests {
         let barrier = try await loop.drainForModelSwitch(deadline: .now.advanced(by: .seconds(3)))
         if reject {
             await #expect(throws: (any Error).self) {
-                try await loop.commitModelSelection([switchModel("new-model")], drainID: barrier)
+                try await loop.commitModelSelection(.init(models: [switchModel("new-model")], fingerprints: [:]), drainID: barrier)
             }
         } else {
-            try await loop.commitModelSelection([switchModel("new-model")], drainID: barrier)
+            try await loop.commitModelSelection(.init(models: [switchModel("new-model")], fingerprints: [:]), drainID: barrier)
             await loop.resumeAfterModelSwitch()
         }
         let expected = reject ? ["old-model"] : ["new-model"]
@@ -351,6 +373,97 @@ struct ProviderModelSwitchTests {
             #expect(await loop.slotBridgeForTesting(modelId: "old-model") == nil)
             #expect(resident.engine.shutdownCalls == 1)
         }
+    }
+
+    @Test func changedArtifactsDuringValidationCannotReuseTheEarlierHash() async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = try switchSnapshot(in: root)
+        let originalHash = try #require(WeightHasher.computeHash(snapshotDir: snapshot, modelID: "new-model"))
+        await loop.useSwitchSnapshot(snapshot, hashSnapshot: { path, id in
+            let hash = WeightHasher.computeHash(snapshotDir: path, modelID: id)
+            // A writer changes bytes before the validation hash returns. Taking
+            // the fingerprint after this callback would bless the earlier hash.
+            do {
+                try Data(repeating: 0x62, count: 2048).write(to: path.appendingPathComponent("model.safetensors"))
+            } catch {
+                Issue.record(error)
+                return nil
+            }
+            return hash
+        })
+        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        defer { reader.cancel(); Task { await client.shutdown() } }
+        let result = await loop.switchModels(request: .init(target: try #require(ProcessIdentity.current()),
+            models: ["new-model"], timeoutSeconds: 0))
+        #expect(result.outcome == .switched)
+        #expect(await loop.liveModelHashForTesting("new-model") == originalHash)
+        let updatedHash = try #require(WeightHasher.computeHash(snapshotDir: snapshot, modelID: "new-model"))
+        let captured = try await loop.captureWeightHashForTesting(modelId: "new-model", modelPath: snapshot)
+        #expect(updatedHash != originalHash)
+        #expect(captured.hash == updatedHash)
+        #expect(captured.recomputed)
+    }
+
+    @Test(arguments: [false, true])
+    func failedCommitPreservesMatchingHashAndFingerprint(dropConnection: Bool) async throws {
+        let mock = MockCoordinator(acknowledgeModelReplacements: false)
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldSnapshot = try switchSnapshot(in: root)
+        let previous = try await ProviderModelSwitchValidation.scanCancellable(
+            ["old-model"], capabilities: [], resolveSnapshot: { _ in oldSnapshot },
+            hashSnapshot: { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) })
+        await loop.beginServingDrain(owner: .modelSwitch)
+        try await loop.applyModelSelection(previous)
+        await loop.resumeAfterModelSwitch()
+        let oldHash = try #require(previous.models.first?.weightHash)
+        let newSnapshot = try switchSnapshot(in: root.appendingPathComponent("replacement"))
+        try Data(repeating: 0x62, count: 2048).write(to: newSnapshot.appendingPathComponent("model.safetensors"))
+        let newHash = try #require(WeightHasher.computeHash(snapshotDir: newSnapshot, modelID: "old-model"))
+        #expect(newHash != oldHash)
+        await loop.useSwitchSnapshot(newSnapshot)
+        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        defer { reader.cancel(); Task { await client.shutdown() } }
+        await client.stageModelSelection(previous.models)
+        let request = ProviderModelSwitchRequest(target: try #require(ProcessIdentity.current()),
+            models: ["old-model"], timeoutSeconds: 0)
+        let switching = Task { await loop.switchModels(request: request) }
+        defer { switching.cancel() }
+        let validationMessages = try #require(try await mock.waitForSnapshot { !$0.modelsReplacements.isEmpty })
+        let validation = try #require(validationMessages.modelsReplacements.first)
+        try await mock.pushModelsReplaceAck(.init(requestId: validation.requestId, drainRequestId: validation.drainRequestId,
+            validateOnly: true, accepted: true))
+        let commitMessages = try #require(try await mock.waitForSnapshot { $0.modelsReplacements.count == 2 })
+        let commit = try #require(commitMessages.modelsReplacements.last)
+        let applied = try await loop.captureWeightHashForTesting(modelId: "old-model", modelPath: newSnapshot)
+        #expect(applied.hash == newHash)
+        #expect(!applied.recomputed)
+        if dropConnection {
+            await mock.dropActiveWebSocket()
+        } else {
+            try await mock.pushModelsReplaceAck(.init(requestId: commit.requestId, drainRequestId: commit.drainRequestId,
+                accepted: false, error: "invalid_models"))
+            let rollbackMessages = try #require(try await mock.waitForSnapshot { $0.modelsReplacements.count == 3 })
+            let rollback = try #require(rollbackMessages.modelsReplacements.last)
+            try await mock.pushModelsReplaceAck(.init(requestId: rollback.requestId, drainRequestId: rollback.drainRequestId,
+                accepted: true))
+        }
+        let result = await switching.value
+        #expect(result.outcome == (dropConnection ? .timedOut : .failed))
+        #expect(await loop.state.refusingNewWork == dropConnection)
+        let expectedHash = dropConnection ? newHash : oldHash
+        let expectedSnapshot = dropConnection ? newSnapshot : oldSnapshot
+        let kept = try await loop.captureWeightHashForTesting(modelId: "old-model", modelPath: expectedSnapshot)
+        #expect(kept.hash == expectedHash)
+        #expect(!kept.recomputed)
+        #expect(await loop.liveModelHashForTesting("old-model") == expectedHash)
+        #expect(await client.currentAdvertisedModels().first?.weightHash == expectedHash)
     }
 }
 

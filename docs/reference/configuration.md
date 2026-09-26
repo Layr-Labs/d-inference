@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-26 · commit `02048322b`
+> Last updated: 2026-09-26 · commit `e0d2da6d0`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -46,6 +46,12 @@ daemon's resolved config path and does not optimistically write from the CLI.
 The daemon persists the accepted selection using a stable config sidecar lock,
 reloading before saving so unrelated settings survive concurrent config writes.
 Other config changes remain process-start settings unless documented otherwise.
+For replacement start, the same sidecar lock covers saving and synchronous
+drain setup. Setup failure restores the original bytes or file absence, so
+legacy unpinned selections stay unpinned; a timeout after publication retains
+the new intent. The lock is released before waiting for drain completion
+(`ProviderModelSelection.withReplacement` in
+`provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift`).
 
 
 ## Where values are set

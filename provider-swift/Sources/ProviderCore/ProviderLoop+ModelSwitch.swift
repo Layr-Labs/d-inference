@@ -47,9 +47,10 @@ extension ProviderLoop {
 
     private func performModelSwitch(request: ProviderModelSwitchRequest) async -> ProviderModelSwitchStatus {
         do {
-            let models = try await ProviderModelSwitchValidation.scanCancellable(
+            let selection = try await ProviderModelSwitchValidation.scanCancellable(
                 request.models, capabilities: loopConfig.runtimeCapabilities,
                 resolveSnapshot: modelSwitchSnapshotResolver, hashSnapshot: modelSwitchWeightHasher)
+            let models = selection.models
             try Task.checkCancellation()
             try checkModelSwitchOwnership(allowServing: true)
             let physical = UInt64(loopConfig.hardware.memoryGb) * 1_073_741_824
@@ -74,7 +75,7 @@ extension ProviderLoop {
             let drainID = try await drainForModelSwitch(deadline: deadline)
             try checkModelSwitchOwnership()
             setModelSwitchPhase(.switching)
-            try await commitModelSelection(models, drainID: drainID)
+            try await commitModelSelection(selection, drainID: drainID)
             try checkModelSwitchOwnership()
             await resumeAfterModelSwitch()
             guard servingDrain.owner == nil, !isShuttingDown, !Task.isCancelled else {

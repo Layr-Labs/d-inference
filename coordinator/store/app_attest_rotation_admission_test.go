@@ -134,6 +134,9 @@ func TestAppAttestKeyRotationLimitsSurviveMachineMerges(t *testing.T) {
 			if !admit(survivor, now.Add(time.Hour+time.Minute)) {
 				t.Fatal("rotation blocked after the hourly window passed")
 			}
+			if admit(predecessor, now.Add(time.Hour+2*time.Minute)) {
+				t.Fatal("stale pre-merge scope bypassed the survivor's hourly limit")
+			}
 		})
 	}
 }

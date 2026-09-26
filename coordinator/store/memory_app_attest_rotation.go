@@ -34,6 +34,13 @@ func (s *MemoryStore) AdmitAppAttestKeyRotation(ctx context.Context, r AppAttest
 	if existing, ok := s.appAttestRotations[r.KeyID]; ok {
 		return &existing, false, nil
 	}
+	canonical, err := s.canonicalMachineIDLocked(r.MachineID)
+	if err != nil {
+		return nil, false, err
+	}
+	if canonical != "" {
+		r.MachineID = canonical
+	}
 	family := s.rotationScopeFamily(r.MachineID)
 	for _, limit := range limits {
 		since, n := r.RequestedAt.Add(-limit.Window), 0
@@ -56,6 +63,13 @@ func (s *MemoryStore) CountAppAttestKeyRotations(ctx context.Context, machineID 
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	canonical, err := s.canonicalMachineIDLocked(machineID)
+	if err != nil {
+		return 0, err
+	}
+	if canonical != "" {
+		machineID = canonical
+	}
 	family := s.rotationScopeFamily(machineID)
 	n := 0
 	for _, r := range s.appAttestRotations {

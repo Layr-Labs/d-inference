@@ -25,15 +25,28 @@ func (s *PostgresStore) RecordAppAttestKeyRotation(ctx context.Context, r AppAtt
 	return tag.RowsAffected() == 1, err
 }
 
-// AdmitAppAttestKeyRotation serializes all rotation admissions for one scope
-// across coordinators with a transaction-scoped advisory lock, so the window
-// counts and the insert see a consistent set of records.
+// AdmitAppAttestKeyRotation holds the inventory merge barrier shared, resolves
+// the current canonical scope, then locks its rotation budget exclusively.
+// ObserveMachine takes that barrier exclusively: no merge can change the
+// family between canonical resolution, window counts and insertion. Unrelated
+// machines can still admit concurrently. Lock order is always barrier, scope.
 func (s *PostgresStore) AdmitAppAttestKeyRotation(ctx context.Context, r AppAttestKeyRotation, limits []AppAttestRotationLimit) (*AppAttestKeyRotation, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(9952701)`); err != nil {
+		return nil, false, err
+	}
+	var canonical string
+	err = tx.QueryRow(ctx, canonicalMachineIDQuery, r.MachineID).Scan(&canonical)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, err
+	}
+	if canonical != "" {
+		r.MachineID = canonical
+	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "app-attest-key-rotation:"+r.MachineID); err != nil {
 		return nil, false, err
 	}
@@ -66,8 +79,15 @@ func (s *PostgresStore) AdmitAppAttestKeyRotation(ctx context.Context, r AppAtte
 }
 
 func (s *PostgresStore) CountAppAttestKeyRotations(ctx context.Context, machineID string, since time.Time) (int, error) {
+	canonical, err := s.CanonicalMachineID(ctx, machineID)
+	if err != nil {
+		return 0, err
+	}
+	if canonical != "" {
+		machineID = canonical
+	}
 	var n int
-	err := s.pool.QueryRow(ctx, appAttestRotationWindowCount, machineID, since).Scan(&n)
+	err = s.pool.QueryRow(ctx, appAttestRotationWindowCount, machineID, since).Scan(&n)
 	return n, err
 }
 

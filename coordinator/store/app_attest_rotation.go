@@ -15,10 +15,10 @@ type AppAttestKeyRotationStore interface {
 	// reports whether this call inserted it.
 	RecordAppAttestKeyRotation(context.Context, AppAttestKeyRotation) (bool, error)
 	// AdmitAppAttestKeyRotation atomically applies the per-scope limits and
-	// inserts r. Callers for one scope (r.MachineID) are serialized across
-	// coordinators, so no window can exceed its limit. The limits also count
-	// records stored under machines later merged into the scope, so a merge
-	// cannot reset them. A key that already has a record is returned as
+	// inserts r. Canonical resolution, limits and insertion are serialized
+	// with machine merges and admissions for that canonical scope. Stale
+	// pre-merge IDs share the survivor's budget, including all merged history.
+	// A key that already has a record is returned as
 	// existing without checking limits or inserting (it names the same dead
 	// key). When any limit is full nothing is inserted and admitted is false.
 	AdmitAppAttestKeyRotation(ctx context.Context, r AppAttestKeyRotation, limits []AppAttestRotationLimit) (existing *AppAttestKeyRotation, admitted bool, err error)

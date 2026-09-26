@@ -237,7 +237,10 @@ final class AppAttestShadowTests: XCTestCase {
 
     func testRuntimeDiagnosticsUseSnakeCaseAndNeverChangeAnySignedTranscript() throws {
         let plain = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request("prepare"))) as? [String: Any])
-        for key in ["launch_session", "boot_time", "operation_stalled_seconds"] { XCTAssertNil(plain[key], key) }
+        let unset = ["launch_session", "boot_time", "operation_stalled_seconds", "process_started_at", "previous_exit",
+                     "start_reason", "console_user_active", "sip_enabled", "authenticated_root", "preflight",
+                     "key_history", "push_history", "native_error_chain"]
+        for key in unset { XCTAssertNil(plain[key], key) }
 
         // Every transcript version, for both signed actions, and a ready reply.
         var payloads: [AppAttestShadowPayload] = [request("assert", key: Data(repeating: 1, count: 32).base64EncodedString())]
@@ -251,17 +254,47 @@ final class AppAttestShadowTests: XCTestCase {
             payload.bootTime = 1_789_430_804
             payload.operationStalledSeconds = 901
             payload.result = "busy"
+            payload.attachAllDeepDiagnostics()
             XCTAssertEqual(payload.clientHash(publicKey: publicKey), original)
             let encoded = try JSONEncoder().encode(payload)
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
             XCTAssertEqual(object["launch_session"] as? String, "background")
             XCTAssertEqual(object["boot_time"] as? Int, 1_789_430_804)
             XCTAssertEqual(object["operation_stalled_seconds"] as? Int, 901)
+            XCTAssertEqual(object["process_started_at"] as? Int, 1_789_430_900)
+            XCTAssertEqual(object["previous_exit"] as? String, "unclean")
+            XCTAssertEqual(object["start_reason"] as? String, "stall_restart")
+            XCTAssertEqual(object["console_user_active"] as? Bool, true)
+            XCTAssertEqual(object["sip_enabled"] as? Bool, false)
+            XCTAssertEqual(object["authenticated_root"] as? Bool, true)
+            let preflight = try XCTUnwrap(object["preflight"] as? [String: Any])
+            XCTAssertEqual(preflight["opt_in_entitlement"] as? Bool, true)
+            XCTAssertEqual(preflight["environment_entitlement"] as? String, "absent")
+            XCTAssertEqual(preflight["profile_present"] as? Bool, true)
+            XCTAssertEqual(preflight["profile_expired"] as? Bool, false)
+            XCTAssertEqual(preflight["bundle_path_class"] as? String, "user_install")
+            let history = try XCTUnwrap(object["key_history"] as? [String: Any])
+            XCTAssertEqual(history["generations_last_24h"] as? Int, 3)
+            XCTAssertEqual(history["last_generation_age_seconds"] as? Int, 60)
+            XCTAssertEqual(history["last_success_age_seconds"] as? Int, 0)
+            XCTAssertEqual(history["consecutive_assertion_failures"] as? Int, 2)
+            XCTAssertEqual(history["key_age_seconds"] as? Int, 7200)
+            XCTAssertEqual(history["created_boot_matches"] as? Bool, false)
+            XCTAssertEqual(history["created_app_version"] as? String, "0.9.9")
+            let push = try XCTUnwrap(object["push_history"] as? [String: Any])
+            XCTAssertEqual(push["device_token_present"] as? Bool, false)
+            XCTAssertEqual(push["pushes_received_last_24h"] as? Int, 0)
+            XCTAssertEqual(push["last_push_received_age_seconds"] as? Int, 86_400)
+            XCTAssertEqual(push["last_reply_sent_age_seconds"] as? Int, 90_000)
+            let chain = try XCTUnwrap(object["native_error_chain"] as? [[String: Any]])
+            XCTAssertEqual(chain.map { $0["domain"] as? String }, ["devicecheck", "cryptotokenkit", "aks"])
+            XCTAssertEqual(chain.map { $0["code"] as? Int }, [0, -3, -536_362_989])
             XCTAssertEqual(try JSONDecoder().decode(AppAttestShadowPayload.self, from: encoded), payload)
         }
         // The pinned Go vector is unchanged with diagnostics present.
         var pinned = request("assert", key: Data(repeating: 1, count: 32).base64EncodedString())
         pinned.launchSession = .gui; pinned.bootTime = 1
+        pinned.attachAllDeepDiagnostics()
         XCTAssertEqual(pinned.clientHash(publicKey: publicKey).map { String(format: "%02x", $0) }.joined(),
                        "6961d03f72d47b5e4d66746d590a82fabfca7a9fd4de48a05bfcef5c1e850449")
     }

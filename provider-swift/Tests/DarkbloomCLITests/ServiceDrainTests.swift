@@ -169,3 +169,19 @@ struct LifecycleRecoveryRollbackTests {
     state.trust?.authorization = nil
     #expect(!ServiceDrain.restartReady(state: state, previous: nil, now: 1000, isCurrent: { _ in true }))
 }
+
+@Test func idleTerminationPersistsCleanMarkerBeforeAcknowledging() async {
+    await #expect(processExitsWith: .success) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let identity = try #require(ProcessIdentity.current())
+        ProviderProcessRun.begin(directory: root, version: "test", processStartMicros: identity.startTimeMicros)
+        let start = try Start.parse([])
+        await start.installIdleScheduleTerminationHandler(disarmRecovery: {})
+        let acknowledged = await ProviderTermination.shared.request()
+        let record = ProviderRunMarker(directory: root).read()
+        let nextExit = ProviderRunMarker.previousExit(record, processStartMicros: identity.startTimeMicros + 1)
+        try? FileManager.default.removeItem(at: root)
+        exit(acknowledged && record?.state == .clean && nextExit == .clean ? 0 : 1)
+    }
+}

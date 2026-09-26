@@ -2,12 +2,14 @@ import Foundation
 
 /// Severity of a single diagnostic check, mirroring the operator-facing marker.
 public enum DiagnosticLevel: String, Sendable, Equatable, Codable {
+    case info
     case pass
     case warn
     case fail
 
     public var marker: String {
         switch self {
+        case .info: return "[INFO]"
         case .pass: return "[PASS]"
         case .warn: return "[WARN]"
         case .fail: return "[FAIL]"

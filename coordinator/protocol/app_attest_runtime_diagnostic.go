@@ -11,12 +11,14 @@ const (
 	AppAttestMaxOperationStallSec = 86400
 )
 
-// SanitizeRuntimeDiagnostics clears launch_session, boot_time and
-// operation_stalled_seconds values that are out of range or misplaced. Unlike
-// ValidClientDiagnostics, an invalid value never rejects the frame or fences a
-// lease: these optional fields are untrusted context that arrives on ready
-// replies, and an older coordinator ignores them entirely.
+// SanitizeRuntimeDiagnostics clears launch_session, boot_time,
+// operation_stalled_seconds and every deep diagnostic member (see
+// app_attest_deep_diagnostic.go) whose value is out of range or misplaced.
+// Unlike ValidClientDiagnostics, an invalid value never rejects the frame or
+// fences a lease: these optional fields are untrusted context, and an older
+// coordinator ignores them entirely.
 func (p *AppAttestShadowPayload) SanitizeRuntimeDiagnostics(now time.Time) {
+	p.sanitizeDeepDiagnostics(now)
 	if p.Action != "ready" {
 		p.LaunchSession, p.BootTime, p.OperationStalledSeconds = "", 0, 0
 		return
@@ -26,7 +28,7 @@ func (p *AppAttestShadowPayload) SanitizeRuntimeDiagnostics(now time.Time) {
 	default:
 		p.LaunchSession = ""
 	}
-	if p.BootTime != 0 && (p.BootTime < appAttestMinBootTime || p.BootTime > now.Add(appAttestMaxBootTimeSkew).Unix()) {
+	if p.BootTime != 0 && !validAppAttestTimestamp(p.BootTime, now) {
 		p.BootTime = 0
 	}
 	if p.OperationStalledSeconds != 0 && (p.Result != "busy" || p.OperationStalledSeconds < 1 || p.OperationStalledSeconds > AppAttestMaxOperationStallSec) {
@@ -49,5 +51,6 @@ func (p AppAttestShadowPayload) RuntimeDiagnosticFields(now time.Time) map[strin
 	if p.OperationStalledSeconds != 0 {
 		fields["operation_stalled_seconds"] = p.OperationStalledSeconds
 	}
+	p.addDeepDiagnosticFields(fields)
 	return fields
 }

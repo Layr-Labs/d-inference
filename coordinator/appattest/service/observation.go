@@ -82,6 +82,9 @@ func (x *Session) observeWithClientDiagnostics(stage, outcome string, metadata *
 			fields["apple_error_source"] = reply.AppleErrorSource
 		}
 	}
+	for key, value := range x.readyDiagnosticsFor(stage) {
+		fields[key] = value
+	}
 	for key, value := range reply.RuntimeDiagnosticFields(time.Now()) {
 		fields[key] = value
 	}

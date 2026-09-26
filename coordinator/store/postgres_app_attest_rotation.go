@@ -14,6 +14,47 @@ func (s *PostgresStore) RecordAppAttestKeyRotation(ctx context.Context, r AppAtt
 	return tag.RowsAffected() == 1, err
 }
 
+// AdmitAppAttestKeyRotation serializes all rotation admissions for one scope
+// across coordinators with a transaction-scoped advisory lock, so the window
+// counts and the insert see a consistent set of records.
+func (s *PostgresStore) AdmitAppAttestKeyRotation(ctx context.Context, r AppAttestKeyRotation, limits []AppAttestRotationLimit) (*AppAttestKeyRotation, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "app-attest-key-rotation:"+r.MachineID); err != nil {
+		return nil, false, err
+	}
+	existing := AppAttestKeyRotation{KeyID: r.KeyID}
+	err = tx.QueryRow(ctx, `SELECT machine_id,account_id,requested_at,failures,reason FROM app_attest_key_rotations WHERE key_id=$1`, r.KeyID).
+		Scan(&existing.MachineID, &existing.AccountID, &existing.RequestedAt, &existing.Failures, &existing.Reason)
+	if err == nil {
+		return &existing, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, err
+	}
+	for _, limit := range limits {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM app_attest_key_rotations WHERE machine_id=$1 AND requested_at>=$2`,
+			r.MachineID, r.RequestedAt.Add(-limit.Window)).Scan(&n); err != nil {
+			return nil, false, err
+		}
+		if n >= limit.Max {
+			return nil, false, nil
+		}
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO app_attest_key_rotations(key_id,machine_id,account_id,requested_at,failures,reason)
+	 VALUES($1,$2,$3,$4,$5,$6)`, r.KeyID, r.MachineID, r.AccountID, r.RequestedAt, r.Failures, r.Reason); err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return nil, true, nil
+}
+
 func (s *PostgresStore) CountAppAttestKeyRotations(ctx context.Context, machineID string, since time.Time) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM app_attest_key_rotations WHERE machine_id=$1 AND requested_at>=$2`, machineID, since).Scan(&n)

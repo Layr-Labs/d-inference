@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-26 · commit `b6f9574ed`
+> Last updated: 2026-09-26 · commit `292bfa291`
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -192,7 +192,7 @@ A Secure Enclave key can die when a new provider process starts (reboot, power l
 |---|---|---|
 | Evidence | Count archived `assertion` evidence for this key with outcome `apple_error` whose context has no `apple_error`, or `domain` `devicecheck` with `code` 0 or 2, received since the key's last verified assertion (`app_attest_shadow_keys.updated_at`, which is the insert time until a counter advances). The context's coordinator-expected `key_id` must match; `apple_error_source=proof_oversize`, `apple_unavailable`, `busy`, timeouts and `unsupported` never count | `coordinator/store/app_attest_rotation.go` (`CountAppAttestRotationFailures`) |
 | Decision | On a `ready` for a known, owner-matched key with protocol ≥ 2: at least `keyRotationFailureThreshold = 2` failures, account in the rotation cohort, and at most one rotation in the trailing hour and four in the trailing 24 hours per machine (canonical connection machine, else the key's machine, else `account:<id>`). Then record the rotation and send `attest` instead of `assert`. Protocol 1 never rotates | `coordinator/appattest/service/key_rotation.go` (`maybeRequestKeyRotation`, `keyRotationPermitted`) |
-| Record | `app_attest_key_rotations` holds one row per retired key: machine scope, account, request time, failure count and reason. A repeat request for a recorded key re-sends `attest` for that same key without a new row | `coordinator/store/app_attest_rotation.go` (`AppAttestKeyRotationStore`) |
+| Record | `app_attest_key_rotations` holds one row per retired key: machine scope, account, request time, failure count and reason. The limit check and the insert are one store operation serialized per scope (a transaction-scoped advisory lock in PostgreSQL, the store mutex in memory), so concurrent sessions for one machine cannot exceed the limits. A repeat request for a recorded key re-sends `attest` for that same key without a new row | `coordinator/store/app_attest_rotation.go` (`AdmitAppAttestKeyRotation`); `postgres_app_attest_rotation.go` |
 | Scheduling | When an eligible assertion failure reaches the threshold while rotation is permitted, or the client answers a newly recorded rotation with `key_unregistered` in the same session, the next attempt starts after a random 15–45 seconds (`keyRotationRetryDelay`) with a fresh session ID. Rate-limited, excluded and repeat requests keep the normal bounded backoff | `coordinator/appattest/service/retry.go` (`runRecovering`); `key_rotation.go` (`rotationRetryDue`) |
 | Observation | Stage `rotation` with outcome `requested`, `rate_limited`, `cohort_excluded`, `configuration_error` or `storage_error`; metric `app_attest.key_rotation` tagged `outcome:` | `key_rotation.go` (`observeKeyRotation`) |
 

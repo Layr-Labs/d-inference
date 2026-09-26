@@ -21,6 +21,33 @@ func (s *MemoryStore) RecordAppAttestKeyRotation(ctx context.Context, r AppAttes
 	return true, nil
 }
 
+func (s *MemoryStore) AdmitAppAttestKeyRotation(ctx context.Context, r AppAttestKeyRotation, limits []AppAttestRotationLimit) (*AppAttestKeyRotation, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.appAttestRotations == nil {
+		s.appAttestRotations = map[string]AppAttestKeyRotation{}
+	}
+	if existing, ok := s.appAttestRotations[r.KeyID]; ok {
+		return &existing, false, nil
+	}
+	for _, limit := range limits {
+		since, n := r.RequestedAt.Add(-limit.Window), 0
+		for _, other := range s.appAttestRotations {
+			if other.MachineID == r.MachineID && !other.RequestedAt.Before(since) {
+				n++
+			}
+		}
+		if n >= limit.Max {
+			return nil, false, nil
+		}
+	}
+	s.appAttestRotations[r.KeyID] = r
+	return nil, true, nil
+}
+
 func (s *MemoryStore) CountAppAttestKeyRotations(ctx context.Context, machineID string, since time.Time) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err

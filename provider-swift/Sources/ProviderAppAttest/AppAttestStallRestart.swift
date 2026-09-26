@@ -32,6 +32,13 @@ public enum AppAttestStallRestartPolicy {
         if inferenceActive { return .skip(.inferenceActive) }
         return .restart
     }
+
+    /// Re-evaluated after the drain, right before the restart is committed:
+    /// false once Apple's callback has released the gate, so a stall that
+    /// resolved during the drain never spends the marker or restarts.
+    public static func stillStalled(heldSince: Date?, now: Date) -> Bool {
+        AppleOperationStall.reportedSeconds(heldSince: heldSince, now: now) != nil
+    }
 }
 
 /// Persisted time of the last automatic stall restart. Written before the

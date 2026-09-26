@@ -81,6 +81,17 @@ extension ProviderLoop {
             await resumeServingAfterUpdate()
             return true
         }
+        // Apple's callback may have arrived while we drained. If the gate is
+        // idle again, App Attest recovered on its own: resume serving without
+        // spending the six-hour marker or reloading models.
+        let heldSince = await appAttestShadowClient?.appleOperationHeldSince()
+        guard AppAttestStallRestartPolicy.stillStalled(heldSince: heldSince, now: Date()) else {
+            logger.info("App Attest: stalled Apple operation completed during drain; resuming without a restart")
+            appAttestStallLastSkip = nil
+            publishAppAttestStall(nil)
+            await resumeServingAfterUpdate()
+            return false
+        }
         do {
             // Record only once the restart is due, but before issuing it: a
             // restart that fails or loops cannot exceed the limit.

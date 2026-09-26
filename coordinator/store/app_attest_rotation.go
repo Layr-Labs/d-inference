@@ -14,6 +14,13 @@ type AppAttestKeyRotationStore interface {
 	// RecordAppAttestKeyRotation inserts at most one record per key and
 	// reports whether this call inserted it.
 	RecordAppAttestKeyRotation(context.Context, AppAttestKeyRotation) (bool, error)
+	// AdmitAppAttestKeyRotation atomically applies the per-scope limits and
+	// inserts r. Callers for one scope (r.MachineID) are serialized across
+	// coordinators, so no window can exceed its limit. A key that already has
+	// a record is returned as existing without checking limits or inserting
+	// (it names the same dead key). When any limit is full nothing is inserted
+	// and admitted is false.
+	AdmitAppAttestKeyRotation(ctx context.Context, r AppAttestKeyRotation, limits []AppAttestRotationLimit) (existing *AppAttestKeyRotation, admitted bool, err error)
 	// CountAppAttestKeyRotations counts records for one rate-limit scope
 	// (canonical machine, or the account fallback) requested at or after since.
 	CountAppAttestKeyRotations(ctx context.Context, machineID string, since time.Time) (int, error)
@@ -38,6 +45,12 @@ type AppAttestKeyRotation struct {
 	RequestedAt time.Time
 	Failures    int
 	Reason      string
+}
+
+// AppAttestRotationLimit caps rotations for one scope within a trailing window.
+type AppAttestRotationLimit struct {
+	Window time.Duration
+	Max    int
 }
 
 // AppAttestRotationCountCap bounds failure-count queries; callers compare

@@ -263,6 +263,17 @@ final class AppAttestStallRestartPolicyTests: XCTestCase {
         XCTAssertEqual(decide(stalledSeconds: stalled, inference: true, last: now.addingTimeInterval(-60)), .skip(.recentlyRestarted))
     }
 
+    func testCallbackArrivingDuringDrainCancelsTheRestart() {
+        let threshold = AppleOperationStall.threshold
+        // Gate released during the drain: nothing is held any more.
+        XCTAssertFalse(AppAttestStallRestartPolicy.stillStalled(heldSince: nil, now: now))
+        // A newer operation holds the gate, but only briefly: not a stall.
+        XCTAssertFalse(AppAttestStallRestartPolicy.stillStalled(heldSince: now.addingTimeInterval(-30), now: now))
+        XCTAssertFalse(AppAttestStallRestartPolicy.stillStalled(heldSince: now.addingTimeInterval(-threshold), now: now))
+        // The original call is still unanswered after the drain.
+        XCTAssertTrue(AppAttestStallRestartPolicy.stillStalled(heldSince: now.addingTimeInterval(-threshold - 120), now: now))
+    }
+
     func testMarkerPersistsAcrossInstancesAndFailsClosedWhenDamaged() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

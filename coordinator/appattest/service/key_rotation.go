@@ -48,20 +48,34 @@ func (x *Session) maybeRequestKeyRotation(ctx context.Context, key *store.AppAtt
 		x.observeKeyRotation(decision)
 		return false
 	}
-	inserted, err := rotations.RecordAppAttestKeyRotation(ctx, store.AppAttestKeyRotation{KeyID: key.KeyID, MachineID: scope, AccountID: x.account,
-		RequestedAt: time.Now().UTC(), Failures: failures, Reason: "assertion_apple_error"})
+	// keyRotationPermitted is advisory (it also decides the fast retry). The
+	// store re-checks the limits and inserts under one per-scope lock, so
+	// concurrent sessions for one machine cannot both exceed them.
+	existing, inserted, err := rotations.AdmitAppAttestKeyRotation(ctx, store.AppAttestKeyRotation{KeyID: key.KeyID, MachineID: scope, AccountID: x.account,
+		RequestedAt: time.Now().UTC(), Failures: failures, Reason: "assertion_apple_error"}, keyRotationLimits())
 	if err != nil {
 		x.observeKeyRotation("storage_error")
 		return false
 	}
+	if !inserted && existing == nil {
+		x.observeKeyRotation("rate_limited")
+		return false
+	}
 	// A repeat request for an already recorded key (its earlier attest frame
-	// was lost, or the client kept the key) inserts nothing and passed the
-	// rate limits above. Only a newly recorded rotation earns the short retry
-	// after key_unregistered; a repeat keeps the normal bounded backoff, so a
-	// client that never retires the key cannot drive a fast loop.
+	// was lost, or the client kept the key) inserts nothing and names the same
+	// dead key. Only a newly recorded rotation earns the short retry after
+	// key_unregistered; a repeat keeps the normal bounded backoff, so a client
+	// that never retires the key cannot drive a fast loop.
 	x.rotationRequested = inserted
 	x.observeKeyRotation("requested")
 	return true
+}
+
+func keyRotationLimits() []store.AppAttestRotationLimit {
+	return []store.AppAttestRotationLimit{
+		{Window: time.Hour, Max: keyRotationHourlyLimit},
+		{Window: 24 * time.Hour, Max: keyRotationDailyLimit},
+	}
 }
 
 // keyRotationPermitted applies the cohort and per-machine rate limits. It

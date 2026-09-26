@@ -318,6 +318,11 @@ Null intervals are gaps, not measured zeros. All counts share one repeatable-rea
 transaction and the same hourly publication rule across all three windows.
 
 The seven outcome counts sum to `requests`; `http_429` overlaps that partition.
+`capacity_rejected` includes provider or coordinator saturation and a 503
+`model_too_large` supply shortfall. A preflight `context_exceeded` request is
+excluded from `requests`; `dispatch_exhausted` is counted as capacity only when
+the terminal capacity check supports its HTTP 429 response. Other 429 reasons
+are not assumed to be capacity rejections.
 No token estimates, identifiers, provider details, raw reasons, or suppressed
 counts are exposed. `ModelDemandCounts` in `coordinator/store/model_demand.go`
 is the response shape.

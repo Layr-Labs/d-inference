@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -18,35 +19,70 @@ func TestPublicDemandOutcome(t *testing.T) {
 		name, termination, stage, reason string
 		status                           int
 		conflict                         bool
+		coordinatorExhausted             bool
 		want                             string
 	}{
-		{"completion", "completed", "", "", 200, false, "completed"},
-		{"started stream", "unknown", "", "", 200, false, "unknown"},
-		{"failed stream", "interrupted_response", "", "", 200, false, "failed"},
-		{"busy", "rejected", "preflight_capacity", "machine_busy", 429, false, "capacity_rejected"},
-		{"no eligible provider", "rejected", "preflight_capacity", "no_provider", 429, false, "capacity_rejected"},
-		{"coordinator capacity", "rejected", "preflight_capacity", "routing_saturated", 429, false, "capacity_rejected"},
-		{"queue full", "rejected", "queue", "queue_full", 429, false, "capacity_rejected"},
-		{"provider token budget exhausted", "rejected", "dispatch", "unservable_token_budget", 429, false, "capacity_rejected"},
-		{"preflight token budget insufficient", "rejected", "preflight_capacity", "prompt_too_long", 429, false, "capacity_rejected"},
-		{"invalid prompt length", "rejected", "validation", "prompt_too_long", 400, false, "excluded"},
-		{"queued first-content deadline", "rejected", "dispatch", "queue_deadline", 429, false, "timed_out"},
-		{"first content timeout", "rejected", "dispatch", "first_chunk_timeout", 429, false, "timed_out"},
-		{"predicted latency", "rejected", "routing_ttft", "ttft_too_slow", 429, false, "latency_rejected"},
-		{"deadline refusal", "rejected", "dispatch", "deadline_unreachable", 429, false, "latency_rejected"},
-		{"unknown 429", "rejected", "dispatch", "", 429, false, "unknown"},
-		{"validation", "rejected", "validation", "bad_body", 400, false, "excluded"},
-		{"balance", "rejected", "balance", "insufficient_quota", 402, false, "excluded"},
-		{"cancelled", "client_departure", "", "", 200, false, "cancelled"},
-		{"conflicting success", "completed", "", "", 200, true, "unknown"},
-		{"provider failure", "rejected", "dispatch", "engine_crashed", 502, false, "failed"},
+		{"completion", "completed", "", "", 200, false, false, "completed"},
+		{"started stream", "unknown", "", "", 200, false, false, "unknown"},
+		{"failed stream", "interrupted_response", "", "", 200, false, false, "failed"},
+		{"busy", "rejected", "preflight_capacity", "machine_busy", 429, false, false, "capacity_rejected"},
+		{"no eligible provider", "rejected", "preflight_capacity", "no_provider", 429, false, false, "capacity_rejected"},
+		{"coordinator capacity", "rejected", "preflight_capacity", "routing_saturated", 429, false, false, "capacity_rejected"},
+		{"queue full", "rejected", "queue", "queue_full", 429, false, false, "capacity_rejected"},
+		{"provider token budget exhausted", "rejected", "dispatch", "unservable_token_budget", 429, false, false, "capacity_rejected"},
+		{"preflight token budget insufficient", "rejected", "preflight_capacity", "prompt_too_long", 429, false, false, "capacity_rejected"},
+		{"context window exceeded", "rejected", "preflight_capacity", "context_exceeded", 429, false, false, "excluded"},
+		{"context rejection wrong stage", "rejected", "dispatch", "context_exceeded", 429, false, false, "unknown"},
+		{"model cannot fit fleet", "rejected", "preflight_capacity", "model_too_large", 503, false, false, "capacity_rejected"},
+		{"model cannot fit invalid status", "rejected", "preflight_capacity", "model_too_large", 500, false, false, "failed"},
+		{"dispatch exhausted at capacity", "rejected", "dispatch", "dispatch_exhausted", 429, false, true, "capacity_rejected"},
+		{"dispatch exhausted without capacity evidence", "rejected", "dispatch", "dispatch_exhausted", 429, false, false, "unknown"},
+		{"dispatch exhausted no provider", "rejected", "dispatch", "dispatch_exhausted", 503, false, true, "failed"},
+		{"dispatch exhausted provider fault", "rejected", "dispatch", "dispatch_exhausted", 502, false, false, "failed"},
+		{"invalid prompt length", "rejected", "validation", "prompt_too_long", 400, false, false, "excluded"},
+		{"queued first-content deadline", "rejected", "dispatch", "queue_deadline", 429, false, false, "timed_out"},
+		{"first content timeout", "rejected", "dispatch", "first_chunk_timeout", 429, false, false, "timed_out"},
+		{"predicted latency", "rejected", "routing_ttft", "ttft_too_slow", 429, false, false, "latency_rejected"},
+		{"deadline refusal", "rejected", "dispatch", "deadline_unreachable", 429, false, false, "latency_rejected"},
+		{"unknown 429", "rejected", "dispatch", "", 429, false, false, "unknown"},
+		{"validation", "rejected", "validation", "bad_body", 400, false, false, "excluded"},
+		{"balance", "rejected", "balance", "insufficient_quota", 402, false, false, "excluded"},
+		{"cancelled", "client_departure", "", "", 200, false, false, "cancelled"},
+		{"conflicting success", "completed", "", "", 200, true, false, "unknown"},
+		{"provider failure", "rejected", "dispatch", "engine_crashed", 502, false, false, "failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := store.RequestOutcomeRecord{Termination: tc.termination, RawStage: tc.stage, RawReason: tc.reason, HTTPStatus: tc.status, EvidenceConflict: tc.conflict}
+			r := store.RequestOutcomeRecord{Termination: tc.termination, RawStage: tc.stage, RawReason: tc.reason, HTTPStatus: tc.status, EvidenceConflict: tc.conflict, CoordinatorExhausted: tc.coordinatorExhausted}
 			if got := publicDemandOutcome(r); got != tc.want {
 				t.Fatalf("got %s want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestModelTooLargeAdmissionCountsPublicSupplyShortfall(t *testing.T) {
+	srv, st := testServer(t)
+	t.Cleanup(srv.Close)
+	const model = "model-demand-too-large"
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 128}})
+	p := registerBuildsProvider(srv, "undersized-provider", model)
+	p.Mu().Lock()
+	p.BackendCapacity.Slots[0].State = "idle_shutdown"
+	p.Mu().Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"model-demand-too-large","messages":[{"role":"user","content":"hello"}],"max_tokens":16}`))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", w.Code, w.Body.String())
+	}
+	outcome := awaitRequestOutcomes(t, st, 1)[0]
+	if outcome.RawStage != "preflight_capacity" || outcome.RawReason != "model_too_large" ||
+		outcome.PublicDemand == nil || outcome.PublicDemand.Outcome != "capacity_rejected" || outcome.AttemptsTotal != 0 {
+		t.Fatalf("model-too-large supply evidence: %+v", outcome)
 	}
 }
 

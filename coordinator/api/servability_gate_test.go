@@ -271,4 +271,8 @@ func TestServabilityGate_CalibrationShedsContextOversized(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "context window") {
 		t.Errorf("body missing context-window detail (want the context_exceeded tier, proving calibration tripped tier-1); body=%s", w.Body.String())
 	}
+	outcome := awaitRequestOutcomes(t, st, 1)[0]
+	if outcome.RawStage != "preflight_capacity" || outcome.RawReason != registry.ServabilityContextExceeded || outcome.PublicDemand == nil || outcome.PublicDemand.Outcome != "excluded" {
+		t.Fatalf("context-window validation entered public demand: %+v", outcome)
+	}
 }

@@ -109,13 +109,20 @@ are outside this cohort. Admin-key traffic is excluded. Unlabelled authenticated
 `publicDemandOutcome` assigns one closed outcome per observation. Completed
 requests use the ledger's completion contract; explicit capacity reasons,
 including `queue_full`, provider-budget refusal at preflight (`prompt_too_long`),
-and dispatch-time `unservable_token_budget`, map to `capacity_rejected`; predictive TTFT refusals map
-to `latency_rejected`. First-content/queue timeouts, including expiry of the
-absolute first-content clock while queued (`queue_deadline`), map to `timed_out`.
-Failed/interrupted responses,
-client departures and unknown observations remain separate. Validation,
-balance and model-resolution failures are excluded. Unknown 429 reasons stay
-unknown. HTTP 429 is counted separately and overlaps outcomes.
+dispatch-time `unservable_token_budget`, and a model that cannot fit any
+advertising provider (`model_too_large`, HTTP 503), map to
+`capacity_rejected`. The last case is a persistent supply shortfall, not a
+retryable busy-provider 429. `dispatch_exhausted` maps to `capacity_rejected`
+only when the terminal capacity probe produced HTTP 429 and the ledger records
+`CoordinatorExhausted`; the same raw reason with a provider fault does not.
+Predictive TTFT refusals map to `latency_rejected`. First-content/queue
+timeouts, including expiry of the absolute first-content clock while queued
+(`queue_deadline`), map to `timed_out`. Failed/interrupted responses, client
+departures and unknown observations remain separate. Validation,
+balance and model-resolution failures are excluded, as is a preflight
+`context_exceeded` refusal: the prompt cannot fit the model's context window.
+Unknown 429 reasons stay unknown. HTTP 429 is counted separately and overlaps
+outcomes.
 
 `coordinator/store/postgres_request_outcomes.go` (`RecordRequestOutcomes`)
 projects the winning revision into `model_demand_requests` in the same

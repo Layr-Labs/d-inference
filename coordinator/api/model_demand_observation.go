@@ -46,12 +46,22 @@ func publicDemandOutcome(r store.RequestOutcomeRecord) string {
 	if r.RawStage == "validation" || r.RawStage == "balance" || r.RawStage == "model_resolution" {
 		return "excluded"
 	}
+	if r.RawStage == "preflight_capacity" && r.RawReason == "context_exceeded" {
+		// The request exceeds the model's context window regardless of fleet capacity.
+		return "excluded"
+	}
+	if r.RawStage == "dispatch" && r.RawReason == "dispatch_exhausted" &&
+		r.CoordinatorExhausted && r.HTTPStatus == http.StatusTooManyRequests {
+		// The terminal capacity probe found providers, but all were full. The
+		// same raw reason also covers provider faults and genuine unavailability.
+		return "capacity_rejected"
+	}
 	switch r.RawReason {
 	case "first_chunk_timeout", "queue_timeout", "queue_deadline":
 		return "timed_out"
 	case "ttft_too_slow", "deadline_unreachable":
 		return "latency_rejected"
-	case "machine_busy", "capacity_exhausted", "routing_saturated", "no_provider", "queue_full", "unservable_token_budget", "prompt_too_long":
+	case "machine_busy", "capacity_exhausted", "routing_saturated", "no_provider", "queue_full", "unservable_token_budget", "prompt_too_long", "model_too_large":
 		if r.HTTPStatus == http.StatusTooManyRequests || r.HTTPStatus == http.StatusServiceUnavailable {
 			return "capacity_rejected"
 		}

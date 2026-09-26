@@ -68,7 +68,7 @@ struct SwitchCommandTests {
         original.backend.idleTimeoutMins = 17
         original.backend.enabledModels = ["old"]
         try ConfigManager.save(original, to: path)
-        try ProviderModelSelection.save(["new"], configPath: path)
+        try ProviderModelSelection.save(["new"], configPath: path, fallbackConfig: original)
         let loaded = try ConfigManager.load(from: path)
         #expect(loaded.backend.enabledModels == ["new"])
         #expect(loaded.provider.name == "retained" && loaded.backend.idleTimeoutMins == 17)
@@ -79,7 +79,7 @@ struct SwitchCommandTests {
         }
         #expect(restartedSelection(managed: true) == ["new"])
         #expect(restartedSelection(managed: false) == ["old"])
-        try ProviderModelSelection.save([], configPath: path)
+        try ProviderModelSelection.save([], configPath: path, fallbackConfig: original)
         #expect(try ConfigManager.load(from: path).backend.enabledModels == [])
     }
 

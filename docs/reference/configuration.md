@@ -51,6 +51,12 @@ legacy unpinned selections stay unpinned; a timeout after publication retains
 the new intent. The lock is released before waiting for drain completion
 (`ProviderModelSelection.withReplacement` in
 `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift`).
+Missing explicit config paths use the already-resolved startup/loop configuration,
+never another path's canonical config. Live switch stages a presence-aware
+rollback snapshot, releases the lock for the network wait, and restores only its
+model-selection key when other settings changed concurrently. A newer selection
+causes a reported conflict instead of being overwritten (`stageReplacement`,
+`restore` in the same module).
 
 
 ## Where values are set

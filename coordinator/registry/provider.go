@@ -105,17 +105,18 @@ type Provider struct {
 	// draining (heartbeat status "draining" or a typed draining rejection);
 	// routing skips it until its next idle/serving heartbeat or the TTL
 	// (drain_state.go). Guarded by p.mu.
-	drainCommitted   bool // fenced until matching inventory replacement or disconnect
-	drainRequestID   string
-	drainGeneration  uint64 // increases per barrier, including reused wire request IDs
-	drainReady       bool   // preceding terminal usage has settled
-	drainingUntil    time.Time
-	Conn             *websocket.Conn
-	writer           *providerWriter
-	LastHeartbeat    time.Time
-	registeredAt     time.Time               // immutable connection creation order for verified duplicate arbitration
-	Stats            protocol.HeartbeatStats // lifetime counters shown to users
-	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
+	drainCommitted          bool // fenced until matching replacement acknowledgement or disconnect
+	drainRequestID          string
+	drainGeneration         uint64 // increases per barrier, including reused wire request IDs
+	drainReady              bool   // preceding reservations and terminal usage have settled
+	drainReplacementPending bool   // inventory committed, receipt not yet confirmed on wire
+	drainingUntil           time.Time
+	Conn                    *websocket.Conn
+	writer                  *providerWriter
+	LastHeartbeat           time.Time
+	registeredAt            time.Time               // immutable connection creation order for verified duplicate arbitration
+	Stats                   protocol.HeartbeatStats // lifetime counters shown to users
+	lastSessionStats        protocol.HeartbeatStats // raw counters from the current provider process
 
 	// Until restore finishes, verified identities cannot route, and persisted
 	// records must not advertise a reusable serial/SE identity. Includes
@@ -303,8 +304,9 @@ type Provider struct {
 	lastDesiredModels                 []protocol.DesiredModelEntry
 	desiredModelsSendMu               sync.Mutex
 
-	mu          sync.Mutex
-	pendingReqs map[string]*PendingRequest
+	mu               sync.Mutex
+	pendingReqs      map[string]*PendingRequest
+	drainPendingDone chan struct{} // allocated only while a committed drain has reservations
 
 	// registry back-pointer, set once in Register (nil for bare test Providers).
 	// SetAttestationResult uses it to bind this session's id to its stable
@@ -332,6 +334,9 @@ func (p *Provider) AddPending(pr *PendingRequest) {
 func (p *Provider) addPendingLocked(pr *PendingRequest) {
 	pr.providerAuthorizationBinding = providerRequestAuthorizationBindingLocked(p)
 	p.pendingReqs[pr.RequestID] = pr
+	if p.drainCommitted && p.drainPendingDone == nil {
+		p.drainPendingDone = make(chan struct{})
+	}
 }
 
 // RemovePending removes and returns a pending request.
@@ -371,6 +376,9 @@ func (p *Provider) RemovePendingForFirstContentTimeout(
 func (p *Provider) removePendingLocked(requestID string) *PendingRequest {
 	pr := p.pendingReqs[requestID]
 	delete(p.pendingReqs, requestID)
+	if len(p.pendingReqs) == 0 {
+		p.settleDrainPendingLocked()
+	}
 	return pr
 }
 

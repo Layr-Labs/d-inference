@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -55,6 +57,8 @@ import (
 const drainStateTTL = 150 * time.Second
 
 var ErrProviderDraining = errors.New("provider draining")
+
+var errProviderDrainSuperseded = errors.New("provider drain superseded")
 
 // providerDrainingLocked reports whether p has an unexpired draining mark.
 // Caller holds p.mu.
@@ -129,6 +133,10 @@ func (r *Registry) CommitProviderDrain(p *Provider, requestID string) uint64 {
 	p.drainRequestID = requestID
 	p.drainGeneration++
 	p.drainReady = false
+	p.drainReplacementPending = false
+	if len(p.pendingReqs) > 0 && p.drainPendingDone == nil {
+		p.drainPendingDone = make(chan struct{})
+	}
 	return p.drainGeneration
 }
 
@@ -141,9 +149,58 @@ func (r *Registry) CompleteProviderDrain(p *Provider, requestID string, generati
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.drainCommitted || p.drainRequestID != requestID || p.drainGeneration != generation {
+	if !p.drainCommitted || p.drainReplacementPending || p.drainRequestID != requestID || p.drainGeneration != generation || len(p.pendingReqs) != 0 {
 		return false
 	}
 	p.drainReady = true
 	return true
+}
+
+// WriteProviderDrainAck checks the barrier again at the control writer's final
+// handoff. A newer barrier (including a reused wire ID) invalidates queued acks,
+// not just workers that are still waiting for settlement.
+func (r *Registry) WriteProviderDrainAck(ctx context.Context, p *Provider, requestID string, generation uint64) error {
+	data, _ := json.Marshal(protocol.ProviderDrainMessage{Type: protocol.TypeProviderDrainAck, RequestID: requestID})
+	p.mu.Lock()
+	w := p.writer
+	p.mu.Unlock()
+	if w == nil {
+		return errProviderWriterStopped
+	}
+	_, err := w.writeRequest(ctx, &providerWriteRequest{
+		data: data,
+		beforeWrite: func() error {
+			if !r.CompleteProviderDrain(p, requestID, generation) {
+				return errProviderDrainSuperseded
+			}
+			return nil
+		},
+	}, true, nil)
+	return err
+}
+
+// ProviderDrainPending returns an event for reservations held at the barrier,
+// including data-lane writes that must fail their final authorization check.
+// A nil event means they have already settled; false means a stale barrier.
+func (r *Registry) ProviderDrainPending(p *Provider, generation uint64) (<-chan struct{}, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if p == nil || r.providers[p.ID] != p {
+		return nil, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.drainCommitted || p.drainGeneration != generation {
+		return nil, false
+	}
+	return p.drainPendingDone, true
+}
+
+// settleDrainPendingLocked broadcasts the final removal (or disconnect) to
+// every barrier waiter. Ordinary dispatch never allocates settlement tracking.
+func (p *Provider) settleDrainPendingLocked() {
+	if p.drainPendingDone != nil {
+		close(p.drainPendingDone)
+		p.drainPendingDone = nil
+	}
 }

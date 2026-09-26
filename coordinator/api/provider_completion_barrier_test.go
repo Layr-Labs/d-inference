@@ -84,7 +84,7 @@ func TestProviderCompletionBarrierReusedDrainIDWaitsForLatestSettlement(t *testi
 		RequestID: "validate", DrainRequestID: "same-id", ValidateOnly: true,
 		Models: []protocol.ModelInfo{{ID: "new"}},
 	}
-	if _, _, err := reg.ReplaceProviderModels(provider, msg); err == nil || err.Error() != "invalid_drain" {
+	if _, _, _, err := reg.ReplaceProviderModels(provider, msg); err == nil || err.Error() != "invalid_drain" {
 		t.Fatalf("validation crossed later unsettled billing: %v", err)
 	}
 	secondTerminal()
@@ -96,14 +96,14 @@ func TestProviderCompletionBarrierReusedDrainIDWaitsForLatestSettlement(t *testi
 	case <-ctx.Done():
 		t.Fatal("latest settlement did not finish")
 	}
-	if _, _, err := reg.ReplaceProviderModels(provider, msg); err != nil {
+	if _, _, _, err := reg.ReplaceProviderModels(provider, msg); err != nil {
 		t.Fatalf("settled validation rejected: %v", err)
 	}
 	if !reg.ProviderDraining(provider.ID) || provider.Models[0].ID != "old" {
 		t.Fatal("validation changed the old inventory or resumed admission")
 	}
 	msg.ValidateOnly = false
-	if _, _, err := reg.ReplaceProviderModels(provider, msg); err != nil || reg.ProviderDraining(provider.ID) || provider.Models[0].ID != "new" {
+	if _, _, receipt, err := reg.ReplaceProviderModels(provider, msg); err != nil || !reg.ProviderDraining(provider.ID) || !reg.ResumeProviderModels(provider, receipt) || provider.Models[0].ID != "new" {
 		t.Fatalf("latest settled drain could not commit: %v", err)
 	}
 }

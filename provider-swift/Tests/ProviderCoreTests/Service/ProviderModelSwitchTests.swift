@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import TOMLKit
 import MLXLMCommon
 import MLXNN
 @testable import ProviderCore
@@ -15,11 +16,11 @@ private func switchModel(_ id: String) -> ModelInfo {
         weightHash: String(repeating: id == "old-model" ? "a" : "b", count: 64))
 }
 
-private func switchLoop(url: String = "ws://127.0.0.1:0/unused") async throws -> (ProviderLoop, URL) {
+private func switchLoop(url: String = "ws://127.0.0.1:0/unused", initialConfig: ProviderConfig? = nil) async throws -> (ProviderLoop, URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    var config = ProviderConfig(provider: ProviderSettings(name: "model-switch-test", memoryReserveGB: 1))
-    config.backend.enabledModels = ["old-model"]
+    var config = initialConfig ?? ProviderConfig(provider: ProviderSettings(name: "model-switch-test", memoryReserveGB: 1))
+    if initialConfig == nil { config.backend.enabledModels = ["old-model"] }
     let configPath = root.appendingPathComponent("provider.toml")
     try ConfigManager.save(config, to: configPath)
     let loop = try ProviderLoop(config: .init(coordinatorURL: url, hardware: switchHardware(),
@@ -33,6 +34,13 @@ private func switchLoop(url: String = "ws://127.0.0.1:0/unused") async throws ->
 
 private extension ProviderLoop {
     func isolateSwitchRuntime() { engineV2Runtime = EngineV2Runtime() }
+    func setSwitchOutbound(_ send: SendHandle) { outboundSend = send }
+    func shutdownSwitchPrefetches() async {
+        for task in desiredPrefetchRetryTasks.values { task.cancel() }
+        desiredPrefetchRetryTasks.removeAll()
+        await prefetchCoordinator?.shutdown(timeout: .seconds(1))
+        prefetchCoordinator = nil
+    }
     func holdSwitchRequest(_ id: String) { acceptedLifecycleRequests.insert(id) }
     func finishSwitchRequest(_ id: String) { acceptedLifecycleRequests.remove(id) }
     func failSwitchModel(_ model: ModelInfo) { failedSelfTestHashes[model.id] = model.weightHash ?? "" }
@@ -62,12 +70,18 @@ private func connectSwitchLoop(_ loop: ProviderLoop, url: String) async -> (Coor
     let client = CoordinatorClient(config: .init(url: url, hardware: switchHardware(),
         models: [switchModel("old-model")], backendName: "mlx-swift", heartbeatInterval: 60,
         publicKey: "cHVibGlj"), stats: AtomicProviderStats(), state: await loop.state, liveAPNsToken: { nil })
-    let (events, _) = await client.start()
+    let (events, send) = await client.start()
     for await event in events { if case .connected = event { break } }
     await loop.setCoordinatorClientForTesting(client)
+    let handle = SendHandle { send($0) }
+    await loop.setSwitchOutbound(handle)
     let reader = Task {
         for await event in events {
-            if case .drainAck(let id) = event { await client.completeDrainAcknowledgement(id) }
+            switch event {
+            case .drainAck(let id): await client.completeDrainAcknowledgement(id)
+            case .desiredModels(let entries): await loop.handleDesiredModels(entries, send: handle)
+            default: break
+            }
         }
     }
     return (client, reader)
@@ -406,6 +420,135 @@ struct ProviderModelSwitchTests {
         #expect(updatedHash != originalHash)
         #expect(captured.hash == updatedHash)
         #expect(captured.recomputed)
+    }
+
+    @Test(arguments: ["during-ack", "after-ack", "disconnected"])
+    func replacementReplaysCurrentDesiredStateWithoutRevivingDeselectedAlias(delivery: String) async throws {
+        let mock = MockCoordinator(acknowledgeModelReplacements: false)
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        defer { reader.cancel(); Task { await loop.shutdownSwitchPrefetches(); await client.shutdown() } }
+        await loop.beginServingDrain(owner: .modelSwitch)
+        let obsolete = CoordinatorMessage.DesiredModelEntry(modelName: "removed-alias",
+            desiredBuild: "org/obsolete-\(UUID().uuidString)", previousBuild: "removed-build")
+        try await mock.pushDesiredModels([obsolete])
+        #expect(try await switchEventually { await loop.deferredDesiredModels == [obsolete] })
+        let barrier = try await loop.drainForModelSwitch(deadline: .now.advanced(by: .seconds(3)))
+        let committing = Task { () -> Bool in
+            do {
+                try await loop.commitModelSelection(.init(models: [switchModel("old-model"), switchModel("new-model")],
+                    fingerprints: [:]), drainID: barrier)
+                return true
+            } catch {
+                return false
+            }
+        }
+        defer { committing.cancel() }
+        let validationMessages = try #require(try await mock.waitForSnapshot { $0.modelsReplacements.count == 1 })
+        let validation = try #require(validationMessages.modelsReplacements.first)
+        try await mock.pushModelsReplaceAck(.init(requestId: validation.requestId, drainRequestId: validation.drainRequestId,
+            validateOnly: true, accepted: true))
+        let commitMessages = try #require(try await mock.waitForSnapshot { $0.modelsReplacements.count == 2 })
+        let commit = try #require(commitMessages.modelsReplacements.last)
+        #expect(await loop.deferredDesiredModels == nil)
+        let current = CoordinatorMessage.DesiredModelEntry(modelName: "retained-alias",
+            desiredBuild: "org/current-\(UUID().uuidString)", previousBuild: "old-model")
+        if delivery != "after-ack" {
+            try await mock.pushDesiredModels([current])
+            #expect(try await switchEventually { await loop.deferredDesiredModels == [current] })
+        }
+        if delivery == "disconnected" {
+            await mock.dropActiveWebSocket()
+            #expect(await !committing.value)
+            #expect(await loop.state.refusingNewWork)
+            #expect(await loop.servingDrain.owner == .modelSwitch)
+            #expect(mock.snapshot().prefetchModelStatuses.isEmpty)
+            return
+        }
+        try await mock.pushModelsReplaceAck(.init(requestId: commit.requestId, drainRequestId: commit.drainRequestId,
+            accepted: true))
+        #expect(await committing.value)
+        if delivery == "after-ack" {
+            // The forced snapshot follows the successful ack on the same socket.
+            try await mock.pushDesiredModels([current])
+            #expect(try await switchEventually { await loop.deferredDesiredModels == [current] })
+        }
+        await loop.resumeAfterModelSwitch()
+        let prefetched = try #require(try await mock.waitForSnapshot {
+            $0.prefetchModelStatuses.contains { $0.modelId == current.desiredBuild && $0.status == .started }
+        })
+        #expect(!prefetched.prefetchModelStatuses.contains { $0.modelId == obsolete.desiredBuild })
+        #expect(await loop.desiredSwapDrop[current.desiredBuild] == "old-model")
+        #expect(await loop.desiredPrefetchTargets == [current.desiredBuild])
+        #expect(await loop.deferredDesiredModels == nil)
+        #expect(await !loop.state.refusingNewWork)
+        #expect(await loop.isModelAdvertised("old-model"))
+        #expect(mock.snapshot().registers.count == 1)
+    }
+
+    @Test(arguments: ["pinned", "unpinned", "missing"], [false, true])
+    func explicitCommitRejectionRestoresPresenceAndConcurrentSettings(presence: String, concurrentEdit: Bool) async throws {
+        let mock = MockCoordinator(acknowledgeModelReplacements: false)
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        var initial = ProviderConfig(provider: ProviderSettings(name: "legacy-provider", memoryReserveGB: 1))
+        initial.backend.model = "old-model"
+        let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL(), initialConfig: initial)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configPath = root.appendingPathComponent("provider.toml")
+        let original: Data? = presence == "missing" ? nil : Data(("# legacy launch selection\n"
+            + "[provider]\nname = 'legacy-provider'\n[backend]\nmodel = 'old-model'\n"
+            + (presence == "pinned" ? "enabled_models = ['old-model']\n" : "")).utf8)
+        if let original { try original.write(to: configPath) }
+        else { try FileManager.default.removeItem(at: configPath) }
+        await loop.useSwitchSnapshot(try switchSnapshot(in: root))
+        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        defer { reader.cancel(); Task { await client.shutdown() } }
+        let identity = try #require(ProcessIdentity.current())
+        let switching = Task { await loop.switchModels(request: .init(target: identity,
+            models: ["new-model"], timeoutSeconds: 0)) }
+        defer { switching.cancel() }
+        let validationMessages = try #require(try await mock.waitForSnapshot { $0.modelsReplacements.count == 1 })
+        let validation = try #require(validationMessages.modelsReplacements.first)
+        try await mock.pushModelsReplaceAck(.init(requestId: validation.requestId, drainRequestId: validation.drainRequestId,
+            validateOnly: true, accepted: true))
+        let commitMessages = try #require(try await mock.waitForSnapshot { $0.modelsReplacements.count == 2 })
+        let commit = try #require(commitMessages.modelsReplacements.last)
+        #expect(try ConfigManager.load(from: configPath).backend.enabledModels == ["new-model"])
+        if concurrentEdit {
+            try withExclusiveConfigLock(at: configPath) {
+                var edited = try ConfigManager.load(from: configPath)
+                edited.backend.idleTimeoutMins = 43
+                edited.backend.mtpMode = .off
+                try ConfigManager.save(edited, to: configPath)
+            }
+        }
+        try await mock.pushModelsReplaceAck(.init(requestId: commit.requestId, drainRequestId: commit.drainRequestId,
+            accepted: false, error: "invalid_models"))
+        let rollbackMessages = try #require(try await mock.waitForSnapshot { $0.modelsReplacements.count == 3 })
+        let rollback = try #require(rollbackMessages.modelsReplacements.last)
+        try await mock.pushModelsReplaceAck(.init(requestId: rollback.requestId, drainRequestId: rollback.drainRequestId,
+            accepted: true))
+        #expect(await switching.value.outcome == .failed)
+        #expect(await loop.advertisedLocalModelIds() == ["old-model"])
+        #expect(await client.currentAdvertisedModels().map(\.id) == ["old-model"])
+        #expect(await !loop.state.refusingNewWork)
+        #expect(await !loop.hasPersistedModelSwitch)
+        if concurrentEdit {
+            let restored = try ConfigManager.load(from: configPath)
+            #expect(restored.backend.idleTimeoutMins == 43)
+            #expect(restored.backend.mtpMode == .off)
+            #expect(restored.backend.enabledModels == (presence == "pinned" ? ["old-model"] : []))
+            let table = try TOMLTable(string: String(contentsOf: configPath, encoding: .utf8))
+            #expect((table["backend"]?.table?["enabled_models"] != nil) == (presence == "pinned"))
+        } else if let original {
+            #expect(try Data(contentsOf: configPath) == original)
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: configPath.path))
+        }
     }
 
     @Test(arguments: [false, true])

@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-22 · commit `73f8c13f`
+> Last updated: 2026-09-26 · commit `9b7d5fbc5`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -20,6 +20,17 @@ A slot being warm does not make a stopped provider available. Provider admission
 and the final inference writer still fence races after planning; existing accepted
 work retains its model pin until terminal completion. See
 [the routing boundary](routing.md#provider-lifecycle-drain-boundary).
+
+A live inventory replacement remains fenced until its committed receipt reaches
+the wire (`ResumeProviderModels`, `coordinator/registry/provider_models_replace.go`).
+Only then does the API reconcile queues and force a current `desired_models`
+snapshot through `RefreshDesiredModels` in `coordinator/registry/model_commands.go`.
+That refresh bypasses per-connection delivery deduplication, retains the existing
+capability/version guards and retired-alias lineage, and emits an empty snapshot
+when deselected aliases no longer apply. The provider preserves a snapshot that
+arrives while its commit is awaiting acknowledgement and resumes convergence
+after reopening admission. A failed receipt write neither resumes routing nor
+dispatches queued work (`handleModelsReplace`, `coordinator/api/provider_models_replace.go`).
 
 
 ## Context

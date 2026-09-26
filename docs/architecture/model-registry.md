@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-06 · commit `32b28b0a7`
+> Last updated: 2026-09-26 · commit `0692c0f82`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -137,8 +137,13 @@ carries a hash per advertised model, and any mismatch against
 share one contract — every file is checked against its manifest size and
 SHA-256 before it leaves staging, and the aggregate is recomputed with
 `WeightHasher.hashFilesWithRelativeKey` before the snapshot is published to
-`{hf-cli Cache Dir}/models--{org}--{name}/snapshots/local/` with a
-`refs/main` pointer so `ModelScanner` discovers it:
+`{cache}/models--{org}--{name}/snapshots/local/` with a `refs/main` pointer so
+`ModelScanner` discovers it. `ModelScanner.resolveCache` in
+`provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift`
+selects the shared discovery/download root using the [cache-location precedence](../reference/configuration.md#model-cache-location).
+The CLI installs the saved config value before serving; launchd retains all
+four cache environment overrides, with relative shell values made absolute.
+Location inspection is discovery only, not the manifest-integrity contract above.
 
 | Flow | Entry point | Used by | Notes |
 |---|---|---|---|

@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-22 · commit `6253ca765`
+> Last updated: 2026-09-26 · commit `0692c0f82`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -187,33 +187,19 @@ See [engine MTP constraints](../architecture/inference.md#multi-token-prediction
 
 ## Storage
 
-Models are cached under the Hugging Face hub directory. The path is resolved by
-`ModelScanner.defaultCacheDirectory()`
-(`provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift`),
-first match wins:
+Model discovery and downloads share the [resolved Hugging Face hub cache](../reference/configuration.md#model-cache-location)
+(`ModelScanner.resolveCache`, `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift`).
+Use [`darkbloom models location`](cli-reference.md#darkbloom-models-location) to inspect
+or choose an existing directory, including one on an external volume. Empty
+directories are valid for future downloads; the command never moves existing
+weights. `--check` lists discovered MLX model IDs without claiming integrity or
+network eligibility. Standard Hugging Face environment variables override the
+saved directory; the CLI and `doctor` report the effective source.
 
-| Source | Cache directory |
-|--------|-----------------|
-| `$HF_HUB_CACHE` | the value itself |
-| `$HUGGINGFACE_HUB_CACHE` | the value itself (legacy alias) |
-| `$HF_HOME` | `$HF_HOME/hub` |
-| `$XDG_CACHE_HOME` | `$XDG_CACHE_HOME/huggingface/hub` |
-| none set | `~/.cache/huggingface/hub` |
-
-This is the same precedence `huggingface_hub` uses, so the provider reads the
-directory `hf download` writes to.
-
-Symlinks are resolved, so a cache kept on an external volume behind a link
-resolves to its real path. Point one of these at the volume to keep weights off
-the boot disk; `darkbloom doctor` prints the resolved path and names the
-variable that selected it. Set the variable in the shell you run
-`darkbloom start` from -- it is persisted into the launchd job (relative values
-are made absolute first), so the background provider scans the same directory
-as the CLI.
-
-The launchd job captures the variable at `start` time and `darkbloom restart`
-only kickstarts the existing job, so after changing or unsetting `HF_HOME` /
-`HF_HUB_CACHE` run `darkbloom stop && darkbloom start` to pick it up.
+After changing a saved location or the shell's cache variables, use
+`darkbloom stop && darkbloom start` to refresh the background provider. Mount
+external volumes before starting it; a missing selected cache does not fall
+back to a different directory.
 
 Plan disk space per model from the catalog output of `darkbloom models catalog`.
 Logs and telemetry are small; the bundle plus `mlx.metallib` is roughly 200 MB.

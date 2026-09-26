@@ -8,6 +8,11 @@
 /// side (`ModelDownloader.cacheModelDirectory`) route through it so they
 /// cannot disagree.
 
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 import Foundation
 
 extension ModelScanner {
@@ -29,16 +34,8 @@ extension ModelScanner {
     /// upstream, so the hub cache is `$XDG_CACHE_HOME/huggingface/hub`.
     public static let xdgCacheHomeEnvKey = "XDG_CACHE_HOME"
 
-    /// The precedence ladder, highest priority first, as DATA rather than a
-    /// chain of branches -- `doctor` reports the winning variable from this
-    /// same list, so the diagnosis cannot drift from the behavior.
-    ///
-    /// Mirrors `huggingface_hub` (verified against 0.36.2):
-    /// `HF_HUB_CACHE` > `HUGGINGFACE_HUB_CACHE` > `$HF_HOME/hub` >
-    /// `$XDG_CACHE_HOME/huggingface/hub` > `~/.cache/huggingface/hub`.
-    /// Matching upstream matters because `hf download` writes where upstream
-    /// resolves; disagreeing would have the provider scan an empty directory
-    /// and re-download models that are already on disk.
+    /// Environment precedence mirrors `huggingface_hub`; a saved Darkbloom
+    /// directory is considered only after these overrides, before the default.
     static let cacheEnvSources: [(key: String, subpath: String?)] = [
         (hfHubCacheEnvKey, nil),
         (legacyHubCacheEnvKey, nil),
@@ -50,15 +47,17 @@ extension ModelScanner {
     /// first. Used by the launchd passthrough allow-list.
     public static var cacheEnvKeys: [String] { cacheEnvSources.map(\.key) }
 
-    /// A resolved cache directory plus the environment variable that selected
-    /// it (nil for the `~/.cache/huggingface/hub` default).
+    /// A resolved cache directory and the environment or saved configuration
+    /// that selected it. Neither source is set for the home-directory default.
     public struct ResolvedCache: Sendable {
         public let url: URL
         public let environmentKey: String?
+        public let isConfigured: Bool
 
-        public init(url: URL, environmentKey: String?) {
+        public init(url: URL, environmentKey: String?, isConfigured: Bool = false) {
             self.url = url
             self.environmentKey = environmentKey
+            self.isConfigured = isConfigured
         }
     }
 
@@ -71,19 +70,30 @@ extension ModelScanner {
     /// resolution itself always succeeds.
     public static func defaultCacheDirectory(
         environment: [String: String],
-        homeDirectory: URL
+        homeDirectory: URL,
+        configuredDirectory: String? = nil
     ) -> URL? {
-        resolveCache(environment: environment, homeDirectory: homeDirectory).url
+        resolveCache(
+            environment: environment, homeDirectory: homeDirectory,
+            configuredDirectory: configuredDirectory
+        ).url
     }
 
-    /// The resolved cache directory. Non-optional: every branch yields a
-    /// directory, so callers never need a fallback that re-hardcodes the home
-    /// path -- which is exactly the drift this func exists to prevent.
+    /// The cache directory for this process, including its saved configuration.
+    public static func cacheDirectory() -> URL {
+        resolveCache(configuredDirectory: configuredCacheDirectory).url
+    }
+
+    /// Resolve explicitly supplied inputs without reading process configuration.
     public static func cacheDirectory(
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+        environment: [String: String],
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        configuredDirectory: String? = nil
     ) -> URL {
-        resolveCache(environment: environment, homeDirectory: homeDirectory).url
+        resolveCache(
+            environment: environment, homeDirectory: homeDirectory,
+            configuredDirectory: configuredDirectory
+        ).url
     }
 
     /// Walk the precedence ladder and report both the directory and its source.
@@ -95,7 +105,8 @@ extension ModelScanner {
     /// is already present.
     public static func resolveCache(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        configuredDirectory: String? = nil
     ) -> ResolvedCache {
         for source in cacheEnvSources {
             guard let base = directoryURL(from: environment[source.key], homeDirectory: homeDirectory)
@@ -104,6 +115,9 @@ extension ModelScanner {
                 base.appendingPathComponent($0, isDirectory: true)
             } ?? base
             return ResolvedCache(url: resolved(url), environmentKey: source.key)
+        }
+        if let url = normalizedCacheDirectory(configuredDirectory, homeDirectory: homeDirectory) {
+            return ResolvedCache(url: url, environmentKey: nil, isConfigured: true)
         }
         return ResolvedCache(
             url: homeCacheDirectory(homeDirectory: homeDirectory),
@@ -118,19 +132,23 @@ extension ModelScanner {
         resolved(homeDirectory.appendingPathComponent(".cache/huggingface/hub", isDirectory: true))
     }
 
-    /// Interpret an environment value as a directory URL, or nil when it is
-    /// unset or blank.
-    ///
-    /// The path is used VERBATIM apart from tilde expansion: a directory name
-    /// may legitimately end in a space, and huggingface_hub does not trim
-    /// either, so trimming would silently resolve to a different directory.
-    /// Only the blank test looks at the trimmed form.
-    static func directoryURL(from raw: String?, homeDirectory: URL) -> URL? {
-        guard let raw,
-              !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    /// Normalize a user-entered cache directory without creating it. Relative
+    /// paths use `base`; existing symlinks are resolved before interpreting `..`.
+    /// Missing suffixes and paths beyond filesystem limits are never truncated.
+    /// Blank, NUL-containing, and unexpandable tilde values are rejected.
+    public static func normalizedCacheDirectory(
+        _ raw: String?,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        relativeTo base: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    ) -> URL? {
+        guard let path = absoluteCachePathValue(raw, relativeTo: base, homeDirectory: homeDirectory)
+        else { return nil }
+        return resolved(URL(fileURLWithPath: path, isDirectory: true))
+    }
 
-        guard let expanded = expandingTilde(raw, homeDirectory: homeDirectory) else { return nil }
-        return URL(fileURLWithPath: expanded, isDirectory: true)
+    static func directoryURL(from raw: String?, homeDirectory: URL) -> URL? {
+        guard let path = absoluteCachePathValue(raw, homeDirectory: homeDirectory) else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     /// Expand a leading tilde, or nil when the value starts with a `~` that
@@ -149,48 +167,59 @@ extension ModelScanner {
             return homeDirectory.path
         }
         if path.hasPrefix("~/") {
-            return homeDirectory.appendingPathComponent(String(path.dropFirst(2))).path
+            return homeDirectory.path + "/" + path.dropFirst(2)
         }
 
-        let expanded = (path as NSString).expandingTildeInPath
-        return expanded.hasPrefix("~") ? nil : expanded
+        // Expand only the username, not the remainder: Foundation path
+        // standardization must not collapse `link/..` before following the link.
+        let end = path.firstIndex(of: "/") ?? path.endIndex
+        let expanded = (String(path[..<end]) as NSString).expandingTildeInPath
+        return expanded.hasPrefix("~") ? nil : expanded + path[end...]
     }
 
-    /// Symlink-resolve a path that may not exist yet.
-    ///
-    /// `resolvingSymlinksInPath()` resolves the links it can and leaves the
-    /// rest intact, so a not-yet-created cache dir under a symlinked parent
-    /// still canonicalises correctly and never collapses to nil. It resolves
-    /// links BEFORE collapsing `..`, matching `realpath(3)`.
-    ///
-    /// Paths at or beyond `PATH_MAX` are returned unresolved: Foundation
-    /// silently TRUNCATES them (a 5001-character path comes back as 1024
-    /// characters), which would point the scanner at an entirely different
-    /// directory. An unresolved path is wrong-but-honest; a truncated one is
-    /// wrong-and-silent.
+    /// Resolve existing ancestors with `realpath` so links and `..` follow
+    /// POSIX traversal order, without depending on Foundation standardization.
+    /// Paths beyond the filesystem limit remain intact rather than truncated.
+    /// If a leaf is missing, keep its suffix verbatim: `missing/../cache` cannot
+    /// be simplified until `missing` exists. Other lookup errors stay unresolved.
     static func resolved(_ url: URL) -> URL {
-        guard url.path.utf8.count < 1024 else { return url }
-        return url.resolvingSymlinksInPath().standardizedFileURL
+        let path = url.path
+        guard path.utf8.count < Int(PATH_MAX), !path.utf8.contains(0) else { return url }
+
+        var prefix = path[...]
+        var metadata = stat()
+        while !prefix.isEmpty {
+            let candidate = String(prefix)
+            // Darwin realpath may simplify file/.. even though the kernel
+            // rejects that traversal. Only canonicalize a traversable prefix.
+            if stat(candidate, &metadata) == 0 {
+                guard let buffer = realpath(candidate, nil) else { return url }
+                defer { free(buffer) }
+                guard let canonical = String(validatingCString: buffer) else { return url }
+                let suffix = path[prefix.endIndex...]
+                let separator = canonical.hasSuffix("/") || suffix.isEmpty || suffix.hasPrefix("/") ? "" : "/"
+                return URL(fileURLWithPath: canonical + separator + suffix, isDirectory: true)
+            }
+            guard errno == ENOENT,
+                  let slash = prefix.lastIndex(of: "/"), prefix != "/" else { return url }
+            prefix = path[..<(slash == path.startIndex ? path.index(after: slash) : slash)]
+        }
+        return url
     }
 
-    /// Make a cache-path environment value absolute, for persisting into an
-    /// environment that does not share the current working directory.
-    ///
-    /// launchd starts jobs with cwd `/`, so forwarding a relative `HF_HOME`
-    /// verbatim would have the daemon resolve a different cache than the shell
-    /// that installed it -- silently advertising no models. Returns nil for a
-    /// blank value (nothing to forward).
+    /// Make a path absolute before persisting it for launchd, whose cwd is `/`.
+    /// Preserve nonblank whitespace and `..` components, which may cross links.
     public static func absoluteCachePathValue(
         _ raw: String?,
-        relativeTo base: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        relativeTo base: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true),
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> String? {
-        guard let raw,
-              !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        guard let expanded = expandingTilde(raw, homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
-        else { return raw }
+        guard let raw, !raw.utf8.contains(0),
+              !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let expanded = expandingTilde(raw, homeDirectory: homeDirectory) else { return nil }
 
         if expanded.hasPrefix("/") { return expanded }
-        return base.appendingPathComponent(expanded).path
+        return base.path + "/" + expanded
     }
 
     /// The cache directory name HuggingFace gives a model ID.
@@ -204,20 +233,20 @@ extension ModelScanner {
     /// Where a model's files live (or should be written) inside the resolved
     /// hub cache: `{cache}/models--{org}--{name}`.
     public static func cacheModelDirectory(for modelID: String) -> URL {
-        cacheModelDirectory(
-            for: modelID,
-            environment: ProcessInfo.processInfo.environment,
-            homeDirectory: FileManager.default.homeDirectoryForCurrentUser
-        )
+        cacheDirectory().appendingPathComponent(cacheDirectoryName(for: modelID), isDirectory: true)
     }
 
     /// Environment-injected form of `cacheModelDirectory(for:)`.
     public static func cacheModelDirectory(
         for modelID: String,
         environment: [String: String],
-        homeDirectory: URL
+        homeDirectory: URL,
+        configuredDirectory: String? = nil
     ) -> URL {
-        cacheDirectory(environment: environment, homeDirectory: homeDirectory)
+        cacheDirectory(
+            environment: environment, homeDirectory: homeDirectory,
+            configuredDirectory: configuredDirectory
+        )
             .appendingPathComponent(cacheDirectoryName(for: modelID), isDirectory: true)
     }
 
@@ -232,18 +261,5 @@ extension ModelScanner {
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
         return exists && isDirectory.boolValue
-    }
-
-    /// Whether a cache directory holds at least one `models--*` entry.
-    ///
-    /// Used to warn when a redirected cache is empty but the default one is
-    /// not -- the shape of an operator who exported `HF_HOME` for other
-    /// tooling and would otherwise silently advertise zero models.
-    public static func hasCachedModels(in cacheDirectory: URL) -> Bool {
-        guard isUsableCacheDirectory(cacheDirectory) else { return false }
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            atPath: cacheDirectory.path
-        ) else { return false }
-        return entries.contains { $0.hasPrefix("models--") }
     }
 }

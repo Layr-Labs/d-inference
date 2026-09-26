@@ -65,16 +65,26 @@ public struct ModelScanner: Sendable {
     ///
     /// Checks the HuggingFace cache for a directory matching the model ID.
     /// Returns the snapshot path so the backend can load directly from disk.
+    public static func resolveLocalPath(modelID: String) -> URL? {
+        resolveLocalPath(
+            modelID: modelID,
+            environment: ProcessInfo.processInfo.environment,
+            configuredDirectory: configuredCacheDirectory)
+    }
+
     public static func resolveLocalPath(
         modelID: String,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+        environment: [String: String],
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        configuredDirectory: String? = nil
     ) -> URL? {
         if modelID == ModelMediaPolicy.ownedQwen4ModelID, Qwen4LocalModelPath.isConfigured(environment: environment) {
             // Invalid explicit staging must not silently serve the old cache.
             return Qwen4LocalModelPath.directory(environment: environment)
         }
-        let cacheDir = cacheDirectory(environment: environment, homeDirectory: homeDirectory)
+        let cacheDir = cacheDirectory(
+            environment: environment, homeDirectory: homeDirectory,
+            configuredDirectory: configuredDirectory)
         let fm = FileManager.default
 
         // Try exact match: models--{id with / replaced by --}
@@ -86,7 +96,6 @@ public struct ModelScanner: Sendable {
                 return snapshot
             }
         }
-
 
         return nil
     }

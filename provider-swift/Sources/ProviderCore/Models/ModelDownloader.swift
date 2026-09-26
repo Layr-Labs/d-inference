@@ -97,26 +97,9 @@ public struct ModelDownloader: Sendable {
 
     /// Where a downloaded model is written.
     ///
-    /// Delegates to `ModelScanner` so the destination is the SAME resolved
-    /// cache directory discovery scans (`$HF_HUB_CACHE`, else
-    /// `$HUGGINGFACE_HUB_CACHE`, else `$HF_HOME/hub`, else
-    /// `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub`).
-    /// Hard-coding the home path here would
-    /// download models into a directory the scanner no longer reads whenever an
-    /// operator points HuggingFace at another volume.
+    /// Discovery, hashing, removal, and downloads share one cache resolver.
     public static func cacheModelDirectory(for modelID: String) -> URL {
         ModelScanner.cacheModelDirectory(for: modelID)
-    }
-
-    /// Environment-injected form, so a test can pin that the download
-    /// destination follows `$HF_HOME` rather than the home directory.
-    public static func cacheModelDirectory(
-        for modelID: String,
-        environment: [String: String],
-        homeDirectory: URL
-    ) -> URL {
-        ModelScanner.cacheModelDirectory(
-            for: modelID, environment: environment, homeDirectory: homeDirectory)
     }
 
     static func cacheSnapshotDirectory(for modelID: String) -> URL {

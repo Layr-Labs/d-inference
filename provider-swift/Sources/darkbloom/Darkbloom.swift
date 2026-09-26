@@ -104,63 +104,37 @@ struct RuntimeSnapshot {
     let hardware: HardwareInfo?
     let hardwareError: Error?
     let models: [ModelInfo]
+    var configuredModelCacheDirectory: String? = nil
 }
 
 func loadRuntimeSnapshot(configOptions: ConfigOptions) throws -> RuntimeSnapshot {
     Darkbloom.ensureLogging()
-    return try loadRuntimeSnapshot(configPath: configOptions.config)
+    let snapshot = try loadRuntimeSnapshot(configPath: configOptions.config)
+    ModelScanner.configureCacheDirectory(snapshot.configuredModelCacheDirectory)
+    return snapshot
 }
 
 func loadRuntimeSnapshot(
     configPath rawPath: String?,
     migrateOnDisk: Bool = true
 ) throws -> RuntimeSnapshot {
-    let configPath = try resolveConfigPath(rawPath)
-    let configFileExists = FileManager.default.fileExists(atPath: configPath.path)
-
-    let hardware: HardwareInfo?
-    let hardwareError: Error?
-    do {
-        hardware = try HardwareDetector.detect()
-        hardwareError = nil
-    } catch {
-        hardware = nil
-        hardwareError = error
-    }
-
-    var config: ProviderConfig
-    if configFileExists {
-        config = try ConfigManager.load(from: configPath)
-    } else if let hardware {
-        config = ProviderConfig.defaultForHardware(hardware)
-    } else {
-        config = ConfigManager.loadDefault()
-    }
-
-    // Serving/operator commands migrate stale config values. Benchmarking is
-    // read-only: measurement must never rewrite the input half of an A/B pair.
-    if migrateOnDisk {
-        config = migrateConfigIfNeeded(configPath: configPath, config: config)
-    }
-
-    let models = hardware.map { ModelScanner.scanModels(hardwareInfo: $0) } ?? []
-
+    let loaded = try loadRuntimeConfiguration(configPath: rawPath, migrateOnDisk: migrateOnDisk)
+    let configuredDirectory = try ConfigManager.modelCacheDirectory(
+        in: loaded.config, relativeTo: loaded.configPath)
+    let cacheDirectory = ModelScanner.resolveCache(configuredDirectory: configuredDirectory).url
+    let models = loaded.hardware.map {
+        ModelScanner.scanModels(in: cacheDirectory, availableMemoryGB: $0.memoryAvailableGb)
+    } ?? []
     return RuntimeSnapshot(
-        configPath: configPath,
-        configFileExists: configFileExists,
-        config: config,
-        hardware: hardware,
-        hardwareError: hardwareError,
-        models: models
-    )
+        configPath: loaded.configPath,
+        configFileExists: loaded.configFileExists,
+        config: loaded.config,
+        hardware: loaded.hardware,
+        hardwareError: loaded.hardwareError,
+        models: models,
+        configuredModelCacheDirectory: configuredDirectory)
 }
 
-private func resolveConfigPath(_ rawPath: String?) throws -> URL {
-    if let rawPath {
-        return URL(fileURLWithPath: (rawPath as NSString).expandingTildeInPath)
-    }
-    return try ConfigManager.defaultConfigPath()
-}
 
 // MARK: - Config Migration
 
@@ -180,14 +154,14 @@ private let staleCoordinatorURLs: [(pattern: String, label: String)] = [
 
 /// Migrate stale config values in-place. Runs on every startup; idempotent.
 ///
-/// 1. **Legacy path**: if the resolved config lives at a non-canonical path
-///    and `~/.config/darkbloom/provider.toml` does not exist yet, copy the
-///    file there (keeping the old one for backward compat).
+/// 1. **Legacy path**: default-path discovery copies a legacy config to
+///    `~/.config/darkbloom/provider.toml` when absent, retaining the old file.
+///    Explicit --config paths stay in place. Relative cache paths keep their target.
 /// 2. **Coordinator URL**: if the TOML text contains a known stale
 ///    coordinator URL (localhost, dev), rewrite it to production in-place.
 /// 3. **Schema migration**: bring `config_version` up to date, applying the
 ///    generated-value migrations selected by the old stamp.
-func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig) -> ProviderConfig {
+func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig, copyToCanonical: Bool) -> ProviderConfig {
     let fm = FileManager.default
     guard fm.fileExists(atPath: configPath.path) else { return config }
 
@@ -199,12 +173,20 @@ func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig) -> ProviderC
 
     // --- 1. Legacy path → canonical path copy ---
     var copiedToCanonical = false
-    if configPath.standardizedFileURL != canonicalPath.standardizedFileURL
-        && !fm.fileExists(atPath: canonicalPath.path) {
+    if copyToCanonical,
+       configPath.standardizedFileURL != canonicalPath.standardizedFileURL,
+       !fm.fileExists(atPath: canonicalPath.path) {
         do {
             let dir = canonicalPath.deletingLastPathComponent()
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            try fm.copyItem(at: configPath, to: canonicalPath)
+            if config.backend.modelCacheDirectory != nil {
+                var relocated = config
+                relocated.backend.modelCacheDirectory = try ConfigManager.modelCacheDirectory(
+                    in: config, relativeTo: configPath)
+                try ConfigManager.save(relocated, to: canonicalPath)
+            } else {
+                try fm.copyItem(at: configPath, to: canonicalPath)
+            }
             copiedToCanonical = true
             printError("  Migrated config to \(canonicalPath.path)")
         } catch {

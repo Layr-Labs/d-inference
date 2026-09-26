@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `292bfa291`
+> Last updated: 2026-09-26 · commit `0692c0f82`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -160,8 +160,15 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
 | `download` | `<modelID>` | `String` | — | Catalog id (or S3 name) |
 | `download` | `--coordinator <url>` | `String?` | config URL | Resolve the catalog entry |
 | `download` | `--r2-cdn <url>` | `String?` | `DARKBLOOM_R2_CDN_URL`, else `https://models.darkbloom.ai` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`, `defaultR2CDNURL`) | Mirror base URL |
-| `remove` | `<modelID>` | `String` | — | Model to delete from `~/.cache/huggingface/hub` |
+| `remove` | `<modelID>` | `String` | — | Model to delete from the effective model cache |
 | `remove` | `--force` | flag | `false` | Skip confirmation |
+| `location` | `[PATH]` | `String?` | status/menu | Select an existing readable, writable cache directory; interactive changes require `yes` |
+| `location` | `--check` | flag | `false` | Inspect PATH, or the effective cache, without changing config or weights |
+| `location` | `--reset` | flag | `false` | Clear only the saved location; environment overrides remain effective |
+
+All model subcommands accept `--config <path>`. Location behavior is implemented
+by `Models.Location` in `provider-swift/Sources/darkbloom/ModelsLocationCommand.swift`;
+cache precedence is specified in [model cache configuration](../reference/configuration.md#model-cache-location).
 
 ### `darkbloom local`
 
@@ -567,6 +574,33 @@ Delete a downloaded model.
 darkbloom models remove <id> [--force]
 ```
 
+### `darkbloom models location`
+
+Inspect a cache or save its location in `provider.toml` (`Models.Location`,
+`provider-swift/Sources/darkbloom/ModelsLocationCommand.swift`).
+
+```bash
+darkbloom models location                              # interactive menu on a terminal; status otherwise
+darkbloom models location /Volumes/Models/hub           # save an existing directory
+darkbloom models location --check /Volumes/Models/hub   # inspect only this directory
+darkbloom models location --reset                       # clear saved setting, not weights
+```
+
+The menu offers keeping the current location, clearing the saved setting, or
+entering a custom path. Enter/EOF cancels; changes in a terminal require `yes`.
+Empty writable directories are valid for future downloads. Missing directories
+are not created: mount the external volume and create the intended directory
+explicitly first. Nothing moves or deletes existing weights, downloads models,
+or restarts the running provider.
+
+Inspection lists discovered MLX model IDs, not integrity verification or proof
+that a model is supported/serveable. Use `models list --hash <model-id>` for an
+on-demand aggregate hash and `doctor` for serving diagnostics. Environment
+overrides take precedence over the saved selection; the command reports the
+winning source and warns about shadowed settings. After a change, run
+`darkbloom stop && darkbloom start` from the intended environment (include
+`--config <path>` on `start` when using a custom config).
+
 ## `darkbloom benchmark`
 
 Run a standardized local inference benchmark.
@@ -885,7 +919,7 @@ manual use.
 | Provider LaunchAgent | label `io.darkbloom.provider`; `~/Library/LaunchAgents/io.darkbloom.provider.plist`; `RunAtLoad = true`, `KeepAlive = false`; stdout/stderr → `~/.darkbloom/provider.log` | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`label`, `plistPath`, `logPath`) |
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |
-| Model cache | `~/.cache/huggingface/hub` (HuggingFace hub layout) | `provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift` |
+| Model cache | Hugging Face hub layout under the [resolved model cache](../reference/configuration.md#model-cache-location) | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift` (`ModelScanner.resolveCache`) |
 | Keychain KEK item | service `io.darkbloom.kv.kek.v1`; access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
 | Secure Enclave key labels | `io.darkbloom.provider.attestation-signing.v2`; legacy `…v1` migrated on first use | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`, `legacyLabelV1`) |
 | Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
@@ -907,6 +941,7 @@ override `provider.toml` for one process, are in
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
 | `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
 | `[backend] enabled_models` | `[]` | Advertise only these ids; empty = all serveable |
+| `[backend] model_cache_directory` | unset | Saved hub directory; set/reset with `models location`. Hugging Face environment overrides win; hand-written relative paths are anchored to the config file (`provider-swift/Sources/ProviderCore/Config/ModelCacheConfiguration.swift`, `ConfigManager.modelCacheDirectory`) |
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables |
 | `[backend] max_model_slots` | `3` | Resident models |
 | `[backend] engine_v2_max_concurrent` | `4` (clamped to `[1, 8]`) | Concurrent requests per engine |
@@ -921,6 +956,11 @@ override `provider.toml` for one process, are in
 | `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`) |
 
 ## LaunchAgent environment passthrough
+
+The four [model-cache environment variables](../reference/configuration.md#model-cache-location)
+are forwarded together. Relative values are made absolute against the installing
+shell's working directory (`LaunchAgent.passthroughEnvironment`). A restart
+retains captured values; stop/start recaptures changed or unset variables.
 
 The [Bonsai performance profile](../reference/configuration.md#bonsai-performance-qualification)
 uses source-default-on eligible paths in foreground and daemon processes. It

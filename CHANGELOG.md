@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `darkbloom models location` to inspect and interactively choose a model-cache directory, with read-only `--check` and saved-setting `--reset`. Report discovered model IDs without moving weights or claiming integrity/network eligibility.
+- Resolve model discovery, downloads, hashing and removal through the same Hugging Face environment overrides or saved `backend.model_cache_directory`. Preserve relative shell paths in launchd, respect filesystem traversal through symlinks, and diagnose redirected caches without mistaking empty download folders for models.
+
 - Replace provider reputation ratings with total, successful, and failed job counts. Remove the composite score calculation and owner API field; historical job failures no longer imply reduced routing priority in the dashboard.
 
 ## Unreleased — App Attest dead-key recovery and release-recovery fixes

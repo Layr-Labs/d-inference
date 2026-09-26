@@ -96,37 +96,24 @@ private func sysctlUInt32(_ key: String) throws -> UInt32 {
 }
 
 private func sysctlUInt32Optional(_ key: String) -> UInt32? {
-    var value: UInt32 = 0
-    var size = MemoryLayout<UInt32>.size
-    guard sysctlbyname(key, &value, &size, nil, 0) == 0 else { return nil }
-    return value
+    try? sysctlUInt32(key)
 }
 
 // MARK: - GPU Detection
 
-private func detectGPUInfo() throws -> (chipName: String, gpuCores: UInt32) {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-    process.arguments = ["SPDisplaysDataType", "-json"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    try process.run()
-    process.waitUntilExit()
-
-    guard process.terminationStatus == 0 else {
-        return (fallbackChipName(), 0)
-    }
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+func detectGPUInfo(
+    runner: SecurityCommandRunner = .live,
+    fallback: () -> String = fallbackChipName
+) throws -> (chipName: String, gpuCores: UInt32) {
+    let result = try runner.run("/usr/sbin/system_profiler", ["SPDisplaysDataType", "-json"])
+    guard result.terminationStatus == 0 else { return (fallback(), 0) }
+    let data = Data(result.stdout.utf8)
 
     guard
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
         let displays = json["SPDisplaysDataType"] as? [[String: Any]]
     else {
-        return (fallbackChipName(), 0)
+        return (fallback(), 0)
     }
 
     for display in displays {
@@ -142,7 +129,7 @@ private func detectGPUInfo() throws -> (chipName: String, gpuCores: UInt32) {
         return (chipName, gpuCores)
     }
 
-    return (fallbackChipName(), 0)
+    return (fallback(), 0)
 }
 
 private func fallbackChipName() -> String {
@@ -155,7 +142,9 @@ internal func parseChipIdentity(_ chipName: String) -> (ChipFamily, ChipTier) {
     let name = chipName.lowercased()
 
     let family: ChipFamily
-    if name.contains("m5") {
+    if name.contains("m6") {
+        family = .m6
+    } else if name.contains("m5") {
         family = .m5
     } else if name.contains("m4") {
         family = .m4
@@ -211,6 +200,11 @@ internal func lookupBandwidth(family: ChipFamily, tier: ChipTier, gpuCores: UInt
     case (.m5, .base):  return 153
     case (.m5, .pro):   return 307
     case (.m5, .max):   return gpuCores >= 40 ? 614 : 460
+    case (.m5, .ultra): return 1200
+
+    // Apple's 16 GB M6 mini is 153 GB/s; larger-memory variants are
+    // 170 GB/s. Use the conservative nominal value without a memory input.
+    case (.m6, .base): return 153
 
     default: return 100
     }
@@ -233,6 +227,7 @@ internal func gpuClockGHz(family: ChipFamily, tier _: ChipTier) -> Double? {
     case .m2, .m3: return 1.40
     case .m4: return 1.80
     case .m5: return 1.90
+    case .m6: return nil
     case .unknown: return nil
     }
 }
@@ -246,6 +241,7 @@ internal func flopPerCorePerCycle(family: ChipFamily) -> Double? {
     switch family {
     case .m1, .m2, .m3, .m4: return 512
     case .m5: return 2048
+    case .m6: return nil
     case .unknown: return nil
     }
 }

@@ -396,38 +396,7 @@ extension ProviderLoop {
     }
 
     private func scheduleRetirementReconnect() {
-        guard pendingRetirementReconnect == nil else { return }
-        pendingRetirementReconnect = Task { [weak self] in
-            guard let self else { return }
-            _ = await self.waitForInflightDrain(
-                timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
-            // Shutdown cancels this task (`beginShutdown`); a cancelled
-            // reconnect must not re-register a session shutdown is closing.
-            guard !Task.isCancelled else { return }
-            await self.fireRetirementReconnect()
-        }
-    }
-
-    private func fireRetirementReconnect() async {
-        pendingRetirementReconnect = nil
-        guard !isShuttingDown, coordinatorClient != nil else { return }
-        // Admission barrier across the reconnect: between the drain's last
-        // observation and the socket closing there is an actor hop, and a
-        // routed request admitted in it would only be cancelled by the
-        // `.disconnected` handler. Raised here, actor-isolated, before any
-        // suspension; lifted by the `.connected` event of the new session.
-        setRetirementReconnectBarrier(true)
-        if hasInflightWork {
-            // Work landed in the hop after the drain observed empty: let it
-            // ride out under the barrier (nothing new is admitted), then close.
-            _ = await waitForInflightDrain(
-                timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
-            if isShuttingDown || Task.isCancelled {
-                setRetirementReconnectBarrier(false)
-                return
-            }
-        }
-        await coordinatorClient?.forceReconnect()
+        requestPlannedReconnect()
     }
 
     // MARK: - Self-test decode (the serving path)
@@ -451,6 +420,7 @@ extension ProviderLoop {
         let tokenizer = slot.tokenizer
         let modelType = slot.modelType
         let slotContainer = slot.container
+        let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
         let slotEngineV2 = slot.engineV2
         let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
@@ -468,7 +438,7 @@ extension ProviderLoop {
             registryProvider: { @Sendable in
                 [modelId: .init(
                     tokenizer: tokenizer, modelType: modelType,
-                    container: slotContainer, isVLM: slotIsVLM,
+                    container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
                     engineV2Bridge: slotEngineV2,
                     visionGate: slotVisionGate)]
             },

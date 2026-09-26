@@ -52,6 +52,9 @@ func (x *Session) send(ctx context.Context, action string) bool {
 		}
 	}
 	if action == "assert" {
+		// The baseline belongs to the challenge, not to dequeue time. A
+		// later inbox drop must not be absorbed by an older queued proof.
+		x.beginAssertionChallenge()
 		pub, err := base64.StdEncoding.DecodeString(x.publicKey)
 		if err != nil || len(pub) != 32 {
 			x.observe(action, "encryption_key", nil)
@@ -89,7 +92,7 @@ func (x *Session) handleExchange(ctx context.Context, reply protocol.AppAttestSh
 		return "stop"
 	}
 	if reply.Result != "ok" {
-		x.observe(x.expected, shadowClientResult(reply.Result), nil)
+		x.observeWithClientDiagnostics(x.expected, shadowClientResult(reply.Result), nil, reply)
 		return "stop"
 	}
 	if x.expected == "ready" {
@@ -136,8 +139,9 @@ func (x *Session) handleExchange(ctx context.Context, reply protocol.AppAttestSh
 	hash, err := prepared.Hash, prepared.Err
 	if err != nil {
 		reason := "enrollment_context"
-		if err.Error() == "enrollment_storage_error" {
-			reason = "enrollment_storage_error"
+		switch err.Error() {
+		case "enrollment_storage_error", "enrollment_expired":
+			reason = err.Error()
 		}
 		x.observe(x.expected, reason, nil)
 		return "stop"

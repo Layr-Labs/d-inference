@@ -49,11 +49,17 @@ if [ -z "$HOSTS" ]; then
 fi
 
 echo "==> Updating $ENV_NAME fleet against $COORD_URL"
+failed=0
 for HOST in $HOSTS; do
   echo "---- $HOST ----"
-  ssh "$HOST" "curl -fsSL $COORD_URL/install.sh | bash" || {
+  ssh "$HOST" "bash -o pipefail -c 'curl -fsSL $COORD_URL/install.sh | bash'" || {
     echo "!!! $HOST failed — continuing" >&2
+    failed=$((failed + 1))
   }
 done
 
+if [ "$failed" -gt 0 ]; then
+  echo "==> Fleet update finished with $failed failed host(s)" >&2
+  exit 1
+fi
 echo "==> Fleet update complete"

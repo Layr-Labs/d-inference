@@ -17,6 +17,7 @@ enum ToolStreamPreparation {
             mode: prepared.mode, modelContext: context)
         try ToolChoiceEnforcementPolicy.validateParser(
             format, strategy: strategy, modelContext: context)
-        return BatchedToolStreamHandler(format: format, tools: prepared.tools?.map { $0.toolSpec() })
+        return BatchedToolStreamHandler(format: format, tools: prepared.tools?.map { $0.toolSpec() },
+            strictGemma: modelType == "diffusion_gemma")
     }
 }

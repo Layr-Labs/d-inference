@@ -148,29 +148,20 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
         let tierKey = ModelWarmKey(model: model, warm: warm)
         lock.withLock {
             touchCounter &+= 1
-            var ring = buckets[key] ?? Ring()
-            ring.append(ttftMs)
-            ring.lastTouch = touchCounter
-            if buckets[key] == nil, buckets.count >= Self.maxBuckets {
-                // Evict the least-recently-updated bucket to stay bounded.
-                if let victim = buckets.min(by: { $0.value.lastTouch < $1.value.lastTouch })?.key {
-                    buckets.removeValue(forKey: victim)
-                }
-            }
-            buckets[key] = ring
+            appendToRing(&buckets, key: key, value: ttftMs)
             // Feed the fallback tiers on the same O(1) write path. The
             // aggregate key spaces (models × warmth, models) are strictly
             // smaller than the bucket key space, but cap them identically so
             // a hostile model-id mix can never outgrow the bucket bound.
-            appendToAggregate(&modelWarmAggregates, key: tierKey, value: ttftMs)
-            appendToAggregate(&modelAggregates, key: model, value: ttftMs)
+            appendToRing(&modelWarmAggregates, key: tierKey, value: ttftMs)
+            appendToRing(&modelAggregates, key: model, value: ttftMs)
         }
     }
 
-    /// Append one sample to a fallback-tier ring, LRU-evicting whole tiers at
+    /// Append one sample to an exact or fallback-tier ring, LRU-evicting whole tiers at
     /// the same ``maxBuckets`` cap the exact buckets use. Must run under the
     /// lock (shares `touchCounter`).
-    private func appendToAggregate<K: Hashable>(
+    private func appendToRing<K: Hashable>(
         _ aggregates: inout [K: Ring],
         key: K,
         value: Double

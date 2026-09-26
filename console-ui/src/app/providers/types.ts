@@ -114,6 +114,7 @@ export interface MyProvider {
   mda_verified: boolean;
   /** Coordinator-derived, live-only App Attest verdict; never legacy proof. */
   app_attest_authorized?: boolean;
+  verification?: import("@/lib/verification").Verification;
   /** Exclusive Unix-seconds deadline for that verdict. */
   authorization_expires_at?: number;
   se_key_bound: boolean;

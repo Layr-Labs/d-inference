@@ -19,7 +19,9 @@ extension ProviderLoop {
     // MARK: - Main Run Loop
 
     public func run() async throws {
-        defer { cancelAppAttestShadow() }
+        startLifecycleMonitor()
+        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow() }
+        if servingDrain.refusing { return }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
         // reached only the coordinator-serving modes.
@@ -108,6 +110,7 @@ extension ProviderLoop {
         let preloadLivenessRefresh = startPreloadLivenessRefresh()
         await runStartupPreloadGate()
         preloadLivenessRefresh.cancel()
+        if servingDrain.phase == .drained { return }
 
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
@@ -162,6 +165,9 @@ extension ProviderLoop {
             idleUnloadMins: loopConfig.config.backend.idleTimeoutMins
         )
 
+        // A termination received during the APNs/startup awaits can already
+        // have drained a process that has no coordinator connection yet.
+        if servingDrain.phase == .drained { return }
         // 4. Create coordinator client and start connection
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
@@ -174,6 +180,7 @@ extension ProviderLoop {
         // already have refreshed a hash, and registration must carry it.
         await coordinator.updateModelWeightHashes(liveModelHashes)
 
+        if servingDrain.phase == .drained { await coordinator.shutdown(); return }
         let (events, sendFn) = await coordinator.start()
         // Wire the direct inference-chunk fast path (Optimizations 1-3) alongside
         // the control path. `chunkSender` is a nonisolated handle on the actor;
@@ -201,7 +208,7 @@ extension ProviderLoop {
             Task {
                 if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
                     log.info("APNs device token arrived after registration — reconnecting to re-register with token")
-                    await coordinator.refreshAPNsToken(late)
+                    await self.refreshAPNsAfterDrain(late)
                 }
             }
         }
@@ -224,20 +231,22 @@ extension ProviderLoop {
 
         logger.info(.coordinatorClientStarted)
 
-        // 5. Process events. Cancellation is used by schedule enforcement
-        // and service shutdown; explicitly close the WebSocket so the stream
-        // unblocks instead of waiting for the next coordinator event.
-        await withTaskCancellationHandler {
+        // 5. The event reader outlives cancellation of the calling task.
+        // Lifecycle shutdown closes admission and drains accepted work plus
+        // terminal accounting before ending this stream.
+        let eventTask = Task {
             for await event in events {
                 switch event {
+                case .drainAck(let id):
+                    await coordinator.completeDrainAcknowledgement(id)
                 case .connected:
                     clearConnectionAuthorization()
                     logger.info(.coordinatorConnected)
                     // The post-retirement reconnect's admission barrier
-                    // (see `fireRetirementReconnect`) lifts with the new
+                    // (see `requestPlannedReconnect`) lifts with the new
                     // session: the register it carried excluded every
                     // retired id, so routed work is safe to admit again.
-                    setRetirementReconnectBarrier(false)
+                    finishPlannedReconnect()
 
                 case .disconnected:
                     clearConnectionAuthorization()
@@ -296,7 +305,7 @@ extension ProviderLoop {
                     handleLoadModelRequest(modelId: modelId, send: send)
 
                 case .prefetchModel(let modelId, let priority):
-                    if isDrainingForUpdate {
+                    if isDraining {
                         sendDrainingPrefetchFailure(modelId: modelId, send: send)
                     } else {
                         staleDesiredPrefetches.remove(modelId)
@@ -304,7 +313,7 @@ extension ProviderLoop {
                     }
 
                 case .desiredModels(let entries):
-                    if isDrainingForUpdate {
+                    if isDraining {
                         // Keep only the latest push (desired state is
                         // declarative). A successful restart makes it moot —
                         // registration receives fresh desired state — but an
@@ -320,8 +329,11 @@ extension ProviderLoop {
                                       authorization: authorization)
                 }
             }
+        }
+        await withTaskCancellationHandler {
+            await eventTask.value
         } onCancel: {
-            Task { await coordinator.shutdown() }
+            Task { _ = await self.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds) }
         }
 
         clearConnectionAuthorization()
@@ -417,29 +429,15 @@ extension ProviderLoop {
         // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
         //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
         //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
-        if let posture = securityPosture {
-            return PrivacyCapabilities(
-                textBackendInprocess: true,
-                textProxyDisabled: true,
-                pythonRuntimeLocked: false,
-                dangerousModulesBlocked: false,
-                sipEnabled: posture.sipEnabled,
-                antiDebugEnabled: posture.antiDebugEnabled,
-                coreDumpsDisabled: posture.coreDumpsDisabled,
-                envScrubbed: posture.envScrubbed
-            )
-        }
-
-        // Pre-hardening fallback (DEBUG builds, or hardening failed).
         return PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
             pythonRuntimeLocked: false,
             dangerousModulesBlocked: false,
-            sipEnabled: SecurityChecks.isSIPEnabled(),
-            antiDebugEnabled: false,
-            coreDumpsDisabled: false,
-            envScrubbed: false
+            sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
+            antiDebugEnabled: securityPosture?.antiDebugEnabled ?? false,
+            coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
+            envScrubbed: securityPosture?.envScrubbed ?? false
         )
     }
 

@@ -99,5 +99,8 @@ export function useNetworkStats() {
   }, []);
 
   useVisiblePolling(refresh, STATS_REFRESH_MS);
+  // Retain the coordinator's verdict at its source observation. Aging a cached
+  // 30-second lease cannot tell us whether the server has renewed or revoked it.
+  // StatsHeader exposes snapshot age; live owner controls use a separate clock.
   return { stats, catalogData, capacityModels, totals24h, snapshotAt, fetchedAt, isMock, refreshing, error, secondaryError, refresh };
 }

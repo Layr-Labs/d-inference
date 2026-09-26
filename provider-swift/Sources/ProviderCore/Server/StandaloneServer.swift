@@ -129,6 +129,12 @@ let standaloneLogger = Logger(
 )
 
 public actor StandaloneServer {
+    nonisolated let responseTracker = LocalResponseTracker()
+    var lifecycleDraining = false
+    var lifecycleControlTask: Task<Void, Never>?
+    var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
+    var lifecycleCommandID: String?
+    var lifecycleStatus = ProviderDrainStatus()
 
     /// One resident model: its v2 bridge, loaded container (the VLM owns both
     /// vision and the exact text tower served by the bridge), and KV sizing
@@ -136,7 +142,8 @@ public actor StandaloneServer {
     struct CachedSlot {
         let bundle: ProviderEngineBundle
         var bridge: EngineV2Bridge { bundle.bridge }
-        let container: MLXLMCommon.ModelContainer
+        let modelContainer: ProviderModelContainer
+        var container: MLXLMCommon.ModelContainer? { modelContainer.autoregressive }
         let tokenizer: TokenizerHandle
         let modelType: String?
         let isVLM: Bool
@@ -154,8 +161,23 @@ public actor StandaloneServer {
             lastUsedAt: ContinuousClock.Instant,
             cacheEligibleWeightHash: String? = nil
         ) {
+            self.init(bundle: bundle, modelContainer: .autoregressive(container), tokenizer: tokenizer,
+                modelType: modelType, isVLM: isVLM, sizing: sizing, lastUsedAt: lastUsedAt,
+                cacheEligibleWeightHash: cacheEligibleWeightHash)
+        }
+
+        init(
+            bundle: ProviderEngineBundle,
+            modelContainer: ProviderModelContainer,
+            tokenizer: TokenizerHandle,
+            modelType: String?,
+            isVLM: Bool,
+            sizing: SlotSizingSnapshot,
+            lastUsedAt: ContinuousClock.Instant,
+            cacheEligibleWeightHash: String? = nil
+        ) {
             self.bundle = bundle
-            self.container = container
+            self.modelContainer = modelContainer
             self.tokenizer = tokenizer
             self.modelType = modelType
             self.isVLM = isVLM
@@ -470,6 +492,8 @@ public actor StandaloneServer {
     public func start() throws {
         guard lifecycleState == .stopped else { return }
 
+        responseTracker.setAccepting(true)
+        lifecycleDraining = false
         didBind = false
         bindFailed = false
         let app = makeApplication()
@@ -540,6 +564,8 @@ public actor StandaloneServer {
     /// Stop the server and fully release resident serving resources. Concurrent
     /// callers and `waitUntilStopped()` join one teardown task.
     public func stop() async {
+        lifecycleControlTask?.cancel()
+        lifecycleControlTask = nil
         switch lifecycleState {
         case .stopped:
             return
@@ -565,6 +591,8 @@ public actor StandaloneServer {
     }
 
     private func finishShutdown(serviceTask: Task<Void, Never>?) async {
+        lifecycleControlTask?.cancel()
+        lifecycleControlTask = nil
         kvSweepTask?.cancel()
         kvSweepTask = nil
         serviceTask?.cancel()
@@ -598,6 +626,8 @@ public actor StandaloneServer {
             MLX.Memory.clearCache()
         }
         serverTask = nil
+        responseTracker.setAccepting(true)
+        lifecycleDraining = false
         didBind = false
         bindFailed = false
         lifecycleState = .stopped
@@ -951,13 +981,13 @@ public actor StandaloneServer {
         specDecPreparation: SpecDecPreparation,
         cacheEligibleWeightHash: String? = nil
     ) async throws -> SlotBuild {
-        var prepared: EngineV2PreparedModel
+        var prepared: EngineV2ServingPreparation
         do {
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory,
-                container: newcomerBox.borrow(),
+                container: newcomerBox.borrowModel(),
                 specDecPreparation: specDecPreparation,
                 assistantLoader: v2TestHooks?.assistantLoader
                     ?? ProductionProviderMTPAssistantLoader(),
@@ -1057,7 +1087,7 @@ public actor StandaloneServer {
                 modelType: modelType,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory,
-                container: newcomerBox.borrow(),
+                container: newcomerBox.borrowModel(),
                 tokenizer: tokenizer,
                 sizing: sizing,
                 kvBytesCapacity: targets[modelId] ?? 0,
@@ -1313,6 +1343,7 @@ public actor StandaloneServer {
     /// reservation if the lookup somehow fails so a partial-acquire
     /// doesn't pin a missing model forever.
     func acquireModel(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        if lifecycleDraining { throw MultiModelBatchSchedulerEngineError.queueFull("provider draining") }
         try throwIfMTPUpgradeDraining(modelId)
         do {
             try await ensureModelLoaded(modelId)
@@ -1334,6 +1365,7 @@ public actor StandaloneServer {
         }
         await waitForMTPUpgrade(modelId)
         try Task.checkCancellation()
+        if lifecycleDraining { throw MultiModelBatchSchedulerEngineError.queueFull("provider draining") }
         try throwIfMTPUpgradeDraining(modelId)
         reserveSlot(modelId)
         guard let slot = slots[modelId], !evictingModels.contains(modelId) else {
@@ -1357,6 +1389,7 @@ public actor StandaloneServer {
             releaseToken: token,
             modelType: slot.modelType,
             container: slot.container,
+            diffusionContainer: slot.modelContainer.diffusion,
             isVLM: slot.isVLM,
             engineV2Bridge: slot.bridge,
             visionGate: VisionMemoryGate(
@@ -1616,7 +1649,7 @@ public actor StandaloneServer {
             // `borrow()` to a long-lived local — that would keep the weights
             // alive past `release()`.
             let newcomer = EngineV2NewcomerBox(
-                try await ModelContainerLoading.loadContainer(from: modelPath, modelID: modelId))
+                try await ModelContainerLoading.loadServingContainer(from: modelPath, modelID: modelId))
             try Task.checkCancellation()
             let postLoadCacheHash = await computeStandaloneWeightHash(
                 modelPath: modelPath, modelId: modelId, required: reusableSSDRequested)
@@ -1645,10 +1678,8 @@ public actor StandaloneServer {
             // Scheduler-free sizing snapshot: weight bytes + the engine-truth
             // fp16 KV rate + context window — everything the re-slice and
             // bridge need.
-            let targetSizing = try await SlotSizingSnapshot.build(
-                container: newcomer.borrow(),
-                modelPath: modelPath,
-                fallbackDefaultMaxTokens: Self.slotDefaultMaxTokens)
+            let targetSizing = try await newcomer.borrowModel().sizing(
+                modelPath: modelPath, defaultMaxTokens: Self.slotDefaultMaxTokens)
             // The loaded weights are now reflected in MLX memory, so transfer
             // accounting from the pending estimate to the live memory snapshot.
             guard await kvBudget.reducePendingLoad(
@@ -1657,14 +1688,8 @@ public actor StandaloneServer {
                 await newcomer.releaseAfterExternalResources()
                 throw StandaloneServerError.capacityUnavailable("Model load ownership changed during setup")
             }
-            let tokenizer: TokenizerHandle = try await newcomer.borrow().perform { ctx in
-                TokenizerHandle(
-                    ctx.tokenizer,
-                    toolConstraintContractVerified:
-                        Gemma4ToolConstraintContract.isVerified(
-                            modelType: modelInfo.modelType,
-                            modelDirectory: modelPath))
-            }
+            let tokenizer = try await newcomer.borrowModel().tokenizerHandle(
+                modelType: modelInfo.modelType, directory: modelPath)
             if Task.isCancelled {
                 await newcomer.releaseAfterExternalResources()
                 MLX.Memory.clearCache()
@@ -1707,9 +1732,10 @@ public actor StandaloneServer {
             // + existing grants restored inside the catch (unwind ordering)
             // — the catch below just surfaces it as a 503-shaped capacity
             // error.
-            var slotBuild: SlotBuild
-            do {
-                slotBuild = try await resliceAndBuildBundle(
+            // Both attempts use the same target and verified cache identity.
+            // Only the optional assistant preparation changes on fallback.
+            func buildSlot(preparation: SpecDecPreparation) async throws -> SlotBuild {
+                try await resliceAndBuildBundle(
                     modelId: modelId,
                     modelType: modelInfo.modelType,
                     isVLM: slotIsVLM,
@@ -1717,8 +1743,12 @@ public actor StandaloneServer {
                     newcomer: newcomer,
                     tokenizer: tokenizer,
                     targetSizing: targetSizing,
-                    specDecPreparation: mtpPreparation,
+                    specDecPreparation: preparation,
                     cacheEligibleWeightHash: cacheEligibleWeightHash)
+            }
+            var slotBuild: SlotBuild
+            do {
+                slotBuild = try await buildSlot(preparation: mtpPreparation)
             } catch let error as StandaloneServerError {
                 MLX.Memory.clearCache()
                 throw error
@@ -1758,15 +1788,7 @@ public actor StandaloneServer {
                 bundle.releaseAssistant()
                 MLX.Memory.clearCache()
                 do {
-                    slotBuild = try await resliceAndBuildBundle(
-                        modelId: modelId,
-                        modelType: modelInfo.modelType,
-                        isVLM: slotIsVLM,
-                        modelDirectory: modelPath,
-                        newcomer: newcomer,
-                        tokenizer: tokenizer,
-                        targetSizing: targetSizing,
-                        specDecPreparation: mtpPreparation.fallingBack(reason))
+                    slotBuild = try await buildSlot(preparation: mtpPreparation.fallingBack(reason))
                 } catch {
                     await resliceGrowSurvivors()
                     MLX.Memory.clearCache()
@@ -1800,7 +1822,7 @@ public actor StandaloneServer {
             }
 
             // Guards passed — NOW publish the slot.
-            guard let installContainer = newcomer.container else {
+            guard let installContainer = newcomer.modelContainer else {
                 // Unreachable (the box is drained only on failure paths) —
                 // defensive so a wiring bug can never publish a slot with no
                 // container.
@@ -1810,7 +1832,7 @@ public actor StandaloneServer {
             }
             slots[modelId] = CachedSlot(
                 bundle: bundle,
-                container: installContainer,
+                modelContainer: installContainer,
                 tokenizer: tokenizer,
                 modelType: modelInfo.modelType,
                 isVLM: slotIsVLM,

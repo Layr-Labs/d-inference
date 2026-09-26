@@ -15,6 +15,7 @@ struct Start: AsyncParsableCommand {
     )
 
     @OptionGroup var configOptions: ConfigOptions
+    @OptionGroup var drain: DrainOptions
 
     @Option(help: "Override coordinator WebSocket URL.")
     var coordinatorURL: String?

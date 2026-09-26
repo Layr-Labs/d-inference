@@ -85,7 +85,9 @@ type Registry struct {
 	// Independent App Attest serving policy. A zero-value registry preserves
 	// legacy authorization. Credentials are denied for this process lifetime;
 	// the API also consults the durable revocation store before each grant.
-	appAttestServingEnabled     bool
+	appAttestServingEnabled          bool
+	appAttestQualificationGeneration uint64
+
 	appAttestPolicyGeneration   uint64
 	appAttestRevokedCredentials map[string]struct{}
 

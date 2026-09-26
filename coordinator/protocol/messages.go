@@ -31,6 +31,8 @@ const (
 	// Provider → Coordinator.
 	TypeRegister               = "register"
 	TypeHeartbeat              = "heartbeat"
+	TypeProviderDrain          = "provider_drain"
+	TypeProviderDrainAck       = "provider_drain_ack"
 	TypeInferenceAccepted      = "inference_accepted"
 	TypeInferenceResponseChunk = "inference_response_chunk"
 	TypeInferenceComplete      = "inference_complete"
@@ -161,6 +163,9 @@ type ModelInfo struct {
 	// consumer sees are governed separately by the catalog capabilities, so this
 	// advertisement does not by itself light up vision in the API.
 	IsVision bool `json:"is_vision,omitempty"`
+	// NativeMediaTools covers forced media tool choice and media-bearing tool
+	// results. Missing/false must never be inferred from a parser or model name.
+	NativeMediaTools bool `json:"native_media_tools,omitempty"`
 	// TemplateRenderOK is set by 0.6.5+ providers after rendering the model's
 	// chat template against canonical fixtures (tool schemas with nullable or
 	// missing types, multimodal content parts). false means the template render
@@ -1026,6 +1031,12 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		}
 		pm.Payload = &msg
 
+	case TypeProviderDrain:
+		var msg ProviderDrainMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return err
+		}
+		pm.Payload = &msg
 	case TypeHeartbeat:
 		var msg HeartbeatMessage
 		if err := json.Unmarshal(data, &msg); err != nil {

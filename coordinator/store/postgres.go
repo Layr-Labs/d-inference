@@ -1182,7 +1182,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	}
 
 	migrations = append(migrations, appAttestShadowDDL, machineInventoryDDL, appAttestArchiveDDL, appAttestEnrollmentDDL, appAttestReceiptDDL)
-	migrations = append(migrations, appAttestRevocationDDL, modelTokenPromotionDDL)
+	migrations = append(migrations, appAttestRevocationDDL, appAttestBuildDDL, modelTokenPromotionDDL)
 	for i, m := range migrations {
 		started := time.Now()
 		_, err := s.pool.Exec(ctx, m)

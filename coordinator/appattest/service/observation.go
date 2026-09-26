@@ -9,9 +9,14 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/appattest"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func (x *Session) observe(stage, outcome string, metadata *appattest.Key) {
+	x.observeWithClientDiagnostics(stage, outcome, metadata, protocol.AppAttestShadowPayload{})
+}
+
+func (x *Session) observeWithClientDiagnostics(stage, outcome string, metadata *appattest.Key, reply protocol.AppAttestShadowPayload) {
 	if stage != "archive" {
 		x.lastOutcome = outcome
 	}
@@ -39,10 +44,15 @@ func (x *Session) observe(stage, outcome string, metadata *appattest.Key) {
 	}
 	if metadata != nil {
 		policy := "matched"
-		if metadata.ValidationCategory == nil || metadata.BundleVersion == "" && len(metadata.CodeDirectorySHA256()) == 0 {
+		candidate := metadata.CodeDirectorySHA256Candidate()
+		if metadata.ValidationCategory == nil || metadata.BundleVersion == "" && len(candidate) == 0 {
 			policy = "metadata_missing"
 		} else if *metadata.ValidationCategory != 6 || metadata.BundleVersion != "" && metadata.BundleVersion != x.version {
 			policy = "metadata_mismatch"
+		} else if len(candidate) == 20 {
+			// The signed 20-byte CDHash still needs a unique durable full-hash
+			// qualification. Do not label it a complete metadata match here.
+			policy = "truncated_measurement_pending_qualification"
 		}
 		fields["metadata_comparison"] = policy
 		fields["attested_bundle_version"] = metadata.BundleVersion
@@ -52,10 +62,26 @@ func (x *Session) observe(stage, outcome string, metadata *appattest.Key) {
 		if metadata.CodeDirectoryType != nil {
 			fields["attested_code_directory_type"] = *metadata.CodeDirectoryType
 			fields["attested_code_directory_hash"] = hex.EncodeToString(metadata.CodeDirectoryHash)
+			if len(candidate) == 20 {
+				fields["attested_code_directory_hash_format"] = "sha256_prefix_20"
+			} else if len(candidate) == 32 {
+				fields["attested_code_directory_hash_format"] = "sha256_full_32"
+			}
 		}
 		x.s.ddIncr("app_attest.shadow.metadata", []string{"result:" + policy})
 	}
 	fields["account_id"] = x.account
+	if reply.AppleError != nil && reply.AppleError.Valid() {
+		fields["apple_error"] = reply.AppleError
+	}
+	if reply.ValidClientDiagnostics() {
+		if reply.AvailabilityReason != "" {
+			fields["availability_reason"] = reply.AvailabilityReason
+		}
+		if reply.AppleErrorSource != "" {
+			fields["apple_error_source"] = reply.AppleErrorSource
+		}
+	}
 	if stage == "prospective_policy" {
 		for key, value := range x.policyFields {
 			fields[key] = value

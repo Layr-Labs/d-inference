@@ -22,6 +22,9 @@ public struct AppAttestShadowPayload: Codable, Sendable, Equatable {
     public var keyID: String?
     public var challenge: String?
     public var result: String?
+    public var appleError: AppAttestAppleError?
+    public var availabilityReason: AppAttestAvailabilityReason?
+    public var appleErrorSource: AppAttestAppleErrorSource?
     public var proof: String?
     public var encryptedChallenge: ShadowEncryptedChallenge?
 
@@ -34,6 +37,9 @@ public struct AppAttestShadowPayload: Codable, Sendable, Equatable {
         case status
         case keyID = "key_id"
         case encryptedChallenge = "encrypted_challenge"
+        case appleError = "apple_error"
+        case availabilityReason = "availability_reason"
+        case appleErrorSource = "apple_error_source"
     }
 
     public func clientHash(publicKey: String) -> Data {
@@ -75,6 +81,13 @@ public struct ShadowKeyRecord: Codable, Sendable {
     public var pendingStatus: AppAttestStatus?
     public var pendingCreatedAt: Date?
     public var generationCount: Int?
+    /// Only a failed generateKey call with no returned identifier may shorten
+    /// the pre-key cooldown. An issued/retired key never sets this field.
+    public var generationRetryAfter: Date?
+    public var retryEnrollment: ShadowEnrollmentAttempt?
+    /// Persisted before the one-time Apple enrollment call. A process exit or
+    /// late callback cannot make an uncertain key look safe to attest again.
+    public var attestationStartedAt: Date?
 }
 
 public protocol ShadowKeyStorage: Sendable {

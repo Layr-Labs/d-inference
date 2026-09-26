@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"reflect"
 
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -25,6 +27,7 @@ func (s *Server) appAttestFeature() *attestservice.Service {
 			},
 			SendTrustStatus:      s.sendTrustStatus,
 			CurrentReleasePolicy: s.currentAppAttestReleasePolicy,
+			RefreshReleasePolicy: s.refreshAppAttestReleaseCatalog,
 		})
 	})
 	return s.appAttest
@@ -43,7 +46,20 @@ func (s *Server) appAttestIdentityCandidate(r *protocol.RegisterMessage, account
 }
 
 func (s *Server) providerServingAuthorizationStatus(p *registry.Provider) *protocol.ProviderServingAuthorization {
-	return s.appAttestFeature().Status(p)
+	status := s.appAttestFeature().Status(p)
+	if status != nil && status.Path != "none" {
+		return status
+	}
+	if p != nil && s.registry.ProviderLegacyServingAuthorized(p) {
+		return &protocol.ProviderServingAuthorization{Protocol: 1, Path: "legacy", Reason: "legacy_verification_active", SessionID: p.ID}
+	}
+	if s.registry.ProviderOwnerServingAuthorized(p) {
+		if status == nil {
+			status = &protocol.ProviderServingAuthorization{Protocol: 1, SessionID: p.ID}
+		}
+		status.Path, status.Reason = "self_route", "owner_serving_authorized"
+	}
+	return status
 }
 
 // Approval and generation close over the same immutable shared release view.
@@ -53,6 +69,16 @@ func (s *Server) currentAppAttestReleasePolicy() attestservice.ReleasePolicy {
 		return attestservice.ReleasePolicy{}
 	}
 	return attestservice.ReleasePolicy{Generation: snapshot.Generation, Known: len(snapshot.ByBinaryHash) > 0,
+		ContainsQualifiedRelease: func(release store.Release) bool {
+			expected := &releaseTrustPolicySnapshot{ByBinaryHash: make(map[string][]approvedReleasePolicy)}
+			expected.addRelease(&release, release.BinaryHash)
+			for _, policy := range snapshot.ByBinaryHash[release.BinaryHash] {
+				if reflect.DeepEqual(policy, expected.ByBinaryHash[release.BinaryHash][0]) {
+					return true
+				}
+			}
+			return false
+		},
 		Approves: func(p *registry.Provider, status *protocol.AppAttestStatus) bool {
 			return appAttestReleaseApproved(snapshot, p, status)
 		}}

@@ -69,7 +69,7 @@ export interface UsageEntry {
 /**
  * A content part in the OpenAI/OpenRouter multimodal format. Either a text
  * part or an image part. The image `url` is a base64 `data:` URI — our
- * provider is end-to-end-encrypted and rejects remote http(s)/file URLs
+ * provider receives a sealed request and rejects remote http(s)/file URLs
  * (the image must ride inside the encrypted prompt). Mirrors the provider's
  * `OpenAIContentPart`.
  */
@@ -86,8 +86,10 @@ export interface ChatMessage {
 }
 
 export interface TrustMetadata {
+  verification?: import("../verification").Verification;
+  encrypted?: boolean;
   attested: boolean;
-  trustLevel: "none" | "hardware";
+  trustLevel: "none" | "hardware" | "self_signed";
   secureEnclave: boolean;
   mdaVerified: boolean;
   providerChip: string;

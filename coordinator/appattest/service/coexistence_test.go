@@ -41,7 +41,7 @@ func TestShadowProofsNeverMutateLegacyTrust(t *testing.T) {
 		return []any{p.Status, p.TrustLevel, p.CodeAttested, p.FreshCodeAttested, p.MDAVerified, p.RuntimeVerified, p.AccountID, p.PublicKey}
 	}
 	before := snapshot()
-	for _, failure := range []string{"unsupported", "not_configured", "apple_unavailable", "apple_invalid_key", "anything-untrusted"} {
+	for _, failure := range []string{"unsupported", "not_configured", "apple_unavailable", "apple_error", "apple_invalid_key", "anything-untrusted"} {
 		if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: failure}); next != "stop" {
 			t.Fatal(next)
 		}
@@ -92,4 +92,60 @@ func TestShadowProofsNeverMutateLegacyTrust(t *testing.T) {
 		t.Fatal("shadow pass promoted legacy trust")
 	}
 
+}
+
+func TestUnsignedChallengeMismatchCannotRevokeIndependentLegacyTrust(t *testing.T) {
+	s, p, record, _ := newAuthorizationFixture(t)
+	makeLegacyAuthorized(p)
+	if !s.registry.ProviderLegacyServingAuthorized(p) {
+		t.Fatal("fixture lacks legacy authorization")
+	}
+	x := sessionForAuthorization(s, p, record)
+	x.expected, x.challenge, x.publicKey = "assertion", "current-challenge", p.PublicKey
+	archive := &capturedProofArchive{}
+	x.archive = archive
+	reply := protocol.AppAttestShadowPayload{
+		Session: x.id, Action: "assertion", Result: "ok", KeyID: x.key.KeyID,
+		Challenge: "unsigned-wrong-challenge", Proof: "AQID",
+	}
+	if next := x.handle(context.Background(), reply); next != "stop" || x.lastOutcome != "challenge_mismatch" {
+		t.Fatalf("unexpected mismatch result: next=%s outcome=%s", next, x.lastOutcome)
+	}
+	x.observeFailedPolicy(x.lastOutcome) // Same post-attempt policy path as runRecovering.
+	if archive.evidence.ProofField != reply.Proof || archive.evidence.SessionID != p.ID {
+		t.Fatal("unsigned failed proof was not archived")
+	}
+	if confirmedAppAttestViolation("challenge_mismatch") || !s.registry.ProviderLegacyServingAuthorized(p) {
+		t.Fatal("unsigned reply fields hard-denied a valid MDM/APNs provider")
+	}
+	if _, ok := s.registry.ProviderServingAuthorization(p); ok || s.authorizer.current[p] != nil {
+		t.Fatal("unsigned mismatch created an App Attest grant")
+	}
+	firstSession := x.id
+	attempts, retries := 0, 0
+	x.runRecovering(context.Background(), func(ctx context.Context) {
+		attempts++
+		if attempts == 1 {
+			if next := x.handle(ctx, reply); next != "stop" {
+				t.Fatalf("mismatch unexpectedly advanced exchange: %s", next)
+			}
+		} else {
+			if x.id == firstSession || x.key != nil {
+				t.Fatal("retry reused the old challenge session or cached key")
+			}
+			x.lastOutcome = "unsupported"
+		}
+	}, func(_ context.Context, delay time.Duration) bool {
+		retries++
+		if delay != time.Minute || !s.registry.ProviderLegacyServingAuthorized(p) {
+			t.Fatal("mismatch did not schedule bounded recovery while preserving legacy")
+		}
+		if _, ok := s.registry.ProviderServingAuthorization(p); ok {
+			t.Fatal("mismatch retry granted App Attest without a fresh proof")
+		}
+		return true
+	})
+	if attempts != 2 || retries != 1 {
+		t.Fatalf("mismatch retry attempts=%d waits=%d", attempts, retries)
+	}
 }

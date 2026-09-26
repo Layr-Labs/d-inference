@@ -1,15 +1,53 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-15 · commit `dfe556c13`
+> Last updated: 2026-09-23 · commit `ac4a776de`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
 computed by the coordinator; consumers receive its result, never the
-identity-bearing evidence behind it.
+raw Apple certificates or receipts behind it. Public legacy verification keys
+remain visible and can link successive public sessions.
 
 [App Attest shadow measurements](../reference/app-attest-shadow.md) do not authorize serving. When separately enabled and qualified, the [App Attest serving path](../reference/provider-authorization.md) appears as `app_attest_authorized` and an exclusive Unix-seconds `authorization_expires_at` deadline in the public listing. The existing `trust_level`, MDM and MDA fields still describe legacy evidence; they are not rewritten to represent App Attest. The listing has its existing short cache window and is diagnostic, not a reusable serving credential.
 
+An App Attest grant also depends on a fresh [durable build qualification](../reference/provider-authorization.md#durable-build-qualification). Withdrawing it fences old qualification generations; cached download metadata or a prior successful signature cannot grant new dispatch. Independently valid legacy verification remains a separate serving path.
+
+Local profile-inventory authentication during `darkbloom unenroll` only identifies the Darkbloom enrollment for user-guided removal. It does not verify or extend serving authorization; the [provider procedure](../provider/attestation.md#app-attest-without-darkbloom-mdm) explains the separate coordinator readiness requirement.
+
+## Read verification in chat and network stats
+
+Open a response's verification panel to see **Verified via App Attest**,
+**Verified via legacy authorization**, both methods, or an unavailable/pending
+verdict. A legacy `self_signed` field can coexist with a valid App Attest grant.
+The panel shows verification **at dispatch**; an old response makes no claim
+about the machine's current permission to serve. Missing snapshots on older
+messages display unavailable rather than inferring a method from `attested`.
+
+Public network counts, directory method filters and proof details show **verification at the source snapshot**. They include App Attest-only providers and count dual-path connections once in the total and in both breakdowns. The snapshot age remains visible, including when stale. An expired lease in an old snapshot does not prove the coordinator stopped renewing it; the browser does not turn those historical App Attest counts into zero. Refresh to obtain another observation.
+
+The owner provider dashboard and MDM-removal controls remain live views: stale or expired authorization cannot enable serving or removal. Connections are distinct from known unique machine inventory; reported macOS 27 adoption is separate. Missing verdicts are unknown and use the available-verdict denominator. See the [fields and freshness rules](../reference/api-contracts.md#verification-presentation-contract).
+
+The proof view explains coordinator-side Apple chain/key enrollment, current
+assertion, receipt policy and qualified-build checks. Detailed certificate and
+receipt data are not published; missing timestamps are unavailable. Your browser
+does not independently validate Apple evidence. App Attest does not certify RAM
+or chip reports, guarantee memory wiping, prove computation correctness, or
+remove the coordinator as a plaintext endpoint; see
+[encryption boundaries](../architecture/security/encryption.md).
+
 ## Public attestation endpoint
+
+An Apple API error can leave an App Attest-only provider pending while the coordinator retries. Retry activity is not successful verification: only an unexpired coordinator-derived authorization permits that path to serve. Independently valid legacy authorization retains its own evidence requirements.
+
+An enrolled App Attest key can remain pending while Apple renews an initial receipt into a verified risk receipt or supplies its first risk metric. The coordinator requests fresh assertions on a bounded schedule during that wait. Neither an unverified receipt nor a retry is serving authorization; only a current authorized verdict marks the provider verified.
+
+A signed proof can also be eligible while the coordinator is still restoring
+the current account-scoped machine identity or checking the final runtime and
+storage gates. The `eligible` policy observation describes that proof, not a
+lease. `GET /v1/me/providers` and the current connection's authorization
+status show whether this Mac can actually serve. A later clean assertion can
+recover from an earlier recorded archive refusal; the refused attempt remains
+in audit counts and never grants permission by itself.
 
 ```bash
 curl https://api.darkbloom.dev/v1/providers/attestation
@@ -17,6 +55,8 @@ curl https://api.darkbloom.dev/v1/providers/attestation
 
 `GET /v1/providers/attestation` needs no authentication and returns
 `{"providers": [...]}` (`handleProviderAttestation`, `coordinator/api/provider.go`).
+Private-only connections are excluded before the response enters its shared
+cache; their owners still see them through authenticated `GET /v1/me/providers`.
 Each entry carries:
 
 | Field | Meaning |
@@ -26,7 +66,7 @@ Each entry carries:
 | `trust_level` | `none`, `self_signed`, or `hardware` (below) |
 | `status` | `online`, `offline`, `untrusted`, … |
 | `secure_enclave`, `sip_enabled`, `secure_boot_enabled`, `authenticated_root_enabled`, `system_volume_hash`? | Latest posture the coordinator verified |
-| `se_public_key` | The provider's Secure Enclave P-256 public key (base64) |
+| `se_public_key` | The provider's persistent legacy Secure Enclave P-256 public key (base64); permits linking public sessions, is not a private key or the App Attest credential |
 | `mdm_verified` | `true` exactly when the live connection holds `hardware` |
 | `acme_verified` | Deprecated, always `false`; kept on the wire for shipped decoders |
 | `mda_verified`, `mda_os_version`?, `mda_sepos_version`? | Apple Managed Device Attestation result, surfaced only while the connection holds `hardware` |

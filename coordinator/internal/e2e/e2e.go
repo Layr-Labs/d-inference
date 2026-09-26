@@ -1,4 +1,4 @@
-// Package e2e provides end-to-end encryption between the coordinator and
+// Package e2e provides authenticated encryption for the hop between the coordinator and
 // provider's hardened process.
 //
 // Prompts are encrypted with the provider's X25519 public key (from their
@@ -11,12 +11,16 @@
 // cross-language compatibility.
 //
 // Flow:
-//  1. Coordinator generates ephemeral X25519 key pair per request (forward secrecy)
+//  1. Coordinator generates an ephemeral X25519 key pair per request
 //  2. Encrypts prompt with: ephemeral private + provider public → shared secret
 //  3. Sends: ephemeral public key + nonce + ciphertext
 //  4. Provider decrypts with: provider private + ephemeral public → same shared secret
 //  5. Provider encrypts response with: provider private + ephemeral public
 //  6. Coordinator decrypts with: ephemeral private + provider public
+//
+// Per-request sender keys do not provide forward secrecy against compromise of
+// the provider's recipient key: that key can open recorded requests from its
+// lifetime using the ephemeral public keys transmitted with those requests.
 package e2e
 
 import (
@@ -39,7 +43,7 @@ type EncryptedPayload struct {
 }
 
 // SessionKeys holds the ephemeral key pair for a single request.
-// The coordinator creates one per inference request for forward secrecy.
+// The coordinator creates a fresh sender key pair for each inference request.
 type SessionKeys struct {
 	PublicKey  [32]byte
 	PrivateKey [32]byte

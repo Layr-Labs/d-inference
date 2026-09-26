@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"time"
 )
 
 // MachineOperationalStore resolves history only after the caller has verified a
@@ -13,6 +14,15 @@ import (
 // Neither lookup argument is a serial, caller-selected machine ID or ledger key.
 type MachineOperationalStore interface {
 	ResolveMachineContinuity(ctx context.Context, sessionID, authenticatedAccount, verifiedAppAttestKey string, excludeProviderIDs []string) (MachineContinuity, error)
+}
+
+// MachineContinuityRecoveryStore repairs only a historical backfill tombstone
+// that raced a live provider session. The caller must first durably verify a
+// fresh assertion and validate its exact current connection, account and
+// endpoint. Recovery grants no serving permission; the strict continuity read
+// and all authorization checks still follow.
+type MachineContinuityRecoveryStore interface {
+	RecoverLiveAppAttestMachineSession(ctx context.Context, sessionID, authenticatedAccount, verifiedAppAttestKey string, now time.Time) (bool, error)
 }
 
 type MachineContinuity struct {
@@ -52,6 +62,8 @@ func cloneMachineHistory(p *ProviderRecord) *ProviderRecord {
 }
 
 var (
-	_ MachineOperationalStore = (*MemoryStore)(nil)
-	_ MachineOperationalStore = (*PostgresStore)(nil)
+	_ MachineOperationalStore        = (*MemoryStore)(nil)
+	_ MachineOperationalStore        = (*PostgresStore)(nil)
+	_ MachineContinuityRecoveryStore = (*MemoryStore)(nil)
+	_ MachineContinuityRecoveryStore = (*PostgresStore)(nil)
 )

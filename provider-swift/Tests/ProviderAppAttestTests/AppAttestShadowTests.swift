@@ -15,11 +15,66 @@ private actor FakeService: AppAttestService {
     func counts() -> [Int] { [generated, attested, asserted] }
 }
 
+private actor DiagnosticService: AppAttestService {
+    let availabilityFailure: AppAttestAvailabilityFailure?
+    let attestationError: AppAttestAppleErrorSource?
+    let assertionError: AppAttestAppleErrorSource?
+    let oversizedProof: Bool
+
+    init(availabilityFailure: AppAttestAvailabilityFailure? = nil,
+         attestationError: AppAttestAppleErrorSource? = nil,
+         assertionError: AppAttestAppleErrorSource? = nil,
+         oversizedProof: Bool = false) {
+        self.availabilityFailure = availabilityFailure
+        self.attestationError = attestationError
+        self.assertionError = assertionError
+        self.oversizedProof = oversizedProof
+    }
+
+    func checkAvailability(environment: String) throws {
+        if let availabilityFailure { throw availabilityFailure }
+    }
+    func generateKey() -> String { Data(repeating: 1, count: 32).base64EncodedString() }
+    func attestKey(_ id: String, hash: Data) throws -> Data {
+        if let attestationError { throw attestationError }
+        return Data("attestation".utf8)
+    }
+    func generateAssertion(_ id: String, hash: Data) throws -> Data {
+        if let assertionError { throw assertionError }
+        return oversizedProof ? Data(repeating: 0, count: 32 * 1024 + 1) : Data("assertion".utf8)
+    }
+}
+
 private final class MemoryKeys: ShadowKeyStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var records: [String: ShadowKeyRecord] = [:]
     func load(scope: String) -> ShadowKeyRecord? { lock.lock(); defer { lock.unlock() }; return records[scope] }
     func save(_ record: ShadowKeyRecord, scope: String) { lock.lock(); defer { lock.unlock() }; records[scope] = record }
+}
+
+private final class FailCleanupKeys: ShadowKeyStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var records: [String: ShadowKeyRecord] = [:]
+    private var savesUntilFailure = 0
+
+    func failSecondSaveAfterArming() {
+        lock.lock(); defer { lock.unlock() }
+        savesUntilFailure = 2
+    }
+
+    func load(scope: String) -> ShadowKeyRecord? {
+        lock.lock(); defer { lock.unlock() }
+        return records[scope]
+    }
+
+    func save(_ record: ShadowKeyRecord, scope: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        if savesUntilFailure > 0 {
+            savesUntilFailure -= 1
+            if savesUntilFailure == 0 { throw ShadowFailure.keychainError }
+        }
+        records[scope] = record
+    }
 }
 
 private struct UnwritableKeys: ShadowKeyStorage {
@@ -52,6 +107,54 @@ final class AppAttestShadowTests: XCTestCase {
         let response = await client.respond(to: request("prepare"), publicKey: publicKey)
         XCTAssertEqual(response.result, "unsupported")
         let counts = await service.counts(); XCTAssertEqual(counts, [0, 0, 0])
+    }
+
+    func testClosedAvailabilityReasonDoesNotChangeUnsupportedResult() async {
+        let service = DiagnosticService(availabilityFailure: AppAttestAvailabilityFailure(
+            failure: .unsupported, reason: .isSupportedFalse))
+        let client = AppAttestShadowClient(scope: "test", service: service, storage: MemoryKeys())
+        let response = await client.respond(to: request("prepare"), publicKey: publicKey)
+        XCTAssertEqual(response.result, "unsupported")
+        XCTAssertEqual(response.availabilityReason, .isSupportedFalse)
+        XCTAssertNil(response.appleError)
+        XCTAssertNil(response.appleErrorSource)
+    }
+
+    func testSyntheticAppleErrorSourcesDoNotChangeResultOrSignedTranscript() async {
+        for (source, oversized) in [(AppAttestAppleErrorSource.callbackWithoutNSError, false),
+                                     (.proofOversize, true)] {
+            let service = DiagnosticService(assertionError: oversized ? nil : source, oversizedProof: oversized)
+            let client = AppAttestShadowClient(scope: "test", service: service, storage: MemoryKeys())
+            let ready = await client.respond(to: request("prepare"), publicKey: publicKey)
+            let attested = await client.respond(to: request("attest", key: ready.keyID), publicKey: publicKey)
+            XCTAssertEqual(attested.result, "ok")
+            let assertionRequest = request("assert", key: ready.keyID)
+            let response = await client.respond(to: assertionRequest, publicKey: publicKey)
+            XCTAssertEqual(response.result, "apple_error")
+            XCTAssertEqual(response.appleErrorSource, source)
+            XCTAssertNil(response.appleError)
+            XCTAssertNil(response.availabilityReason)
+            var withoutDiagnostics = response
+            withoutDiagnostics.appleErrorSource = nil
+            XCTAssertEqual(response.clientHash(publicKey: publicKey), withoutDiagnostics.clientHash(publicKey: publicKey))
+        }
+    }
+
+    func testCleanupWriteFailureClearsSyntheticAppleErrorSource() async throws {
+        let storage = FailCleanupKeys()
+        let service = DiagnosticService(attestationError: .callbackWithoutNSError)
+        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let ready = await client.respond(to: request("prepare"), publicKey: publicKey)
+        XCTAssertEqual(ready.result, "ok")
+        storage.failSecondSaveAfterArming()
+
+        let response = await client.respond(to: request("attest", key: ready.keyID), publicKey: publicKey)
+        XCTAssertEqual(response.result, "keychain_error")
+        XCTAssertNil(response.appleError)
+        XCTAssertNil(response.availabilityReason)
+        XCTAssertNil(response.appleErrorSource)
+        let body = try JSONEncoder().encode(response)
+        XCTAssertFalse(String(decoding: body, as: UTF8.self).contains("apple_error_source"))
     }
 
     func testPersistentKeySurvivesReconnectAndOnlyAttestsOnce() async {
@@ -106,6 +209,28 @@ final class AppAttestShadowTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertNil(object["encrypted_challenge"])
         XCTAssertNotNil(object["key_id"])
+    }
+
+    func testClosedDiagnosticWireFieldsAreOptionalAndOutsideClientHash() throws {
+        var payload = request("prepare")
+        payload.result = "not_configured"
+        let originalHash = payload.clientHash(publicKey: publicKey)
+        let plain = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as? [String: Any])
+        XCTAssertNil(plain["availability_reason"])
+        XCTAssertNil(plain["apple_error_source"])
+
+        payload.availabilityReason = .signingInfoUnavailable
+        payload.appleErrorSource = .callbackWithoutNSError
+        let encoded = try JSONEncoder().encode(payload)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["availability_reason"] as? String, "signing_info_unavailable")
+        XCTAssertEqual(object["apple_error_source"] as? String, "callback_without_nserror")
+        XCTAssertEqual(try JSONDecoder().decode(AppAttestShadowPayload.self, from: encoded), payload)
+        XCTAssertEqual(payload.clientHash(publicKey: publicKey), originalHash)
+
+        let unknown = Data(String(decoding: encoded, as: UTF8.self)
+            .replacingOccurrences(of: "signing_info_unavailable", with: "arbitrary_user_input").utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(AppAttestShadowPayload.self, from: unknown))
     }
 }
 

@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-18 · commit `6050cc4d4`
+> Last updated: 2026-09-23 · commit `ac4a776de`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -11,11 +11,50 @@ and is not restated here.
 
 Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in the background. Shadow results do not change these enrollment requirements or your existing trust eligibility. Version/cohort controls protect older clients; see the [rollout procedure](../operations/app-attest-rollout.md).
 
+A signed version must be [qualified by the coordinator](../reference/provider-authorization.md#durable-build-qualification) before publication. Build approvals persist across coordinator restarts. Missing approval keeps App Attest-only serving pending; it does not require deleting your credentials or replacing an existing employer profile.
+
+## Read current verification in the dashboard
+
+Open a machine's verification panel to inspect the coordinator's separate App
+Attest and legacy decisions, verification times and authorization deadlines.
+Green requires a current server verdict; expired, revoked, unsupported, offline
+and stale/missing states do not manufacture a current grant from saved hardware
+trust. App Attest-only machines retain their legacy `self_signed` field. A
+provider advertising an App Attest protocol other than version 3 displays
+`unsupported`, even if its reported OS supports App Attest.
+
+The footer counts the union once and reports both method counts and overlap.
+Offline machine records stay in the owned-machine denominator but not current
+authorization. Public proof views omit raw certificates, receipt blobs and
+credential identifiers. See [consumer verification](../consumer/verification.md)
+and the [wire contract](../reference/api-contracts.md#verification-presentation-contract).
+
+
 ## App Attest without Darkbloom MDM
+
+A failed initial enrollment can leave an Apple key unusable even when its identifier is still in Keychain. Darkbloom replaces that identifier after non-service-unavailable failures or interrupted attempts, subject to the persisted one-hour replacement cooldown and shared hourly generation budget. Service-unavailable failures keep the same key, and already saved enrollment proofs are retained for retry. Do not delete account, machine, Keychain or employer-management state to force retries. This recovery is not proof that the Mac is authorized; check the coordinator verdict before removing Darkbloom MDM. See the [key lifecycle](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
+
+After a macOS upgrade, the running signed app checks App Attest again on its next coordinator connection. If a completed Apple callback reports key-generation failure without a usable ID, Darkbloom can retry after one minute within its persisted hourly budget; timeout, cancellation and busy admission retain the safer one-hour cooldown. A definite Apple service-unavailable assertion gets one local retry using the same key and challenge. These attempts cannot grant access without Apple's verified proof and the coordinator's current receipt, build and security checks.
+
+
+If Apple's API returns a generic error during setup, the coordinator retries after one minute, then five minutes, then every ten minutes while the provider stays connected. Retrying cannot approve the machine without a successful qualified proof. Persistent generic errors can still require a signed provider update and diagnosis from the bounded native Apple error code; `darkbloom status` or `darkbloom doctor` reports current authorization. The [recovery policy](../reference/provider-authorization.md#controls) does not require deleting credentials or management profiles.
+
+After first enrollment, Apple may provide a receipt that is not yet a verified risk receipt or lacks its risk metric. The coordinator keeps the connection pending and requests another signed assertion after one minute, five minutes, then at the normal ten-minute interval while receipt renewal completes. Continue checking `darkbloom status`; the absence of a verified risk metric cannot be treated as approval.
+
+A verified assertion is one step toward authorization. Current serving also
+requires the complete proof archive, the same authenticated account and
+machine identity on this connection, a qualified signed build and the current
+runtime checks. A transient identity or storage refusal remains pending; the
+coordinator requests another fresh assertion on its bounded retry schedule.
+Keep the provider running and inspect the current authorization reported by
+`darkbloom status` or `darkbloom doctor`. A historical `eligible` observation
+cannot authorize serving or MDM removal by itself. A missing or mismatched
+Apple code measurement remains ineligible until an exact signed build is
+qualified; do not delete a working credential to bypass that check.
 
 New setup on macOS 27 or later skips MDM profile download in both the installer and `darkbloom enroll`. Darkbloom MDM will be deactivated soon; upgrade to macOS 27 to avoid legacy enrollment. A qualified macOS 27 provider can use [App Attest authorization](../reference/provider-authorization.md) when the coordinator explicitly enables it. Start the signed provider and check `darkbloom status` / `darkbloom doctor` for current App Attest authorization. Company-managed Macs keep their employer profile; they do not enroll into Darkbloom MDM for this path.
 
-After the coordinator enables removal and reports readiness, run `darkbloom unenroll` and choose the App Attest option. Removal guidance requires a coordinator decision received within the last 10 seconds, as well as a current daemon snapshot and unexpired authorization; a local state-file rewrite cannot extend readiness. It requires macOS 27 or later; `--keep-serving` remains a direct shortcut. The command preserves credentials/account data, validates the exact Darkbloom enrollment and guides removal in System Settings. A read-only administrator profile inventory may be required. The full-exit option stops the provider and offers identity cleanup, so choose App Attest to retain provider identity. Older macOS uses the complete legacy path below. New macOS 27+ setup remains pending if App Attest is unavailable or unqualified; diagnose with `darkbloom doctor` instead of installing an MDM profile. The legacy steps below apply only to older macOS and existing enrollments.
+After the coordinator enables removal and reports readiness, run `darkbloom unenroll` and choose the App Attest option. Removal guidance requires a coordinator decision received within the last 10 seconds, as well as a current daemon snapshot and unexpired authorization; a local state-file rewrite cannot extend readiness. It requires macOS 27 or later; `--keep-serving` remains a direct shortcut. The command preserves credentials/account data, validates the exact Darkbloom enrollment and guides removal in System Settings. If the read-only administrator inventory is needed, run the command in the foreground of an interactive terminal: `sudo` reads the password with terminal echo disabled. Refusing authentication, running without a terminal, or running as a background job withholds guidance; no profile is removed by the CLI. The full-exit option stops the provider and offers identity cleanup, so choose App Attest to retain provider identity. Older macOS uses the complete legacy path below. New macOS 27+ setup remains pending if App Attest is unavailable or unqualified; diagnose with `darkbloom doctor` instead of installing an MDM profile. The legacy steps below apply only to older macOS and existing enrollments.
 
 ## Existing machines and upgrade notices
 

@@ -208,7 +208,7 @@ public actor ProviderLoop {
 
     /// Test seam (`ProviderLoop+Testing`): overrides the environment, the
     /// container EOS snapshot, and the production CBv2 engine builder used
-    /// by `makeEngineV2BridgeForSlot`. nil in production.
+    /// by `makeEngineV2BundleForSlot`. nil in production.
     internal var engineV2SlotHooks: EngineV2SlotHooks?
 
     /// Operator-configured hard cap on concurrent model slots
@@ -280,6 +280,11 @@ public actor ProviderLoop {
     /// retirements coalesces into one re-registration, fired once
     /// box-wide in-flight work has drained.
     internal var pendingRetirementReconnect: Task<Void, Never>?
+    internal var plannedReconnectTaskGeneration: UInt64 = 0
+    internal var plannedReconnectRevision: UInt64 = 0
+    internal var issuedReconnectRevision: UInt64 = 0
+    internal var connectionGeneration: UInt64 = 0
+    internal var disconnectBarrierPending = false
 
     /// Admission barrier across the post-retirement reconnect: raised on
     /// the actor immediately before the socket is closed, cleared when the
@@ -314,6 +319,15 @@ public actor ProviderLoop {
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
+    internal var servingDrain = ProviderDrain()
+    internal var lifecycleStatus = ProviderDrainStatus()
+    internal var lastLifecycleTelemetry: ProviderDrainStatus?
+    internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
+    internal var lifecycleDrainRequestID: String?
+    internal var lifecycleCommandReceived = false
+    internal var lifecycleMonitorTask: Task<Void, Never>?
+    internal var acceptedLifecycleRequests: Set<String> = []
+    internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()
     internal var mtpUpgradeMonitorTask: Task<Void, Never>?
@@ -724,7 +738,7 @@ public actor ProviderLoop {
     static func inferReasoningParser(for modelType: String?) -> ReasoningParserFormat {
         guard let type = modelType?.lowercased() else { return .qwen3 }
         if type == "gpt_oss" { return .harmony }
-        if type.hasPrefix("gemma") { return .gemma4 }
+        if type.hasPrefix("gemma") || type == "diffusion_gemma" { return .gemma4 }
         if type.hasPrefix("qwen") { return .qwen3 }
         if type.hasPrefix("deepseek") { return .deepseekR1 }
         // Safe default: qwen3's <think> parser handles the most common format.
@@ -740,7 +754,8 @@ public actor ProviderLoop {
         var engineV2: EngineV2Bridge { engineBundle.bridge }
         /// Retained for VLM vision preprocessing and liveness rebuilds; the
         /// wrapper owns the exact text tower retained by the engine.
-        let container: MLXLMCommon.ModelContainer
+        let modelContainer: ProviderModelContainer
+        var container: MLXLMCommon.ModelContainer? { modelContainer.autoregressive }
         let tokenizer: TokenizerHandle
         /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —
         /// feeds re-slicing, heartbeat fleet context, and the vision gate.
@@ -784,8 +799,23 @@ public actor ProviderLoop {
             modelType: String?,
             lastInferenceAt: ContinuousClock.Instant
         ) {
+            self.init(engineBundle: engineBundle, modelContainer: .autoregressive(container),
+                tokenizer: tokenizer, sizing: sizing, cacheEligibleWeightHash: cacheEligibleWeightHash,
+                isVLM: isVLM, modelType: modelType, lastInferenceAt: lastInferenceAt)
+        }
+
+        init(
+            engineBundle: ProviderEngineBundle,
+            modelContainer: ProviderModelContainer,
+            tokenizer: TokenizerHandle,
+            sizing: SlotSizingSnapshot,
+            cacheEligibleWeightHash: String? = nil,
+            isVLM: Bool,
+            modelType: String?,
+            lastInferenceAt: ContinuousClock.Instant
+        ) {
             self.engineBundle = engineBundle
-            self.container = container
+            self.modelContainer = modelContainer
             self.tokenizer = tokenizer
             self.sizing = sizing
             self.cacheEligibleWeightHash = cacheEligibleWeightHash

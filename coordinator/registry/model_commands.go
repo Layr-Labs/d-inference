@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -22,7 +23,7 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 		return fmt.Errorf("provider %q not found", providerID)
 	}
 	p.mu.Lock()
-	eligible := r.providerServesCatalogModelLocked(p, modelID)
+	eligible := !providerDrainingLocked(p, time.Now()) && r.providerServesCatalogModelLocked(p, modelID)
 	p.mu.Unlock()
 	r.mu.RUnlock()
 	if !eligible {
@@ -75,7 +76,7 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 		return fmt.Errorf("provider %q not found", providerID)
 	}
 	p.mu.Lock()
-	eligible := r.providerCanAcquireCatalogModelLocked(p, modelID)
+	eligible := !providerDrainingLocked(p, time.Now()) && r.providerCanAcquireCatalogModelLocked(p, modelID)
 	p.mu.Unlock()
 	r.mu.RUnlock()
 	if !eligible {

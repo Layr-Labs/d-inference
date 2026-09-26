@@ -57,6 +57,9 @@ func (r *Registry) authorizeInferenceHandoff(p *Provider, pending *PendingReques
 	// A final handoff cannot use a clock sampled before a contended lock:
 	// the authorization may have expired while this writer was waiting.
 	now := time.Now()
+	if providerDrainingLocked(p, now) {
+		return ErrProviderDraining
+	}
 	if p.writer != writer || p.pendingReqs[pending.RequestID] != pending || pending.ProviderID != p.ID {
 		return ErrProviderServingUnauthorized
 	}
@@ -77,5 +80,6 @@ func (r *Registry) authorizeInferenceHandoff(p *Provider, pending *PendingReques
 		!r.providerEligibleForTraitsLocked(p, pending.Model, pending.Traits) {
 		return ErrProviderServingUnauthorized
 	}
+	pending.DispatchVerification = r.providerVerificationLocked(p, now)
 	return nil
 }

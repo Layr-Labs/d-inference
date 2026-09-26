@@ -8,12 +8,7 @@ import Testing
 @Suite("Beta command config mutation")
 struct BetaCommandTests {
 
-    /// Write `toml` (when non-nil) into a unique temp `provider.toml` and
-    /// return its URL. `~/.config/darkbloom/provider.toml` is guarded around
-    /// every toggle call: a non-canonical config path triggers
-    /// loadRuntimeSnapshot's legacy→canonical copy when the canonical file is
-    /// ABSENT, which would otherwise plant test fixtures in the operator's
-    /// real config on a fresh machine.
+    /// Write a unique temporary config; mutation calls disable home-directory migration.
     private func makeTempConfig(_ toml: String?) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("beta-cfg-\(UUID().uuidString)")
@@ -25,22 +20,6 @@ struct BetaCommandTests {
         }
         return url
     }
-
-    private func withGuardedCanonicalConfig(
-        _ body: () throws -> Void
-    ) rethrows {
-        let canonical = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/darkbloom/provider.toml")
-        let existedBefore = FileManager.default.fileExists(atPath: canonical.path)
-        defer {
-            if !existedBefore,
-               FileManager.default.fileExists(atPath: canonical.path) {
-                try? FileManager.default.removeItem(at: canonical)
-            }
-        }
-        try body()
-    }
-
 
     @Test("beta projections distinguish automatic MTP from on and off")
     func automaticProjection() throws {
@@ -73,9 +52,7 @@ struct BetaCommandTests {
 
         // weightedR1 already decodes to true via the default; the old code
         // no-oped ("already enabled") without pinning anything.
-        try withGuardedCanonicalConfig {
-            try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path)
-        }
+        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path, migrateOnDisk: false)
 
         let written = try String(contentsOf: url, encoding: .utf8)
         #expect(written.contains("[gemma_optimizations]"))
@@ -92,15 +69,13 @@ struct BetaCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try withGuardedCanonicalConfig {
-            try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path)
-            let pinned = try String(contentsOf: url, encoding: .utf8)
+        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path, migrateOnDisk: false)
+        let pinned = try String(contentsOf: url, encoding: .utf8)
 
-            try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path)
-            let after = try String(contentsOf: url, encoding: .utf8)
+        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path, migrateOnDisk: false)
+        let after = try String(contentsOf: url, encoding: .utf8)
 
-            #expect(after == pinned)
-        }
+        #expect(after == pinned)
     }
 
     @Test("a key pinned at the target value is a no-op without a rewrite")
@@ -117,9 +92,7 @@ struct BetaCommandTests {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let before = try String(contentsOf: url, encoding: .utf8)
 
-        try withGuardedCanonicalConfig {
-            try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path)
-        }
+        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path, migrateOnDisk: false)
 
         let after = try String(contentsOf: url, encoding: .utf8)
         #expect(after == before)
@@ -127,7 +100,7 @@ struct BetaCommandTests {
 
     @Test("disable with an absent key materializes an explicit off override")
     func disableMaterializesAbsentKey() throws {
-        // MTP defaults to automatic Qwen-only policy. Disabling an absent key
+        // MTP defaults to automatic model-aware policy. Disabling an absent key
         // must persist the operator's stronger all-target rollback.
         let url = try makeTempConfig("""
             [provider]
@@ -135,9 +108,7 @@ struct BetaCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try withGuardedCanonicalConfig {
-            try setBetaFeature("mtp", enabled: false, configPath: url.path)
-        }
+        try setBetaFeature("mtp", enabled: false, configPath: url.path, migrateOnDisk: false)
 
         let written = try String(contentsOf: url, encoding: .utf8)
         #expect(written.contains("mtp_mode = 'off'"))
@@ -156,9 +127,7 @@ struct BetaCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try withGuardedCanonicalConfig {
-            try setBetaFeature("mtp", enabled: false, configPath: url.path)
-        }
+        try setBetaFeature("mtp", enabled: false, configPath: url.path, migrateOnDisk: false)
 
         let written = try String(contentsOf: url, encoding: .utf8)
         #expect(written.contains("mtp_mode = 'off'"))
@@ -177,9 +146,7 @@ struct BetaCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try withGuardedCanonicalConfig {
-            try setBetaFeature("gemma-weighted-r1", enabled: false, configPath: url.path)
-        }
+        try setBetaFeature("gemma-weighted-r1", enabled: false, configPath: url.path, migrateOnDisk: false)
 
         let reloaded = try ConfigManager.load(from: url)
         #expect(!reloaded.gemmaOptimizations.weightedR1)
@@ -199,7 +166,7 @@ struct BetaCommandTests {
         let before = try String(contentsOf: url, encoding: .utf8)
 
         do {
-            try setBetaFeature("gemma-expert-packing", enabled: true, configPath: url.path)
+            try setBetaFeature("gemma-expert-packing", enabled: true, configPath: url.path, migrateOnDisk: false)
             Issue.record("gemma-expert-packing is not a beta feature in this build")
         } catch {
             // ValidationError naming the known feature ids.
@@ -214,12 +181,39 @@ struct BetaCommandTests {
         let url = try makeTempConfig(nil)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try withGuardedCanonicalConfig {
-            try setBetaFeature("gemma-prefill-layer18", enabled: false, configPath: url.path)
-        }
+        try setBetaFeature("gemma-prefill-layer18", enabled: false, configPath: url.path, migrateOnDisk: false)
 
         let written = try String(contentsOf: url, encoding: .utf8)
         #expect(written.contains("prefill_layer18 = false"))
+    }
+
+    @Test("fixture mutations retain unrelated legacy settings without migration")
+    func isolatedMutationsPreserveOtherSettings() throws {
+        let url = try makeTempConfig("""
+            config_version = 1
+
+            [provider]
+            name = "isolated-mutations"
+
+            [coordinator]
+            url = "ws://localhost:8080/ws/provider"
+
+            [backend]
+            idle_timeout_mins = 60
+            """)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        try setBetaFeature("mtp", enabled: false, configPath: url.path, migrateOnDisk: false)
+        let idle = try setIdleUnloadMinutes(45, configPath: url.path, migrateOnDisk: false)
+
+        #expect(idle.path == url)
+        let reloaded = try ConfigManager.load(from: url)
+        #expect(reloaded.coordinator.url == "ws://localhost:8080/ws/provider")
+        #expect(reloaded.provider.name == "isolated-mutations")
+        #expect(reloaded.backend.idleTimeoutMins == 45)
+        let written = try String(contentsOf: url, encoding: .utf8)
+        #expect(written.contains("mtp_mode = 'off'"))
+        #expect(tomlKeyPresent(written, section: "backend", key: "idle_timeout_mins"))
     }
 
     // MARK: - tomlKeyPresent

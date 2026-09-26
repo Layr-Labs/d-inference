@@ -1,13 +1,66 @@
 # Changelog
 
-## Release candidate v0.9.7 — MDM-optional providers and account-scoped SLAs (not shipped; 2026-09-20)
-
-- Align `ProviderCore.version` and the coordinator's `LatestProviderVersion` fallback at 0.9.7. Publication, coordinator deployment and App Attest serving/removal activation remain separate rollout steps.
+## Unreleased
 
 ### Public model demand
 
 - Add model demand and fulfillment to Stats, with 24-hour, 7-day and 30-day windows, shared-scale request bars, sorting, expandable outcome counts, per-model timeline charts, an exact interval table, and CSV export. Separate capacity rejections, predicted latency limits, actual timeouts, service errors, client departures and unknown outcomes; HTTP 429 is an overlapping diagnostic.
 - Scope new public routing-admission observations explicitly and persist revision-aware hourly aggregates for 31 days. Delay publication by at least one hour and suppress cohorts with fewer than 20 requests or 3 consumer accounts. Label recorded-request coverage and partial collection history; token demand and network-wide completeness claims remain unavailable.
+
+## Release candidate v0.9.9 — App Attest recovery and snapshot accuracy (not shipped; 2026-09-22)
+
+- Distinguish signed-app availability failures and synthetic Apple callback/proof errors with closed, privacy-bounded diagnostics. Keep the result and trust policy unchanged; native `NSError` codes remain separate.
+- Align `ProviderCore.version` and the coordinator display fallback at 0.9.9. Deploy coordinator and console fixes before publishing the separately qualified signed provider.
+- Retire failed or interrupted one-time App Attest enrollment keys instead of retrying them indefinitely. Preserve server-unavailable retries, cached enrollment proofs, accepted assertion credentials, account identity, and persisted generation limits.
+- Preserve the original attestation key and hash across server-unavailable retries, reconnects and protocol upgrades, as Apple requires. Later serving assertions remain fresh and bound to the current process endpoint.
+- Recover from expired cached-enrollment transactions on a live connection without accepting stale proofs or retrying identity/binding violations. Correct obsolete shadow-only rollout and rollback instructions.
+- Accept authenticated macOS CDhash attestation extensions when Apple omits the extension flag; retain complete certificate, nonce, Mac ACL, key, transcript and serving-policy verification.
+- Retain bounded Apple error domain/code diagnostics without error descriptions, user-info dictionaries or raw identity data.
+- Show public network verification counts and filters at their source snapshot instead of expiring cached App Attest rows into a false zero. Owner serving controls retain live expiry.
+- Exclude private-only providers from the unauthenticated attestation roster and its shared cache. Preserve owner access and document public legacy-key linkability and private audit-data destinations.
+- Accept fully signed, measured macOS App Attest assertions when Apple omits the extension flag, and recover serving authorization after a fresh, completely archived proof despite an earlier recorded frame refusal. Repair the startup inventory-backfill race only for current authenticated sessions while retaining genuine disconnects and revocations.
+- Distinguish an eligible Apple proof from a successfully granted serving lease in App Attest operations, with bounded failure reasons for identity, storage and runtime gates.
+- Recognize Apple's signed 20-byte SHA-256 CandidateCDHash only when it uniquely matches the same active, durably qualified signed artifact's full 32-byte CodeDirectory hash; all independent release, receipt, revocation and runtime checks still apply.
+- Retry only a completed Apple key-generation callback that returned an error with no usable key ID after a persisted one-minute cooldown, within the normal provider's generation budget. Timeout, cancellation, busy admission, and crash keep the one-hour marker; the budget also bounds possible internally created but inaccessible keys. Retry a definite assertion `serverUnavailable` once with the same key and challenge.
+- Recheck a first App Attest grant after one, five and ten minutes while Apple risk-receipt renewal is still unverified; a fresh assertion, verified risk metric and every existing serving check remain required. macOS 27 alone never grants authorization.
+- Reprobe a live connection's generic or server-unavailable Apple App Attest failure after one, five, then every ten minutes instead of leaving its accepted key idle for an hour. Storage failures retain their slower backoff; signed policy failures remain terminal.
+
+## v0.9.8 — graceful lifecycle and App Attest recovery (2026-09-22)
+
+- Align `ProviderCore.version` and the coordinator's `LatestProviderVersion` fallback at 0.9.8. Deploy coordinator drain-barrier support before publishing this provider; qualify the exact signed artifact independently before advancing the registered release.
+
+- Extend graceful draining to replacement starts, standalone/foreground handoffs, manual update activation, and planned APNs/model-inventory reconnects. Background update deadlines defer without force-cancelling work; failed pre-publication setup restores recovery, and restart recognizes explicit owner self-route authorization.
+
+- Drain accepted inference and local response writes before normal provider stop/restart, confirm terminal usage with the coordinator, preserve model selection, and report recoverable timeouts separately from explicit force.
+
+- Replace the static landing page with the Darkbloom Next.js site from eigen-homepages, preserving the old legal URLs with redirects.
+- Recognize the 2026 M6 and M5 Pro Mac minis and M5 Max Mac Studio for base-reward memory caps and complete the new desktops' earnings-calculator choices. Recognize M5 Ultra for serving bandwidth while withholding its disputed identifier from base rewards. Report M6 as its own chip family with conservative MTP and model-capability gates pending physical qualification.
+- Retry generic Apple App Attest API failures with the existing bounded backoff instead of leaving a live connection permanently pending. Failed exchanges remain unqualified; fresh proof and all serving-policy checks are still required.
+- Retry a first verified App Attest assertion early while Apple's risk receipt is pending. A successful receipt still requires a fresh assertion, machine identity, build qualification, and all serving-policy checks; missing risk evidence never grants serving.
+- Keep the interactive `darkbloom unenroll` administrator profile inventory in the foreground terminal group so `sudo` can hide password input and complete the read. Background jobs, denied authentication and noninteractive reads withhold removal guidance without changing profiles or authorization.
+- **Privacy descriptions** — Describe encrypted network hops and plaintext processing at the coordinator and provider, distinguish qualified MDM-optional App Attest authorization from legacy MDA evidence, and remove unsupported memory-wiping and recipient-key forward-secrecy guarantees.
+- Unify App Attest and legacy verification labels, dispatch-time chat proof summaries, live authorization expiry, and network method counts without changing legacy trust fields or exposing private Apple evidence. Keep owner lease fields and geography counts on the same live authorization snapshot, and label unsupported App Attest protocol versions accurately.
+- Operations helpers encode admin JSON fields, return a failure after any fleet host fails while still visiting remaining hosts, and isolate smoke-test response files.
+- **Admin email login** — Encode Privy OTP email/code fields as JSON strings so quoted addresses and escape characters cannot break or reshape the upstream request.
+- Preserve Responses `instructions` as a leading system message in serving and prompt-cache preparation, and include them in admission/billing estimates. Retain inline media and tool history; reject invalid instruction types.
+- Route forced media tools and media-bearing tool results only to providers advertising the model's native capability; preserve aliases, queued/retried requests and legacy refusals. Native DiffusionGemma retains tool-result assets in actual call order without changing its sampler.
+- Reject malformed or negative top-level output-token budgets before coordinator defaulting and admission on all inference endpoints; preserve omitted, null, zero and valid positive budget behavior.
+- Preserve ordered inline image/video content and media-bearing tool results when lowering Responses requests for inference. Retain vision admission and inline-only Responses URL policy; media remains ineligible for the separate text-only prompt-cache planner.
+
+- Add an opt-in native DiffusionGemma sampler candidate preserving exact RNG constants, request-local key order and validated state commits, with original-path fallbacks and benchmark-only dispatch evidence.
+- Add an opt-in native DiffusionGemma soft-conditioning projection candidate using the existing affine matrix arithmetic and unchanged weights, with original training/transform/stream fallbacks and benchmark-only dispatch evidence.
+- Add opt-in DiffusionGemma benchmark route observations, separating first-iteration dispatch evidence from disarmed timing iterations without changing serving controls or generation.
+- Add native DiffusionGemma committed-block serving and image/video-frame discovery, including multimodal template validation. Keep text-only declarations disabled for media and preserve existing load and memory safeguards; catalog publication and release qualification remain separate.
+- Preserve DiffusionGemma's native tokenizer whitespace default without rewriting artifact metadata or changing other processors; explicit cleanup settings remain authoritative.
+- Fail unexpected nonempty DiffusionGemma reasoning before exposing it when thinking is disabled, while preserving empty native envelopes and never promoting tool examples from an unclosed thought.
+- Avoid restoring the sorted expert-output intermediate on eligible native DiffusionGemma inference paths. Preserve the existing weighted-reduction order, model weights and denoising controls; retain legacy training, shape, precision and stream paths plus an explicit rollback.
+
+- Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.
+- Stage immutable signed provider artifacts before publication. Block unqualified releases before updater/latest aliases advance; retry the separate publication job using the same signed bytes, without rebuilding or notarizing again.
+
+## v0.9.7 — MDM-optional providers and account-scoped SLAs (shipped; 2026-09-20)
+
+- Align `ProviderCore.version` and the coordinator's `LatestProviderVersion` fallback at 0.9.7. Publication, coordinator deployment and App Attest serving/removal activation remain separate rollout steps.
 
 ### Model verification I/O
 

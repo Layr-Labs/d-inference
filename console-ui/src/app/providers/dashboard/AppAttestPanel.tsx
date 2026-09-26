@@ -1,17 +1,18 @@
-import type { MyProvider } from "../types";
 import { hasCurrentAppAttestAuthorization } from "../authorization";
+import type { MyProvider } from "../types";
+import { ProofDetails } from "@/components/verification/ProofDetails";
+import { currentVerification } from "@/lib/verification";
 
 export function AppAttestPanel({ provider }: { provider: MyProvider }) {
-  const authorized = hasCurrentAppAttestAuthorization(provider);
-  return (
-    <div className="space-y-2 text-xs text-text-secondary">
-      <p className={`font-semibold ${authorized ? "text-accent-green" : "text-accent-amber"}`}>
-        {authorized ? "App Attest serving authorization verified" : "Awaiting fresh App Attest authorization"}
-      </p>
-      <p>{authorized
-        ? "The coordinator verified this signed provider and its connection. Darkbloom MDM enrollment is not required for this authorization path."
-        : "The previous authorization has expired or is no longer current. Run darkbloom status or darkbloom doctor to check verification."}</p>
-      <p>Keep existing management profiles installed. To migrate an existing Darkbloom profile, run darkbloom unenroll and choose App Attest; the CLI checks current removal approval. Keep employer management in place.</p>
-    </div>
-  );
+  if (!provider.verification) {
+    const authorized = hasCurrentAppAttestAuthorization(provider);
+    const expires = provider.authorization_expires_at;
+    return <div className="space-y-2 text-xs text-text-secondary">
+      <p className={authorized ? "font-semibold text-accent-green" : "font-semibold text-text-tertiary"}>{authorized ? "Verified via App Attest" : "App Attest authorization not current"}</p>
+      <p>This coordinator reports App Attest serving authorization using its earlier status format.</p>
+      <p>Authorization expires: {typeof expires === "number" && Number.isFinite(expires) && expires > 0 ? new Date(expires * 1000).toLocaleString() : "Unavailable"}.</p>
+      <p>Verification time, certificate, receipt and qualified-build details are unavailable in this format. The browser displays the coordinator’s decision and has not independently validated Apple evidence.</p>
+    </div>;
+  }
+  return <ProofDetails verification={currentVerification(provider.verification)} />;
 }

@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-23 · commit `afb71c63d`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -9,7 +9,58 @@ keeps the verdict fresh, and the single routing gate that consumes all of it.
 
 The legacy levels and flags below retain their meaning. With the explicit serving opt-in, [qualified App Attest authorization](../../reference/provider-authorization.md) is an independent path alongside complete legacy verification. `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) binds permission to the account, verified machine, credential, live connection, endpoint and policy generation. `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) checks every final inference handoff after queueing. Expired, revoked or replaced authorizations cannot permit new dispatch; no legacy flags are fabricated. Shadow mode alone still changes no trust.
 
+The [durable build qualification policy](../../reference/provider-authorization.md#durable-build-qualification) adds a separate qualification generation to App Attest leases. `coordinator/appattest/service/authorizer.go` (`apply`) recomputes the build/code match using the current approved record and retained Apple-signed type-2 measurement; cached true booleans cannot survive withdrawal. Apple's 20-byte CandidateCDHash form must uniquely bind to the exact durable qualified artifact's full 32-byte hash and cannot use environment bootstrap. `coordinator/registry/app_attest_authorization.go` (`providerHasAppAttestAuthorizationLocked`) rejects stale generations at every shared dispatch gate. Qualification expiry is independent of assertion and receipt expiry.
+
+Initial App Attest enrollment is a one-time Apple operation. `provider-swift/Sources/ProviderAppAttest/AppAttestShadowClient.swift` persists an attempt marker before the call and uses `EnrollmentKeyLifecycle.swift` to retire uncertain or failed enrollment keys under the existing generation budgets. Service-unavailable retries retain the original key/hash and enrollment transaction across reconnects and upgrades; cached proofs survive response loss. Generic assertion errors never rotate an already accepted credential. A cached enrollment whose original server transaction has expired is rejected and retried later, allowing local cache retirement; owner, account, key and environment mismatches remain terminal. This follows [Apple’s attestation error guidance](https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity) without weakening independent authorization or revocation.
+
+`coordinator/appattest/authenticator.go` accepts the observed macOS attestation
+and assertion variant whose authenticated CDhash extension dictionary omits
+the ED bit. `Verifier.Attestation` in `coordinator/appattest/verify.go` first
+validates Apple's chain, Mac ACL and nonce; `Verifier.Assertion` first validates
+the signature over all authenticator bytes. Unflagged assertions require the
+complete Developer ID category 6 and type-2 20- or 32-byte CodeDirectory hash. Parsing
+remains bounded and exact; arbitrary trailing bytes stay invalid. Public
+network verification is labeled at its source snapshot; live owner controls
+continue to enforce expiry.
+
+The lifecycle readiness diagnostic reports an explicit `self_route` path when
+an owned connection satisfies the existing self/preferred-owner gate but lacks
+public serving authorization. `coordinator/registry/owner_authorization.go`
+(`ProviderOwnerServingAuthorized`) applies `TrustNone` with the existing runtime,
+privacy, challenge and liveness checks. This reports owner eligibility only;
+it neither changes the public trust floor nor creates App Attest/legacy evidence.
+
+MDM removal guidance is a separate local operation. `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift` (`installedTarget`) validates the exact Darkbloom profile and, when needed, uses `ProfileInventoryAuthorization.readAuthenticatedProfiles` for a fixed read-only inventory. That helper requires its own process group to own the foreground terminal before launching native `sudo` authentication, inherits only terminal input/error and captured XML output, and returns no target on denial or background execution. The CLI never removes the profile itself or grants serving permission; coordinator authorization still gates the App Attest path.
+
+## Presentation and dispatch history
+
+`coordinator/registry/verification.go` (`ProviderVerificationAndAuthorization`) evaluates the
+two authorization paths, owner compatibility lease and live account/status under
+one registry/provider lock observation; unsupported App Attest protocol versions
+never appear pending. It exports only bounded public states and timestamps.
+Legacy hardware trust is preserved as evidence, not
+rewritten by App Attest. `authorizeInferenceHandoff` captures the verdict on the
+pending request at the final writer check. The response metadata uses that
+immutable winning-attempt snapshot, not a later live grant.
+
+Live views use each path's expiry and a bounded source-snapshot age. Historical
+chat uses the recorded dispatch time; revocation fences future work without
+rewriting prior claims. Counts distinguish connection-level union/breakdowns
+from privately deduplicated machine inventory and reported OS adoption. Stats
+location buckets are derived from the same detached fleet walk as provider rows,
+so store work between aggregation stages cannot mix connection generations. See
+[the presentation contract](../../reference/api-contracts.md#verification-presentation-contract)
+for cache bounds and unknown-field behavior. No raw Apple certificate or receipt
+is added to public/owner presentation; detailed archive access remains on its
+existing authorized operations path.
+
 ## Context
+
+Generic client-reported Apple API failures (`apple_error`) use bounded [exchange recovery](../../reference/app-attest-shadow.md). They are unknown observations, not verified security denials. Retrying neither creates a serving grant nor extends its deadline; fresh proof still passes all qualification, receipt, revocation and binding checks. Verified cryptographic or policy violations remain terminal.
+
+Closed client diagnostics separate local availability failures and synthetic callback/proof failures from native DeviceCheck errors. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds them before archival; `coordinator/appattest/service/observation.go` (`observeWithClientDiagnostics`) emits them only as evidence about a failed exchange. They do not enter `clientDataHash`, the verifier, or `EvaluateAuthorization`, so reporting a reason cannot grant serving.
+
+A verified first App Attest assertion may have no **verified** risk receipt yet: the initial `ATTEST` receipt can require renewal, or a verified receipt can lack a risk metric. With receipt renewal configured and no first serving record, the coordinator requests a fresh assertion after one minute, five minutes, then at the normal ten-minute cadence while the independent receipt worker renews evidence. An unverified receipt or another assertion does not itself create a grant. The [serving authorization policy](../../reference/provider-authorization.md) still requires a verified current risk receipt and complete metric, fresh assertion, non-revoked credential, qualified build and bound identity before granting permission.
 
 Providers are adversarial until proven otherwise ([`../../threat-model.yaml`](../../threat-model.yaml),
 `ADV-001`). A provider's self-report is worthless on its own — the reporter is

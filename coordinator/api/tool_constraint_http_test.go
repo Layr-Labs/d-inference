@@ -45,11 +45,11 @@ func TestToolConstraintValidationRunsThroughEveryHTTPShape(t *testing.T) {
 			"supports tool calls",
 		},
 		{
-			"chat constrained multimodal",
+			"chat constrained multimodal without a capable provider",
 			"/v1/chat/completions",
 			`{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"x"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}],"tools":[{"type":"function","function":{"name":"safe","parameters":{"type":"object"}}}],"tool_choice":"required"}`,
-			http.StatusBadRequest,
-			"not supported for multimodal",
+			http.StatusServiceUnavailable,
+			"supports native media tools",
 		},
 		{
 			"responses streaming named undeclared",
@@ -112,7 +112,6 @@ func TestPreferOwnerConstraintFailsBeforeQueueWithoutCapableFallback(t *testing.
 		true,
 		true,
 		"required",
-		false,
 		selfRoutePolicy{prefer: true, ownerAccountID: "owner"},
 		nil,
 	)

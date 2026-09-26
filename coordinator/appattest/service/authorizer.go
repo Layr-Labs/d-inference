@@ -33,6 +33,7 @@ type appAttestAuthorizationRecord struct {
 	status       protocol.AppAttestStatus
 	proofSession string
 	dropped      func() uint64
+	dropBaseline uint64
 }
 
 func (s *Service) startAppAttestAuthorizer(ctx context.Context) {
@@ -191,36 +192,49 @@ func (a *authorizer) refresh(ctx context.Context) {
 // Caller serializes replacement/invalidation with mu. A registry grant also
 // checks the exact live connection, endpoint and current policy generation.
 func (a *authorizer) apply(p *registry.Provider, record *appAttestAuthorizationRecord, state store.AppAttestReadiness, observedAt time.Time) bool {
+	granted, _ := a.applyDetailed(p, record, state, observedAt)
+	return granted
+}
+
+func (a *authorizer) applyDetailed(p *registry.Provider, record *appAttestAuthorizationRecord, state store.AppAttestReadiness, observedAt time.Time) (bool, string) {
 	e := record.evidence
 	applyAppAttestReadiness(&e, state)
-	if record.dropped != nil && record.dropped() > 0 {
+	if record.dropped != nil && record.dropped() > record.dropBaseline {
 		e.ArchiveComplete = false
+		a.s.registry.ClearAppAttestServingAuthorization(p)
+		a.queuePostLocked(p)
+		return false, "archive_gap"
 	}
 	snapshot := a.s.currentReleasePolicySnapshot()
 	e.CatalogKnown = snapshot != nil && snapshot.Known
 	e.BuildMatched = appAttestReleaseApproved(snapshot, p, &record.status)
+	qualificationGeneration, qualificationUntil := a.s.applyBuildQualification(&e, &record.status, snapshot)
 	verdict := appattest.EvaluateAuthorization(e, time.Now().UTC())
 	if verdict.Outcome != "eligible" || snapshot == nil {
 		if verdict.Outcome != "unknown" {
 			a.s.registry.ClearAppAttestServingAuthorization(p)
 		}
 		a.queuePostLocked(p)
-		return false
+		if verdict.Outcome == "unknown" {
+			return false, "policy_unknown"
+		}
+		return false, "policy_ineligible"
 	}
 	until := minAuthorizationTime(verdict.ValidUntil, observedAt.Add(appAttestRevocationFreshness))
+	until = minAuthorizationTime(until, qualificationUntil)
 	lease := registry.AppAttestServingAuthorization{
 		AccountID: e.Binding.Account, MachineID: e.Binding.Machine, CredentialID: e.Binding.Credential,
 		ConnectionID: p.ID, ProofSessionID: record.proofSession, Endpoint: e.Binding.Endpoint,
-		PolicyGeneration: snapshot.Generation, IssuedAt: e.AssertionAt, ValidUntil: until,
+		PolicyGeneration: snapshot.Generation, QualificationGeneration: qualificationGeneration, IssuedAt: e.AssertionAt, ValidUntil: until,
 		MachineModel: record.status.MachineModel,
 	}
 	lease.MemoryGB, _ = strconv.Atoi(record.status.MemoryGB)
 	if !a.s.registry.GrantAppAttestServingAuthorization(p, lease) {
-		return false
+		return false, "grant_rejected"
 	}
 	a.queuePostLocked(p)
 	a.s.ddIncr("app_attest.authorization.renewed", nil)
-	return true
+	return true, "granted"
 }
 
 func minAuthorizationTime(a, b time.Time) time.Time {

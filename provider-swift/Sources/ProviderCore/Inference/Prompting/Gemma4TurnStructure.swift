@@ -33,8 +33,28 @@
 // message — so "nearest preceding tool-call turn" always exists here.
 
 import Foundation
+import MLXLMServer
 
 enum Gemma4TurnStructure {
+
+    /// Reuse the same ownership/order algorithm before decoding tool media so
+    /// the separately owned assets follow the rendered tool-result ordering.
+    /// The private index never enters the template or crosses the request wire.
+    static func orderTypedToolResults(_ messages: [OpenAIChatMessage]) throws -> [OpenAIChatMessage] {
+        let indexKey = "__darkbloom_tool_media_index"
+        let tagged = messages.enumerated().map { index, message in
+            var fields = message.templateMessageDict()
+            fields[indexKey] = index
+            return fields
+        }
+        let ordered = try repairToolResultPlacement(tagged)
+        let indices = ordered.compactMap { $0[indexKey] as? Int }
+        guard indices.count == messages.count, Set(indices).count == messages.count,
+            indices.allSatisfy({ messages.indices.contains($0) }) else {
+            throw MultiModelBatchSchedulerEngineError.invalidToolPayload("native tool-result ownership is inconsistent")
+        }
+        return indices.map { messages[$0] }
+    }
 
     static func normalizeMessages(
         _ messages: [[String: any Sendable]]

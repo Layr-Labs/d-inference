@@ -17,8 +17,8 @@ export default async function AppAttestPage({ searchParams }: { searchParams: Pr
     ? <p className="text-amber-500">Awaiting the coordinator schema rollout. Data is unavailable.</p>
     : <DbError />;
   return <div className="space-y-6">
-    <div><h1 className="text-lg font-semibold">App Attest · shadow rollout</h1>
-      <p className="mt-1 text-sm text-[var(--text-dim)]">APNs and MDM remain authoritative. These observations do not grant trust or change payouts.</p>
+    <div><h1 className="text-lg font-semibold">App Attest · evidence and authorization</h1>
+      <p className="mt-1 text-sm text-[var(--text-dim)]">Evidence collection and serving authorization are separate. MDM-free serving requires current coordinator authorization; a historical successful proof does not establish it.</p>
       <div className="mt-3 flex gap-4"><Link href="?days=1">Last 24 hours</Link><Link href="?days=7">Last 7 days</Link><span className="text-[var(--text-faint)]">Showing {days === 1 ? "24 hours" : "7 days"}</span></div>
     </div>
     {census.status === "fulfilled" ? <>
@@ -38,6 +38,7 @@ export default async function AppAttestPage({ searchParams }: { searchParams: Pr
       </p>
     </> : unavailable(census.reason)}
     <p className="text-sm text-[var(--text-dim)]">The denominator includes every registered identity seen in this window, including older clients and failures. Reconnects count as sessions. Key-bound and provisional identities are not proven unique physical Macs. OS values are app-reported; old records without OS data stay unknown. Historical backfill runs in bounded batches.</p>
+    <p className="text-sm text-[var(--text-dim)]">Readiness is the latest recorded proof and authorization attempt. Current serving authorization can expire or be revoked afterward.</p>
     <AppAttestReadiness days={days} />
     <div className="space-y-2"><h2 className="font-semibold">Machine adoption</h2>
       <p className="text-sm text-[var(--text-dim)]">Latest 200 identities by last observation. “First 27+” is the first recorded observation, not the installation date. Fresh assertion means within the last 15 minutes.</p>

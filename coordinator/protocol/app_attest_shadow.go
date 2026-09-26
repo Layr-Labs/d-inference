@@ -21,18 +21,21 @@ type AppAttestShadowMessage struct {
 }
 
 type AppAttestShadowPayload struct {
-	ProtocolVersion    int               `json:"protocol_version,omitempty"`
-	AccountScope       string            `json:"account_scope,omitempty"`
-	EnrollmentSession  string            `json:"enrollment_session,omitempty"`
-	Status             *AppAttestStatus  `json:"status,omitempty"`
-	Action             string            `json:"action"`
-	Session            string            `json:"session"`
-	Environment        string            `json:"environment,omitempty"`
-	KeyID              string            `json:"key_id,omitempty"`
-	Challenge          string            `json:"challenge,omitempty"`
-	Result             string            `json:"result,omitempty"`
-	Proof              string            `json:"proof,omitempty"`
-	EncryptedChallenge *EncryptedPayload `json:"encrypted_challenge,omitempty"`
+	ProtocolVersion    int                  `json:"protocol_version,omitempty"`
+	AccountScope       string               `json:"account_scope,omitempty"`
+	EnrollmentSession  string               `json:"enrollment_session,omitempty"`
+	Status             *AppAttestStatus     `json:"status,omitempty"`
+	Action             string               `json:"action"`
+	Session            string               `json:"session"`
+	Environment        string               `json:"environment,omitempty"`
+	KeyID              string               `json:"key_id,omitempty"`
+	Challenge          string               `json:"challenge,omitempty"`
+	Result             string               `json:"result,omitempty"`
+	AppleError         *AppAttestAppleError `json:"apple_error,omitempty"`
+	AvailabilityReason string               `json:"availability_reason,omitempty"`
+	AppleErrorSource   string               `json:"apple_error_source,omitempty"`
+	Proof              string               `json:"proof,omitempty"`
+	EncryptedChallenge *EncryptedPayload    `json:"encrypted_challenge,omitempty"`
 }
 
 // AppAttestShadowHash is length-prefixed UTF-8 to avoid JSON canonicalization ambiguity.

@@ -159,7 +159,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.9.7"
+var LatestProviderVersion = "0.9.9"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -199,6 +199,8 @@ type releaseTrustPolicySnapshot struct {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
+	appAttestRuntimeRefreshPending atomic.Bool
+
 	appAttestShadow               AppAttestShadowConfig
 	appAttest                     *attestservice.Service
 	appAttestOnce                 sync.Once
@@ -2830,6 +2832,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases) // admin key or Privy admin
 	s.mux.HandleFunc("POST /v1/admin/app-attest/revoke", s.handleAdminAppAttestRevoke)
+	s.mux.HandleFunc("GET /v1/admin/app-attest/builds", s.requireAuth(s.handleAdminAppAttestBuilds))
+	s.mux.HandleFunc("POST /v1/admin/app-attest/builds", s.requireAuth(s.handleAdminAppAttestBuilds))
+	s.mux.HandleFunc("POST /v1/admin/app-attest/builds/revoke", s.requireAuth(s.handleAdminAppAttestBuildRevoke))
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
 
 	// Historical admin state export (DAR-70) — streams the TEE-sealed /data
@@ -3505,6 +3510,8 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+metadataDetailsHeader)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
+
+		w.Header().Set("Access-Control-Expose-Headers", "X-Provider-Verification, X-Provider-Authorization-Method, X-Provider-Encrypted, X-Provider-Trust-Level, X-Provider-Attested")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

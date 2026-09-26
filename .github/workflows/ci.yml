@@ -19,8 +19,10 @@ jobs:
           python3 scripts/test-provider-release-cache.py
           python3 scripts/test-prepare-metal-toolchain.py
           python3 scripts/test-provider-release-pipeline.py
+          python3 scripts/test-provider-release-publication.py
           python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-test-watchdog.py
+          python3 scripts/test-stage-test-metallib.py
           python3 scripts/test-app-attest-entitlements.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
@@ -138,6 +140,8 @@ jobs:
           submodules: recursive
       - name: Test Qwen resources in a relocated app
         run: python3 scripts/test-qwen4-packaged-resources.py
+      - name: Test profile inventory authentication in a terminal
+        run: python3 scripts/test-profile-inventory-auth.py
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
@@ -179,25 +183,9 @@ jobs:
         run: |
           set -euo pipefail
           command -v cmake >/dev/null 2>&1 || brew install cmake
-          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
-            ./scripts/fetch-metallib.sh "$RUNNER_TEMP"
-          metallib="$RUNNER_TEMP/mlx.metallib"
-          test -s "$metallib" || { echo "::error::source-matched mlx.metallib was not produced"; exit 1; }
-
-          # MLX loads the metallib from beside the running executable. Stage the
-          # helper-authorized artifact into every provider binary and XCTest
-          # location that the preceding build created.
           provider_bin=$(cd provider-swift && swift build -c debug --show-bin-path)
-          for destination in provider-swift/.build/debug "$provider_bin"; do
-            mkdir -p "$destination"
-            cp "$metallib" "$destination/mlx.metallib"
-          done
-          while IFS= read -r macos; do
-            cp "$metallib" "$macos/mlx.metallib"
-            echo "placed source-matched metallib in $macos"
-          done < <(
-            find provider-swift/.build -type d -path '*.xctest/Contents/MacOS' -print
-          )
+          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
+            ./scripts/stage-test-metallib.sh "$provider_bin"
       - name: Run Swift tests
         working-directory: provider-swift
         # Reuse the built bundle and matched metallib. The exact allocator
@@ -238,13 +226,13 @@ jobs:
         working-directory: libs/mlx-swift-lm
         run: |
           set -euo pipefail
-          cp "$RUNNER_TEMP/mlx.metallib" .build/debug/mlx.metallib
-          for bundle in .build/debug/*PackageTests.xctest; do
-            macos="$bundle/Contents/MacOS"
-            if [ -d "$macos" ]; then
-              cp "$RUNNER_TEMP/mlx.metallib" "$macos/mlx.metallib"
-            fi
-          done
+          nested_bin=$(swift build -c debug --show-bin-path)
+          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
+            ../../scripts/stage-test-metallib.sh "$nested_bin"
+      - name: Verify DiffusionGemma artifact and expert reduction
+        if: ${{ !cancelled() && steps.build-nested-tests.outcome == 'success' && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        run: ../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel
       # NOTE (v0.8.0): the guards below exist because these gates once
       # reported GREEN while executing NOTHING. `Tests/BenchCBv2Tests`
       # depended on the BenchCBv2 EXECUTABLE target, so SwiftPM routed the

@@ -47,12 +47,13 @@ public actor EngineV2Bridge {
                 stepsExecuted: wedgeMonitor.lastStepsSample)
     }
     public let modelId: String
-    /// Which KV backend the engine was built with. Keys the bridge's
-    /// shared-gate accounting (paged pools are construction-committed —
-    /// no per-request `GlobalKVCacheBudget` reserve), the heartbeat
-    /// capacity clamp, and the provider's re-slice policy (paged slots
-    /// rebuild instead of resizing; `updateBytesCapacity` is a no-op on
-    /// a physically preallocated pool).
+    /// Native block engines report generation from completed prefill, including
+    /// their first block; ordinary AR/MTP timing remains unchanged.
+    let usesNativeBlockTiming: Bool
+    /// Actual serving backend. Contiguous requests reserve worst-case bytes
+    /// through the shared budget; paged engines own native process-ledger
+    /// charges. Segmented paged storage follows runtime grant changes; only
+    /// explicit fixed-reference pools clamp grants to physical capacity.
     public let kvBackendKind: EngineV2KVBackendKind
     /// Observed pool geometry from backend preparation, never a default guess.
     public let pagedPageSize: Int?
@@ -324,6 +325,7 @@ public actor EngineV2Bridge {
     ) {
         self.ownedEngine = engine
         self.modelId = modelId
+        self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
@@ -357,6 +359,10 @@ public actor EngineV2Bridge {
             let accepted = (engine as? EngineV2)?.completePrefixCache,
             accepted === candidate
         {
+            completeStore = candidate
+        } else if let candidate = ssdHybridCheckpointStore,
+            let accepted = (engine as? CBv2NativeBlockEngine)?.completeNativePrefixCache,
+            accepted === candidate {
             completeStore = candidate
         } else {
             ssdHybridCheckpointStore?.close()
@@ -420,6 +426,8 @@ public actor EngineV2Bridge {
     /// Profiler identities still retained for pending submissions (leak check).
     func _testPendingProfileCount() -> Int { pendingProfiles.count }
     #if DEBUG
+    // Test-installed only; never emitted to logging/telemetry or built in release.
+    var _testNativeTextObserver: (@Sendable (String, String) -> Void)?
     var _testBeforeNativeTerminal: (@Sendable (CBv2Usage) async -> Void)?
     var _testOnCancelledSettlementWait: (@Sendable () -> Void)?
 

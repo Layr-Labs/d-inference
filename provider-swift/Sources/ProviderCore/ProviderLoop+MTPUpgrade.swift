@@ -25,12 +25,12 @@ final class StagedProviderMTPUpgrade: @unchecked Sendable {
 
 extension ProviderLoop {
     var mtpStagingBytes: UInt64 {
-        mtpStagingReservations.extraBytes(residentTargets: Set(modelSlots.values.map { ObjectIdentifier($0.container) }))
+        mtpStagingReservations.extraBytes(residentTargets: Set(modelSlots.values.map { $0.modelContainer.identity }))
     }
 
     func isMTPUpgradeTargetRetained(_ modelID: String) -> Bool {
         guard let slot = modelSlots[modelID] else { return false }
-        return mtpStagingReservations.retains(ObjectIdentifier(slot.container))
+        return mtpStagingReservations.retains(slot.modelContainer.identity)
     }
 
     func startMTPUpgradeMonitor() {
@@ -78,7 +78,7 @@ extension ProviderLoop {
             SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment)
         else { return [] }
         return modelSlots.compactMap { modelID, slot in
-            guard modelID == "gemma-4-26b-qat-4bit", !slot.engineBundle.mtpStatus.active,
+            guard slot.container != nil, modelID == "gemma-4-26b-qat-4bit", !slot.engineBundle.mtpStatus.active,
                 loopConfig.config.backend.mtpMode.enablesMTP(
                     forModelType: slot.modelType, embeddedArtifactDeclared: false, modelID: modelID),
                 !modelsUnloading.contains(modelID), !isRefusedByRetirement(modelID)
@@ -90,7 +90,7 @@ extension ProviderLoop {
     func prepareMTPUpgrade(_ modelID: String, modelDirectory: URL? = nil) async throws -> StagedProviderMTPUpgrade? {
         guard pendingMTPUpgradeModels().contains(modelID), !isLoadingAny,
             let target = modelSlots[modelID].map({
-                (ObjectIdentifier($0.container), UInt64(max(0, $0.sizing.weightsBytes)))
+                ($0.modelContainer.identity, UInt64(max(0, $0.sizing.weightsBytes)))
             }) else { return nil }
         let retention = mtpStagingReservations.retainPreparingTarget(target.0, bytes: target.1)
         await updateAggregateCapacity()
@@ -108,7 +108,8 @@ extension ProviderLoop {
     private func prepareRetainedMTPUpgrade(_ modelID: String, modelDirectory: URL?,
                                           target: ObjectIdentifier) async throws -> StagedProviderMTPUpgrade? {
         guard pendingMTPUpgradeModels().contains(modelID), !isLoadingAny,
-            let original = modelSlots[modelID], ObjectIdentifier(original.container) == target,
+            let original = modelSlots[modelID], original.modelContainer.identity == target,
+            let originalContainer = original.container,
             let info = advertisedModels[modelID],
             let directory = modelDirectory ?? ModelScanner.resolveLocalPath(modelID: modelID)
         else { return nil }
@@ -131,7 +132,7 @@ extension ProviderLoop {
             throw MTPIdleUpgrade.PreparationError.insufficientMemory
         }
         await acquireResliceGate()
-        mtpStagingReservations.reserve(lease, target: ObjectIdentifier(original.container),
+        mtpStagingReservations.reserve(lease, target: original.modelContainer.identity,
             targetBytes: UInt64(max(0, original.sizing.weightsBytes)),
             assistantBytes: artifact.residentBytes, kvBytes: UInt64(grant))
         await updateAggregateCapacity()
@@ -145,7 +146,7 @@ extension ProviderLoop {
             let logger = self.logger
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelID, isVLM: original.isVLM, modelDirectory: directory,
-                container: original.container, specDecPreparation: preparation,
+                container: originalContainer, specDecPreparation: preparation,
                 assistantLoader: engineV2SlotHooks?.assistantLoader ?? ProductionProviderMTPAssistantLoader(),
                 emitTelemetry: engineV2SlotHooks?.emitTelemetry,
                 logInfo: { logger.info($0) }, logWarning: { logger.warning($0) })
@@ -159,7 +160,7 @@ extension ProviderLoop {
             let sizing = original.sizing.replacingAuxiliaryWeightBytes(prepared.assistantBytes)
             replacement = try await makeEngineV2BundleForSlot(
                 modelId: modelID, modelType: original.modelType, isVLM: original.isVLM,
-                modelDirectory: directory, container: original.container, tokenizer: original.tokenizer,
+                modelDirectory: directory, container: originalContainer, tokenizer: original.tokenizer,
                 sizing: sizing, kvBytesCapacity: grant, specDecPreparation: preparation,
                 preparedModel: prepared, cacheEligibleWeightHash: original.cacheEligibleWeightHash,
                 registerInRuntime: false)
@@ -190,7 +191,7 @@ extension ProviderLoop {
 
     func commitMTPUpgradeIfIdle(_ staged: StagedProviderMTPUpgrade) async throws -> Bool {
         let modelID = staged.modelID
-        guard let original = staged.original else { throw CancellationError() }
+        guard let original = staged.original, let originalContainer = original.container else { throw CancellationError() }
         try Task.checkCancellation()
         guard modelSlots[modelID]?.engineV2 === original.engineV2,
             pendingMTPUpgradeModels().contains(modelID)
@@ -217,7 +218,7 @@ extension ProviderLoop {
         defer { finishMTPUpgradeTransition(modelID) }
         await engineV2Runtime.register(modelId: modelID, bridge: staged.replacement.bridge)
         modelSlots[modelID] = ModelSlot(
-            engineBundle: staged.replacement, container: original.container,
+            engineBundle: staged.replacement, container: originalContainer,
             tokenizer: original.tokenizer, sizing: staged.sizing,
             cacheEligibleWeightHash: original.cacheEligibleWeightHash,
             isVLM: original.isVLM, modelType: original.modelType,

@@ -42,6 +42,16 @@ func TestAppAttestShadowInboxBounded(t *testing.T) {
 	}
 }
 
+func TestAppAttestShadowInboxRejectsUnboundedClientDiagnostics(t *testing.T) {
+	x := &Session{in: make(chan protocol.AppAttestShadowPayload, 2)}
+	x.offer(protocol.AppAttestShadowPayload{Action: "ready", Result: "unsupported", AvailabilityReason: "is_supported_false"})
+	x.offer(protocol.AppAttestShadowPayload{Action: "ready", Result: "unsupported", AvailabilityReason: "private path or entitlement"})
+	x.offer(protocol.AppAttestShadowPayload{Action: "assertion", Result: "apple_error", AppleErrorSource: "private native description"})
+	if len(x.in) != 1 || x.dropped.Load() != 2 {
+		t.Fatalf("unbounded diagnostics reached inbox: queued=%d dropped=%d", len(x.in), x.dropped.Load())
+	}
+}
+
 func TestAppAttestShadowLateProofCannotWinTimerRace(t *testing.T) {
 	p := newSessionProvider("key", "se")
 	x := &Session{s: &Service{}, provider: p, expected: "assertion", started: time.Now().Add(-shadowResponseTimeout - time.Second)}

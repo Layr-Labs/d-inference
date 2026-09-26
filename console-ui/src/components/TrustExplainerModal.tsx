@@ -27,73 +27,18 @@ interface StepData {
 }
 
 const STEPS: StepData[] = [
-  {
-    icon: Cpu,
-    iconColor: "text-purple",
-    iconBg: "bg-purple-light",
-    title: "Apple Hardware",
-    description:
-      "Your request is processed on a real Apple Silicon Mac, verified by Apple.",
-    technical:
-      "The provider runs on Apple Silicon (M1/M2/M3/M4) with hardware-backed security features. " +
-      "The device identity is established through Apple's Managed Device Attestation (MDA), " +
-      "which uses DeviceInformation DevicePropertiesAttestation OIDs (1.2.840.113635.100.8.9.*, " +
-      "100.8.10.*, 100.8.11.*) to certify serial number, UDID, OS version, and SepOS version.",
-  },
-  {
-    icon: Fingerprint,
-    iconColor: "text-teal",
-    iconBg: "bg-teal-light",
-    title: "Secure Enclave",
-    description:
-      "The machine's identity key is sealed in a tamper-proof chip that can't be cloned.",
-    technical:
-      "A P-256 key pair is generated inside Apple's Secure Enclave Processor (SEP). " +
-      "The private key never leaves the hardware — it cannot be exported, copied, or read by software. " +
-      "The provider signs attestation blobs with ECDSA (SHA-256 + P-256), proving identity without " +
-      "revealing the key. The SEP has its own isolated firmware (SepOS) and memory.",
-  },
-  {
-    icon: ShieldCheck,
-    iconColor: "text-blue",
-    iconBg: "bg-blue-light",
-    title: "Apple Certificate",
-    description:
-      "Apple's certificate authority confirms this specific device's identity.",
-    technical:
-      "Apple's Enterprise Attestation Root CA (P-384, valid until 2047) signs intermediate " +
-      "certificates that chain to the device leaf certificate. This X.509 chain is verified " +
-      "by the coordinator. The leaf certificate embeds device-specific OIDs signed by Apple; " +
-      "the raw certificate, serial number, and UDID remain private to the provider and coordinator.",
-  },
-  {
-    icon: Lock,
-    iconColor: "text-coral",
-    iconBg: "bg-coral-light",
-    title: "End-to-End Encryption",
-    description:
-      "Your prompts are encrypted before leaving your browser. Only the verified hardware can decrypt them.",
-    technical:
-      "E2E encryption uses X25519/NaCl box (Curve25519 + XSalsa20-Poly1305). " +
-      "The coordinator generates ephemeral X25519 session keys for each request, encrypts " +
-      "the request body with the provider's public key, and forwards the ciphertext. " +
-      "Decryption happens only inside the hardened provider process with PT_DENY_ATTACH, " +
-      "Hardened Runtime, and SIP protections.",
-  },
-  {
-    icon: RefreshCw,
-    iconColor: "text-gold",
-    iconBg: "bg-gold-light",
-    title: "Continuous Verification",
-    description:
-      "The machine is re-verified every 5 minutes. If anything changes, it's taken offline.",
-    technical:
-      "The coordinator sends attestation challenges (32-byte random nonce + timestamp) " +
-      "every 5 minutes. The provider must sign the challenge with its SE key and report " +
-      "fresh security posture: SIP status, Secure Boot, binary hash (self-hash of provider binary), " +
-      "RDMA status, and runtime integrity hashes (MLX-Swift runtime, chat templates, " +
-      "and active model weights). Any mismatch triggers demotion.",
-  },
+  { icon: ShieldCheck, iconColor: "text-blue", iconBg: "bg-blue-light", title: "Two verification methods",
+    description: "App Attest and legacy MDM/MDA/APNs are separate ways to earn serving authorization. A provider may qualify through either or both.",
+    technical: "App Attest requires Apple key enrollment, connection-bound assertions, receipt policy and a qualified signed build. Legacy authorization requires its own device, application and challenge evidence. A self_signed legacy field does not rule out App Attest." },
+  { icon: Fingerprint, iconColor: "text-teal", iconBg: "bg-teal-light", title: "Apple evidence and Darkbloom authorization",
+    description: "The coordinator validates Apple's evidence and applies Darkbloom's serving policy. Your browser displays that verdict.",
+    technical: "Raw certificate chains and Apple receipts can contain private device and credential information. Public views omit them. Reported chip, memory and macOS properties are not certified merely because App Attest succeeded." },
+  { icon: Lock, iconColor: "text-coral", iconBg: "bg-coral-light", title: "Encryption between hops",
+    description: "Encrypted requests are decrypted in the coordinator’s confidential VM, then re-encrypted to the provider.",
+    technical: "NaCl Box protects each encrypted leg. The provider is a plaintext endpoint and the coordinator handles routing and billing. The provider-hop encryption header does not establish browser-to-coordinator encryption." },
+  { icon: RefreshCw, iconColor: "text-gold", iconBg: "bg-gold-light", title: "Freshness and request history",
+    description: "Live authorization expires and can be revoked. Each chat message retains the verification recorded at dispatch.",
+    technical: "Each method has its own verification and expiry timestamps. Live views also expire stale cached verdicts. Historical response metadata is not evidence of a current authorization and does not prove that an inference result is correct." },
 ];
 
 function TechnicalDetails({ text }: { text: string }) {
@@ -158,7 +103,7 @@ export function TrustExplainerModal({ open, onClose }: TrustExplainerModalProps)
                 How Your Privacy is Protected
               </h2>
               <p className="text-sm text-text-secondary mt-1">
-                5 layers of hardware-backed security
+                How provider verification works
               </p>
             </div>
             <button

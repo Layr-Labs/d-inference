@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-20 · commit `0cb0c6310`
+> Last updated: 2026-09-26 · commit `c0d06f9ba`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -31,6 +31,8 @@ registration blob (`coordinator/attestation/attestation.go`, `VerificationResult
 Existing rows without it decode as unknown. This app-reported metadata supports
 owner upgrade notices; it does not certify an OS or alter trust gates, and needs
 no SQL migration.
+
+The additive `app_attest_build_qualifications` table stores immutable signed-artifact approval, test evidence and server-attributed operator/time, plus permanent revocation tombstones. `coordinator/store/app_attest_builds_postgres.go` (`SetQualifiedRelease`) locks the same row used for revocation and atomically checks the exact identity before writing the active release. `store.As[AppAttestBuildStore]` unwraps the store decorator; qualification reads are deliberately uncached there. Service snapshots have a separate bounded lifetime, and stored approval never restores a live serving lease. See the [qualification runbook](../operations/app-attest-build-qualification.md).
 
 ## Context
 

@@ -1,13 +1,12 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-18 · commit `4a453679b`
+> Last updated: 2026-09-23 · commit `afb71c63d`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
 (`coordinator/protocol/messages.go`, `capacity.go`, `profile.go`); Swift mirrors
 it (`provider-swift/Sources/ProviderCore/Protocol/Messages.swift`, `Types.swift`,
-`InferenceProfile.swift`). There are 16 provider→coordinator and 10
-coordinator→provider message types; nothing else is accepted.
+`InferenceProfile.swift`). The message inventory and additive lifecycle/attestation sections enumerate the accepted types.
 
 Conventions: **req** = always present; **opt** = Go `omitempty`, Swift
 `encodeIfPresent` (absent when nil, and for scalars when zero/empty unless a
@@ -20,6 +19,58 @@ Terminal `profile` objects can include optional schema-1
 This does not add a message type or change the public error code.
 
 The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
+
+App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds both fields. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).
+
+## Provider lifecycle drain
+
+| Direction | Type | Required fields | Behavior / source |
+|---|---|---|---|
+| Provider → coordinator | `provider_drain` | `request_id`: nonempty random barrier ID, at most 64 bytes | `coordinator/protocol/provider_drain.go` (`ProviderDrainMessage`), Swift `ProviderMessage.drainBarrier` |
+| Coordinator → provider | `provider_drain_ack` | Matching `request_id` | Swift `CoordinatorMessage.drainAck`; only the issuing connection's current waiter can consume it |
+
+The registered provider closes admission first, then sends a barrier over the
+FIFO control writer. The coordinator permanently fences that connection from
+new dispatch and asynchronously waits for all earlier completion/billing workers
+before acknowledging. Heartbeat/challenge reads continue during that wait; the
+connection has at most two pending acknowledgement workers. A final barrier
+after accepted requests and local response writes finish establishes that prior
+terminal usage has been processed. The Swift acknowledgement also passes through
+the ordered provider event queue, so earlier inbound inference frames are refused
+before the barrier completes. It is not a bearer credential or permission
+to serve. A stale idle heartbeat or drain TTL cannot reopen this connection; a
+restart registers and authorizes a new connection. Code:
+`coordinator/api/provider_completion_barrier.go` (`providerCompletionBarrier`),
+`coordinator/api/provider.go` (`providerReadLoop`),
+`coordinator/registry/drain_state.go` (`CommitProviderDrain`),
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Drain.swift`
+(`acknowledgeDrain`).
+
+Missing/late acknowledgements, including an older coordinator that does not
+support these additive frames, never imply success. Normal shutdown remains
+draining and returns non-success at its deadline. Explicit force is separate.
+Existing `heartbeat.status = draining` and typed `inference_error` draining
+rejections remain compatible. The legacy string `provider draining for update`
+is retained for load/prefetch and old rejection classifiers even on lifecycle
+drains. Legacy authorization diagnostics can report `authorization.path = legacy`
+without App Attest serving enabled; this is a current registry verdict, not a
+change to legacy eligibility.
+When public authorization is absent, `authorization.path = self_route` reports
+an authenticated owner's existing private/preferred-owner liveness and privacy
+checks (`ProviderOwnerServingAuthorized` in `coordinator/registry/owner_authorization.go`).
+It relaxes only the existing owner trust floor; it does not grant public routing,
+change dispatch policy, or infer authorization from an `online` status.
+
+All healthy planned disconnects use the drain barrier: lifecycle replacement,
+manual/background update activation, late APNs registration, and model-inventory
+reconciliation. Reconnect admission reopens only on the fresh session. A timeout
+defers the reconnect/update rather than cancelling accepted inference. If a
+barrier may have permanently fenced the old session, admission remains closed
+until a confirmed drain and reconnect. Unexpected transport loss and explicit
+force/fault recovery retain their cancellation paths; a dead connection cannot
+deliver a graceful-drain acknowledgement.
+
+
 
 ## Envelope and the single-parse rule
 
@@ -114,7 +165,7 @@ Go `Hardware` · Swift `HardwareInfo`. All fields required.
 |---|---|---|
 | `machine_model` | `string` | `String` |
 | `chip_name` | `string` | `String` |
-| `chip_family` | `string` | `ChipFamily` (`"M1"`, `"M2"`, `"M3"`, `"M4"`, `"M5"`, `"Unknown"`; `Protocol/Enums.swift`) |
+| `chip_family` | `string` | `ChipFamily` (`"M1"`, `"M2"`, `"M3"`, `"M4"`, `"M5"`, `"M6"`, `"Unknown"`; `Protocol/Enums.swift`) |
 | `chip_tier` | `string` | `ChipTier` (`"Base"`, `"Pro"`, `"Max"`, `"Ultra"`, `"Unknown"`) |
 | `memory_gb` | `int` | `UInt64` |
 | `memory_available_gb` | `float64` | `UInt64` |
@@ -134,6 +185,7 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `quantization` | `string` | `String?` | req in Go | |
 | `weight_hash` | `string` | `String?` | opt | SHA-256 of the weight files |
 | `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media |
+| `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See `coordinator/registry/native_media_tools.go` (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
 | `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Padded native-weight load estimate in GiB; used for reduced offload admission only with a valid family-matched offload declaration |

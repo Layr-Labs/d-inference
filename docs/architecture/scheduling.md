@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-18 · commit `397b4d902`
+> Last updated: 2026-09-22 · commit `73f8c13f`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -9,6 +9,18 @@ derived from them, demand-driven model loads, and the warm-pool controller
 that keeps enough providers resident for each model. Choosing *which*
 eligible provider gets a request is the subject of
 [`routing.md`](routing.md); this page stops where that choice begins.
+
+## Draining providers
+
+A lifecycle-draining connection is excluded from `modelLoadCandidatePendingLocked`
+and `providerHasWarmModelLocked` in `coordinator/registry/model_loading.go`, from
+`warmPoolCandidateReasonLocked` in `coordinator/registry/warm_pool_controller.go`,
+and from load/prefetch command submission in `coordinator/registry/model_commands.go`.
+A slot being warm does not make a stopped provider available. Provider admission
+and the final inference writer still fence races after planning; existing accepted
+work retains its model pin until terminal completion. See
+[the routing boundary](routing.md#provider-lifecycle-drain-boundary).
+
 
 ## Context
 
@@ -53,7 +65,7 @@ absolute first-content clock. The queue's error vocabulary:
 | `ErrQueueTimeout` | Waited `maxWait` without a reservation. |
 | `ErrQueueTTFTTooSlow` | Hard-reject mode: every otherwise-eligible provider fails only the TTFT ceiling, so waiting cannot help. |
 | `ErrQueueFirstContentDeadline` | The request-absolute first-content clock expired while queued. |
-| `ErrQueueToolConstraintUnavailable` | No provider left that can honour a required tool constraint. |
+| `ErrQueueToolConstraintUnavailable` | No provider left that can honour a required tool constraint or the request's native media-tool capability. |
 
 **Draining.** A queue is drained — waiters popped in order and offered to the
 routing path — whenever fleet state changes. The event is recorded on the

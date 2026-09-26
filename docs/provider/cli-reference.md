@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-20 · commit `a26b1107b`
+> Last updated: 2026-09-22 · commit `632a94adc`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -41,8 +41,8 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | Command | Purpose | `--config` | Source (`provider-swift/Sources/darkbloom/…`) |
 |---|---|---|---|
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
-| `stop` | Stop the LaunchAgent; `--uninstall` removes both plists | | `StopCommand.swift` (`Stop`) |
-| `restart` | Restart the service in place and re-arm the watchdog | ✓ | `RestartCommand.swift` (`Restart`) |
+| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes both plists | | `StopCommand.swift` (`Stop`) |
+| `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
@@ -76,28 +76,40 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | `--port <n>` | `UInt16` | `8000` | Local server port |
 | `--bind <addr>` | `String` | `127.0.0.1` | Local server bind address |
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
+| `--timeout <seconds>` | integer, 0–3600 | `600` | Drain a running provider before replacing its process/configuration |
+| `--force` | flag | `false` | Explicitly permit cancellation if the old provider cannot drain |
 
 Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
 
-### `darkbloom stop`
+A replacement start completes the picker/preflight first, then drains and stops
+the old provider before installing the chosen configuration. Foreground/local
+starts also require a drained handoff. The process-lifetime kernel lock refuses
+a live owner; it never silently sends SIGKILL after a short grace period.
 
-| Flag | Type | Default | Effect |
-|---|---|---|---|
-| `--uninstall` | flag | `false` | Also delete `io.darkbloom.provider.plist` and `io.darkbloom.watchdog.plist` |
+### Graceful stop and restart
 
-Disarms the watchdog first, removes `~/.darkbloom/watchdog-state.json`, then
-stops the service and disables it in launchd; `darkbloom start` re-enables
-auto-start.
+```bash
+darkbloom stop --timeout 600
+darkbloom restart --timeout 600 --startup-timeout 180
+darkbloom stop --force             # explicit interruption, including stalled work
+```
 
-### `darkbloom restart`
-
-Only `--config`. Restarts the loaded service in place with its recorded
-coordinator URL and models; starts it if installed but not running; exit 1 if
-not installed. Re-arms the watchdog when `provider.auto_restart` is `true`,
-disarms it when `false`.
+Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) below
+for deadline recovery. Commands do not initiate graceful shutdown by killing the
+serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
+standalone local mode also waits for active HTTP response bodies. The signal
+deadline is configurable with
+[`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
+Signal-only shutdown disarms current watchdog recovery but preserves configured
+login startup; use `darkbloom stop` for a persistent stop.
+Newly installed or CLI-restarted jobs have launchd `ExitTimeOut = 3660`; an
+existing job must be restarted to load that allowance. OS logout/shutdown may
+impose its own limit. Crashes, power loss, SIGKILL and explicit force can interrupt
+responses. The [protocol barrier](../reference/protocol-messages.md#provider-lifecycle-drain)
+requires the updated coordinator before normal provider shutdown can be confirmed.
 
 ### `darkbloom status`
 
@@ -219,6 +231,8 @@ and mixed prompt arrivals, see [the profiling workflow](../developer/test.md#6-s
 | `--coordinator <url>` | `String?` | config URL | Release source |
 | `--check-only` | flag | `false` | Report; do not install |
 | `--override-quarantine` | flag | `false` | Reinstall a version quarantined after 3 failed starts |
+| `--timeout <seconds>` | integer, 0–3600 | `600` | Drain the running service before activating the installed update |
+| `--force` | flag | `false` | Explicitly permit interruption during update activation |
 
 Exit 1 on `quarantined`, `busy`, `cancelled`, `downloadFailed`, `hashMismatch`,
 `replaceFailed`, or a failed check (`UpdateResult`, `provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
@@ -353,27 +367,64 @@ machine-readably.
 
 ## `darkbloom stop`
 
-### `darkbloom watchdog`, `darkbloom runtime-smoke`
+Drain accepted requests and their terminal usage before persistently stopping
+the launchd service.
 
 ```bash
-darkbloom stop [--uninstall]
+darkbloom stop [--timeout <seconds>] [--force] [--uninstall]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--uninstall` | Also remove the launchd plist |
+| Flag | Type / valid range | Default | Effect |
+|---|---|---|---|
+| `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted coordinator requests, local response writes and the coordinator acknowledgement |
+| `--force` | flag | `false` | Explicitly permit bounded cancellation and termination of unfinished work |
+| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists |
 
-`--uninstall` disarms the crash-recovery watchdog before removing the agent
-(`provider-swift/Sources/darkbloom/StopCommand.swift`).
+The command disarms the watchdog and disables login/reboot startup before
+requesting the drain. If setup fails before the mailbox request is published,
+it restores the prior launchd/watchdog recovery state and retains its history. A normal drain timeout returns non-success and leaves the
+process draining with automatic restart disabled. Repeat `stop` or `restart`
+with a new deadline, or explicitly pass `--force`. Interrupting the CLI does not
+cancel accepted inference or reopen admission. A running provider without the
+drain control protocol requires an upgrade or an explicit forced interruption.
+
+Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
+`ServiceDrain.prepare`) and `provider-swift/Sources/darkbloom/StopCommand.swift`
+(`Stop`). See [graceful lifecycle behavior](#graceful-stop-and-restart) for signal
+handling and launchd's termination allowance.
 
 ## `darkbloom restart`
 
-Restart the running launchd service in place, reusing the current coordinator URL
-and model selection.
+Drain accepted work, reload the recorded launchd configuration, and confirm a
+new provider process with fresh serving authorization. The coordinator URL,
+model selection and provider config arguments are preserved.
 
 ```bash
-darkbloom restart
+darkbloom restart [--timeout <seconds>] [--force] [--startup-timeout <seconds>] [--config <path>]
 ```
+
+| Flag | Type / valid range | Default | Effect |
+|---|---|---|---|
+| `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted work and the coordinator acknowledgement before restarting |
+| `--force` | flag | `false` | Explicitly permit interruption of unfinished work before restarting |
+| `--startup-timeout <seconds>` | integer, 1–3600 | `180` | Wait for a new process identity and fresh App Attest, legacy, or owner self-route authorization |
+| `--config <path>` | path | unset | Override the config used to re-arm the watchdog; the provider keeps its recorded config arguments |
+
+A drain timeout returns non-success and leaves the old process draining with
+automatic restart disabled; repeat the command with a new deadline or explicitly
+choose `--force`. A startup timeout returns non-success while the new service
+keeps starting, without issuing another restart. Inspect `darkbloom status` to
+check its progress. An installed, stopped service is started; a missing service
+returns non-success. The watchdog is re-armed according to `provider.auto_restart`.
+A foreground/local process is explicitly terminated after draining before the
+saved launchd configuration starts. If no launchd configuration exists, restart
+refuses before disturbing that process; use `start` to choose a replacement.
+Owner-only/preferred-owner connections may confirm `self_route` authorization;
+this does not claim public-fleet eligibility.
+
+Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
+`ServiceDrain.waitForRestart`) and
+`provider-swift/Sources/darkbloom/RestartCommand.swift` (`Restart`).
 
 ## `darkbloom status`
 
@@ -533,13 +584,53 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 For native Qwen4 model types, the ordinary command uses the production CBv2
 model/factory path with MTP and prefix caching off. It preserves model/tokenizer
 EOS, checks complete weight integrity before and after load, and releases the
-session between independent runs. Other model types keep their generic path
+session between independent runs. Non-native model types keep their generic path
 and JSON5 configuration support (`ModelBenchmark.run`,
 `provider-swift/Sources/ProviderBenchmark/ModelBenchmarkNativeQwen4.swift`).
 Iteration/output counts must be positive. The prefill column measures time to
 the first generated token, including prompt preparation; model loading and
 integrity hashing are outside the reported iteration time. An eight-token
 smoke proves entry-point operation, not sustained decode performance.
+
+For `diffusion_gemma`, the ordinary command uses the
+[native block benchmark](../architecture/native-block-inference.md#ordinary-cli-benchmark).
+`--kv-backend auto|contiguous|paged` selects storage (`auto` remains contiguous).
+The prefill column is encoder prefill, not time to first output. Each
+`NATIVE_BLOCK_BENCHMARK` JSON row separately reports first committed output,
+generation including first-block work, completion usage including EOS, committed
+tokens excluding EOS, resolved backend and the production KV grant. Native framing
+can be included in committed tokens; the row does not certify a visible-token
+performance target. Loading and its integrity hashes have a separate clock.
+The row also exposes existing native execution/prefill quantum counts,
+post-first-block commit count and quantum wall-time sum/maximum. Those are work
+diagnostics, not output tokens or GPU-only timing. Prefill, refinement and
+committed-block re-encoding all contribute native work; do not count the
+execution-quanta total as refinement passes without separating those phases.
+Emitting these counters adds no sampling or GPU evaluation step.
+AR sweep, scheduler-prefill, arrival, teacher-forcing and parity modes reject this
+architecture instead of substituting an autoregressive iterator.
+
+Eligible native inference uses the SDK's
+[ordered expert-output reduction](../reference/configuration.md#native-diffusiongemma-expert-reduction).
+That reference defines `DARKBLOOM_DIFFUSION_EXPERT_UNSORT` and its explicit
+rollback. Compare warmed original/optimized runs with unchanged artifact,
+prompt, seed and denoising controls; cold JIT timings and isolated kernel
+timings do not establish a request-throughput improvement.
+
+For an exclusive native benchmark, the
+[descriptor-route diagnostic](../reference/configuration.md#native-diffusiongemma-expert-reduction)
+adds `DIFFUSION_PROVIDER_ROUTE` rows. It observes the first iteration and checks
+that counters stay disarmed for subsequent iterations; it does not remove the
+first sample from the ordinary output. Configure expert routing through
+`[gemma_optimizations].weighted_r1`; the benchmark refuses conflicting low-level
+environment overrides. DiffusionGemma's separate expert reduction control remains
+independent of the Gemma-specific weighted-unsort setting.
+The same reference documents opt-in soft-conditioning and native compiled-sampler
+candidates. `softEmbeddingCalls` and `compiledSamplerCalls` prove dispatch in the
+observed first iteration; subsequent iterations must retain the disarmed counts.
+Report first-use compilation separately from warmed results. An environment value alone does not
+prove shape eligibility or a request-throughput gain. Keep native weights,
+sampling, canvas and output-count oracles identical when comparing either route.
 
 ### Teacher-forced scores
 
@@ -576,13 +667,15 @@ See the [developer test procedure](../developer/test.md#ordinary-teacher-forced-
 Check for and apply provider updates.
 
 ```bash
-darkbloom update [--check-only] [--coordinator <url>]
+darkbloom update [--check-only] [--coordinator <url>] [--timeout <seconds>] [--force]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--check-only` | Report whether an update is available without installing |
 | `--coordinator <url>` | Override coordinator URL |
+| `--timeout <seconds>` | Drain deadline: default `600`, valid 0–3600 seconds |
+| `--force` | Explicitly permit interruption during activation; default `false` |
 
 The update path verifies bundle, binary, and `mlx.metallib` hashes before
 replacing the running binary (`provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
@@ -696,6 +789,8 @@ darkbloom enroll [--coordinator <url>] [--no-open]
 Without a flag, ask whether to fully exit Darkbloom or remove only MDM and keep serving with App Attest. Enter or closed input cancels without changing anything. The App Attest option requires macOS 27 or later and fresh coordinator removal approval; an unsupported/unqualified choice never falls back to cleanup.
 
 Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup list includes the current and legacy Secure Enclave signing keys. Model downloads and server-side account history remain intact.
+
+If profile inventory needs administrator access, run this command in the foreground of an interactive terminal. `sudo` prompts there with terminal echo disabled; only the fixed, read-only profile inventory command is elevated. A denied prompt, noninteractive session, or background terminal job withholds profile-removal guidance. The command does not remove a profile itself; confirm the exact Darkbloom profile in System Settings. See [`attestation.md`](./attestation.md#app-attest-without-darkbloom-mdm).
 
 Code: `provider-swift/Sources/darkbloom/UnenrollCommand+Choice.swift` (`chooseUnenrollmentMode`, `performUnenrollment`); `provider-swift/Sources/darkbloom/UnenrollCommand.swift` (`performFullUnenrollment`). Noninteractive use requires an explicit mode flag.
 

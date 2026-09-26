@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -53,10 +54,12 @@ import (
 // fallback; a live provider clears its mark with its next idle/serving.
 const drainStateTTL = 150 * time.Second
 
+var ErrProviderDraining = errors.New("provider draining")
+
 // providerDrainingLocked reports whether p has an unexpired draining mark.
 // Caller holds p.mu.
 func providerDrainingLocked(p *Provider, now time.Time) bool {
-	return !p.drainingUntil.IsZero() && now.Before(p.drainingUntil)
+	return p.drainCommitted || (!p.drainingUntil.IsZero() && now.Before(p.drainingUntil))
 }
 
 // applyHeartbeatDrainStateLocked updates the draining mark from a heartbeat's
@@ -109,4 +112,18 @@ func (r *Registry) ProviderDraining(id string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return providerDrainingLocked(p, time.Now())
+}
+
+// CommitProviderDrain is the lifecycle barrier: stale idle heartbeats and the
+// heartbeat TTL cannot reopen admission. A new connection is required to serve.
+func (r *Registry) CommitProviderDrain(p *Provider) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if p == nil || r.providers[p.ID] != p {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.drainCommitted = true
+	return true
 }

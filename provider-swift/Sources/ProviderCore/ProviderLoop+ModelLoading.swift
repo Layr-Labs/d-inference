@@ -297,10 +297,7 @@ extension ProviderLoop {
 
         // Re-check slot cap after gate (another load may have consumed a slot)
         if modelSlots.count >= maxModelSlots {
-            let modelsWithInflight = Set(requestToModel.values)
-            let evictable = modelSlots.filter {
-                !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key)
-            }
+            let evictable = evictableModelSlots()
             if evictable.isEmpty || !allowEviction {
                 isLoadingAny = false
                 releaseLoadGateWaiters()
@@ -503,10 +500,8 @@ extension ProviderLoop {
             // Target-only sizing snapshot. After assistant load/bind, the slot
             // factory replaces its auxiliary component with the bytes actually
             // retained before final re-slicing and installation.
-            let targetSizing = try await SlotSizingSnapshot.build(
-                container: newcomer.borrow(),
-                modelPath: modelPath,
-                fallbackDefaultMaxTokens: Self.schedulerDefaultMaxTokens)
+            let targetSizing = try await newcomer.borrowModel().sizing(
+                modelPath: modelPath, defaultMaxTokens: Self.schedulerDefaultMaxTokens)
 
             // Weights are resident now (reflected in MLX active/cache), so hand
             // off from the pending-load reservation to the live mlxUsed view —
@@ -556,14 +551,8 @@ extension ProviderLoop {
                 throw InferenceError.modelLoadFailed(message)
             }
 
-            let tokenizer: TokenizerHandle = try await newcomer.borrow().perform { ctx in
-                TokenizerHandle(
-                    ctx.tokenizer,
-                    toolConstraintContractVerified:
-                        Gemma4ToolConstraintContract.isVerified(
-                            modelType: modelInfo.modelType,
-                            modelDirectory: modelPath))
-            }
+            let tokenizer = try await newcomer.borrowModel().tokenizerHandle(
+                modelType: modelInfo.modelType, directory: modelPath)
 
             // ONE ENGINE (v0.7.5): re-slice co-resident KV grants (shrink
             // existing engines to fair shares) and build this model's CBv2
@@ -599,7 +588,7 @@ extension ProviderLoop {
                 // rethrow unchanged so loadErrorStatusCode sees the original.
                 // The unwind ordering (release newcomer weights → clearCache
                 // → restore survivor grants) already ran inside
-                // `resliceAndBuildEngineV2Slot`'s catch, before this one.
+                // `resliceAndBuildEngineV2Bundle`'s catch, before this one.
                 releaseResliceGate()
                 MLX.Memory.clearCache()
                 if case .modelLoadFailed(let message) = error {
@@ -716,7 +705,7 @@ extension ProviderLoop {
                 + Double(loadElapsed.components.attoseconds) / 1e15
             await engineV2Bridge.recordModelLoadTime(ms: Int64(max(0, loadMs.rounded())))
 
-            guard let installContainer = newcomer.container else {
+            guard let installContainer = newcomer.modelContainer else {
                 // Unreachable (the box is drained only on failure paths) —
                 // defensive so a wiring bug can never leak the re-slice gate
                 // and wedge every future load.
@@ -728,7 +717,7 @@ extension ProviderLoop {
             }
             modelSlots[modelId] = ModelSlot(
                 engineBundle: engineBundle,
-                container: installContainer,
+                modelContainer: installContainer,
                 tokenizer: tokenizer,
                 sizing: sizing,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
@@ -1008,14 +997,23 @@ extension ProviderLoop {
         await kvBudget.setActivationReserveBytes(bytes, epoch: activationReserveEpoch)
     }
 
-    private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
-        var total: UInt64 = 0
-        for value in values {
-            let (sum, overflow) = total.addingReportingOverflow(value)
-            if overflow { return UInt64.max }
-            total = sum
+    /// One actor-local eviction snapshot shared by slot-cap, memory-load and
+    /// pre-accept admission decisions. Callers still recheck after suspension;
+    /// unloadModel(forEviction:) is the authoritative final gate.
+    private func evictableModelSlots() -> [String: ModelSlot] {
+        let modelsWithInflight = Set(requestToModel.values)
+        return modelSlots.filter {
+            !modelsWithInflight.contains($0.key)
+                && !hasLocalReservation($0.key)
+                && !modelsUnloading.contains($0.key)
+                && !isMTPUpgradeTargetRetained($0.key)
         }
-        return total
+    }
+
+    private func reclaimableMemoryGb(from slots: [String: ModelSlot]) -> Double {
+        slots.reduce(0.0) {
+            $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+        } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
     }
 
     /// Evict idle models (LRU order) until `requiredGb` is available or
@@ -1052,18 +1050,14 @@ extension ProviderLoop {
             // guessed reclaimable bytes to the OS sample or relax the gate.
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
                 try await retirement.pauseForRecheck() { continue }
-            let modelsWithInflight = Set(requestToModel.values)
-            let evictable = modelSlots
-                .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key) }
+            let evictable = evictableModelSlots()
             // Feasibility BEFORE the first eviction: if even evicting every
             // idle model (plus the reclaimable buffer cache) cannot reach the
             // requirement, refuse now rather than unload a model the box can
             // serve for one it cannot — the #653 32 GB report's "a request
             // for a model I can't serve killed the one I could".
             if allowEviction, !evictable.isEmpty {
-                let reclaimableGb = evictable.reduce(0.0) {
-                    $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
-                } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+                let reclaimableGb = reclaimableMemoryGb(from: evictable)
                 if !ModelLoadAdmission.evictionCanReach(
                     availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
                 {
@@ -1157,10 +1151,6 @@ extension ProviderLoop {
         // must not schedule catalog or artifact prefetch work for requests
         // that may be rejected. The accepted load path performs the real
         // preparation (and any prefetch) itself.
-        var requiredGb = ModelLoadAdmission.requiredToLoadGb(
-            weightsGb: modelInfo.estimatedMemoryGb,
-            headroomGb: loadHeadroomGb)
-
         // Sample live memory FIRST — this is the only suspension point in the
         // method (it awaits the KV-budget actor). Reading all the actor-local
         // slot/in-flight state AFTER the await means the decision below is made
@@ -1171,7 +1161,7 @@ extension ProviderLoop {
         // verified prefetch can have RAISED the serving-set floor while we
         // awaited memory (measured-only set + unmeasured advertise), and
         // admitting against the stale lower figure is accepted-then-503.
-        requiredGb = ModelLoadAdmission.requiredToLoadGb(
+        var requiredGb = ModelLoadAdmission.requiredToLoadGb(
             weightsGb: modelInfo.estimatedMemoryGb,
             headroomGb: loadHeadroomGb)
 
@@ -1188,10 +1178,7 @@ extension ProviderLoop {
 
         // An idle slot with no in-flight work, unload, or MTP target retention
         // can be eviction credit; check the resulting headroom before rejecting.
-        let modelsWithInflight = Set(requestToModel.values)
-        let evictable = modelSlots.filter {
-            !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key)
-        }
+        let evictable = evictableModelSlots()
         let hasEvictable = !evictable.isEmpty
         let mayStillReclaim = Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
             && qwen4MemoryRetirement?.nextDelay() != nil
@@ -1201,9 +1188,7 @@ extension ProviderLoop {
         // so reject fast here and let the coordinator reroute instead of
         // accepting a request that would only fail after the same check.
         if available < requiredGb, hasEvictable {
-            let reclaimableGb = evictable.reduce(0.0) {
-                $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
-            } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+            let reclaimableGb = reclaimableMemoryGb(from: evictable)
             if !ModelLoadAdmission.evictionCanReach(
                 availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
             {
@@ -1293,13 +1278,13 @@ extension ProviderLoop {
             errorReason: .modelLoad)
     }
 
-    private func loadModelContainer(from directory: URL, modelID: String) async throws -> MLXLMCommon.ModelContainer {
+    private func loadModelContainer(from directory: URL, modelID: String) async throws -> ProviderModelContainer {
         // Vision-language models (config declares `vision_config`) load via
         // VLMModelFactory so image/video requests can run the container's
         // prepare/generate vision path. Their text path still works through the
         // batched engine since VLMModel refines LanguageModel. Shared with the
         // standalone server via `ModelContainerLoading`.
-        try await ModelContainerLoading.loadContainer(from: directory, modelID: modelID)
+        try await ModelContainerLoading.loadServingContainer(from: directory, modelID: modelID)
     }
 
     /// A model is a vision-language model when its `config.json` declares a

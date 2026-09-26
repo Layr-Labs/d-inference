@@ -22,13 +22,21 @@ func multiModelEngineReportsRegistry() async throws {
 
 @Test("availableModels returns sorted ids")
 func multiModelEngineReturnsSortedIDs() async throws {
-    // Verify the empty path; the sort property is documented and tested
-    // via end-to-end live tests where real engine slots are present.
-    let engine = MultiModelBatchSchedulerEngine(
-        registryProvider: { @Sendable in [:] }
-    )
-    let models = try await engine.availableModels()
-    #expect(models.map(\.id) == [])
+    let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
+        tokenizer: TokenizerHandle(MultiModelDeadlineTokenizer()))
+    let registryEngine = MultiModelBatchSchedulerEngine(
+        registryProvider: { ["zeta": entry, "alpha": entry, "middle": entry] })
+    let advertisedEngine = MultiModelBatchSchedulerEngine(
+        acquire: { throw MultiModelBatchSchedulerEngineError.modelNotLoaded($0) },
+        tokenizerProvider: { _ in
+            throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
+        },
+        availableModels: { ["zeta", "alpha", "middle"] })
+
+    for engine in [registryEngine, advertisedEngine] {
+        let models = try await engine.availableModels()
+        #expect(models.map(\.id) == ["alpha", "middle", "zeta"])
+    }
 }
 
 @Test("streamChatCompletion calls ensureLoaded before lookup")

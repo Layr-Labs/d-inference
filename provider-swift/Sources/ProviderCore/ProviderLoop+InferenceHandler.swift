@@ -18,7 +18,7 @@ import os
 extension ProviderLoop {
     // MARK: - Inference Request Handling
 
-    /// Whether the provider is draining for a hot-swap update and must refuse
+    /// Shared update/lifecycle admission boundary. Once draining, refuse
     /// new work. 503 is the documented no-fault reroute signal (the coordinator
     /// routes elsewhere); local requests get a 503-equivalent queue-full. We
     /// only drain AFTER the new bundle is staged and verified (`.installing`
@@ -30,19 +30,19 @@ extension ProviderLoop {
     /// the early gate is stale across the `await` between them. Each helper is
     /// synchronous + actor-isolated, so the authoritative call is atomic with the
     /// registration that follows (no suspension in between).
-    internal var isDrainingForUpdate: Bool { updatePhase == .draining }
+    internal var isDraining: Bool { servingDrain.refusing }
 
     /// Coordinator admission: sends the 503 reroute and returns true if the
     /// request must be dropped because we're draining — for the update
     /// hot-swap, or across the post-retirement reconnect (the socket is
     /// about to close; admitting now would only hand the request to the
     /// `.disconnected` cancel).
-    internal func rejectIfDrainingForUpdate(
+    internal func rejectIfDraining(
         requestId: String,
         send: SendHandle,
         lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
     ) -> Bool {
-        guard isDrainingForUpdate || isReconnectingAfterRetirement else { return false }
+        guard isDraining || isShuttingDown || isReconnectingAfterRetirement else { return false }
         lookupReceiptFinalizer.sendTerminal(
             .inferenceError(
                 requestId: requestId,
@@ -110,13 +110,19 @@ extension ProviderLoop {
         else {
             return false
         }
+        await finishAcceptedRequestWithoutTask(requestId: requestId)
+        return true
+    }
+
+    /// Admission owns the model pin and cancellation registration until the
+    /// streaming task takes over. Early exits unwind them in the same order.
+    private func finishAcceptedRequestWithoutTask(requestId: String) async {
         if requestToModel.removeValue(forKey: requestId) != nil {
             powerAssertion.release()
             syncWarmModelState()
             await updateAggregateCapacity()
         }
         await cancellationRegistry.finish(requestId: requestId)
-        return true
     }
 
     /// Local-endpoint admission: throws a 503-equivalent when new local work
@@ -129,7 +135,7 @@ extension ProviderLoop {
         if isShuttingDown {
             throw MultiModelBatchSchedulerEngineError.queueFull("provider shutting down")
         }
-        if isDrainingForUpdate {
+        if isDraining {
             throw MultiModelBatchSchedulerEngineError.queueFull(providerDrainingForUpdateReason)
         }
         if let modelId, mtpAdmissionDrains.contains(modelId) {
@@ -214,8 +220,18 @@ extension ProviderLoop {
         }
         let lookupReceiptFinalizer = PrefixCacheLookupReceiptFinalizer(
             callback: receiptCallbacks.lookup)
+        func rejectInvalidRequest() {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile),
+                fallbackFailure: .policy,
+                send: send)
+        }
         var receiptTransferredToTask = false
         defer {
+            if !receiptTransferredToTask { acceptedLifecycleRequests.remove(requestId) }
             if !receiptTransferredToTask {
                 lookupReceiptFinalizer.finalize(failure: .policy)
                 inflightProfiles.removeValue(forKey: requestId)
@@ -247,8 +263,8 @@ extension ProviderLoop {
         }
 
         // Fast-path drain reject (skips decrypt/parse work). Re-checked
-        // authoritatively at step 4. See `rejectIfDrainingForUpdate`.
-        if rejectIfDrainingForUpdate(
+        // authoritatively at step 4. See `rejectIfDraining`.
+        if rejectIfDraining(
             requestId: requestId,
             send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer)
@@ -261,13 +277,7 @@ extension ProviderLoop {
         // so we hand the raw bytes straight to NodeKeyPair.decrypt.
         guard let senderKey = senderPublicKey, senderKey.count == 32 else {
             logger.error("[\(requestId)] missing or malformed sender public key")
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile),
-                fallbackFailure: .policy,
-                send: send)
+            rejectInvalidRequest()
             return
         }
 
@@ -279,13 +289,7 @@ extension ProviderLoop {
             )
         } catch {
             logger.error("[\(requestId)] request decryption failed")
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile),
-                fallbackFailure: .policy,
-                send: send)
+            rejectInvalidRequest()
             return
         }
         profile.mark(.decrypted)
@@ -304,13 +308,7 @@ extension ProviderLoop {
         {
             logger.warning(
                 "[\(requestId)] rejecting unauthenticated internal tool-schema metadata")
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile),
-                fallbackFailure: .policy,
-                send: send)
+            rejectInvalidRequest()
             return
         }
 
@@ -343,13 +341,7 @@ extension ProviderLoop {
             // the raw error could resurface a prompt fragment in coordinator logs
             // (defense-in-depth for the "coordinator never sees plaintext" invariant).
             logger.error("[\(requestId)] failed to parse chat request")
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile),
-                fallbackFailure: .policy,
-                send: send)
+            rejectInvalidRequest()
             return
         }
         profile.mark(.parsed)
@@ -439,7 +431,7 @@ extension ProviderLoop {
         // registration below, so on the actor it is atomic: either we reject now,
         // or the request is counted in `hasInflightWork` before any drain
         // snapshot can miss it.
-        if rejectIfDrainingForUpdate(
+        if rejectIfDraining(
             requestId: requestId,
             send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer)
@@ -462,6 +454,7 @@ extension ProviderLoop {
             lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
 
         // 5. Send inference_accepted
+        acceptedLifecycleRequests.insert(requestId)
         send.send(.inferenceAccepted(requestId: requestId))
         profile.mark(.acceptedSent)
 
@@ -509,12 +502,7 @@ extension ProviderLoop {
             // be misfiled as memory_cap instead of slot_state.
             let rejectedByRetirement = isRefusedByRetirement(modelId)
             profile.mark(.loadWaitEnd)
-            if requestToModel.removeValue(forKey: requestId) != nil {
-                powerAssertion.release()
-                syncWarmModelState()
-                await updateAggregateCapacity()
-            }
-            await cancellationRegistry.finish(requestId: requestId)
+            await finishAcceptedRequestWithoutTask(requestId: requestId)
             logger.error("[\(requestId)] model load failed")
             let failure = CapacityRejectionEnrichment.enrich(
                 Self.loadInferenceFailure(for: error),
@@ -550,12 +538,7 @@ extension ProviderLoop {
         }
 
         guard let slot = modelSlots[modelId] else {
-            if requestToModel.removeValue(forKey: requestId) != nil {
-                powerAssertion.release()
-                syncWarmModelState()
-                await updateAggregateCapacity()
-            }
-            await cancellationRegistry.finish(requestId: requestId)
+            await finishAcceptedRequestWithoutTask(requestId: requestId)
             logger.error("[\(requestId)] requested model disappeared after load")
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
@@ -597,6 +580,7 @@ extension ProviderLoop {
         // load, so it is correct for startup, prefetched, AND dropped-resident.
         let modelType = slot.modelType
         let slotContainer = slot.container
+        let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
         // ONE ENGINE (v0.7.5): the slot's v2 bridge serves every request;
         // the scheduler-free vision gate covers media decode and generation
@@ -805,7 +789,7 @@ extension ProviderLoop {
                 registryProvider: { @Sendable in
                     [chatRequest.model: .init(
                         tokenizer: tokenizer, modelType: modelType,
-                        container: slotContainer, isVLM: slotIsVLM,
+                        container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
                         engineV2Bridge: slotEngineV2,
                         visionGate: slotVisionGate)]
                 },
@@ -1357,9 +1341,7 @@ extension ProviderLoop {
                 }
                 // Surface to `doctor` — but not for a cancel, where a missing
                 // final chunk is expected, not an upstream anomaly.
-                if !cancelledMidStream {
-                    providerStats.incrementUsageGaps()
-                }
+                providerStats.incrementUsageGaps()
                 usageRecovered = true
             }
 

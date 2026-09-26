@@ -79,6 +79,7 @@ extension Start {
 
         // Lock acquisition and exact legacy-artifact housekeeping are one
         // ordered operation shared with coordinator-connected foreground mode.
+        try await ServiceDrain.prepareForegroundReplacement(options: drain)
         try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
@@ -106,6 +107,9 @@ extension Start {
             models: advertised
         )
         try await server.start()
+        await ProviderTermination.shared.install {
+            await server.drainAndStop(timeoutSeconds: ProviderTermination.timeoutSeconds)
+        }
 
         // Wait until the server CONFIRMS it bound the port before advertising it.
         // start() launches Hummingbird in a child task and returns before the
@@ -119,6 +123,8 @@ extension Start {
             printError("Local server failed to bind \(bind):\(port) within 5s — is the port already in use?")
             throw ExitCode.failure
         }
+
+        await server.startLifecycleControl()
 
         // Publish discovery metadata so a same-machine client (and
         // `darkbloom local`) can find + authenticate to this server. Removed on
@@ -156,29 +162,22 @@ extension Start {
     ) async throws {
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
-        let selectedModels: [ModelInfo]
-        if !model.isEmpty {
-            selectedModels = advertisedModels(
-                from: snapshot.models,
-                config: config,
-                modelOverrides: model,
-                runtimeCapabilities: runtimeCapabilities)
-        } else if all {
-            selectedModels = snapshot.models.filter {
-                ModelRuntimeRequirements.isEligible(
-                    modelID: $0.id, available: runtimeCapabilities)
-            }
-        } else {
-            selectedModels = advertisedModels(
-                from: snapshot.models,
-                config: config,
-                runtimeCapabilities: runtimeCapabilities)
-        }
+        let selectedModels = advertisedModels(
+            from: snapshot.models,
+            config: config,
+            modelOverrides: model,
+            includeDisabled: all,
+            runtimeCapabilities: runtimeCapabilities)
 
         guard !selectedModels.isEmpty else {
             printError("No models selected.")
             throw ExitCode.failure
         }
+
+        try await ServiceDrain.prepareForegroundReplacement(options: drain)
+        try ProcessLifecycle.acquireMediaServingLock()
+        ProcessLifecycle.preventSystemSleep()
+        defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
         let (models, modelHashes, modelHashFingerprints) = attachWeightHashes(to: selectedModels)
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
@@ -194,13 +193,6 @@ extension Start {
         if config.provider.autoUpdate {
             try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
         }
-
-        // ----- Process lifecycle: PID lock, legacy-artifact housekeeping, caffeinate. -----
-        // Housekeeping runs once here, outside telemetry configuration and any
-        // scheduled ProviderLoop reconstruction, after the old process releases the lock.
-        try ProcessLifecycle.acquireMediaServingLock()
-        ProcessLifecycle.preventSystemSleep()
-        defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
         // Housekeeping has removed the legacy telemetry queue. Install the
         // panic hook now; its compatibility queue calls are no-ops and its only
@@ -382,10 +374,15 @@ extension Start {
         schedule: Schedule
     ) async throws {
         while !Task.isCancelled {
+            await installIdleScheduleTerminationHandler()
+            if await ProviderTermination.shared.terminationRequested {
+                _ = await ProviderTermination.shared.request()
+                return
+            }
             if !schedule.isActiveNow() {
                 let wait = schedule.durationUntilNextActive()
                 print("Outside availability schedule; next window opens in \(formatDuration(wait)).")
-                try await Task.sleep(nanoseconds: sleepNanoseconds(for: wait))
+                if try await waitOutsideSchedule(seconds: wait, coordinatorURL: loopConfig.coordinatorURL) { return }
                 continue
             }
 
@@ -423,6 +420,14 @@ extension Start {
     }
 
     private func runProviderLoopWithFanLease(_ loop: ProviderLoop) async throws {
+        await ProviderTermination.shared.install {
+            // CLI drains already disarmed recovery. A late old-process signal
+            // must not stop a watchdog newly armed by the replacement CLI.
+            if await !loop.lifecycleIsCommandDriven() { try? WatchdogAgent.stop() }
+            // Preserve configured login startup for ordinary OS termination;
+            // only explicit CLI stop/restart disables it persistently.
+            return await loop.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds)
+        }
         try await withFanActivityLease(providerVersion: ProviderCore.version) {
             try await loop.run()
         }

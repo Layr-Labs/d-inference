@@ -1,103 +1,119 @@
-# Roll out App Attest recovery and qualify MDM retirement
+# Roll out App Attest recovery with MDM coexistence
 
-> Last updated: 2026-09-15 · commit `a99ce680a`
+> Last updated: 2026-09-23 · commit `afb71c63d`
 
-Use this runbook to qualify provider 0.9.4 alongside authoritative APNs/MDM.
-The [protocol reference](../reference/app-attest-shadow.md) owns configuration,
-policy conditions and timing. A ready PR is distinct from a qualified release
-artifact, a deployed coordinator, and a successful fleet rollout.
+Use this runbook for App Attest reliability upgrades on a fleet that may already
+serve without MDM. [Provider authorization](../reference/provider-authorization.md)
+owns the serving controls; the [protocol reference](../reference/app-attest-shadow.md)
+owns exchange bounds and recovery. Source tests, signed-artifact qualification,
+deployment and observed provider recovery are separate results.
 
 ## When to use
 
-Resume App Attest after the 0.9.3 callback-timer incident, repair archived
-receipt scheduling, and collect evidence for a later MDM/APNs retirement.
-Keep the current production pause until the replacement artifact and cohort
-have been explicitly approved.
+Deploy a reviewed App Attest parser, recovery or observability change and publish
+its provider release. For the first activation of MDM-free serving, follow
+[MDM-optional rollout](mdm-optional-rollout.md). The original 0.9.3 incident is a
+[historical report](../reports/2026-09-14-app-attest-release-disconnects.md), not
+instructions to reset an already enabled fleet to a shadow-only cohort.
 
 ## Prerequisites
 
-- Review and merge the candidate. Pass coordinator race/PostgreSQL contracts,
-  provider callback/client/updater tests, installer acceptance, admin queries,
-  and the full optimized packaged runtime smoke.
-- Build the qualification candidate with the macOS 27 SDK. Qualify the final notarized bundle on physical macOS 27 with real Apple
-  enrollment, repeated assertions, process/coordinator restart, sleep/reboot,
-  account change and key loss. Confirm install/update and ordinary APNs/MDM
-  serving on supported older macOS. Local Developer ID signing is not final
-  notarized-release qualification.
-- Obtain specific human approval for each production deploy, configuration,
-  secret change, provider release and traffic change. See
-  [coordinator deployment](coordinator-deploy.md).
-- Mount a dedicated DeviceCheck-authorized ES256 server key and supply its
-  identifier for App Attest receipt renewal. Do not replace APNs credentials.
-  Merely enabling DeviceCheck in Apple’s portal does not configure the worker.
+- Review and merge the candidate; pass coordinator/protocol race checks,
+  provider recovery tests, release integrity and packaged runtime smoke.
+- Obtain operator approval for the specific coordinator deployment,
+  configuration changes and provider release. Preserve the approved cohort,
+  serving/removal settings, receipt credentials, existing build approvals and
+  independently valid legacy path unless that operation explicitly changes them.
+- Retain an immutable rollback image that understands App Attest-only serving,
+  durable qualification and revocation. An old legacy-only coordinator cannot
+  safely serve as a compatible rollback after providers remove MDM.
+- Qualify the exact signed artifact following [build qualification](app-attest-build-qualification.md).
+  Include real Apple enrollment/assertions, process/coordinator restart, account
+  change, SIP/Full Security transitions and supported older-macOS behavior.
+  Local unsigned tests do not complete those checks.
+- Check the affected cohort through enrollment, a fresh verified assertion,
+  durable evidence and current authorization on the same connection. Repeat
+  across a coordinator restart and a bounded archive/identity lookup failure;
+  an `eligible` observation alone is insufficient. Qualify the exact signed
+  artifact with its full 32-byte CodeDirectory hash. A 20-byte Apple-signed
+  CandidateCDHash is usable only when it uniquely binds to that durable
+  qualification and passes the other current serving checks.
 
 ## Steps
 
-1. Deploy the reviewed coordinator and additive migrations through the existing
-   approved drain/hotswap procedure. Keep `EIGENINFERENCE_APP_ATTEST_SHADOW=false`
-   and `EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT=0`. Machine inventory and
-   interrupted-evidence/receipt-job maintenance continue while paused.
-2. Configure the receipt key path and identifier through the approved secret
-   procedure. Verify successful Apple HTTP responses, fresh `RECEIPT` validation,
-   new appended receipt versions, due-job drainage and no missing blob records.
-   A `renewal_required` record is a historical input, not a fresh risk receipt.
-3. Publish the approved provider 0.9.4 artifact. Verify its registered release,
-   final hashes and installer/updater smoke. Older 0.9.3 providers must continue
-   ordinary serving and must receive no App Attest operations.
-4. Enable shadow with a one-percent stable account cohort. Leave qualified build hashes
-   empty until the exact artifact completes the Mac security tests below.
-   Increase the percentage only after comparing disconnects, serving success,
-   Apple/storage timeouts, retries, dropped submissions and evidence completeness
-   against the excluded cohort on the same OS/version/time window.
-5. Record the exact signed binary hashes for builds that pass Mac launch/build
-   identity and security-transition qualification. Only then populate
-   `EIGENINFERENCE_APP_ATTEST_QUALIFIED_BUILD_HASHES` and the corresponding
-   `EIGENINFERENCE_APP_ATTEST_QUALIFIED_CODE_HASHES` pairs. Obtain the full
-   SHA-256 CodeDirectory digest from the same final executable using
-   `codesign -d --verbose=4`; use `CandidateCDHashFull sha256`, not the truncated
-   `CDHash`. Confirm Apple returns exactly that measurement. This cannot make missing
-   Apple assertion metadata, absent receipts, revoked keys or old clients pass.
-6. Review the private `/app-attest` readiness view by provider version. Include
-   all recent identities; distinguish online, offline, excluded, unsupported,
-   unevaluated, unknown, ineligible and expired observations. Do not substitute
-   event counts for a unique-machine denominator.
+1. Record the current release, coordinator image, configuration and trust controls.
+   Deploy the reviewed coordinator with the approved drain procedure in
+   [coordinator deployment](coordinator-deploy.md). Verify readiness and successful
+   inference on existing provider versions before advancing their release.
+2. Verify receipt renewal, appended receipt versions and evidence completeness.
+   Keep receipt credentials independent of APNs. Initial `ATTEST` receipts and
+   renewed risk receipts have different roles; an initial receipt without a
+   risk metric cannot establish serving readiness.
+3. Deploy the console separately when presentation changes are included. Check
+   source-snapshot counts against the public stats response. A historical label
+   or expired browser snapshot is not the current dispatch decision.
+4. Build, sign and stage the new provider through [provider release](provider-release.md).
+   Qualify and approve its exact bytes, then publish them. Retain older approved
+   builds during adoption; a version bump or notarization alone grants no trust.
+5. Observe enrollment and assertion outcomes separately by provider version and
+   macOS cohort. Distinguish verification, receipt readiness, current App Attest-only /
+   dual / legacy authorization, and distinct successfully completed requests.
+   Compare bounded native domain/code on upgraded clients with the closed
+   `availability_reason` for failed preflight and `apple_error_source` for
+   failures without a native `NSError`. A generic error without one of these
+   details remains unclassified; do not assign it a cause from an OS report.
+6. Confirm recovery in the affected cohort before claiming an incident resolved.
+   Do not infer a verified provider-to-person mapping from a hardware screenshot
+   alone. Canonical Darkbloom identities do not prove immutable physical devices.
 
 ## Verification
 
-| Gate before the later retirement release | Evidence required |
+| Gate | Evidence required |
 |---|---|
-| Runtime reliability | Final artifact smoke, real Apple exchanges, no callback-related process aborts, no serving regression in matched cohorts |
-| Recovery | Interrupted enrollment, delayed receipt delivery, Apple timeout/late callback, DB failure, reconnect and concurrent-counter negatives |
-| Evidence completeness | No missing accepted-proof/receipt blobs; pending/interrupted/storage-error and dropped counts explicitly reconciled or explained; renewal jobs not overdue |
-| Mac policy | Existing-key assertions fail after SIP or Full Security is reduced and rebooted; fresh enrollment under reduced posture also fails |
-| App/build identity | Current Apple launch category and exact CodeDirectory measurement, wrong-team/re-sign/unapproved-build/altered-resource negatives, correct catalog and qualified binary/code-hash pair; protocol 3 hardware claims match registration |
-| Identity continuity | Same account/credential and fresh endpoint proof retain identity without MDM; account transfer/claimed key cannot inherit it; balances and historical accounting remain unchanged |
-| Revocation and dispatch | The later enforcement change must call the shared policy at every dispatch/reseal path, using current revocation and catalog state; expiry/reconnect cannot reuse an old verdict |
-| Supported fleet and rewards | Explicit policy for Macs without App Attest; explicit resolution of any reward rule requiring one certified physical Mac or certified RAM |
+| Enrollment | A failed `generateKey` without an ID recovers after the persisted one-minute cooldown and shared five-per-hour budget; issued/uncertain keys retain one-hour protection; service-unavailable attestation retry preserves the same key/hash; cached proofs survive lost replies and expired original transactions cannot bypass binding checks |
+| Assertions | Definite Apple server-unavailable error retries once with the same key/hash; fresh endpoint-bound signatures and increasing counters are still required; generic errors do not rotate accepted keys; rejected/timed-out work cannot create a grant |
+| Receipt/readiness | A first unverified receipt or missing risk metric prompts bounded fresh-assertion rechecks while independent renewal completes; only a valid current receipt and risk metric with complete accepted-proof blobs authorize serving |
+| Mac/build policy | Exact Apple Mac ACL, launch category, Apple-signed type-2 measurement, active release and full-hash durable qualification; test ambiguous/revoked 20-byte candidates, reduced-security and altered-app negatives |
+| Identity/revocation | Stable same-account identity after verified reconnect; cross-account/claimed-key negatives; revocation and expiry enforced at every dispatch path |
+| Serving | Real completed requests from upgraded App Attest-only, dual and legacy providers; disconnects and failures compared with preceding cohorts |
+| Presentation | Public stats explicitly describe their source snapshot; owner controls and MDM-removal readiness remain current and bounded |
 
-Do not mark retirement ready from aggregate cryptographic successes alone.
-Current Mac assertions that omit required Apple metadata remain unknown; do
-not substitute app-reported fields. App Attest does not supply a permanent
-physical machine identifier. These platform/product conditions require evidence
-or a deliberate eligibility/accounting decision, not a code toggle.
+For a macOS 27 provider without a grant, classify the **current exchange** before
+changing its key or legacy authorization:
 
-For a credential revocation, use `RevokeAppAttestKey` in
-`coordinator/store/app_attest_readiness.go` through an approved administrative
-operation. It requires the owning account, retains the reason/time, and cannot
-silently revoke another account’s key. This release records the prospective
-result; APNs/MDM continues to decide serving.
+| Observation | Next inspection |
+|---|---|
+| Failed `ready` with `availability_reason` | Check the reported client OS against the local prerequisite, signed full-app launch context, CDhash opt-in and `isSupported` result. An app-reported OS or SIP bit alone is not Apple proof. |
+| `apple_error` with bounded native `apple_error` domain/code | Group by `ready` / `attestation` / `assertion` stage and exact native code. Preserve an already accepted key until a definite invalid-key result or other verified cause warrants rotation. |
+| `apple_error_source=callback_without_nserror` or `proof_oversize` | Investigate a local callback/proof-bound failure; no native `NSError` was available for that exchange. Do not label it an Apple server outage. |
+| Verified assertion without a current grant | Inspect the separate receipt/risk, machine association, exact build qualification, revocation and lease gates; another client retry cannot substitute for a missing server decision. |
+
+For a credential revocation, use the approved administrative
+[revocation endpoint](../reference/provider-authorization.md#admin-revocation).
+It fences both paths for that credential's current presenters. Build withdrawal
+has different semantics; follow the [qualification rollback](app-attest-build-qualification.md#rollback).
+Never delete evidence or reset counters to make a provider appear healthy.
 
 ## Rollback
 
-Set `EIGENINFERENCE_APP_ATTEST_SHADOW=false` through the approved configuration
-and drain procedure. Keep the durable archive, aliases, counters and revocations.
-Receipt renewal can continue independently when its credentials are configured.
-Never restart a pre-pause container whose environment re-enables 0.9.3 clients.
-Do not delete or rewrite old receipt failures to make readiness appear healthy.
+Prefer the approved compatible coordinator/provider rollback for a regression.
+Disabling `EIGENINFERENCE_APP_ATTEST_SHADOW` alone does **not** stop exchanges or
+serving when `EIGENINFERENCE_APP_ATTEST_SERVING` remains enabled: the serving path
+also needs fresh proofs. Disabling MDM-removal readiness alone prevents further
+removal guidance and does not remove existing serving permission.
+
+If the operator explicitly approves stopping all new App Attest exchanges,
+both shadow and serving controls must be disabled through the configuration and
+deployment procedure. This also removes the App Attest serving path; providers
+without independently valid legacy authorization lose public-serving eligibility.
+Inventory, durable evidence and receipt maintenance remain separate. Retain
+aliases, counters, qualifications, revocations and all original receipt failures.
+Code: `coordinator/appattest/service/session.go` (`startAppAttestShadow`) and
+`coordinator/appattest/service/config.go` (`ConfigFromEnvironment`).
 
 ## Related
 
-- [Current protocol, storage and policy](../reference/app-attest-shadow.md)
-- [Retirement design](../design/app-attest-retirement.md)
-- [Provider release](provider-release.md)
-- [0.9.3 disconnect investigation](../reports/2026-09-14-app-attest-release-disconnects.md)
+- [Current protocol, storage and recovery](../reference/app-attest-shadow.md)
+- [Serving and administrative contracts](../reference/provider-authorization.md)
+- [Provider release sequence](provider-release.md)
+- [2026-09-22 recovery investigation](../reports/2026-09-22-app-attest-recovery.md)

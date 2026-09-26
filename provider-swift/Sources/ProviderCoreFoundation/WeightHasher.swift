@@ -8,8 +8,8 @@ import Logging
 /// On-demand SHA-256 weight hashing for model integrity verification.
 ///
 /// Computes a deterministic hash over all integrity-relevant files in a model
-/// snapshot directory. Files are sorted by filename, each hashed independently
-/// (in parallel), then the per-file digests are combined into a final hash.
+/// snapshot directory. Files are hashed independently; their per-file digests
+/// are combined in sorted filename order into a deterministic final hash.
 ///
 /// This is intentionally separated from `ModelScanner` because hashing is
 /// expensive (reads every byte of every weight file) and should only be

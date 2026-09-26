@@ -40,7 +40,7 @@ public enum MTPAutomaticVerificationPolicy {
         switch parseChipIdentity(chipName).0 {
         case .m3, .m4, .m5:
             return 8
-        case .m1, .m2, .unknown:
+        case .m1, .m2, .m6, .unknown:
             return 4
         }
     }

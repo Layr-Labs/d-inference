@@ -25,8 +25,10 @@ public struct LocalDisconnectResponder<Inner: HTTPResponder>: HTTPResponder
 where Inner.Context == BasicRequestContext {
     public typealias Context = LocalDisconnectContext
     let inner: Inner
+    var responseTracker: LocalResponseTracker? = nil
 
     public func respond(to request: Request, context: Context) async throws -> Response {
+        let lease = request.method == .post ? try responseTracker?.admit() : nil
         let scope = context.connection.makeScope()
         let task = Task<Response, Error> {
             try await LocalRequestCancellation.$current.withValue(scope) {
@@ -39,8 +41,10 @@ where Inner.Context == BasicRequestContext {
         // Admitted native streams register their own removable row hook.
         return try await withTaskCancellationHandler {
             do {
-                return try await task.value
+                let response = try await task.value
+                return lease?.wrap(response) ?? response
             } catch {
+                lease?.release()
                 scope.cancel()
                 throw error
             }

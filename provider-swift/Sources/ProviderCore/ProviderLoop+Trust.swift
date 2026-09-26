@@ -47,6 +47,7 @@ extension ProviderLoop {
             warmModels: state.warmModels,
             advertisedModels: advertisedModels.keys.sorted(),
             inferenceActive: state.inferenceActive,
+            lifecycle: lifecycleStatus,
             stats: DaemonState.Stats(
                 requestsServed: stats.requestsServed,
                 tokensGenerated: stats.tokensGenerated,

@@ -44,6 +44,7 @@ const CHAT_MEDIA_TYPES: &[&str] = &["image", "image_url", "video", "video_url"];
 const RESPONSES_MEDIA_TYPES: &[&str] = &[
     "input_image",
     "input_file",
+    "input_video",
     "image",
     "image_url",
     "video",
@@ -64,6 +65,10 @@ fn content_collection_has_media(value: &Value, media_types: &[&str]) -> bool {
                 || object
                     .get("content")
                     .is_some_and(|content| content_collection_has_media(content, media_types))
+                || (object.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    && object
+                        .get("output")
+                        .is_some_and(|output| content_collection_has_media(output, media_types)))
         }
         _ => false,
     }
@@ -90,9 +95,24 @@ fn lower_completions(input: &Map<String, Value>) -> Result<Map<String, Value>, E
 }
 
 fn lower_responses(input: &Map<String, Value>) -> Result<Map<String, Value>, EndpointError> {
-    let messages = responses_messages(input.get("input").ok_or(EndpointError::Invalid)?)?;
+    let mut messages = responses_messages(input.get("input").ok_or(EndpointError::Invalid)?)?;
+    match input.get("instructions") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(instructions)) => {
+            if !instructions.is_empty() {
+                messages.insert(0, json!({"role": "system", "content": instructions}));
+            }
+        }
+        Some(_) => return Err(EndpointError::Invalid),
+    }
     let mut out = input.clone();
-    for key in ["input", "endpoint", "max_output_tokens", "text"] {
+    for key in [
+        "input",
+        "instructions",
+        "endpoint",
+        "max_output_tokens",
+        "text",
+    ] {
         out.remove(key);
     }
     out.insert("messages".into(), Value::Array(messages));
@@ -535,6 +555,47 @@ fn explicit_max_tokens(input: &Map<String, Value>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lowers_responses_instructions_shared_vectors() {
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../fixtures/prompt-contract/v1/responses_instructions.json"
+        ))
+        .unwrap();
+        for case in cases {
+            let result = lower(Endpoint::Responses, case["request"].clone());
+            if case["invalid"] == true {
+                assert!(
+                    matches!(result, Err(EndpointError::Invalid)),
+                    "{}: {result:?}",
+                    case["name"]
+                );
+            } else {
+                assert_eq!(
+                    Value::Object(result.unwrap()),
+                    case["expected"],
+                    "{}",
+                    case["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_tool_output_media_without_changing_text_history() {
+        for kind in ["input_image", "image_url", "video_url", "input_video"] {
+            let body = json!({"input": [{"type": "function_call_output", "call_id": "actual", "output": [{"type": kind}]}]});
+            assert!(matches!(
+                lower(Endpoint::Responses, body),
+                Err(EndpointError::Unsupported)
+            ));
+        }
+        let body = json!({"input": [{"type": "function_call_output", "call_id": "actual", "output": "plain result"}]});
+        assert_eq!(
+            lower(Endpoint::Responses, body).unwrap()["messages"][0]["content"],
+            "plain result"
+        );
+    }
 
     #[test]
     fn lowers_responses_function_history() {

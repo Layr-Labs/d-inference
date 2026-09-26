@@ -12,6 +12,7 @@ type AppAttestServingAuthorization struct {
 	AccountID, MachineID, CredentialID     string
 	ConnectionID, ProofSessionID, Endpoint string
 	PolicyGeneration                       uint64
+	QualificationGeneration                uint64
 	IssuedAt, ValidUntil                   time.Time
 	// These assertions cover observed hardware matched to registration. They
 	// are not Apple-certified immutable hardware specifications.
@@ -74,7 +75,10 @@ func (r *Registry) GrantAppAttestServingAuthorization(p *Provider, lease AppAtte
 		p.Status = StatusOnline
 	}
 	p.appAttestAuthorization = lease
-	valid := r.providerHasAppAttestAuthorizationLocked(p, now) &&
+	// Validate the same final gates used by dispatch before a recoverable
+	// Untrusted connection is promoted or counted online. The failure branch
+	// below restores both the previous lease and status atomically.
+	valid := r.providerAppAttestServingAuthorizedLocked(p, now) &&
 		!lease.IssuedAt.IsZero() && !lease.IssuedAt.After(now) &&
 		lease.ValidUntil.Sub(lease.IssuedAt) <= maxAppAttestServingLease
 	if !valid {
@@ -162,6 +166,7 @@ func (r *Registry) providerHasAppAttestAuthorizationLocked(p *Provider, now time
 	return r.appAttestServingEnabled && !revoked && !p.appAttestSecurityDenied &&
 		p.Status != StatusOffline && p.Status != StatusUntrusted &&
 		a.PolicyGeneration != 0 && a.PolicyGeneration == r.appAttestPolicyGeneration &&
+		a.QualificationGeneration == r.appAttestQualificationGeneration &&
 		a.AccountID != "" && a.AccountID == p.AccountID &&
 		a.MachineID != "" && a.MachineID == p.verifiedMachineID &&
 		a.AccountID == p.verifiedMachineAccount && a.CredentialID != "" &&
@@ -255,4 +260,20 @@ func (r *Registry) providerTrustMeetsMinimumAtLocked(p *Provider, minimum TrustL
 func (r *Registry) providerChallengeFreshAtLocked(p *Provider, now time.Time) bool {
 	return r.providerHasAppAttestAuthorizationLocked(p, now) ||
 		(!p.LastChallengeVerified.IsZero() && now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge)
+}
+
+// SetAppAttestQualificationGeneration fences only App Attest grants. It is
+// independent of catalog generations and never changes legacy trust evidence.
+func (r *Registry) SetAppAttestQualificationGeneration(generation uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if generation == r.appAttestQualificationGeneration {
+		return
+	}
+	r.appAttestQualificationGeneration = generation
+	for _, p := range r.providers {
+		p.mu.Lock()
+		p.appAttestAuthorization = AppAttestServingAuthorization{}
+		p.mu.Unlock()
+	}
 }

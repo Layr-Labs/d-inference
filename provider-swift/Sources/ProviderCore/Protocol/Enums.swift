@@ -16,6 +16,7 @@ public enum ChipFamily: String, Codable, Sendable {
     case m3 = "M3"
     case m4 = "M4"
     case m5 = "M5"
+    case m6 = "M6"
     case unknown = "Unknown"
 }
 

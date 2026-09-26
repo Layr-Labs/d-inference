@@ -48,6 +48,49 @@ afterEach(() => {
 });
 
 describe("useNetworkStats", () => {
+  it("retains source verification when its cached lease expires", async () => {
+    const observed = Date.parse(SNAPSHOT_AT) / 1000;
+    const timed = { ...stats, providers: [{ id: "provider", verification: {
+      observed_at: observed,
+      app_attest: { state: "verified", verified_at: observed - 1, expires_at: observed + 5 },
+      legacy: { state: "pending" },
+    } }] };
+    upstreamFetch.mockImplementation(async (input) => String(input) === "/api/stats"
+      ? Response.json(timed)
+      : responseFor(input));
+    const { result } = renderHook(() => useNetworkStats());
+    await act(async () => {});
+    const before = result.current.stats;
+    expect(before?.providers[0].verification?.app_attest.state).toBe("verified");
+    await act(async () => { vi.advanceTimersByTime(4_999); });
+    expect(result.current.stats).toBe(before);
+    await act(async () => { vi.advanceTimersByTime(1); });
+    expect(result.current.stats).toBe(before);
+    expect(result.current.stats?.providers[0].verification?.app_attest.state).toBe("verified");
+    expect(requestsTo("/api/stats")).toHaveLength(1);
+  });
+
+  it("replaces the source verdict with a newly fetched observation", async () => {
+    const observed = Date.parse(SNAPSHOT_AT) / 1000;
+    let latest: object = { ...stats, providers: [{ id: "provider", verification: {
+      observed_at: observed,
+      app_attest: { state: "pending" }, legacy: { state: "pending" },
+    } }] };
+    upstreamFetch.mockImplementation(async (input) => String(input) === "/api/stats"
+      ? Response.json(latest)
+      : responseFor(input));
+    const { result } = renderHook(() => useNetworkStats());
+    await act(async () => {});
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+    latest = { ...stats, providers: [{ id: "provider", verification: {
+      observed_at: observed + 10,
+      app_attest: { state: "verified", verified_at: observed + 10, expires_at: observed + 15 },
+      legacy: { state: "pending" },
+    } }] };
+    await act(async () => { result.current.refresh(); });
+    expect(result.current.stats?.providers[0].verification?.app_attest.state).toBe("verified");
+  });
+
   it("loads immediately in Strict Mode after the abandoned mount is cancelled", async () => {
     const { result } = renderHook(() => useNetworkStats(), { wrapper: StrictMode });
     await act(async () => {});

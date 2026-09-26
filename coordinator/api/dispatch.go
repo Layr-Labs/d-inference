@@ -1727,6 +1727,11 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					"timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
 				return outcomeFailFast
 			}
+			if errors.Is(writeErr, registry.ErrProviderDraining) {
+				d.setLastError(protocol.ProviderDrainingForUpdate, http.StatusServiceUnavailable)
+				d.updateRoutingOutcome(d.errorRoutingOutcome("error", "draining", http.StatusServiceUnavailable))
+				return outcomeRetry
+			}
 			d.setLastError("failed to send request to provider", 0)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", 0))
 			return outcomeRetry
@@ -3795,6 +3800,10 @@ func (d *dispatchState) writeCommittedResponse() {
 	// fields onto the pending request so chat-completions writers can attach
 	// them to the JSON body (OpenAI SDKs often hide custom headers).
 	info := collectCommittedProviderInfo(provider)
+	if pr.DispatchVerification.ObservedAt != 0 {
+		verification := pr.DispatchVerification
+		info.Verification = &verification
+	}
 	writeCommittedProviderHeaders(w, info)
 	d.writeTimingHeaderWithProfile(w, pr)
 	d.stampCommitted(pr)

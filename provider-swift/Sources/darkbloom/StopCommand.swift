@@ -4,24 +4,21 @@ import ProviderCore
 
 struct Stop: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Stop the provider launchd service."
+        abstract: "Drain accepted requests, then persistently stop the provider service."
     )
+
+    @OptionGroup var drain: DrainOptions
 
     @Flag(help: "Also remove the launchd plist (full uninstall).")
     var uninstall = false
 
     mutating func run() async throws {
-        let wasLoaded = LaunchAgent.isLoaded()
+        let wasLoaded = LaunchAgent.isAnySupportedLabelLoaded()
+        let session = try await ServiceDrain.prepare(options: drain)
+        defer { session.release() }
 
-        // Disarm crash recovery FIRST so the watchdog can't relaunch what we're
-        // stopping, and drop its timer so the next start gets a fresh grace
-        // window (uninstall additionally deletes its plist). Best-effort.
-        if uninstall {
-            try? WatchdogAgent.uninstall()
-        } else {
-            try? WatchdogAgent.stop()
-        }
-        try? FileManager.default.removeItem(at: WatchdogStateStore.path())
+        try await ServiceDrain.stopDrainedProvider()
+        if uninstall { try? WatchdogAgent.uninstall() }
 
         if uninstall {
             try LaunchAgent.uninstall()

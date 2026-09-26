@@ -24,13 +24,17 @@ import type {
 import { ThinkStreamParser } from "./think-parser";
 import { readSsePayloads } from "./sse";
 
+import { parseVerification } from "../verification";
+
 type SealContext = { ephemPriv: Uint8Array; coordPub: Uint8Array };
 
 import { chatErrorMessage } from "./errors";
 
 /** Extract the provider trust metadata advertised on the response headers. */
-function extractTrustMeta(res: Response): TrustMetadata {
+export function extractTrustMeta(res: Response): TrustMetadata {
   return {
+    verification: parseVerification(res.headers.get("x-provider-verification")),
+    encrypted: res.headers.get("x-provider-encrypted") === "true",
     attested: res.headers.get("x-provider-attested") === "true",
     trustLevel: (res.headers.get("x-provider-trust-level") as TrustMetadata["trustLevel"]) || "none",
     secureEnclave: res.headers.get("x-provider-secure-enclave") === "true",
@@ -208,20 +212,15 @@ export async function streamChat(
       return;
     }
 
-    // Attestation receipt event (sent just before [DONE]).
-    try {
-      const receipt = JSON.parse(payload);
-      if (receipt.se_signature) {
-        trustMeta.seSignature = receipt.se_signature;
-        trustMeta.responseHash = receipt.response_hash;
-        continue;
-      }
-    } catch {
-      // Not a receipt — fall through to normal chunk handling.
-    }
-
     try {
       const chunk = JSON.parse(payload);
+      // Receipts and token deltas share the SSE transport, but each payload
+      // is decoded only once before choosing its destination.
+      if (chunk.se_signature) {
+        trustMeta.seSignature = chunk.se_signature;
+        trustMeta.responseHash = chunk.response_hash;
+        continue;
+      }
       const delta = chunk.choices?.[0]?.delta;
       const content = delta?.content;
       const reasoning = delta?.reasoning_content || delta?.reasoning;

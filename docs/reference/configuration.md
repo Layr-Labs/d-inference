@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-20 · commit `a26b1107b`
+> Last updated: 2026-09-22 · commit `73f8c13f`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -9,7 +9,24 @@ symbol; a production or dev host may pin a different value in its environment
 file. Secrets are named, never valued. Unless a row says *live*, the variable is
 read once at process start and a restart applies a change.
 
-[App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
+[App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. [Durable build approvals](provider-authorization.md#durable-build-qualification) replace per-release env edits; existing env pairs are a bootstrap fallback that cannot override a durable revocation. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
+
+## Provider drain deadline
+
+| Setting | Default / bounds | Consumer |
+|---|---|---|
+| `darkbloom start/stop/restart/update --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
+| `darkbloom restart --startup-timeout` | `180` seconds; 1–3600 | `provider-swift/Sources/darkbloom/RestartCommand.swift` (`Restart`) |
+| `DARKBLOOM_DRAIN_TIMEOUT_SECONDS` | `600` seconds when missing/invalid; valid 1–3600 | Signal/AppKit and planned metadata-reconnect drain in `provider-swift/Sources/ProviderCore/Service/ProviderTermination.swift` (`timeoutSeconds`); launchd environment allowlist preserves it |
+| launchd `ExitTimeOut` | `3660` seconds on install or CLI restart | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`makeServicePlist`, `refreshTerminationAllowance`) |
+
+A CLI deadline expiry leaves a running, non-admitting process and disables
+watchdog/login restart. Signal-only shutdown preserves configured login startup. See [lifecycle commands](../provider/cli-reference.md#graceful-stop-and-restart)
+for recovery and explicit force semantics. Existing loaded launchd jobs must be
+restarted to adopt the new allowance. Local mailbox files are owner-only under
+`lifecycle/` beside the daemon state file and bind PID plus kernel process-start
+time; they are not network control endpoints or serving credentials.
+
 
 ## Where values are set
 
@@ -19,7 +36,7 @@ read once at process start and a restart applies a change.
 | Coordinator, dev | Same file layout on the dev VM, written by `deploy/gcp/refresh-env.sh`; see [`../operations/dev-environment.md`](../operations/dev-environment.md). |
 | Coordinator, local | Whatever shell exports `go run ./coordinator/cmd/coordinator` inherits. `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` is the only way to start without a database. |
 | Provider CLI, `darkbloom start --foreground` | The invoking shell's environment, minus the 13 variables scrubbed by `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift`. Every `DARKBLOOM_*` row below applies. |
-| Provider CLI, installed LaunchAgent | `darkbloom start` (daemon mode) writes a launchd plist whose `EnvironmentVariables` are built by `passthroughEnvironment` in `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`: only the allow-list `passthroughEnvKeys` + `inferencePassthroughEnvKeys` is copied from the operator's shell (`DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_MEMORY`, `DARKBLOOM_MLX_RESOURCE_DEBUG`, `DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_MLX_CACHE_LIMIT_GB`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`, `DARKBLOOM_PREFILL_DEADLINE_MODE`), plus `MLX_GATHER_QMM_EXPERT_SLICES` only when it is exactly `1`. `PATH` is deliberately dropped. The watchdog plist (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`) additionally forwards `DARKBLOOM_NO_UPDATE_CHECK`. Every other provider variable is inert under launchd. |
+| Provider CLI, installed LaunchAgent | `darkbloom start` (daemon mode) writes a launchd plist whose `EnvironmentVariables` are built by `passthroughEnvironment` in `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`: only the allow-list `passthroughEnvKeys` + `inferencePassthroughEnvKeys` is copied from the operator's shell (`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`, `DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_MEMORY`, `DARKBLOOM_MLX_RESOURCE_DEBUG`, `DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_MLX_CACHE_LIMIT_GB`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`, `DARKBLOOM_PREFILL_DEADLINE_MODE`), plus `MLX_GATHER_QMM_EXPERT_SLICES` only when it is exactly `1`. `PATH` is deliberately dropped. The watchdog plist (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`) additionally forwards `DARKBLOOM_NO_UPDATE_CHECK`. Every other provider variable is inert under launchd. |
 | Provider CLI, `provider.toml` | `~/.config/darkbloom/provider.toml` (`ConfigManager` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`) is the durable configuration; a variable that overrides a config key says so in its Effect cell (`DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`). |
 | console-ui | Next.js `.env*` files or the hosting build environment (Vercel-style). Every console-ui variable is `NEXT_PUBLIC_*` or build-tooling: inlined at **build** time, so changing one requires a rebuild. There is no server-only secret; a gitignored `.env.local` in `console-ui/` is the only local file and no `.env.example` exists. |
 | admin-ui | Server-only **runtime** variables read by React Server Components on each request; set them in `.env*` or the host environment. `NODE_ENV` is set by Next. |
@@ -395,6 +412,26 @@ Installed processes still use the source defaults.
 | `DARKBLOOM_QWEN4_QSA_PARALLEL_FULL_KV` | unset or exact `1` enables; explicit `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpParallelQSA.swift` (`fullKVEnabled`) | Existing parallel QK/ordered-PV path for eligible native full-KV widths 1–6. Larger prefill retains existing dispatch. Other explicit spellings stay disabled. Separate compact-KV experiments remain opt-in. |
 | `DARKBLOOM_QWEN4_QSA_PARALLEL_VALUE_PARTITIONS` | `1`, `2`, `4`, `8`, `16`, `32` | `32` for full KV; caller fallback for compact KV | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpParallelQSA.swift` (`valuePartitions`) | A valid explicit caller argument wins over the environment. Invalid explicit values retain the caller fallback. This changes scheduling, not arithmetic order, precision or MTP depth. |
 | `DARKBLOOM_QWEN4_LAYER_ASYNC` | unset or exact `1` enables; explicit `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpLayerSubmission.swift` (`enabled`, `plan`) | Early singleton text layer submission on valid native paged caches at widths 1–6. Media/explicit positions, wider/batched shapes and faulted or unknown caches retain the existing scheduling. Other explicit spellings stay disabled. |
+
+### Native DiffusionGemma expert reduction
+
+These controls affect native DiffusionGemma inference, not its weights,
+denoising recipe or autoregressive MTP capability. Set overrides before starting
+a foreground provider or benchmark. These variables are not forwarded by
+`LaunchAgent.inferencePassthroughEnvKeys`; installed processes retain the source
+default unless their own environment supplies an override.
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_DIFFUSION_EXPERT_UNSORT` | unset enables; case-insensitive `1`, `true`, `yes`, `on` enable; any other explicit value disables | on for eligible inference | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/DiffusionGemmaExpertReduction.swift` (`enabled`, `eligible`, `shaderIndexFits`, `reduce`); `libs/mlx-swift-lm/Libraries/MLXLLM/Models/DiffusionGemmaBlocks.swift` (`DiffusionGemmaExperts.callAsFunction`) | Reuses the ordered weighted-unsort kernel for sorted BF16 outputs/weights with hidden size 2816, eight selected experts, at least 64 assignments and a matching uint32 inverse permutation on the ordinary GPU device/stream. Flattened output addresses must fit the shader's uint32 range, with checked host multiplication. Avoids materializing the restored expert-output intermediate. Training, CPU/custom streams, oversized shader indices, other shapes/dtypes and explicit rollback retain the original scatter/multiply/reduce graph. No context-capacity, sampler, attention or precision change. |
+| `DARKBLOOM_DIFFUSION_SOFT_EMBEDDING` | case-insensitive `1`, `true`, `yes`, `on` enable; unset or any other value disables | off; qualification candidate | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/DiffusionGemmaSoftEmbedding.swift` (`enabled`, `eligible`, `project`) | Uses the existing non-transposed affine matrix math with a 64-row GPU tile for the 256-by-262144 soft-conditioning input and 2816-wide Q8/group64 embedding. Native BF16 inference on the ordinary GPU stream only; training, traced/retained graphs, other geometry/quantization and missing resources retain original `quantizedMM`. Input-view preparation, weights and native sampler are unchanged. |
+| `DARKBLOOM_DIFFUSION_COMPILED_SAMPLER` | exact `1` enables; unset or any other value disables | off; qualification candidate | `libs/mlx-swift-lm/Libraries/MLXLMCommon/DiffusionGemmaCompiledSampler.swift` (`enabled`, `eligible`, `graph`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/DiffusionGemmaSampler.swift` (`stepNative`) | Compiles native entropy/acceptance and sampling-state operations for the eligible single-row, 256-position, 262144-vocabulary FP32 path. Preserves key ordering, integer draws, exact RNG/clamp constants and validation before state mutation; arbitrary callbacks, CPU/custom streams, other geometry/storage and nondefault stability/entropy/confidence policies retain the original sampler. Request arrays are explicit inputs to bounded compiled variants. Weights, diffusion recipe and context are unchanged. Account separately for first-use compilation and warmed latency. |
+
+The following observer affects benchmarks only, not serving dispatch.
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_DIFFUSION_DESCRIPTOR_PROBE` | exact `1` enables | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/DiffusionBenchmarkRouteProbe.swift` (`isEnabled`, `begin`, `end`) | Emits descriptor, DiffusionGemma weighted-reduction, soft-conditioning and compiled-sampler dispatch counts from the first iteration, then requires unchanged disarmed counters. Does not select a route or alter serving. Use exclusive ownership, report first-use latency separately and exclude that iteration from warmed comparisons. |
 
 ### Bonsai performance qualification
 

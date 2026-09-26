@@ -29,6 +29,12 @@ func (r *Registry) BindVerifiedMachineIdentity(p *Provider, accountID, machineID
 func (p *Provider) GetVerifiedMachineIdentity() (accountID, machineID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.VerifiedMachineIdentityLocked()
+}
+
+// VerifiedMachineIdentityLocked is for snapshot visitors already holding p.mu.
+// These identifiers are for private aggregation, never public serialization.
+func (p *Provider) VerifiedMachineIdentityLocked() (accountID, machineID string) {
 	return p.verifiedMachineAccount, p.verifiedMachineID
 }
 

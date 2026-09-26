@@ -2,7 +2,7 @@ package appattest
 
 import "time"
 
-const AuthorizationPolicyVersion = "mac-app-attest-v2"
+const AuthorizationPolicyVersion = "mac-app-attest-v3"
 const AssertionFreshness = 15 * time.Minute
 
 // AuthorizationBinding belongs to one live connection, never just a machine.
@@ -13,6 +13,11 @@ type AuthorizationBinding struct {
 }
 
 type AuthorizationEvidence struct {
+	// Type-2 SHA-256 measurement from verified Apple metadata. A 20-byte value
+	// is only a truncated prefix and needs unique durable full-hash binding.
+	CodeDirectoryHash                            string
+	CodeMeasurementTruncated                     bool
+	CodeMeasurementAmbiguous                     bool
 	CodeMeasurementKnown, CodeMeasurementMatched bool
 	VerificationKeyKnown, VerificationKeyMatched bool
 	HardwareKnown, HardwareMatched               bool
@@ -89,7 +94,9 @@ func EvaluateAuthorization(e AuthorizationEvidence, now time.Time) Authorization
 	// macOS 27 CDhash opt-in supplies the exact signed code measurement instead
 	// of a bundle-version extension. Match it to a qualified immutable release;
 	// app-reported version/hash fields alone cannot establish build identity.
-	if !e.CodeMeasurementKnown {
+	if e.CodeMeasurementAmbiguous {
+		unknown("apple_code_measurement_ambiguous")
+	} else if !e.CodeMeasurementKnown {
 		unknown("apple_code_measurement_unavailable")
 	} else if !e.CodeMeasurementMatched {
 		deny("apple_code_measurement_mismatch")

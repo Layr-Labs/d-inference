@@ -1,8 +1,8 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-20 · commit `0cb0c6310`
+> Last updated: 2026-09-26 · commit `c0d06f9ba`
 
-The complete public HTTP surface of the coordinator, derived from the 112 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -14,12 +14,96 @@ Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
 
+## Graceful provider lifecycle
+
+Lifecycle drains preserve the existing public inference protocol. A reservation
+that reaches a newly draining provider's final writer is retried as transient
+503 capacity, with no sent frame or new usage debit. Already accepted requests
+continue through their normal streaming/non-streaming terminal and settlement
+paths. The additive [provider WebSocket barrier](protocol-messages.md#provider-lifecycle-drain)
+is connection-scoped and never exposed as an unauthenticated HTTP stop endpoint.
+The unified local API refuses new admissions with 503 during drain and tracks
+accepted response bodies until their final write. This applies to local-only
+CLI replacement as well as coordinator-connected providers; CLI lifecycle
+control remains private to the local OS user.
+
+The `trust_status.authorization` readiness diagnostic can use `self_route` for
+an account-owned connection that passes existing self/preferred-owner liveness
+and privacy gates below the public trust floor. It does not grant public-fleet
+eligibility or bypass per-model dispatch checks. Code:
+`coordinator/registry/owner_authorization.go` (`ProviderOwnerServingAuthorized`)
+and `coordinator/api/app_attest.go` (`providerServingAuthorizationStatus`).
+
+## Verification presentation contract
+
+`X-Provider-Authorization-Method` is `app_attest`, `legacy`, `dual`, or `none`.
+`X-Provider-Verification` is compact JSON with `observed_at`, `app_attest`, and
+`legacy`. Each method has `state` and optional `verified_at` / `expires_at`
+(exclusive Unix seconds). Server states are `verified`, `pending`, `expired`,
+`revoked`, `unsupported`, and `offline`; missing metadata is unknown. Unsupported
+means the registered App Attest protocol lacks the qualified protocol 3 path,
+not an inference from a reported OS version. Times absent from the response are
+unavailable. No certificate, receipt, account, credential, serial or canonical
+machine identifier is included. Code: `coordinator/registry/verification.go`
+(`ProviderVerification`).
+
+For inference these fields are frozen at `authorizeInferenceHandoff` in
+`coordinator/registry/inference_authorization.go`, after the writer queue and
+last authorization check. The winning attempt's snapshot is used for headers
+and opt-in chat `metadata.verification` even if its grant expires or is revoked
+before the first response byte. Existing `X-Provider-Trust-Level` and MDA fields
+keep their legacy meaning. The console proxy forwards the verification and
+provider-hop encryption headers; it does not construct them from provider output.
+The server decides `verified` with precise time before dispatch; Unix-second
+serialization can make a valid final fractional second show equal `observed_at`
+and `expires_at`. Historical display preserves that frozen server verdict,
+while live views still expire grants at the recorded deadline. Public network statistics are explicitly historical source observations: `summarizeSnapshotVerification` in `console-ui/src/lib/verification.ts` keeps those method counts stable until the next snapshot, while the stats header exposes age. Directory filters and proof details use that same observation. Owner dashboard/removal controls continue to use live expiry; a stale statistics snapshot never grants permission to serve.
+
+`GET /v1/me/providers`, `GET /v1/providers/attestation`, and individual public
+`GET /v1/stats` provider rows include the same `verification` object evaluated
+at snapshot time. Owner records with no live connection are offline. Connected but untrusted owned
+providers retain their live verification verdict (including revocation), while
+serving authorization remains false. Owner `verification`,
+`app_attest_authorized` and expiry are checked with current account and status
+in one registry/provider-locked observation (`ProviderVerificationAndAuthorization` in
+`coordinator/registry/verification.go`), so grant changes cannot mix opposing
+verdicts in one row. Unknown App Attest protocol versions remain `unsupported`;
+only protocol 3 can show a pending current authorization path. Public attestation rows capture verification,
+compatibility authorization flags, and catalog models in one registry/provider
+locked walk (`ForEachProviderVerification` in `coordinator/registry/verification.go`).
+Stats rows and geography aggregates use one locked visitor and detached location
+values (`aggregateProviderLocations` in `coordinator/api/stats_provider_locations.go`),
+so a new or replacement connection cannot change the geography between the row
+and count observations. Missing
+or stale verification metadata is counted as unknown in the UI, with a separate
+known-verdict denominator. Owner views retain explicit `app_attest_authorized`
+and expiry guidance during older-coordinator rollout without inventing missing
+proof timestamps; connected untrusted records remain in the connected count.
+`verification_counts` in stats and privacy-floored provider geography buckets
+contains `connections`, `authorized` (union), `app_attest`, `legacy`, and
+`overlap`. Both method counts include the overlap. Legacy `hardware_attested`
+counts remain evidence counts. Top-level counts additionally report
+`known_unique_machines`, `connections_without_machine_identity`,
+`reported_macos_27_or_later`, and `connections_with_reported_os`. Known machines
+are deduplicated privately from verified account/machine inventory; this is not
+proof of physical uniqueness. OS counts are app reports, not successful App
+Attest counts. Private-only providers are excluded. These aggregates describe
+the source snapshot, not a reusable routing grant. Code:
+`coordinator/api/stats_verification.go` (`addProvider`).
+
+Live console views honor each method's expiry and stop showing cached verified
+verdicts after 60 seconds from `observed_at`, even if polling fails. Revocation
+appears on refresh, subject to server/cache/poll delay; no instant push is
+promised. Chat history uses dispatch time instead of the live clock. No
+telemetry wire enums or authorization gates change.
+
+
 ## App Attest authorization additions
 
 | Surface | Contract | Code |
 |---|---|---|
 | `POST /v1/admin/app-attest/revoke` | Admin authenticated; account/key/reason body, durable idempotent revocation and immediate local dispatch fencing; [exact response and errors](provider-authorization.md#admin-revocation) | `coordinator/api/app_attest_revocation.go` (`handleAdminAppAttestRevoke`) |
-| `GET /v1/providers/attestation` | Additive `app_attest_authorized` boolean and `authorization_expires_at` Unix deadline; no account, credential, canonical machine IDs or raw evidence exposed | `coordinator/api/provider.go` (`handleProviderAttestation`) |
+| `GET /v1/providers/attestation` | Public connections only; private-only providers are excluded before shared caching. Additive `app_attest_authorized` boolean and `authorization_expires_at` Unix deadline; no account, App Attest credential, canonical machine IDs or raw evidence exposed. The existing persistent legacy `se_public_key` remains linkable across public sessions. | `coordinator/api/provider.go` (`handleProviderAttestation`) |
 
 `GET /v1/me/providers` adds account-scoped `app_attest_authorized` and optional
 `authorization_expires_at` (exclusive Unix seconds), computed from the current
@@ -46,6 +130,7 @@ Code: `coordinator/api/me_handlers.go` (`buildMyProvider`).
 | `privy` | Bearer must be a Privy JWT. API keys → 403 `forbidden` | `requirePrivyAuth` |
 | `user` | `key` or `privy` plus an in-handler check that a resolved account user is in the context (Privy JWT, or an API key linked to a Privy account). Admin key and unlinked legacy keys → 401 `auth_error` | `requirePrivyUser` (`coordinator/api/billing_handlers.go`) |
 | `admin` | In-handler check: Bearer equals the admin key (`EIGENINFERENCE_ADMIN_KEY`), or the context holds a Privy user whose email is in the admin list. Otherwise 403 `forbidden`. When the route is registered *without* `requireAuth` no user is ever placed in the context, so only the admin key can pass; those rows say `admin-key` | `isAdminAuthorized` (`coordinator/api/release_handlers.go`), `requireAdminKey` (`coordinator/api/invite_handlers.go`), `isAdmin` (`coordinator/api/billing_handlers.go`) |
+| `admin-session` | `requireAuth` verifies the Privy JWT or admin key; the handler requires an allowlisted admin and rejects inference API keys/provider tokens even when owned by an admin. Missing/invalid credentials → 401; authenticated non-admin or non-interactive account credentials → 403 | `isBuildAdminAuthorized` (`coordinator/api/app_attest_builds.go`) |
 | `publishing` | `X-Darkbloom-Publishing-Key` header or Bearer equal to the bootstrap `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a publishing key stored in the DB | `requirePublishingAPIKey` (`coordinator/api/model_registry_handlers.go`) |
 | `release` | Bearer equal to `EIGENINFERENCE_RELEASE_KEY`; otherwise 401 `unauthorized` | `handleRegisterRelease` (`coordinator/api/release_handlers.go`) |
 | `stripe-sig` | Stripe webhook signature | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`), `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) |
@@ -67,6 +152,15 @@ Both tiers set `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `
 ### Inference (4)
 
 All four share the chain `drainGate → requireAuth → rateLimitConsumer → sealedTransport → handler` and the pipeline in `coordinator/api/consumer.go`.
+
+After authentication, shared preprocessing rejects negative or malformed
+top-level `max_tokens`, `max_completion_tokens` and `max_output_tokens` with
+HTTP400 `invalid_request_error` naming the field, before budget defaulting or
+inference admission (`invalidOutputTokenField`,
+`coordinator/api/output_budget_validation.go`). Omitted, null and zero retain
+their existing default-bound behavior; valid positive integer bounds and alias
+precedence are unchanged. Nested tool arguments and schemas are not inspected
+as inference budgets.
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
@@ -116,7 +210,7 @@ Lifecycle semantics: [`../consumer/authentication.md`](../consumer/authenticatio
 
 Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInterval` = 5 (`interval`). The `token` is a **provider token** (`eigeninference-pt-` + 64 hex characters, labelled `device-<user_code>`; only its SHA-256 hash is stored) used by the provider CLI to link a machine to the account; it is not a consumer API key. The small-body cap [`maxControlPlaneBodyBytes`](#limits-and-validation) applies to these unauthenticated endpoints.
 
-### Account, balance, usage and pricing (13)
+### Account, balance, usage and pricing (15)
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
@@ -126,6 +220,8 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/billing/methods` | `handleBillingMethods` (`coordinator/api/billing_handlers.go`) | `—` | — | Which top-up methods are enabled |
 | GET | `/v1/provider/earnings` | `handleProviderEarnings` (`coordinator/api/consumer.go`) | `—` | — | Legacy lookup by `?wallet=` query or `X-Provider-Wallet` header; `ProviderEarningsResponse` |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
+| GET | `/v1/me/token-promotions` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | — | Account-scoped grants and eligible offers |
+| POST | `/v1/me/token-promotions/claim` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | `fin` | Claim a capped grant; [campaign procedure](../operations/model-token-promotions.md) |
 | GET | `/v1/me/summary` | `handleMySummary` (`coordinator/api/me_handlers.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
 | GET | `/v1/me/providers` | `handleMyProviders` (`coordinator/api/me_handlers.go`) | `user` | — | Machines linked to the account |
 | GET | `/v1/me/self-route-models` | `handleMySelfRouteModels` (`coordinator/api/me_handlers.go`) | `user` | — | Models the account's own machines can serve |
@@ -134,7 +230,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | PUT | `/v1/pricing` | `handleSetPricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Provider sets its own prices |
 | DELETE | `/v1/pricing` | `handleDeletePricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Revert to defaults |
 
-The four `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
+All six `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
 
 ### Stripe, payouts and MDM (13)
 
@@ -196,7 +292,7 @@ Cache behavior is implemented by `coordinator/api/cache_refresher.go`
 | `geography_snapshot_at` | RFC 3339 UTC observation start for the geography attempt, separate from core `snapshot_at`; empty before an attempt or after expiry | `coordinator/api/stats_geography.go` (`statsGeography`) |
 | `request_locations`, `request_regions`, `unknown_request_location_requests`, `suppressed_request_city_requests` | `null` when locations are unavailable; successful empty windows retain arrays and numeric counts. A failed attempt replaces previous geography rather than presenting stale figures as current | `coordinator/api/stats_geography.go` (`computeStatsGeography`, `addTo`) |
 | `request_flows` | `null` when flows are unavailable, an array (possibly empty) on success; independent of location status | `coordinator/api/stats_geography.go` (`computeStatsGeography`) |
-| `provider_locations`, `provider_regions` | Still computed from the live fleet with core stats; request-geography failures do not hide provider geography | `coordinator/api/stats.go` (`computeStats`, `aggregateProviderLocations`) |
+| `provider_locations`, `provider_regions` | Computed from the same live-fleet walk as core provider rows and verification counts; request-geography failures do not hide provider geography | `coordinator/api/stats.go` (`computeStats`); `coordinator/api/stats_provider_locations.go` (`aggregateProviderLocations`) |
 
 The stats, totals, and series handlers emit the 503 `service_unavailable` error
 envelope when their required data is unavailable.
@@ -250,11 +346,15 @@ client receipt. See [incoming request accounting](../architecture/request-accoun
 | GET | `/v1/releases/latest` | `handleLatestRelease` (`coordinator/api/release_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `handleReadyz` (`coordinator/api/drain.go`) | `—` | 200 normally; 503 while draining |
 
-The 0.9.7 candidate sets `LatestProviderVersion = "0.9.7"` in
+The 0.9.8 candidate sets `LatestProviderVersion = "0.9.8"` in
 `coordinator/api/server.go`. A registered active release still takes precedence
 for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none
 exists (`coordinator/api/release_handlers.go`, `handleLatestRelease`).
+
+`POST /v1/releases` accepts additive `code_directory_hash`, `source_commit`, `ci_run_id`, and `require_app_attest_qualification`. The production workflow requires durable approval; enabled production App Attest serving also enforces the gate server-side. The scoped release key cannot create approval. Missing or conflicting approval returns 409 without advancing latest; unavailable qualification returns 503. Both the legacy version path and a bundle-hash-qualified `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-<PLATFORM>.tar.gz` path are accepted only on the configured R2 origin. Code: `coordinator/api/app_attest_publication.go` (`persistReleaseForPublication`), `coordinator/api/release_handlers.go` (`trustedReleaseArtifactURL`).
+
+Admin `GET/POST /v1/admin/app-attest/builds` lists/approves signed builds; admin `POST /v1/admin/app-attest/builds/revoke` records a permanent withdrawal. See [request/response and error contracts](provider-authorization.md#durable-build-qualification). With production App Attest serving enabled, even cached `/v1/releases/latest` and `/api/version` responses return 503 when the selected release lacks fresh qualification/catalog readiness; this does not silently select a different release.
 
 Release publishing: [`../operations/provider-release.md`](../operations/provider-release.md).
 
@@ -272,7 +372,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 |---|---|---|---|---|
 | POST | `/v1/telemetry/events` | `handleTelemetryIngest` (`coordinator/api/telemetry_handlers.go`) | `—` | Always **410 Gone** `telemetry_ingest_disabled`. Live telemetry is described in [`../architecture/telemetry.md`](../architecture/telemetry.md) |
 
-### Admin (35)
+### Admin (41)
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
@@ -285,6 +385,11 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | DELETE | `/v1/admin/models/aliases/{aliasID}` | `handleModelAliasDelete` (`coordinator/api/model_alias_handlers.go`) | `publishing` | |
 | GET / POST | `/v1/admin/models/openrouter-aliases` | `handleOpenRouterAliasList`, `handleOpenRouterAliasUpsert` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | Two registrations |
 | DELETE | `/v1/admin/models/openrouter-aliases/{aliasID}` | `handleOpenRouterAliasDelete` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | |
+| GET / PUT | `/v1/admin/token-promotions` | `handleAdminModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `admin-key` | Two registrations; inspect/configure token campaigns |
+| POST | `/v1/admin/app-attest/revoke` | `handleAdminAppAttestRevoke` (`coordinator/api/app_attest_revocation.go`) | `admin-key` | Revoke an account-owned credential; [contract](provider-authorization.md#admin-revocation) |
+| GET | `/v1/admin/app-attest/builds` | `handleAdminAppAttestBuilds` (`coordinator/api/app_attest_builds.go`) | `admin-session` | List exact signed build qualifications and audits |
+| POST | `/v1/admin/app-attest/builds` | `handleAdminAppAttestBuilds` (`coordinator/api/app_attest_builds.go`) | `admin-session` | Independently approve signed bytes and record test evidence; [contract](provider-authorization.md#durable-build-qualification) |
+| POST | `/v1/admin/app-attest/builds/revoke` | `handleAdminAppAttestBuildRevoke` (`coordinator/api/app_attest_builds.go`) | `admin-session` | Permanently withdraw build approval and fence local grants; [contract](provider-authorization.md#durable-build-qualification) |
 | GET / DELETE | `/v1/admin/releases` | `handleAdminListReleases`, `handleAdminDeleteRelease` (`coordinator/api/release_handlers.go`) | `admin-key` | Two registrations |
 | GET | `/v1/admin/state-export` | `handleAdminStateExport` (`coordinator/api/admin_state_export.go`) | `admin-key` | 404 unless `EIGENINFERENCE_STATE_EXPORT_ENABLED=true`; 412 `precondition_failed` without an encryption recipient. See [`../operations/state-export.md`](../operations/state-export.md) |
 | POST | `/v1/admin/auth/init` | `handleAdminAuthInit` (`coordinator/api/release_handlers.go`) | `—` | Body `{"email"}`; starts a Privy email OTP for an admin email. 503 `not_configured` when Privy is not configured; 500 `otp_error` when sending fails |
@@ -310,7 +415,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 |---|---|---|
 | `/v1/` | `handleUnimplementedEndpoint` | Any `/v1/*` request matching no registered method+path — including a wrong method on a real path — gets 404 `invalid_request_error` with message `endpoint <METHOD> <path> is not implemented` |
 
-Total: 4 + 9 + 10 + 3 + 13 + 13 + 6 + 5 + 5 + 3 + 1 + 35 + 1 = **108 registrations**, matching `routes()`.
+Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 5 + 5 + 3 + 1 + 41 + 1 = **116 registrations**, matching `routes()`.
 
 
 ## Exact cache status
@@ -426,7 +531,7 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 
 | Status | `type` values | Raised by |
 |---|---|---|
-| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, inference-enforced `tool_choice` combined with images (`param: tool_choice`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
+| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, native media tools unsupported by a model's serving fleet (`param: model`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
 | 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`requireAuth`, `requirePrivyAuth`), no account user (`requirePrivyUser`), release key |
 | 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
 | 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) |
@@ -517,6 +622,31 @@ provider sends none (`handleStreamingResponseWithFirstChunkAndError`,
 
 ### Responses API
 
+Non-empty string `instructions` becomes a leading system message before `input`,
+preserving whitespace, existing system/developer messages and tool history.
+Missing, null or empty instructions add no message; other types return400.
+Both serving and text-cache preparation use `lowerResponsesWithContent`
+(`coordinator/promptcontract/endpoint_lower_responses.go`); Rust mirrors the
+text-cache contract in `lower_responses` (`coordinator/promptsidecar/src/endpoint.rs`).
+Routing and billing reservation estimates include the new system message before
+lowering (`routingShape`, `billingBytes`, `coordinator/api/request_introspection.go`).
+
+Serving uses `LowerResponsesInferenceBody`
+(`coordinator/promptcontract/endpoint_responses_inference.go`) to preserve
+ordered inline media alongside text and function history. `input_image` accepts
+a string `image_url`; canonical `image_url` and `video_url` parts accept their
+`{"url": ...}` objects. These references must be inline `data:` URIs. Uploaded
+file IDs, files, audio, unknown parts and the unsupported `input_video` alias
+return400 rather than being omitted or fetched. The existing Chat remote-media
+resolver policy is unchanged. Media-bearing `function_call_output.output`
+arrays participate in vision routing and media-aware token estimates.
+
+This serving path is distinct from `LowerProviderBody`, the text-only Go/Rust
+cache-planning contract. That contract rejects media, including media in tool
+outputs; accepting a Responses image for inference does not establish exact
+coordinator cache-routing eligibility. Native model codec, media-size, context
+and tool-capability checks still apply.
+
 Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`newResponsesStreamEmitter`, `coordinator/api/responses_stream.go`).
 
 `usage.total_tokens` is always emitted as `input_tokens + output_tokens`, including
@@ -573,7 +703,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Tool schemas | Normalised to strict JSON Schema before dispatch; schemas the constraint parser cannot compile → 422 | `NormalizeToolSchemas`, `validateResolvedToolConstraintParser` |
 | Vision | Image parts require a vision-capable model, otherwise 400; a vision model with no vision-capable provider online → 503 `model_unavailable` | `detectMediaRequirement` (`coordinator/api/request_introspection.go`), `visionToolsFailFast` (`coordinator/api/inference_preprocess.go`) |
 | Remote images | `http(s)` `image_url` parts are gated before dispatch and fetched by the coordinator; the fetch is billed as media | `gateRemoteMediaPreDispatch`, `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |
-| Inference-enforced `tool_choice` + images | `required` or a named `tool_choice` (modes that need provider-side constraint enforcement) together with image content → 400, `param: tool_choice`. `response_format` is not validated by the coordinator | `handleChatCompletions` |
+| Forced media tools / media tool results | Requires explicit per-model native media-tool capability. A public model served only by providers lacking it → 400, `param: model`; no currently eligible capable provider → 503. Applies to `required`/named tools with media and media-bearing tool results even with `tool_choice: none`. Other vision/tool checks remain; `response_format` is not validated by the coordinator | `nativeMediaToolsFailFast`, `coordinator/api/native_media_tools.go` |
 | Token rate limits | Per-account input and output tokens per minute → 429 with `Retry-After` | `applyTokenRateLimitWithAdmission`, `writeTokenRateLimited` |
 | Model shedding | A model currently rejecting → 429 with `Retry-After` from `estimateRetryAfter` | `shedIfModelRejected` |
 
@@ -598,7 +728,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 
 Three distinct version values govern providers:
 
-- `LatestProviderVersion = "0.9.6"` (`coordinator/api/server.go`) is the source's provider-version display fallback. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered. Preparing a source bump does not create a release row or alter `/v1/releases/latest`.
+- `LatestProviderVersion = "0.9.8"` (`coordinator/api/server.go`) is the source's provider-version display fallback. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered. With production App Attest serving enabled, `/api/version` returns 503 instead of a download fallback when release authorization is unavailable. Preparing a source bump does not create a release row or alter `/v1/releases/latest`.
 - `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) is a **feature floor for the WebSocket `desired_models` message**: only Swift-runtime providers at or above it receive the message (`providerSupportsDesiredModels`, `fanOutDesiredModels` in `coordinator/api/model_alias_handlers.go`), because older decoders disconnect on unknown message types. It does not affect HTTP routes.
 - `EIGENINFERENCE_MIN_PROVIDER_VERSION` (`MinProviderVersion`, `coordinator/api/server_config.go`; `SetMinProviderVersion`) is the **routing floor**: a provider that registers or re-attests below it stays connected but is marked not runtime-verified and excluded from routing (`coordinator/api/provider.go`, registration and `applyChallengeMinVersionPolicy`), and its log uploads get 426 `upgrade_required`.
 - **Feature floors** exclude too-old providers from serving specific request traits rather than the whole model: tools require providers ≥ `0.6.3` (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`); vision requests strip repetition-penalty fields for providers below `penaltySafeProviderVersion` = `0.6.7` (`coordinator/api/consumer.go`); reconnect attestation needs `minProviderVersionForReconnectAttestation` = `0.8.15` (`coordinator/api/provider.go`); servability gating uses `servabilityActivationFloorMinVersion` = `0.8.0` and `servabilityPerModelFloorMinVersion` = `0.8.16` (`coordinator/registry/servability.go`); private slot grants need `privateSlotGrantsMinVersion` = `0.7.5` (`coordinator/registry/pooled_admission.go`). When no provider clears the floor for a request, the client sees 503 `model_unavailable` (or 400 `param: tool_choice` when the fleet serves the model but no provider advertises the tool-constraint protocol).

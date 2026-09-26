@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-22 · commit `31a6ca37f`
+> Last updated: 2026-09-26 · commit `3e9dcf6b4`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -726,3 +726,7 @@ and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
 opt-in encrypted transport gate.
+
+## Telemetry archive worker
+
+The independent Python worker uses `scripts/telemetry_archive/Dockerfile` and hash-pinned `requirements.lock`. Run `uv sync --locked` in that directory for local tooling; build the container for Linux/amd64. It does not rebuild or deploy the coordinator. See [telemetry history](../operations/telemetry-history.md).

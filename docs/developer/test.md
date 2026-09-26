@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-22 · commit `31a6ca37f`
+> Last updated: 2026-09-26 · commit `3e9dcf6b4`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2330,3 +2330,7 @@ against a mock WebSocket coordinator while accepted work is held open.
 `ProcessLifecycleTests` verifies that lock acquisition cannot kill a live PID owner.
 `TestRestartStatusReportsOwnerAuthorizationWithoutPublicGrant` checks explicit
 owner authorization while retaining runtime/security denials.
+
+## Telemetry archive validation
+
+In `scripts/telemetry_archive`, run `uv run ruff check src tests`, `uv run ruff format --check src tests`, and `uv run pytest -q`. Set `TEST_ARCHIVE_DATABASE_URL` only to a disposable local database named `archive_test` for PostgreSQL restoration, snapshot-isolation, and nested-outcome tests. The tests reject remote databases. Production copy/BigQuery verification is a separate gate in [telemetry history](../operations/telemetry-history.md).

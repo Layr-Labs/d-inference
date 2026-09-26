@@ -13,6 +13,7 @@ private final class SentMessages: @unchecked Sendable {
     private let lock = NSLock()
     private var messages: [OutboundMessage] = []
     func append(_ message: OutboundMessage) { lock.withLock { messages.append(message) } }
+    var last: OutboundMessage? { lock.withLock { messages.last } }
     var count: Int { lock.withLock { messages.count } }
 }
 
@@ -36,7 +37,31 @@ struct APNsPushHistoryTests {
         let sent = SentMessages()
         #expect(await loop.handleCodeChallenge(challenge, send: SendHandle { sent.append($0) }))
         #expect(sent.count == 1)
-        #expect(APNsPushHistoryStore(directory: dir).load().repliedAt.isEmpty)
+        let history = APNsPushHistoryStore(directory: dir)
+        #expect(history.load().repliedAt.isEmpty)
+        #expect(sent.last?.onWritten == nil, "resume replies never record APNs history")
+        #expect(await loop.handleCodeChallenge(challenge, send: SendHandle { sent.append($0) },
+                                              onWritten: { history.recordReply() }))
+        #expect(history.load().repliedAt.isEmpty, "enqueueing or dropping a frame is not a successful write")
+        let completion = try #require(sent.last?.onWritten)
+        completion() // successful NWConnection contentProcessed callback
+        #expect(history.load().repliedAt.count == 1)
+    }
+
+    @Test func tokenCallbacksRemainTrackedAfterStartupWaiterExpires() async throws {
+        let dir = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let history = APNsPushHistoryStore(directory: dir)
+        let bridge = APNsBridge()
+        bridge.trackDeviceToken(in: history)
+        #expect(history.load().deviceTokenPresent == false)
+        #expect(await bridge.awaitDeviceToken(timeoutSeconds: 0) == nil)
+        bridge.setDeviceToken("late-token")
+        #expect(history.load().deviceTokenPresent == true)
+        // Installation after an early token also sees the live value.
+        bridge.trackDeviceToken(in: history)
+        #expect(history.load().deviceTokenPresent == true)
+        #expect(!String(decoding: try Data(contentsOf: history.url), as: UTF8.self).contains("late-token"))
     }
 
     @Test func persistsAcrossStoreInstancesOwnerOnly() throws {

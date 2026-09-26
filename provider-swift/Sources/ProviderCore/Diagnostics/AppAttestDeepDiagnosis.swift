@@ -72,6 +72,10 @@ public enum AppAttestDeepDiagnosis {
         if p.sipEnabled == false { problems.append("System Integrity Protection is not fully enabled") }
         if p.authenticatedRoot == false { problems.append("Authenticated Root is not confirmed enabled") }
         guard !problems.isEmpty else {
+            guard p.sipEnabled == true && p.authenticatedRoot == true else {
+                return Diagnostic(section: .appAttest, name: "boot security", level: .warn,
+                                  message: "boot security is indeterminate: SIP or authenticated root could not be read.")
+            }
             let parts = [p.sipEnabled == true ? "SIP enabled" : nil, p.authenticatedRoot == true ? "authenticated root enabled" : nil]
             return Diagnostic(section: .appAttest, name: "boot security", level: .pass,
                               message: parts.compactMap { $0 }.joined(separator: ", ") + ".")

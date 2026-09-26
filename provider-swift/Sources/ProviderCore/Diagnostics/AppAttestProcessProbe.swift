@@ -37,8 +37,11 @@ public final class AppAttestProcessProbe: @unchecked Sendable {
 
     public init(pushHistory: APNsPushHistoryStore,
                 probeBootSecurity: @escaping @Sendable () -> BootSecurity = {
-                    BootSecurity(sipEnabled: BootSecurity.sip(SIPStatusChecker().status()),
-                                 authenticatedRoot: authenticatedRootStatus())
+                    // At most three commands, one second each. A timeout
+                    // produces unknown fields and never blocks authorization.
+                    let runner = SecurityCommandRunner.bounded(timeout: 1)
+                    return BootSecurity(sipEnabled: BootSecurity.sip(SIPStatusChecker(runner: runner).status()),
+                                        authenticatedRoot: authenticatedRootStatus(runner: runner))
                 },
                 consoleUser: @escaping @Sendable () -> String? = { AttestationReadiness.currentConsoleUser() },
                 preflight: @escaping @Sendable () -> AppAttestPreflight = { AppAttestPreflight.current() },

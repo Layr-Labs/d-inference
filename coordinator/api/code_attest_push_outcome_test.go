@@ -161,9 +161,9 @@ func TestCodeAttestUnansweredPushSurvivesReconnect(t *testing.T) {
 	}
 	disconnect()
 	<-done
-	// Pushes 2 and 3 of the first loop counted pushes 1 and 2.
-	if got := codeAttestPushCount(srv, "result", "unanswered"); got != 2 {
-		t.Fatalf("unanswered before the reconnect = %d, want 2", got)
+	// Retries count the earlier pushes; disconnect finalizes the last one.
+	if got := codeAttestPushCount(srv, "result", "unanswered"); got != 3 {
+		t.Fatalf("unanswered before the reconnect = %d, want 3", got)
 	}
 	answer.Store(true)
 	select {
@@ -176,5 +176,75 @@ func TestCodeAttestUnansweredPushSurvivesReconnect(t *testing.T) {
 	}
 	if got := codeAttestPushCount(srv, "result", "answered"); got != 1 {
 		t.Fatalf("answered = %d, want 1", got)
+	}
+}
+
+// A terminating loop cannot count a newer loop's pushes or count its own twice.
+// Finalizing diagnostics must preserve the nonce for a late verified reply.
+func TestCodeAttestFinalizationIsGenerationScopedAndPreservesLateReplies(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	throttle := srv.codeAttestThrottle
+	throttle.recordChallengeForIdentity("device", "old", "token", "node")
+	throttle.markChallengeAccepted("device", "old", 1)
+	throttle.recordChallengeForIdentity("device", "new", "token", "node")
+	throttle.markChallengeAccepted("device", "new", 2)
+	throttle.recordChallengeForIdentity("device", "rejected", "token", "node")
+	srv.recordUnansweredCodeAttestPushes("provider", "device", 1)
+	srv.recordUnansweredCodeAttestPushes("provider", "device", 1)
+	if got := codeAttestPushCount(srv, "result", "unanswered"); got != 1 {
+		t.Fatalf("unanswered = %d", got)
+	}
+	if !throttle.consumeChallengeForIdentity("device", "old", "token", "node") {
+		t.Fatal("finalization invalidated late proof")
+	}
+	if !throttle.consumeChallengeForIdentity("device", "new", "token", "node") {
+		t.Fatal("new loop challenge lost")
+	}
+	srv.recordUnansweredCodeAttestPushes("provider", "device", 2)
+	srv.recordUnansweredCodeAttestPushes("provider", "device")
+	if got := codeAttestPushCount(srv, "result", "unanswered"); got != 1 {
+		t.Fatalf("answered/rejected push counted: %d", got)
+	}
+}
+
+func TestCodeAttestLoopFinalizesWithoutAnotherPush(t *testing.T) {
+	for _, ending := range []string{"disconnect", "hard_untrust", "other_proof"} {
+		t.Run(ending, func(t *testing.T) {
+			logger := quietLogger()
+			srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+			srv.codeAttestThrottle.retrySpacing = time.Millisecond
+			srv.codeAttestThrottle.retryJitter = 0
+			kPub, _, _, sePub := providerKeyMaterial(t)
+			provider := newCodeAttestProvider(kPub, sePub)
+			srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error { return nil }})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := runCodeAttestLoopAsync(ctx, srv, provider)
+			if !waitForCond(2*time.Second, func() bool { return codeAttestPushCount(srv, "outcome", "sent_ok") == 1 }) {
+				t.Fatal("push was not accepted")
+			}
+			switch ending {
+			case "disconnect":
+				cancel()
+			case "hard_untrust":
+				provider.Mu().Lock()
+				provider.Status = registry.StatusUntrusted
+				provider.Mu().Unlock()
+			case "other_proof":
+				provider.SetCodeAttested(true)
+			}
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("loop did not terminate")
+			}
+			if got := codeAttestPushCount(srv, "result", "unanswered"); got != 1 {
+				t.Fatalf("unanswered = %d", got)
+			}
+			if got := codeAttestPushCount(srv, "result", "answered"); got != 0 {
+				t.Fatalf("answered = %d", got)
+			}
+		})
 	}
 }

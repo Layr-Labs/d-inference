@@ -116,16 +116,17 @@ extension ProviderLoop {
     /// reply over the WebSocket. Only the genuine hardened process can do both,
     /// which is what binds the Apple-gated push proof onto this connection.
     /// WebSocket resume challenges reuse this handler. Returns whether a reply
-    /// was sent.
+    /// was queued. onWritten runs only after a successful transport write.
     @discardableResult
-    func handleCodeChallenge(_ challenge: EncryptedPayload, send: SendHandle) -> Bool {
+    func handleCodeChallenge(_ challenge: EncryptedPayload, send: SendHandle,
+                             onWritten: (@Sendable () -> Void)? = nil) -> Bool {
         guard let signer = self.signer else {
             logger.warning(.codeAttestationSignerUnavailable)
             return false
         }
         do {
             let answer = try Self.answerCodeChallenge(challenge: challenge, keyPair: keyPair, signer: signer)
-            send.send(.codeAttestationResponse(nonce: answer.nonce, signature: answer.signature))
+            send.send(.codeAttestationResponse(nonce: answer.nonce, signature: answer.signature, onWritten: onWritten))
             logger.info(.codeAttestationResponseSent)
             return true
         } catch {

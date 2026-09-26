@@ -89,6 +89,22 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
     expect(await appAttestDiagnosticCoverage(1)).toEqual({ machines: "3", ready_events: "3", diagnosed_events: "1", diagnosed_machines: "1" });
   });
 
+  it("excludes generic busy and malformed stall durations", async () => {
+    await pool.query("SAVEPOINT busy");
+    try {
+      const invalid = [undefined, null, "900", -1, 0, 1.5, 86401, true, {}];
+      for (const [i, value] of invalid.entries()) {
+        await event(`busy-${i}`, "s-new", "ready", "busy", { operation_stalled_seconds: value });
+      }
+      expect((await appAttestDiagnosticCohorts(1)).find(c => c.cohort === "stalled_busy"))
+        .toEqual({ cohort: "stalled_busy", events: "1", machines: "1" });
+      expect((await appAttestDiagnosticBreakdown(1)).filter(r => r.cohort === "stalled_busy" && r.dimension === "operation_stalled_seconds"))
+        .toMatchObject([{ value: "10-60m", events: "1" }]);
+    } finally {
+      await pool.query("ROLLBACK TO SAVEPOINT busy");
+    }
+  });
+
   it("breaks cohorts down by diagnostics and reports old rows as missing", async () => {
     const rows = await appAttestDiagnosticBreakdown(1);
     const pick = (cohort: string, dimension: string) => rows.filter(r => r.cohort === cohort && r.dimension === dimension)

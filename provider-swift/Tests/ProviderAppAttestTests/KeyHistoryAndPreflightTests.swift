@@ -25,6 +25,22 @@ final class KeyHistoryAndPreflightTests: XCTestCase {
 
     // MARK: - key_history builder
 
+    func testSaturatedDayRetainsGenerationsBeyondTwentyAndAgesThemOut() {
+        var attempts: [Date] = []
+        for hour in 0..<24 {
+            for attempt in 0..<KeyGenerationBudget.limit {
+                attempts = KeyGenerationHistory.appending(now.addingTimeInterval(Double(hour * 3601 + attempt)), to: attempts)
+            }
+        }
+        var budget = ShadowKeyRecord(keyID: "budget", attested: false, createdAt: now)
+        budget.generationHistory = attempts
+        XCTAssertEqual(attempts.count, 120)
+        XCTAssertEqual(AppAttestKeyHistory.build(record: nil, budget: budget, now: now.addingTimeInterval(86400), bootTime: nil)?.generationsLast24h, 100)
+        XCTAssertEqual(AppAttestKeyHistory.build(record: nil, budget: budget, now: now.addingTimeInterval(169230), bootTime: nil)?.generationsLast24h, 0)
+        budget.generationHistory = Array(attempts.prefix(30))
+        XCTAssertEqual(AppAttestKeyHistory.build(record: nil, budget: budget, now: now.addingTimeInterval(22000), bootTime: nil)?.generationsLast24h, 30)
+    }
+
     func testHistoryCountsTrailing24hGenerationsAndAges() {
         var budget = ShadowKeyRecord(keyID: "budget", attested: false, createdAt: now)
         budget.generationHistory = [now.addingTimeInterval(-90_000), now.addingTimeInterval(-3_600), now.addingTimeInterval(-60)]

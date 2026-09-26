@@ -25,7 +25,10 @@ const cohorts = `WITH scoped AS (
   WHEN stage='ready' AND outcome='unsupported' AND f->>'availability_reason'='is_supported_false' THEN 'is_supported_false'
   WHEN stage='attestation' AND outcome='apple_invalid_key' THEN 'fresh_key_invalid_key'
   WHEN stage='assertion' AND outcome='apple_error' AND ${deadKey("f")} THEN 'dead_key_assertion'
-  WHEN outcome='busy' THEN 'stalled_busy'
+  WHEN outcome='busy' AND CASE WHEN jsonb_typeof(f->'operation_stalled_seconds')='number'
+   THEN (f->>'operation_stalled_seconds')::numeric BETWEEN 1 AND 86400
+    AND trunc((f->>'operation_stalled_seconds')::numeric)=(f->>'operation_stalled_seconds')::numeric
+   ELSE false END THEN 'stalled_busy'
   WHEN stage='rollout' AND outcome='identity_required' THEN 'identity_required'
  END AS cohort FROM scoped
 )`;

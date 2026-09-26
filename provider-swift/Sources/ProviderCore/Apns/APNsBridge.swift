@@ -14,6 +14,7 @@ public final class APNsBridge: @unchecked Sendable {
 
     private let lock = NSLock()
     private var deviceToken: String?
+    private var tokenHistory: APNsPushHistoryStore?
     private var pushHandler: (@Sendable ([String: Any]) -> Void)?
     /// Pushes that arrived before the handler was installed. A code-identity
     /// challenge can land in the window between `registerForRemoteNotifications`
@@ -24,13 +25,23 @@ public final class APNsBridge: @unchecked Sendable {
     private var pendingPushes: [[String: Any]] = []
     private let maxPendingPushes = 16
 
-    private init() {}
+    init() {}
 
     /// Called by the app delegate when APNs returns a device token (hex).
     public func setDeviceToken(_ hex: String) {
         lock.lock()
         deviceToken = hex
+        tokenHistory?.recordDeviceToken(present: true)
         lock.unlock()
+    }
+
+    /// Keep the diagnostic file current even after the startup waiter expires.
+    /// Serialize installation and callbacks so a stale initial false cannot win.
+    public func trackDeviceToken(in history: APNsPushHistoryStore) {
+        lock.withLock {
+            tokenHistory = history
+            history.recordDeviceToken(present: deviceToken != nil)
+        }
     }
 
     /// The current device token, if APNs has returned one.

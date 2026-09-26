@@ -195,7 +195,7 @@ public enum CoordinatorClientCodec {
         case .appAttestShadow(let payload):
             return .appAttestShadow(payload)
 
-        case .codeAttestationResponse(let nonce, let signature):
+        case .codeAttestationResponse(let nonce, let signature, _):
             return .codeAttestationResponse(ProviderMessage.CodeAttestationResponse(
                 nonce: nonce,
                 signature: signature

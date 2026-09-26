@@ -26,6 +26,18 @@ struct AppAttestDeepDiagnosisTests {
         #expect(gui?.fix?.contains("darkbloom restart") == true)
     }
 
+    @Test func bootSecurityRequiresBothPositiveReadings() {
+        for sip in [nil, false, true] as [Bool?] {
+            for root in [nil, false, true] as [Bool?] {
+                let result = AppAttestDeepDiagnosis.bootSecurity(.init(sipEnabled: sip, authenticatedRoot: root))
+                if sip == nil && root == nil { #expect(result == nil) }
+                else if sip == false || root == false { #expect(result?.level == .fail) }
+                else if sip == true && root == true { #expect(result?.level == .pass) }
+                else { #expect(result?.level == .warn) }
+            }
+        }
+    }
+
     @Test func bootSecurityFalseRequiresFullSecurity() {
         let d = AppAttestDeepDiagnosis.evaluate(
             status(process: AppAttestProcessDiagnostics(sipEnabled: false, authenticatedRoot: true)), pushHistory: nil, now: 1_000)

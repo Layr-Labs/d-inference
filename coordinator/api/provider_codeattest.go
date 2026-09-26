@@ -197,6 +197,9 @@ func (s *Server) codeAttestLoopForGeneration(
 		return
 	}
 	defer s.codeAttestThrottle.endLoop(seKey, loopGeneration)
+	// Finalize only this loop's accepted pushes, leaving a replacement loop alone.
+	// Nonces remain valid for late verified replies. Diagnostics never revoke trust.
+	defer s.recordUnansweredCodeAttestPushes(providerID, seKey, loopGeneration)
 
 	// Wait for the initial fresh process/posture challenge before deciding
 	// whether a genuine prior APNs proof can be composed with its release fact.
@@ -660,7 +663,7 @@ func (s *Server) sendCodeIdentityChallengeForReservation(
 		return false
 	}
 	s.codeAttestMetric("push_sent")
-	s.codeAttestThrottle.markChallengeAccepted(sePubKey, nonceB64)
+	s.codeAttestThrottle.markChallengeAccepted(sePubKey, nonceB64, loopGeneration)
 	// No blocking wait: the reply is verified in handleCodeAttestationResponse on
 	// whichever live connection it lands.
 	return true

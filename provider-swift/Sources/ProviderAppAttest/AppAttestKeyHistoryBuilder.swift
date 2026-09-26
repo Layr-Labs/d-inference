@@ -3,7 +3,8 @@ import Foundation
 /// Rolling record of generateKey attempts, kept on the shared budget record
 /// so account churn cannot hide generation storms.
 enum KeyGenerationHistory {
-    static let cap = 20
+    // Five attempts per hourly window, including a boundary-straddling window.
+    static let cap = KeyGenerationBudget.limit * 25
 
     static func appending(_ date: Date, to history: [Date]?) -> [Date] {
         Array(((history ?? []) + [date]).suffix(cap))

@@ -2,6 +2,8 @@
 
 ## Unreleased — App Attest dead-key recovery and release-recovery fixes
 
+- Correct App Attest diagnostics for hung security probes, unknown boot security, late APNs tokens, failed WebSocket writes, terminating push loops, full-day key churn, and non-stalled busy replies.
+
 - Replace App Attest keys the Secure Enclave can no longer use. After two consecutive DeviceCheck code-0/2 (or uncoded) assertion failures since the key's last verified assertion, the coordinator asks for a fresh attestation instead of another assertion. Released 0.9.8 and 0.9.9 providers answer by retiring the dead key and enrolling a new one, which must pass the full attestation, receipt, build-qualification and assertion checks. Rotations are durable, limited to one per machine per hour and four per 24 hours (limits carry over when two machine records are merged), controlled by `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT` (default 100), and never revoke or deny serving.
 - Serialize App Attest rotation admission with machine merges and resolve stale machine IDs before checking the shared budget, preventing overlapping old/new identities from bypassing rotation limits.
 - Back off fresh-key enrollment for 6 hours after a machine's third `invalidKey` attestation failure in 24 hours, instead of generating a new key every few minutes. Reconnects, coordinator restarts and releases do not cut the backoff short.

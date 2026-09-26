@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `10fb4b7c1`
+> Last updated: 2026-09-26 · commit `77722aaf1`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -837,6 +837,8 @@ darkbloom logs [--file] [--follow] [--last <duration>] [--debug] [--lines <n>]
 | `--last <duration>` | Historical window, e.g. `1h`, `30m`, `24h` |
 | `--debug` | Include debug-level messages |
 | `--lines <n>` | Number of lines (only with `--file`) |
+
+Boot-security diagnostics pass only when SIP and authenticated root are both positively enabled. A missing reading produces a warning, and failed diagnostic commands time out with unknown fields. APNs token presence follows late callbacks; a recorded reply means the local WebSocket write completed, not that the coordinator verified it.
 
 ## `darkbloom report`
 

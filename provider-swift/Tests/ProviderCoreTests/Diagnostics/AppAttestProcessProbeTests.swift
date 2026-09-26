@@ -12,6 +12,21 @@ private final class Counter: @unchecked Sendable {
 
 @Suite("App Attest process probe")
 struct AppAttestProcessProbeTests {
+    @Test func hungSecurityCommandTimesOutAndOmitsDiagnostics() throws {
+        let runner = SecurityCommandRunner.bounded(timeout: 0.1)
+        let started = ContinuousClock.now
+        #expect(throws: SecurityCommandRunner.CommandError.self) {
+            try runner.run("/bin/sh", ["-c", "exec /bin/sleep 30"])
+        }
+        #expect(started.duration(to: .now) < .seconds(2))
+        let hung = SecurityCommandRunner { _, _ in try runner.run("/bin/sh", ["-c", "exec /bin/sleep 30"]) }
+        #expect(AppAttestProcessProbe.BootSecurity.sip(SIPStatusChecker(runner: hung).status()) == nil)
+        #expect(authenticatedRootStatus(runner: hung) == nil)
+        let successful = try SecurityCommandRunner.bounded(timeout: 2).run("/bin/echo", ["enabled"])
+        #expect(successful.terminationStatus == 0)
+        #expect(successful.stdout == "enabled\n")
+    }
+
     @Test func bootSecurityProbesRunOncePerProcessAndConsoleNameIsNeverSent() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("probe-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }

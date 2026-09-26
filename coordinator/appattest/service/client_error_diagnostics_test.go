@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -77,5 +78,40 @@ func TestSyntheticAppleErrorSourceArchivedWithoutNativeDetails(t *testing.T) {
 	}
 	if _, ok := context["apple_error"]; ok {
 		t.Fatal("synthetic failure fabricated a native NSError")
+	}
+}
+
+func TestReadyRuntimeDiagnosticsReachEventAndLaterEvidenceWithoutAuthorization(t *testing.T) {
+	s, p, record, _ := newAuthorizationFixture(t)
+	x := sessionForAuthorization(s, p, record)
+	x.expected = "ready"
+	var observed map[string]any
+	s.emitEvent = func(fields map[string]any) { observed = fields }
+	ready := protocol.AppAttestShadowPayload{Action: "ready", Result: "busy", LaunchSession: "background", BootTime: 1_700_000_000, OperationStalledSeconds: 120}
+	if next := x.handleExchange(context.Background(), ready, nil); next != "stop" || observed["launch_session"] != "background" ||
+		observed["boot_time"] != int64(1_700_000_000) || observed["operation_stalled_seconds"] != 120 {
+		t.Fatalf("runtime diagnostics missing from ready event: %s, %+v", next, observed)
+	}
+	if _, ok := s.registry.ProviderServingAuthorization(p); ok {
+		t.Fatal("runtime diagnostics authorized a provider")
+	}
+	// Direct callers that bypass admission still cannot leak invalid values.
+	x.handleExchange(context.Background(), protocol.AppAttestShadowPayload{Action: "ready", Result: "ok", LaunchSession: "private", BootTime: 5, OperationStalledSeconds: 7}, nil)
+	for _, field := range []string{"launch_session", "boot_time", "operation_stalled_seconds"} {
+		if _, ok := observed[field]; ok {
+			t.Fatalf("invalid %s entered telemetry", field)
+		}
+	}
+	// A proof later in the same attempt carries the ready reply's context.
+	archive := &capturedProofArchive{}
+	y := &Session{s: &Service{}, provider: newSessionProvider("endpoint", "se"), archive: archive, expected: "assertion", rejectReason: "verifier_busy",
+		readyDiagnostics: ready.RuntimeDiagnosticFields(time.Now())}
+	y.handle(context.Background(), protocol.AppAttestShadowPayload{Action: "assertion", Result: "apple_error"})
+	var archived map[string]any
+	if err := json.Unmarshal(archive.evidence.Context, &archived); err != nil {
+		t.Fatal(err)
+	}
+	if archived["launch_session"] != "background" || archived["boot_time"] != float64(1_700_000_000) || archived["operation_stalled_seconds"] != float64(120) {
+		t.Fatalf("runtime diagnostics absent from evidence context: %+v", archived)
 	}
 }

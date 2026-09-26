@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-06 · commit `32b28b0a7`
+> Last updated: 2026-09-26 · commit `0ce33cee2`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -130,14 +130,22 @@ carries a hash per advertised model, and any mismatch against
 
 ### 5. Providers select a source, verify, then announce
 
+
 `provider-swift/Sources/ProviderCore/Models/ModelCatalogClient.swift` reads
 `GET /v1/models/catalog` (optionally `?type=text&include_aliases=1`) and
 `GET /v1/models/catalog/manifest/{id}`. `ModelDownloader` has two flows that
 share one contract — every file is checked against its manifest size and
 SHA-256 before it leaves staging, and the aggregate is recomputed with
 `WeightHasher.hashFilesWithRelativeKey` before the snapshot is published to
-`~/.cache/huggingface/hub/models--{org}--{name}/snapshots/local/` with a
-`refs/main` pointer so `ModelScanner` discovers it:
+`{cache}/models--{org}--{name}/snapshots/local/` with a `refs/main` pointer so
+`ModelScanner` discovers it. `ModelScanner.resolveCache` in
+`provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift`
+selects the shared discovery/download root using the [cache-location precedence](../reference/configuration.md#model-cache-location).
+The CLI installs the saved config value before serving; without it, the legacy
+home cache remains authoritative. Ambient Hugging Face/XDG variables are ignored
+by runtime selection. Only an explicit `models location --from-env` or confirmed
+menu import resolves those variables once and saves the concrete path in TOML.
+Location inspection is discovery only, not the manifest-integrity contract above.
 
 | Flow | Entry point | Used by | Notes |
 |---|---|---|---|

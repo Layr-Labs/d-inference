@@ -243,9 +243,9 @@ export function computeWarnings(
     if (successRate < 0.8 && p.reputation.total_jobs >= 10) {
       out.push({
         id: "low_success_rate",
-        severity: "degrading",
+        severity: "info",
         title: `Job success rate low (${(successRate * 100).toFixed(0)}%)`,
-        detail: `Reputation score: ${p.reputation.score.toFixed(2)}. Investigate failed jobs in the logs to recover routing priority.`,
+        detail: `${p.reputation.successful_jobs} of ${p.reputation.total_jobs} jobs succeeded; ${p.reputation.failed_jobs} failed. Check provider logs for failure details.`,
       });
     }
   }

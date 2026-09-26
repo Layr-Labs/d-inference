@@ -255,7 +255,7 @@ public enum OutboundMessage: Sendable {
         profile: RequestProfileBuilder? = nil
     )
     case attestationResponse(AttestationResponsePayload)
-    case codeAttestationResponse(nonce: String, signature: String)
+    case codeAttestationResponse(nonce: String, signature: String, onWritten: (@Sendable () -> Void)? = nil)
     case appAttestShadow(AppAttestShadowPayload)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
     case prefetchModelStatus(

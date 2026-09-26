@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-26 · commit `824fbf05c`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -191,8 +191,14 @@ vetoes (`provider-swift/Sources/darkbloom/DoctorCommand.swift`,
 [guard recovery](./troubleshooting.md#kv-backend-crash-loop-guard).
 
 Exit 1 when any detailed check or diagnosis line is FAIL (or WARN with
-`--strict`). The check names are listed in
-[troubleshooting](./troubleshooting.md#doctor-checks).
+`--strict`). On macOS 27 or later the diagnosis includes an `APP ATTEST`
+section. It shows the daemon's local key state and launch session, and the
+diagnostics from the provider's last `ready`: how the process started, how the
+previous one exited, SIP and authenticated root, signing preflight, key history,
+the last native Apple error chain and APNs push history. The section also
+reads local `devicecheckd` log evidence; macOS lets only administrator accounts read the system log.
+The check names are listed in [troubleshooting](./troubleshooting.md#doctor-checks).
+[`app-attest-shadow.md`](../reference/app-attest-shadow.md) defines the fields.
 
 ### `darkbloom verify`
 
@@ -215,8 +221,16 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
 | `download` | `<modelID>` | `String` | — | Catalog id (or S3 name) |
 | `download` | `--coordinator <url>` | `String?` | config URL | Resolve the catalog entry |
 | `download` | `--r2-cdn <url>` | `String?` | `DARKBLOOM_R2_CDN_URL`, else `https://models.darkbloom.ai` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`, `defaultR2CDNURL`) | Mirror base URL |
-| `remove` | `<modelID>` | `String` | — | Model to delete from `~/.cache/huggingface/hub` |
+| `remove` | `<modelID>` | `String` | — | Model to delete from the effective model cache |
 | `remove` | `--force` | flag | `false` | Skip confirmation |
+| `location` | `[PATH]` | `String?` | status/menu | Select an existing readable, writable cache directory; interactive changes require `yes` |
+| `location` | `--check` | flag | `false` | Inspect PATH, or the effective cache, without changing config or weights |
+| `location` | `--from-env` | flag | `false` | Explicitly import the current Hugging Face environment cache once and save its absolute path |
+| `location` | `--reset` | flag | `false` | Clear the saved location and restore the legacy home cache, regardless of ambient variables |
+
+All model subcommands accept `--config <path>`. Location behavior is implemented
+by `Models.Location` in `provider-swift/Sources/darkbloom/ModelsLocationCommand.swift`;
+cache precedence is specified in [model cache configuration](../reference/configuration.md#model-cache-location).
 
 ### `darkbloom local`
 
@@ -622,6 +636,46 @@ Delete a downloaded model.
 darkbloom models remove <id> [--force]
 ```
 
+### `darkbloom models location`
+
+Inspect a cache or explicitly save its location in `provider.toml`
+(`Models.Location`, `provider-swift/Sources/darkbloom/ModelsLocationCommand.swift`).
+No beta flag is involved. Without a saved location, existing providers continue
+using the legacy cache even if Hugging Face/XDG variables are exported.
+
+```bash
+darkbloom models location                              # terminal menu; status otherwise
+darkbloom models location /Volumes/Models/hub           # explicitly save an existing hub root
+darkbloom models location --from-env                    # explicitly import and pin the current HF cache
+darkbloom models location --check /Volumes/Models/hub   # inspect only; never opts in
+darkbloom models location --reset                       # restore the legacy default; retain all weights
+```
+
+The menu offers keeping the current location, restoring the default, choosing a
+custom path, or importing the detected environment cache. Enter/EOF cancels;
+terminal changes require `yes`. An explicit PATH or `--from-env` also works
+noninteractively. `--from-env` cannot be combined with PATH, `--check`, or `--reset`.
+An import pins the resolved absolute directory; later environment changes cannot
+switch it. No valid cache variable means no import and no saved change. See the
+[one-time import precedence](../reference/configuration.md#model-cache-location).
+
+Empty writable directories are valid for future downloads. Missing directories
+are not created: mount the external volume and create the intended directory
+explicitly first. Nothing moves or deletes existing weights, downloads models,
+or restarts a running provider. `--reset` returns to the legacy home cache even
+when cache environment variables remain set.
+
+Before applying a selection, inspect the chosen directory and confirm the
+expected model IDs. `--check` can succeed for an empty writable directory; it is
+discovery, not weight-integrity verification or network eligibility. Use
+`models list --hash <model-id>` for an on-demand aggregate hash and `doctor` for
+serving diagnostics.
+
+After saving, apply the configuration with `darkbloom restart`, or `darkbloom
+start` if stopped. Use the intended `--config <path>` on the location command and
+`start` for a custom config; restart retains the installed job's config argument.
+The CLI reports the selected config, not a running daemon's already-loaded state.
+
 ## `darkbloom benchmark`
 
 Run a standardized local inference benchmark.
@@ -888,6 +942,8 @@ darkbloom logs [--file] [--follow] [--last <duration>] [--debug] [--lines <n>]
 | `--debug` | Include debug-level messages |
 | `--lines <n>` | Number of lines (only with `--file`) |
 
+Boot-security diagnostics pass only when SIP and authenticated root are both positively enabled. A missing reading produces a warning, and failed diagnostic commands time out with unknown fields. APNs history is rendered under APNs code-identity readiness on all supported macOS versions, even without an App Attest snapshot. An absent history file is omitted. Zero observed pushes is `[INFO]` with an indeterminate delivery result, not a warning: cached code identity may avoid APNs entirely. Informational results do not fail `--strict`. A recorded App Attest `environment_mismatch` fails the signing diagnostic even when the entitlement is a known production/development value. APNs token presence follows late callbacks; a recorded reply means the local WebSocket write completed, not that the coordinator verified it.
+
 ## `darkbloom report`
 
 Collect recent Darkbloom provider unified logs and explicitly upload them to the
@@ -902,10 +958,41 @@ darkbloom report [--last <duration>] [--dry-run]
 | `--last <duration>` | Time window, e.g. `1h`, `6h`, `24h` |
 | `--dry-run` | Print the exact report locally without uploading |
 
+The assembled upload reserves room for App Attest evidence within the coordinator's 10 MiB raw-body limit; older provider-log lines are trimmed as needed. `--dry-run` prints this same bounded payload.
+
 The command runs only when invoked by the provider operator. It collects the
 `dev.darkbloom.provider` subsystem, preserves macOS unified-log privacy
 redaction, and does not include debug-level messages. Automatic report upload is
 disabled.
+
+The device-wide log collector allows 30 seconds, then a 250 ms termination grace before killing an unresponsive child. A timeout returns unavailable evidence without an unbounded wait (`DeviceCheckEvidence.runLog`). Reads retain at most the newest 8 MiB of stdout and 4 KiB of stderr. Parsing skips lines over 64 KiB and retains only the newest 200 matching events in a ring; the output describes the collected log tail rather than claiming complete two-hour coverage.
+
+It also appends App Attest evidence as extra NDJSON lines:
+
+- the daemon's local App Attest snapshot (`source`
+  `darkbloom.app_attest_state`), with key history refreshed after each proof,
+  ages advanced to report time, process start and the native error chain;
+- the APNs push receipt/reply summary;
+- device-wide `devicecheckd` / `com.apple.appattest` observations from the last
+  2 h (`source` `darkbloom.devicecheck_evidence`). Every outcome carries
+  `scope=device_wide` and `attribution=not_attributable_to_darkbloom`: other apps
+  can cause these events, so they do not establish this provider's key state.
+  Only timestamp, category, message type and closed-pattern numeric matches
+  remain, such as `SecKeyCreateSignature failed`, `CryptoTokenKit Code`,
+  `AKSError`, `Should fetch CD hash`, `invalidKey` and `unknownSystemFailure`.
+  Message text, key identifiers and paths are dropped.
+
+macOS lets only administrator accounts read the system log. From a standard
+account, macOS answers `Operation not permitted`. The command reports this and
+still uploads the App Attest snapshot. To include the logs, run it from an
+administrator account, or run `sudo darkbloom report` if this account is allowed
+to use sudo. Under `sudo` it reads the invoking user's daemon state and provider
+config (unless `--config` is given), plus canonical then legacy credentials
+through `AuthTokenStore.loadReadOnly`. It does not migrate config or token files
+as root. An explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` overrides that lookup
+and suppresses legacy fallback. See `ReportAppAttestEvidence` in
+`provider-swift/Sources/darkbloom/Diagnostics/`. `--dry-run` prints every appended
+line before anything is uploaded.
 
 ## `darkbloom watchdog`
 
@@ -936,10 +1023,13 @@ manual use.
 | Warm-model journal | `~/.darkbloom/loaded-models.json` (`DARKBLOOM_LOADED_MODELS_FILE`) | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` |
 | Watchdog state | `~/.darkbloom/watchdog-state.json` (`DARKBLOOM_WATCHDOG_STATE`) | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` |
 | KV-backend crash-loop guard | `~/.darkbloom/kv-backend-guard.json` (`DARKBLOOM_KV_BACKEND_GUARD`) | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
+| App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic restart for a stalled DeviceCheck call ([limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |
+| Provider run marker | `provider-run.json` beside the daemon state file, `0600`. Set to `running` when a serve process starts and to `clean` (with cause) after its drain or before an update/stall relaunch. Explicit update/stall relaunch causes survive later generic termination callbacks; a failed hand-off restores running state and clears the cause. The next process derives `previous_exit` and `start_reason` from it | `provider-swift/Sources/ProviderCore/Service/ProviderRunMarker.swift`, `ProviderProcessRun.swift` |
+| APNs push history | `apns-push-history.json` beside the daemon state file, `0600`. The last 50 code-identity push receipt times and reply times, plus whether a device token was present. No token, nonce or payload | `provider-swift/Sources/ProviderCore/Apns/APNsPushHistory.swift` |
 | Provider LaunchAgent | label `io.darkbloom.provider`; `~/Library/LaunchAgents/io.darkbloom.provider.plist`; `RunAtLoad = true`, `KeepAlive = false`; stdout/stderr → `~/.darkbloom/provider.log` | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`label`, `plistPath`, `logPath`) |
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |
-| Model cache | `~/.cache/huggingface/hub` (HuggingFace hub layout) | `provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift` |
+| Model cache | Hugging Face hub layout under the [resolved model cache](../reference/configuration.md#model-cache-location) | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift` (`ModelScanner.resolveCache`) |
 | Keychain KEK item | service `io.darkbloom.kv.kek.v1`; access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
 | Secure Enclave key labels | `io.darkbloom.provider.attestation-signing.v2`; legacy `…v1` migrated on first use | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`, `legacyLabelV1`) |
 | Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
@@ -961,6 +1051,7 @@ override `provider.toml` for one process, are in
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
 | `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
 | `[backend] enabled_models` | `[]` | Advertise only these ids; empty = all serveable |
+| `[backend] model_cache_directory` | unset | Explicit saved hub directory; set or import once with `models location`, clear with `--reset`. Ambient cache variables never override it; hand-written relative paths are anchored to the config file (`provider-swift/Sources/ProviderCore/Config/ModelCacheConfiguration.swift`, `ConfigManager.modelCacheDirectory`) |
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables |
 | `[backend] max_model_slots` | `3` | Resident models |
 | `[backend] engine_v2_max_concurrent` | `4` (clamped to `[1, 8]`) | Concurrent requests per engine |
@@ -975,6 +1066,11 @@ override `provider.toml` for one process, are in
 | `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`) |
 
 ## LaunchAgent environment passthrough
+
+Model-cache locations are read from `provider.toml`; Hugging Face/XDG cache
+variables are neither forwarded nor runtime overrides. The optional
+[`--from-env` import](#darkbloom-models-location) saves an absolute path once,
+so the foreground CLI and daemon use the same explicitly selected directory.
 
 The [Bonsai performance profile](../reference/configuration.md#bonsai-performance-qualification)
 uses source-default-on eligible paths in foreground and daemon processes. It

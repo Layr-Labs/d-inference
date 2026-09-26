@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 type memoryAppAttestEvidence struct {
@@ -48,7 +49,9 @@ func (s *MemoryStore) CompleteAppAttestEvidence(ctx context.Context, id string, 
 		}
 		old, ok := s.appAttestShadowKeys[d.Key.KeyID]
 		if !ok {
-			s.appAttestShadowKeys[d.Key.KeyID] = *cloneAppAttestKey(*d.Key)
+			key := *cloneAppAttestKey(*d.Key)
+			key.UpdatedAt = time.Now().UTC()
+			s.appAttestShadowKeys[d.Key.KeyID] = key
 		} else if old.Owner != d.Key.Owner || old.AppID != d.Key.AppID || old.Environment != d.Key.Environment || string(old.PublicKey) != string(d.Key.PublicKey) {
 			d.Outcome = "key_owner_or_policy"
 		}
@@ -59,6 +62,7 @@ func (s *MemoryStore) CompleteAppAttestEvidence(ctx context.Context, id string, 
 			d.Outcome = "counter_conflict"
 		} else {
 			old.Counter = *d.Counter
+			old.UpdatedAt = time.Now().UTC()
 			s.appAttestShadowKeys[d.KeyID] = old
 		}
 	}
@@ -66,4 +70,40 @@ func (s *MemoryStore) CompleteAppAttestEvidence(ctx context.Context, id string, 
 	e.Decision = d
 	s.appAttestEvidence[id] = e
 	return d.Outcome, nil
+}
+
+func (s *MemoryStore) GetAppAttestAssertionDiagnostics(ctx context.Context, keyID string) (*AppAttestAssertionDiagnostics, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var latest AppAttestEvidence
+	found := false
+	for _, row := range s.appAttestEvidence {
+		e := row.Evidence
+		if e.KeyID == keyID && e.Action == "assertion" && row.Decision.Outcome == "verified" &&
+			(!found || e.ReceivedAt.After(latest.ReceivedAt) || e.ReceivedAt.Equal(latest.ReceivedAt) && e.ID > latest.ID) {
+			latest, found = e, true
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	// Match the bounded PostgreSQL window without copying or sorting proof rows.
+	newer := 0
+	for _, row := range s.appAttestEvidence {
+		e := row.Evidence
+		if e.KeyID == keyID && (e.ReceivedAt.After(latest.ReceivedAt) || e.ReceivedAt.Equal(latest.ReceivedAt) && e.ID > latest.ID) {
+			newer++
+			if newer >= AppAttestDiagnosticLookback {
+				return nil, nil
+			}
+		}
+	}
+	var result AppAttestAssertionDiagnostics
+	if err := json.Unmarshal(latest.Context, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }

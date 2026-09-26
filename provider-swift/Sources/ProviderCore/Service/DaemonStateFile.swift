@@ -1,4 +1,5 @@
 import Foundation
+import ProviderAppAttest
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -66,6 +67,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// reported and has nothing loaded.
     public var slots: [SlotPosture]?
     public var connectivity: Connectivity?
+    /// The daemon's last local App Attest observation (launch session, boot
+    /// time, key state, stalled Apple call). Diagnostic only; optional so
+    /// older daemons' files keep decoding.
+    public var appAttest: AppAttestLocalStatus?
 
     public struct Trust: Codable, Sendable, Equatable {
         public var trustLevel: String
@@ -230,7 +235,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
         capacity: Capacity? = nil,
         lastModelLoadError: ModelLoadError? = nil,
         slots: [SlotPosture]? = nil,
-        connectivity: Connectivity? = nil
+        connectivity: Connectivity? = nil,
+        appAttest: AppAttestLocalStatus? = nil
     ) {
         self.schema = schema
         self.pid = pid
@@ -255,6 +261,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.lastModelLoadError = lastModelLoadError
         self.slots = slots
         self.connectivity = connectivity
+        self.appAttest = appAttest
     }
 
     // MARK: - Reader helpers

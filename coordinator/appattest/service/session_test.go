@@ -52,6 +52,22 @@ func TestAppAttestShadowInboxRejectsUnboundedClientDiagnostics(t *testing.T) {
 	}
 }
 
+func TestAppAttestShadowInboxStripsInvalidRuntimeDiagnosticsWithoutDropping(t *testing.T) {
+	x := &Session{in: make(chan protocol.AppAttestShadowPayload, 2)}
+	x.offer(protocol.AppAttestShadowPayload{Action: "ready", Result: "busy", LaunchSession: "private label", BootTime: -1, OperationStalledSeconds: 90000})
+	x.offer(protocol.AppAttestShadowPayload{Action: "ready", Result: "busy", LaunchSession: "background", BootTime: 1_700_000_000, OperationStalledSeconds: 42})
+	if len(x.in) != 2 || x.dropped.Load() != 0 {
+		t.Fatalf("runtime diagnostics dropped a frame: queued=%d dropped=%d", len(x.in), x.dropped.Load())
+	}
+	stripped, kept := <-x.in, <-x.in
+	if stripped.LaunchSession != "" || stripped.BootTime != 0 || stripped.OperationStalledSeconds != 0 {
+		t.Fatalf("invalid values admitted: %+v", stripped)
+	}
+	if kept.LaunchSession != "background" || kept.BootTime != 1_700_000_000 || kept.OperationStalledSeconds != 42 {
+		t.Fatalf("valid values lost: %+v", kept)
+	}
+}
+
 func TestAppAttestShadowLateProofCannotWinTimerRace(t *testing.T) {
 	p := newSessionProvider("key", "se")
 	x := &Session{s: &Service{}, provider: p, expected: "assertion", started: time.Now().Add(-shadowResponseTimeout - time.Second)}

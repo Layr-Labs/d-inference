@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-22 · commit `31a6ca37f`
+> Last updated: 2026-09-26 · commit `4c868179d`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2274,7 +2274,22 @@ from `coordinator/`, using a disposable local `DATABASE_URL` for the store
 contracts (the test harness truncates tables). Add `-race` for concurrency checks.
 Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
 The private admin queries have PostgreSQL coverage in
-`admin-ui/src/lib/queries/app-attest.test.ts`.
+`admin-ui/src/lib/queries/app-attest.test.ts` and
+`admin-ui/src/lib/queries/app-attest-diagnostics.test.ts`. These cover account-scoped
+rotation recovery and aging historical APNs snapshots. `DeviceCheckProcessTests`
+executes a child that ignores SIGTERM to verify bounded log collection.
+`DeviceCheckExtractionBoundsTests` covers bounded file tails, oversized lines and
+ring ordering; `ProviderRunMarkerTests` separates stale version markers from exact
+exec identity, and informational doctor results remain non-failing under `--strict`.
+`ReportPayloadTests` covers the combined upload-size limit, and an isolated idle
+termination test checks that the run marker is clean before AppKit can exit.
+`AppAttestLocalDiagnosisTests` covers APNs history below macOS 27 and missing
+App Attest state.
+
+After pushing a contribution, follow the [contributor skill](../../.agents/skills/darkbloom-contributor/SKILL.md#post-push-review-loop):
+monitor reviews and checks on the current remote head, validate findings before
+fixing them, and verify fixes are pushed before resolving threads. A passing
+local suite does not establish that the post-push review cycle has completed.
 
 After the optimized provider is packaged with its resources, run
 `Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all four markers:

@@ -13,6 +13,7 @@ const MaxRequestOutcomeAttempts = 128
 // HTTP request. ReceivedAt defines cohort membership; revisions enrich the same
 // request with late provider evidence. No field establishes upstream receipt.
 type RequestOutcomeRecord struct {
+	PublicDemand            *PublicDemandScope      `json:"public_demand,omitempty"`
 	CoordRequestID          string                  `json:"coord_request_id"`
 	SchemaVersion           int                     `json:"schema_version"`
 	Revision                int64                   `json:"revision"`
@@ -74,6 +75,11 @@ type RequestOutcomeStore interface {
 }
 
 func validateRequestOutcome(r RequestOutcomeRecord) error {
+	if d := r.PublicDemand; d != nil {
+		if d.Model == "" || len(d.Model) > 256 || len(d.ConsumerHash) != 64 || !validDemandOutcome(d.Outcome) {
+			return errors.New("store: invalid public demand scope")
+		}
+	}
 	if r.CoordRequestID == "" || len(r.CoordRequestID) > 64 || r.SchemaVersion != RequestOutcomeSchemaVersion || r.Revision < 1 || r.ReceivedAt.IsZero() || r.UpdatedAt.IsZero() {
 		return errors.New("store: invalid request outcome identity/version")
 	}

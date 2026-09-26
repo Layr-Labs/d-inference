@@ -250,7 +250,7 @@ extension CoordinatorClient {
                 for await msg in outboundStream {
                     if self.shutdownRequested { break }
                     let json = self.encodeOutbound(msg)
-                    self.sendTextFrame(json, on: connection, identifier: "chunk")
+                    self.sendTextFrame(json, on: connection, identifier: "chunk", onWritten: msg.onWritten)
                 }
             }
 
@@ -336,7 +336,8 @@ extension CoordinatorClient {
     nonisolated internal func sendTextFrame(
         _ json: String,
         on connection: NWConnection,
-        identifier: String
+        identifier: String,
+        onWritten: (@Sendable () -> Void)? = nil
     ) {
         let logger = self.logger
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
@@ -354,6 +355,8 @@ extension CoordinatorClient {
                     // this, the outbound loop keeps draining chunks that silently
                     // vanish, and the coordinator-side request waits for a timeout.
                     connection.cancel()
+                } else {
+                    onWritten?()
                 }
             }
         )

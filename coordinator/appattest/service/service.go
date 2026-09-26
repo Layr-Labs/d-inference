@@ -44,6 +44,8 @@ type Service struct {
 	verifierSlots        chan struct{}
 	storageOnce          sync.Once
 	storageSlots         chan struct{}
+	diagnosticOnce       sync.Once
+	diagnosticSlots      chan struct{}
 	inventorySlots       chan struct{}
 	startOnce            sync.Once
 	metrics              Metrics

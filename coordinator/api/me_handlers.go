@@ -27,14 +27,13 @@ import (
 
 // myReputation is the wire shape for a provider's reputation snapshot.
 type myReputation struct {
-	Score              float64 `json:"score"`
-	TotalJobs          int     `json:"total_jobs"`
-	SuccessfulJobs     int     `json:"successful_jobs"`
-	FailedJobs         int     `json:"failed_jobs"`
-	TotalUptimeSeconds int64   `json:"total_uptime_seconds"`
-	AvgResponseTimeMs  int64   `json:"avg_response_time_ms"`
-	ChallengesPassed   int     `json:"challenges_passed"`
-	ChallengesFailed   int     `json:"challenges_failed"`
+	TotalJobs          int   `json:"total_jobs"`
+	SuccessfulJobs     int   `json:"successful_jobs"`
+	FailedJobs         int   `json:"failed_jobs"`
+	TotalUptimeSeconds int64 `json:"total_uptime_seconds"`
+	AvgResponseTimeMs  int64 `json:"avg_response_time_ms"`
+	ChallengesPassed   int   `json:"challenges_passed"`
+	ChallengesFailed   int   `json:"challenges_failed"`
 }
 
 // myProvider is the per-machine payload for /v1/me/providers.
@@ -456,23 +455,14 @@ func needsStoredReputation(mp *myProvider) bool {
 }
 
 func applyStoredReputation(mp *myProvider, rep *store.ReputationRecord) {
-	r := registry.NewReputation()
-	r.TotalJobs = rep.TotalJobs
-	r.SuccessfulJobs = rep.SuccessfulJobs
-	r.FailedJobs = rep.FailedJobs
-	r.TotalUptime = time.Duration(rep.TotalUptimeSeconds) * time.Second
-	r.AvgResponseTime = time.Duration(rep.AvgResponseTimeMs) * time.Millisecond
-	r.ChallengesPassed = rep.ChallengesPassed
-	r.ChallengesFailed = rep.ChallengesFailed
 	mp.Reputation = myReputation{
-		Score:              r.Score(),
-		TotalJobs:          r.TotalJobs,
-		SuccessfulJobs:     r.SuccessfulJobs,
-		FailedJobs:         r.FailedJobs,
-		TotalUptimeSeconds: int64(r.TotalUptime / time.Second),
-		AvgResponseTimeMs:  int64(r.AvgResponseTime / time.Millisecond),
-		ChallengesPassed:   r.ChallengesPassed,
-		ChallengesFailed:   r.ChallengesFailed,
+		TotalJobs:          rep.TotalJobs,
+		SuccessfulJobs:     rep.SuccessfulJobs,
+		FailedJobs:         rep.FailedJobs,
+		TotalUptimeSeconds: rep.TotalUptimeSeconds,
+		AvgResponseTimeMs:  rep.AvgResponseTimeMs,
+		ChallengesPassed:   rep.ChallengesPassed,
+		ChallengesFailed:   rep.ChallengesFailed,
 	}
 }
 
@@ -619,7 +609,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.CurrentModel = live.CurrentModel
 		// Reputation snapshot.
 		mp.Reputation = myReputation{
-			Score:              live.Reputation.Score(),
 			TotalJobs:          live.Reputation.TotalJobs,
 			SuccessfulJobs:     live.Reputation.SuccessfulJobs,
 			FailedJobs:         live.Reputation.FailedJobs,

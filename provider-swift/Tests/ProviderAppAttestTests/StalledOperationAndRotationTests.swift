@@ -274,6 +274,16 @@ final class AppAttestStallRestartPolicyTests: XCTestCase {
         XCTAssertTrue(AppAttestStallRestartPolicy.stillStalled(heldSince: now.addingTimeInterval(-threshold - 120), now: now))
     }
 
+    func testLifecycleTakeoverDuringDrainCancelsTheRestart() {
+        let stuck = now.addingTimeInterval(-AppleOperationStall.threshold - 120)
+        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: true, heldSince: stuck, now: now), .restart)
+        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: true, heldSince: nil, now: now), .recovered)
+        // A stop or shutdown that took over the drain wins even while the
+        // Apple call is still stuck: the provider must not be relaunched.
+        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: false, heldSince: stuck, now: now), .lifecycleTookOver)
+        XCTAssertEqual(AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: false, heldSince: nil, now: now), .lifecycleTookOver)
+    }
+
     func testMarkerPersistsAcrossInstancesAndFailsClosedWhenDamaged() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -116,4 +116,24 @@ struct ProviderLifecycleTests {
         #expect(await loop.state.refusingNewWork)
         #expect(await loop.servingDrain.refusing)
     }
+
+    @Test func lifecycleDrainTakesOwnershipFromAnAppAttestStallRestart() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(await !loop.appAttestStallRestartOwnsDrain)
+        await loop.beginUpdateDraining()
+        #expect(await loop.appAttestStallRestartOwnsDrain)
+        await loop.holdLifecycleRequests(["accepted"])
+        let identity = try #require(ProcessIdentity.current())
+        let stop = Task { await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 2)) }
+        for _ in 0..<100 {
+            if await loop.servingDrain.owner == .lifecycle { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(await !loop.appAttestStallRestartOwnsDrain)
+        await loop.completeLifecycleRequest("accepted")
+        #expect(await stop.value.outcome == .drained)
+        // The finished stop keeps ownership: the stall path must not restart.
+        #expect(await !loop.appAttestStallRestartOwnsDrain)
+    }
 }

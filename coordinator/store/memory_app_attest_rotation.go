@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"time"
 )
 
@@ -33,10 +34,11 @@ func (s *MemoryStore) AdmitAppAttestKeyRotation(ctx context.Context, r AppAttest
 	if existing, ok := s.appAttestRotations[r.KeyID]; ok {
 		return &existing, false, nil
 	}
+	family := s.rotationScopeFamily(r.MachineID)
 	for _, limit := range limits {
 		since, n := r.RequestedAt.Add(-limit.Window), 0
 		for _, other := range s.appAttestRotations {
-			if other.MachineID == r.MachineID && !other.RequestedAt.Before(since) {
+			if family[other.MachineID] && !other.RequestedAt.Before(since) {
 				n++
 			}
 		}
@@ -54,13 +56,32 @@ func (s *MemoryStore) CountAppAttestKeyRotations(ctx context.Context, machineID 
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	family := s.rotationScopeFamily(machineID)
 	n := 0
 	for _, r := range s.appAttestRotations {
-		if r.MachineID == machineID && !r.RequestedAt.Before(since) {
+		if family[r.MachineID] && !r.RequestedAt.Before(since) {
 			n++
 		}
 	}
 	return n, nil
+}
+
+// rotationScopeFamily mirrors appAttestRotationWindowCount: the scope plus
+// every machine merged into it. Callers hold s.mu.
+func (s *MemoryStore) rotationScopeFamily(scope string) map[string]bool {
+	family := map[string]bool{scope: true}
+	if s.machineInventory == nil {
+		return family
+	}
+	for grew := true; grew; {
+		grew = false
+		for old, next := range s.machineInventory.merged {
+			if family[next] && !family[old] {
+				family[old], grew = true, true
+			}
+		}
+	}
+	return family
 }
 
 func (s *MemoryStore) GetAppAttestKeyRotation(ctx context.Context, keyID string) (*AppAttestKeyRotation, error) {
@@ -91,20 +112,20 @@ func (s *MemoryStore) CountAppAttestRotationFailures(ctx context.Context, keyID 
 	return min(n, AppAttestRotationCountCap), nil
 }
 
-func (s *MemoryStore) CountAppAttestEnrollmentInvalidKeyFailures(ctx context.Context, machineID, accountID string, since time.Time) (int, error) {
+func (s *MemoryStore) AppAttestEnrollmentInvalidKeyFailureTimes(ctx context.Context, machineID, accountID string, since time.Time) ([]time.Time, error) {
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if machineID == "" && accountID == "" {
-		return 0, nil
+		return nil, nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	m := s.machineInventory
 	if m == nil {
-		return 0, nil
+		return nil, nil
 	}
-	n := 0
+	var times []time.Time
 	for _, e := range s.appAttestEvidence {
 		if e.Evidence.Action != "attestation" || e.Decision.Outcome != "apple_invalid_key" || e.Evidence.ReceivedAt.Before(since) {
 			continue
@@ -114,8 +135,9 @@ func (s *MemoryStore) CountAppAttestEnrollmentInvalidKeyFailures(ctx context.Con
 			continue
 		}
 		if machineID != "" && m.sessionMachines[session] == machineID || machineID == "" && m.sessions[session].AccountID == accountID {
-			n++
+			times = append(times, e.Evidence.ReceivedAt)
 		}
 	}
-	return min(n, AppAttestRotationCountCap), nil
+	slices.SortFunc(times, func(a, b time.Time) int { return b.Compare(a) })
+	return times[:min(len(times), AppAttestRotationCountCap)], nil
 }

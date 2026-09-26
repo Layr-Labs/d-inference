@@ -76,6 +76,100 @@ func TestRepeatedFreshKeyInvalidKeyEnrollmentBacksOffSixHours(t *testing.T) {
 	}
 }
 
+// A reconnect, coordinator restart or release starts a new session. It must
+// re-derive a running backoff from the archive before its first exchange.
+func TestEnrollmentBackoffResumesInANewSession(t *testing.T) {
+	now := time.Now().UTC()
+	for name, tc := range map[string]struct {
+		ago  []time.Duration
+		want time.Duration
+	}{
+		"backoff still running":                 {ago: []time.Duration{3 * time.Hour, 2 * time.Hour, time.Hour}, want: 5 * time.Hour},
+		"backoff already served":                {ago: []time.Duration{9 * time.Hour, 8 * time.Hour, 7 * time.Hour}},
+		"below the threshold":                   {ago: []time.Duration{2 * time.Hour, time.Hour}},
+		"threshold only across more than a day": {ago: []time.Duration{27 * time.Hour, 26 * time.Hour, time.Hour}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newRotationHarness(t, 100)
+			previous, machine := enrollmentBackoffSession(t, h, "previous-connection")
+			for _, ago := range tc.ago {
+				archiveEnrollmentOutcome(t, h.mem, previous.provider.ID, "apple_invalid_key", now.Add(-ago))
+			}
+			x, current := enrollmentBackoffSession(t, h, "connection")
+			if current != machine {
+				t.Fatal("fixture connections are on different machines")
+			}
+			attempts := 0
+			var delays []time.Duration
+			x.runRecovering(context.Background(), func(context.Context) {
+				attempts++
+				x.lastOutcome = "unsupported" // ends the loop
+			}, func(_ context.Context, delay time.Duration) bool {
+				delays = append(delays, delay)
+				return true
+			})
+			resumed := 0
+			for _, e := range h.events {
+				if e["stage"] == "recovery" && e["outcome"] == "enrollment_backoff_resumed" {
+					resumed++
+				}
+			}
+			if attempts != 1 {
+				t.Fatalf("attempts = %d, want 1", attempts)
+			}
+			if tc.want == 0 {
+				if len(delays) != 0 || resumed != 0 {
+					t.Fatalf("unexpected backoff: delays=%v resumed=%d", delays, resumed)
+				}
+				return
+			}
+			if len(delays) != 1 || delays[0] > tc.want || delays[0] < tc.want-time.Minute || resumed != 1 {
+				t.Fatalf("delays=%v resumed=%d, want one wait of about %v", delays, resumed, tc.want)
+			}
+		})
+	}
+	t.Run("session ends during the wait", func(t *testing.T) {
+		h := newRotationHarness(t, 100)
+		previous, _ := enrollmentBackoffSession(t, h, "previous-connection")
+		for _, ago := range []time.Duration{3 * time.Hour, 2 * time.Hour, time.Hour} {
+			archiveEnrollmentOutcome(t, h.mem, previous.provider.ID, "apple_invalid_key", now.Add(-ago))
+		}
+		x, _ := enrollmentBackoffSession(t, h, "connection")
+		attempts := 0
+		x.runRecovering(context.Background(), func(context.Context) { attempts++ },
+			func(context.Context, time.Duration) bool { return false })
+		if attempts != 0 {
+			t.Fatal("a session that ended during the backoff still enrolled")
+		}
+	})
+}
+
+func TestEnrollmentBackoffLeftMirrorsTheDecisionAtTheLatestFailure(t *testing.T) {
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	ago := func(durations ...time.Duration) []time.Time {
+		times := make([]time.Time, len(durations))
+		for i, d := range durations {
+			times[i] = now.Add(-d)
+		}
+		return times
+	}
+	for name, tc := range map[string]struct {
+		times []time.Time
+		want  time.Duration
+	}{
+		"no failures":                     {nil, 0},
+		"two failures":                    {ago(time.Hour, 2*time.Hour), 0},
+		"three within a day":              {ago(time.Hour, 2*time.Hour, 23*time.Hour), 5 * time.Hour},
+		"oldest outside the latest's day": {ago(time.Hour, 2*time.Hour, 25*time.Hour+time.Second), 0},
+		"backoff served":                  {ago(6*time.Hour, 7*time.Hour, 8*time.Hour), 0},
+		"clock ahead is capped":           {ago(-time.Hour, time.Hour, 2*time.Hour), enrollmentInvalidKeyBackoff},
+	} {
+		if got := enrollmentBackoffLeft(tc.times, now); got != tc.want {
+			t.Errorf("%s: left = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
 func TestEnrollmentBackoffCountsOnlyTrailingDayOnSameMachine(t *testing.T) {
 	t.Run("older than 24 hours", func(t *testing.T) {
 		h := newRotationHarness(t, 100)

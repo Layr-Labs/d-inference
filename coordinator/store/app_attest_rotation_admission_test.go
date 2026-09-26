@@ -76,3 +76,64 @@ func TestAppAttestKeyRotationAdmissionIsAtomicPerScope(t *testing.T) {
 		})
 	}
 }
+
+// A rotation row keeps the machine that was canonical when it was recorded.
+// When that machine is later merged into another, the survivor's limits must
+// still count the row, or the same Mac gets another immediate rotation.
+func TestAppAttestKeyRotationLimitsSurviveMachineMerges(t *testing.T) {
+	for name, backend := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			inventory, _ := As[MachineInventoryStore](backend)
+			lookup, _ := As[MachineIdentityLookupStore](backend)
+			rotations, ok := As[AppAttestKeyRotationStore](NewCached(backend, DefaultCacheConfig()))
+			if !ok || inventory == nil || lookup == nil {
+				t.Fatal("inventory or rotation storage hidden")
+			}
+			account, serial, now := uniqueID("account"), uniqueID("serial"), time.Now().UTC().Truncate(time.Microsecond)
+			observe := func(session, se, verifiedSerial string) string {
+				t.Helper()
+				id, err := inventory.ObserveMachine(t.Context(), MachineObservation{SessionID: session, AccountID: account, SEKey: se,
+					VerifiedSerial: verifiedSerial, At: now, OSMajor: 27, Source: "live_registration"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return id.ID
+			}
+			limits := []AppAttestRotationLimit{{Window: time.Hour, Max: 1}, {Window: 24 * time.Hour, Max: 4}}
+			admit := func(scope string, at time.Time) bool {
+				t.Helper()
+				_, ok, err := rotations.AdmitAppAttestKeyRotation(t.Context(), AppAttestKeyRotation{KeyID: uniqueID("key"), MachineID: scope,
+					AccountID: account, RequestedAt: at, Failures: 2, Reason: "assertion_apple_error"}, limits)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return ok
+			}
+			survivor := observe(uniqueID("a"), uniqueID("se"), serial)
+			sessionB, seB := uniqueID("b"), uniqueID("se")
+			predecessor := observe(sessionB, seB, "")
+			if predecessor == survivor {
+				t.Fatal("fixture machines collapsed before the merge")
+			}
+			if !admit(predecessor, now) {
+				t.Fatal("first rotation for the machine not admitted")
+			}
+			// The same Apple-verified serial proves both records are one Mac.
+			if observe(sessionB, seB, serial) != survivor {
+				t.Fatal("verified serial did not merge the machines")
+			}
+			if canonical, err := lookup.CanonicalMachineID(t.Context(), predecessor); err != nil || canonical != survivor {
+				t.Fatalf("canonical of merged machine = %q (%v), want %q", canonical, err, survivor)
+			}
+			if admit(survivor, now.Add(time.Minute)) {
+				t.Fatal("merge reset the hourly rotation limit")
+			}
+			if n, err := rotations.CountAppAttestKeyRotations(t.Context(), survivor, now.Add(-time.Hour)); err != nil || n != 1 {
+				t.Fatalf("survivor rotations in the hour = %d (%v), want 1", n, err)
+			}
+			if !admit(survivor, now.Add(time.Hour+time.Minute)) {
+				t.Fatal("rotation blocked after the hourly window passed")
+			}
+		})
+	}
+}

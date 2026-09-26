@@ -39,6 +39,22 @@ public enum AppAttestStallRestartPolicy {
     public static func stillStalled(heldSince: Date?, now: Date) -> Bool {
         AppleOperationStall.reportedSeconds(heldSince: heldSince, now: now) != nil
     }
+
+    public enum AfterDrain: Sendable, Equatable {
+        case restart
+        /// Apple's callback released the gate while the drain was awaited.
+        case recovered
+        /// A CLI stop, OS termination or scheduled shutdown took over the
+        /// drain; a relaunch would undo it.
+        case lifecycleTookOver
+    }
+
+    /// Decided after the drain's last suspension point. Losing ownership of
+    /// the drain wins over everything else: the process is being stopped.
+    public static func afterDrain(updateOwnsDrain: Bool, heldSince: Date?, now: Date) -> AfterDrain {
+        guard updateOwnsDrain else { return .lifecycleTookOver }
+        return stillStalled(heldSince: heldSince, now: now) ? .restart : .recovered
+    }
 }
 
 /// Persisted time of the last automatic stall restart. Written before the

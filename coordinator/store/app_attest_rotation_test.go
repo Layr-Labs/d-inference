@@ -147,17 +147,18 @@ func TestAppAttestEnrollmentInvalidKeyFailuresFollowCanonicalMachine(t *testing.
 				archiveAppAttestOutcome(t, archive, fmt.Sprintf("k-%d", i), tc.session, fmt.Sprintf("fresh-%d", i), tc.action, tc.outcome, tc.at, map[string]any{})
 			}
 			since := now.Add(-24 * time.Hour)
-			if n, err := rotations.CountAppAttestEnrollmentInvalidKeyFailures(ctx, machine, "account", since); err != nil || n != 2 {
-				t.Fatalf("machine failures = %d, want 2 (%v)", n, err)
+			times, err := rotations.AppAttestEnrollmentInvalidKeyFailureTimes(ctx, machine, "account", since)
+			if err != nil || len(times) != 2 || !times[0].Equal(now) || !times[1].Equal(now.Add(-time.Hour)) {
+				t.Fatalf("machine failures = %v (%v), want [now, now-1h]", times, err)
 			}
-			if n, err := rotations.CountAppAttestEnrollmentInvalidKeyFailures(ctx, other, "account", since); err != nil || n != 1 {
-				t.Fatalf("other machine failures = %d, want 1 (%v)", n, err)
+			if times, err := rotations.AppAttestEnrollmentInvalidKeyFailureTimes(ctx, other, "account", since); err != nil || len(times) != 1 {
+				t.Fatalf("other machine failures = %v (%v), want 1", times, err)
 			}
-			if n, err := rotations.CountAppAttestEnrollmentInvalidKeyFailures(ctx, "", "account", since); err != nil || n != 3 {
-				t.Fatalf("account fallback failures = %d, want 3 (%v)", n, err)
+			if times, err := rotations.AppAttestEnrollmentInvalidKeyFailureTimes(ctx, "", "account", since); err != nil || len(times) != 3 {
+				t.Fatalf("account fallback failures = %v (%v), want 3", times, err)
 			}
-			if n, err := rotations.CountAppAttestEnrollmentInvalidKeyFailures(ctx, "", "", since); err != nil || n != 0 {
-				t.Fatalf("unscoped count = %d (%v)", n, err)
+			if times, err := rotations.AppAttestEnrollmentInvalidKeyFailureTimes(ctx, "", "", since); err != nil || len(times) != 0 {
+				t.Fatalf("unscoped failures = %v (%v)", times, err)
 			}
 		})
 	}

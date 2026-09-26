@@ -17,6 +17,10 @@ func (x *Session) run(ctx context.Context) {
 }
 
 func (x *Session) runRecovering(ctx context.Context, attempt func(context.Context), wait func(context.Context, time.Duration) bool) {
+	// An enrollment backoff started by an earlier session still applies.
+	if delay := x.enrollmentBackoffRemaining(ctx, time.Now().UTC()); delay > 0 && !wait(ctx, delay) {
+		return
+	}
 	for failures := 0; ctx.Err() == nil; failures++ {
 		previousSuccess := x.assertionAt
 		x.lastOutcome = ""

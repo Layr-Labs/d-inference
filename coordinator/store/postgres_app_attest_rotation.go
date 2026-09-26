@@ -8,6 +8,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// appAttestRotationWindowCount counts rotations for a scope ($1) since $2,
+// including rows stored under machines merged into it, directly or through a
+// chain: a row keeps the machine that was canonical when it was recorded, and a
+// merge moves only aliases and sessions. The walk uses
+// darkbloom_machines_merged_into with CanonicalMachineID's depth bound; an
+// account scope has no merged machines.
+const appAttestRotationWindowCount = `WITH RECURSIVE family AS (
+ SELECT $1::text AS id,0 AS depth
+ UNION ALL SELECT m.id,f.depth+1 FROM darkbloom_machines m JOIN family f ON m.merged_into=f.id WHERE f.depth<100)
+ SELECT count(*) FROM app_attest_key_rotations WHERE machine_id IN (SELECT id FROM family) AND requested_at>=$2`
+
 func (s *PostgresStore) RecordAppAttestKeyRotation(ctx context.Context, r AppAttestKeyRotation) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `INSERT INTO app_attest_key_rotations(key_id,machine_id,account_id,requested_at,failures,reason)
 	 VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(key_id) DO NOTHING`, r.KeyID, r.MachineID, r.AccountID, r.RequestedAt, r.Failures, r.Reason)
@@ -37,8 +48,7 @@ func (s *PostgresStore) AdmitAppAttestKeyRotation(ctx context.Context, r AppAtte
 	}
 	for _, limit := range limits {
 		var n int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM app_attest_key_rotations WHERE machine_id=$1 AND requested_at>=$2`,
-			r.MachineID, r.RequestedAt.Add(-limit.Window)).Scan(&n); err != nil {
+		if err := tx.QueryRow(ctx, appAttestRotationWindowCount, r.MachineID, r.RequestedAt.Add(-limit.Window)).Scan(&n); err != nil {
 			return nil, false, err
 		}
 		if n >= limit.Max {
@@ -57,7 +67,7 @@ func (s *PostgresStore) AdmitAppAttestKeyRotation(ctx context.Context, r AppAtte
 
 func (s *PostgresStore) CountAppAttestKeyRotations(ctx context.Context, machineID string, since time.Time) (int, error) {
 	var n int
-	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM app_attest_key_rotations WHERE machine_id=$1 AND requested_at>=$2`, machineID, since).Scan(&n)
+	err := s.pool.QueryRow(ctx, appAttestRotationWindowCount, machineID, since).Scan(&n)
 	return n, err
 }
 
@@ -93,20 +103,30 @@ func (s *PostgresStore) CountAppAttestRotationFailures(ctx context.Context, keyI
 // darkbloom_machine_sessions_seen(last_seen DESC) for the account fallback.
 // Each session's evidence uses app_attest_evidence_session(session_id,
 // received_at DESC). The LIMIT bounds the result.
-func (s *PostgresStore) CountAppAttestEnrollmentInvalidKeyFailures(ctx context.Context, machineID, accountID string, since time.Time) (int, error) {
+func (s *PostgresStore) AppAttestEnrollmentInvalidKeyFailureTimes(ctx context.Context, machineID, accountID string, since time.Time) ([]time.Time, error) {
 	scope, value := `m.machine_id=$1`, machineID
 	if machineID == "" {
 		if accountID == "" {
-			return 0, nil
+			return nil, nil
 		}
 		scope, value = `m.account_id=$1`, accountID
 	}
-	var n int
-	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM (
-	 SELECT 1 FROM darkbloom_machine_sessions m
+	rows, err := s.pool.Query(ctx, `SELECT e.received_at FROM darkbloom_machine_sessions m
 	 JOIN app_attest_evidence e ON e.session_id=m.session_id
 	 WHERE `+scope+` AND m.last_seen>=$2
 	 AND e.received_at>=$2 AND e.action='attestation' AND e.outcome='apple_invalid_key'
-	 LIMIT $3) failures`, value, since, AppAttestRotationCountCap).Scan(&n)
-	return n, err
+	 ORDER BY e.received_at DESC LIMIT $3`, value, since, AppAttestRotationCountCap)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var times []time.Time
+	for rows.Next() {
+		var at time.Time
+		if err := rows.Scan(&at); err != nil {
+			return nil, err
+		}
+		times = append(times, at)
+	}
+	return times, rows.Err()
 }

@@ -16,13 +16,15 @@ type AppAttestKeyRotationStore interface {
 	RecordAppAttestKeyRotation(context.Context, AppAttestKeyRotation) (bool, error)
 	// AdmitAppAttestKeyRotation atomically applies the per-scope limits and
 	// inserts r. Callers for one scope (r.MachineID) are serialized across
-	// coordinators, so no window can exceed its limit. A key that already has
-	// a record is returned as existing without checking limits or inserting
-	// (it names the same dead key). When any limit is full nothing is inserted
-	// and admitted is false.
+	// coordinators, so no window can exceed its limit. The limits also count
+	// records stored under machines later merged into the scope, so a merge
+	// cannot reset them. A key that already has a record is returned as
+	// existing without checking limits or inserting (it names the same dead
+	// key). When any limit is full nothing is inserted and admitted is false.
 	AdmitAppAttestKeyRotation(ctx context.Context, r AppAttestKeyRotation, limits []AppAttestRotationLimit) (existing *AppAttestKeyRotation, admitted bool, err error)
 	// CountAppAttestKeyRotations counts records for one rate-limit scope
-	// (canonical machine, or the account fallback) requested at or after since.
+	// (canonical machine, or the account fallback) requested at or after since,
+	// including records stored under machines merged into it.
 	CountAppAttestKeyRotations(ctx context.Context, machineID string, since time.Time) (int, error)
 	GetAppAttestKeyRotation(ctx context.Context, keyID string) (*AppAttestKeyRotation, error)
 	// CountAppAttestRotationFailures counts archived assertion failures that
@@ -31,11 +33,11 @@ type AppAttestKeyRotationStore interface {
 	// key matches keyID count, so a client cannot charge another key.
 	// The result saturates at AppAttestRotationCountCap.
 	CountAppAttestRotationFailures(ctx context.Context, keyID string, since time.Time) (int, error)
-	// CountAppAttestEnrollmentInvalidKeyFailures counts attestation replies
-	// with outcome apple_invalid_key from sessions currently attributed to
-	// machineID, or to accountID when machineID is empty. The result saturates
-	// at AppAttestRotationCountCap.
-	CountAppAttestEnrollmentInvalidKeyFailures(ctx context.Context, machineID, accountID string, since time.Time) (int, error)
+	// AppAttestEnrollmentInvalidKeyFailureTimes returns when attestation
+	// replies with outcome apple_invalid_key were received since since, from
+	// sessions currently attributed to machineID, or to accountID when
+	// machineID is empty. Newest first, at most AppAttestRotationCountCap.
+	AppAttestEnrollmentInvalidKeyFailureTimes(ctx context.Context, machineID, accountID string, since time.Time) ([]time.Time, error)
 }
 
 type AppAttestKeyRotation struct {

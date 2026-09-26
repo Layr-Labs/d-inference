@@ -81,16 +81,29 @@ extension ProviderLoop {
             await resumeServingAfterUpdate()
             return true
         }
-        // Apple's callback may have arrived while we drained. If the gate is
-        // idle again, App Attest recovered on its own: resume serving without
-        // spending the six-hour marker or reloading models.
+        // Apple's callback may have arrived, or a CLI stop, OS termination or
+        // scheduled shutdown may have taken over the drain, while we awaited.
+        // Nothing below suspends, so this is the last point to re-check both.
         let heldSince = await appAttestShadowClient?.appleOperationHeldSince()
-        guard AppAttestStallRestartPolicy.stillStalled(heldSince: heldSince, now: Date()) else {
+        let ownsDrain = appAttestStallRestartOwnsDrain && !Task.isCancelled
+        switch AppAttestStallRestartPolicy.afterDrain(updateOwnsDrain: ownsDrain, heldSince: heldSince, now: Date()) {
+        case .lifecycleTookOver:
+            logger.info("App Attest: stall restart abandoned; a lifecycle drain or shutdown took over")
+            appAttestStallMonitorTask = nil
+            // Releases the update lease; lifecycle-owned admission stays closed.
+            await resumeServingAfterUpdate()
+            return false
+        case .recovered:
+            // App Attest recovered on its own: resume serving without spending
+            // the six-hour marker or reloading models.
             logger.info("App Attest: stalled Apple operation completed during drain; resuming without a restart")
             appAttestStallLastSkip = nil
+            appAttestStallMonitorTask = nil
             publishAppAttestStall(nil)
             await resumeServingAfterUpdate()
             return false
+        case .restart:
+            break
         }
         do {
             // Record only once the restart is due, but before issuing it: a
@@ -114,6 +127,13 @@ extension ProviderLoop {
             await resumeServingAfterUpdate()
             return true
         }
+    }
+
+    /// Whether the drain begun for a stall restart is still update-owned.
+    /// `ProviderDrain.begin(.lifecycle)` takes over without cancelling the
+    /// stall monitor, so the restart path must check this itself.
+    internal var appAttestStallRestartOwnsDrain: Bool {
+        !isShuttingDown && lifecycleDrainTask == nil && servingDrain.owner == .update && updatePhase == .draining
     }
 
     private func appAttestStallRestartMarker() -> AppAttestStallRestartMarker {

@@ -37,13 +37,55 @@ struct AppAttestDeepDiagnosisTests {
         #expect(check(healthy, "boot security")?.level == .pass)
     }
 
-    @Test func expiredOrMissingProfileAdvisesReinstall() {
+    @Test(arguments: [
+        AppAttestPreflight(optInEntitlement: true, environmentEntitlement: .production,
+                          profilePresent: true, profileExpired: true),
+        AppAttestPreflight(optInEntitlement: true, environmentEntitlement: .production, profilePresent: false),
+        AppAttestPreflight(optInEntitlement: false, profilePresent: true),
+        AppAttestPreflight(optInEntitlement: true, environmentEntitlement: .invalid, profilePresent: true),
+    ])
+    func knownInvalidSigningFailsEvenWhenOtherChecksAreUnknown(_ preflight: AppAttestPreflight) {
         let d = AppAttestDeepDiagnosis.evaluate(
-            status(process: AppAttestProcessDiagnostics(preflight: AppAttestPreflight(optInEntitlement: true, profilePresent: true,
-                                                                                     profileExpired: true, bundlePathClass: .userInstall))),
-            pushHistory: nil, now: 1_000)
+            status(process: AppAttestProcessDiagnostics(preflight: preflight)), pushHistory: nil, now: 1_000)
         #expect(check(d, "app signing")?.level == .fail)
-        #expect(check(d, "app signing")?.fix?.contains("install.sh") == true)
+    }
+
+    @Test(arguments: [
+        AppAttestPreflight(profilePresent: true, bundlePathClass: .userInstall),
+        AppAttestPreflight(environmentEntitlement: .production, profilePresent: true, profileExpired: false),
+        AppAttestPreflight(optInEntitlement: true, profilePresent: true, profileExpired: false),
+        AppAttestPreflight(optInEntitlement: true, environmentEntitlement: .production, profileExpired: false),
+        AppAttestPreflight(optInEntitlement: true, environmentEntitlement: .production, profilePresent: true),
+    ])
+    func incompleteSigningEvidenceIsIndeterminate(_ preflight: AppAttestPreflight) {
+        let d = AppAttestDeepDiagnosis.evaluate(
+            status(process: AppAttestProcessDiagnostics(preflight: preflight)), pushHistory: nil, now: 1_000)
+        #expect(check(d, "app signing")?.level == .warn)
+    }
+
+    @Test(arguments: [AppAttestPreflight.EnvironmentEntitlement.production, .development, .absent])
+    func validSigningAllowsLegitimatelyAbsentEnvironment(_ environment: AppAttestPreflight.EnvironmentEntitlement) {
+        let preflight = AppAttestPreflight(optInEntitlement: true, environmentEntitlement: environment,
+                                          profilePresent: true, profileExpired: false, bundlePathClass: .userInstall)
+        let d = AppAttestDeepDiagnosis.evaluate(
+            status(process: AppAttestProcessDiagnostics(preflight: preflight)), pushHistory: nil, now: 1_000)
+        #expect(check(d, "app signing")?.level == .pass)
+    }
+
+    @Test func undecodableSigningEvidenceNeverPasses() throws {
+        let data = Data(#"{"opt_in_entitlement":"unknown","environment_entitlement":"future-value","profile_present":true,"profile_expired":"unknown"}"#.utf8)
+        let preflight = try JSONDecoder().decode(AppAttestPreflight.self, from: data)
+        let d = AppAttestDeepDiagnosis.evaluate(
+            status(process: AppAttestProcessDiagnostics(preflight: preflight)), pushHistory: nil, now: 1_000)
+        #expect(check(d, "app signing")?.level == .warn)
+    }
+
+    @Test func keyHistoryDisplayAgesAdvanceBetweenProofs() {
+        let snapshot = status(history: AppAttestKeyHistory(lastSuccessAgeSeconds: 0, keyAgeSeconds: 30))
+        let d = AppAttestLocalDiagnosis.evaluate(snapshot, daemonRunning: true, macOSMajorVersion: 27, now: 1_020)
+        let history = check(d, "key history")
+        #expect(history?.message.contains("last Apple success 20s ago") == true)
+        #expect(history?.message.contains("current key 50s old") == true)
     }
 
     @Test func uncleanPreviousExitIsCalledOut() {

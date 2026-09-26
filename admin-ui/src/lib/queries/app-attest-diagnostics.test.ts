@@ -1,13 +1,18 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
+import { pivotDeaths } from "../app-attest-diagnostics";
+import {
+  appAttestDiagnosticBreakdown, appAttestDiagnosticCohorts, appAttestDiagnosticCoverage,
+  appAttestKeyDeathsByDay, appAttestPushReceipt, appAttestRecentKeyDeaths,
+  appAttestRotationEvents, appAttestRotationOutcomes,
+} from "./app-attest-diagnostics";
 
 const testURL = process.env.APP_ATTEST_TEST_DATABASE_URL;
 // This integration test writes fixtures only in the designated disposable DB.
 const enabled = !!testURL?.startsWith("postgres://gaj@127.0.0.1:55495/darkbloom_attest_094_test?");
 // Keep fixtures on one connection and roll them back, including truncation.
 const pool = new Pool({ connectionString: testURL, max: 1 });
-// The mock factory closes over `pool`; hoisted static imports would evaluate it
-// before `pool` exists, so each test imports the query module dynamically.
+// The mock captures `pool` but only reads it when a query runs, after module initialization.
 vi.mock("@/lib/db", () => ({ query: async (text: string, params: unknown[]) => (await pool.query(text, params)).rows }));
 
 const session = (id: string, machine: string, os: number, build: string, chip = "Apple M3 Max") =>
@@ -73,7 +78,6 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
   afterAll(async () => { await pool.query("ROLLBACK"); await pool.end(); });
 
   it("counts every unknown cohort on macOS 27+ only, within the window", async () => {
-    const { appAttestDiagnosticCohorts, appAttestDiagnosticCoverage } = await import("./app-attest-diagnostics");
     expect(await appAttestDiagnosticCohorts(1)).toEqual([
       { cohort: "dead_key_assertion", events: "1", machines: "1" },
       { cohort: "fresh_key_invalid_key", events: "1", machines: "1" },
@@ -86,7 +90,6 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
   });
 
   it("breaks cohorts down by diagnostics and reports old rows as missing", async () => {
-    const { appAttestDiagnosticBreakdown } = await import("./app-attest-diagnostics");
     const rows = await appAttestDiagnosticBreakdown(1);
     const pick = (cohort: string, dimension: string) => rows.filter(r => r.cohort === cohort && r.dimension === dimension)
       .map(r => [r.value, r.events]);
@@ -104,14 +107,12 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
   });
 
   it("classifies each dead key once by OS change, reboot or process restart", async () => {
-    const { appAttestKeyDeathsByDay, appAttestRecentKeyDeaths } = await import("./app-attest-diagnostics");
     const byClass = Object.fromEntries((await appAttestKeyDeathsByDay(1)).map(r => [r.classification, [r.keys, r.clean_exit, r.unclean_exit]]));
     expect(byClass).toEqual({ os_change: ["1", "0", "0"], process_restart: ["1", "0", "1"], unknown: ["1", "0", "0"] });
     // m-old has dead keys in two classes: the day counts it once.
     const byDay = await appAttestKeyDeathsByDay(1);
     expect(byDay.reduce((sum, r) => sum + Number(r.machines), 0)).toBe(3);
     expect(new Set(byDay.map(r => r.day_machines))).toEqual(new Set(["2"]));
-    const { pivotDeaths } = await import("../app-attest-diagnostics");
     expect(pivotDeaths(byDay)[0].machines).toBe(2);
     const recent = await appAttestRecentKeyDeaths(1);
     const restart = recent.find(r => r.key_id === "k-restart");
@@ -122,7 +123,6 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
   });
 
   it("falls back to boot_time on rows without derived flags", async () => {
-    const { appAttestRecentKeyDeaths } = await import("./app-attest-diagnostics");
     await pool.query("SAVEPOINT fallback");
     try {
       await evidence("v9", "s-new", "k-boot", 10, "verified", { boot_time: 1_800_000_000 });
@@ -134,7 +134,6 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
   });
 
   it("reports rotation requests, replacement outcomes and decisions", async () => {
-    const { appAttestRotationOutcomes, appAttestRotationEvents } = await import("./app-attest-diagnostics");
     const [row] = await appAttestRotationOutcomes(1);
     expect(row).toMatchObject({ reason: "assertion_apple_error", requested: "2", scopes: "2", replacement_attested: "1", replacement_verified: "1" });
     expect(row.median_seconds_to_verified).toBeCloseTo(3630, 0);
@@ -144,8 +143,32 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
     ]);
   });
 
+  it("finds replacement proofs after chained machine merges and preserves account scopes", async () => {
+    await pool.query("SAVEPOINT merged_rotation");
+    try {
+      await pool.query(`INSERT INTO darkbloom_machines VALUES
+        ('m-middle','hardware_verified',NULL,NOW(),NOW()),
+        ('m-survivor','hardware_verified',NULL,NOW(),NOW())`);
+      await pool.query("UPDATE darkbloom_machines SET merged_into='m-middle' WHERE id='m-rep'");
+      await pool.query("UPDATE darkbloom_machines SET merged_into='m-survivor' WHERE id='m-middle'");
+      await pool.query("UPDATE darkbloom_machine_sessions SET machine_id='m-survivor' WHERE machine_id='m-rep'");
+      const [merged] = await appAttestRotationOutcomes(1);
+      expect(merged).toMatchObject({ requested: "2", scopes: "2", replacement_attested: "1", replacement_verified: "1" });
+      expect(merged.median_seconds_to_verified).toBeCloseTo(3630, 0);
+      // A later request under the survivor is the same machine scope. The
+      // account fallback remains separate and can still find its proofs.
+      await pool.query(`INSERT INTO app_attest_key_rotations VALUES
+        ('k-survivor','m-survivor','owner',NOW()-INTERVAL '5 hours',2,'assertion_apple_error'),
+        ('k-account','account:owner','owner',NOW()-INTERVAL '5 hours',2,'assertion_apple_error')`);
+      expect((await appAttestRotationOutcomes(1))[0]).toMatchObject({
+        requested: "4", scopes: "3", replacement_attested: "3", replacement_verified: "3",
+      });
+    } finally {
+      await pool.query("ROLLBACK TO SAVEPOINT merged_rotation");
+    }
+  });
+
   it("summarizes APNs push receipt from the latest ready per machine on every OS", async () => {
-    const { appAttestPushReceipt } = await import("./app-attest-diagnostics");
     await pool.query("SAVEPOINT pushes");
     try {
       // An older ready with push_history is superseded by the latest ready.

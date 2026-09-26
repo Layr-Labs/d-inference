@@ -17,6 +17,9 @@ public actor AppAttestShadowClient {
     private var preparedAccountScope: String?
     private var preparedProtocol: Int?
     private var localStatus: AppAttestLocalStatus?
+    /// The generation budget does not change during proofs. Keep the prepare
+    /// observation so proof diagnostics need no additional Keychain reads.
+    private var localKeyContext: (scope: String, budget: ShadowKeyRecord?)?
     private var lastAppleFailure: AppAttestLastAppleFailure?
 
     /// `processDiagnostics` supplies the process-level `ready` context owned
@@ -41,6 +44,7 @@ public actor AppAttestShadowClient {
     public func respond(to request: AppAttestShadowPayload, publicKey: String, status: AppAttestStatus? = nil) async -> AppAttestShadowPayload {
         guard request.action == "prepare" else {
             let response = await exchange(request, publicKey: publicKey, status: status)
+            refreshLocalKeyStatus()
             recordAppleFailure(response)
             return response
         }
@@ -70,16 +74,23 @@ public actor AppAttestShadowClient {
         let current = now()
         var key: AppAttestKeyState?
         var history: AppAttestKeyHistory?
+        localKeyContext = nil
         // An availability failure never reaches Keychain in the exchange; keep it that way.
         if response.availabilityReason == nil, let environment = request.environment,
            let keyScope = keyScope(for: request, environment: environment) {
             // A Keychain read error leaves both nil (doctor reports it); a
             // missing record is a valid "no key" state.
             do {
-                let record = try storage.load(scope: keyScope)
+                let record: ShadowKeyRecord?
+                if response.result == "ok", preparedScope == keyScope, session == request.session {
+                    record = self.record
+                } else {
+                    record = try storage.load(scope: keyScope)
+                }
                 let budget = try storage.load(scope: KeyGenerationBudget.scope(scope, environment: environment))
                 key = AppAttestKeyState(record: record, budget: budget, now: current)
                 history = AppAttestKeyHistory.build(record: record, budget: budget, now: current, bootTime: context.bootTime)
+                localKeyContext = (keyScope, budget)
             } catch {}
         }
         localStatus = AppAttestLocalStatus(
@@ -87,6 +98,18 @@ public actor AppAttestShadowClient {
             availabilityReason: response.availabilityReason, operationStalledSeconds: response.operationStalledSeconds, key: key,
             process: diagnostics, keyHistory: history, lastAppleFailure: lastAppleFailure)
         return history
+    }
+
+    private func refreshLocalKeyStatus() {
+        guard let record, let context = localKeyContext, context.scope == preparedScope,
+              var status = localStatus else { return }
+        let current = now()
+        status.observedAt = current.timeIntervalSince1970
+        status.key = AppAttestKeyState(record: record, budget: context.budget, now: current)
+        status.keyHistory = AppAttestKeyHistory.build(
+            record: record, budget: context.budget, now: current, bootTime: status.bootTime)
+        status.keyHistoryObservedAt = current.timeIntervalSince1970
+        localStatus = status
     }
 
     /// Keeps the last Apple failure of an attestation/assertion for doctor.

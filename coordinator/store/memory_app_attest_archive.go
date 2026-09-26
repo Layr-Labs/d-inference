@@ -71,3 +71,39 @@ func (s *MemoryStore) CompleteAppAttestEvidence(ctx context.Context, id string, 
 	s.appAttestEvidence[id] = e
 	return d.Outcome, nil
 }
+
+func (s *MemoryStore) GetAppAttestAssertionDiagnostics(ctx context.Context, keyID string) (*AppAttestAssertionDiagnostics, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var latest AppAttestEvidence
+	found := false
+	for _, row := range s.appAttestEvidence {
+		e := row.Evidence
+		if e.KeyID == keyID && e.Action == "assertion" && row.Decision.Outcome == "verified" &&
+			(!found || e.ReceivedAt.After(latest.ReceivedAt) || e.ReceivedAt.Equal(latest.ReceivedAt) && e.ID > latest.ID) {
+			latest, found = e, true
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	// Match the bounded PostgreSQL window without copying or sorting proof rows.
+	newer := 0
+	for _, row := range s.appAttestEvidence {
+		e := row.Evidence
+		if e.KeyID == keyID && (e.ReceivedAt.After(latest.ReceivedAt) || e.ReceivedAt.Equal(latest.ReceivedAt) && e.ID > latest.ID) {
+			newer++
+			if newer >= AppAttestDiagnosticLookback {
+				return nil, nil
+			}
+		}
+	}
+	var result AppAttestAssertionDiagnostics
+	if err := json.Unmarshal(latest.Context, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

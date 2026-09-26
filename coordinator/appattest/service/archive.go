@@ -37,6 +37,7 @@ func (x *Session) handle(ctx context.Context, reply protocol.AppAttestShadowPayl
 			x.observe("archive", "unavailable", nil)
 			return "stop"
 		}
+		x.deriveKeyLifecycleDiagnostics(ctx)
 		raw, decodeErr := base64.StdEncoding.DecodeString(reply.Proof)
 		if decodeErr != nil {
 			// Partial decode output is not a complete proof. The exact original

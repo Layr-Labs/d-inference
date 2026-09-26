@@ -123,6 +123,35 @@ final class NativeErrorChainTests: XCTestCase {
         XCTAssertEqual(AppAttestLocalStatus.published(current: daemon, client: client, prepared: true), client)
     }
 
+    func testProofHistoryPublishesWithoutChangedFailureAndKeepsDaemonStallFields() throws {
+        let failure = AppAttestLastAppleFailure(observedAt: 90, action: .assertion, result: "operation_timeout")
+        let process = AppAttestProcessDiagnostics(consoleUserActive: true)
+        let daemon = AppAttestLocalStatus(
+            observedAt: 100, launchSession: .gui, operationStalledSeconds: 1_200,
+            key: AppAttestKeyState(recordPresent: true, attested: false, generationBlockedUntil: nil), process: process,
+            keyHistory: AppAttestKeyHistory(lastSuccessAgeSeconds: 10, consecutiveAssertionFailures: 1),
+            lastAppleFailure: failure)
+        var client = AppAttestLocalStatus(
+            observedAt: 200, launchSession: .unknown, operationStalledSeconds: 600,
+            key: AppAttestKeyState(recordPresent: true, attested: true, generationBlockedUntil: nil),
+            keyHistory: AppAttestKeyHistory(lastSuccessAgeSeconds: 0, consecutiveAssertionFailures: 0),
+            lastAppleFailure: failure)
+        let recovered = try XCTUnwrap(AppAttestLocalStatus.published(current: daemon, client: client, prepared: false))
+        XCTAssertEqual(recovered.key?.attested, true)
+        XCTAssertEqual(recovered.keyHistory?.consecutiveAssertionFailures, 0)
+        XCTAssertEqual(recovered.keyHistory?.lastSuccessAgeSeconds, 0)
+        XCTAssertEqual(recovered.keyHistoryObservedAt, 200)
+        XCTAssertEqual(recovered.lastAppleFailure, failure)
+        XCTAssertEqual(recovered.operationStalledSeconds, 1_200)
+        XCTAssertEqual(recovered.launchSession, .gui)
+        XCTAssertEqual(recovered.process, process)
+        XCTAssertNil(AppAttestLocalStatus.published(current: recovered, client: client, prepared: false))
+        client.keyHistory?.consecutiveAssertionFailures = 1
+        let failed = AppAttestLocalStatus.published(current: recovered, client: client, prepared: false)
+        XCTAssertEqual(failed?.keyHistory?.consecutiveAssertionFailures, 1)
+        XCTAssertEqual(failed?.operationStalledSeconds, 1_200)
+    }
+
     func testOnlyTheCoordinatorsDeadKeySignalsCountTowardRotation() {
         func failure(action: AppAttestLastAppleFailure.Action = .assertion, result: String = "apple_error",
                      top: AppAttestNativeErrorEntry? = nil, source: AppAttestAppleErrorSource? = nil) -> AppAttestLastAppleFailure {

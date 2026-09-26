@@ -16,7 +16,7 @@ enum ReportAppAttestEvidence {
 
     /// snake_case throughout, matching the daemon state file and the wire.
     static func snapshotLine(state: DaemonState?, pushHistory: APNsPushHistory, now: Date) -> Data {
-        let snapshot = Snapshot(appAttest: state?.appAttest,
+        let snapshot = Snapshot(appAttest: state?.appAttest?.resolvingKeyHistoryAges(at: now.timeIntervalSince1970),
                                 pushHistory: pushHistory.summary(deviceTokenPresent: pushHistory.deviceTokenPresent, now: now))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -26,8 +26,8 @@ enum ReportAppAttestEvidence {
         return data
     }
 
-    /// Under `sudo darkbloom report`, read the invoking user's auth token and
-    /// daemon files rather than root's. Only the system log needs elevation.
+    /// Under `sudo darkbloom report`, read the invoking user's daemon files
+    /// rather than root's. Only the system log needs elevation.
     /// Returns that user's home, or nil when not running under sudo.
     @discardableResult
     static func adoptInvokingUserFiles(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
@@ -35,13 +35,16 @@ enum ReportAppAttestEvidence {
               let entry = getpwnam(user), let dir = entry.pointee.pw_dir else { return nil }
         let home = URL(fileURLWithPath: String(cString: dir))
         let darkbloom = home.appendingPathComponent(".darkbloom")
-        if environment["DARKBLOOM_AUTH_TOKEN_PATH"] == nil {
-            setenv("DARKBLOOM_AUTH_TOKEN_PATH", darkbloom.appendingPathComponent("auth_token").path, 1)
-        }
         if environment["DARKBLOOM_STATE_FILE"] == nil {
             setenv("DARKBLOOM_STATE_FILE", darkbloom.appendingPathComponent("daemon-state.json").path, 1)
         }
         return home
+    }
+
+    /// Sudo reports may read legacy credentials, but must not migrate them as root.
+    static func authToken(invokingHome: URL?, environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        guard let invokingHome else { return AuthTokenStore.load() }
+        return AuthTokenStore.loadReadOnly(home: invokingHome, overridePath: environment["DARKBLOOM_AUTH_TOKEN_PATH"])
     }
 
     /// The provider config a report reads: an explicit `--config` wins; under

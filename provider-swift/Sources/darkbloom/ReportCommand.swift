@@ -25,7 +25,8 @@ private final class LockedText: @unchecked Sendable {
 /// The collector scopes `log show` to Darkbloom's provider subsystem and does
 /// not request private fields, so macOS unified-log redaction is preserved.
 /// App Attest evidence (the daemon's closed local snapshot, APNs push history
-/// and closed-pattern devicecheckd matches) is appended to the same upload.
+/// and closed-pattern device-wide matches, not attributable to Darkbloom)
+/// is appended to the same upload.
 struct Report: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Upload recent provider unified logs for troubleshooting.",
@@ -36,14 +37,15 @@ struct Report: AsyncParsableCommand {
         the exact report locally before uploading it.
 
         Also appends App Attest evidence: the provider's last local App Attest
-        snapshot, APNs push receipt/reply history, and devicecheckd log lines
-        from the last 2 hours reduced to a closed set of failure patterns and
-        numeric codes. macOS lets only administrator accounts read the system
-        log: run this from an administrator account, or `sudo darkbloom report`
-        if this account is allowed to use sudo.
+        snapshot, APNs push receipt/reply history, and device-wide devicecheckd /
+        App Attest log observations from the last 2 hours reduced to a closed
+        set of failure patterns and numeric codes. These observations may come
+        from other apps and are not attributable to Darkbloom. macOS lets only
+        administrator accounts read the system log: run this from an
+        administrator account, or `sudo darkbloom report` if this account is
+        allowed to use sudo.
 
-        Other logs from applications and operating-system subsystems are not
-        included.
+        No other application or operating-system logs are included.
         """
     )
 
@@ -145,7 +147,9 @@ struct Report: AsyncParsableCommand {
 
         print("Uploading to coordinator...")
         do {
-            let reportID = try await uploadReport(httpBase: httpBase, logData: logData)
+            let reportID = try await uploadReport(
+                httpBase: httpBase, logData: logData,
+                token: ReportAppAttestEvidence.authToken(invokingHome: invokingHome))
             print()
             print("  Report uploaded successfully!")
             print("  Report ID: \(reportID)")
@@ -191,7 +195,7 @@ struct Report: AsyncParsableCommand {
         return data
     }
 
-    private func uploadReport(httpBase: String, logData: Data) async throws -> Int64 {
+    private func uploadReport(httpBase: String, logData: Data, token: String?) async throws -> Int64 {
         guard let url = URL(string: "\(httpBase)/v1/provider/log-report") else {
             throw URLError(.badURL)
         }
@@ -202,7 +206,7 @@ struct Report: AsyncParsableCommand {
         request.httpBody = logData
         request.timeoutInterval = 60
 
-        if let token = AuthTokenStore.load() {
+        if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 

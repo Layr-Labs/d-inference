@@ -1,9 +1,9 @@
 import Foundation
 import ProviderCore
 
-/// Local-only `devicecheckd` / App Attest evidence from the unified log, for
+/// Device-wide `devicecheckd` / App Attest evidence from the unified log, for
 /// `darkbloom doctor` (printed) and `darkbloom report` (appended to the
-/// user-initiated upload). Never collected or sent automatically.
+/// user-initiated upload). Not attributable to Darkbloom; never collected or sent automatically.
 ///
 /// Only a closed set of patterns and their numeric codes is kept per line;
 /// the raw message text, key identifiers and paths are never retained.
@@ -12,6 +12,7 @@ enum DeviceCheckEvidence {
     static let predicate = #"process == "devicecheckd" OR subsystem == "com.apple.appattest""#
     static let timeoutSeconds: TimeInterval = 30
     static let maxEvents = 200
+    static let scopeDisclaimer = "Device-wide observations; not attributable to Darkbloom."
 
     /// Closed pattern set. `code` patterns capture one signed integer.
     enum Pattern: String, CaseIterable, Codable, Sendable {
@@ -156,7 +157,7 @@ enum DeviceCheckEvidence {
     // MARK: - Rendering
 
     static func summary(_ events: [Event]) -> String {
-        guard !events.isEmpty else { return "no devicecheckd/App Attest failure patterns in the last \(window)." }
+        guard !events.isEmpty else { return scopeDisclaimer + " No devicecheckd/App Attest failure patterns in the last \(window)." }
         var counts: [Pattern: Int] = [:]
         var codes: [Pattern: Set<Int32>] = [:]
         for event in events {
@@ -170,17 +171,12 @@ enum DeviceCheckEvidence {
             let list = codes[pattern].map { " (" + $0.sorted().map(String.init).joined(separator: ", ") + ")" } ?? ""
             return "\(pattern.rawValue) ×\(count)\(list)"
         }
-        return "last \(window): " + parts.joined(separator: "; ")
+        return scopeDisclaimer + " Last \(window): " + parts.joined(separator: "; ")
     }
 
     static func doctorDiagnostic(_ outcome: Outcome) -> Diagnostic {
         switch outcome {
         case .collected(let events):
-            if showsKeyLoss(events) {
-                return Diagnostic(section: .appAttest, name: "devicecheckd log", level: .warn,
-                                  message: summary(events) + ". The Secure Enclave refused to sign with the App Attest key (CryptoTokenKit -3).",
-                                  fix: "the coordinator rotates a dead key automatically; run `darkbloom report` to send this evidence to support.")
-            }
             return Diagnostic(section: .appAttest, name: "devicecheckd log",
                               level: events.isEmpty ? .pass : .warn, message: summary(events),
                               fix: events.isEmpty ? nil : "run `darkbloom report` to send this evidence to support.")
@@ -194,19 +190,13 @@ enum DeviceCheckEvidence {
         }
     }
 
-    /// True for the Secure Enclave key-loss signature seen after restarts:
-    /// SecKeyCreateSignature failed with CryptoTokenKit -3 and an AKS error.
-    static func showsKeyLoss(_ events: [Event]) -> Bool {
-        events.contains { event in
-            event.matches.contains { $0.pattern == .secKeyCreateSignatureFailed }
-                && event.matches.contains { $0.pattern == .cryptoTokenKitCode && $0.code == -3 }
-        }
-    }
 
     /// NDJSON lines appended to `darkbloom report`. Only closed fields.
     static func reportLines(_ outcome: Outcome) -> Data {
         struct Line: Encodable {
             let source = "darkbloom.devicecheck_evidence"
+            let scope = "device_wide"
+            let attribution = "not_attributable_to_darkbloom"
             let status: String
             let event: Event?
         }

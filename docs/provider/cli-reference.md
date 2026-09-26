@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `ca5f71ecd`
+> Last updated: 2026-09-26 · commit `10fb4b7c1`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -859,26 +859,30 @@ disabled.
 
 It also appends App Attest evidence as extra NDJSON lines:
 
-- the daemon's last local App Attest snapshot (`source`
-  `darkbloom.app_attest_state`), with key history, process start and the native
-  error chain;
+- the daemon's local App Attest snapshot (`source`
+  `darkbloom.app_attest_state`), with key history refreshed after each proof,
+  ages advanced to report time, process start and the native error chain;
 - the APNs push receipt/reply summary;
-- `devicecheckd` / `com.apple.appattest` log lines from the last 2 h (`source`
-  `darkbloom.devicecheck_evidence`). Only the timestamp, category, message type
-  and matches from a closed pattern set with their numeric codes are kept, for
-  example `SecKeyCreateSignature failed`, `CryptoTokenKit Code`, `AKSError`,
-  `Should fetch CD hash`, `invalidKey` and `unknownSystemFailure`. Message text,
-  key identifiers and paths are dropped.
+- device-wide `devicecheckd` / `com.apple.appattest` observations from the last
+  2 h (`source` `darkbloom.devicecheck_evidence`). Every outcome carries
+  `scope=device_wide` and `attribution=not_attributable_to_darkbloom`: other apps
+  can cause these events, so they do not establish this provider's key state.
+  Only timestamp, category, message type and closed-pattern numeric matches
+  remain, such as `SecKeyCreateSignature failed`, `CryptoTokenKit Code`,
+  `AKSError`, `Should fetch CD hash`, `invalidKey` and `unknownSystemFailure`.
+  Message text, key identifiers and paths are dropped.
 
 macOS lets only administrator accounts read the system log. From a standard
 account, macOS answers `Operation not permitted`. The command reports this and
 still uploads the App Attest snapshot. To include the logs, run it from an
 administrator account, or run `sudo darkbloom report` if this account is allowed
-to use sudo. Under `sudo` the command reads the invoking user's auth token,
-daemon state and provider config (unless `--config` is given) and does not
-migrate config files on disk (`ReportAppAttestEvidence` in
-`provider-swift/Sources/darkbloom/Diagnostics/`). `--dry-run` prints every
-appended line before anything is uploaded.
+to use sudo. Under `sudo` it reads the invoking user's daemon state and provider
+config (unless `--config` is given), plus canonical then legacy credentials
+through `AuthTokenStore.loadReadOnly`. It does not migrate config or token files
+as root. An explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` overrides that lookup
+and suppresses legacy fallback. See `ReportAppAttestEvidence` in
+`provider-swift/Sources/darkbloom/Diagnostics/`. `--dry-run` prints every appended
+line before anything is uploaded.
 
 ## `darkbloom watchdog`
 

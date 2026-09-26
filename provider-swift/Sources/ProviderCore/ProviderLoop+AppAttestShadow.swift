@@ -49,7 +49,8 @@ extension ProviderLoop {
 
     private func finishAppAttestShadow(_ reply: AppAttestShadowPayload, localStatus: AppAttestLocalStatus?,
                                        prepared: Bool, generation: UInt64, send: SendHandle) {
-        // Proof failures reach doctor and report now, not at the next prepare.
+        // Proof key/history updates and failures reach doctor and report now,
+        // not at the next prepare; the daemon keeps its current stall fields.
         if let localStatus, let published = AppAttestLocalStatus.published(
             current: appAttestLocalStatus, client: localStatus, prepared: prepared) {
             appAttestLocalStatus = published

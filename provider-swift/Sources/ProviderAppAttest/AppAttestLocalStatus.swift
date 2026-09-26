@@ -17,15 +17,19 @@ public struct AppAttestLocalStatus: Codable, Sendable, Equatable {
     public var key: AppAttestKeyState?
     /// The process-level context sent on the last `ready`.
     public var process: AppAttestProcessDiagnostics?
-    /// The `key_history` sent on the last `ready`.
+    /// Latest local key lifecycle summary; only `ready` carries it on the wire.
     public var keyHistory: AppAttestKeyHistory?
+    /// Unix seconds anchoring the relative ages in `keyHistory`, independently
+    /// of the process observation or the daemon's stall monitor.
+    public var keyHistoryObservedAt: Double?
     /// The last failed attestation/assertion in this process.
     public var lastAppleFailure: AppAttestLastAppleFailure?
 
     public init(observedAt: Double, launchSession: AppAttestLaunchSession, bootTime: Int64? = nil,
                 availabilityReason: AppAttestAvailabilityReason? = nil, operationStalledSeconds: Int? = nil,
                 key: AppAttestKeyState? = nil, process: AppAttestProcessDiagnostics? = nil,
-                keyHistory: AppAttestKeyHistory? = nil, lastAppleFailure: AppAttestLastAppleFailure? = nil) {
+                keyHistory: AppAttestKeyHistory? = nil, keyHistoryObservedAt: Double? = nil,
+                lastAppleFailure: AppAttestLastAppleFailure? = nil) {
         self.observedAt = observedAt
         self.launchSession = launchSession
         self.bootTime = bootTime
@@ -34,13 +38,14 @@ public struct AppAttestLocalStatus: Codable, Sendable, Equatable {
         self.key = key
         self.process = process
         self.keyHistory = keyHistory
+        self.keyHistoryObservedAt = keyHistory == nil ? nil : (keyHistoryObservedAt ?? observedAt)
         self.lastAppleFailure = lastAppleFailure
     }
 
     // camelCase names: the daemon state file applies its snake-case strategy.
     enum CodingKeys: String, CodingKey {
         case observedAt, launchSession, bootTime, availabilityReason, operationStalledSeconds, key
-        case process, keyHistory, lastAppleFailure
+        case process, keyHistory, keyHistoryObservedAt, lastAppleFailure
     }
 
     /// A CLI and daemon of different versions share the state file during an
@@ -56,19 +61,44 @@ public struct AppAttestLocalStatus: Codable, Sendable, Equatable {
         key = try? c.decodeIfPresent(AppAttestKeyState.self, forKey: .key)
         process = try? c.decodeIfPresent(AppAttestProcessDiagnostics.self, forKey: .process)
         keyHistory = try? c.decodeIfPresent(AppAttestKeyHistory.self, forKey: .keyHistory)
+        keyHistoryObservedAt = try? c.decodeIfPresent(Double.self, forKey: .keyHistoryObservedAt)
         lastAppleFailure = try? c.decodeIfPresent(AppAttestLastAppleFailure.self, forKey: .lastAppleFailure)
     }
 
-    /// What the daemon publishes after an exchange, or nil when nothing
-    /// changed. A prepare replaces the status. A proof reply only brings its
-    /// Apple failure: the daemon's other fields can be fresher than the
-    /// client's (the stall monitor owns `operationStalledSeconds`).
+    /// Resolve relative ages at display time without changing when the daemon
+    /// observed the remaining fields. Older daemon snapshots used `observedAt`
+    /// as their only age anchor. Unknown or invalid ages remain absent.
+    public func resolvingKeyHistoryAges(at now: Double) -> AppAttestLocalStatus {
+        guard var history = keyHistory else { return self }
+        let elapsed = now - (keyHistoryObservedAt ?? observedAt)
+        func advanced(_ age: Int?) -> Int? {
+            guard let age, age >= 0, elapsed.isFinite, elapsed >= 0 else { return nil }
+            let seconds = Double(age) + elapsed
+            guard seconds < Double(Int32.max) else { return nil }
+            return Int(seconds)
+        }
+        history.keyAgeSeconds = advanced(history.keyAgeSeconds)
+        history.lastGenerationAgeSeconds = advanced(history.lastGenerationAgeSeconds)
+        history.lastSuccessAgeSeconds = advanced(history.lastSuccessAgeSeconds)
+        var status = self
+        status.keyHistory = history
+        status.keyHistoryObservedAt = now.isFinite ? now : nil
+        return status
+    }
+
+    /// A prepare replaces the status. A proof refreshes client-owned key
+    /// observations and failure details, retaining the daemon's fresher stall
+    /// monitor and process fields. Nil means no published value changed.
     public static func published(current: AppAttestLocalStatus?, client: AppAttestLocalStatus,
                                  prepared: Bool) -> AppAttestLocalStatus? {
         if prepared { return client }
-        guard var status = current, status.lastAppleFailure != client.lastAppleFailure else { return nil }
+        guard var status = current else { return client }
+        status.observedAt = client.observedAt
+        status.key = client.key
+        status.keyHistory = client.keyHistory
+        status.keyHistoryObservedAt = client.keyHistoryObservedAt
         status.lastAppleFailure = client.lastAppleFailure
-        return status
+        return status == current ? nil : status
     }
 }
 

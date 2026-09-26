@@ -1,10 +1,9 @@
 import Foundation
 import ProviderAppAttest
 
-/// Human-readable verdicts over the deep App Attest diagnostics the provider
-/// sent on its last `ready` (process start, boot security, preflight, key and
-/// APNs push history, last native Apple error). Pure; rendered by
-/// `darkbloom doctor` in the APP ATTEST section.
+/// Human-readable verdicts over the provider's local App Attest observations
+/// (process start, boot security, preflight, current key and APNs push history,
+/// last native Apple error). Pure; rendered by `darkbloom doctor` in APP ATTEST.
 public enum AppAttestDeepDiagnosis {
     static let reportAdvice = "run `darkbloom report` from an administrator account (or `sudo darkbloom report` if this account is allowed to use sudo) so support receives key_history and devicecheckd evidence."
 
@@ -16,7 +15,9 @@ public enum AppAttestDeepDiagnosis {
             if let boot = bootSecurity(process) { out.append(boot) }
             if let preflight = process.preflight.flatMap(preflightDiagnostic) { out.append(preflight) }
         }
-        if let history = status.keyHistory { out.append(keyHistory(history, lastFailure: status.lastAppleFailure)) }
+        if let history = status.resolvingKeyHistoryAges(at: now).keyHistory {
+            out.append(keyHistory(history, lastFailure: status.lastAppleFailure))
+        }
         if let failure = status.lastAppleFailure { out.append(lastFailure(failure, now: now)) }
         if let push = pushDiagnostic(pushHistory, now: now) { out.append(push) }
         return out
@@ -93,7 +94,18 @@ public enum AppAttestDeepDiagnosis {
                               message: problems.joined(separator: "; ") + ".",
                               fix: "reinstall the signed release: `curl -fsSL https://api.darkbloom.dev/install.sh | bash`, then `darkbloom restart`.")
         }
-        guard p.optInEntitlement != nil || p.profilePresent != nil else { return nil }
+        guard p.optInEntitlement != nil || p.environmentEntitlement != nil
+            || p.profilePresent != nil || p.profileExpired != nil else { return nil }
+        var unknown: [String] = []
+        if p.optInEntitlement == nil { unknown.append("the App Attest opt-in entitlement") }
+        if p.environmentEntitlement == nil { unknown.append("the App Attest environment entitlement") }
+        if p.profilePresent == nil { unknown.append("provisioning profile presence") }
+        if p.profileExpired == nil { unknown.append("provisioning profile expiry") }
+        if !unknown.isEmpty {
+            return Diagnostic(section: .appAttest, name: "app signing", level: .warn,
+                              message: "could not verify " + unknown.joined(separator: ", ") + ".",
+                              fix: "run `darkbloom report` so support can inspect the local signing evidence.")
+        }
         let location: String
         switch p.bundlePathClass {
         case .userInstall?: location = "installed in ~/.darkbloom"
@@ -102,7 +114,7 @@ public enum AppAttestDeepDiagnosis {
         case nil: location = "install location unknown"
         }
         return Diagnostic(section: .appAttest, name: "app signing", level: p.bundlePathClass == .other ? .warn : .pass,
-                          message: "entitlements and provisioning profile present; \(location).",
+                          message: "App Attest opt-in and environment checks passed; provisioning profile present and not expired; \(location).",
                           fix: p.bundlePathClass == .other ? "run the installed release from ~/.darkbloom (`darkbloom update`)." : nil)
     }
 

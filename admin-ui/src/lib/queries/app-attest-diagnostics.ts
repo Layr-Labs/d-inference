@@ -170,22 +170,31 @@ export async function appAttestRecentKeyDeaths(days: number) {
     FROM classified ORDER BY received_at DESC,key_id LIMIT 50`, [days]);
 }
 
-// Durable rotation records and whether a different key from the same scope
-// (canonical machine, or account:<id>) later verified within 7 days.
+// Durable rotation records retain their original scope. Resolve its current
+// canonical machine before matching sessions rewritten by inventory merges.
 export async function appAttestRotationOutcomes(days: number) {
   return query<{ reason: string; requested: string; scopes: string; replacement_attested: string; replacement_verified: string; median_seconds_to_verified: number | null }>(`
-    WITH r AS (SELECT * FROM app_attest_key_rotations WHERE requested_at>=NOW()-$1::int*INTERVAL '1 day')
-    SELECT r.reason,COUNT(*) AS requested,COUNT(DISTINCT r.machine_id) AS scopes,
+    WITH r AS (SELECT * FROM app_attest_key_rotations WHERE requested_at>=NOW()-$1::int*INTERVAL '1 day'),
+    canonical_rotations AS (
+     SELECT r.*,COALESCE(canonical.id,r.machine_id) AS canonical_scope FROM r
+     LEFT JOIN LATERAL (
+      WITH RECURSIVE chain AS (
+       SELECT id,merged_into,0 AS depth FROM darkbloom_machines WHERE id=r.machine_id
+       UNION ALL SELECT m.id,m.merged_into,c.depth+1 FROM darkbloom_machines m
+        JOIN chain c ON c.merged_into=m.id WHERE c.depth<100)
+      SELECT id FROM chain WHERE merged_into IS NULL LIMIT 1
+     ) canonical ON TRUE)
+    SELECT r.reason,COUNT(*) AS requested,COUNT(DISTINCT r.canonical_scope) AS scopes,
     COUNT(*) FILTER(WHERE rep.attested IS NOT NULL) AS replacement_attested,
     COUNT(*) FILTER(WHERE rep.asserted IS NOT NULL) AS replacement_verified,
     percentile_cont(0.5) WITHIN GROUP(ORDER BY EXTRACT(EPOCH FROM rep.asserted-r.requested_at)) AS median_seconds_to_verified
-    FROM r LEFT JOIN LATERAL (
+    FROM canonical_rotations r LEFT JOIN LATERAL (
      SELECT MIN(e.received_at) FILTER(WHERE e.action='attestation') AS attested,
       MIN(e.received_at) FILTER(WHERE e.action='assertion') AS asserted
      FROM darkbloom_machine_sessions s JOIN app_attest_evidence e ON e.session_id=s.session_id
       AND e.received_at>=r.requested_at AND e.received_at<r.requested_at+INTERVAL '7 days'
      WHERE s.last_seen>=r.requested_at AND e.outcome='verified' AND e.key_id<>r.key_id
-      AND (s.machine_id=r.machine_id OR (r.machine_id LIKE 'account:%' AND s.account_id=substr(r.machine_id,9)))
+      AND (s.machine_id=r.canonical_scope OR (r.machine_id LIKE 'account:%' AND s.account_id=substr(r.machine_id,9)))
     ) rep ON TRUE
     GROUP BY r.reason ORDER BY requested DESC,r.reason`, [days]);
 }

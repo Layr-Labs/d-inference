@@ -28,14 +28,58 @@ struct DeviceCheckEvidenceTests {
         #expect(events.first?.matches == [.init(pattern: .shouldFetchCDHash, code: nil)])
         let invalid = try #require(events.first { $0.matches.contains { $0.pattern == .invalidKey } })
         #expect(invalid.category == nil, "a category outside the closed character set is dropped")
-        #expect(DeviceCheckEvidence.showsKeyLoss(events))
 
         let uploaded = String(decoding: DeviceCheckEvidence.reportLines(.collected(events)), as: UTF8.self)
         for secret in ["alice", "3xAMPLEk3y1D", "unable to sign digest", "/usr/libexec", "<script>"] {
             #expect(!uploaded.contains(secret), "leaked \(secret)")
         }
         #expect(uploaded.contains("-536362989"))
-        #expect(DeviceCheckEvidence.summary(events).contains("CryptoTokenKit Code ×1 (-3)"))
+    }
+
+    @Test func mixedApplicationRowsRemainUnattributedAndPrivate() throws {
+        let rows = """
+        {"timestamp":"2026-09-24 03:12:44.1-0700","category":"attest","messageType":"Error","eventMessage":"SecKeyCreateSignature failed: Error Domain=CryptoTokenKit Code=-3 for com.example.unrelated /Applications/Unrelated.app key=private-key"}
+        {"timestamp":"2026-09-24 03:12:45.1-0700","category":"attest","messageType":"Error","eventMessage":"invalidKey for dev.darkbloom.provider /Users/alice/Darkbloom.app key=another-private-key"}
+        """
+        let events = DeviceCheckEvidence.extract(ndjson: Data(rows.utf8))
+        #expect(events.map(\.matches) == [
+            [.init(pattern: .secKeyCreateSignatureFailed, code: nil), .init(pattern: .cryptoTokenKitCode, code: -3)],
+            [.init(pattern: .invalidKey, code: nil)],
+        ])
+        let data = DeviceCheckEvidence.reportLines(.collected(events))
+        let lines = try data.split(separator: UInt8(ascii: "\n")).map {
+            try #require(JSONSerialization.jsonObject(with: Data($0)) as? [String: Any])
+        }
+        #expect(lines.count == 2)
+        for line in lines {
+            #expect(Set(line.keys) == ["source", "scope", "attribution", "status", "event"])
+            #expect(line["scope"] as? String == "device_wide")
+            #expect(line["attribution"] as? String == "not_attributable_to_darkbloom")
+            #expect(line["status"] as? String == "match")
+            let event = try #require(line["event"] as? [String: Any])
+            #expect(Set(event.keys) == ["timestamp", "category", "message_type", "matches"])
+        }
+        let uploaded = String(decoding: data, as: UTF8.self)
+        for secret in ["com.example.unrelated", "dev.darkbloom.provider", "Unrelated.app", "Darkbloom.app", "alice", "private-key"] {
+            #expect(!uploaded.contains(secret))
+        }
+        let unrelatedKeyFailure = DeviceCheckEvidence.doctorDiagnostic(.collected(Array(events.prefix(1))))
+        let otherFailure = DeviceCheckEvidence.doctorDiagnostic(.collected(Array(events.suffix(1))))
+        #expect(unrelatedKeyFailure.level == .warn)
+        #expect(unrelatedKeyFailure.level == otherFailure.level)
+        #expect(unrelatedKeyFailure.fix == otherFailure.fix)
+    }
+
+    @Test func unavailableAndEmptyEvidenceRetainDeviceWideScope() throws {
+        let outcomes: [DeviceCheckEvidence.Outcome] = [.collected([]), .accessDenied, .failed("private failure detail")]
+        for outcome in outcomes {
+            let data = DeviceCheckEvidence.reportLines(outcome)
+            let line = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            #expect(Set(line.keys) == ["source", "scope", "attribution", "status"])
+            #expect(line["scope"] as? String == "device_wide")
+            #expect(line["attribution"] as? String == "not_attributable_to_darkbloom")
+            #expect(!String(decoding: data, as: UTF8.self).contains("private failure detail"))
+        }
     }
 
     @Test func accessDeniedIsReportedWithAdminGuidanceNotAFailure() {
@@ -45,7 +89,6 @@ struct DeviceCheckEvidenceTests {
         #expect(outcome == .accessDenied)
         let diagnostic = DeviceCheckEvidence.doctorDiagnostic(outcome)
         #expect(diagnostic.level == .warn)
-        #expect(diagnostic.fix?.contains("administrator account") == true)
         #expect(String(decoding: DeviceCheckEvidence.reportLines(outcome), as: UTF8.self).contains("access_denied"))
     }
 

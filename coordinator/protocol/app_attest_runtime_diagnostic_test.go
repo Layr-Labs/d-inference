@@ -13,7 +13,7 @@ func TestAppAttestRuntimeDiagnosticsStripInvalidValuesWithoutRejectingFrame(t *t
 	valid := AppAttestShadowPayload{Action: "ready", Result: "busy", LaunchSession: "background", BootTime: now.Add(-time.Hour).Unix(), OperationStalledSeconds: 86400}
 	got := valid
 	got.SanitizeRuntimeDiagnostics(now)
-	if got != valid {
+	if !reflect.DeepEqual(got, valid) {
 		t.Fatalf("valid diagnostics changed: %+v", got)
 	}
 	if fields := valid.RuntimeDiagnosticFields(now); !reflect.DeepEqual(fields, map[string]any{"launch_session": "background", "boot_time": valid.BootTime, "operation_stalled_seconds": 86400}) {
@@ -40,7 +40,7 @@ func TestAppAttestRuntimeDiagnosticsStripInvalidValuesWithoutRejectingFrame(t *t
 	} {
 		got := tc.in
 		got.SanitizeRuntimeDiagnostics(now)
-		if got != tc.want {
+		if !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("%s: %+v, want %+v", name, got, tc.want)
 		}
 		if fields := tc.in.RuntimeDiagnosticFields(now); !reflect.DeepEqual(fields, tc.want.RuntimeDiagnosticFields(now)) {

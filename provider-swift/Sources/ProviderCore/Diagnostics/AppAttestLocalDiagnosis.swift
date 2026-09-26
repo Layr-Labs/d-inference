@@ -13,8 +13,9 @@ public enum AppAttestLocalDiagnosis {
 
     /// Pure verdict over the published status. Empty below macOS 27, where the
     /// provider does not use App Attest.
+    /// `pushHistory` is the local `apns-push-history.json`, read by the CLI.
     public static func evaluate(_ status: AppAttestLocalStatus?, daemonRunning: Bool,
-                                macOSMajorVersion: Int, now: Double) -> [Diagnostic] {
+                                macOSMajorVersion: Int, now: Double, pushHistory: APNsPushHistory? = nil) -> [Diagnostic] {
         guard ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) else { return [] }
         guard daemonRunning, let status else {
             return [Diagnostic(section: .appAttest, name: "app attest key", level: .warn,
@@ -41,6 +42,7 @@ public enum AppAttestLocalDiagnosis {
         }
         // Unavailable App Attest never reads Keychain, so there is no key state.
         if status.availabilityReason == nil { out.append(keyDiagnostic(status.key, now: now)) }
+        out.append(contentsOf: AppAttestDeepDiagnosis.evaluate(status, pushHistory: pushHistory, now: now))
         return out
     }
 

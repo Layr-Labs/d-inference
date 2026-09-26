@@ -25,7 +25,9 @@ extension ProviderLoop {
             request.encryptedChallenge = nil
         }
         if appAttestShadowClient == nil {
-            appAttestShadowClient = AppAttestShadowClient(scope: loopConfig.coordinatorURL)
+            let probe = AppAttestProcessProbe(pushHistory: apnsPushHistory)
+            appAttestShadowClient = AppAttestShadowClient(
+                scope: loopConfig.coordinatorURL, processDiagnostics: { probe.diagnostics() })
         }
         guard let client = appAttestShadowClient else { return }
         let publicKey = keyPair.publicKeyBase64

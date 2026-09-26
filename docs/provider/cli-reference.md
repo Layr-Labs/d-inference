@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `292bfa291`
+> Last updated: 2026-09-26 · commit `b1aac01b5`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -136,8 +136,13 @@ vetoes (`provider-swift/Sources/darkbloom/DoctorCommand.swift`,
 
 Exit 1 when any detailed check or diagnosis line is FAIL (or WARN with
 `--strict`). On macOS 27 or later the diagnosis includes an `APP ATTEST`
-section with the daemon's local key state and launch session. The check names
-are listed in [troubleshooting](./troubleshooting.md#doctor-checks).
+section. It shows the daemon's local key state and launch session, and the
+diagnostics from the provider's last `ready`: how the process started, how the
+previous one exited, SIP and authenticated root, signing preflight, key history,
+the last native Apple error chain and APNs push history. The section also
+reads local `devicecheckd` log evidence; macOS lets only administrator accounts read the system log.
+The check names are listed in [troubleshooting](./troubleshooting.md#doctor-checks).
+[`app-attest-shadow.md`](../reference/app-attest-shadow.md) defines the fields.
 
 ### `darkbloom verify`
 
@@ -852,6 +857,28 @@ The command runs only when invoked by the provider operator. It collects the
 redaction, and does not include debug-level messages. Automatic report upload is
 disabled.
 
+It also appends App Attest evidence as extra NDJSON lines:
+
+- the daemon's last local App Attest snapshot (`source`
+  `darkbloom.app_attest_state`), with key history, process start and the native
+  error chain;
+- the APNs push receipt/reply summary;
+- `devicecheckd` / `com.apple.appattest` log lines from the last 2 h (`source`
+  `darkbloom.devicecheck_evidence`). Only the timestamp, category, message type
+  and matches from a closed pattern set with their numeric codes are kept, for
+  example `SecKeyCreateSignature failed`, `CryptoTokenKit Code`, `AKSError`,
+  `Should fetch CD hash`, `invalidKey` and `unknownSystemFailure`. Message text,
+  key identifiers and paths are dropped.
+
+macOS lets only administrator accounts read the system log. From a standard
+account, macOS answers `Operation not permitted`. The command reports this and
+still uploads the App Attest snapshot. To include the logs, run it from an
+administrator account, or run `sudo darkbloom report` if this account is allowed
+to use sudo. Under `sudo` the command reads the invoking user's auth token and
+daemon state (`ReportAppAttestEvidence` in
+`provider-swift/Sources/darkbloom/Diagnostics/`). `--dry-run` prints every
+appended line before anything is uploaded.
+
 ## `darkbloom watchdog`
 
 Internal command used by the launchd crash-recovery watchdog. Not intended for
@@ -882,6 +909,8 @@ manual use.
 | Watchdog state | `~/.darkbloom/watchdog-state.json` (`DARKBLOOM_WATCHDOG_STATE`) | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` |
 | KV-backend crash-loop guard | `~/.darkbloom/kv-backend-guard.json` (`DARKBLOOM_KV_BACKEND_GUARD`) | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic restart for a stalled DeviceCheck call ([limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |
+| Provider run marker | `provider-run.json` beside the daemon state file, `0600`. Set to `running` when a serve process starts and to `clean` (with cause) after its drain or before an update/stall relaunch. The next process derives `previous_exit` and `start_reason` from it | `provider-swift/Sources/ProviderCore/Service/ProviderRunMarker.swift`, `ProviderProcessRun.swift` |
+| APNs push history | `apns-push-history.json` beside the daemon state file, `0600`. The last 50 code-identity push receipt times and reply times, plus whether a device token was present. No token, nonce or payload | `provider-swift/Sources/ProviderCore/Apns/APNsPushHistory.swift` |
 | Provider LaunchAgent | label `io.darkbloom.provider`; `~/Library/LaunchAgents/io.darkbloom.provider.plist`; `RunAtLoad = true`, `KeepAlive = false`; stdout/stderr → `~/.darkbloom/provider.log` | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`label`, `plistPath`, `logPath`) |
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |

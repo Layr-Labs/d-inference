@@ -178,6 +178,9 @@ extension Start {
         try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
+        // Only the lock holder is the serving process: record its start
+        // (previous_exit / start_reason) before any in-place update exec.
+        ProviderProcessRun.begin()
 
         let (models, modelHashes, modelHashFingerprints) = attachWeightHashes(to: selectedModels)
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
@@ -313,6 +316,7 @@ extension Start {
             throw error
         }
 
+        ProviderProcessRun.finish()
         await TelemetryClient.shared.shutdown()
     }
 
@@ -423,14 +427,23 @@ extension Start {
         await ProviderTermination.shared.install {
             // CLI drains already disarmed recovery. A late old-process signal
             // must not stop a watchdog newly armed by the replacement CLI.
-            if await !loop.lifecycleIsCommandDriven() { try? WatchdogAgent.stop() }
+            let commandDriven = await loop.lifecycleIsCommandDriven()
+            if !commandDriven { try? WatchdogAgent.stop() }
             // Preserve configured login startup for ordinary OS termination;
             // only explicit CLI stop/restart disables it persistently.
-            return await loop.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds)
+            let drained = await loop.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds)
+            // AppKit may terminate as soon as this returns true; record the
+            // clean exit here rather than only after `run()` unwinds.
+            if drained {
+                if await loop.lifecycleIsCommandDriven() { ProviderProcessRun.noteLifecycleCommand() }
+                ProviderProcessRun.finish()
+            }
+            return drained
         }
         try await withFanActivityLease(providerVersion: ProviderCore.version) {
             try await loop.run()
         }
+        if await loop.lifecycleIsCommandDriven() { ProviderProcessRun.noteLifecycleCommand() }
     }
 
 }

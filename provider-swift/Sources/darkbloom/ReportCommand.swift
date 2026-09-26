@@ -10,11 +10,22 @@ private struct ReportUploadResponse: Decodable {
     }
 }
 
+private enum ReportLogAccess: Error { case denied }
+
+private final class LockedText: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+    func set(_ value: String) { lock.withLock { text = value } }
+    var value: String { lock.withLock { text } }
+}
+
 /// Explicit, operator-initiated support report.
 ///
 /// Automatic log upload is intentionally not part of this command's lifecycle.
 /// The collector scopes `log show` to Darkbloom's provider subsystem and does
 /// not request private fields, so macOS unified-log redaction is preserved.
+/// App Attest evidence (the daemon's closed local snapshot, APNs push history
+/// and closed-pattern devicecheckd matches) is appended to the same upload.
 struct Report: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Upload recent provider unified logs for troubleshooting.",
@@ -24,7 +35,14 @@ struct Report: AsyncParsableCommand {
         command. macOS privacy redactions are preserved. Use --dry-run to review
         the exact report locally before uploading it.
 
-        Logs from other applications and operating-system subsystems are not
+        Also appends App Attest evidence: the provider's last local App Attest
+        snapshot, APNs push receipt/reply history, and devicecheckd log lines
+        from the last 2 hours reduced to a closed set of failure patterns and
+        numeric codes. macOS lets only administrator accounts read the system
+        log: run this from an administrator account, or `sudo darkbloom report`
+        if this account is allowed to use sudo.
+
+        Other logs from applications and operating-system subsystems are not
         included.
         """
     )
@@ -53,6 +71,7 @@ struct Report: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
+        ReportAppAttestEvidence.adoptInvokingUserFiles()
         await runUpdateBannerIfEnabled()
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
@@ -64,22 +83,39 @@ struct Report: AsyncParsableCommand {
         print()
 
         print("Collecting unified logs...")
-        let logData: Data
+        var logData = Data()
         do {
             logData = try collectUnifiedLogs(last: last)
+            if logData.isEmpty {
+                print("  No provider logs for the given time window (is the provider running? Try: darkbloom start).")
+            }
+        } catch ReportLogAccess.denied {
+            // Standard accounts cannot open the log store at all. Keep going:
+            // the App Attest snapshot below is still worth sending.
+            print("  Provider logs: not included — macOS denied log access (Operation not permitted).")
+            print("  Fix: \(DeviceCheckEvidence.accessDeniedFix)")
         } catch {
             printError("Failed to collect logs: \(error.localizedDescription)")
             throw ExitCode.failure
         }
 
+        print("Collecting App Attest evidence...")
+        logData.append(ReportAppAttestEvidence.snapshotLine(
+            state: DaemonStateFile.read(), pushHistory: APNsPushHistoryStore().load(), now: Date()))
+        let evidence = DeviceCheckEvidence.collect()
+        logData.append(DeviceCheckEvidence.reportLines(evidence))
+        switch evidence {
+        case .collected(let events):
+            print("  devicecheckd: \(DeviceCheckEvidence.summary(events))")
+        case .accessDenied:
+            print("  devicecheckd: not included — macOS denied log access (Operation not permitted).")
+            print("  Fix: \(DeviceCheckEvidence.accessDeniedFix)")
+        case .failed(let reason):
+            print("  devicecheckd: not included — \(reason).")
+        }
+
         let sizeMB = Double(logData.count) / 1_048_576.0
         print("  Collected \(logData.count) bytes (\(String(format: "%.1f", sizeMB)) MB)")
-
-        guard !logData.isEmpty else {
-            print("  No logs found for the given time window.")
-            print("  Is the provider running? Try: darkbloom start")
-            return
-        }
 
         if dryRun {
             print()
@@ -116,13 +152,25 @@ struct Report: AsyncParsableCommand {
         process.arguments = Self.logShowArguments(last: last)
 
         let pipe = Pipe()
+        let errors = Pipe()
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        process.standardError = errors
 
         try process.run()
+        // Drain stderr concurrently so a chatty failure cannot block stdout.
+        let errorText = LockedText()
+        let drained = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            errorText.set(String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+            drained.signal()
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        drained.wait()
 
+        if DeviceCheckEvidence.isAccessDenied(status: process.terminationStatus, stderr: errorText.value) {
+            throw ReportLogAccess.denied
+        }
         guard process.terminationStatus == 0 else {
             throw NSError(
                 domain: "darkbloom.report",

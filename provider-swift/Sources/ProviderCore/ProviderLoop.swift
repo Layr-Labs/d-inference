@@ -523,6 +523,11 @@ public actor ProviderLoop {
     /// `.serialized` only orders tests WITHIN a suite).
     internal var daemonStateFileOverride: URL?
 
+    /// APNs code-identity push receipt/reply history beside the state file.
+    internal var apnsPushHistory: APNsPushHistoryStore {
+        APNsPushHistoryStore(directory: (daemonStateFileOverride ?? DaemonStateFile.path()).deletingLastPathComponent())
+    }
+
     /// Gate on the loaded-models persistence writes. `run()` flips it on at
     /// startup; it stays FALSE for `ProviderLoop` instances that never serve
     /// (unit tests exercising load/unload paths), so an unrelated test can

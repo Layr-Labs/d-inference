@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-22 · commit `31a6ca37f`
+> Last updated: 2026-09-26 · commit `b1aac01b5`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -681,7 +681,8 @@ from `coordinator/`, using a disposable local `DATABASE_URL` for the store
 contracts (the test harness truncates tables). Add `-race` for concurrency checks.
 Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
 The private admin queries have PostgreSQL coverage in
-`admin-ui/src/lib/queries/app-attest.test.ts`.
+`admin-ui/src/lib/queries/app-attest.test.ts` and
+`admin-ui/src/lib/queries/app-attest-diagnostics.test.ts`.
 
 After the optimized provider is packaged with its resources, run
 `Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all four markers:

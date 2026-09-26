@@ -123,6 +123,7 @@ extension ProviderLoop {
         do {
             let answer = try Self.answerCodeChallenge(challenge: challenge, keyPair: keyPair, signer: signer)
             send.send(.codeAttestationResponse(nonce: answer.nonce, signature: answer.signature))
+            apnsPushHistory.recordReply()
             logger.info(.codeAttestationResponseSent)
         } catch {
             logger.error(.codeAttestationSigningFailed)

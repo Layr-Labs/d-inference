@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-26 · commit `292bfa291`
+> Last updated: 2026-09-26 · commit `b1aac01b5`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -42,6 +42,14 @@ If Apple's API returns a generic error during setup, the coordinator retries aft
 When the coordinator asks the provider to enroll a key that this Mac already enrolled, the provider clears that key and answers `key_unregistered`; the next exchange generates a replacement within the one-hour cooldown and shared hourly generation budget. The replacement goes through the full enrollment checks. Do not delete the Keychain item yourself.
 
 `darkbloom doctor` shows the provider's local App Attest state in the `APP ATTEST` section: whether a key is stored and enrolled, any remaining key-generation cooldown, whether the provider runs in the logged-in GUI session, and a stalled Apple call. The daemon records this on each coordinator App Attest exchange (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`). If Apple reports App Attest as unsupported (`is_supported_false`), log in at the console and run `darkbloom restart` so the provider runs inside the GUI session, and confirm SIP is enabled and Startup Security Utility is set to Full Security.
+
+Each `ready` reply also carries bounded diagnostics that are never signed and never used for authorization. They cover how the provider process started and whether the previous one exited cleanly, whether a user is logged in at the console, SIP and authenticated root, signing preflight (entitlements, embedded profile, install location), key history, APNs push history, and the native NSError chain of a failed Apple call. [`app-attest-shadow.md`](../reference/app-attest-shadow.md) defines each field. `darkbloom doctor` explains them with targeted advice ([doctor checks](./troubleshooting.md#doctor-checks)):
+
+- `gui session`: a user is logged in, but the provider runs outside that session. Run `darkbloom restart` from the desktop session.
+- `boot security` / `app signing`: Apple needs Full Security and an intact signed install. Fix in Recovery, or reinstall.
+- `key history` / `last apple failure`: repeated `invalidKey` on brand-new keys, or a CryptoTokenKit `-3` key loss after a restart.
+
+For the last two, run `darkbloom report` from an administrator account; macOS lets only administrator accounts read the system log. Use `sudo darkbloom report` instead if this account is allowed to use sudo. The report adds local `devicecheckd` log evidence, reduced to a closed set of failure patterns and numeric codes, to the upload. That evidence is never collected or sent automatically.
 
 If an Apple DeviceCheck call never answers, every later App Attest call answers `busy` until the provider process restarts. The provider reports the stall and restarts itself through the normal drain when it is idle; the thresholds and limits are in the [App Attest reference](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle). The log line starts with `App Attest: Apple operation stalled`. Run `darkbloom restart` to recover immediately.
 
@@ -245,6 +253,9 @@ For local diagnostics use `darkbloom doctor` and `darkbloom logs --last 1h`.
 Provider logs are never uploaded automatically; `darkbloom report` uploads a
 unified-log excerpt to `POST /v1/provider/log-report` only when you run it
 (`--dry-run` prints it first; [`cli-reference.md`](./cli-reference.md#darkbloom-report)).
+On macOS 27 the report also carries the App Attest snapshot and the APNs push
+history. Run from an administrator account (or with `sudo` where allowed), it
+also carries closed `devicecheckd` pattern matches.
 
 ## Related
 

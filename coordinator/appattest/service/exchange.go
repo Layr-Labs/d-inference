@@ -119,6 +119,7 @@ func (x *Session) handleExchange(ctx context.Context, reply protocol.AppAttestSh
 			return "stop"
 		}
 		x.key = key
+		deriveKeyLifecycleDiagnostics(x.readyDiagnostics, key)
 		x.owner = key.Owner
 		if x.maybeRequestKeyRotation(ctx, key) {
 			// Retire the dead key: the client answers attest for an attested

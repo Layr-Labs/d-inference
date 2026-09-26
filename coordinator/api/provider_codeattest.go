@@ -296,6 +296,7 @@ func (s *Server) codeAttestLoopForGeneration(
 			if reserved {
 				if prevSent {
 					s.codeAttestMetric("timeout")
+					s.recordCodeAttestPushReply(providerID, "unanswered")
 					s.logger.Warn("code-attest: no valid reply within the push budget; retrying",
 						"attempt", schedule.pushes)
 				}
@@ -646,7 +647,7 @@ func (s *Server) sendCodeIdentityChallengeForReservation(
 		sePubKey, nonceB64, deviceToken, pubKey)
 
 	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	err := s.codeAttestor.SendCodeChallenge(sendCtx, deviceToken, env, pubKey, nonceB64)
+	err := s.sendCodeChallengeRecorded(sendCtx, provider.ID, deviceToken, env, pubKey, nonceB64)
 	cancel()
 	if err != nil {
 		// The push never went out — drop the outstanding challenge so no stale
@@ -740,10 +741,13 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 		) {
 			return // timeout/disconnect/racing response consumed it first
 		}
-	} else if !s.codeAttestThrottle.consumeChallengeForIdentity(
-		sePubKey, resp.Nonce, apnsToken, nodeKey,
-	) {
-		return
+	} else {
+		if !s.codeAttestThrottle.consumeChallengeForIdentity(
+			sePubKey, resp.Nonce, apnsToken, nodeKey,
+		) {
+			return
+		}
+		s.recordCodeAttestPushReply(providerID, "answered")
 	}
 
 	if !provider.GrantProcessCodeAttested(apnsToken, nodeKey) {

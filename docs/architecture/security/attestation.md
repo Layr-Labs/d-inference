@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-26 · commit `b1aac01b5`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -320,6 +320,26 @@ still inside the original 30-minute window. See
 The first deployment from a coordinator that never recorded code continuity
 has no such evidence to reuse. Do not backfill it from hardware-only liveness
 or move proof timestamps forward administratively.
+
+Push outcome diagnostics tell a rejected push from an undelivered or
+unanswered one. `SendCodeChallengeResult` returns the APNs HTTP status, the
+error body's `reason` mapped to the closed set `BadDeviceToken`,
+`Unregistered`, `TooManyRequests`, `DeviceTokenNotForTopic`,
+`ExpiredProviderToken`, `InternalServerError`, `ServiceUnavailable` or
+`other` (`ParseReason`; non-JSON bodies are `other`) and whether an `apns-id`
+came back; `SendCodeChallenge` keeps its exact error. Every push increments
+`code_attest.push{outcome}` (and `code_attest_push_total` at
+`/v1/admin/metrics`) with `sent_ok`, `throttled` (APNs 429 or local
+Retry-After backoff), `transport_error`, `not_sent` (local failure before a
+request) or `rejected_<reason>` (snake_case). An accepted push later
+increments `code_attest.push_reply{result}`: `answered` when a verified reply
+consumes its nonce, `unanswered` when the loop reserves the next push while
+the previous accepted push drew no verified reply. A late reply after a retry
+counts both. Metric tags carry no provider, device or token identifier; one
+structured log line per push and per reply carries `provider_id`. Outcomes are
+not persisted and never affect `CodeAttested`. See
+`coordinator/apns/push_result.go` and
+`coordinator/api/code_attest_push_outcome.go`.
 
 APNs proves which *binary* is running; it proves nothing about SIP, Secure
 Boot, or hardware genuineness (Layers 3 and MDA). It binds App ID and Team ID,

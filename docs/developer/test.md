@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-26 · commit `24db88e2a`
+> Last updated: 2026-09-26 · commit `4c868179d`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2281,7 +2281,8 @@ executes a child that ignores SIGTERM to verify bounded log collection.
 `DeviceCheckExtractionBoundsTests` covers bounded file tails, oversized lines and
 ring ordering; `ProviderRunMarkerTests` separates stale version markers from exact
 exec identity, and informational doctor results remain non-failing under `--strict`.
-Also,
+`ReportPayloadTests` covers the combined upload-size limit, and an isolated idle
+termination test checks that the run marker is clean before AppKit can exit.
 `AppAttestLocalDiagnosisTests` covers APNs history below macOS 27 and missing
 App Attest state.
 

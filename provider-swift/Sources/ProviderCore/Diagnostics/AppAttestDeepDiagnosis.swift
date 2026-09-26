@@ -13,7 +13,9 @@ public enum AppAttestDeepDiagnosis {
             out.append(processStart(process))
             if let session = sessionMismatch(process, launchSession: status.launchSession) { out.append(session) }
             if let boot = bootSecurity(process) { out.append(boot) }
-            if let preflight = process.preflight.flatMap(preflightDiagnostic) { out.append(preflight) }
+            if let preflight = process.preflight.flatMap({ preflightDiagnostic($0, availabilityReason: status.availabilityReason) }) {
+                out.append(preflight)
+            }
         }
         if let history = status.resolvingKeyHistoryAges(at: now).keyHistory {
             out.append(keyHistory(history, lastFailure: status.lastAppleFailure))
@@ -87,8 +89,9 @@ public enum AppAttestDeepDiagnosis {
 
     // MARK: - Preflight
 
-    static func preflightDiagnostic(_ p: AppAttestPreflight) -> Diagnostic? {
+    static func preflightDiagnostic(_ p: AppAttestPreflight, availabilityReason: AppAttestAvailabilityReason? = nil) -> Diagnostic? {
         var problems: [String] = []
+        if availabilityReason == .environmentMismatch { problems.append("the App Attest environment does not match the coordinator request") }
         if p.optInEntitlement == false { problems.append("the App Attest opt-in entitlement is missing") }
         if p.environmentEntitlement == .invalid { problems.append("the App Attest environment entitlement is invalid") }
         if p.profilePresent == false { problems.append("the embedded provisioning profile is missing") }

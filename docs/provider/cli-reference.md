@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `24db88e2a`
+> Last updated: 2026-09-26 · commit `4c868179d`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -838,7 +838,7 @@ darkbloom logs [--file] [--follow] [--last <duration>] [--debug] [--lines <n>]
 | `--debug` | Include debug-level messages |
 | `--lines <n>` | Number of lines (only with `--file`) |
 
-Boot-security diagnostics pass only when SIP and authenticated root are both positively enabled. A missing reading produces a warning, and failed diagnostic commands time out with unknown fields. APNs history is rendered under APNs code-identity readiness on all supported macOS versions, even without an App Attest snapshot. An absent history file is omitted. Zero observed pushes is `[INFO]` with an indeterminate delivery result, not a warning: cached code identity may avoid APNs entirely. Informational results do not fail `--strict`. APNs token presence follows late callbacks; a recorded reply means the local WebSocket write completed, not that the coordinator verified it.
+Boot-security diagnostics pass only when SIP and authenticated root are both positively enabled. A missing reading produces a warning, and failed diagnostic commands time out with unknown fields. APNs history is rendered under APNs code-identity readiness on all supported macOS versions, even without an App Attest snapshot. An absent history file is omitted. Zero observed pushes is `[INFO]` with an indeterminate delivery result, not a warning: cached code identity may avoid APNs entirely. Informational results do not fail `--strict`. A recorded App Attest `environment_mismatch` fails the signing diagnostic even when the entitlement is a known production/development value. APNs token presence follows late callbacks; a recorded reply means the local WebSocket write completed, not that the coordinator verified it.
 
 ## `darkbloom report`
 
@@ -853,6 +853,8 @@ darkbloom report [--last <duration>] [--dry-run]
 |------|-------------|
 | `--last <duration>` | Time window, e.g. `1h`, `6h`, `24h` |
 | `--dry-run` | Print the exact report locally without uploading |
+
+The assembled upload reserves room for App Attest evidence within the coordinator's 10 MiB raw-body limit; older provider-log lines are trimmed as needed. `--dry-run` prints this same bounded payload.
 
 The command runs only when invoked by the provider operator. It collects the
 `dev.darkbloom.provider` subsystem, preserves macOS unified-log privacy

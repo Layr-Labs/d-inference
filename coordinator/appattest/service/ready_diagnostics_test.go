@@ -118,13 +118,14 @@ func checkLifecycleOutput(t *testing.T, h *rotationHarness, a *lifecycleArchive,
 func TestLifecycleDiagnosticsUseProviderEvidenceAndAdvanceOnAssertions(t *testing.T) {
 	for _, skew := range []time.Duration{-6 * time.Hour, 0, 6 * time.Hour} {
 		for _, tc := range []struct {
-			name            string
-			boot, process   int64
-			reboot, restart bool
+			name          string
+			boot, process int64
+			reboot        bool
+			restart       any
 		}{
-			{"unchanged", 0, 0, false, false},
-			{"boot_tolerance_forward", 60, 0, false, false},
-			{"boot_tolerance_backward", -60, 0, false, false},
+			{"unchanged", 0, 0, false, nil},
+			{"boot_tolerance_forward", 60, 0, false, nil},
+			{"boot_tolerance_backward", -60, 0, false, nil},
 			{"process_restart", 0, 10, false, true},
 			{"reboot_forward", 61, 120, true, true},
 			{"reboot_backward", -61, -120, true, true},
@@ -143,7 +144,7 @@ func TestLifecycleDiagnosticsUseProviderEvidenceAndAdvanceOnAssertions(t *testin
 				// No new prepare: the periodic assertion must compare with proof 2,
 				// not keep reporting the transition first seen against proof 1.
 				lifecycleAssertion(t, x, private, 3)
-				checkLifecycleOutput(t, h, a, false, false)
+				checkLifecycleOutput(t, h, a, false, nil)
 			})
 		}
 	}
@@ -159,10 +160,10 @@ func TestLifecycleDiagnosticsPreserveUnknownMembersAndIgnoreReadFailure(t *testi
 		readErr         error
 	}{
 		{"legacy", `{}`, timestamp, timestamp, nil, nil, nil},
-		{"invalid_boot_type", `{"boot_time":"1780000000","process_started_at":1780000000}`, timestamp, timestamp, nil, false, nil},
+		{"invalid_boot_type", `{"boot_time":"1780000000","process_started_at":1780000000}`, timestamp, timestamp, nil, nil, nil},
 		{"invalid_process_range", `{"boot_time":1780000000,"process_started_at":1}`, timestamp, timestamp, false, nil, nil},
-		{"invalid_boot_future", `{"boot_time":9223372036854775807,"process_started_at":1780000000}`, timestamp, timestamp, nil, false, nil},
-		{"missing_current_boot", `{"boot_time":1780000000,"process_started_at":1780000000}`, 0, timestamp, nil, false, nil},
+		{"invalid_boot_future", `{"boot_time":9223372036854775807,"process_started_at":1780000000}`, timestamp, timestamp, nil, nil, nil},
+		{"missing_current_boot", `{"boot_time":1780000000,"process_started_at":1780000000}`, 0, timestamp, nil, nil, nil},
 		{"invalid_current_process", `{"boot_time":1780000000,"process_started_at":1780000000}`, timestamp, 1, false, nil, nil},
 		{"lookup_failure", `{"boot_time":1780000000,"process_started_at":1780000000}`, timestamp, timestamp, nil, nil, errors.New("read unavailable")},
 	} {

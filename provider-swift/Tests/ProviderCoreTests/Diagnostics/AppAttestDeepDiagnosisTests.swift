@@ -131,6 +131,20 @@ struct AppAttestDeepDiagnosisTests {
         #expect(failure?.message.contains("Secure Enclave refused") == true)
     }
 
+    @Test func knownEnvironmentMismatchCannotPassSigning() {
+        for environment in [AppAttestPreflight.EnvironmentEntitlement.production, .development] {
+            let preflight = AppAttestPreflight(optInEntitlement: true, environmentEntitlement: environment,
+                                              profilePresent: true, profileExpired: false, bundlePathClass: .userInstall)
+            var snapshot = status(process: .init(preflight: preflight))
+            snapshot.availabilityReason = .environmentMismatch
+            let result = check(AppAttestDeepDiagnosis.evaluate(snapshot, pushHistory: nil, now: 1_000), "app signing")
+            #expect(result?.level == .fail)
+            #expect(result?.message.contains("does not match") == true)
+        }
+        #expect(AppAttestDeepDiagnosis.preflightDiagnostic(.init(optInEntitlement: true, environmentEntitlement: .absent,
+            profilePresent: true, profileExpired: false, bundlePathClass: .userInstall))?.level == .pass)
+    }
+
     @Test func pushHistoryDistinguishesNoTokenNoDeliveryAndUnanswered() {
         let now = 100_000.0
         let noToken = AppAttestDeepDiagnosis.pushDiagnostic(APNsPushHistory(deviceTokenPresent: false), now: now)

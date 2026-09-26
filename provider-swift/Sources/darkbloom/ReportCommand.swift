@@ -112,10 +112,15 @@ struct Report: AsyncParsableCommand {
         }
 
         print("Collecting App Attest evidence...")
-        logData.append(ReportAppAttestEvidence.snapshotLine(
-            state: DaemonStateFile.read(), pushHistory: APNsPushHistoryStore().load(), now: Date()))
+        var diagnosticData = ReportAppAttestEvidence.snapshotLine(
+            state: DaemonStateFile.read(), pushHistory: APNsPushHistoryStore().load(), now: Date())
         let evidence = DeviceCheckEvidence.collect()
-        logData.append(DeviceCheckEvidence.reportLines(evidence))
+        diagnosticData.append(DeviceCheckEvidence.reportLines(evidence))
+        let originalBytes = logData.count
+        logData = try ReportPayload.assemble(logs: logData, evidence: diagnosticData)
+        if logData.count < originalBytes + diagnosticData.count {
+            print("  Provider logs trimmed to the newest complete lines to reserve room for diagnostics.")
+        }
         switch evidence {
         case .collected(let events):
             print("  devicecheckd: \(DeviceCheckEvidence.summary(events))")
@@ -139,7 +144,7 @@ struct Report: AsyncParsableCommand {
             return
         }
 
-        guard logData.count <= 10 * 1024 * 1024 else {
+        guard logData.count <= ReportPayload.maxBytes else {
             printError("Log data exceeds 10 MB limit (\(String(format: "%.1f", sizeMB)) MB).")
             printError("Try a shorter time window: --last 6h or --last 1h")
             throw ExitCode.failure

@@ -125,9 +125,9 @@ const deaths = `WITH dead AS (
   COALESCE(CASE WHEN jsonb_typeof(d.c->'rebooted_since_last_success')='boolean' THEN (d.c->>'rebooted_since_last_success')::boolean END,
    CASE WHEN jsonb_typeof(d.c->'boot_time')='number' AND jsonb_typeof(ok.c->'boot_time')='number'
     THEN abs((d.c->>'boot_time')::bigint-(ok.c->>'boot_time')::bigint)>60 END) AS rebooted,
-  COALESCE(CASE WHEN jsonb_typeof(d.c->'process_restarted_since_last_success')='boolean' THEN (d.c->>'process_restarted_since_last_success')::boolean END,
+  COALESCE(CASE WHEN d.c->'process_restarted_since_last_success'='true'::jsonb THEN true END,
    CASE WHEN jsonb_typeof(d.c->'process_started_at')='number' AND jsonb_typeof(ok.c->'process_started_at')='number'
-    THEN (d.c->>'process_started_at')::bigint<>(ok.c->>'process_started_at')::bigint END) AS restarted
+    AND (d.c->>'process_started_at')::bigint<>(ok.c->>'process_started_at')::bigint THEN true END) AS restarted
  FROM dead d LEFT JOIN LATERAL (
   SELECT v.received_at,v.context AS c,vs.observation AS o FROM app_attest_evidence v
   LEFT JOIN darkbloom_machine_sessions vs ON vs.session_id=v.session_id

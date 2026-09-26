@@ -52,8 +52,10 @@ func (x *Session) deriveKeyLifecycleDiagnostics(ctx context.Context) {
 		delta := current.BootTime - prior.BootTime
 		ready["rebooted_since_last_success"] = delta > diagnosticBootTimeTolerance || delta < -diagnosticBootTimeTolerance
 	}
-	if current.ProcessStartedAt != 0 && prior.ProcessStartedAt != 0 {
-		ready["process_restarted_since_last_success"] = current.ProcessStartedAt != prior.ProcessStartedAt
+	// Whole-second equality cannot distinguish a rapid replacement process.
+	// A changed timestamp establishes a reported restart; equal values remain unknown.
+	if current.ProcessStartedAt != 0 && prior.ProcessStartedAt != 0 && current.ProcessStartedAt != prior.ProcessStartedAt {
+		ready["process_restarted_since_last_success"] = true
 	}
 }
 

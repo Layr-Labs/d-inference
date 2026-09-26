@@ -138,6 +138,22 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
     expect(recent.map(r => r.key_id).sort()).toEqual(["k-os", "k-restart", "k-unknown"]);
   });
 
+  it("does not infer no restart from equal whole-second timestamps or old false flags", async () => {
+    await pool.query("SAVEPOINT coarse_time");
+    try {
+      await evidence("v-coarse", "s-new", "k-coarse", 10, "verified", { boot_time: 1780000000, process_started_at: 1780000100 });
+      await evidence("d-coarse", "s-new", "k-coarse", 2, "apple_error", {
+        boot_time: 1780000000, process_started_at: 1780000100,
+        rebooted_since_last_success: false, process_restarted_since_last_success: false,
+      });
+      expect((await appAttestRecentKeyDeaths(1)).find(r => r.key_id === "k-coarse")?.classification).toBe("unknown");
+      await pool.query("UPDATE app_attest_evidence SET context=context || '{\"process_started_at\":1780000101}' WHERE id='d-coarse'");
+      expect((await appAttestRecentKeyDeaths(1)).find(r => r.key_id === "k-coarse")?.classification).toBe("process_restart");
+    } finally {
+      await pool.query("ROLLBACK TO SAVEPOINT coarse_time");
+    }
+  });
+
   it("falls back to boot_time on rows without derived flags", async () => {
     await pool.query("SAVEPOINT fallback");
     try {

@@ -692,11 +692,8 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	if resp == nil {
 		return
 	}
-	if provider.GetCodeAttested() &&
-		(!provider.RequiresFreshRuntimeCodeProof() ||
-			provider.GetFreshCodeAttested()) {
-		return // already holds every proof required by this connection
-	}
+	alreadyAttested := provider.GetCodeAttested() &&
+		(!provider.RequiresFreshRuntimeCodeProof() || provider.GetFreshCodeAttested())
 
 	provider.Mu().Lock()
 	var sePubKey, attestedBinaryHash string
@@ -729,6 +726,11 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	apnsProof := !resumeProof && resp.Nonce != "" &&
 		s.codeAttestThrottle.matchChallengeForIdentity(
 			sePubKey, resp.Nonce, apnsToken, nodeKey)
+	// Once authorized, only an outstanding APNs nonce has diagnostic work left.
+	// Preserve the previous no-op for resume proofs and unrelated/replayed frames.
+	if alreadyAttested && !apnsProof {
+		return
+	}
 	if !resumeProof && !apnsProof {
 		s.codeAttestMetric("nonce_mismatch")
 		s.logger.Warn("code-attest response nonce mismatch or expired proof")
@@ -754,6 +756,11 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 			return
 		}
 		s.recordCodeAttestPushReply(providerID, "answered")
+	}
+
+	// Counted a late APNs reply; never re-grant or refresh reuse.
+	if alreadyAttested {
+		return
 	}
 
 	if !provider.GrantProcessCodeAttested(apnsToken, nodeKey) {

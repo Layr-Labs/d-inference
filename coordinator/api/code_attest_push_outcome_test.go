@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/apns"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -246,5 +247,52 @@ func TestCodeAttestLoopFinalizesWithoutAnotherPush(t *testing.T) {
 				t.Fatalf("answered = %d", got)
 			}
 		})
+	}
+}
+
+func TestCodeAttestLateOutstandingReplyCountsWithoutRefreshingAuthorization(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	clock := newManualCodeAttestClock(srv.codeAttestThrottle)
+	pub, _, signer, sePub := providerKeyMaterial(t)
+	provider := newCodeAttestProvider(pub, sePub)
+	for _, nonce := range []string{"first", "second"} {
+		srv.codeAttestThrottle.recordChallengeForIdentity(sePub, nonce, provider.APNsDeviceToken, pub)
+		srv.codeAttestThrottle.markChallengeAccepted(sePub, nonce, 1)
+	}
+	reply := func(nonce, signature string) {
+		srv.handleCodeAttestationResponse(provider.ID, provider, &protocol.CodeAttestationResponseMessage{
+			Nonce: nonce, Signature: signature,
+		})
+	}
+	reply("first", signSEOverString(t, signer, "first"))
+	if !provider.GetCodeAttested() {
+		t.Fatal("first proof did not authorize")
+	}
+	srv.codeAttestThrottle.mu.Lock()
+	firstGrant := srv.codeAttestThrottle.attested[sePub].at
+	srv.codeAttestThrottle.mu.Unlock()
+	clock.advance(time.Second)
+	reply("second", "invalid")
+	if got := codeAttestPushCount(srv, "result", "answered"); got != 1 {
+		t.Fatalf("invalid late reply counted: %d", got)
+	}
+	reply("second", signSEOverString(t, signer, "second"))
+	reply("second", signSEOverString(t, signer, "second")) // replay is not another answer
+	if got := codeAttestPushCount(srv, "result", "answered"); got != 2 {
+		t.Fatalf("answered = %d", got)
+	}
+	srv.recordUnansweredCodeAttestPushes(provider.ID, sePub, 1)
+	if got := codeAttestPushCount(srv, "result", "unanswered"); got != 0 {
+		t.Fatalf("answered nonce finalized unanswered: %d", got)
+	}
+	srv.codeAttestThrottle.mu.Lock()
+	latestGrant := srv.codeAttestThrottle.attested[sePub].at
+	srv.codeAttestThrottle.mu.Unlock()
+	if !latestGrant.Equal(firstGrant) {
+		t.Fatal("late reply refreshed reuse authorization")
+	}
+	if got := srv.metrics.Snapshot().Counters[metricKey("code_attest_total", []MetricLabel{{"outcome", "attested"}})]; got != 1 {
+		t.Fatalf("late reply re-entered grant path: %d grants", got)
 	}
 }

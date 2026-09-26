@@ -37,6 +37,7 @@ def create_json(bucket, name: str, value: dict) -> dict:
             timeout=60,
         )
     except PreconditionFailed:
+        # Another writer committed first; read and verify that immutable value below.
         pass
     stored = read_json(bucket, name)
     if stored is None:

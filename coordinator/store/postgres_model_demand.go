@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -71,9 +72,49 @@ func (s *PostgresStore) ModelDemand(ctx context.Context, since, until time.Time)
 
 func (s *PostgresStore) PruneModelDemand(ctx context.Context, before time.Time, batch int) (int, error) {
 	n, _, err := s.pruneTelemetryTable(ctx, telemetryTable{name: "model_demand_requests", timeCol: "received_at"}, before, batch)
-	if err != nil {
+	if err != nil || before.IsZero() {
 		return n, err
 	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM model_demand_hourly WHERE hour < $1`, before.UTC().Truncate(time.Hour))
-	return n + int(tag.RowsAffected()), err
+	if batch <= 0 {
+		batch = defaultTelemetryPruneBatch
+	}
+	cutoff := before.UTC().Truncate(time.Hour)
+	for {
+		if err := ctx.Err(); err != nil {
+			return n, err
+		}
+		deleted, err := s.deleteModelDemandHourlyBatch(ctx, cutoff, batch)
+		n += deleted
+		if err != nil {
+			return n, fmt.Errorf("prune model_demand_hourly: %w", err)
+		}
+		if deleted < batch {
+			return n, nil
+		}
+	}
+}
+
+// The hourly table has a composite key, so select a bounded primary-key prefix
+// per transaction instead of the id windows used by the compact projections.
+func (s *PostgresStore) deleteModelDemandHourlyBatch(ctx context.Context, before time.Time, batch int) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '2s'`); err != nil {
+		return 0, err
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM model_demand_hourly
+ WHERE (hour,model,consumer_hash) IN (
+  SELECT hour,model,consumer_hash FROM model_demand_hourly
+  WHERE hour < $1 ORDER BY hour,model,consumer_hash LIMIT $2
+ )`, before, batch)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
 }

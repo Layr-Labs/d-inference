@@ -107,8 +107,7 @@ func TestServabilityGateShedsUnservable429(t *testing.T) {
 
 	var body struct {
 		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
+			Code string `json:"code"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
@@ -117,12 +116,13 @@ func TestServabilityGateShedsUnservable429(t *testing.T) {
 	if body.Error.Code != "rate_limit_exceeded" {
 		t.Fatalf("error.code = %q, want rate_limit_exceeded; body = %s", body.Error.Code, w.Body.String())
 	}
-	// Pin the servability gate specifically (tier-2 prompt_too_long), not a
-	// generic capacity 429: only this gate emits the "largest provider token
-	// budget" detail. modelMaxContext is 0 here (no store registry record), so
-	// the context tier is skipped and the token-budget tier fires.
-	if !strings.Contains(body.Error.Message, "largest provider token budget") {
-		t.Fatalf("message = %q, want servability token-budget detail", body.Error.Message)
+	// Observe the real admission result rather than pinning its error prose.
+	outcome := awaitRequestOutcomes(t, srv.store, 1)[0]
+	if outcome.RawStage != "preflight_capacity" || outcome.RawReason != registry.ServabilityPromptTooLong {
+		t.Fatalf("wrong admission path: %+v", outcome)
+	}
+	if outcome.PublicDemand == nil || outcome.PublicDemand.Outcome != "capacity_rejected" {
+		t.Fatalf("preflight budget refusal not counted as capacity: %+v", outcome.PublicDemand)
 	}
 }
 

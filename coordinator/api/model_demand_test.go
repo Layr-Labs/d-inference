@@ -28,6 +28,8 @@ func TestPublicDemandOutcome(t *testing.T) {
 		{"coordinator capacity", "rejected", "preflight_capacity", "routing_saturated", 429, false, "capacity_rejected"},
 		{"queue full", "rejected", "queue", "queue_full", 429, false, "capacity_rejected"},
 		{"provider token budget exhausted", "rejected", "dispatch", "unservable_token_budget", 429, false, "capacity_rejected"},
+		{"preflight token budget insufficient", "rejected", "preflight_capacity", "prompt_too_long", 429, false, "capacity_rejected"},
+		{"invalid prompt length", "rejected", "validation", "prompt_too_long", 400, false, "excluded"},
 		{"queued first-content deadline", "rejected", "dispatch", "queue_deadline", 429, false, "timed_out"},
 		{"first content timeout", "rejected", "dispatch", "first_chunk_timeout", 429, false, "timed_out"},
 		{"predicted latency", "rejected", "routing_ttft", "ttft_too_slow", 429, false, "latency_rejected"},

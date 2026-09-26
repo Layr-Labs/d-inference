@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-26 · commit `76b44a972`
+> Last updated: 2026-09-26 · commit `cf7393580`
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The public Stats page exposes a narrower, explicitly scoped recorded-request view; it does not establish traffic-wide completeness.
 
@@ -108,7 +108,8 @@ are outside this cohort. Admin-key traffic is excluded. Unlabelled authenticated
 
 `publicDemandOutcome` assigns one closed outcome per observation. Completed
 requests use the ledger's completion contract; explicit capacity reasons,
-including `queue_full` and `unservable_token_budget`, map to `capacity_rejected`; predictive TTFT refusals map
+including `queue_full`, provider-budget refusal at preflight (`prompt_too_long`),
+and dispatch-time `unservable_token_budget`, map to `capacity_rejected`; predictive TTFT refusals map
 to `latency_rejected`. First-content/queue timeouts, including expiry of the
 absolute first-content clock while queued (`queue_deadline`), map to `timed_out`.
 Failed/interrupted responses,
@@ -125,6 +126,13 @@ conflicts become unknown. The compact projection keeps revisions for 31 days,
 even when the detailed ledger expires, and prevents an old replay from
 regressing a terminal. Hourly counters avoid scanning a month of individual
 requests for every public read. Collection epoch metadata survives restarts.
+
+`PruneModelDemand` in `coordinator/store/postgres_model_demand.go` removes expired
+compact projections and whole expired aggregate hours in separate bounded
+transactions. Each delete is limited by the requested batch size (the shared
+`defaultTelemetryPruneBatch` applies when non-positive), with a two-second lock
+timeout. An error or cancellation stops the sweep without rolling back earlier
+committed batches. The partially expired cutoff hour remains intact.
 
 Both backends compare replays against the retained compact observation, not
 only the detailed ledger. Conflicting outcomes or HTTP statuses at the same

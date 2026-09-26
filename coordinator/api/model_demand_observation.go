@@ -51,7 +51,7 @@ func publicDemandOutcome(r store.RequestOutcomeRecord) string {
 		return "timed_out"
 	case "ttft_too_slow", "deadline_unreachable":
 		return "latency_rejected"
-	case "machine_busy", "capacity_exhausted", "routing_saturated", "no_provider", "queue_full", "unservable_token_budget":
+	case "machine_busy", "capacity_exhausted", "routing_saturated", "no_provider", "queue_full", "unservable_token_budget", "prompt_too_long":
 		if r.HTTPStatus == http.StatusTooManyRequests || r.HTTPStatus == http.StatusServiceUnavailable {
 			return "capacity_rejected"
 		}

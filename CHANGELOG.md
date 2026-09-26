@@ -12,6 +12,7 @@
 - Count full request queues as capacity rejections and queued first-content deadline expiry as timeouts in public model-demand history, rather than reporting either as unknown.
 - Exclude suppressed hourly cohorts from model summaries and all history resolutions so subtraction cannot recover hidden counts. Label counts, percentages, tables and CSV as published observations rather than complete window demand.
 - Count provider token/KV/context-budget exhaustion (`unservable_token_budget`) as capacity rejection in public model-demand outcomes.
+- Count preflight structural token-budget refusals (`prompt_too_long`) as capacity rejections while preserving validation exclusions. Prune expired model-demand aggregates in bounded transactions, retaining the partial cutoff hour and completed batches when a later batch fails.
 
 ### App Attest dead-key recovery and release-recovery fixes
 

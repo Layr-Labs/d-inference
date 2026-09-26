@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `0692c0f82`
+> Last updated: 2026-09-26 · commit `df511c02b`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -600,6 +600,23 @@ overrides take precedence over the saved selection; the command reports the
 winning source and warns about shadowed settings. After a change, run
 `darkbloom stop && darkbloom start` from the intended environment (include
 `--config <path>` on `start` when using a custom config).
+
+**Upgrade preflight:** before the first start with the upgraded provider, run
+these commands from the same shell, adding the same `--config <path>` you intend
+to use for `start`:
+
+```bash
+darkbloom models location --check
+darkbloom models list --all
+```
+
+Confirm the effective directory and the expected model IDs, not just the exit
+code: `--check` can succeed for an empty writable directory. Existing cache
+environment variables that older providers ignored are now honored, so an
+upgrade is not a zero-impact guarantee for every environment. The CLI's report
+does not inspect a running daemon's captured environment. If the selected cache
+is wrong, correct or unset the winning environment override before starting;
+`--reset` alone does not unset it. See [upgrade compatibility](../reference/configuration.md#model-cache-location).
 
 ## `darkbloom benchmark`
 

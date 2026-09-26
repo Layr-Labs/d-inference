@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-26 · commit `0692c0f82`
+> Last updated: 2026-09-26 · commit `df511c02b`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -397,6 +397,24 @@ before saving all four variables in the provider plist. They are captured at
 `start`, not refreshed by `restart`; after changing/unsetting them or changing a
 saved location, run `darkbloom stop && darkbloom start` from the intended shell.
 The command does not move weights or automatically restart a serving process.
+
+**Existing-provider upgrades.** With no cache environment override and no saved
+location, the default cache remains unchanged. Earlier providers ignored the
+four variables above for model-cache selection; the upgraded provider honors
+them even if the operator never runs `models location`. A previously exported
+value can therefore select another directory at the next launch. If that
+directory lacks the expected models, discovery can return no models; existing
+weights are not moved or copied, and an empty cache does not cause fallback to
+the home cache (`ModelScanner.resolveCache`).
+
+The CLI reports its own environment/config resolution, not the running daemon's
+captured environment. Ordinary daemon restart and automatic binary-update
+restart reuse the installed job; only a fresh `start` captures the invoking
+shell's cache variables (`LaunchAgent.installAndStart`, `restartAfterDrain`,
+`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`). Before that
+start, use the [location preflight](../provider/cli-reference.md#darkbloom-models-location)
+from the intended shell and config. `--reset` clears the saved setting only;
+it does not remove inherited environment overrides.
 
 ### Operator-facing: daemon, paths, updates
 

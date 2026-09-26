@@ -59,7 +59,7 @@ def replica_ready(dsn: str) -> None:
         ).fetchone()
         if recovery is not True or readonly != "on":
             raise ArchiveError("backfill source is not a physical replica")
-        if paused or lag is None or lag > 30:
+        if paused or lag is None or lag >= 30:
             # Exit nonzero with checkpoints retained; do not continue scanning
             # during degraded replication or call a paused backfill complete.
             raise BackfillIncomplete("replica replay age exceeds 30 seconds; resume after recovery")

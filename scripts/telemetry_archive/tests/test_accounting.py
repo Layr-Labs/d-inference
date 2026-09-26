@@ -178,3 +178,32 @@ def test_id_window_limits_and_scope(window):
         assert "AS INT64" in sql and "PARTITION BY r.source_id" in sql
         with pytest.raises(ArchiveError):
             reader_sql("archive-project", "telemetry_history", table, "a" * 16)
+
+
+@pytest.mark.parametrize(
+    "lag,paused,allowed",
+    [
+        (29.99, False, True),
+        (30, False, False),
+        (31, False, False),
+        (None, False, False),
+        (0, True, False),
+    ],
+)
+def test_replica_guard_requires_strictly_below_30_seconds(monkeypatch, lag, paused, allowed):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from telemetry_archive.backfill_job import replica_ready
+
+    connection = SimpleNamespace(
+        execute=lambda _: SimpleNamespace(fetchone=lambda: (True, "on", paused, lag))
+    )
+    monkeypatch.setattr(
+        "telemetry_archive.backfill_job.psycopg.connect", lambda *a, **kw: nullcontext(connection)
+    )
+    if allowed:
+        replica_ready("test-only")
+    else:
+        with pytest.raises(BackfillIncomplete):
+            replica_ready("test-only")

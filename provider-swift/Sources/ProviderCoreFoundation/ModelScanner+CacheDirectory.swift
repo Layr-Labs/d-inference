@@ -17,8 +17,8 @@ import Foundation
 
 extension ModelScanner {
 
-    /// Environment variable naming the hub cache directly. Highest priority,
-    /// and already IS the `hub` directory, so nothing is appended.
+    /// Highest-priority environment variable for an explicit cache import.
+    /// Its value already names the `hub` directory, so nothing is appended.
     public static let hfHubCacheEnvKey = "HF_HUB_CACHE"
 
     /// Legacy alias of `HF_HUB_CACHE`, still honored by `huggingface_hub` and
@@ -34,18 +34,13 @@ extension ModelScanner {
     /// upstream, so the hub cache is `$XDG_CACHE_HOME/huggingface/hub`.
     public static let xdgCacheHomeEnvKey = "XDG_CACHE_HOME"
 
-    /// Environment precedence mirrors `huggingface_hub`; a saved Darkbloom
-    /// directory is considered only after these overrides, before the default.
+    /// Explicit environment imports follow `huggingface_hub` precedence.
     static let cacheEnvSources: [(key: String, subpath: String?)] = [
         (hfHubCacheEnvKey, nil),
         (legacyHubCacheEnvKey, nil),
         (hfHomeEnvKey, "hub"),
         (xdgCacheHomeEnvKey, "huggingface/hub"),
     ]
-
-    /// Every environment variable that can move the cache, highest priority
-    /// first. Used by the launchd passthrough allow-list.
-    public static var cacheEnvKeys: [String] { cacheEnvSources.map(\.key) }
 
     /// A resolved cache directory and the environment or saved configuration
     /// that selected it. Neither source is set for the home-directory default.
@@ -66,19 +61,6 @@ extension ModelScanner {
         cacheDirectory()
     }
 
-    /// Optional-returning for source compatibility with existing call sites;
-    /// resolution itself always succeeds.
-    public static func defaultCacheDirectory(
-        environment: [String: String],
-        homeDirectory: URL,
-        configuredDirectory: String? = nil
-    ) -> URL? {
-        resolveCache(
-            environment: environment, homeDirectory: homeDirectory,
-            configuredDirectory: configuredDirectory
-        ).url
-    }
-
     /// The cache directory for this process, including its saved configuration.
     public static func cacheDirectory() -> URL {
         resolveCache(configuredDirectory: configuredCacheDirectory).url
@@ -86,17 +68,15 @@ extension ModelScanner {
 
     /// Resolve explicitly supplied inputs without reading process configuration.
     public static func cacheDirectory(
-        environment: [String: String],
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        homeDirectory: URL,
         configuredDirectory: String? = nil
     ) -> URL {
         resolveCache(
-            environment: environment, homeDirectory: homeDirectory,
-            configuredDirectory: configuredDirectory
+            homeDirectory: homeDirectory, configuredDirectory: configuredDirectory
         ).url
     }
 
-    /// Walk the precedence ladder and report both the directory and its source.
+    /// Resolve the saved directory or the home default, ignoring cache environment variables.
     ///
     /// The result is symlink-resolved: a cache reached through a link (a
     /// `~/.cache` symlinked to an external volume, `/tmp` -> `/private/tmp`)
@@ -104,18 +84,9 @@ extension ModelScanner {
     /// download side, or scanner and downloader disagree about whether a model
     /// is already present.
     public static func resolveCache(
-        environment: [String: String] = ProcessInfo.processInfo.environment,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         configuredDirectory: String? = nil
     ) -> ResolvedCache {
-        for source in cacheEnvSources {
-            guard let base = directoryURL(from: environment[source.key], homeDirectory: homeDirectory)
-            else { continue }
-            let url = source.subpath.map {
-                base.appendingPathComponent($0, isDirectory: true)
-            } ?? base
-            return ResolvedCache(url: resolved(url), environmentKey: source.key)
-        }
         if let url = normalizedCacheDirectory(configuredDirectory, homeDirectory: homeDirectory) {
             return ResolvedCache(url: url, environmentKey: nil, isConfigured: true)
         }
@@ -125,7 +96,25 @@ extension ModelScanner {
         )
     }
 
-    /// The no-environment default: `~/.cache/huggingface/hub`.
+    /// Discover a cache only when the operator explicitly imports environment settings.
+    /// Callers persist the resulting concrete path, never the environment variable.
+    /// No valid variable means there is nothing to import; the default is not a candidate.
+    public static func resolveEnvironmentCache(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> ResolvedCache? {
+        for source in cacheEnvSources {
+            guard let base = directoryURL(from: environment[source.key], homeDirectory: homeDirectory)
+            else { continue }
+            let url = source.subpath.map {
+                base.appendingPathComponent($0, isDirectory: true)
+            } ?? base
+            return ResolvedCache(url: resolved(url), environmentKey: source.key)
+        }
+        return nil
+    }
+
+    /// The default used unless a cache directory is saved: `~/.cache/huggingface/hub`.
     public static func homeCacheDirectory(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
@@ -157,9 +146,7 @@ extension ModelScanner {
     /// `~` / `~/` use the injected home directory (so resolution stays
     /// testable). `~user` is delegated to Foundation, which consults the
     /// password database. An unexpandable `~user` returns nil rather than a
-    /// path-relative literal directory named `~user`: a relative result would
-    /// resolve differently in the operator's shell than in the launchd daemon,
-    /// whose working directory is `/`.
+    /// path-relative literal directory named `~user`.
     static func expandingTilde(_ path: String, homeDirectory: URL) -> String? {
         guard path.hasPrefix("~") else { return path }
 
@@ -207,9 +194,9 @@ extension ModelScanner {
         return url
     }
 
-    /// Make a path absolute before persisting it for launchd, whose cwd is `/`.
+    /// Make a cache path absolute without changing filesystem traversal order.
     /// Preserve nonblank whitespace and `..` components, which may cross links.
-    public static func absoluteCachePathValue(
+    static func absoluteCachePathValue(
         _ raw: String?,
         relativeTo base: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true),
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -236,16 +223,14 @@ extension ModelScanner {
         cacheDirectory().appendingPathComponent(cacheDirectoryName(for: modelID), isDirectory: true)
     }
 
-    /// Environment-injected form of `cacheModelDirectory(for:)`.
+    /// Resolve explicitly supplied inputs without reading process configuration.
     public static func cacheModelDirectory(
         for modelID: String,
-        environment: [String: String],
         homeDirectory: URL,
         configuredDirectory: String? = nil
     ) -> URL {
         cacheDirectory(
-            environment: environment, homeDirectory: homeDirectory,
-            configuredDirectory: configuredDirectory
+            homeDirectory: homeDirectory, configuredDirectory: configuredDirectory
         )
             .appendingPathComponent(cacheDirectoryName(for: modelID), isDirectory: true)
     }
@@ -254,9 +239,8 @@ extension ModelScanner {
 
     /// Whether `url` is an existing DIRECTORY.
     ///
-    /// `fileExists(atPath:)` alone returns true for a regular file, so a
-    /// `HF_HUB_CACHE` pointing at a file read as a healthy cache in `doctor`
-    /// while the scanner silently found nothing.
+    /// `fileExists(atPath:)` alone returns true for a regular file, which is
+    /// not a usable model cache.
     public static func isUsableCacheDirectory(_ url: URL) -> Bool {
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)

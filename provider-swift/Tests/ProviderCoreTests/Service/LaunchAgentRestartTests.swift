@@ -55,46 +55,6 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "1"])
     }
 
-    /// Forwarding a higher-priority variable but dropping a lower one would
-    /// silently move the daemon to another rung.
-    @Test func daemonResolvesTheSameRungAsTheShell() {
-        let home = URL(fileURLWithPath: "/Users/op", isDirectory: true)
-        let foreground = [
-            ModelScanner.hfHomeEnvKey: "/Volumes/models/hf",
-            ModelScanner.xdgCacheHomeEnvKey: "/Volumes/models/xdg",
-        ]
-        let launchd = LaunchAgent.passthroughEnvironment(from: foreground)
-
-        #expect(
-            ModelScanner.cacheDirectory(environment: launchd, homeDirectory: home).path
-                == ModelScanner.cacheDirectory(environment: foreground, homeDirectory: home).path
-        )
-        #expect(ModelScanner.resolveCache(environment: launchd, homeDirectory: home)
-            .environmentKey == ModelScanner.hfHomeEnvKey)
-    }
-
-    /// launchd runs the job with working directory `/`, so a RELATIVE value
-    /// must be absolutised on the way into the plist. Forwarded verbatim it
-    /// would resolve to `<shell cwd>/models/hf/hub` for the CLI and
-    /// `/models/hf/hub` for the daemon -- the exact split this passthrough
-    /// exists to close.
-    @Test func relativeCachePathIsAbsolutisedForTheDaemon() {
-        let home = URL(fileURLWithPath: "/Users/op", isDirectory: true)
-        let shellCwd = URL(fileURLWithPath: "/Users/op/work", isDirectory: true)
-        let foreground = [ModelScanner.hfHomeEnvKey: "models/hf"]
-
-        let launchd = LaunchAgent.passthroughEnvironment(
-            from: foreground, workingDirectory: shellCwd)
-
-        #expect(launchd[ModelScanner.hfHomeEnvKey] == "/Users/op/work/models/hf")
-
-        // Resolved in the daemon (cwd `/`) it must name the same directory the
-        // installing shell meant.
-        let daemonCache = ModelScanner.cacheDirectory(
-            environment: launchd, homeDirectory: home)
-        #expect(daemonCache.path == "/Users/op/work/models/hf/hub")
-    }
-
     @Test func dropsEmptyAndMissingVars() {
         #expect(LaunchAgent.passthroughEnvironment(from: [:]).isEmpty)
         let out = LaunchAgent.passthroughEnvironment(from: [

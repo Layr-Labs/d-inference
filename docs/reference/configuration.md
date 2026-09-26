@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-26 · commit `df511c02b`
+> Last updated: 2026-09-26 · commit `0ce33cee2`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -36,7 +36,7 @@ time; they are not network control endpoints or serving credentials.
 | Coordinator, dev | Same file layout on the dev VM, written by `deploy/gcp/refresh-env.sh`; see [`../operations/dev-environment.md`](../operations/dev-environment.md). |
 | Coordinator, local | Whatever shell exports `go run ./coordinator/cmd/coordinator` inherits. `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` is the only way to start without a database. |
 | Provider CLI, `darkbloom start --foreground` | The invoking shell's environment, minus the 13 variables scrubbed by `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift`. Every `DARKBLOOM_*` row below applies. |
-| Provider CLI, installed LaunchAgent | `darkbloom start` writes a launchd plist whose `EnvironmentVariables` come from `LaunchAgent.passthroughEnvironment` in `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`. The allow-list includes all four [model-cache variables](#model-cache-location), `DARKBLOOM_DRAIN_TIMEOUT_SECONDS`, `DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_MEMORY`, `DARKBLOOM_MLX_RESOURCE_DEBUG`, `DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_MLX_CACHE_LIMIT_GB`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`, and `DARKBLOOM_PREFILL_DEADLINE_MODE`; `MLX_GATHER_QMM_EXPERT_SLICES` is forwarded only when exactly `1`. `PATH` is deliberately dropped. The watchdog (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`) additionally forwards `DARKBLOOM_NO_UPDATE_CHECK`. Other provider variables are not shell passthrough entries. |
+| Provider CLI, installed LaunchAgent | `darkbloom start` writes a launchd plist whose `EnvironmentVariables` come from `LaunchAgent.passthroughEnvironment` in `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`. The allow-list includes `DARKBLOOM_DRAIN_TIMEOUT_SECONDS`, `DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_MEMORY`, `DARKBLOOM_MLX_RESOURCE_DEBUG`, `DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_MLX_CACHE_LIMIT_GB`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`, and `DARKBLOOM_PREFILL_DEADLINE_MODE`; `MLX_GATHER_QMM_EXPERT_SLICES` is forwarded only when exactly `1`. `PATH` and the Hugging Face/XDG cache variables are not forwarded. Model-cache selection is config-backed. The watchdog (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`) additionally forwards `DARKBLOOM_NO_UPDATE_CHECK`. |
 | Provider CLI, `provider.toml` | `~/.config/darkbloom/provider.toml` (`ConfigManager` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`) is the durable configuration; a variable that overrides a config key says so in its Effect cell (`DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`). |
 | console-ui | Next.js `.env*` files or the hosting build environment (Vercel-style). Every console-ui variable is `NEXT_PUBLIC_*` or build-tooling: inlined at **build** time, so changing one requires a rebuild. There is no server-only secret; a gitignored `.env.local` in `console-ui/` is the only local file and no `.env.example` exists. |
 | admin-ui | Server-only **runtime** variables read by React Server Components on each request; set them in `.env*` or the host environment. `NODE_ENV` is set by Next. |
@@ -363,58 +363,54 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 
 ### Model cache location
 
-Discovery, downloads, hashing and removal use `ModelScanner.resolveCache`
+Model-cache changes require explicit operator selection, not a beta flag.
+Discovery, downloads, hashing and removal share `ModelScanner.resolveCache`
 (`provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift`).
-The first usable setting wins; values select the hub root containing
+The selected directory is a hub root containing
 `models--<org>--<name>/snapshots/<revision>`, not a single model snapshot.
 
-| Priority | Setting | Cache directory | Reader |
-|---|---|---|---|
-| 1 | `HF_HUB_CACHE` | The value itself | `ModelScanner.resolveCache` |
-| 2 | `HUGGINGFACE_HUB_CACHE` | The value itself (legacy alias) | `ModelScanner.resolveCache` |
-| 3 | `HF_HOME` | `<value>/hub` | `ModelScanner.resolveCache` |
-| 4 | `XDG_CACHE_HOME` | `<value>/huggingface/hub` | `ModelScanner.resolveCache` |
-| 5 | `[backend] model_cache_directory` in `provider.toml` | Saved path; unset by default | `ConfigManager.modelCacheDirectory`, `provider-swift/Sources/ProviderCore/Config/ModelCacheConfiguration.swift` |
-| 6 | None set | `~/.cache/huggingface/hub` | `ModelScanner.homeCacheDirectory` |
+| Runtime setting | Cache directory | Reader |
+|---|---|---|
+| `[backend] model_cache_directory` in `provider.toml` | Explicit saved path; unset by default | `ConfigManager.modelCacheDirectory`, `provider-swift/Sources/ProviderCore/Config/ModelCacheConfiguration.swift` |
+| No saved location | Unchanged `~/.cache/huggingface/hub` | `ModelScanner.homeCacheDirectory` |
 
-The environment ordering matches Hugging Face. Darkbloom treats blank,
-NUL-containing or unexpandable `~user` environment values as unset; other paths
-retain significant whitespace. A valid selection stays selected even when its
-directory is missing or inaccessible: downloads must not silently switch disks.
-Symlinks follow filesystem traversal order; missing or non-directory components
-before `..` are not removed to manufacture a different valid destination.
+**Existing providers keep the legacy cache until a location is explicitly saved,**
+even when Hugging Face/XDG variables are already exported. Those variables are
+not runtime cache overrides and are not forwarded into the provider LaunchAgent.
+Status, inspection, menu cancellation, and upgrading do not save a location.
 
 [`darkbloom models location`](../provider/cli-reference.md#darkbloom-models-location)
-saves an absolute path or clears it with `--reset`. Hand-written relative config
-paths are relative to the TOML file. Invalid explicit saved paths fail loading;
-`--reset` or selecting a valid path can repair them. Inspection with `--check PATH`
-does not depend on the saved setting. Hugging Face tooling does not read this
-Darkbloom config key; export one of the standard environment variables when
-sharing a custom cache with `hf download`.
+saves an absolute path from a direct argument or confirmed menu selection.
+`--from-env` explicitly imports the current environment-selected directory once
+and saves its concrete path. Only that import uses `ModelScanner.resolveEnvironmentCache`
+with the following first-valid-value precedence:
 
-`LaunchAgent.passthroughEnvironment` makes relative shell cache values absolute
-before saving all four variables in the provider plist. They are captured at
-`start`, not refreshed by `restart`; after changing/unsetting them or changing a
-saved location, run `darkbloom stop && darkbloom start` from the intended shell.
-The command does not move weights or automatically restart a serving process.
+| Import priority | Variable | Candidate directory | Reader |
+|---|---|---|---|
+| 1 | `HF_HUB_CACHE` | The value itself | `ModelScanner.resolveEnvironmentCache` |
+| 2 | `HUGGINGFACE_HUB_CACHE` | The value itself (legacy alias) | `ModelScanner.resolveEnvironmentCache` |
+| 3 | `HF_HOME` | `<value>/hub` | `ModelScanner.resolveEnvironmentCache` |
+| 4 | `XDG_CACHE_HOME` | `<value>/huggingface/hub` | `ModelScanner.resolveEnvironmentCache` |
 
-**Existing-provider upgrades.** With no cache environment override and no saved
-location, the default cache remains unchanged. Earlier providers ignored the
-four variables above for model-cache selection; the upgraded provider honors
-them even if the operator never runs `models location`. A previously exported
-value can therefore select another directory at the next launch. If that
-directory lacks the expected models, discovery can return no models; existing
-weights are not moved or copied, and an empty cache does not cause fallback to
-the home cache (`ModelScanner.resolveCache`).
+No valid variable means the import fails without saving. Blank, NUL-containing
+or unexpandable `~user` values are ignored; other paths retain significant
+whitespace. The selected candidate must be an existing readable, searchable,
+writable directory. A missing/unusable higher-priority path does not silently
+fall through to another directory. Later environment changes never redirect a
+saved path; import again explicitly if that is intended. Hugging Face tools do
+not read Darkbloom's TOML key.
 
-The CLI reports its own environment/config resolution, not the running daemon's
-captured environment. Ordinary daemon restart and automatic binary-update
-restart reuse the installed job; only a fresh `start` captures the invoking
-shell's cache variables (`LaunchAgent.installAndStart`, `restartAfterDrain`,
-`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`). Before that
-start, use the [location preflight](../provider/cli-reference.md#darkbloom-models-location)
-from the intended shell and config. `--reset` clears the saved setting only;
-it does not remove inherited environment overrides.
+`--reset` removes the saved setting and restores the legacy default, regardless
+of ambient variables. Hand-written relative config paths are relative to the
+TOML file. Invalid saved paths fail loading; reset or an explicit valid selection
+can repair them. Inspection with `--check PATH` is independent of saved config.
+Missing or empty selected caches never cause fallback to another cache. Symlink
+resolution preserves filesystem traversal failures rather than erasing a missing
+or non-directory component before `..`.
+
+The command never moves weights or restarts a provider. Apply a saved change with
+`darkbloom restart` (or `darkbloom start` if stopped). The CLI reports its selected
+config, not proof that an already-running daemon has adopted a new setting.
 
 ### Operator-facing: daemon, paths, updates
 

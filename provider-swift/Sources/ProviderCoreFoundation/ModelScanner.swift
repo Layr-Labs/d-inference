@@ -8,9 +8,9 @@ import Logging
 /// The HuggingFace cache layout is:
 ///   {cache}/models--{org}--{name}/snapshots/{hash}/
 ///
-/// where `{cache}` is resolved by `ModelScanner+CacheDirectory.swift`:
-/// `$HF_HUB_CACHE`, else `$HUGGINGFACE_HUB_CACHE`, else `$HF_HOME/hub`, else
-/// `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub`.
+/// where `{cache}` is the explicitly saved directory, or the unchanged
+/// `~/.cache/huggingface/hub` default. Ambient HuggingFace variables never
+/// select a serving cache; the location command can import them explicitly.
 ///
 /// A valid MLX model has config.json and at least one .safetensors weight file.
 ///
@@ -58,7 +58,7 @@ public struct ModelScanner: Sendable {
 
     // MARK: - Public API
     //
-    // Cache-directory resolution ($HF_HOME / $HF_HUB_CACHE / ~) lives in
+    // Saved-location and legacy-default resolution lives in
     // ModelScanner+CacheDirectory.swift.
 
     /// Resolve a model ID to its local snapshot path on disk.
@@ -83,7 +83,7 @@ public struct ModelScanner: Sendable {
             return Qwen4LocalModelPath.directory(environment: environment)
         }
         let cacheDir = cacheDirectory(
-            environment: environment, homeDirectory: homeDirectory,
+            homeDirectory: homeDirectory,
             configuredDirectory: configuredDirectory)
         let fm = FileManager.default
 

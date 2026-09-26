@@ -2,16 +2,14 @@ import Foundation
 import ProviderCore
 
 func hfCacheCheck(
-    environment: [String: String],
     homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
     configuredDirectory: String? = nil
 ) -> DoctorCheck {
     let resolved = ModelScanner.resolveCache(
-        environment: environment, homeDirectory: homeDirectory,
+        homeDirectory: homeDirectory,
         configuredDirectory: configuredDirectory)
     let cacheDir = resolved.url
-    let source = resolved.environmentKey.map { " (via $\($0))" }
-        ?? (resolved.isConfigured ? " (via backend.model_cache_directory)" : "")
+    let source = resolved.isConfigured ? " (via backend.model_cache_directory)" : ""
     let fm = FileManager.default
     guard ModelScanner.isUsableCacheDirectory(cacheDir) else {
         let reason = fm.fileExists(atPath: cacheDir.path) ? "not a directory" : "not found"

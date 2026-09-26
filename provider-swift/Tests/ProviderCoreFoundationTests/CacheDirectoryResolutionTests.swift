@@ -37,12 +37,26 @@ struct CacheDirectoryResolutionTests {
 
     private func fakeHome() throws -> URL { try makeDir("home") }
 
-    // MARK: - Precedence
+    // MARK: - Runtime selection and explicit imports
 
-    @Test("environment overrides saved configuration, which overrides the home default")
-    func precedenceLadder() throws {
+    @Test("runtime uses saved configuration or the home default")
+    func runtimeSelection() throws {
         let home = try fakeHome()
         let saved = try makeDir("configured")
+        let configured = ModelScanner.resolveCache(homeDirectory: home, configuredDirectory: saved.path)
+        #expect(configured.url.path == saved.path)
+        #expect(configured.environmentKey == nil)
+        #expect(configured.isConfigured)
+
+        let fallback = ModelScanner.resolveCache(homeDirectory: home)
+        #expect(fallback.url.path == home.appendingPathComponent(".cache/huggingface/hub").path)
+        #expect(fallback.environmentKey == nil)
+        #expect(!fallback.isConfigured)
+    }
+
+    @Test("explicit environment import selects the highest-priority valid variable")
+    func environmentImportPrecedence() throws {
+        let home = try fakeHome()
         let sources = [
             ("HF_HUB_CACHE", ""),
             ("HUGGINGFACE_HUB_CACHE", ""),
@@ -53,47 +67,36 @@ struct CacheDirectoryResolutionTests {
         var environment = Dictionary(uniqueKeysWithValues: zip(sources, bases).map { ($0.0.0, $0.1.path) })
 
         for (source, base) in zip(sources, bases) {
-            let result = ModelScanner.resolveCache(
-                environment: environment, homeDirectory: home, configuredDirectory: saved.path)
+            let result = try #require(ModelScanner.resolveEnvironmentCache(
+                environment: environment, homeDirectory: home))
             #expect(result.url.path == base.path + source.1)
             #expect(result.environmentKey == source.0)
             #expect(!result.isConfigured)
             environment.removeValue(forKey: source.0)
         }
 
-        let configured = ModelScanner.resolveCache(
-            environment: [:], homeDirectory: home, configuredDirectory: saved.path)
-        #expect(configured.url.path == saved.path)
-        #expect(configured.environmentKey == nil)
-        #expect(configured.isConfigured)
-
-        let fallback = ModelScanner.resolveCache(environment: [:], homeDirectory: home)
-        #expect(fallback.url.path == home.appendingPathComponent(".cache/huggingface/hub").path)
-        #expect(fallback.environmentKey == nil)
-        #expect(!fallback.isConfigured)
+        #expect(ModelScanner.resolveEnvironmentCache(environment: environment, homeDirectory: home) == nil)
     }
 
-    // MARK: - Degenerate env values
+    // MARK: - Invalid and significant path values
 
     @Test("invalid path values fall through without redirecting to a truncated path",
         arguments: ["", " \t\n", "\0", "hub\0else"])
     func invalidValuesIgnored(raw: String) throws {
         let home = try fakeHome()
-        let saved = try makeDir("configured-invalid")
-        let next = ModelScanner.resolveCache(
-            environment: ["HF_HUB_CACHE": raw, "HF_HOME": saved.path], homeDirectory: home)
-        #expect(next.url.path == saved.path + "/hub")
+        let nextBase = try makeDir("valid-env")
+        let next = try #require(ModelScanner.resolveEnvironmentCache(
+            environment: ["HF_HUB_CACHE": raw, "HF_HOME": nextBase.path], homeDirectory: home))
+        #expect(next.url.path == nextBase.path + "/hub")
         #expect(next.environmentKey == "HF_HOME")
 
-        let environment = Dictionary(uniqueKeysWithValues: ModelScanner.cacheEnvKeys.map { ($0, raw) })
-        let configured = ModelScanner.resolveCache(
-            environment: environment, homeDirectory: home, configuredDirectory: saved.path)
-        #expect(configured.url.path == saved.path)
-        #expect(configured.isConfigured)
+        let environment = Dictionary(uniqueKeysWithValues:
+            ["HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME"].map { ($0, raw) })
+        #expect(ModelScanner.resolveEnvironmentCache(environment: environment, homeDirectory: home) == nil)
 
-        let fallback = ModelScanner.resolveCache(
-            environment: environment, homeDirectory: home, configuredDirectory: raw)
+        let fallback = ModelScanner.resolveCache(homeDirectory: home, configuredDirectory: raw)
         #expect(fallback.url.path == home.path + "/.cache/huggingface/hub")
+        #expect(fallback.environmentKey == nil)
         #expect(!fallback.isConfigured)
         #expect(ModelScanner.normalizedCacheDirectory(raw, homeDirectory: home) == nil)
     }
@@ -108,13 +111,11 @@ struct CacheDirectoryResolutionTests {
         let spaced = parent.appendingPathComponent("hub ", isDirectory: true)
         try FileManager.default.createDirectory(at: spaced, withIntermediateDirectories: true)
 
-        let resolved = ModelScanner.defaultCacheDirectory(
-            environment: ["HF_HUB_CACHE": spaced.path],
-            homeDirectory: try fakeHome()
-        )
+        let resolved = ModelScanner.resolveCache(
+            homeDirectory: try fakeHome(), configuredDirectory: spaced.path)
 
-        #expect(resolved?.path == spaced.path)
-        #expect(resolved?.lastPathComponent == "hub ")
+        #expect(resolved.url.path == spaced.path)
+        #expect(resolved.url.lastPathComponent == "hub ")
     }
 
     @Test("a non-breaking space in a path is not stripped")
@@ -123,24 +124,22 @@ struct CacheDirectoryResolutionTests {
         let odd = parent.appendingPathComponent("\u{00A0}hf\u{00A0}", isDirectory: true)
         try FileManager.default.createDirectory(at: odd, withIntermediateDirectories: true)
 
-        let resolved = ModelScanner.defaultCacheDirectory(
-            environment: ["HF_HUB_CACHE": odd.path],
-            homeDirectory: try fakeHome()
-        )
+        let resolved = ModelScanner.resolveCache(
+            homeDirectory: try fakeHome(), configuredDirectory: odd.path)
 
-        #expect(resolved?.path == odd.path)
+        #expect(resolved.url.path == odd.path)
     }
 
     @Test("a leading tilde expands against the home directory")
     func tildeExpanded() throws {
         let home = try fakeHome()
 
-        let resolved = ModelScanner.defaultCacheDirectory(
+        let resolved = ModelScanner.resolveEnvironmentCache(
             environment: ["HF_HOME": "~/models/hf"],
             homeDirectory: home
         )
 
-        #expect(resolved?.path == home.appendingPathComponent("models/hf/hub").path)
+        #expect(resolved?.url.path == home.appendingPathComponent("models/hf/hub").path)
     }
 
     // MARK: - Symlink resolution
@@ -158,11 +157,12 @@ struct CacheDirectoryResolutionTests {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: child)
         // Lexically collapsing link/.. would incorrectly choose root/cache.
         let raw = link.path + "/../cache"
-        let result = ModelScanner.resolveCache(environment: ["HF_HUB_CACHE": raw], homeDirectory: root)
+        let result = try #require(ModelScanner.resolveEnvironmentCache(
+            environment: ["HF_HUB_CACHE": raw], homeDirectory: root))
         #expect(result.url.path == expected.path)
         #expect(FileManager.default.fileExists(atPath: expected.path) == leafExists)
 
-        let saved = ModelScanner.resolveCache(environment: [:], homeDirectory: root, configuredDirectory: raw)
+        let saved = ModelScanner.resolveCache(homeDirectory: root, configuredDirectory: raw)
         #expect(saved.url.path == expected.path)
         #expect(saved.isConfigured)
     }
@@ -176,7 +176,7 @@ struct CacheDirectoryResolutionTests {
         try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target.lastPathComponent)
 
         let result = ModelScanner.resolveCache(
-            environment: ["HF_HUB_CACHE": link.path + "/cache/new"], homeDirectory: root)
+            homeDirectory: root, configuredDirectory: link.path + "/cache/new")
         #expect(result.url.path == target.path + "/cache/new")
         #expect(!FileManager.default.fileExists(atPath: target.path + "/cache"))
     }
@@ -210,9 +210,9 @@ struct CacheDirectoryResolutionTests {
         let error = errno
         #expect(status == -1)
         #expect(error == (component == "file" ? ENOTDIR : component == "loop" ? ELOOP : ENOENT))
-        let result = ModelScanner.resolveCache(environment: ["HF_HUB_CACHE": raw], homeDirectory: root)
+        let result = ModelScanner.resolveCache(homeDirectory: root, configuredDirectory: raw)
         #expect(result.url.path == raw)
-        #expect(result.environmentKey == "HF_HUB_CACHE")
+        #expect(result.isConfigured)
     }
 
     @Test("a missing component below a symlink cannot redirect into an unrelated cache")
@@ -232,7 +232,7 @@ struct CacheDirectoryResolutionTests {
         let error = errno
         #expect(status == -1)
         #expect(error == ENOENT)
-        let result = ModelScanner.resolveCache(environment: ["HF_HUB_CACHE": raw], homeDirectory: root)
+        let result = ModelScanner.resolveCache(homeDirectory: root, configuredDirectory: raw)
         #expect(result.url.path == target.path + suffix)
         let resolvedStatus = stat(result.url.path, &metadata)
         let resolvedError = errno
@@ -250,12 +250,12 @@ struct CacheDirectoryResolutionTests {
         let link = linkParent.appendingPathComponent("link", isDirectory: true)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
 
-        let resolved = ModelScanner.defaultCacheDirectory(
+        let resolved = ModelScanner.resolveEnvironmentCache(
             environment: ["HF_HOME": link.path],
             homeDirectory: try fakeHome()
         )
 
-        #expect(resolved?.path == hub.path)
+        #expect(resolved?.url.path == hub.path)
     }
 
     @Test("a symlinked HF_HUB_CACHE resolves to its real path")
@@ -265,12 +265,12 @@ struct CacheDirectoryResolutionTests {
         let link = linkParent.appendingPathComponent("hub-link", isDirectory: true)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
 
-        let resolved = ModelScanner.defaultCacheDirectory(
+        let resolved = ModelScanner.resolveEnvironmentCache(
             environment: ["HF_HUB_CACHE": link.path],
             homeDirectory: try fakeHome()
         )
 
-        #expect(resolved?.path == real.path)
+        #expect(resolved?.url.path == real.path)
     }
 
     @Test("a symlinked home resolves even before its cache exists", arguments: [false, true])
@@ -285,21 +285,18 @@ struct CacheDirectoryResolutionTests {
         let homeLink = linkParent.appendingPathComponent("home-link", isDirectory: true)
         try FileManager.default.createSymbolicLink(at: homeLink, withDestinationURL: realHome)
 
-        let resolved = ModelScanner.defaultCacheDirectory(
-            environment: [:],
-            homeDirectory: homeLink
-        )
+        let resolved = ModelScanner.cacheDirectory(homeDirectory: homeLink)
 
-        #expect(resolved?.path == cache.path)
+        #expect(resolved.path == cache.path)
     }
 
-    @Test("a nonexistent override stays selected and resolution creates no directories")
+    @Test("an explicit import keeps a nonexistent candidate without creating directories")
     func nonexistentPathResolves() throws {
         let home = try fakeHome()
         let missing = home.appendingPathComponent("not-created-yet")
-        let resolved = ModelScanner.resolveCache(
+        let resolved = try #require(ModelScanner.resolveEnvironmentCache(
             environment: ["HF_HOME": missing.path, "XDG_CACHE_HOME": home.path],
-            homeDirectory: home, configuredDirectory: home.path)
+            homeDirectory: home))
 
         #expect(resolved.url.path == missing.path + "/hub")
         #expect(resolved.environmentKey == "HF_HOME")
@@ -310,8 +307,7 @@ struct CacheDirectoryResolutionTests {
     // MARK: - Hostile / malformed values
 
     /// `~user` must not silently become a CWD-relative literal directory named
-    /// "~user" -- that path differs between the operator's shell and the
-    /// launchd daemon (cwd `/`).
+    /// "~user".
     @Test("a ~user path expands against the user's home directory")
     func tildeUserDoesNotBecomeRelative() throws {
         let username = NSUserName()
@@ -327,15 +323,16 @@ struct CacheDirectoryResolutionTests {
         let home = try fakeHome()
         let raw = "~nosuchuser-\(UUID().uuidString)/x"
 
-        let resolved = ModelScanner.defaultCacheDirectory(
-            environment: ["HF_HOME": raw],
-            homeDirectory: home
-        )
-
-        #expect(resolved?.path == home.appendingPathComponent(".cache/huggingface/hub").path)
+        #expect(ModelScanner.resolveEnvironmentCache(
+            environment: ["HF_HOME": raw], homeDirectory: home) == nil)
+        let next = ModelScanner.resolveEnvironmentCache(
+            environment: ["HF_HUB_CACHE": raw, "HF_HOME": home.path], homeDirectory: home)
+        #expect(next?.url.path == home.path + "/hub")
+        #expect(next?.environmentKey == "HF_HOME")
         #expect(ModelScanner.normalizedCacheDirectory(raw, homeDirectory: home) == nil)
-        #expect(ModelScanner.resolveCache(
-            environment: [:], homeDirectory: home, configuredDirectory: raw).isConfigured == false)
+        let fallback = ModelScanner.resolveCache(homeDirectory: home, configuredDirectory: raw)
+        #expect(fallback.url.path == home.path + "/.cache/huggingface/hub")
+        #expect(!fallback.isConfigured)
     }
 
     @Test("paths at component and total byte limits are never silently truncated",
@@ -343,44 +340,39 @@ struct CacheDirectoryResolutionTests {
     func overLongPathNotTruncated(length: Int) throws {
         let raw = "/" + String(repeating: "a", count: length - 1)
         let resolved = ModelScanner.resolveCache(
-            environment: ["HF_HUB_CACHE": raw], homeDirectory: try fakeHome())
+            homeDirectory: try fakeHome(), configuredDirectory: raw)
         #expect(resolved.url.path == raw)
-        #expect(resolved.environmentKey == "HF_HUB_CACHE")
+        #expect(resolved.isConfigured)
     }
 
     @Test("path limits count UTF-8 bytes, without splitting non-ASCII characters")
     func multibytePathNotTruncated() throws {
         let raw = "/" + String(repeating: "é", count: 600)
         let resolved = ModelScanner.resolveCache(
-            environment: ["HF_HUB_CACHE": raw], homeDirectory: try fakeHome())
+            homeDirectory: try fakeHome(), configuredDirectory: raw)
         #expect(resolved.url.path == raw)
     }
 
-    // MARK: - Absolutising for the launchd daemon
+    // MARK: - Relative paths and model lookup
 
-    /// launchd starts jobs with cwd `/` while the installing shell has its own
-    /// cwd, so a relative value must be made absolute before it is persisted
-    /// into the plist -- otherwise CLI and daemon resolve different caches.
-    @Test("a relative cache path is made absolute against the shell's cwd")
-    func relativePathAbsolutisedForDaemon() throws {
+    @Test("a relative cache path is made absolute against its supplied base")
+    func relativePathMadeAbsolute() throws {
         let base = try makeDir("cwd")
 
-        let out = ModelScanner.absoluteCachePathValue("models/hf", relativeTo: base)
+        let out = ModelScanner.normalizedCacheDirectory("models/hf", relativeTo: base)
 
-        #expect(out == base.appendingPathComponent("models/hf").path)
-        #expect(out?.hasPrefix("/") == true)
+        #expect(out?.path == base.appendingPathComponent("models/hf").path)
     }
 
     /// A round trip: place a snapshot at the downloader's destination and
     /// confirm discovery finds it. Locks the two sides against drifting apart.
-    @Test("a model written to cacheModelDirectory is found by resolveLocalPath")
-    func downloadDestinationIsDiscoverable() throws {
-        let hfHome = try makeDir("hfhome-roundtrip")
-        let env = ["HF_HOME": hfHome.path]
+    @Test("models written to the default or saved cache are discoverable", arguments: [false, true])
+    func downloadDestinationIsDiscoverable(useSavedCache: Bool) throws {
+        let saved = useSavedCache ? try makeDir("saved-roundtrip").path : nil
         let home = try fakeHome()
 
         let modelDir = ModelScanner.cacheModelDirectory(
-            for: "acme/Round-Trip", environment: env, homeDirectory: home
+            for: "acme/Round-Trip", homeDirectory: home, configuredDirectory: saved
         )
         let snapshot = modelDir.appendingPathComponent("snapshots/local", isDirectory: true)
         try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
@@ -388,8 +380,9 @@ struct CacheDirectoryResolutionTests {
 
         let found = ModelScanner.resolveLocalPath(
             modelID: "acme/Round-Trip",
-            environment: env,
-            homeDirectory: home
+            environment: [:],
+            homeDirectory: home,
+            configuredDirectory: saved
         )
 
         #expect(found?.path == snapshot.path)
@@ -411,13 +404,11 @@ struct CacheDirectoryResolutionTests {
             parent.appendingPathComponent("missing", isDirectory: true)) == false)
     }
 
-    // MARK: - Snapshot resolution reads through the override
+    // MARK: - Snapshot layout
 
-    /// The org-less fallback branch built `models--{id}` inline; for an id
-    /// containing a slash that yields a NESTED path (`models--org/name`)
-    /// rather than the flattened cache directory name.
-    @Test("the org-less fallback branch never builds a nested path")
-    func orgLessBranchFlattensSlash() throws {
+    /// A model ID's slash becomes `--`, not another directory level.
+    @Test("model lookup rejects a nested org/name cache directory")
+    func nestedModelDirectoryIsNotDiscovered() throws {
         let hfHome = try makeDir("hfhome-orgless")
         // A directory laid out with an unflattened slash is not a model cache.
         let nested = hfHome.appendingPathComponent(
@@ -426,8 +417,9 @@ struct CacheDirectoryResolutionTests {
 
         let found = ModelScanner.resolveLocalPath(
             modelID: "acme/Slashed",
-            environment: ["HF_HOME": hfHome.path],
-            homeDirectory: try fakeHome()
+            environment: [:],
+            homeDirectory: try fakeHome(),
+            configuredDirectory: hfHome.appendingPathComponent("hub").path
         )
 
         #expect(found == nil)

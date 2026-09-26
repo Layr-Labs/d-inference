@@ -96,8 +96,7 @@ struct DoctorChecksTests {
         try "not a directory".write(to: file, atomically: true, encoding: .utf8)
 
         let check = hfCacheCheck(
-            environment: [ModelScanner.hfHubCacheEnvKey: file.path],
-            homeDirectory: base
+            homeDirectory: base, configuredDirectory: file.path
         )
         // A plain fileExists() check called this PASS while the scanner found
         // nothing.
@@ -111,14 +110,12 @@ struct DoctorChecksTests {
             .appendingPathComponent("doctor-missing-\(UUID().uuidString)", isDirectory: true)
 
         let check = hfCacheCheck(
-            environment: [ModelScanner.hfHomeEnvKey: base.path],
-            homeDirectory: base
+            homeDirectory: base, configuredDirectory: base.appendingPathComponent("hub").path
         )
         #expect(check.status == .warn)
     }
 
-    /// The upgrade hazard: an operator who exported HF_HOME for other tooling
-    /// would silently advertise zero models.
+    /// Selecting an empty cache must warn when the old cache still holds models.
     @Test("hfCacheCheck warns when the redirected cache is empty but home is not")
     func hfCacheCheckEmptyRedirect() throws {
         let root = FileManager.default.temporaryDirectory
@@ -134,28 +131,23 @@ struct DoctorChecksTests {
         defer { try? fm.removeItem(at: root) }
 
         let check = hfCacheCheck(
-            environment: [ModelScanner.hfHomeEnvKey: redirected.path],
-            homeDirectory: home
+            homeDirectory: home, configuredDirectory: redirected.appendingPathComponent("hub").path
         )
         #expect(check.status == .warn)
-        let saved = hfCacheCheck(environment: [:], homeDirectory: home,
-                                 configuredDirectory: redirected.appendingPathComponent("hub").path)
-        #expect(saved.status == .warn)
 
         // An empty download directory does not make the cache healthy.
         let modelDir = redirected.appendingPathComponent("hub/models--acme--Other")
         try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
-        #expect(hfCacheCheck(environment: [ModelScanner.hfHomeEnvKey: redirected.path],
-                             homeDirectory: home).status == .warn)
+        #expect(hfCacheCheck(homeDirectory: home,
+                            configuredDirectory: redirected.appendingPathComponent("hub").path).status == .warn)
         try makeCachedModel(at: modelDir.appendingPathComponent("snapshots/local"))
         let ok = hfCacheCheck(
-            environment: [ModelScanner.hfHomeEnvKey: redirected.path],
-            homeDirectory: home
+            homeDirectory: home, configuredDirectory: redirected.appendingPathComponent("hub").path
         )
         #expect(ok.status == .pass)
     }
 
-    @Test("hfCacheCheck passes on the default cache with no env override")
+    @Test("hfCacheCheck passes on the legacy default cache")
     func hfCacheCheckDefault() throws {
         let home = FileManager.default.temporaryDirectory
             .resolvingSymlinksInPath()
@@ -165,7 +157,7 @@ struct DoctorChecksTests {
             withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
 
-        let check = hfCacheCheck(environment: [:], homeDirectory: home)
+        let check = hfCacheCheck(homeDirectory: home)
         #expect(check.status == .pass)
     }
 

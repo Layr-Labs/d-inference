@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-26 · commit `0692c0f82`
+> Last updated: 2026-09-26 · commit `0ce33cee2`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -193,13 +193,13 @@ Use [`darkbloom models location`](cli-reference.md#darkbloom-models-location) to
 or choose an existing directory, including one on an external volume. Empty
 directories are valid for future downloads; the command never moves existing
 weights. `--check` lists discovered MLX model IDs without claiming integrity or
-network eligibility. Standard Hugging Face environment variables override the
-saved directory; the CLI and `doctor` report the effective source.
+network eligibility. Existing providers keep their legacy cache until a location
+is explicitly saved; ambient Hugging Face/XDG variables never override it.
+`--from-env` is an explicit one-time import that pins the resolved directory.
 
-After changing a saved location or the shell's cache variables, use
-`darkbloom stop && darkbloom start` to refresh the background provider. Mount
-external volumes before starting it; a missing selected cache does not fall
-back to a different directory.
+After saving a location, use `darkbloom restart` (or `darkbloom start` if stopped)
+to apply it. Mount external volumes first; a missing selected cache does not fall
+back to another directory. No automatic weight movement or restart occurs.
 
 Plan disk space per model from the catalog output of `darkbloom models catalog`.
 Logs and telemetry are small; the bundle plus `mlx.metallib` is roughly 200 MB.

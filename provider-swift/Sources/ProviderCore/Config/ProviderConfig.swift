@@ -139,7 +139,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
 public struct BackendSettings: Sendable, Equatable, Codable {
     public var port: UInt16
     public var model: String?
-    /// Saved HuggingFace hub directory; standard HuggingFace environment variables override it.
+    /// Explicitly selected HuggingFace hub directory; unset preserves the legacy home cache.
     public var modelCacheDirectory: String?
     /// Which models to advertise to the network. If empty, all downloaded models
     /// are advertised. If set, only these models are offered.

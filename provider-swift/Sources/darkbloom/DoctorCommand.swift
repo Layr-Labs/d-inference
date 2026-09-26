@@ -249,11 +249,8 @@ func buildDoctorChecks(
         detail: snapshot.configFileExists ? "loaded" : "missing, defaults are in memory only"
     ))
 
-    // Name the source when an env var redirects the cache: "not found" against
-    // an unexpected path is otherwise a confusing diagnosis for an operator who
-    // has weights on an external volume.
+    // Diagnose the saved location or unchanged legacy cache, never ambient HF variables.
     checks.append(hfCacheCheck(
-        environment: ProcessInfo.processInfo.environment,
         configuredDirectory: snapshot.configuredModelCacheDirectory))
 
     checks.append(.init(

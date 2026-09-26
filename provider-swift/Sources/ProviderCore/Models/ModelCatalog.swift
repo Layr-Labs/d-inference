@@ -10,8 +10,8 @@
 /// fallback (the coordinator never fronts model
 /// weights). The model lives in the standard HuggingFace cache layout
 /// at `{hf-cache}/models--{org}--{name}/snapshots/{hash}/`. The shared
-/// `ModelScanner.cacheDirectory` resolver selects the environment override,
-/// saved configuration, or home default for discovery and downloads alike.
+/// `ModelScanner.cacheDirectory` resolver selects the explicitly saved location
+/// or the unchanged home default for discovery and downloads alike.
 
 import Foundation
 

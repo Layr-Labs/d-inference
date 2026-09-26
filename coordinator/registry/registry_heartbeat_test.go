@@ -71,7 +71,7 @@ func TestHeartbeat(t *testing.T) {
 
 // TestHeartbeatAccumulatesUptime is the integration regression: the
 // heartbeat handler credits the wall-clock gap since the previous heartbeat as
-// uptime (bounded), so an always-online provider's reputation can exceed 0.85.
+// bounded uptime for the provider dashboard.
 // This test fails without the Heartbeat inventory update.
 func TestHeartbeatAccumulatesUptime(t *testing.T) {
 	reg := New(testLogger())
@@ -104,19 +104,6 @@ func TestHeartbeatAccumulatesUptime(t *testing.T) {
 	p.mu.Unlock()
 	if jump := after - before; jump > time.Minute {
 		t.Fatalf("oversized offline gap credited %v of uptime, want it skipped", jump)
-	}
-
-	// After enough accumulated uptime + a perfect record, the score must clear
-	// the old 0.85 cap.
-	p.mu.Lock()
-	p.Reputation.RecordUptime(24 * time.Hour)
-	p.Reputation.RecordJobSuccess()
-	p.Reputation.RecordLatency(300 * time.Millisecond)
-	p.Reputation.RecordChallengePass()
-	score := p.Reputation.Score()
-	p.mu.Unlock()
-	if score <= 0.85 {
-		t.Fatalf("score = %f, want > 0.85 after accumulated uptime", score)
 	}
 }
 

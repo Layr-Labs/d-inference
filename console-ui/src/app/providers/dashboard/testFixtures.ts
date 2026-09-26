@@ -5,7 +5,6 @@ import type { MyProvider, MyReputation, MyHardware } from "../types";
 
 export function makeReputation(overrides: Partial<MyReputation> = {}): MyReputation {
   return {
-    score: 0.92,
     total_jobs: 120,
     successful_jobs: 118,
     failed_jobs: 2,

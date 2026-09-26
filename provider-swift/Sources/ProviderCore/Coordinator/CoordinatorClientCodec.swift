@@ -230,8 +230,8 @@ public enum CoordinatorClientCodec {
                 toolConstraintProtocol: 1,
                 toolConstraintModels: toolConstraintModelIDs(models)))
 
-        case .modelsReplaceReady(let requestId, let drainID):
-            return .modelsReplaceReady(.init(requestId: requestId, drainRequestId: drainID))
+        case .modelsReplaceReady(let requestId, let drainID, let capacitySeq):
+            return .modelsReplaceReady(.init(requestId: requestId, drainRequestId: drainID, capacitySeq: capacitySeq))
 
         case .prefixCacheLookup(
             let requestId, let nonce, let outcome, let tier,

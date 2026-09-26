@@ -8,6 +8,12 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
+func markReplacementCapacityFresh(p *Provider) {
+	p.mu.Lock()
+	p.drainReplacementAppliedSeq = 1
+	p.mu.Unlock()
+}
+
 func TestReplaceProviderModelsRejectsAtomicallyAndCanResumeOldSet(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -44,7 +50,8 @@ func TestReplaceProviderModelsRejectsAtomicallyAndCanResumeOldSet(t *testing.T) 
 			if err != nil || !r.ProviderDraining(p.ID) || !r.ConfirmProviderModelsReceipt(p, "rollback", receipt) {
 				t.Fatalf("old inventory could not confirm receipt: %v", err)
 			}
-			_, _, resumed := r.ResumeProviderModels(p, "rollback", "drain")
+			markReplacementCapacityFresh(p)
+			_, _, resumed := r.ResumeProviderModels(p, "rollback", "drain", 1)
 			if !resumed || r.ProviderDraining(p.ID) {
 				t.Fatalf("old inventory could not resume: %v", err)
 			}
@@ -90,7 +97,8 @@ func TestReplaceProviderModelsAllowsOwnerOnlyOffCatalogInventory(t *testing.T) {
 			if err != nil || !r.ProviderDraining(p.ID) || !r.ConfirmProviderModelsReceipt(p, msg.RequestID, receipt) {
 				t.Fatalf("off-catalog replacement rejected or resumed before its receipt: %v", err)
 			}
-			_, _, resumed := r.ResumeProviderModels(p, msg.RequestID, msg.DrainRequestID)
+			markReplacementCapacityFresh(p)
+			_, _, resumed := r.ResumeProviderModels(p, msg.RequestID, msg.DrainRequestID, 1)
 			if !resumed {
 				t.Fatal("off-catalog replacement did not resume after provider readiness")
 			}
@@ -196,7 +204,8 @@ func TestReplaceProviderModelsPreservesSessionAndRemovesRoutingState(t *testing.
 	if !r.ProviderDraining(p.ID) || !r.ConfirmProviderModelsReceipt(p, "replace", receipt) {
 		t.Fatal("replacement must remain fenced until the exact receipt is written")
 	}
-	_, _, resumed := r.ResumeProviderModels(p, "replace", "drain")
+	markReplacementCapacityFresh(p)
+	_, _, resumed := r.ResumeProviderModels(p, "replace", "drain", 1)
 	if !resumed {
 		t.Fatal("replacement did not resume after provider readiness")
 	}

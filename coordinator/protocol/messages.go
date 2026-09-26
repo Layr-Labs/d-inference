@@ -872,6 +872,7 @@ type ModelsReplaceReadyMessage struct {
 	Type           string `json:"type"`
 	RequestID      string `json:"request_id"`
 	DrainRequestID string `json:"drain_request_id"`
+	CapacitySeq    uint64 `json:"capacity_seq"`
 }
 
 // PrefetchModelStatusMessage is the provider's progress/terminal reply to a

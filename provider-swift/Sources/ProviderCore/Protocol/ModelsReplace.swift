@@ -4,15 +4,18 @@ extension ProviderMessage {
     public struct ModelsReplaceReady: Codable, Sendable, Equatable {
         public var requestId: String
         public var drainRequestId: String
+        public var capacitySeq: UInt64
 
-        public init(requestId: String, drainRequestId: String) {
+        public init(requestId: String, drainRequestId: String, capacitySeq: UInt64) {
             self.requestId = requestId
             self.drainRequestId = drainRequestId
+            self.capacitySeq = capacitySeq
         }
 
         enum CodingKeys: String, CodingKey {
             case requestId = "request_id"
             case drainRequestId = "drain_request_id"
+            case capacitySeq = "capacity_seq"
         }
     }
 

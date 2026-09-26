@@ -23,7 +23,8 @@ struct ScheduledWindowSelection {
         resolveModels: ([String], Set<ProviderRuntimeCapability>) throws -> [ModelInfo] = {
             try ProviderModelSwitchValidation.scan($0, capabilities: $1)
         },
-        resolveLocalPath: (String) -> URL? = { ModelScanner.resolveLocalPath(modelID: $0) }
+        resolveLocalPath: (String) -> URL? = { ModelScanner.resolveLocalPath(modelID: $0) },
+        scanLocalModels: (HardwareInfo) -> [ModelInfo] = { ModelScanner.scanAllModels(hardwareInfo: $0) }
     ) throws -> ProviderLoopConfig {
         guard hasOpenedWindow else {
             hasOpenedWindow = true
@@ -37,17 +38,23 @@ struct ScheduledWindowSelection {
         hasSeenConfigFile = true
         usesSavedSelection = usesSavedSelection || saved != startup.config.backend.enabledModels
         guard usesSavedSelection else { return startup }
+        // Empty enabled_models means every eligible local model at normal start.
+        // Re-resolve that set for each scheduled window as local artifacts change.
+        let selectedIDs = saved.isEmpty
+            ? try Switch.selectModels(requested: [], local: scanLocalModels(startup.hardware),
+                capabilities: startup.runtimeCapabilities)
+            : saved
 
         // Capture BEFORE scan's weight hashing, as in attachWeightHashes. A
         // concurrent file change must force re-hashing, never bless stale bytes.
         var fingerprints: [String: String] = [:]
-        for id in saved {
+        for id in selectedIDs {
             if let snapshot = resolveLocalPath(id),
                 let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: snapshot) {
                 fingerprints[id] = fingerprint
             }
         }
-        let models = try resolveModels(saved, startup.runtimeCapabilities)
+        let models = try resolveModels(selectedIDs, startup.runtimeCapabilities)
         let hashes = Dictionary(uniqueKeysWithValues: models.compactMap { model in
             model.weightHash.map { (model.id, $0) }
         })
@@ -68,4 +75,3 @@ struct ScheduledWindowSelection {
         )
     }
 }
-

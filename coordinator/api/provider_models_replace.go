@@ -32,7 +32,16 @@ func (s *Server) handleModelsReplace(ctx context.Context, provider *registry.Pro
 }
 
 func (s *Server) handleModelsReplaceReady(provider *registry.Provider, msg *protocol.ModelsReplaceReadyMessage) {
-	added, removed, resumed := s.registry.ResumeProviderModels(provider, msg.RequestID, msg.DrainRequestID)
+	added, removed, resumed := s.registry.ResumeProviderModels(provider, msg.RequestID, msg.DrainRequestID, msg.CapacitySeq)
+	s.finishModelsReplaceReady(provider, added, removed, resumed)
+}
+
+func (s *Server) handleModelsReplaceHeartbeat(provider *registry.Provider) {
+	added, removed, resumed := s.registry.ResumeProviderModelsAfterHeartbeat(provider)
+	s.finishModelsReplaceReady(provider, added, removed, resumed)
+}
+
+func (s *Server) finishModelsReplaceReady(provider *registry.Provider, added, removed []string, resumed bool) {
 	if !resumed {
 		return
 	}

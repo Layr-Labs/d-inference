@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `e467eff8d`
+> Last updated: 2026-09-26 · commit `7c8fc8f1e`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -174,11 +174,16 @@ Sources: `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`),
 After provider readiness, the coordinator refreshes desired alias builds
 for the current inventory; the provider preserves snapshots received during the
 commit wait and resumes convergence after reopening admission.
+The provider publishes refreshed capacity immediately after reopening local
+admission; the ready frame names that heartbeat's `capacity_seq`. The coordinator
+waits for the matching sequence and ready frame before routing queued work.
 
 Scheduled serving keeps the initial foreground selection, including manual
 `--model` overrides, until a live switch or a change to `backend.enabled_models`
-on disk. Each later window reads that selection from the same resolved config path and validates
-and hashes exactly those models before reopening; an invalid selection fails
+on disk. Each later window reads that selection from the same resolved config path.
+An empty saved list selects all eligible local models found for that window;
+explicit IDs select only those models. The provider validates and hashes the
+result before reopening; an invalid selection fails
 instead of reverting to startup models. Other provider settings, runtime
 identity/capabilities and local endpoint options remain frozen for the process
 (`ScheduledWindowSelection` in `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift`;

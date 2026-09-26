@@ -341,6 +341,7 @@ struct ProviderModelSwitchTests {
             processor: SwitchSlotProcessor(), tokenizer: tokenizer))
         await loop.installModelSlotForTesting(modelId: "old-model", container: container,
             tokenizer: TokenizerHandle(tokenizer), engineV2: resident.bridge)
+        await loop.updateAggregateCapacity()
         defer { Task { await loop.removeModelSlotForTesting(modelId: "old-model"); await resident.bridge.shutdown() } }
         let client = CoordinatorClient(config: .init(url: url.mockProviderWebSocketURL(),
             hardware: switchHardware(), models: [switchModel("old-model")], backendName: "mlx-swift",
@@ -372,9 +373,15 @@ struct ProviderModelSwitchTests {
             let replacementID = try await loop.commitModelSelection(.init(models: [switchModel("new-model")], fingerprints: [:]), drainID: barrier)
             #expect(mock.snapshot().modelsReplacementReadiness.isEmpty)
             await loop.resumeAfterModelSwitch(requestID: replacementID, drainID: barrier)
-            let ready = try #require(try await mock.waitForSnapshot { $0.modelsReplacementReadiness.count == 1 })
+            let ready = try #require(try await mock.waitForSnapshot { snapshot in
+                guard let sequence = snapshot.modelsReplacementReadiness.first?.capacitySeq else { return false }
+                return snapshot.heartbeats.contains { $0.backendCapacity?.capacitySeq == sequence }
+            })
             #expect(ready.modelsReplacementReadiness[0].requestId == ready.modelsReplacements.last?.requestId)
             #expect(ready.modelsReplacementReadiness[0].drainRequestId == barrier)
+            let publishedSeq = ready.modelsReplacementReadiness[0].capacitySeq
+            #expect(publishedSeq > 0)
+            #expect(ready.heartbeats.contains { $0.backendCapacity?.capacitySeq == publishedSeq })
         }
         let expected = reject ? ["old-model"] : ["new-model"]
         #expect(await loop.advertisedLocalModelIds() == expected)

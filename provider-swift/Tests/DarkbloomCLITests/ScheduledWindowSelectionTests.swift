@@ -124,6 +124,36 @@ struct ScheduledWindowSelectionTests {
         #expect(next.models.map(\.id) == ["fixture/b"])
     }
 
+    @Test func emptySavedSelectionUsesEveryEligibleLocalModelInEachWindow() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("provider.toml")
+        var paths = ["fixture/a": try snapshot(in: directory, id: "fixture/a"),
+                     "fixture/b": try snapshot(in: directory, id: "fixture/b")]
+        var config = ProviderConfig(provider: ProviderSettings(name: "all-models"))
+        config.backend.enabledModels = ["fixture/a"]
+        try ConfigManager.save(config, to: path)
+        var selection = ScheduledWindowSelection(
+            startup: startup(config: config, path: path, model: "manual-argv"), configFileExists: true)
+        #expect(try selection.nextWindowConfiguration().models.map(\.id) == ["manual-argv"])
+        try ProviderModelSelection.save([], configPath: path, fallbackConfig: config)
+
+        func next() throws -> ProviderLoopConfig {
+            try selection.nextWindowConfiguration(
+                resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: paths) },
+                resolveLocalPath: { paths[$0] },
+                scanLocalModels: { _ in ModelScanner.scanAllModels(in: directory, environment: [:]) })
+        }
+        let second = try next()
+        #expect(second.models.map(\.id) == ["fixture/a", "fixture/b"])
+        #expect(second.config.backend.enabledModels.isEmpty)
+        #expect(Set(second.modelHashes.keys) == ["fixture/a", "fixture/b"])
+        paths["fixture/c"] = try snapshot(in: directory, id: "fixture/c")
+        let third = try next()
+        #expect(third.models.map(\.id) == ["fixture/a", "fixture/b", "fixture/c"])
+        #expect(third.config.backend.enabledModels.isEmpty)
+    }
+
     @Test func manualOverrideSurvivesUntilDurableSelectionChangesAndNeverReturnsAfterward() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -164,7 +194,9 @@ struct ScheduledWindowSelectionTests {
         try ProviderModelSelection.save(["missing-\(UUID().uuidString)"], configPath: path, fallbackConfig: config)
         #expect(throws: (any Error).self) { _ = try selection.nextWindowConfiguration() }
         try ProviderModelSelection.save([], configPath: path, fallbackConfig: config)
-        #expect(throws: (any Error).self) { _ = try selection.nextWindowConfiguration() }
+        #expect(throws: (any Error).self) {
+            _ = try selection.nextWindowConfiguration(scanLocalModels: { _ in [] })
+        }
         try "[backend]\nenabled_models = 42\n".write(to: path, atomically: true, encoding: .utf8)
         #expect(throws: (any Error).self) { _ = try selection.nextWindowConfiguration() }
         try FileManager.default.removeItem(at: path)

@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-26 · commit `e467eff8d`
+> Last updated: 2026-09-26 · commit `7c8fc8f1e`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -22,16 +22,21 @@ work retains its model pin until terminal completion. See
 [the routing boundary](routing.md#provider-lifecycle-drain-boundary).
 
 A live inventory replacement remains fenced until its committed receipt reaches
-the wire and the provider sends matching `models_replace_ready` after reopening
-local admission (`ResumeProviderModels`, `coordinator/registry/provider_models_replace.go`).
-Only then does the API reconcile queues and force a current `desired_models`
+the wire, the provider sends matching `models_replace_ready` after reopening
+local admission, and an accepted serving heartbeat refreshes `BackendCapacity`
+at the ready frame's `capacity_seq` or later
+(`ResumeProviderModels`, `coordinator/registry/provider_models_replace.go`).
+Readiness and the heartbeat may arrive in either order; earlier sequence numbers,
+draining status, and missing capacity do not release the fence. Only then does
+the API reconcile queues and force a current `desired_models`
 snapshot through `RefreshDesiredModels` in `coordinator/registry/model_commands.go`.
 That refresh bypasses per-connection delivery deduplication, retains the existing
 capability/version guards and retired-alias lineage, and emits an empty snapshot
 when deselected aliases no longer apply. The provider preserves a snapshot that
 arrives while its commit is awaiting acknowledgement and resumes convergence
 after reopening admission. A failed receipt write or missing readiness neither
-resumes routing nor dispatches queued work (`handleModelsReplace`,
+resumes routing nor dispatches queued work. Removed-model queue cleanup persists
+through a reconciliation drain until routing resumes or disconnect (`handleModelsReplace`,
 `handleModelsReplaceReady`, `coordinator/api/provider_models_replace.go`).
 
 

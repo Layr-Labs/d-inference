@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-26 · commit `e467eff8d`
+> Last updated: 2026-09-26 · commit `7c8fc8f1e`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -565,7 +565,7 @@ merge semantics.
 |---|---|---|
 | `models_replace` | `request_id`, `drain_request_id`, nonempty `models`; optional `validate_only` (Bool, omitted means false), `tool_constraint_protocol`, `tool_constraint_models` | `coordinator/protocol/messages.go` (`ModelsReplaceMessage`); Swift `provider-swift/Sources/ProviderCore/Protocol/ModelsReplace.swift` (`ModelsReplace`) |
 | `models_replace_ack` | matching `request_id`, `drain_request_id`, and echoed `validate_only` (Bool, always present), `accepted`; optional `error` | `coordinator/protocol/messages.go` (`ModelsReplaceAckMessage`); Swift `ModelsReplaceAck` |
-| `models_replace_ready` | matching `request_id`, `drain_request_id` after the provider opens local admission | `coordinator/protocol/messages.go` (`ModelsReplaceReadyMessage`); Swift `ModelsReplaceReady` |
+| `models_replace_ready` | matching `request_id`, `drain_request_id`, and nonzero `capacity_seq` stamped after the provider opens local admission | `coordinator/protocol/messages.go` (`ModelsReplaceReadyMessage`); Swift `ModelsReplaceReady` |
 
 `request_id` is nonempty and at most 64 bytes. `drain_request_id` must name the
 latest committed **and settled** `provider_drain` on this exact live connection.
@@ -598,10 +598,16 @@ template, and cache evidence; tool capabilities become the complete new allowlis
 Routing indexes reflect the new set immediately, but admission stays fenced until
 the accepted committing acknowledgement is successfully written and the provider
 reopens its own admission. It then sends `models_replace_ready` on the same
-connection; the coordinator checks its request and drain IDs against the current
-committed replacement before resuming routing. A failed write or missing readiness
+connection and emits a refreshed capacity heartbeat. The coordinator checks
+the ready frame's request and drain IDs, then waits for an accepted `idle` or
+`serving` heartbeat with `backend_capacity.capacity_seq` at least as new as the
+nonzero sequence in readiness before resuming routing; either message may arrive
+first. Earlier or stale `capacity_seq`, draining status, and omitted
+capacity cannot release the fence. A failed write or missing readiness
 does not dispatch or reject queued work and does not force a reconnect. A later
-drain or another session cannot be reopened by stale readiness. After resume the
+drain or another session cannot be reopened by stale readiness. Removed-model
+queue cleanup survives a later same-session reconciliation drain and is consumed
+only when routing resumes or the session disconnects. After resume the
 coordinator sends a fresh `desired_models` snapshot
 for the replaced inventory, bypassing its prior-snapshot deduplication, then
 reconciles queues including requests for removed models. A drain remains reusable

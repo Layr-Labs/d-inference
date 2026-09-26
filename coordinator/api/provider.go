@@ -698,7 +698,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
-			s.applyProviderHeartbeat(providerID, provider, hbMsg)
+			if s.applyProviderHeartbeat(providerID, provider, hbMsg) {
+				s.handleModelsReplaceHeartbeat(provider)
+			}
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)

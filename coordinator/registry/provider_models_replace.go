@@ -133,8 +133,24 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 	p.drainReady = false
 	p.drainReplacementPending = true
 	p.drainReplacementAcked = false
+	p.drainReplacementReadySeq = 0
+	p.drainReplacementAppliedSeq = 0
 	p.drainReplacementID = msg.RequestID
-	p.drainRemovedModels = append([]string(nil), removed...)
+	// A failed receipt can be reconciled on this session after another drain.
+	// Retain removals from every unconfirmed replacement, except IDs restored
+	// by the final selection. Otherwise their queued requests wait for timeout.
+	pendingRemoved := make([]string, 0, len(p.drainRemovedModels)+len(removed))
+	seenRemoved := make(map[string]struct{}, len(p.drainRemovedModels)+len(removed))
+	for _, id := range append(append([]string(nil), p.drainRemovedModels...), removed...) {
+		if _, restored := selected[id]; restored {
+			continue
+		}
+		if _, seen := seenRemoved[id]; !seen {
+			seenRemoved[id] = struct{}{}
+			pendingRemoved = append(pendingRemoved, id)
+		}
+	}
+	p.drainRemovedModels = pendingRemoved
 	return added, removed, p.drainGeneration, nil
 }
 
@@ -155,10 +171,10 @@ func (r *Registry) ConfirmProviderModelsReceipt(p *Provider, requestID string, g
 	return true
 }
 
-// ResumeProviderModels opens admission only after the matching provider has
-// reopened its own admission. A stale readiness frame cannot resume a newer
-// drain, another replacement, or a replacement whose receipt failed to write.
-func (r *Registry) ResumeProviderModels(p *Provider, requestID, drainRequestID string) (added, removed []string, resumed bool) {
+// ResumeProviderModels records matching local readiness. Routing opens only
+// after an accepted serving heartbeat has replaced the pre-switch capacity.
+// A stale readiness frame cannot resume a newer drain or another session.
+func (r *Registry) ResumeProviderModels(p *Provider, requestID, drainRequestID string, capacitySeq uint64) (added, removed []string, resumed bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if p == nil || r.providers[p.ID] != p {
@@ -167,7 +183,33 @@ func (r *Registry) ResumeProviderModels(p *Provider, requestID, drainRequestID s
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.drainCommitted || !p.drainReplacementPending || !p.drainReplacementAcked ||
-		p.drainReplacementID != requestID || p.drainRequestID != drainRequestID {
+		p.drainReplacementID != requestID || p.drainRequestID != drainRequestID || capacitySeq == 0 {
+		return nil, nil, false
+	}
+	if capacitySeq > p.drainReplacementReadySeq {
+		p.drainReplacementReadySeq = capacitySeq
+	}
+	return p.resumeProviderModelsIfReadyLocked()
+}
+
+// ResumeProviderModelsAfterHeartbeat completes a replacement whose readiness
+// arrived before its refreshed capacity heartbeat. Heartbeat marked freshness
+// under p.mu only after applying an ordered, serving capacity snapshot.
+func (r *Registry) ResumeProviderModelsAfterHeartbeat(p *Provider) (added, removed []string, resumed bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if p == nil || r.providers[p.ID] != p {
+		return nil, nil, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.resumeProviderModelsIfReadyLocked()
+}
+
+// Caller holds p.mu and the registry read lock.
+func (p *Provider) resumeProviderModelsIfReadyLocked() (added, removed []string, resumed bool) {
+	if !p.drainCommitted || !p.drainReplacementPending || !p.drainReplacementAcked ||
+		p.drainReplacementReadySeq == 0 || p.drainReplacementAppliedSeq < p.drainReplacementReadySeq {
 		return nil, nil, false
 	}
 	for _, model := range p.Models {
@@ -177,6 +219,8 @@ func (r *Registry) ResumeProviderModels(p *Provider, requestID, drainRequestID s
 	p.drainCommitted = false
 	p.drainReplacementPending = false
 	p.drainReplacementAcked = false
+	p.drainReplacementReadySeq = 0
+	p.drainReplacementAppliedSeq = 0
 	p.drainReplacementID = ""
 	p.drainRemovedModels = nil
 	p.drainRequestID = ""

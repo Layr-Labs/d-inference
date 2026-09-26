@@ -53,7 +53,9 @@ extension ProviderLoop {
                 }
                 discardObsoleteModelPrefetches()
                 let rollbackID = try await client.replaceModelsAfterDrain(previous.models, drainID: drainID, timeout: .seconds(30))
-                await resumeAfterModelSwitch(requestID: rollbackID, drainID: drainID)
+                guard await resumeAfterModelSwitch(requestID: rollbackID, drainID: drainID) else {
+                    throw ModelSelectionFailure("Previous selection was restored locally, but refreshed coordinator capacity was not confirmed.")
+                }
             } catch let rollbackError {
                 throw ModelSelectionFailure("Switch failed: \(error). Restoring the previous selection is unconfirmed: \(rollbackError).")
             }

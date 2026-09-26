@@ -307,6 +307,8 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 		p.drainReady = false
 		p.drainReplacementPending = false
 		p.drainReplacementAcked = false
+		p.drainReplacementReadySeq = 0
+		p.drainReplacementAppliedSeq = 0
 		p.drainReplacementID = ""
 		p.drainRemovedModels = nil
 		p.drainRequestID = ""

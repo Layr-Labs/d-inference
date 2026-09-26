@@ -123,12 +123,27 @@ func TestProviderModelsReplaceUsesSameDrainedConnection(t *testing.T) {
 				t.Fatal("commit receipt dispatched queued work before provider readiness")
 			}
 			ready, err := json.Marshal(protocol.ModelsReplaceReadyMessage{
-				Type: protocol.TypeModelsReplaceReady, RequestID: tc.id, DrainRequestID: tc.drain,
+				Type: protocol.TypeModelsReplaceReady, RequestID: tc.id, DrainRequestID: tc.drain, CapacitySeq: 1,
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if err := conn.Write(ctx, websocket.MessageText, ready); err != nil {
+				t.Fatal(err)
+			}
+			free := 24.0
+			heartbeat, err := json.Marshal(protocol.HeartbeatMessage{
+				Type: protocol.TypeHeartbeat, Status: "idle",
+				BackendCapacity: &protocol.BackendCapacity{
+					CapacitySeq:   1,
+					FreeForLoadGB: &free,
+					Slots:         []protocol.BackendSlotCapacity{{Model: "new", State: "idle"}},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.Write(ctx, websocket.MessageText, heartbeat); err != nil {
 				t.Fatal(err)
 			}
 			select {

@@ -77,7 +77,9 @@ extension ProviderLoop {
             setModelSwitchPhase(.switching)
             let replacementID = try await commitModelSelection(selection, drainID: drainID)
             try checkModelSwitchOwnership()
-            await resumeAfterModelSwitch(requestID: replacementID, drainID: drainID)
+            guard await resumeAfterModelSwitch(requestID: replacementID, drainID: drainID) else {
+                throw ModelSelectionFailure("Refreshed coordinator capacity was not confirmed after the switch.")
+            }
             guard servingDrain.owner == nil, !isShuttingDown, !Task.isCancelled else {
                 throw ModelSelectionFailure("Model selection applied, but shutdown superseded resuming service.")
             }
@@ -148,24 +150,36 @@ extension ProviderLoop {
         _ = await switching?.value
     }
 
-    internal func resumeAfterModelSwitch(requestID: String? = nil, drainID: String? = nil) async {
-        guard servingDrain.owner == .modelSwitch, !isShuttingDown, !Task.isCancelled else { return }
-        if requestID != nil && outboundSend == nil { return }
-        prefetchCoordinator = makePrefetchCoordinator()
+    @discardableResult
+    internal func resumeAfterModelSwitch(requestID: String? = nil, drainID: String? = nil) async -> Bool {
+        guard servingDrain.owner == .modelSwitch, !isShuttingDown, !Task.isCancelled else { return false }
+        if requestID != nil && (drainID == nil || outboundSend == nil || coordinatorClient == nil) { return false }
         servingDrain.resumeModelSwitch()
         lifecycleStatus = .init()
         localResponseTracker.setAccepting(true)
         state.refusingNewWork = false
-        // Reopen coordinator routing only after all local admission gates have
-        // been cleared. The commit acknowledgement alone is not readiness.
+        // Build a capacity heartbeat only after local admission has opened.
+        // Its sequence binds readiness to the refreshed reserve and slot grants,
+        // regardless of which outbound frame reaches the coordinator first.
         if let requestID, let drainID {
-            outboundSend?.send(.modelsReplaceReady(requestId: requestID, drainID: drainID))
+            guard let capacitySeq = await coordinatorClient?.sendEventHeartbeatWithCapacitySeq(), capacitySeq > 0,
+                  servingDrain.owner == nil, !isShuttingDown, !Task.isCancelled else {
+                if servingDrain.owner == nil && !isShuttingDown {
+                    beginServingDrain(owner: .modelSwitch)
+                }
+                return false
+            }
+            outboundSend?.send(.modelsReplaceReady(
+                requestId: requestID, drainID: drainID, capacitySeq: capacitySeq))
+        } else {
+            await coordinatorClient?.sendEventHeartbeat()
         }
+        prefetchCoordinator = makePrefetchCoordinator()
         if let entries = deferredDesiredModels, let send = outboundSend {
             deferredDesiredModels = nil
             await reconcileDesiredModels(entries, send: send)
         }
-        await coordinatorClient?.sendEventHeartbeat()
+        return true
     }
 
     private func setModelSwitchPhase(_ phase: ProviderModelSwitchStatus.Outcome) {

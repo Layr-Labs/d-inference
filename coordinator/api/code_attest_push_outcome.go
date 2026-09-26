@@ -41,10 +41,20 @@ func (s *Server) sendCodeChallengeRecorded(ctx context.Context, providerID, devi
 
 // recordCodeAttestPushReply records whether an APNs-accepted push was
 // answered: "answered" when its nonce is consumed by a verified reply,
-// "unanswered" when the loop re-pushes after the previous accepted push drew
-// no verified reply. A late reply after an unanswered retry counts both.
+// "unanswered" when a loop for the device reserves the next push while it is
+// still unconsumed (recordUnansweredCodeAttestPushes). A late reply after an
+// unanswered retry counts both.
 func (s *Server) recordCodeAttestPushReply(providerID, result string) {
 	s.ddIncr("code_attest.push_reply", []string{"result:" + result})
 	s.metrics.IncCounter("code_attest_push_reply_total", MetricLabel{"result", result})
 	s.logger.Info("code-attest push reply", "provider_id", providerID, "code_attest_push_reply", result)
+}
+
+// recordUnansweredCodeAttestPushes records one "unanswered" per push APNs
+// accepted for this device that no verified reply consumed, whichever
+// connection's loop sent it.
+func (s *Server) recordUnansweredCodeAttestPushes(providerID, seKey string) {
+	for range s.codeAttestThrottle.takeUnansweredPushes(seKey) {
+		s.recordCodeAttestPushReply(providerID, "unanswered")
+	}
 }

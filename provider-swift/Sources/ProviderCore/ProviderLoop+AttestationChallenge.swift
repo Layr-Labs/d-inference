@@ -115,19 +115,23 @@ extension ProviderLoop {
     /// delegate): decrypt E_K(nonce) with K, sign the nonce with the SE key, and
     /// reply over the WebSocket. Only the genuine hardened process can do both,
     /// which is what binds the Apple-gated push proof onto this connection.
-    func handleCodeChallenge(_ challenge: EncryptedPayload, send: SendHandle) {
+    /// WebSocket resume challenges reuse this handler. Returns whether a reply
+    /// was sent.
+    @discardableResult
+    func handleCodeChallenge(_ challenge: EncryptedPayload, send: SendHandle) -> Bool {
         guard let signer = self.signer else {
             logger.warning(.codeAttestationSignerUnavailable)
-            return
+            return false
         }
         do {
             let answer = try Self.answerCodeChallenge(challenge: challenge, keyPair: keyPair, signer: signer)
             send.send(.codeAttestationResponse(nonce: answer.nonce, signature: answer.signature))
-            apnsPushHistory.recordReply()
             logger.info(.codeAttestationResponseSent)
+            return true
         } catch {
             logger.error(.codeAttestationSigningFailed)
             logger.error("failed to answer code-identity challenge: \(error)")
+            return false
         }
     }
 

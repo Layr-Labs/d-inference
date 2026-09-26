@@ -296,10 +296,12 @@ func (s *Server) codeAttestLoopForGeneration(
 			if reserved {
 				if prevSent {
 					s.codeAttestMetric("timeout")
-					s.recordCodeAttestPushReply(providerID, "unanswered")
 					s.logger.Warn("code-attest: no valid reply within the push budget; retrying",
 						"attempt", schedule.pushes)
 				}
+				// Per device, not prevSent: a push accepted before the provider
+				// reconnected is counted by this replacement loop.
+				s.recordUnansweredCodeAttestPushes(providerID, seKey)
 				if schedule.slow {
 					s.codeAttestMetric("slow_retry")
 					s.logger.Info("code-attest: slow retry push",
@@ -658,6 +660,7 @@ func (s *Server) sendCodeIdentityChallengeForReservation(
 		return false
 	}
 	s.codeAttestMetric("push_sent")
+	s.codeAttestThrottle.markChallengeAccepted(sePubKey, nonceB64)
 	// No blocking wait: the reply is verified in handleCodeAttestationResponse on
 	// whichever live connection it lands.
 	return true

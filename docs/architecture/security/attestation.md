@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-26 · commit `b1aac01b5`
+> Last updated: 2026-09-26 · commit `ca5f71ecd`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -333,9 +333,11 @@ came back; `SendCodeChallenge` keeps its exact error. Every push increments
 Retry-After backoff), `transport_error`, `not_sent` (local failure before a
 request) or `rejected_<reason>` (snake_case). An accepted push later
 increments `code_attest.push_reply{result}`: `answered` when a verified reply
-consumes its nonce, `unanswered` when the loop reserves the next push while
-the previous accepted push drew no verified reply. A late reply after a retry
-counts both. Metric tags carry no provider, device or token identifier; one
+consumes its nonce, `unanswered` when a loop for the device, including the
+new loop of a reconnected provider, reserves the next push while an accepted
+push is still unconsumed. The accepted mark lives with the outstanding
+challenge in coordinator memory, so a coordinator restart or a reconnect to
+another replica still loses it. A late reply after a retry counts both. Metric tags carry no provider, device or token identifier; one
 structured log line per push and per reply carries `provider_id`. Outcomes are
 not persisted and never affect `CodeAttested`. See
 `coordinator/apns/push_result.go` and

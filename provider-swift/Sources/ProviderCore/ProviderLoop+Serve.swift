@@ -201,7 +201,9 @@ extension ProviderLoop {
             // Extract the Sendable EncryptedPayload synchronously here so the
             // non-Sendable [String: Any] never crosses into the actor Task.
             guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
-            Task { await self.handleCodeChallenge(challenge, send: send) }
+            // Only a push-delivered challenge counts as a push reply; resume
+            // challenges arrive over the WebSocket through the same handler.
+            Task { if await self.handleCodeChallenge(challenge, send: send) { pushHistory.recordReply() } }
         }
 
         // If the device token wasn't ready at registration (APNs slow / GUI

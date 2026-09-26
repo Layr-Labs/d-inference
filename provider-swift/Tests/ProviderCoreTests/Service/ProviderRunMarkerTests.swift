@@ -15,25 +15,25 @@ struct ProviderRunMarkerTests {
         let dir = try tempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let marker = ProviderRunMarker(directory: dir)
-        #expect(ProviderRunMarker.previousExit(marker.read(), processStartedAt: 100) == .unknown)
+        #expect(ProviderRunMarker.previousExit(marker.read(), processStartMicros: 100_000_000) == .unknown)
 
-        try marker.markRunning(processStartedAt: 100, version: "0.9.10", previousExit: .unknown)
+        try marker.markRunning(processStartMicros: 100_000_000, version: "0.9.10", previousExit: .unknown)
         let mode = try FileManager.default.attributesOfItem(atPath: marker.url.path)[.posixPermissions] as? Int
         #expect(mode == 0o600)
-        try marker.markClean(processStartedAt: 100, cause: .shutdown, now: Date(timeIntervalSince1970: 200))
-        #expect(ProviderRunMarker.previousExit(marker.read(), processStartedAt: 300) == .clean)
+        try marker.markClean(processStartMicros: 100_000_000, cause: .shutdown, now: Date(timeIntervalSince1970: 200))
+        #expect(ProviderRunMarker.previousExit(marker.read(), processStartMicros: 300_000_000) == .clean)
 
         // Next process starts, then dies without finishing its drain.
-        try marker.markRunning(processStartedAt: 300, version: "0.9.10", previousExit: .clean)
-        #expect(ProviderRunMarker.previousExit(marker.read(), processStartedAt: 400) == .unclean)
+        try marker.markRunning(processStartMicros: 300_000_000, version: "0.9.10", previousExit: .clean)
+        #expect(ProviderRunMarker.previousExit(marker.read(), processStartMicros: 400_000_000) == .unclean)
     }
 
     @Test func staleProcessCannotMarkANewerRunClean() throws {
         let dir = try tempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let marker = ProviderRunMarker(directory: dir)
-        try marker.markRunning(processStartedAt: 500, version: "b", previousExit: .clean)
-        try marker.markClean(processStartedAt: 100, cause: .shutdown)
+        try marker.markRunning(processStartMicros: 500_000_000, version: "b", previousExit: .clean)
+        try marker.markClean(processStartMicros: 100_000_000, cause: .shutdown)
         #expect(marker.read()?.state == .running)
     }
 
@@ -41,9 +41,21 @@ struct ProviderRunMarkerTests {
         let dir = try tempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let marker = ProviderRunMarker(directory: dir)
-        try marker.markRunning(processStartedAt: 700, version: "0.9.9", previousExit: .unclean)
+        try marker.markRunning(processStartMicros: 700_000_000, version: "0.9.9", previousExit: .unclean)
         // Same kernel process after a startup self-update exec.
-        #expect(ProviderRunMarker.previousExit(marker.read(), processStartedAt: 700) == .unclean)
+        #expect(ProviderRunMarker.previousExit(marker.read(), processStartMicros: 700_000_000) == .unclean)
+    }
+
+    @Test func launchesWithinTheSameSecondAreDifferentRuns() throws {
+        let dir = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let marker = ProviderRunMarker(directory: dir)
+        try marker.markRunning(processStartMicros: 5_000_000_100, version: "0.9.10", previousExit: .clean)
+        // A replacement that starts in the same second after a crash is not an in-place exec.
+        #expect(ProviderRunMarker.previousExit(marker.read(), processStartMicros: 5_000_000_900) == .unclean)
+        #expect(ProviderRunMarker.previousExit(marker.read(), processStartMicros: 5_000_000_100) == .clean)
+        try marker.markClean(processStartMicros: 5_000_000_900, cause: .shutdown)
+        #expect(marker.read()?.state == .running, "a different process in the same second cannot mark it clean")
     }
 
     @Test func corruptMarkerReadsAsUnknown() throws {
@@ -52,22 +64,23 @@ struct ProviderRunMarkerTests {
         let marker = ProviderRunMarker(directory: dir)
         try Data("{not json".utf8).write(to: marker.url)
         #expect(marker.read() == nil)
-        #expect(ProviderRunMarker.previousExit(marker.read(), processStartedAt: 1) == .unknown)
+        #expect(ProviderRunMarker.previousExit(marker.read(), processStartMicros: 1_000_000) == .unknown)
     }
 
     @Test func beginClassifiesAndRecordsRunning() throws {
         let dir = try tempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        try ProviderRunMarker(directory: dir).markRunning(processStartedAt: 1_000, version: "0.9.9", previousExit: .clean)
-        let context = ProviderProcessRun.begin(directory: dir, version: "0.9.10", processStartedAt: 2_000.5,
+        try ProviderRunMarker(directory: dir).markRunning(processStartMicros: 1_000_000_000, version: "0.9.9", previousExit: .clean)
+        let context = ProviderProcessRun.begin(directory: dir, version: "0.9.10", processStartMicros: 2_000_500_000,
                                                environment: ["XPC_SERVICE_NAME": LaunchAgent.label],
                                                now: Date(timeIntervalSince1970: 2_001))
         #expect(context.processStartedAt == 2_000)
+        #expect(context.processStartMicros == 2_000_500_000)
         #expect(context.previousExit == .unclean)
         #expect(context.startReason == .update, "a different previous version wins over launchd")
         let written = ProviderRunMarker(directory: dir).read()
         #expect(written?.state == .running)
-        #expect(written?.processStartedAt == 2_000)
+        #expect(written?.processStartMicros == 2_000_500_000)
         #expect(written?.previousExit == .unclean)
     }
 
@@ -81,7 +94,7 @@ struct ProviderRunMarkerTests {
 
     @Test func startReasonPrecedenceAndRecency() {
         let recentExit = { (cause: ProviderRunMarker.ExitCause) in
-            ProviderRunMarker.Record(state: .clean, processStartedAt: 1, version: "1", exitCause: cause, exitedAt: 9_990)
+            ProviderRunMarker.Record(state: .clean, processStartMicros: 1_000_000, version: "1", exitCause: cause, exitedAt: 9_990)
         }
         #expect(ProviderStartReason.classify(evidence(stall: 9_950, watchdog: 9_990)) == .stallRestart)
         #expect(ProviderStartReason.classify(evidence(previous: recentExit(.stallRestart))) == .stallRestart)
@@ -92,7 +105,7 @@ struct ProviderRunMarkerTests {
         #expect(ProviderStartReason.classify(evidence()) == .launchd)
         // Old evidence (a stall restart six hours ago, a watchdog restart from
         // yesterday, a clean stop long ago) does not explain this start.
-        let oldExit = ProviderRunMarker.Record(state: .clean, processStartedAt: 1, version: "1",
+        let oldExit = ProviderRunMarker.Record(state: .clean, processStartMicros: 1_000_000, version: "1",
                                                exitCause: .lifecycleCommand, exitedAt: 1_000)
         #expect(ProviderStartReason.classify(evidence(previous: oldExit, stall: 1_000, watchdog: 2_000)) == .launchd)
     }

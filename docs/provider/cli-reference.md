@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `b1aac01b5`
+> Last updated: 2026-09-26 · commit `ca5f71ecd`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -874,8 +874,9 @@ macOS lets only administrator accounts read the system log. From a standard
 account, macOS answers `Operation not permitted`. The command reports this and
 still uploads the App Attest snapshot. To include the logs, run it from an
 administrator account, or run `sudo darkbloom report` if this account is allowed
-to use sudo. Under `sudo` the command reads the invoking user's auth token and
-daemon state (`ReportAppAttestEvidence` in
+to use sudo. Under `sudo` the command reads the invoking user's auth token,
+daemon state and provider config (unless `--config` is given) and does not
+migrate config files on disk (`ReportAppAttestEvidence` in
 `provider-swift/Sources/darkbloom/Diagnostics/`). `--dry-run` prints every
 appended line before anything is uploaded.
 

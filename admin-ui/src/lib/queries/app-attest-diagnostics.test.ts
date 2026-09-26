@@ -107,6 +107,12 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
     const { appAttestKeyDeathsByDay, appAttestRecentKeyDeaths } = await import("./app-attest-diagnostics");
     const byClass = Object.fromEntries((await appAttestKeyDeathsByDay(1)).map(r => [r.classification, [r.keys, r.clean_exit, r.unclean_exit]]));
     expect(byClass).toEqual({ os_change: ["1", "0", "0"], process_restart: ["1", "0", "1"], unknown: ["1", "0", "0"] });
+    // m-old has dead keys in two classes: the day counts it once.
+    const byDay = await appAttestKeyDeathsByDay(1);
+    expect(byDay.reduce((sum, r) => sum + Number(r.machines), 0)).toBe(3);
+    expect(new Set(byDay.map(r => r.day_machines))).toEqual(new Set(["2"]));
+    const { pivotDeaths } = await import("../app-attest-diagnostics");
+    expect(pivotDeaths(byDay)[0].machines).toBe(2);
     const recent = await appAttestRecentKeyDeaths(1);
     const restart = recent.find(r => r.key_id === "k-restart");
     expect(restart).toMatchObject({ classification: "process_restart", previous_exit: "unclean", native_error_chain: "devicecheck:0 → aks:-536362989" });

@@ -104,6 +104,41 @@ final class NativeErrorChainTests: XCTestCase {
         XCTAssertEqual(failed.appleError?.underlyingDomain, "other")
         var stripped = failed; stripped.nativeErrorChain = nil
         XCTAssertEqual(failed.clientHash(publicKey: publicKey), stripped.clientHash(publicKey: publicKey))
+        let recorded = await client.currentLocalStatus()?.lastAppleFailure
+        XCTAssertEqual(recorded?.nativeErrorChain?.map(\.domain), [.devicecheck, .cryptotokenkit, .aks])
+        XCTAssertEqual(recorded?.countsTowardKeyRotation, true)
+    }
+
+    func testProofFailureIsPublishedWithoutOverwritingFresherDaemonFields() {
+        let failure = AppAttestLastAppleFailure(observedAt: 2, action: .assertion, result: "apple_error",
+                                                nativeErrorChain: [AppAttestNativeErrorEntry(domain: .devicecheck, code: 0)])
+        var daemon = AppAttestLocalStatus(observedAt: 1, launchSession: .gui, operationStalledSeconds: 1_200)
+        var client = AppAttestLocalStatus(observedAt: 1, launchSession: .gui)
+        client.lastAppleFailure = failure
+        let published = AppAttestLocalStatus.published(current: daemon, client: client, prepared: false)
+        XCTAssertEqual(published?.lastAppleFailure, failure)
+        XCTAssertEqual(published?.operationStalledSeconds, 1_200, "the stall monitor's value is kept")
+        daemon.lastAppleFailure = failure
+        XCTAssertNil(AppAttestLocalStatus.published(current: daemon, client: client, prepared: false))
+        XCTAssertEqual(AppAttestLocalStatus.published(current: daemon, client: client, prepared: true), client)
+    }
+
+    func testOnlyTheCoordinatorsDeadKeySignalsCountTowardRotation() {
+        func failure(action: AppAttestLastAppleFailure.Action = .assertion, result: String = "apple_error",
+                     top: AppAttestNativeErrorEntry? = nil, source: AppAttestAppleErrorSource? = nil) -> AppAttestLastAppleFailure {
+            AppAttestLastAppleFailure(observedAt: 0, action: action, result: result,
+                                      nativeErrorChain: top.map { [$0] }, appleErrorSource: source)
+        }
+        let code0 = AppAttestNativeErrorEntry(domain: .devicecheck, code: 0)
+        XCTAssertTrue(failure(top: code0).countsTowardKeyRotation)
+        XCTAssertTrue(failure(top: AppAttestNativeErrorEntry(domain: .devicecheck, code: 2)).countsTowardKeyRotation)
+        XCTAssertTrue(failure(source: .callbackWithoutNSError).countsTowardKeyRotation)
+        XCTAssertFalse(failure(source: .proofOversize).countsTowardKeyRotation, "Apple returned a proof: the key is alive")
+        XCTAssertFalse(failure(top: AppAttestNativeErrorEntry(domain: .devicecheck, code: 3)).countsTowardKeyRotation)
+        XCTAssertFalse(failure(top: AppAttestNativeErrorEntry(domain: .cryptotokenkit, code: -3)).countsTowardKeyRotation)
+        XCTAssertFalse(failure(result: "operation_timeout").countsTowardKeyRotation)
+        XCTAssertFalse(failure(result: "apple_unavailable", top: AppAttestNativeErrorEntry(domain: .devicecheck, code: 4)).countsTowardKeyRotation)
+        XCTAssertFalse(failure(action: .attestation, top: code0).countsTowardKeyRotation)
     }
 }
 

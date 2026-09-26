@@ -6,7 +6,10 @@ import ProviderAppAttest
 /// before a relaunch hand-off. Diagnostics only.
 public enum ProviderProcessRun {
     public struct StartContext: Sendable, Equatable {
+        /// Whole seconds, as sent on the wire.
         public var processStartedAt: Int64?
+        /// The run identity in the marker file.
+        public var processStartMicros: UInt64?
         public var previousExit: AppAttestPreviousExit
         public var startReason: AppAttestStartReason
     }
@@ -28,22 +31,22 @@ public enum ProviderProcessRun {
     @discardableResult
     public static func begin(directory: URL = DaemonStateFile.path().deletingLastPathComponent(),
                              version: String = ProviderCore.version,
-                             processStartedAt: Double? = ProcessIdentity.current().map { Double($0.startTimeMicros) / 1_000_000 },
+                             processStartMicros: UInt64? = ProcessIdentity.current()?.startTimeMicros,
                              environment: [String: String] = ProcessInfo.processInfo.environment,
                              now: Date = Date()) -> StartContext {
         let marker = ProviderRunMarker(directory: directory)
         let previous = marker.read()
-        let started = processStartedAt ?? now.timeIntervalSince1970
-        let startedAt = processStartedAt.map { Int64($0) }
+        let started = processStartMicros.map { Double($0) / 1_000_000 } ?? now.timeIntervalSince1970
         let reason = ProviderStartReason.classify(ProviderStartReason.Evidence(
             processStartedAt: started, now: now.timeIntervalSince1970, previousRun: previous, currentVersion: version,
             stallRestartAt: AppAttestStallRestartMarker(directory: directory).lastRestart()?.timeIntervalSince1970,
             watchdogRestartAt: WatchdogStateStore.read().lastRestartAt,
             launchedByLaunchd: ProviderStartReason.launchedByLaunchd(environment: environment)))
-        let context = StartContext(processStartedAt: startedAt,
-                                   previousExit: ProviderRunMarker.previousExit(previous, processStartedAt: startedAt),
+        let context = StartContext(processStartedAt: processStartMicros.map { Int64($0 / 1_000_000) },
+                                   processStartMicros: processStartMicros,
+                                   previousExit: ProviderRunMarker.previousExit(previous, processStartMicros: processStartMicros),
                                    startReason: reason)
-        try? marker.markRunning(processStartedAt: startedAt, version: version, previousExit: context.previousExit)
+        try? marker.markRunning(processStartMicros: processStartMicros, version: version, previousExit: context.previousExit)
         state.lock.withLock {
             state.context = context
             state.marker = marker
@@ -61,7 +64,7 @@ public enum ProviderProcessRun {
     public static func finish(cause: ProviderRunMarker.ExitCause? = nil) {
         let (marker, context, lifecycle) = state.lock.withLock { (state.marker, state.context, state.lifecycleCommand) }
         guard let marker else { return }
-        try? marker.markClean(processStartedAt: context?.processStartedAt,
+        try? marker.markClean(processStartMicros: context?.processStartMicros,
                               cause: cause ?? (lifecycle ? .lifecycleCommand : .shutdown))
     }
 
@@ -69,7 +72,7 @@ public enum ProviderProcessRun {
     public static func resume() {
         let (marker, context) = state.lock.withLock { (state.marker, state.context) }
         guard let marker else { return }
-        try? marker.markRunning(processStartedAt: context?.processStartedAt, version: ProviderCore.version,
+        try? marker.markRunning(processStartMicros: context?.processStartMicros, version: ProviderCore.version,
                                 previousExit: context?.previousExit)
     }
 }

@@ -627,11 +627,21 @@ public enum ConfigManager: Sendable {
     /// If none of those files exist yet, we return path #1 so first-time
     /// `save()` writes to the canonical location.
     public static func defaultConfigPath() throws -> URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first
+        return defaultConfigPath(home: FileManager.default.homeDirectoryForCurrentUser, appSupport: appSupport)
+    }
 
+    /// The same resolution for another account's home, such as the invoking
+    /// user of `sudo darkbloom report`.
+    public static func defaultConfigPath(home: URL) -> URL {
+        defaultConfigPath(home: home, appSupport: home
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Application Support"))
+    }
+
+    private static func defaultConfigPath(home: URL, appSupport: URL?) -> URL {
         let xdgNew = home
             .appendingPathComponent(".config")
             .appendingPathComponent("darkbloom")

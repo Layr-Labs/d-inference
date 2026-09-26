@@ -161,6 +161,9 @@ type codeAttestChallenge struct {
 	token   string
 	nodeKey string
 	at      time.Time
+	// Push-reply diagnostics only; never part of matching or attestation.
+	// accepted: APNs took the push. counted: already recorded as unanswered.
+	accepted, counted bool
 }
 
 type codeAttestResumeChallenge struct {
@@ -792,6 +795,35 @@ func (t *codeAttestThrottle) consumeChallengeForIdentity(
 		}
 	}
 	return false
+}
+
+// markChallengeAccepted records that APNs accepted the push carrying nonce.
+func (t *codeAttestThrottle) markChallengeAccepted(seKey, nonce string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i := range t.outstanding[seKey] {
+		if t.outstanding[seKey][i].nonce == nonce {
+			t.outstanding[seKey][i].accepted = true
+		}
+	}
+}
+
+// takeUnansweredPushes counts this device's APNs-accepted pushes that no
+// verified reply consumed and no earlier call counted, and marks them
+// counted. Outstanding challenges outlive a connection, so a reconnected
+// provider's loop still counts the previous connection's push. Call it
+// before recording the next challenge, which prunes expired ones.
+func (t *codeAttestThrottle) takeUnansweredPushes(seKey string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := 0
+	for i := range t.outstanding[seKey] {
+		if c := &t.outstanding[seKey][i]; c.accepted && !c.counted {
+			c.counted = true
+			n++
+		}
+	}
+	return n
 }
 
 // outstandingChallenge reports whether the device has ANY still-valid pushed

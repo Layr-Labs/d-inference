@@ -129,3 +129,52 @@ func TestCodeAttestPushReplyAnsweredAndUnanswered(t *testing.T) {
 		t.Fatalf("sent_ok = %d, want 4", got)
 	}
 }
+
+// An accepted push left unanswered when the provider reconnects is counted by
+// the replacement connection's loop at its next push, not lost with the old
+// loop's state.
+func TestCodeAttestUnansweredPushSurvivesReconnect(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.SeedCodeAttestCache(context.Background())
+	clock := newManualCodeAttestClock(srv.codeAttestThrottle)
+	kPub, kPriv, seKey, sePub := providerKeyMaterial(t)
+	provider := newCodeAttestProvider(kPub, sePub)
+	var pushes atomic.Int32
+	var answer atomic.Bool
+	srv.SetCodeAttestor(&reportingCodeAttestor{
+		fakeCodeAttestor: fakeCodeAttestor{onSend: func(_, _, pubKey, nonce string) error {
+			clock.advance(time.Second)
+			pushes.Add(1)
+			if !answer.Load() {
+				return nil
+			}
+			return completeRoundTrip(t, srv, provider, provider.ID, kPriv, seKey, pubKey, nonce)
+		}},
+		result: func() apns.PushResult { return apns.PushResult{StatusCode: 200, APNsIDPresent: true} },
+	})
+	firstConnection, disconnect := context.WithCancel(t.Context())
+	done := runCodeAttestLoopAsync(firstConnection, srv, provider)
+	if !waitForCond(2*time.Second, func() bool { return pushes.Load() == 3 }) {
+		t.Fatalf("first connection pushes = %d", pushes.Load())
+	}
+	disconnect()
+	<-done
+	// Pushes 2 and 3 of the first loop counted pushes 1 and 2.
+	if got := codeAttestPushCount(srv, "result", "unanswered"); got != 2 {
+		t.Fatalf("unanswered before the reconnect = %d, want 2", got)
+	}
+	answer.Store(true)
+	select {
+	case <-runCodeAttestLoopAsync(t.Context(), srv, provider):
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconnected loop did not finish")
+	}
+	if got := codeAttestPushCount(srv, "result", "unanswered"); got != 3 {
+		t.Fatalf("unanswered = %d, want 3 (the first connection's last push)", got)
+	}
+	if got := codeAttestPushCount(srv, "result", "answered"); got != 1 {
+		t.Fatalf("answered = %d, want 1", got)
+	}
+}

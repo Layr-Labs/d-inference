@@ -140,13 +140,19 @@ const deaths = `WITH dead AS (
  FROM compared
 )`;
 
+// day_machines is a distinct count over the whole day: a Mac with dead keys in
+// two classes must not be counted twice in the day's total.
 export async function appAttestKeyDeathsByDay(days: number) {
-  return query<DeathDayRow>(`${deaths}
-    SELECT to_char(received_at AT TIME ZONE 'UTC','YYYY-MM-DD') AS day,classification,
-    COUNT(*) AS keys,COUNT(DISTINCT machine_id) AS machines,
-    COUNT(*) FILTER(WHERE c->>'previous_exit'='clean') AS clean_exit,
-    COUNT(*) FILTER(WHERE c->>'previous_exit'='unclean') AS unclean_exit
-    FROM classified GROUP BY day,classification ORDER BY day DESC,classification`, [days]);
+  return query<DeathDayRow>(`${deaths}, dated AS (
+    SELECT classified.*,to_char(received_at AT TIME ZONE 'UTC','YYYY-MM-DD') AS day FROM classified
+    )
+    SELECT per.*,total.day_machines FROM (
+     SELECT day,classification,COUNT(*) AS keys,COUNT(DISTINCT machine_id) AS machines,
+     COUNT(*) FILTER(WHERE c->>'previous_exit'='clean') AS clean_exit,
+     COUNT(*) FILTER(WHERE c->>'previous_exit'='unclean') AS unclean_exit
+     FROM dated GROUP BY day,classification) per
+    JOIN (SELECT day,COUNT(DISTINCT machine_id) AS day_machines FROM dated GROUP BY day) total USING (day)
+    ORDER BY day DESC,classification`, [days]);
 }
 
 export async function appAttestRecentKeyDeaths(days: number) {

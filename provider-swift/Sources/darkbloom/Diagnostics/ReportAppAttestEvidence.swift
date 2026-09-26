@@ -28,9 +28,11 @@ enum ReportAppAttestEvidence {
 
     /// Under `sudo darkbloom report`, read the invoking user's auth token and
     /// daemon files rather than root's. Only the system log needs elevation.
-    static func adoptInvokingUserFiles(environment: [String: String] = ProcessInfo.processInfo.environment) {
+    /// Returns that user's home, or nil when not running under sudo.
+    @discardableResult
+    static func adoptInvokingUserFiles(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
         guard getuid() == 0, let user = environment["SUDO_USER"], !user.isEmpty, user != "root",
-              let entry = getpwnam(user), let dir = entry.pointee.pw_dir else { return }
+              let entry = getpwnam(user), let dir = entry.pointee.pw_dir else { return nil }
         let home = URL(fileURLWithPath: String(cString: dir))
         let darkbloom = home.appendingPathComponent(".darkbloom")
         if environment["DARKBLOOM_AUTH_TOKEN_PATH"] == nil {
@@ -39,5 +41,13 @@ enum ReportAppAttestEvidence {
         if environment["DARKBLOOM_STATE_FILE"] == nil {
             setenv("DARKBLOOM_STATE_FILE", darkbloom.appendingPathComponent("daemon-state.json").path, 1)
         }
+        return home
+    }
+
+    /// The provider config a report reads: an explicit `--config` wins; under
+    /// sudo, the invoking user's config, so the report and that user's token
+    /// go to their coordinator rather than root's default one.
+    static func configPath(explicit: String?, invokingHome: URL?) -> String? {
+        explicit ?? invokingHome.map { ConfigManager.defaultConfigPath(home: $0).path }
     }
 }

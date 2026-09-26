@@ -72,6 +72,8 @@ export interface DeathDayRow {
   machines: string;
   clean_exit: string;
   unclean_exit: string;
+  /** Distinct machines over the whole day, across classifications. */
+  day_machines: string;
 }
 
 /** Pivots per-day key-death rows into one row per day (newest first) with a
@@ -88,8 +90,7 @@ export function pivotDeaths(rows: DeathDayRow[]) {
     day[cls] += Number(row.keys);
     day.clean += Number(row.clean_exit);
     day.unclean += Number(row.unclean_exit);
-    // Machines are distinct per classification; the day total is an upper bound.
-    day.machines += Number(row.machines);
+    day.machines = Number(row.day_machines);
   }
   return [...days.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([day, counts]) => ({ day, ...counts }));
 }

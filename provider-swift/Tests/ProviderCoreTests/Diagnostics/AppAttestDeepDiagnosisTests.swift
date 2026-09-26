@@ -66,6 +66,7 @@ struct AppAttestDeepDiagnosisTests {
         #expect(check(d, "last apple failure")?.message.contains("devicecheck 3") == true)
     }
 
+
     @Test func cryptoTokenKitKeyLossIsExplained() {
         let d = AppAttestDeepDiagnosis.evaluate(
             status(failure: AppAttestLastAppleFailure(observedAt: 900, action: .assertion, result: "apple_error", nativeErrorChain: [

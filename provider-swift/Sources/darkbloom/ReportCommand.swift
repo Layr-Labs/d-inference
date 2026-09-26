@@ -71,10 +71,20 @@ struct Report: AsyncParsableCommand {
     }
 
     mutating func run() async throws {
-        ReportAppAttestEvidence.adoptInvokingUserFiles()
+        let invokingHome = ReportAppAttestEvidence.adoptInvokingUserFiles()
         await runUpdateBannerIfEnabled()
 
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let snapshot: RuntimeSnapshot
+        if invokingHome != nil {
+            // Under sudo: the invoking user's config, and no on-disk
+            // migration that would write it (or root's home) as root.
+            Darkbloom.ensureLogging()
+            snapshot = try loadRuntimeSnapshot(
+                configPath: ReportAppAttestEvidence.configPath(explicit: configOptions.config, invokingHome: invokingHome),
+                migrateOnDisk: false)
+        } else {
+            snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        }
         let httpBase = coordinatorHTTPBase(snapshot.config.coordinator.url)
 
         print("Darkbloom Log Report")

@@ -9,8 +9,36 @@ private func tempDirectory() throws -> URL {
     return url
 }
 
+private final class SentMessages: @unchecked Sendable {
+    private let lock = NSLock()
+    private var messages: [OutboundMessage] = []
+    func append(_ message: OutboundMessage) { lock.withLock { messages.append(message) } }
+    var count: Int { lock.withLock { messages.count } }
+}
+
 @Suite("APNs push history")
 struct APNsPushHistoryTests {
+    // Resume challenges arrive over the WebSocket and reuse the code-challenge
+    // handler; only the APNs push handler may record a push reply.
+    @Test func resumeChallengeReplyIsNotRecordedAsAPushReply() async throws {
+        guard let signer = try SecureEnclaveIdentity.createEphemeral() else { return }
+        let dir = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let hardware = HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4,
+            chipTier: .max, memoryGb: 128, memoryAvailableGb: 124,
+            cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4), gpuCores: 40, memoryBandwidthGbs: 546)
+        let loop = try ProviderLoop(config: ProviderLoopConfig(coordinatorURL: "ws://127.0.0.1:0/unused",
+            hardware: hardware, models: [], config: ProviderConfig(provider: ProviderSettings(name: "push-history-test"))),
+            purgeLegacyFiles: false, attestationSigner: signer)
+        await loop.setDaemonStateFileForTesting(dir.appendingPathComponent("state.json"))
+        let recipient = try #require(Data(base64Encoded: await loop.keyPair.publicKeyBase64))
+        let challenge = try NodeKeyPair.generate().encryptPayload(recipientPublicKey: recipient, plaintext: Data("nonce".utf8))
+        let sent = SentMessages()
+        #expect(await loop.handleCodeChallenge(challenge, send: SendHandle { sent.append($0) }))
+        #expect(sent.count == 1)
+        #expect(APNsPushHistoryStore(directory: dir).load().repliedAt.isEmpty)
+    }
+
     @Test func persistsAcrossStoreInstancesOwnerOnly() throws {
         let dir = try tempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }

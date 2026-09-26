@@ -58,6 +58,18 @@ public struct AppAttestLocalStatus: Codable, Sendable, Equatable {
         keyHistory = try? c.decodeIfPresent(AppAttestKeyHistory.self, forKey: .keyHistory)
         lastAppleFailure = try? c.decodeIfPresent(AppAttestLastAppleFailure.self, forKey: .lastAppleFailure)
     }
+
+    /// What the daemon publishes after an exchange, or nil when nothing
+    /// changed. A prepare replaces the status. A proof reply only brings its
+    /// Apple failure: the daemon's other fields can be fresher than the
+    /// client's (the stall monitor owns `operationStalledSeconds`).
+    public static func published(current: AppAttestLocalStatus?, client: AppAttestLocalStatus,
+                                 prepared: Bool) -> AppAttestLocalStatus? {
+        if prepared { return client }
+        guard var status = current, status.lastAppleFailure != client.lastAppleFailure else { return nil }
+        status.lastAppleFailure = client.lastAppleFailure
+        return status
+    }
 }
 
 /// Closed summary of the last failed attestation/assertion reply, for doctor.
@@ -69,12 +81,16 @@ public struct AppAttestLastAppleFailure: Codable, Sendable, Equatable {
     /// A `ShadowFailure` raw value (closed set).
     public var result: String
     public var nativeErrorChain: [AppAttestNativeErrorEntry]?
+    /// Why an `apple_error` carried no native error.
+    public var appleErrorSource: AppAttestAppleErrorSource?
 
-    public init(observedAt: Double, action: Action, result: String, nativeErrorChain: [AppAttestNativeErrorEntry]? = nil) {
+    public init(observedAt: Double, action: Action, result: String, nativeErrorChain: [AppAttestNativeErrorEntry]? = nil,
+                appleErrorSource: AppAttestAppleErrorSource? = nil) {
         self.observedAt = observedAt
         self.action = action
         self.result = result
         self.nativeErrorChain = nativeErrorChain
+        self.appleErrorSource = appleErrorSource
     }
 
     /// Nil for `ok`, local-only results and non-exchange replies.
@@ -83,10 +99,21 @@ public struct AppAttestLastAppleFailure: Codable, Sendable, Equatable {
               let failure = ShadowFailure(rawValue: raw),
               [.appleError, .appleInvalidKey, .appleUnavailable, .operationTimeout, .unsupported].contains(failure)
         else { return nil }
-        self.init(observedAt: observedAt, action: action, result: failure.rawValue, nativeErrorChain: response.nativeErrorChain)
+        self.init(observedAt: observedAt, action: action, result: failure.rawValue, nativeErrorChain: response.nativeErrorChain,
+                  appleErrorSource: response.appleErrorSource)
     }
 
-    enum CodingKeys: String, CodingKey { case observedAt, action, result, nativeErrorChain }
+    /// The coordinator's dead-key rule (`CountAppAttestRotationFailures`): an
+    /// assertion `apple_error` with no native error (other than an oversize
+    /// proof) or with DeviceCheck code 0 or 2. Timeouts and
+    /// `serverUnavailable` (`apple_unavailable`) never count.
+    public var countsTowardKeyRotation: Bool {
+        guard action == .assertion, result == ShadowFailure.appleError.rawValue else { return false }
+        guard let top = nativeErrorChain?.first else { return appleErrorSource != .proofOversize }
+        return top.domain == .devicecheck && (top.code == 0 || top.code == 2)
+    }
+
+    enum CodingKeys: String, CodingKey { case observedAt, action, result, nativeErrorChain, appleErrorSource }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -94,5 +121,6 @@ public struct AppAttestLastAppleFailure: Codable, Sendable, Equatable {
         action = try c.decode(Action.self, forKey: .action)
         result = try c.decode(String.self, forKey: .result)
         nativeErrorChain = try? c.decodeIfPresent([AppAttestNativeErrorEntry].self, forKey: .nativeErrorChain)
+        appleErrorSource = try? c.decodeIfPresent(AppAttestAppleErrorSource.self, forKey: .appleErrorSource)
     }
 }

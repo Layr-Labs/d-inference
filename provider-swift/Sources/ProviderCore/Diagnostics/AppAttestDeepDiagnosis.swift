@@ -118,16 +118,25 @@ public enum AppAttestDeepDiagnosis {
         if let n = h.consecutiveAssertionFailures, n > 0 { facts.append("\(n) consecutive assertion failure(s)") }
         let freshKeyInvalid = (h.generationsLast24h ?? 0) >= 3 && lastFailure?.result == "apple_invalid_key"
             && lastFailure?.action == .attestation
-        let dying = (h.consecutiveAssertionFailures ?? 0) >= 2
+        let repeatedFailures = (h.consecutiveAssertionFailures ?? 0) >= 2
         if freshKeyInvalid {
             return Diagnostic(section: .appAttest, name: "key history", level: .warn,
                               message: facts.joined(separator: "; ") + ". Apple rejects even brand-new keys (invalidKey on first attestation).",
                               fix: reportAdvice)
         }
-        if dying {
+        // This aggregate includes timeouts and serverUnavailable. Even an
+        // eligible latest error cannot establish two eligible failures or a
+        // granted rotation; that decision belongs to the coordinator.
+        if repeatedFailures, lastFailure?.countsTowardKeyRotation == true {
             return Diagnostic(section: .appAttest, name: "key history", level: .warn,
-                              message: facts.joined(separator: "; ") + ". Apple can no longer sign with this key; the coordinator will rotate it.",
-                              fix: "no action needed for rotation; if it recurs after restarts, " + reportAdvice)
+                              message: facts.joined(separator: "; ") + ". The latest failure is eligible for coordinator dead-key checks; this total alone does not establish a dead key.",
+                              fix: "the coordinator decides whether replacement is due; if failures continue, " + reportAdvice)
+        }
+        if repeatedFailures {
+            let last = lastFailure.map { " The last was `\($0.result)`, which does not mark the key as dead." } ?? ""
+            return Diagnostic(section: .appAttest, name: "key history", level: .warn,
+                              message: facts.joined(separator: "; ") + "." + last,
+                              fix: "if failures continue, " + reportAdvice)
         }
         return Diagnostic(section: .appAttest, name: "key history", level: .pass,
                           message: facts.isEmpty ? "no key history yet." : facts.joined(separator: "; ") + ".")
@@ -138,10 +147,16 @@ public enum AppAttestDeepDiagnosis {
             " Native error chain: " + entries.map { "\($0.domain.rawValue) \($0.code)" }.joined(separator: " → ") + "."
         } ?? ""
         let keyLoss = f.nativeErrorChain?.contains { $0.domain == .cryptotokenkit && $0.code == -3 } == true
+        let fix: String?
+        if keyLoss {
+            fix = (f.countsTowardKeyRotation ? "the coordinator evaluates dead-key recovery; " : "") + reportAdvice
+        } else {
+            fix = nil
+        }
         return Diagnostic(section: .appAttest, name: "last apple failure", level: .warn,
                           message: "\(f.action.rawValue) failed \(duration(max(0, Int(now - f.observedAt)))) ago with `\(f.result)`.\(chain)"
                               + (keyLoss ? " CryptoTokenKit -3 means the Secure Enclave refused to sign with the stored key." : ""),
-                          fix: keyLoss ? "the coordinator rotates a dead key automatically; " + reportAdvice : nil)
+                          fix: fix)
     }
 
     // MARK: - APNs pushes

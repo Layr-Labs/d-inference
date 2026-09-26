@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-26 · commit `b1aac01b5`
+> Last updated: 2026-09-26 · commit `ca5f71ecd`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -72,7 +72,7 @@ App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 | `boot security` | SIP or authenticated root is not confirmed enabled. Apple requires Full Security for App Attest | In Recovery: `csrutil enable`, `csrutil authenticated-root enable`, Startup Security Utility → Full Security, restart |
 | `app signing` | The App Attest opt-in or environment entitlement is missing or invalid, or the embedded provisioning profile is missing or expired | Reinstall the signed release (`curl -fsSL https://api.darkbloom.dev/install.sh \| bash`), then `darkbloom restart` |
 | `process start` | Why this provider process started (launchd, watchdog, update, stall restart, manual) and whether the previous one shut down cleanly (`provider-run.json`) | Unclean exits come from a crash, force-kill, power loss or a reboot without a drain. If App Attest broke right after one, run `darkbloom report` |
-| `key history`, `last apple failure` | Key generations in 24 h, key age and boot, last Apple success, consecutive assertion failures, and the last native error chain. CryptoTokenKit `-3` with an `aks` code means the Secure Enclave refused the key | The coordinator rotates dead keys. For repeated `invalidKey` on brand-new keys, run `darkbloom report` from an administrator account (or `sudo darkbloom report` if this account can use sudo) |
+| `key history`, `last apple failure` | Key generations in 24 h, key age and boot, last Apple success, consecutive assertion failures, and the last native error chain. CryptoTokenKit `-3` with an `aks` code means the Secure Enclave refused to sign. Doctor distinguishes a latest error eligible for coordinator dead-key checks from timeouts or `serverUnavailable`; the aggregate failure count alone cannot establish a dead key or promise rotation | The coordinator decides whether replacement is due. For repeated `invalidKey` on brand-new keys, run `darkbloom report` from an administrator account (or `sudo darkbloom report` if this account can use sudo) |
 | `apns pushes` | APNs code-identity pushes received and answered in 24 h, and whether APNs registration produced a device token (`apns-push-history.json`) | No token: APNs registration failed, so stay in the GUI session and restart. None received while the coordinator says it pushed: an APNs delivery problem, so keep the Mac awake and online. Received but unanswered: `darkbloom restart` |
 | `devicecheckd log` | Local `devicecheckd` log patterns from the last 2 h. macOS lets only administrator accounts read the system log; otherwise the check reports `Operation not permitted` | Run `darkbloom doctor` / `darkbloom report` from an administrator account, or `sudo darkbloom report` if this account can use sudo |
 | `coordinator health`, `minimum version`, `coordinator trust` | Coordinator reachable, this version is accepted, trust verdict with reasons | `darkbloom update`; reasons are explained in [attestation](./attestation.md) |

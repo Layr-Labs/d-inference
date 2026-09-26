@@ -45,7 +45,7 @@ extension ProviderLoop {
         let decision = AppAttestStallRestartPolicy.decide(
             stalledSeconds: stalled, inferenceActive: hasInflightWork || isLoadingAny,
             lifecycleBusy: updatePhase != .idle || servingDrain.refusing || lifecycleDrainTask != nil,
-            lastRestartAt: marker.lastRestart(), now: now)
+            lastRestartAt: marker.lastRestart(), retryDeferred: appAttestStallRetryDeferred, now: now)
         switch decision {
         case .skip(let reason):
             if reason != appAttestStallLastSkip {
@@ -77,8 +77,8 @@ extension ProviderLoop {
         beginUpdateDraining()
         guard await waitForSafeDisconnect(timeout: Self.appAttestStallDrainTimeout, reason: "App Attest stall restart"),
               !Task.isCancelled else {
-            logger.warning("App Attest: stall restart deferred; accepted work or coordinator acknowledgement is still pending")
-            await resumeServingAfterUpdate()
+            logger.warning("App Attest: stall restart deferred \(Int(AppAttestStallRestartPolicy.drainRetryDelay / 60)) min; accepted work or coordinator acknowledgement is still pending")
+            await abandonAppAttestStallRestart(after: .drainNotAcknowledged)
             return true
         }
         // Apple's callback may have arrived, or a CLI stop, OS termination or
@@ -110,8 +110,8 @@ extension ProviderLoop {
             // restart that fails or loops cannot exceed the limit.
             try marker.record(Date())
         } catch {
-            logger.warning("App Attest: cannot persist the stall restart marker; not restarting: \(error)")
-            await resumeServingAfterUpdate()
+            logger.warning("App Attest: cannot persist the stall restart marker; not restarting for \(Int(AppAttestStallRestartPolicy.minimumInterval / 3600))h: \(error)")
+            await abandonAppAttestStallRestart(after: .markerNotPersisted)
             return true
         }
         if case .failed(let reason) = prepareInstalledCandidateRestart(updater: updater) {
@@ -127,6 +127,19 @@ extension ProviderLoop {
             await resumeServingAfterUpdate()
             return true
         }
+    }
+
+    /// An attempt that closed admission but will not restart: reopen serving
+    /// and keep the monitor from draining again on its next tick. Failures
+    /// after the marker is written are already limited by the marker.
+    internal func abandonAppAttestStallRestart(after failure: AppAttestStallRestartPolicy.FailedAttempt) async {
+        appAttestStallRetryAt = ContinuousClock.now.advanced(
+            by: .seconds(AppAttestStallRestartPolicy.retryDelay(after: failure)))
+        await resumeServingAfterUpdate()
+    }
+
+    internal var appAttestStallRetryDeferred: Bool {
+        appAttestStallRetryAt.map { ContinuousClock.now < $0 } ?? false
     }
 
     /// Whether the drain begun for a stall restart is still update-owned.

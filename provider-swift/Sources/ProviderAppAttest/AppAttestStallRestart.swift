@@ -9,6 +9,8 @@ public enum AppAttestStallRestartPolicy {
     public enum SkipReason: String, Sendable, Equatable {
         case notStalled = "not_stalled"
         case recentlyRestarted = "recently_restarted"
+        /// An earlier attempt in this process drained but could not restart.
+        case retryDeferred = "retry_deferred"
         case lifecycleBusy = "lifecycle_busy"
         case inferenceActive = "inference_active"
     }
@@ -18,16 +20,41 @@ public enum AppAttestStallRestartPolicy {
         case skip(SkipReason)
     }
 
+    /// Why an attempt that had already closed admission did not restart.
+    public enum FailedAttempt: Sendable, Equatable {
+        /// Accepted work or the coordinator's drain acknowledgement did not
+        /// finish before the drain timeout, or the connection dropped.
+        case drainNotAcknowledged
+        /// The restart marker could not be persisted, so no restart may be issued.
+        case markerNotPersisted
+    }
+
+    /// Often transient, but retrying on every one-minute monitor tick would
+    /// close admission again and again.
+    public static let drainRetryDelay: TimeInterval = 15 * 60
+
+    /// How long this process waits before draining again. A marker that cannot
+    /// be written keeps failing and forbids the restart, so it waits the full
+    /// interval: at most one drain per interval, as if the restart had run.
+    public static func retryDelay(after failure: FailedAttempt) -> TimeInterval {
+        switch failure {
+        case .drainNotAcknowledged: return drainRetryDelay
+        case .markerNotPersisted: return minimumInterval
+        }
+    }
+
     /// A marker from the future (clock moved backwards) also counts as recent
-    /// unless it is more than one interval away.
+    /// unless it is more than one interval away. `retryDeferred` is this
+    /// process's in-memory deferral after a failed attempt.
     public static func decide(stalledSeconds: Int?, inferenceActive: Bool, lifecycleBusy: Bool,
-                              lastRestartAt: Date?, now: Date) -> Decision {
+                              lastRestartAt: Date?, retryDeferred: Bool, now: Date) -> Decision {
         guard let stalledSeconds, Double(stalledSeconds) > AppleOperationStall.threshold else {
             return .skip(.notStalled)
         }
         if let lastRestartAt, abs(now.timeIntervalSince(lastRestartAt)) < minimumInterval {
             return .skip(.recentlyRestarted)
         }
+        if retryDeferred { return .skip(.retryDeferred) }
         if lifecycleBusy { return .skip(.lifecycleBusy) }
         if inferenceActive { return .skip(.inferenceActive) }
         return .restart

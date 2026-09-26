@@ -240,9 +240,10 @@ final class AppAttestStallRestartPolicyTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_790_000_000)
     private let stalled = Int(AppleOperationStall.threshold) + 1
 
-    private func decide(stalledSeconds: Int?, inference: Bool = false, lifecycle: Bool = false, last: Date? = nil) -> AppAttestStallRestartPolicy.Decision {
+    private func decide(stalledSeconds: Int?, inference: Bool = false, lifecycle: Bool = false, deferred: Bool = false,
+                        last: Date? = nil) -> AppAttestStallRestartPolicy.Decision {
         AppAttestStallRestartPolicy.decide(stalledSeconds: stalledSeconds, inferenceActive: inference,
-                                           lifecycleBusy: lifecycle, lastRestartAt: last, now: now)
+                                           lifecycleBusy: lifecycle, lastRestartAt: last, retryDeferred: deferred, now: now)
     }
 
     func testRestartsOnlyWhenStalledIdleAndOutsideTheInterval() {
@@ -261,6 +262,21 @@ final class AppAttestStallRestartPolicyTests: XCTestCase {
         XCTAssertEqual(decide(stalledSeconds: stalled, last: now.addingTimeInterval(3600)), .skip(.recentlyRestarted))
         // The interval outranks inference, so an unchanged limit is logged once.
         XCTAssertEqual(decide(stalledSeconds: stalled, inference: true, last: now.addingTimeInterval(-60)), .skip(.recentlyRestarted))
+    }
+
+    func testFailedAttemptDefersTheNextDrainInThisProcess() {
+        XCTAssertEqual(decide(stalledSeconds: stalled, deferred: true), .skip(.retryDeferred))
+        // No drain is attempted while deferred, whatever else is going on.
+        XCTAssertEqual(decide(stalledSeconds: stalled, inference: true, lifecycle: true, deferred: true), .skip(.retryDeferred))
+        // The persisted interval still wins, so an unchanged limit is logged once.
+        XCTAssertEqual(decide(stalledSeconds: stalled, deferred: true, last: now.addingTimeInterval(-60)), .skip(.recentlyRestarted))
+        XCTAssertEqual(decide(stalledSeconds: nil, deferred: true), .skip(.notStalled))
+        // A marker that cannot be written forbids the restart, so the next drain
+        // waits a full interval: at most one drain per interval, as if it restarted.
+        XCTAssertEqual(AppAttestStallRestartPolicy.retryDelay(after: .markerNotPersisted),
+                       AppAttestStallRestartPolicy.minimumInterval)
+        XCTAssertLessThan(AppAttestStallRestartPolicy.retryDelay(after: .drainNotAcknowledged),
+                          AppAttestStallRestartPolicy.minimumInterval)
     }
 
     func testCallbackArrivingDuringDrainCancelsTheRestart() {

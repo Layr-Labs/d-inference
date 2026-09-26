@@ -136,4 +136,17 @@ struct ProviderLifecycleTests {
         // The finished stop keeps ownership: the stall path must not restart.
         #expect(await !loop.appAttestStallRestartOwnsDrain)
     }
+
+    @Test func abandonedAppAttestStallRestartReopensServingAndDefersTheNextDrain() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(await !loop.appAttestStallRetryDeferred)
+        await loop.beginUpdateDraining()
+        #expect(await loop.servingDrain.refusing)
+        await loop.abandonAppAttestStallRestart(after: .markerNotPersisted)
+        // Serving reopens at once, but the monitor may not drain again on its next tick.
+        #expect(await !loop.servingDrain.refusing)
+        #expect(await loop.updatePhase == .idle)
+        #expect(await loop.appAttestStallRetryDeferred)
+    }
 }

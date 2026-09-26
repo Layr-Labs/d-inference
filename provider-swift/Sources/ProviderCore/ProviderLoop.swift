@@ -188,6 +188,10 @@ public actor ProviderLoop {
     internal var appAttestStallMonitorTask: Task<Void, Never>?
     /// Last logged reason for deferring the stall restart (log on change only).
     internal var appAttestStallLastSkip: AppAttestStallRestartPolicy.SkipReason?
+    /// After a stall-restart attempt drained but could not restart, the next
+    /// attempt waits until this instant (monotonic; this process only, since a
+    /// new process has no stalled call).
+    internal var appAttestStallRetryAt: ContinuousClock.Instant?
     internal let loopConfig: ProviderLoopConfig
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?

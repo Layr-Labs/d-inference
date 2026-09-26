@@ -16,6 +16,8 @@ from .model import TABLES, ArchiveError, Window, utc
 from .objects import archive_bucket, check_generations, load_remote, upload
 from .publish import publish as publish_catalog
 from .queries import verify_query
+from .scope import require_bucket_scope
+from .windows import IDWindow
 
 
 def parser():
@@ -23,8 +25,10 @@ def parser():
     commands = root.add_subparsers(dest="command", required=True)
     take = commands.add_parser("capture", help="capture one bounded read-replica snapshot locally")
     take.add_argument("--table", choices=TABLES, required=True)
-    take.add_argument("--start", type=utc, required=True)
-    take.add_argument("--end", type=utc, required=True)
+    take.add_argument("--start", type=utc)
+    take.add_argument("--end", type=utc)
+    take.add_argument("--id-start", type=int)
+    take.add_argument("--id-end", type=int)
     take.add_argument("--directory", type=Path, required=True)
     take.add_argument("--page-rows", type=int, default=1000)
     take.add_argument("--max-rows", type=int, default=250_000)
@@ -43,7 +47,9 @@ def parser():
     remote.add_argument("--receipt", required=True)
     remote.add_argument("--bigquery", action="store_true")
     remote.add_argument("--maximum-bytes-billed", type=int, default=1024**3)
-    plan = commands.add_parser("prepare-plan", help="freeze finite telemetry time ranges locally")
+    plan = commands.add_parser(
+        "prepare-plan", help="freeze finite time or accounting ID ranges locally"
+    )
     plan.add_argument("--ranges", type=Path, required=True)
     plan.add_argument("--output", type=Path, required=True)
     publish = commands.add_parser("upload-plan", help="publish a verified immutable backfill plan")
@@ -80,10 +86,16 @@ def execute(args):
         dsn = os.environ.get("ARCHIVE_DATABASE_URL")
         if not dsn:
             raise ArchiveError("ARCHIVE_DATABASE_URL must name the read replica")
-        window = Window(
+        id_mode = args.id_start is not None or args.id_end is not None
+        if id_mode and (args.start is not None or args.end is not None):
+            raise ArchiveError("choose timestamp or ID bounds, not both")
+        if not id_mode and (args.start is None or args.end is None):
+            raise ArchiveError("capture requires complete timestamp or ID bounds")
+        window_type = IDWindow if id_mode else Window
+        window = window_type(
             args.table,
-            args.start,
-            args.end,
+            args.id_start if id_mode else args.start,
+            args.id_end if id_mode else args.end,
             args.page_rows,
             args.max_rows,
             args.max_raw_bytes,
@@ -102,6 +114,7 @@ def execute(args):
         plan = json.loads(args.file.read_text())
         validate_plan(plan)
         bucket = archive_bucket(storage, args.bucket, args.location)
+        require_bucket_scope(bucket, [r["table"] for r in plan["ranges"]])
         name = f"backfill-plans/v1/{plan['plan_id']}.json"
         if create_json(bucket, name, plan) != plan:
             raise ArchiveError("existing plan differs from the local plan")

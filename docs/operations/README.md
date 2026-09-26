@@ -12,6 +12,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | Runbook | Scope |
 |---|---|
 | [telemetry-history.md](telemetry-history.md) | Copy and verify retained telemetry into queryable history before coordinator changes |
+| [accounting-history.md](accounting-history.md) | Copy exact accounting history into isolated storage and query it with BigQuery |
 | [telemetry-archive.md](telemetry-archive.md) | Capture and verify bounded Parquet snapshots |
 | [telemetry-backfill.md](telemetry-backfill.md) | Run resumable, finite copy-only backfills |
 | [`model-token-promotions.md`](model-token-promotions.md) | Configure capped model-token claims, signup eligibility, paid fallback and provider settlement |

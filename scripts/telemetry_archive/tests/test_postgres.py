@@ -4,11 +4,76 @@ from datetime import timedelta
 
 import psycopg
 import pytest
+from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 
 from telemetry_archive.artifact import capture, read_artifact
 from telemetry_archive.model import ArchiveError
 from telemetry_archive.source import snapshot
+from telemetry_archive.tables import ACCOUNTING_FIELDS
+from telemetry_archive.windows import IDWindow
+
+
+@pytest.mark.parametrize("table", ACCOUNTING_FIELDS)
+def test_accounting_primary_key_capture_restores_exact_money(database, table, tmp_path):
+    import pyarrow.parquet as pq
+
+    fields = ACCOUNTING_FIELDS[table]
+    name = sql.Identifier(table)
+    with psycopg.connect(database, autocommit=True) as conn:
+        conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(name))
+        definitions = [sql.SQL("{} BIGINT NOT NULL").format(sql.Identifier(f)) for f in fields]
+        conn.execute(
+            sql.SQL(
+                "CREATE TABLE {} (id BIGINT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, "
+                "{}, future_data JSONB)"
+            ).format(name, sql.SQL(",").join(definitions))
+        )
+        for i, at, value in (
+            (1, "2026-09-02", 2**63 - 1),
+            (5, "2026-08-01", 2**63 - 1),
+            (9, "2026-09-01", -1),
+        ):
+            values = [i, at, *([value] * len(fields)), '{"unicode":"☃","wide":9223372036854775807}']
+            conn.execute(
+                sql.SQL("INSERT INTO {} VALUES ({})").format(
+                    name, sql.SQL(",").join(sql.Placeholder() for _ in values)
+                ),
+                values,
+            )
+    window = IDWindow(table, 1, 10, page_rows=1)
+    directory = tmp_path / "accounting"
+    receipt = capture(database, window, directory, require_replica=False)
+    read_artifact(directory)
+    expected = dict.fromkeys(fields, str(2 * (2**63 - 1) - 1))
+    assert (
+        receipt["source"]["accounting_totals"] == receipt["stats"]["accounting_totals"] == expected
+    )
+    assert receipt["stats"]["first_time"].startswith("2026-08-01")
+    with psycopg.connect(database, autocommit=True) as conn:
+        for row in pq.read_table(directory / "data.parquet").to_pylist():
+            assert conn.execute(
+                sql.SQL(
+                    "SELECT to_jsonb(json_populate_record(NULL::{},%s::json)) = to_jsonb(s) "
+                    "FROM {} s WHERE id=%s"
+                ).format(name, name),
+                (row["row_json"], row["source_id"]),
+            ).fetchone()[0]
+        assert conn.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(name)).fetchone()[0] == 3
+    # An ID gap is not proof that a transaction never existed or committed later.
+    with snapshot(database, window, require_replica=False) as (_, count, pages):
+        with psycopg.connect(database, autocommit=True) as writer:
+            values = [3, "2026-08-01", *([0] * len(fields)), None]
+            writer.execute(
+                sql.SQL("INSERT INTO {} VALUES ({})").format(
+                    name, sql.SQL(",").join(sql.Placeholder() for _ in values)
+                ),
+                values,
+            )
+        assert count == len([r for page in pages for r in page]) == 3
+    refreshed = capture(database, window, tmp_path / "refresh", require_replica=False)
+    assert refreshed["stats"]["rows"] == 4
+    assert refreshed["artifact_id"] != receipt["artifact_id"]
 
 
 @pytest.fixture

@@ -9,15 +9,17 @@ from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
 from . import cloud
+from .accounting import query_projections
 from .artifact import json_bytes
 from .backfill_plan import validate_plan
 from .catalog import merge_files, verified_entries
 from .journal import read_json
 from .model import TABLES, ArchiveError
 from .objects import archive_bucket, put_verified
+from .scope import require_bucket_scope, require_dataset_scope
 
 CATALOG_SCHEMA = [
-    bigquery.SchemaField(name, kind, mode="REQUIRED")
+    bigquery.SchemaField(name, kind, mode="NULLABLE" if name.startswith("window_") else "REQUIRED")
     for name, kind in (
         ("table_name", "STRING"),
         ("source_uri", "STRING"),
@@ -29,22 +31,25 @@ CATALOG_SCHEMA = [
         ("parquet_bytes", "INTEGER"),
         ("plan_id", "STRING"),
     )
-]
+] + [bigquery.SchemaField(name, "INTEGER") for name in ("id_start", "id_end")]
 
 
 def validate_destination(project, dataset):
     if not re.fullmatch(r"[a-z][a-z0-9-]{4,62}", project):
         raise ArchiveError("invalid project")
-    if not re.fullmatch(r"telemetry_[a-zA-Z0-9_]+", dataset):
-        raise ArchiveError("publisher requires a dedicated telemetry_ dataset")
+    if not re.fullmatch(r"(?:telemetry|accounting)_[a-zA-Z0-9_]+", dataset):
+        raise ArchiveError("publisher requires a dedicated telemetry_ or accounting_ dataset")
 
 
 def reader_sql(project, dataset, table, version):
     validate_destination(project, dataset)
     if table not in TABLES or not re.fullmatch(r"[0-9a-f]{16}", version):
         raise ArchiveError("invalid catalog identity")
+    require_dataset_scope(dataset, [table])
     prefix = f"{project}.{dataset}"
-    return f"""SELECT r.*, c.observed_at AS archive_observed_at
+    projections = query_projections(table)
+    extra = ", " + ", ".join(projections) if projections else ""
+    return f"""SELECT r.*, c.observed_at AS archive_observed_at{extra}
 FROM `{prefix}.{table}_files_{version}` r
 JOIN `{prefix}.catalog_{version}` c ON r._FILE_NAME = c.source_uri
 WHERE c.table_name = '{table}'
@@ -65,6 +70,9 @@ def publish(args):
         if plan is None or plan["plan_id"] != plan_id:
             raise ArchiveError("catalog plan is missing or mismatched")
         validate_plan(plan)
+        tables = [r["table"] for r in plan["ranges"]]
+        require_bucket_scope(bucket, tables)
+        require_dataset_scope(args.dataset, tables)
         entries.extend(verified_entries(bucket, args.bucket, plan))
     client = cloud.bigquery_client(args.project, args.location)
     dataset = client.get_dataset(f"{args.project}.{args.dataset}")
@@ -83,7 +91,10 @@ def publish(args):
         for row in prior:
             entry = dict(row.items())
             for field in ("observed_at", "window_start", "window_end"):
-                entry[field] = entry[field].isoformat()
+                if entry[field] is not None:
+                    entry[field] = entry[field].isoformat()
+            require_dataset_scope(args.dataset, [entry["table_name"]])
+            require_bucket_scope(bucket, [entry["table_name"]])
             if not entry["source_uri"].startswith(f"gs://{args.bucket}/data/v1/"):
                 raise ArchiveError("existing catalog names another bucket")
             object_name = entry["source_uri"].removeprefix(f"gs://{args.bucket}/")

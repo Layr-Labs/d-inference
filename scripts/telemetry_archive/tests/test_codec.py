@@ -12,9 +12,10 @@ from telemetry_archive.model import ARCHIVE_SCHEMA, ArchiveError, Window, utc
 
 
 @pytest.mark.parametrize(
-    "table", ["usage", "ledger_entries", "balances", "users", "request_profiles;DROP TABLE users"]
+    "table",
+    ["payments", "stripe_withdrawals", "balances", "users", "request_profiles;DROP TABLE users"],
 )
-def test_financial_and_unknown_tables_rejected(window, table):
+def test_live_financial_state_and_unknown_tables_rejected(window, table):
     with pytest.raises(ValueError):
         replace(window, table=table)
 

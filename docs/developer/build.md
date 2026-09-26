@@ -1020,4 +1020,4 @@ migration coverage runs with `npm test` in `console-ui`.
 
 ## Telemetry archive worker
 
-The independent Python worker uses `scripts/telemetry_archive/Dockerfile` and hash-pinned `requirements.lock`. Run `uv sync --locked` in that directory for local tooling; build the container for Linux/amd64. It does not rebuild or deploy the coordinator. See [telemetry history](../operations/telemetry-history.md).
+The independent Python worker uses `scripts/telemetry_archive/Dockerfile` and hash-pinned `requirements.lock`. Run `uv sync --locked` in that directory for local tooling; build the container for Linux/amd64. It does not rebuild or deploy the coordinator. The same worker supports isolated accounting archives and indexed ID batches; deploy each archive job with its own destination permissions. See [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).

@@ -1,6 +1,6 @@
 # Queryable telemetry history
 
-> Last updated: 2026-09-26 · commit `3e9dcf6b4`
+> Last updated: 2026-09-26 · commit `86895ace9`
 
 Copy and verify retained PostgreSQL telemetry into private Cloud Storage, then
 publish BigQuery views without changing coordinator writes, retention, or
@@ -100,6 +100,7 @@ catalog generation. No coordinator rollout or source-database rollback is needed
 ## Related
 
 - [Snapshot verification](telemetry-archive.md)
+- [Accounting history](accounting-history.md)
 - [Finite cloud backfills](telemetry-backfill.md)
 - [Worker commands](../../scripts/telemetry_archive/README.md)
 - [Telemetry inventory](../reference/telemetry-inventory.md)

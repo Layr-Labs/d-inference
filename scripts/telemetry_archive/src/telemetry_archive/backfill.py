@@ -3,9 +3,11 @@
 import hashlib
 import time
 
+from .accounting import validate_totals
 from .artifact import json_bytes
 from .backfill_plan import children, identity, window_key, windows
 from .model import ArchiveError
+from .windows import end_boundary
 
 
 class SplitWindow(ArchiveError):
@@ -70,10 +72,11 @@ class Runner:
                 result = self.process(window)
             except SplitWindow:
                 left, _ = children(window)
-                state.update(status="split", middle=identity(left)["end"])
+                state.update(status="split", middle=end_boundary(left))
             else:
                 if result.get("verified") is not True:
                     raise ArchiveError("unverified export cannot become a completion checkpoint")
+                validate_totals(window.table, result.get("accounting_totals"), result["rows"])
                 state.update(status="complete", result=result)
             # First immutable writer decides this window's structure. A concurrent
             # loser can leave an unreferenced copy, never an overlapping checkpoint.
@@ -87,7 +90,7 @@ class Runner:
             yield state
         else:
             left, right = children(window)
-            if state.get("middle") != identity(left)["end"]:
+            if state.get("middle") != end_boundary(left):
                 raise ArchiveError("split checkpoint has an unexpected boundary")
             yield from self.visit(left)
             yield from self.visit(right)
@@ -107,6 +110,11 @@ class Runner:
                 target["rows"] += result["rows"]
                 target["parquet_bytes"] += result["parquet_bytes"]
                 target["windows"] += 1
+                validate_totals(window.table, result.get("accounting_totals"), result["rows"])
+                if "accounting_totals" in result:
+                    sums = target.setdefault("accounting_totals", {})
+                    for field, value in result["accounting_totals"].items():
+                        sums[field] = str(int(sums.get(field, "0")) + int(value))
                 data = result["objects"]["data"]
                 entries = files.setdefault(window.table, {})
                 if data["name"] in entries and entries[data["name"]] != data:
@@ -120,6 +128,11 @@ class Runner:
                 "table": table,
                 "copy_only": True,
                 "rows": totals[table]["rows"],
+                **(
+                    {"accounting_totals": totals[table]["accounting_totals"]}
+                    if "accounting_totals" in totals[table]
+                    else {}
+                ),
                 "files": [entries[k] for k in sorted(entries)],
             }
             key = "catalogs/" + table

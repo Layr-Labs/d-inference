@@ -8,6 +8,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from .accounting import add_row, empty_totals, serialized_totals
 from .model import ARCHIVE_SCHEMA, TABLES, ArchiveError, Window, stamp, utc
 
 
@@ -52,6 +53,7 @@ def envelope(source_id, source_time, raw, time_column):
 
 def encode(pages, path: Path, window: Window, expected: int) -> dict:
     digest = hashlib.sha256()
+    totals = empty_totals(window.table)
     count = raw_bytes = 0
     min_id = max_id = None
     first = last = previous = None
@@ -59,13 +61,14 @@ def encode(pages, path: Path, window: Window, expected: int) -> dict:
         for page in pages:
             encoded = []
             for source_id, source_time, raw in page:
-                key = (source_time, source_id)
+                key = window.order_key(source_id, source_time)
                 if previous is not None and key <= previous:
                     raise ArchiveError("source rows are not strictly ordered")
-                if not window.start <= source_time < window.end:
+                if not window.contains(source_id, source_time):
                     raise ArchiveError("source row lies outside the requested window")
                 previous = key
                 row = envelope(source_id, source_time, raw, TABLES[window.table])
+                add_row(totals, raw)
                 encoded.append(row)
                 digest_row(digest, raw)
                 count += 1
@@ -74,13 +77,14 @@ def encode(pages, path: Path, window: Window, expected: int) -> dict:
                     raise ArchiveError("snapshot size limit reached; reduce the window")
                 min_id = source_id if min_id is None else min(min_id, source_id)
                 max_id = source_id if max_id is None else max(max_id, source_id)
-                first = first or source_time
-                last = source_time
+                first = source_time if first is None else min(first, source_time)
+                last = source_time if last is None else max(last, source_time)
             if encoded:
                 writer.write_table(pa.Table.from_pylist(encoded, schema=ARCHIVE_SCHEMA))
     if count != expected:
         raise ArchiveError("snapshot count differs from the source COUNT in the same transaction")
     return {
+        **({"accounting_totals": serialized_totals(totals)} if totals else {}),
         "rows": count,
         "raw_bytes": raw_bytes,
         "content_sha256": digest.hexdigest(),
@@ -102,6 +106,7 @@ def verify_parquet(path: Path, window: Window, expected: dict) -> None:
     if not parquet.schema_arrow.equals(ARCHIVE_SCHEMA, check_metadata=True):
         raise ArchiveError("Parquet schema mismatch")
     digest = hashlib.sha256()
+    totals = empty_totals(window.table)
     count = raw_bytes = 0
     min_id = max_id = None
     first = last = previous = None
@@ -112,20 +117,22 @@ def verify_parquet(path: Path, window: Window, expected: dict) -> None:
             )
             if rebuilt != row:
                 raise ArchiveError("decoded projection or row digest differs from complete JSON")
-            key = (row["source_time"], row["source_id"])
+            key = window.order_key(row["source_id"], row["source_time"])
             if previous is not None and key <= previous:
                 raise ArchiveError("decoded rows are not strictly ordered")
             previous = key
-            if not window.start <= row["source_time"] < window.end:
+            if not window.contains(row["source_id"], row["source_time"]):
                 raise ArchiveError("decoded row outside the archive interval")
             digest_row(digest, row["row_json"])
+            add_row(totals, row["row_json"])
             count += 1
             raw_bytes += len(row["row_json"].encode("utf-8"))
             min_id = row["source_id"] if min_id is None else min(min_id, row["source_id"])
             max_id = row["source_id"] if max_id is None else max(max_id, row["source_id"])
-            first = first or row["source_time"]
-            last = row["source_time"]
+            first = row["source_time"] if first is None else min(first, row["source_time"])
+            last = row["source_time"] if last is None else max(last, row["source_time"])
     actual = {
+        **({"accounting_totals": serialized_totals(totals)} if totals else {}),
         "rows": count,
         "raw_bytes": raw_bytes,
         "content_sha256": digest.hexdigest(),

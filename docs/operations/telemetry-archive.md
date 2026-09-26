@@ -1,6 +1,6 @@
 # Copy and verify historical telemetry
 
-> Last updated: 2026-09-26 · commit `3e9dcf6b4`
+> Last updated: 2026-09-26 · commit `86895ace9`
 
 Use the standalone copy-only exporter to preserve a bounded telemetry snapshot
 in Cloud Storage and verify it with BigQuery. This phase does not change the
@@ -11,9 +11,10 @@ deploy a scheduled service.
 
 Use for small verified pilots and explicitly bounded historical copies of
 `request_profiles`, `fleet_snapshots`, `request_rejections`, or
-`inference_routes`. These are diagnostic histories. They are used by admin and
-profiler reads, while live routing and financial state are separate. No billing,
-balance, user, or API-key table is accepted by the exporter.
+`inference_routes`, or `request_outcomes`. These are diagnostic histories used by
+admin and profiler reads. The separate [accounting history runbook](accounting-history.md)
+covers the four allowed accounting-history tables and their isolated destinations.
+Balance, user, and API-key tables remain outside the exporter scope.
 
 The implementation is `scripts/telemetry_archive/src/telemetry_archive/`:
 `source.snapshot` opens a read-only replica snapshot, `artifact.capture` creates

@@ -7,6 +7,8 @@ import psycopg
 from psycopg import sql
 
 from .model import TABLES, ArchiveError, Window, stamp
+from .tables import ACCOUNTING_FIELDS
+from .windows import IDWindow
 
 
 @contextmanager
@@ -56,21 +58,48 @@ def snapshot(dsn: str, window: Window, *, require_replica: bool = True):
             }
             table = sql.Identifier("public", window.table)
             timestamp = sql.Identifier(TABLES[window.table])
-            predicate = sql.SQL("{t} >= %s AND {t} < %s").format(t=timestamp)
-            expected = conn.execute(
-                sql.SQL("SELECT COUNT(*) FROM {table} WHERE {predicate}").format(
-                    table=table, predicate=predicate
+            ordering = sql.Identifier("id") if isinstance(window, IDWindow) else timestamp
+            predicate = sql.SQL("{t} >= %s AND {t} < %s").format(t=ordering)
+            fields = ACCOUNTING_FIELDS.get(window.table, ())
+            types = {name: kind for name, kind, _ in columns}
+            if isinstance(window, IDWindow):
+                indexed = conn.execute(
+                    "SELECT EXISTS (SELECT 1 FROM pg_index i "
+                    "JOIN pg_class c ON c.oid=i.indrelid "
+                    "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                    "JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=i.indkey[0] "
+                    "WHERE n.nspname='public' AND c.relname=%s AND a.attname='id' "
+                    "AND i.indisprimary AND i.indisvalid AND i.indnkeyatts=1)",
+                    (window.table,),
+                ).fetchone()[0]
+                if types.get("id") != "bigint" or not indexed:
+                    raise ArchiveError("ID capture requires the existing bigint primary key")
+            if any(types.get(field) not in ("bigint", "integer") for field in fields):
+                raise ArchiveError("accounting source schema must use exact integer fields")
+            aggregates = [sql.SQL("COUNT(*)")]
+            aggregates += [
+                sql.SQL("COALESCE(SUM({field}), 0)").format(field=sql.Identifier(field))
+                for field in fields
+            ]
+            counts = conn.execute(
+                sql.SQL("SELECT {aggregates} FROM {table} WHERE {predicate}").format(
+                    aggregates=sql.SQL(", ").join(aggregates), table=table, predicate=predicate
                 ),
                 (window.start, window.end),
-            ).fetchone()[0]
+            ).fetchone()
+            expected = counts[0]
+            if fields:
+                metadata["accounting_totals"] = {
+                    field: str(value) for field, value in zip(fields, counts[1:], strict=True)
+                }
             if expected > window.max_rows:
                 raise ArchiveError("window exceeds max_rows; split it into smaller intervals")
             with conn.cursor(name="telemetry_archive_rows") as cursor:
                 cursor.execute(
                     sql.SQL(
                         "SELECT id, {t}, row_to_json(s)::text FROM {table} s "
-                        "WHERE {predicate} ORDER BY {t}, id"
-                    ).format(t=timestamp, table=table, predicate=predicate),
+                        "WHERE {predicate} ORDER BY {ordering}, id"
+                    ).format(t=timestamp, table=table, predicate=predicate, ordering=ordering),
                     (window.start, window.end),
                 )
 

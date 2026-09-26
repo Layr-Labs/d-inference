@@ -18,7 +18,7 @@ func TestProviderDrainAtWriterDoesNotSendOrPublishDispatch(t *testing.T) {
 	d := &dispatchState{s: s, provider: p, pr: pr, timing: pr.Timing}
 	frame := providerInferenceFrameBuilder(pr.RequestID, "ephemeral", "ciphertext", pr)
 	metadata, err := d.writeQueuedProviderInferenceRequest(context.Background(), func(at time.Time) ([]byte, error) {
-		s.registry.CommitProviderDrain(p)
+		s.registry.CommitProviderDrain(p, "stop")
 		return frame(at)
 	})
 	if !errors.Is(err, registry.ErrProviderDraining) || metadata.Committed || d.providerDispatches != 0 || !pr.Timing.DispatchedAt.IsZero() {

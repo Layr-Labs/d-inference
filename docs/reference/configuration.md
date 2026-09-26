@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-26 · commit `9b7d5fbc5`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -16,16 +16,48 @@ read once at process start and a restart applies a change.
 | Setting | Default / bounds | Consumer |
 |---|---|---|
 | `darkbloom start/stop/restart/update --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
+| `darkbloom switch --timeout` | `600` seconds; 0–3600; `0` means no waiting for unfinished work, with a 30-second barrier allowance when already settled; no force mode | `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSwitch.swift` (`drainForModelSwitch`) |
 | `darkbloom restart --startup-timeout` | `180` seconds; 1–3600 | `provider-swift/Sources/darkbloom/RestartCommand.swift` (`Restart`) |
 | `DARKBLOOM_DRAIN_TIMEOUT_SECONDS` | `600` seconds when missing/invalid; valid 1–3600 | Signal/AppKit and planned metadata-reconnect drain in `provider-swift/Sources/ProviderCore/Service/ProviderTermination.swift` (`timeoutSeconds`); launchd environment allowlist preserves it |
 | launchd `ExitTimeOut` | `3660` seconds on install or CLI restart | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`makeServicePlist`, `refreshTerminationAllowance`) |
 
-A CLI deadline expiry leaves a running, non-admitting process and disables
-watchdog/login restart. Signal-only shutdown preserves configured login startup. See [lifecycle commands](../provider/cli-reference.md#graceful-stop-and-restart)
+A start/stop/restart/update CLI deadline expiry leaves a running, non-admitting
+process and disables watchdog/login restart. A `switch` timeout also keeps
+accepted work alive and admission closed, but never changes recovery settings.
+Signal-only shutdown preserves configured login startup. See [lifecycle commands](../provider/cli-reference.md#graceful-stop-and-restart)
 for recovery and explicit force semantics. Existing loaded launchd jobs must be
 restarted to adopt the new allowance. Local mailbox files are owner-only under
 `lifecycle/` beside the daemon state file and bind PID plus kernel process-start
 time; they are not network control endpoints or serving credentials.
+
+## Provider model selection
+
+| Setting | Default / precedence | Consumer |
+|---|---|---|
+| `backend.enabled_models` | `[]` means all eligible local models; a successful `switch` pins its complete nonempty selection | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`) |
+| launchd-managed `start --foreground --model` | Explicitly pinned `enabled_models` overrides stale baked arguments, including restart and watchdog recovery | `provider-swift/Sources/darkbloom/StartCommand.swift` (`usesPinnedModelSelection`); `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runForeground`) |
+| direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runForeground`) |
+| later scheduled serving windows | Keep the initial foreground selection until a live switch or saved `enabled_models` change; then reload only that selection, validating exact local models and refreshing weight hashes before each window | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runScheduled`) |
+
+`start` saves its selected models under the lifecycle lease before disabling
+recovery or draining/stopping the current daemon; persistence failure leaves it
+running. Live [`switch`](../provider/cli-reference.md#darkbloom-switch) uses the running
+daemon's resolved config path and does not optimistically write from the CLI.
+The daemon persists the accepted selection using a stable config sidecar lock,
+reloading before saving so unrelated settings survive concurrent config writes.
+Other config changes remain process-start settings unless documented otherwise.
+For replacement start, the same sidecar lock covers saving and synchronous
+drain setup. Setup failure restores the original bytes or file absence, so
+legacy unpinned selections stay unpinned; a timeout after publication retains
+the new intent. The lock is released before waiting for drain completion
+(`ProviderModelSelection.withReplacement` in
+`provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift`).
+Missing explicit config paths use the already-resolved startup/loop configuration,
+never another path's canonical config. Live switch stages a presence-aware
+rollback snapshot, releases the lock for the network wait, and restores only its
+model-selection key when other settings changed concurrently. A newer selection
+causes a reported conflict instead of being overwritten (`stageReplacement`,
+`restore` in the same module).
 
 
 ## Where values are set

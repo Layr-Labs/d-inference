@@ -155,7 +155,7 @@ extension ProviderLoop {
     /// enter the `.installing` phase — still serving while the new bundle
     /// downloads and stages. The App Attest stall restart claims the same lease.
     internal func claimUpdateStart(updater: SelfUpdater) -> Bool {
-        guard updatePhase == .idle, !servingDrain.refusing, !isShuttingDown else { return false }
+        guard updatePhase == .idle, modelSwitchTask == nil, !servingDrain.refusing, !isShuttingDown else { return false }
         do {
             let session = try updater.beginUpdateSession(
                 operation: "background-auto-update",

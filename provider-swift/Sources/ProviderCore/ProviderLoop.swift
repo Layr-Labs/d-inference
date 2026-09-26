@@ -336,6 +336,17 @@ public actor ProviderLoop {
     internal var lifecycleDrainRequestID: String?
     internal var lifecycleCommandReceived = false
     internal var lifecycleMonitorTask: Task<Void, Never>?
+    internal var modelSwitchTask: Task<ProviderModelSwitchStatus, Never>?
+    internal var modelSwitchStatus = ProviderModelSwitchStatus()
+    /// IO-only seams keep validation on real scanner/hash paths in lifecycle tests.
+    internal var modelSwitchSnapshotResolver: @Sendable (String) -> URL? = { ModelScanner.resolveLocalPath(modelID: $0) }
+    internal var modelSwitchWeightHasher: @Sendable (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
+    /// Invalidates prefetch work begun before an operator replaced the set.
+    internal var modelSelectionRevision: UInt64 = 0
+    internal var modelAdvertisementsInFlight = 0
+    /// Distinguishes an explicit switch back to the already-saved IDs from
+    /// unchanged TOML while a manual foreground override was serving.
+    public internal(set) var hasPersistedModelSwitch = false
     internal var acceptedLifecycleRequests: Set<String> = []
     internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()
@@ -370,11 +381,10 @@ public actor ProviderLoop {
     /// durable commit.
     internal var updateSession: SelfUpdater.UpdateSession?
 
-    /// Latest `desired_models` push received while update-draining. Normally
-    /// the restart makes it moot (registration gets fresh desired state), but
-    /// if the restart is aborted (commit/restart failure) the deferred state
-    /// is replayed by `resumeServingAfterUpdate` so the provider does not keep
-    /// serving from a desired set the coordinator has since changed.
+    /// Latest desired_models push received while admission is closed. A switch
+    /// clears obsolete state before committing, then replays the fresh snapshot
+    /// after reopening; an aborted update likewise replays its deferred state.
+    /// Reconnecting providers receive a new snapshot during registration.
     internal var deferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
 
     /// Models remain tracked while their scheduler is tearing down so

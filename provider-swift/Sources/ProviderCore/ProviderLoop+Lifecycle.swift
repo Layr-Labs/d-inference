@@ -36,6 +36,9 @@ extension ProviderLoop {
         beginServingDrain(owner: .lifecycle)
         pendingRetirementReconnect?.cancel()
         pendingRetirementReconnect = nil
+        // Stop/signal preempts read-only validation, but inventory transactions
+        // must settle before the final lifecycle barrier.
+        await cancelModelSwitchAndWait()
         let deadline = ContinuousClock.now.advanced(by: .seconds(request.timeoutSeconds))
         lifecycleStatus = ProviderDrainStatus(requestID: request.id, outcome: .draining,
             remaining: lifecycleRemaining, deadline: Date().timeIntervalSince1970 + Double(request.timeoutSeconds))
@@ -111,9 +114,15 @@ extension ProviderLoop {
                     handled = request.id
                     Task { await self?.handleLifecycleCommand(request) }
                 }
+                _ = await self?.acceptPendingModelSwitch(from: mailbox)
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
+    }
+
+    internal func acceptPendingModelSwitch(from mailbox: LifecycleMailbox) -> Task<ProviderModelSwitchStatus, Never>? {
+        guard let request = mailbox.claimSwitchRequest(), request.isValid(for: mailbox.identity) else { return nil }
+        return Task { await self.switchModels(request: request) }
     }
 
     private func handleLifecycleCommand(_ request: ProviderDrainRequest) async {

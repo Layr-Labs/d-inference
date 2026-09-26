@@ -185,6 +185,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case loadModelStatus(LoadModelStatus)
     case prefetchModelStatus(PrefetchModelStatus)
     case modelsUpdate(ModelsUpdate)
+    case modelsReplace(ModelsReplace)
     case prefixCacheLookup(PrefixCacheLookup)
     case prefixCacheReady(PrefixCacheReady)
     case prefixCacheLookupV2(PrefixCacheLookupV2)
@@ -862,6 +863,7 @@ extension ProviderMessage: Codable {
         case loadModelStatus = "load_model_status"
         case prefetchModelStatus = "prefetch_model_status"
         case modelsUpdate = "models_update"
+        case modelsReplace = "models_replace"
         case prefixCacheLookup = "prefix_cache_lookup"
         case prefixCacheReady = "prefix_cache_ready"
         case prefixCacheLookupV2 = "prefix_cache_lookup_v2"
@@ -1157,6 +1159,10 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(
                 u.toolConstraintModels, forKey: .toolConstraintModels)
 
+        case .modelsReplace(let replacement):
+            try container.encode(TypeValue.modelsReplace, forKey: .type)
+            try replacement.encode(to: encoder)
+
         case .prefixCacheLookup(let receipt):
             try container.encode(TypeValue.prefixCacheLookup, forKey: .type)
             try container.encode(receipt.requestId, forKey: .requestId)
@@ -1421,6 +1427,9 @@ extension ProviderMessage: Codable {
                     [String].self, forKey: .toolConstraintModels)
             ))
 
+        case .modelsReplace:
+            self = .modelsReplace(try ModelsReplace(from: decoder))
+
         case .prefixCacheLookup:
             self = .prefixCacheLookup(PrefixCacheLookup(
                 requestId: try container.decode(String.self, forKey: .requestId),
@@ -1508,6 +1517,7 @@ extension ProviderMessage: Codable {
 
 public enum CoordinatorMessage: Sendable, Equatable {
     case drainAck(String)
+    case modelsReplaceAck(ModelsReplaceAck)
     case inferenceRequest(InferenceRequest)
     case cancel(Cancel)
     case attestationChallenge(AttestationChallenge)
@@ -1703,6 +1713,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
 extension CoordinatorMessage: Codable {
     enum TypeValue: String, Codable {
         case drainAck = "provider_drain_ack"
+        case modelsReplaceAck = "models_replace_ack"
         case inferenceRequest = "inference_request"
         case cancel
         case attestationChallenge = "attestation_challenge"
@@ -1753,6 +1764,9 @@ extension CoordinatorMessage: Codable {
         case .drainAck(let id):
             try container.encode(TypeValue.drainAck, forKey: .type)
             try container.encode(id, forKey: .requestId)
+        case .modelsReplaceAck(let ack):
+            try container.encode(TypeValue.modelsReplaceAck, forKey: .type)
+            try ack.encode(to: encoder)
         case .inferenceRequest(let r):
             try container.encode(TypeValue.inferenceRequest, forKey: .type)
             try container.encode(r.requestId, forKey: .requestId)
@@ -1843,6 +1857,8 @@ extension CoordinatorMessage: Codable {
         switch type {
         case .drainAck:
             self = .drainAck(try container.decode(String.self, forKey: .requestId))
+        case .modelsReplaceAck:
+            self = .modelsReplaceAck(try ModelsReplaceAck(from: decoder))
         case .inferenceRequest:
             self = .inferenceRequest(InferenceRequest(
                 requestId: try container.decode(String.self, forKey: .requestId),

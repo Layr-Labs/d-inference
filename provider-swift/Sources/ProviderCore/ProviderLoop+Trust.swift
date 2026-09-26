@@ -48,6 +48,9 @@ extension ProviderLoop {
             advertisedModels: advertisedModels.keys.sorted(),
             inferenceActive: state.inferenceActive,
             lifecycle: lifecycleStatus,
+            modelSwitch: modelSwitchStatus,
+            configPath: loopConfig.configPath?.path,
+            runtimeCapabilities: loopConfig.runtimeCapabilities.map(\.rawValue).sorted(),
             stats: DaemonState.Stats(
                 requestsServed: stats.requestsServed,
                 tokensGenerated: stats.tokensGenerated,

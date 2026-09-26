@@ -1,6 +1,21 @@
 import Foundation
 
 extension ProviderMessage {
+    public struct ModelsReplaceReady: Codable, Sendable, Equatable {
+        public var requestId: String
+        public var drainRequestId: String
+
+        public init(requestId: String, drainRequestId: String) {
+            self.requestId = requestId
+            self.drainRequestId = drainRequestId
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case requestId = "request_id"
+            case drainRequestId = "drain_request_id"
+        }
+    }
+
     public struct ModelsReplace: Codable, Sendable, Equatable {
         public var requestId: String
         public var drainRequestId: String

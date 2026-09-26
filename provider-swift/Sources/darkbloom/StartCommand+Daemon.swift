@@ -70,7 +70,6 @@ extension Start {
         })
         defer { replacement.release() }
         try await ServiceDrain.stopDrainedProvider()
-        try ProviderModelSelection.save(selectedModelIDs, configPath: snapshot.configPath)
         try LaunchAgent.installAndStart(
             coordinatorURL: coordinatorURL,
             models: selectedModelIDs,

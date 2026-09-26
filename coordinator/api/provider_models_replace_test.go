@@ -118,6 +118,27 @@ func TestProviderModelsReplaceUsesSameDrainedConnection(t *testing.T) {
 				default:
 				}
 			}
+		} else {
+			if !reg.ProviderDraining(original.ID) || reg.Queue().QueueSize("new") != 1 {
+				t.Fatal("commit receipt dispatched queued work before provider readiness")
+			}
+			ready, err := json.Marshal(protocol.ModelsReplaceReadyMessage{
+				Type: protocol.TypeModelsReplaceReady, RequestID: tc.id, DrainRequestID: tc.drain,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.Write(ctx, websocket.MessageText, ready); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case selected := <-queued[1].ResponseCh:
+				if selected != original {
+					t.Fatal("ready provider did not receive queued replacement work")
+				}
+			case <-ctx.Done():
+				t.Fatal("readiness did not dispatch queued replacement work")
+			}
 		}
 	}
 	if reg.GetProvider(original.ID) != original || reg.ProviderDraining(original.ID) {

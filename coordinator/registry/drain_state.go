@@ -134,6 +134,9 @@ func (r *Registry) CommitProviderDrain(p *Provider, requestID string) uint64 {
 	p.drainGeneration++
 	p.drainReady = false
 	p.drainReplacementPending = false
+	p.drainReplacementAcked = false
+	p.drainReplacementID = ""
+	p.drainRemovedModels = nil
 	if len(p.pendingReqs) > 0 && p.drainPendingDone == nil {
 		p.drainPendingDone = make(chan struct{})
 	}

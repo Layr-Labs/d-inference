@@ -23,8 +23,24 @@ public struct LifecycleMailbox: Sendable {
 
     public func writeSwitchRequest(_ request: ProviderModelSwitchRequest) throws { try write(request, suffix: "switch-request") }
     public func writeSwitchStatus(_ status: ProviderModelSwitchStatus) throws { try write(status, suffix: "switch-status") }
-    public func readSwitchRequest() -> ProviderModelSwitchRequest? { read(ProviderModelSwitchRequest.self, suffix: "switch-request") }
     public func readSwitchStatus() -> ProviderModelSwitchStatus? { read(ProviderModelSwitchStatus.self, suffix: "switch-status") }
+
+    /// Rename is the acceptance boundary. Each loop/monitor can consume a
+    /// publication once, and cleanup can never unlink a newer publication.
+    public func claimSwitchRequest() -> ProviderModelSwitchRequest? {
+        claimSwitchRequest(afterClaim: {})
+    }
+
+    internal func claimSwitchRequest(afterClaim: () -> Void) -> ProviderModelSwitchRequest? {
+        var info = stat()
+        guard lstat(directory.path, &info) == 0, info.st_uid == getuid(),
+              info.st_mode & S_IFMT == S_IFDIR, info.st_mode & 0o077 == 0 else { return nil }
+        let claimed = path("switch-claim-\(UUID().uuidString)")
+        guard rename(path("switch-request").path, claimed.path) == 0 else { return nil }
+        defer { try? FileManager.default.removeItem(at: claimed) }
+        afterClaim()
+        return read(ProviderModelSwitchRequest.self, at: claimed)
+    }
 
     private func write<T: Encodable>(_ value: T, suffix: String) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -44,7 +60,11 @@ public struct LifecycleMailbox: Sendable {
     }
 
     private func read<T: Decodable>(_ type: T.Type, suffix: String) -> T? {
-        let fd = open(path(suffix).path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        read(type, at: path(suffix))
+    }
+
+    private func read<T: Decodable>(_ type: T.Type, at path: URL) -> T? {
+        let fd = open(path.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { return nil }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? file.close() }

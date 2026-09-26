@@ -45,20 +45,20 @@ extension CoordinatorClient {
     public func validateModelSelectionAfterDrain(
         _ models: [ModelInfo], drainID: String, timeout: Duration
     ) async throws {
-        try await sendModelSelectionAfterDrain(models, drainID: drainID, timeout: timeout, validateOnly: true)
+        _ = try await sendModelSelectionAfterDrain(models, drainID: drainID, timeout: timeout, validateOnly: true)
     }
 
     /// Never reconnects. Explicit rejection restores the previous reconnect inventory;
     /// timeout/disconnect retains the intended inventory because commit is unknown.
     public func replaceModelsAfterDrain(
         _ models: [ModelInfo], drainID: String, timeout: Duration
-    ) async throws {
+    ) async throws -> String {
         try await sendModelSelectionAfterDrain(models, drainID: drainID, timeout: timeout, validateOnly: false)
     }
 
     private func sendModelSelectionAfterDrain(
         _ models: [ModelInfo], drainID: String, timeout: Duration, validateOnly: Bool
-    ) async throws {
+    ) async throws -> String {
         guard hasRegisteredConnection(), let connection = nwConnection else {
             throw ModelSwitchError.disconnected
         }
@@ -107,7 +107,9 @@ extension CoordinatorClient {
             guard nwConnection === connection, hasRegisteredConnection() else {
                 throw ModelSwitchError.disconnected
             }
-            if !validateOnly, acknowledgedSwitchDrain == drainID { acknowledgedSwitchDrain = nil }
+            if !validateOnly {
+                if acknowledgedSwitchDrain == drainID { acknowledgedSwitchDrain = nil }
+            }
         case .failure(let error):
             switch error {
             case .invalidDrain, .invalidModels, .rejected:
@@ -121,6 +123,7 @@ extension CoordinatorClient {
             }
             throw error
         }
+        return id
     }
 
     internal func completeModelReplacement(_ ack: CoordinatorMessage.ModelsReplaceAck) {

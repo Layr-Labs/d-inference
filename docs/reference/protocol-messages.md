@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-26 · commit `b1aac01b5`
+> Last updated: 2026-09-26 · commit `e467eff8d`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -50,7 +50,7 @@ so earlier inbound inference frames are refused before the barrier completes.
 It is not a bearer credential or permission to serve. A stale idle heartbeat or
 drain TTL cannot reopen this connection. Only a committing `models_replace`
 (`validate_only` omitted or false) against the latest settled drain, followed by
-successful receipt delivery, resumes the same connection; a restart instead
+successful receipt delivery and matching provider readiness, resumes the same connection; a restart instead
 registers and authorizes a new connection. Code:
 `coordinator/api/provider_completion_barrier.go` (`providerCompletionBarrier`),
 `coordinator/api/provider_drain_ack.go` (`providerDrainAcker`),
@@ -112,6 +112,7 @@ deliver a graceful-drain acknowledgement.
 | provider → coordinator | `models_update` | `ModelsUpdateMessage` | `.modelsUpdate` |
 | provider → coordinator | `models_replace` | `ModelsReplaceMessage` | `.modelsReplace` |
 | coordinator → provider | `models_replace_ack` | `ModelsReplaceAckMessage` | `.modelsReplaceAck` |
+| provider → coordinator | `models_replace_ready` | `ModelsReplaceReadyMessage` | `.modelsReplaceReady` |
 | provider → coordinator | `prefix_cache_lookup` | `PrefixCacheLookupMessage` | `.prefixCacheLookup` |
 | provider → coordinator | `prefix_cache_ready` | `PrefixCacheReadyMessage` | `.prefixCacheReady` |
 | provider → coordinator | `prefix_cache_lookup_v2` | `PrefixCacheLookupV2Message` | `.prefixCacheLookupV2` |
@@ -554,7 +555,7 @@ encoding as `register`); `tool_constraint_protocol` (`int`, opt);
 `weight_hash` against the catalog before merging, so a verified build becomes
 routable without a re-register.
 
-### `models_replace` / `models_replace_ack`
+### `models_replace` / `models_replace_ack` / `models_replace_ready`
 
 Non-destructive target validation followed by atomic full inventory replacement
 and resume on the same registered connection; `models_update` retains its existing
@@ -564,11 +565,19 @@ merge semantics.
 |---|---|---|
 | `models_replace` | `request_id`, `drain_request_id`, nonempty `models`; optional `validate_only` (Bool, omitted means false), `tool_constraint_protocol`, `tool_constraint_models` | `coordinator/protocol/messages.go` (`ModelsReplaceMessage`); Swift `provider-swift/Sources/ProviderCore/Protocol/ModelsReplace.swift` (`ModelsReplace`) |
 | `models_replace_ack` | matching `request_id`, `drain_request_id`, and echoed `validate_only` (Bool, always present), `accepted`; optional `error` | `coordinator/protocol/messages.go` (`ModelsReplaceAckMessage`); Swift `ModelsReplaceAck` |
+| `models_replace_ready` | matching `request_id`, `drain_request_id` after the provider opens local admission | `coordinator/protocol/messages.go` (`ModelsReplaceReadyMessage`); Swift `ModelsReplaceReady` |
 
 `request_id` is nonempty and at most 64 bytes. `drain_request_id` must name the
 latest committed **and settled** `provider_drain` on this exact live connection.
-Every model ID must be unique and nonempty, in the catalog when configured,
-carry its catalog-pinned hash, and meet the attested runtime capability floor.
+Every model ID must be unique and nonempty and meet the attested runtime
+capability floor. Catalog-tracked models must carry their catalog-pinned hash.
+As with registration, off-catalog local models may be advertised regardless of
+`private_only` or whether the provider has a linked owner; advertising them does
+not grant trust or ownership. With a configured catalog, they are eligible only
+for their owner's self-route or preferred-owner requests, never public routing.
+Sources: `coordinator/registry/provider_lifecycle.go` (`Register`),
+`coordinator/registry/model_catalog.go` (`modelServableForOwnerLocked`,
+`providerServesCatalogModelLocked`).
 The tool allowlist must contain unique selected IDs and use protocol 1; protocol
 0 has no tool allowlist. The coordinator validates the entire set before mutation.
 Pending inference reservations must be gone. Both phases require the same committed
@@ -587,15 +596,18 @@ Committing success preserves the provider object, session, trust, reputation, an
 challenge state. Removed or hash-changed models lose warm/current/slot, pending-load,
 template, and cache evidence; tool capabilities become the complete new allowlist.
 Routing indexes reflect the new set immediately, but admission stays fenced until
-the accepted committing acknowledgement is successfully written. A failed write
-does not dispatch or reject queued work and does not force a reconnect. Only the
-exact session and committed generation may resume; a late receipt cannot reopen a
-newer drain. After resume the coordinator sends a fresh `desired_models` snapshot
+the accepted committing acknowledgement is successfully written and the provider
+reopens its own admission. It then sends `models_replace_ready` on the same
+connection; the coordinator checks its request and drain IDs against the current
+committed replacement before resuming routing. A failed write or missing readiness
+does not dispatch or reject queued work and does not force a reconnect. A later
+drain or another session cannot be reopened by stale readiness. After resume the
+coordinator sends a fresh `desired_models` snapshot
 for the replaced inventory, bypassing its prior-snapshot deduplication, then
 reconciles queues including requests for removed models. A drain remains reusable
 after validation but not after commit or disconnect. Sources:
 `coordinator/registry/provider_models_replace.go` (`ReplaceProviderModels`, `ResumeProviderModels`),
-`coordinator/api/provider_models_replace.go` (`handleModelsReplace`).
+`coordinator/api/provider_models_replace.go` (`handleModelsReplace`, `handleModelsReplaceReady`).
 
 Swift `prepareModelSwitch(timeout:)` returns the settled drain ID or nil.
 `validateModelSelectionAfterDrain(_:drainID:timeout:)` checks the candidate before
@@ -770,7 +782,7 @@ Go `DesiredModelsMessage` · Swift `DesiredModels`. `models` (`[]DesiredModelEnt
 `model_name` (public alias), `desired_build` (concrete build id),
 `previous_build` (opt; still acceptable mid-rollout). Sent right after `register`,
 when desired builds or eligible capabilities change, and freshly recomputed after
-a successful committed replacement acknowledgement even when the alias snapshot
+matching provider readiness for a committed replacement even when the alias snapshot
 equals the one sent before switching. The same backend/version and attested
 capability guards apply. Entries describe aliases whose desired, previous, or
 retired build is in the provider's advertised inventory; an empty set revokes old

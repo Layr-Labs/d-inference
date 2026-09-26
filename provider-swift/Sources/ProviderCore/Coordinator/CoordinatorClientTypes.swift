@@ -270,6 +270,7 @@ public enum OutboundMessage: Sendable {
     /// computed weight hash so the coordinator can cross-check before routing.
     case modelsUpdate(models: [ModelInfo])
     case modelsReplace(requestId: String, drainID: String, models: [ModelInfo], validateOnly: Bool)
+    case modelsReplaceReady(requestId: String, drainID: String)
     case prefixCacheLookup(
         requestId: String,
         cacheReceiptNonce: String,

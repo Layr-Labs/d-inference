@@ -338,6 +338,9 @@ public actor ProviderLoop {
     internal var lifecycleMonitorTask: Task<Void, Never>?
     internal var modelSwitchTask: Task<ProviderModelSwitchStatus, Never>?
     internal var modelSwitchStatus = ProviderModelSwitchStatus()
+    /// IO-only seams keep validation on real scanner/hash paths in lifecycle tests.
+    internal var modelSwitchSnapshotResolver: @Sendable (String) -> URL? = { ModelScanner.resolveLocalPath(modelID: $0) }
+    internal var modelSwitchWeightHasher: @Sendable (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
     /// Invalidates prefetch work begun before an operator replaced the set.
     internal var modelSelectionRevision: UInt64 = 0
     internal var modelAdvertisementsInFlight = 0

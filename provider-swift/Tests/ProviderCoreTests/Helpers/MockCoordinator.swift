@@ -45,6 +45,7 @@ public struct CapturedMessages: Sendable {
     public var prefetchModelStatuses: [ProviderMessage.PrefetchModelStatus] = []
     public var modelsUpdates: [ProviderMessage.ModelsUpdate] = []
     public var modelsReplacements: [ProviderMessage.ModelsReplace] = []
+    public var modelsReplacementReadiness: [ProviderMessage.ModelsReplaceReady] = []
     public var prefixCacheLookups: [ProviderMessage.PrefixCacheLookup] = []
     public var prefixCacheReady: [ProviderMessage.PrefixCacheReady] = []
     public var prefixCacheLookupsV2: [ProviderMessage.PrefixCacheLookupV2] = []
@@ -639,6 +640,7 @@ public final class MockCoordinator: @unchecked Sendable {
             case .prefetchModelStatus(let s): captured.prefetchModelStatuses.append(s)
             case .modelsUpdate(let u):       captured.modelsUpdates.append(u)
             case .modelsReplace(let r): captured.modelsReplacements.append(r)
+            case .modelsReplaceReady(let r): captured.modelsReplacementReadiness.append(r)
             case .prefixCacheLookup(let r):  captured.prefixCacheLookups.append(r)
             case .prefixCacheReady(let r):   captured.prefixCacheReady.append(r)
             case .prefixCacheLookupV2(let r): captured.prefixCacheLookupsV2.append(r)

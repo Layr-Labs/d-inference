@@ -350,6 +350,7 @@ struct ProviderModelSwitchTests {
         defer { Task { await client.shutdown() } }
         for await event in events { if case .connected = event { break } }
         await loop.setCoordinatorClientForTesting(client)
+        await loop.setSwitchOutbound(SendHandle(send))
         let reader = Task {
             for await event in events {
                 if case .drainAck(let id) = event { await client.completeDrainAcknowledgement(id) }
@@ -368,8 +369,12 @@ struct ProviderModelSwitchTests {
                 try await loop.commitModelSelection(.init(models: [switchModel("new-model")], fingerprints: [:]), drainID: barrier)
             }
         } else {
-            try await loop.commitModelSelection(.init(models: [switchModel("new-model")], fingerprints: [:]), drainID: barrier)
-            await loop.resumeAfterModelSwitch()
+            let replacementID = try await loop.commitModelSelection(.init(models: [switchModel("new-model")], fingerprints: [:]), drainID: barrier)
+            #expect(mock.snapshot().modelsReplacementReadiness.isEmpty)
+            await loop.resumeAfterModelSwitch(requestID: replacementID, drainID: barrier)
+            let ready = try #require(try await mock.waitForSnapshot { $0.modelsReplacementReadiness.count == 1 })
+            #expect(ready.modelsReplacementReadiness[0].requestId == ready.modelsReplacements.last?.requestId)
+            #expect(ready.modelsReplacementReadiness[0].drainRequestId == barrier)
         }
         let expected = reject ? ["old-model"] : ["new-model"]
         #expect(await loop.advertisedLocalModelIds() == expected)

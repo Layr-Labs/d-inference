@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-26 · commit `9b7d5fbc5`
+> Last updated: 2026-09-26 · commit `e467eff8d`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -42,11 +42,12 @@ to leave the writer/pending set and for terminal billing before acknowledgement
 A validation-only request checks the complete model set without changing routing.
 A committed replacement updates model indexes and stale residency/cache evidence
 but keeps the fence until its acknowledgement is written successfully and the
-same drain generation is still current. Ack failure never dispatches queued work.
-Successful resume forces current desired-model reconciliation before explicit
-queue reconciliation. Invalid selections leave inventory and drain unchanged;
-provider-side admission opens only after the correlated commit receipt. See
-[the replacement contract](../reference/protocol-messages.md#models_replace--models_replace_ack).
+provider confirms that local admission has reopened for that replacement.
+Ack failure or missing readiness never dispatches queued work. The readiness
+frame is matched to the current session, replacement and drain; only then does
+the coordinator force desired-model reconciliation and dispatch queued work.
+Invalid selections leave inventory and drain unchanged. See
+[the replacement contract](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready).
 
 
 ## Context

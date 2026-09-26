@@ -23,6 +23,50 @@ struct LifecycleMailboxTests {
         #expect(mailbox.readStatus()?.remaining == 3)
     }
 
+    @Test func switchClaimSurvivesNextMonitorAndConcurrentPublication() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let identity = try #require(ProcessIdentity.current())
+        let firstMonitor = LifecycleMailbox(identity: identity, directory: root)
+        let nextMonitor = LifecycleMailbox(identity: identity, directory: root)
+        let old = ProviderModelSwitchRequest(target: identity, models: ["old"], timeoutSeconds: 0)
+        let new = ProviderModelSwitchRequest(target: identity, models: ["new"], timeoutSeconds: 0)
+        let stop = ProviderDrainRequest(target: identity, timeoutSeconds: 1)
+        try firstMonitor.writeRequest(stop)
+        try firstMonitor.writeSwitchRequest(old)
+        var publicationError: (any Error)?
+        let claimed = firstMonitor.claimSwitchRequest {
+            // A new CLI can publish while the previous claim is being read.
+            // Cleaning up the old claim must leave this new request untouched.
+            do { try nextMonitor.writeSwitchRequest(new) }
+            catch { publicationError = error }
+        }
+        if let publicationError { throw publicationError }
+        #expect(claimed == old)
+        #expect(nextMonitor.claimSwitchRequest() == new)
+        #expect(firstMonitor.claimSwitchRequest() == nil)
+        #expect(nextMonitor.claimSwitchRequest() == nil)
+        #expect(nextMonitor.readRequest() == stop)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).allSatisfy { !$0.contains("switch-") })
+    }
+
+    @Test func switchClaimRejectsUnsafeFilesWithoutTouchingTheirTargets() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let identity = try #require(ProcessIdentity.current())
+        let mailbox = LifecycleMailbox(identity: identity, directory: root)
+        let request = ProviderModelSwitchRequest(target: identity, models: ["new"], timeoutSeconds: 0)
+        try mailbox.writeSwitchRequest(request)
+        let path = root.appendingPathComponent("\(identity.pid)-\(identity.startTimeMicros).switch-request.json")
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path.path)
+        #expect(mailbox.claimSwitchRequest() == nil)
+        let target = root.appendingPathComponent("target.json")
+        try JSONEncoder().encode(request).write(to: target)
+        try FileManager.default.createSymbolicLink(at: path, withDestinationURL: target)
+        #expect(mailbox.claimSwitchRequest() == nil)
+        #expect(try JSONDecoder().decode(ProviderModelSwitchRequest.self, from: Data(contentsOf: target)) == request)
+    }
+
     @Test func rejectsSharedDirectoryAndInvalidDeadlines() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

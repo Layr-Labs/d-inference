@@ -18,9 +18,12 @@ func TestReplaceProviderModelsRejectsAtomicallyAndCanResumeOldSet(t *testing.T) 
 		{"wrong drain", "other", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}}, nil},
 		{"empty", "drain", nil, nil},
 		{"duplicate", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}, {ID: "new", WeightHash: "hash"}}, nil},
-		{"unknown after valid", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}, {ID: "unknown"}}, nil},
+		{"empty ID after valid", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}, {ID: ""}}, nil},
 		{"hash after valid", "drain", []protocol.ModelInfo{{ID: drainStateTestModel}, {ID: "new", WeightHash: "wrong"}}, nil},
+		{"hash after off-catalog", "drain", []protocol.ModelInfo{{ID: "local/model"}, {ID: "new", WeightHash: "wrong"}}, nil},
+		{"missing hash after off-catalog", "drain", []protocol.ModelInfo{{ID: "local/model"}, {ID: "new"}}, nil},
 		{"capability after valid", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}, {ID: "protected"}}, nil},
+		{"off-catalog capability after valid", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}, {ID: Qwen38NAXModelID}}, nil},
 		{"unknown tool", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}}, []string{"other"}},
 	}
 	for _, tc := range cases {
@@ -38,7 +41,11 @@ func TestReplaceProviderModelsRejectsAtomicallyAndCanResumeOldSet(t *testing.T) 
 				}
 			}
 			_, _, receipt, err := r.ReplaceProviderModels(p, &protocol.ModelsReplaceMessage{RequestID: "rollback", DrainRequestID: "drain", Models: old})
-			if err != nil || !r.ProviderDraining(p.ID) || !r.ResumeProviderModels(p, receipt) || r.ProviderDraining(p.ID) {
+			if err != nil || !r.ProviderDraining(p.ID) || !r.ConfirmProviderModelsReceipt(p, "rollback", receipt) {
+				t.Fatalf("old inventory could not confirm receipt: %v", err)
+			}
+			_, _, resumed := r.ResumeProviderModels(p, "rollback", "drain")
+			if !resumed || r.ProviderDraining(p.ID) {
 				t.Fatalf("old inventory could not resume: %v", err)
 			}
 		})
@@ -79,8 +86,13 @@ func TestReplaceProviderModelsAllowsOwnerOnlyOffCatalogInventory(t *testing.T) {
 				t.Fatal("preflight changed inventory or consumed the settled drain")
 			}
 			msg.RequestID, msg.ValidateOnly = "replace", false
-			if _, _, receipt, err := r.ReplaceProviderModels(p, msg); err != nil || !r.ProviderDraining(p.ID) || !r.ResumeProviderModels(p, receipt) {
+			_, _, receipt, err := r.ReplaceProviderModels(p, msg)
+			if err != nil || !r.ProviderDraining(p.ID) || !r.ConfirmProviderModelsReceipt(p, msg.RequestID, receipt) {
 				t.Fatalf("off-catalog replacement rejected or resumed before its receipt: %v", err)
+			}
+			_, _, resumed := r.ResumeProviderModels(p, msg.RequestID, msg.DrainRequestID)
+			if !resumed {
+				t.Fatal("off-catalog replacement did not resume after provider readiness")
 			}
 			if !reflect.DeepEqual(p.Models, models) || r.ProviderDraining(p.ID) {
 				t.Fatal("replacement did not install the complete set and resume")
@@ -181,8 +193,12 @@ func TestReplaceProviderModelsPreservesSessionAndRemovesRoutingState(t *testing.
 	if err != nil || !reflect.DeepEqual(removed, []string{drainStateTestModel}) {
 		t.Fatalf("replace: %v removed=%v", err, removed)
 	}
-	if !r.ProviderDraining(p.ID) || !r.ResumeProviderModels(p, receipt) {
+	if !r.ProviderDraining(p.ID) || !r.ConfirmProviderModelsReceipt(p, "replace", receipt) {
 		t.Fatal("replacement must remain fenced until the exact receipt is written")
+	}
+	_, _, resumed := r.ResumeProviderModels(p, "replace", "drain")
+	if !resumed {
+		t.Fatal("replacement did not resume after provider readiness")
 	}
 	if r.GetProvider(p.ID) != p || p.TrustLevel != trust || !reflect.DeepEqual(p.Reputation, reputation) || p.LastChallengeVerified != challenge || p.registeredAt != registered {
 		t.Fatal("replacement reset live session/trust/reputation")

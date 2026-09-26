@@ -338,9 +338,7 @@ extension ProviderLoop {
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
-        let switching = modelSwitchTask
-        switching?.cancel()
-        _ = await switching?.value
+        await cancelModelSwitchAndWait()
         // Quote path mirror (routing v2): a shutting-down provider quotes
         // `slot_state` rejections for the brief window the socket stays up.
         state.refusingNewWork = true

@@ -642,6 +642,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 			s.handleModelsReplace(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceMessage))
 
+		case protocol.TypeModelsReplaceReady:
+			if provider == nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before models_replace_ready")
+				return
+			}
+			s.handleModelsReplaceReady(provider, msg.Payload.(*protocol.ModelsReplaceReadyMessage))
+
 		case protocol.TypeHeartbeat:
 			if provider == nil {
 				// Heartbeats are meaningful only after this connection has

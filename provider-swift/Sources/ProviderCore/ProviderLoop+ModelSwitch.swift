@@ -67,7 +67,7 @@ extension ProviderLoop {
             beginServingDrain(owner: .modelSwitch)
             modelSelectionRevision &+= 1
             setModelSwitchPhase(.draining)
-            let deadline = ContinuousClock.now.advanced(by: .seconds(request.timeoutSeconds))
+            let deadline = request.timeoutSeconds == 0 ? nil : ContinuousClock.now.advanced(by: .seconds(request.timeoutSeconds))
             let oldPrefetch = prefetchCoordinator
             prefetchCoordinator = nil
             await oldPrefetch?.shutdown(timeout: .seconds(min(request.timeoutSeconds, 10)))
@@ -75,9 +75,9 @@ extension ProviderLoop {
             let drainID = try await drainForModelSwitch(deadline: deadline)
             try checkModelSwitchOwnership()
             setModelSwitchPhase(.switching)
-            try await commitModelSelection(selection, drainID: drainID)
+            let replacementID = try await commitModelSelection(selection, drainID: drainID)
             try checkModelSwitchOwnership()
-            await resumeAfterModelSwitch()
+            await resumeAfterModelSwitch(requestID: replacementID, drainID: drainID)
             guard servingDrain.owner == nil, !isShuttingDown, !Task.isCancelled else {
                 throw ModelSelectionFailure("Model selection applied, but shutdown superseded resuming service.")
             }
@@ -100,21 +100,28 @@ extension ProviderLoop {
 
     /// Drain inference AND background model mutations. The receive-side ack is
     /// processed behind earlier inference frames, closing the last-dispatch race.
-    internal func drainForModelSwitch(deadline: ContinuousClock.Instant) async throws -> String {
+    /// A nil deadline means no waiting for unfinished work, not skipping the
+    /// coordinator barrier: an already-settled provider gets one 30s wire wait.
+    internal func drainForModelSwitch(deadline: ContinuousClock.Instant?) async throws -> String {
         while true {
             try Task.checkCancellation()
             try checkModelSwitchOwnership()
-            guard ContinuousClock.now < deadline else { throw ModelSelectionFailure("Model-switch drain deadline expired; no accepted request was cancelled.") }
+            if let deadline, ContinuousClock.now >= deadline {
+                throw ModelSelectionFailure("Model-switch drain deadline expired; no accepted request was cancelled.")
+            }
             modelSwitchStatus.remaining = lifecycleRemaining
             publishModelSwitchStatus()
             if lifecycleRemaining == 0, modelSwitchMutationsSettled {
                 guard let client = coordinatorClient,
-                      let id = await client.prepareModelSwitch(timeout: ContinuousClock.now.duration(to: deadline)) else {
+                      let id = await client.prepareModelSwitch(timeout: deadline.map { ContinuousClock.now.duration(to: $0) } ?? .seconds(30)) else {
                     throw ModelSelectionFailure("Coordinator did not acknowledge the model-switch drain.")
                 }
                 try Task.checkCancellation()
                 try checkModelSwitchOwnership()
                 if lifecycleRemaining == 0, modelSwitchMutationsSettled { return id }
+            }
+            guard let deadline, ContinuousClock.now < deadline else {
+                throw ModelSelectionFailure("Model-switch drain deadline expired; no accepted request was cancelled.")
             }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -133,13 +140,27 @@ extension ProviderLoop {
         }
     }
 
-    internal func resumeAfterModelSwitch() async {
+    /// Read-only validation abandons its result on cancellation. Once mutation
+    /// starts, still await the transaction's cleanup before lifecycle proceeds.
+    internal func cancelModelSwitchAndWait() async {
+        let switching = modelSwitchTask
+        switching?.cancel()
+        _ = await switching?.value
+    }
+
+    internal func resumeAfterModelSwitch(requestID: String? = nil, drainID: String? = nil) async {
         guard servingDrain.owner == .modelSwitch, !isShuttingDown, !Task.isCancelled else { return }
+        if requestID != nil && outboundSend == nil { return }
         prefetchCoordinator = makePrefetchCoordinator()
         servingDrain.resumeModelSwitch()
         lifecycleStatus = .init()
         localResponseTracker.setAccepting(true)
         state.refusingNewWork = false
+        // Reopen coordinator routing only after all local admission gates have
+        // been cleared. The commit acknowledgement alone is not readiness.
+        if let requestID, let drainID {
+            outboundSend?.send(.modelsReplaceReady(requestId: requestID, drainID: drainID))
+        }
         if let entries = deferredDesiredModels, let send = outboundSend {
             deferredDesiredModels = nil
             await reconcileDesiredModels(entries, send: send)

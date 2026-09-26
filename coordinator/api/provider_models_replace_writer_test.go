@@ -63,6 +63,10 @@ func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T
 	if len(models) != 1 || models[0].ID != "replacement" {
 		t.Fatalf("expected committed inventory behind the fence, got %+v", models)
 	}
+	s.handleModelsReplaceReady(p, &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain"})
+	if !s.registry.ProviderDraining(p.ID) {
+		t.Fatal("readiness without a written commit receipt reopened admission")
+	}
 	for _, request := range queued {
 		if s.registry.Queue().QueueSize(request.Model) != 1 {
 			t.Fatalf("failed receipt drained/rejected queued %s", request.Model)
@@ -87,8 +91,12 @@ func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T
 	})
 	var receipt protocol.ModelsReplaceAckMessage
 	readReplacementFrame(t, ctx, peer, protocol.TypeModelsReplaceAck, &receipt)
-	if !receipt.Accepted || receipt.RequestID != "retry" || s.registry.ProviderDraining(p.ID) {
+	if !receipt.Accepted || receipt.RequestID != "retry" || !s.registry.ProviderDraining(p.ID) {
 		t.Fatalf("same-session reconciliation failed: %+v", receipt)
+	}
+	s.handleModelsReplaceReady(p, &protocol.ModelsReplaceReadyMessage{RequestID: "retry", DrainRequestID: "reconcile"})
+	if s.registry.ProviderDraining(p.ID) {
+		t.Fatal("matching provider readiness failed to resume admission")
 	}
 	select {
 	case selected := <-queued[1].ResponseCh:
@@ -142,6 +150,10 @@ func TestModelsReplaceRefreshesDesiredSnapshotAfterAck(t *testing.T) {
 			if !receipt.Accepted || receipt.ValidateOnly || receipt.RequestID != "replace" {
 				t.Fatalf("replacement failed: %+v", receipt)
 			}
+			if !s.registry.ProviderDraining(p.ID) {
+				t.Fatal("receipt reopened admission before provider readiness")
+			}
+			s.handleModelsReplaceReady(p, &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain"})
 			var after protocol.DesiredModelsMessage
 			readReplacementFrame(t, ctx, peer, protocol.TypeDesiredModels, &after)
 			if !reflect.DeepEqual(after.Models, want) {

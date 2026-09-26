@@ -56,7 +56,7 @@ public enum ProviderModelSwitchValidation {
         let models = try modelIDs.map { id in
             try Task.checkCancellation()
             try ModelRuntimeRequirements.requireEligible(modelID: id, available: capabilities)
-            guard let path = ModelScanner.resolveLocalPath(modelID: id),
+            guard let path = resolveSnapshot(id),
                   var model = ModelScanner.parseModelInfo(snapshotDir: path, modelName: id) else {
                 throw ModelSelectionFailure("Model '\(id)' is not downloaded or cannot be scanned. Use darkbloom models download first.")
             }

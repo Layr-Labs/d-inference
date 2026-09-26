@@ -186,6 +186,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case prefetchModelStatus(PrefetchModelStatus)
     case modelsUpdate(ModelsUpdate)
     case modelsReplace(ModelsReplace)
+    case modelsReplaceReady(ModelsReplaceReady)
     case prefixCacheLookup(PrefixCacheLookup)
     case prefixCacheReady(PrefixCacheReady)
     case prefixCacheLookupV2(PrefixCacheLookupV2)
@@ -864,6 +865,7 @@ extension ProviderMessage: Codable {
         case prefetchModelStatus = "prefetch_model_status"
         case modelsUpdate = "models_update"
         case modelsReplace = "models_replace"
+        case modelsReplaceReady = "models_replace_ready"
         case prefixCacheLookup = "prefix_cache_lookup"
         case prefixCacheReady = "prefix_cache_ready"
         case prefixCacheLookupV2 = "prefix_cache_lookup_v2"
@@ -1163,6 +1165,10 @@ extension ProviderMessage: Codable {
             try container.encode(TypeValue.modelsReplace, forKey: .type)
             try replacement.encode(to: encoder)
 
+        case .modelsReplaceReady(let ready):
+            try container.encode(TypeValue.modelsReplaceReady, forKey: .type)
+            try ready.encode(to: encoder)
+
         case .prefixCacheLookup(let receipt):
             try container.encode(TypeValue.prefixCacheLookup, forKey: .type)
             try container.encode(receipt.requestId, forKey: .requestId)
@@ -1429,6 +1435,9 @@ extension ProviderMessage: Codable {
 
         case .modelsReplace:
             self = .modelsReplace(try ModelsReplace(from: decoder))
+
+        case .modelsReplaceReady:
+            self = .modelsReplaceReady(try ModelsReplaceReady(from: decoder))
 
         case .prefixCacheLookup:
             self = .prefixCacheLookup(PrefixCacheLookup(

@@ -306,6 +306,9 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 		p.drainCommitted = false
 		p.drainReady = false
 		p.drainReplacementPending = false
+		p.drainReplacementAcked = false
+		p.drainReplacementID = ""
+		p.drainRemovedModels = nil
 		p.drainRequestID = ""
 		p.appAttestAuthorization = AppAttestServingAuthorization{}
 		// Clear any pending model load entries for this provider.

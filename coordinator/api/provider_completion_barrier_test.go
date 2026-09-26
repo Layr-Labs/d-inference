@@ -103,7 +103,11 @@ func TestProviderCompletionBarrierReusedDrainIDWaitsForLatestSettlement(t *testi
 		t.Fatal("validation changed the old inventory or resumed admission")
 	}
 	msg.ValidateOnly = false
-	if _, _, receipt, err := reg.ReplaceProviderModels(provider, msg); err != nil || !reg.ProviderDraining(provider.ID) || !reg.ResumeProviderModels(provider, receipt) || provider.Models[0].ID != "new" {
+	_, _, receipt, err := reg.ReplaceProviderModels(provider, msg)
+	if err != nil || !reg.ProviderDraining(provider.ID) || !reg.ConfirmProviderModelsReceipt(provider, msg.RequestID, receipt) || provider.Models[0].ID != "new" {
 		t.Fatalf("latest settled drain could not commit: %v", err)
+	}
+	if _, _, resumed := reg.ResumeProviderModels(provider, msg.RequestID, msg.DrainRequestID); !resumed {
+		t.Fatal("settled replacement did not resume after provider readiness")
 	}
 }

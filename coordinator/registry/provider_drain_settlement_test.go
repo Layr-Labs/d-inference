@@ -58,7 +58,7 @@ func TestReplacementReceiptCannotResumeNewerDrainOrSession(t *testing.T) {
 	r := New(testLogger())
 	p := registerDrainStateProvider(t, r, "session", 100)
 	first := r.CommitProviderDrain(p, "same-id")
-	if r.ResumeProviderModels(p, first) {
+	if _, _, resumed := r.ResumeProviderModels(p, "replace", "same-id"); resumed {
 		t.Fatal("uncommitted inventory resumed admission")
 	}
 	r.CompleteProviderDrain(p, "same-id", first)
@@ -71,8 +71,19 @@ func TestReplacementReceiptCannotResumeNewerDrainOrSession(t *testing.T) {
 	if !r.ProviderDraining(p.ID) {
 		t.Fatal("idle heartbeat reopened a commit without its receipt")
 	}
+	if _, _, resumed := r.ResumeProviderModels(p, "replace", "same-id"); resumed {
+		t.Fatal("provider readiness reopened before the receipt reached the wire")
+	}
+	if !r.ConfirmProviderModelsReceipt(p, "replace", receipt) {
+		t.Fatal("could not confirm committed receipt")
+	}
+	for _, correlation := range [][2]string{{"other", "same-id"}, {"replace", "other"}} {
+		if _, _, resumed := r.ResumeProviderModels(p, correlation[0], correlation[1]); resumed || !r.ProviderDraining(p.ID) {
+			t.Fatal("mismatched readiness reopened admission")
+		}
+	}
 	second := r.CommitProviderDrain(p, "same-id")
-	if r.ResumeProviderModels(p, receipt) || !r.ProviderDraining(p.ID) {
+	if _, _, resumed := r.ResumeProviderModels(p, "replace", "same-id"); resumed || !r.ProviderDraining(p.ID) {
 		t.Fatal("late replacement receipt reopened the newer drain")
 	}
 	r.CompleteProviderDrain(p, "same-id", second)
@@ -80,10 +91,13 @@ func TestReplacementReceiptCannotResumeNewerDrainOrSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !r.ConfirmProviderModelsReceipt(p, "replace", receipt) {
+		t.Fatal("could not confirm second receipt")
+	}
 	r.Disconnect(p.ID)
 	fresh := registerDrainStateProvider(t, r, p.ID, 100)
 	r.CommitProviderDrain(fresh, "same-id")
-	if r.ResumeProviderModels(p, receipt) || !r.ProviderDraining(fresh.ID) {
+	if _, _, resumed := r.ResumeProviderModels(p, "replace", "same-id"); resumed || !r.ProviderDraining(fresh.ID) {
 		t.Fatal("old connection receipt reopened another session")
 	}
 }

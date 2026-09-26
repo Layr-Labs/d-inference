@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `824fbf05c`
+> Last updated: 2026-09-26 · commit `e467eff8d`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -85,11 +85,12 @@ a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
 
-A replacement start completes the picker/preflight first, then drains and stops
-the old provider before installing the chosen configuration. Foreground/local
-starts also require a drained handoff. The process-lifetime kernel lock refuses
-a live owner; it never silently sends SIGKILL after a short grace period.
-The selected IDs are saved to `backend.enabled_models` before daemon installation.
+A replacement start completes the picker/preflight and saves the selected IDs
+under `backend.enabled_models` while holding the lifecycle lease, before it
+disables recovery or drains/stops the current provider. A persistence failure
+leaves the current service unchanged. Only then does it drain, stop, and install
+the chosen configuration. Foreground/local starts also require a drained handoff;
+the process-lifetime kernel lock never silently sends SIGKILL after a short grace period.
 On launchd-managed foreground starts (including restart and watchdog recovery),
 an explicitly pinned `enabled_models` takes precedence over old `--model` plist
 arguments. A directly invoked foreground `--model` still overrides config
@@ -111,7 +112,7 @@ not from the separate canonical config file.
 |---|---|---|---|
 | `--model <id>` | `[String]`, repeatable | `[]` | Replace the complete hosted selection with these local IDs; any invalid ID rejects the whole selection |
 | `--all` | flag | `false` | Select all eligible local models; mutually exclusive with `--model` |
-| `--timeout <seconds>` | integer, 0–3600 | `600` | Graceful drain deadline; never cancels accepted requests |
+| `--timeout <seconds>` | integer, 0–3600 | `600` | Graceful drain deadline; `0` refuses unfinished work immediately but still acknowledges an already-settled drain |
 
 With neither selection flag, this command reuses the `start` catalog picker and
 downloader. It checks fresh daemon identity and switch capability before opening
@@ -170,7 +171,7 @@ message and selection; stale daemon snapshots are explicitly marked
 Sources: `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`),
 `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift`
 (`ProviderModelSelection.stageReplacement`, `ProviderModelSelection.restore`).
-After acknowledged replacement, the coordinator refreshes desired alias builds
+After provider readiness, the coordinator refreshes desired alias builds
 for the current inventory; the provider preserves snapshots received during the
 commit wait and resumes convergence after reopening admission.
 

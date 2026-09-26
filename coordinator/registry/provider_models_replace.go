@@ -38,9 +38,10 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		if _, duplicate := selected[model.ID]; duplicate {
 			return nil, nil, 0, errors.New("invalid_models")
 		}
-		entry, exists := r.modelCatalog[model.ID]
-		if (r.modelCatalog != nil && !exists) ||
-			!capabilitySetContainsAll(p.RuntimeCapabilities, effectiveRequiredProviderCapabilities(model.ID, entry.RequiredProviderCapabilities)) ||
+		// Match registration: off-catalog local models remain eligible for
+		// owner routing, while public routing still requires catalog membership.
+		entry := r.modelCatalog[model.ID]
+		if !r.providerMeetsModelRequirementsLocked(p, model.ID) ||
 			(entry.WeightHash != "" && !strings.EqualFold(model.WeightHash, entry.WeightHash)) {
 			return nil, nil, 0, errors.New("invalid_models")
 		}
@@ -131,12 +132,15 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 	p.syncModelIndexLocked()
 	p.drainReady = false
 	p.drainReplacementPending = true
+	p.drainReplacementAcked = false
+	p.drainReplacementID = msg.RequestID
+	p.drainRemovedModels = append([]string(nil), removed...)
 	return added, removed, p.drainGeneration, nil
 }
 
-// ResumeProviderModels opens admission only after a committed replacement receipt
-// reached the wire. A late write cannot resume a newer drain or another session.
-func (r *Registry) ResumeProviderModels(p *Provider, generation uint64) bool {
+// ConfirmProviderModelsReceipt records a successful control-writer handoff. The
+// provider still owns closed admission until it sends models_replace_ready.
+func (r *Registry) ConfirmProviderModelsReceipt(p *Provider, requestID string, generation uint64) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if p == nil || r.providers[p.ID] != p || generation == 0 {
@@ -144,12 +148,38 @@ func (r *Registry) ResumeProviderModels(p *Provider, generation uint64) bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.drainCommitted || !p.drainReplacementPending || p.drainGeneration != generation {
+	if !p.drainCommitted || !p.drainReplacementPending || p.drainGeneration != generation || p.drainReplacementID != requestID {
 		return false
 	}
+	p.drainReplacementAcked = true
+	return true
+}
+
+// ResumeProviderModels opens admission only after the matching provider has
+// reopened its own admission. A stale readiness frame cannot resume a newer
+// drain, another replacement, or a replacement whose receipt failed to write.
+func (r *Registry) ResumeProviderModels(p *Provider, requestID, drainRequestID string) (added, removed []string, resumed bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if p == nil || r.providers[p.ID] != p {
+		return nil, nil, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.drainCommitted || !p.drainReplacementPending || !p.drainReplacementAcked ||
+		p.drainReplacementID != requestID || p.drainRequestID != drainRequestID {
+		return nil, nil, false
+	}
+	for _, model := range p.Models {
+		added = append(added, model.ID)
+	}
+	removed = append([]string(nil), p.drainRemovedModels...)
 	p.drainCommitted = false
 	p.drainReplacementPending = false
+	p.drainReplacementAcked = false
+	p.drainReplacementID = ""
+	p.drainRemovedModels = nil
 	p.drainRequestID = ""
 	p.drainingUntil = time.Time{}
-	return true
+	return added, removed, true
 }

@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Server) handleModelsReplace(ctx context.Context, provider *registry.Provider, msg *protocol.ModelsReplaceMessage) {
-	added, removed, generation, err := s.registry.ReplaceProviderModels(provider, msg)
+	_, _, generation, err := s.registry.ReplaceProviderModels(provider, msg)
 	ack := protocol.ModelsReplaceAckMessage{
 		Type: protocol.TypeModelsReplaceAck, RequestID: msg.RequestID,
 		DrainRequestID: msg.DrainRequestID, ValidateOnly: msg.ValidateOnly, Accepted: err == nil,
@@ -25,7 +25,15 @@ func (s *Server) handleModelsReplace(ctx context.Context, provider *registry.Pro
 		s.logger.Warn("failed to send models_replace acknowledgement", "provider_id", provider.ID, "error", writeErr)
 		return
 	}
-	if err != nil || msg.ValidateOnly || !s.registry.ResumeProviderModels(provider, generation) {
+	if err != nil || msg.ValidateOnly {
+		return
+	}
+	s.registry.ConfirmProviderModelsReceipt(provider, msg.RequestID, generation)
+}
+
+func (s *Server) handleModelsReplaceReady(provider *registry.Provider, msg *protocol.ModelsReplaceReadyMessage) {
+	added, removed, resumed := s.registry.ResumeProviderModels(provider, msg.RequestID, msg.DrainRequestID)
+	if !resumed {
 		return
 	}
 	provider.Mu().Lock()

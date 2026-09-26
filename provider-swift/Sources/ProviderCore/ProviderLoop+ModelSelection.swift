@@ -4,7 +4,7 @@ extension ProviderLoop {
     /// Local admission remains closed until the coordinator confirms the whole
     /// inventory on this connection. Persist before publishing so a crash after
     /// the receipt cannot restart with the old launchd selection.
-    internal func commitModelSelection(_ selection: ProviderModelSwitchValidation.Result, drainID: String) async throws {
+    internal func commitModelSelection(_ selection: ProviderModelSwitchValidation.Result, drainID: String) async throws -> String {
         let models = selection.models
         guard let client = coordinatorClient else { throw ModelSelectionFailure("Coordinator connection is unavailable.") }
         let previous = ProviderModelSwitchValidation.Result(
@@ -32,7 +32,7 @@ extension ProviderLoop {
             // Discard only pre-commit state. The coordinator forces a current
             // desired snapshot after this ack; preserve arrivals during the wait.
             discardObsoleteModelPrefetches()
-            try await client.replaceModelsAfterDrain(models, drainID: drainID, timeout: .seconds(30))
+            return try await client.replaceModelsAfterDrain(models, drainID: drainID, timeout: .seconds(30))
         } catch {
             await client.stageModelSelection(advertisedModels.values.sorted { $0.id < $1.id })
             if let wire = error as? ModelSwitchError {
@@ -52,8 +52,8 @@ extension ProviderLoop {
                     hasPersistedModelSwitch = previouslyPersistedSwitch
                 }
                 discardObsoleteModelPrefetches()
-                try await client.replaceModelsAfterDrain(previous.models, drainID: drainID, timeout: .seconds(30))
-                await resumeAfterModelSwitch()
+                let rollbackID = try await client.replaceModelsAfterDrain(previous.models, drainID: drainID, timeout: .seconds(30))
+                await resumeAfterModelSwitch(requestID: rollbackID, drainID: drainID)
             } catch let rollbackError {
                 throw ModelSelectionFailure("Switch failed: \(error). Restoring the previous selection is unconfirmed: \(rollbackError).")
             }

@@ -105,11 +105,14 @@ type Provider struct {
 	// draining (heartbeat status "draining" or a typed draining rejection);
 	// routing skips it until its next idle/serving heartbeat or the TTL
 	// (drain_state.go). Guarded by p.mu.
-	drainCommitted          bool // fenced until matching replacement acknowledgement or disconnect
+	drainCommitted          bool // fenced until matching provider readiness or disconnect
 	drainRequestID          string
 	drainGeneration         uint64 // increases per barrier, including reused wire request IDs
 	drainReady              bool   // preceding reservations and terminal usage have settled
-	drainReplacementPending bool   // inventory committed, receipt not yet confirmed on wire
+	drainReplacementPending bool   // inventory committed, waiting for receipt and provider readiness
+	drainReplacementAcked   bool
+	drainReplacementID      string
+	drainRemovedModels      []string
 	drainingUntil           time.Time
 	Conn                    *websocket.Conn
 	writer                  *providerWriter

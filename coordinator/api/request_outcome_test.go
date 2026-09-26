@@ -256,6 +256,8 @@ func TestRequestOutcomeQueueAndMissingTerminal(t *testing.T) {
 					ap.CompleteHandler()
 					return
 				}
+				r = r.WithContext(context.WithValue(r.Context(), ctxKeyConsumer, "public-queue-consumer"))
+				markPublicModelDemand(r, inferenceAdmissionParams{model: "queued-model"})
 				d := queueDispatchState(srv, "queued-model", rp, r, 50*time.Millisecond)
 				d.w = w
 				d.run()
@@ -273,6 +275,13 @@ func TestRequestOutcomeQueueAndMissingTerminal(t *testing.T) {
 			} else {
 				if r.Termination != "rejected" || r.RawReason != kind || r.NormalizedCode == "ext_first_content_timeout" {
 					t.Fatalf("queue conflated with first-content timeout %+v", r)
+				}
+				wantDemand := "timed_out"
+				if kind == "queue_full" {
+					wantDemand = "capacity_rejected"
+				}
+				if r.PublicDemand == nil || r.PublicDemand.Outcome != wantDemand {
+					t.Fatalf("public demand for %s = %+v, want %s", kind, r.PublicDemand, wantDemand)
 				}
 			}
 		})

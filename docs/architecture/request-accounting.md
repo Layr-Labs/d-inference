@@ -1,8 +1,8 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-11 · commit `5e41029dd`
+> Last updated: 2026-09-26 · commit `cf7393580`
 
-`request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The dashboard aggregation and presentation work in issue #845 remains open.
+`request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The public Stats page exposes a narrower, explicitly scoped recorded-request view; it does not establish traffic-wide completeness.
 
 ## Context
 
@@ -96,6 +96,88 @@ A raw historical `dispatch_exhausted` can represent a retained real provider err
 5. Process counters count observed receipts and persistence snapshots, not durable unique rows. Snapshot failures, queued work and restarts prevent traffic-wide denominator claims. Multi-process/historical coverage needs independent reconciliation; this API does not pretend otherwise.
 6. Rollback leaves the additive table readable but stops new observations. Do not mix older traffic with newly covered receipts as if their coverage were equal. Retention is receipt-based, including late revisions.
 
+## Public model demand
+
+`coordinator/api/model_demand_observation.go` (`markPublicModelDemand`) marks new
+requests at `runInferenceAdmission`, after account gates and body preparation.
+The marker stores the requested public model and a hashed consumer identity;
+it excludes exclusive self-route, owner-preferred and machine-restricted
+traffic. Historical records have no marker and are never backfilled by
+inference. Early model-shedding rejections and other exits before admission
+are outside this cohort. Admin-key traffic is excluded. Unlabelled authenticated load tests are included.
+
+`publicDemandOutcome` assigns one closed outcome per observation. Completed
+requests use the ledger's completion contract; explicit capacity reasons,
+including `queue_full`, provider-budget refusal at preflight (`prompt_too_long`),
+and dispatch-time `unservable_token_budget`, map to `capacity_rejected`; predictive TTFT refusals map
+to `latency_rejected`. First-content/queue timeouts, including expiry of the
+absolute first-content clock while queued (`queue_deadline`), map to `timed_out`.
+Failed/interrupted responses,
+client departures and unknown observations remain separate. Validation,
+balance and model-resolution failures are excluded. Unknown 429 reasons stay
+unknown. HTTP 429 is counted separately and overlaps outcomes.
+
+`coordinator/store/postgres_request_outcomes.go` (`RecordRequestOutcomes`)
+projects the winning revision into `model_demand_requests` in the same
+transaction. Its trigger in `coordinator/store/model_demand_migration.go`
+applies old/new deltas to `model_demand_hourly`; duplicate snapshots, late
+terminals and stale writes cannot create additional requests. Sticky evidence
+conflicts become unknown. The compact projection keeps revisions for 31 days,
+even when the detailed ledger expires, and prevents an old replay from
+regressing a terminal. Hourly counters avoid scanning a month of individual
+requests for every public read. Collection epoch metadata survives restarts.
+
+`PruneModelDemand` in `coordinator/store/postgres_model_demand.go` removes expired
+compact projections and whole expired aggregate hours in separate bounded
+transactions. Each delete is limited by the requested batch size (the shared
+`defaultTelemetryPruneBatch` applies when non-positive), with a two-second lock
+timeout. An error or cancellation stops the sweep without rolling back earlier
+committed batches. The partially expired cutoff hour remains intact.
+
+Both backends compare replays against the retained compact observation, not
+only the detailed ledger. Conflicting outcomes or HTTP statuses at the same
+revision, and receipt/model/consumer identity changes at any revision, set a
+sticky conflict and publish `unknown`. The original receipt cohort and scope
+remain fixed; later revisions cannot erase the conflict. This remains true
+after diagnostic-ledger expiry (`projectModelDemandSQL` and
+`projectModelDemandLocked`).
+
+`coordinator/store/postgres_model_demand_series.go` (`readModelDemandSeries`)
+applies the privacy floor to each UTC clock hour for each model before any
+public aggregation. An hour contributes only when its non-excluded observations
+include at least `ModelDemandMinRequests` requests from
+`ModelDemandMinConsumers` distinct consumer accounts. Models with no qualifying
+hours are omitted.
+
+`ModelDemandBucketSize` selects hourly, six-hourly or daily display intervals for
+the 24-hour, 7-day and 30-day windows. Every interval and model summary sums only
+the same qualifying hourly cohorts. A wider interval may include only some of
+its constituent hours; it never makes a suppressed hour publishable. Summary
+counts equal the fieldwise sum of non-null interval counts, including `http_429`.
+No independent full-window totals or hidden residuals are returned, so combining
+summaries and differently sized intervals does not restore suppressed hours.
+Intervals with no qualifying hours have `counts: null`, never measured zeros.
+The chart, exact interval table and CSV export all use these published counts.
+
+`coordinator/store/postgres_model_demand.go` (`ModelDemand`) reads aggregates in
+a repeatable-read, read-only transaction with an 8-second statement timeout
+and 1-second lock timeout. `coordinator/api/model_demand.go` (`handleModelDemand`)
+coalesces reads per range and caches successful responses for up to five
+minutes. Failures return 503 rather than an empty successful result.
+`ModelDemandMinRequests` and `ModelDemandMinConsumers` suppress sparse cohorts;
+fixed hourly boundaries with at least one hour of delay reduce fine-grained
+activity exposure. No raw identities, suppressed counts or per-request timing
+are public. These thresholds do not establish differential privacy.
+
+The public UI labels counts and percentages as published hourly observations,
+not complete window totals or a network-wide success rate. It shows partial
+history when collection began inside the window and never interprets absent
+records as zero demand or successes. Projection and rollup writes share the
+best-effort sink's loss risk; missing observations are not estimated. Coverage
+is `published_hourly_cohorts`, even when no current-process drops are visible.
+Token demand remains omitted until measured and estimated counts can be
+reconciled. See [the API contract](../reference/api-contracts.md#model-demand-response).
+
 ## Code map
 
 | Concern | Source |
@@ -112,4 +194,4 @@ A raw historical `dispatch_exhausted` can represent a retained real provider err
 - [Existing attempt outcomes and protected counters](request-outcome-observability.md)
 - [Heavy system profiler](system-profiler.md)
 - [Storage and migrations](storage.md)
-- [Tracking issue #845](https://github.com/Layr-Labs/d-inference/issues/845): aggregation/dashboard work remains separate and incomplete.
+- [Tracking issue #845](https://github.com/Layr-Labs/d-inference/issues/845): broader traffic-wide coverage reconciliation remains separate from the recorded-request dashboard.

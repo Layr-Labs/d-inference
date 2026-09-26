@@ -94,6 +94,11 @@ func (s *Server) observeRequestOutcome(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 func (o *requestOutcome) publishLocked() {
+	if o.record.PublicDemand != nil {
+		d := *o.record.PublicDemand
+		d.Outcome = publicDemandOutcome(o.record)
+		o.record.PublicDemand = &d
+	}
 	o.record.Revision++
 	o.record.UpdatedAt = time.Now()
 	r := o.record

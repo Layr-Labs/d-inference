@@ -41,6 +41,7 @@ func (s *MemoryStore) RecordRequestOutcomes(ctx context.Context, records []Reque
 		if exists && r.Revision <= old.Revision {
 			old.EvidenceConflict = old.EvidenceConflict || conflict || r.EvidenceConflict
 			s.requestOutcomes[r.CoordRequestID] = old
+			s.projectModelDemandLocked(old)
 			continue
 		}
 		if exists {
@@ -49,6 +50,7 @@ func (s *MemoryStore) RecordRequestOutcomes(ctx context.Context, records []Reque
 		}
 		r.EvidenceConflict = r.EvidenceConflict || old.EvidenceConflict || conflict
 		s.requestOutcomes[r.CoordRequestID] = cloneRequestOutcome(r)
+		s.projectModelDemandLocked(r)
 	}
 	return nil
 }

@@ -505,8 +505,9 @@ type Server struct {
 
 	// profiler owns the per-request profile records and their dedicated sink
 	// (system profiler). Nil on a Server built without NewServer.
-	profiler        *profiler
-	requestOutcomes *requestOutcomeSink
+	profiler           *profiler
+	requestOutcomes    *requestOutcomeSink
+	modelDemandRefresh [3]cacheRefresher
 	// unknownRequestFrames counts provider frames for requests the coordinator
 	// no longer tracks (zombie streams); exported on the fleet coordinator row.
 	unknownRequestFrames atomic.Int64
@@ -2754,6 +2755,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/leaderboard", s.handleLeaderboard)
 	s.mux.HandleFunc("GET /v1/network/totals", s.handleNetworkTotals)
 	s.mux.HandleFunc("GET /v1/network/series", s.handleNetworkSeries)
+	s.mux.HandleFunc("GET /v1/network/model-demand", s.handleModelDemand)
 
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
@@ -3467,10 +3469,11 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 // the wildcard applies only to GET; non-GET methods fall through to the
 // credentialed, single-origin CORS below.
 var publicCORSPaths = map[string]bool{
-	"/v1/models/catalog": true,
-	"/v1/pricing":        true,
-	"/v1/stats":          true,
-	"/v1/network/series": true,
+	"/v1/models/catalog":       true,
+	"/v1/pricing":              true,
+	"/v1/stats":                true,
+	"/v1/network/series":       true,
+	"/v1/network/model-demand": true,
 }
 
 // corsMiddleware sets CORS headers. Authenticated/credentialed requests are

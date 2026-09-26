@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Replace provider reputation ratings with total, successful, and failed job counts. Remove the composite score calculation and owner API field; historical job failures no longer imply reduced routing priority in the dashboard.
+
 ## Unreleased — App Attest dead-key recovery and release-recovery fixes
 
 - Replace App Attest keys the Secure Enclave can no longer use. After two consecutive DeviceCheck code-0/2 (or uncoded) assertion failures since the key's last verified assertion, the coordinator asks for a fresh attestation instead of another assertion. Released 0.9.8 and 0.9.9 providers answer by retiring the dead key and enrolling a new one, which must pass the full attestation, receipt, build-qualification and assertion checks. Rotations are durable, limited to one per machine per hour and four per 24 hours (limits carry over when two machine records are merged), controlled by `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT` (default 100), and never revoke or deny serving.

@@ -264,7 +264,7 @@ describe("ProvidersPage", () => {
       decode_tps: 50,
       system_metrics: { memory_pressure: 0.3, cpu_usage: 0.2, thermal_state: "nominal" },
       reputation: {
-        score: 0.9, total_jobs: 100, successful_jobs: 99, failed_jobs: 1,
+        total_jobs: 100, successful_jobs: 99, failed_jobs: 1,
         total_uptime_seconds: 3600, avg_response_time_ms: 200, challenges_passed: 5, challenges_failed: 0,
       },
       lifetime_requests_served: 100,
@@ -349,7 +349,7 @@ describe("ProvidersPage", () => {
       pending_requests: 0,
       max_concurrency: 8,
       reputation: {
-        score: 0.8, total_jobs: 50, successful_jobs: 49, failed_jobs: 1,
+        total_jobs: 50, successful_jobs: 49, failed_jobs: 1,
         total_uptime_seconds: 3600, avg_response_time_ms: 250, challenges_passed: 5, challenges_failed: 0,
       },
       lifetime_requests_served: 50,

@@ -13,6 +13,14 @@ describe("deriveRouting", () => {
     expect(routingFor(baseProvider(), ctx)).toBe("routable");
   });
 
+  it("does not infer reduced routing priority from historical job failures", () => {
+    const p = baseProvider();
+    p.reputation.total_jobs = 20;
+    p.reputation.successful_jobs = 10;
+    p.reputation.failed_jobs = 10;
+    expect(routingFor(p, ctx)).toBe("routable");
+  });
+
   it("returns offline for offline/never_seen regardless of warnings", () => {
     expect(routingFor(baseProvider({ status: "offline", online: false }), ctx)).toBe("offline");
     expect(routingFor(baseProvider({ status: "never_seen", online: false }), ctx)).toBe("offline");

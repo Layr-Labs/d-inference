@@ -4,13 +4,16 @@ extension ProviderLoop {
     /// Local admission remains closed until the coordinator confirms the whole
     /// inventory on this connection. Persist before publishing so a crash after
     /// the receipt cannot restart with the old launchd selection.
-    internal func commitModelSelection(_ models: [ModelInfo], drainID: String) async throws {
+    internal func commitModelSelection(_ selection: ProviderModelSwitchValidation.Result, drainID: String) async throws {
+        let models = selection.models
         guard let client = coordinatorClient else { throw ModelSelectionFailure("Coordinator connection is unavailable.") }
-        let previous = advertisedModels.values.map { info in
-            var model = info
-            model.weightHash = liveModelHashes[info.id] ?? info.weightHash
-            return model
-        }.sorted { $0.id < $1.id }
+        let previous = ProviderModelSwitchValidation.Result(
+            models: advertisedModels.values.map { info in
+                var model = info
+                model.weightHash = liveModelHashes[info.id] ?? info.weightHash
+                return model
+            }.sorted { $0.id < $1.id },
+            fingerprints: modelHashFingerprints)
         let previousSelection = try loopConfig.configPath.map { path in
             try FileManager.default.fileExists(atPath: path.path)
                 ? ConfigManager.load(from: path).backend.enabledModels : loopConfig.config.backend.enabledModels
@@ -22,7 +25,7 @@ extension ProviderLoop {
             try validateModelSwitchSelfTests(models)
             try await client.validateModelSelectionAfterDrain(models, drainID: drainID, timeout: .seconds(30))
             mutationStarted = true
-            try await applyModelSelection(models)
+            try await applyModelSelection(selection)
             await client.stageModelSelection(models)
             try checkModelSwitchOwnership()
             if let path = loopConfig.configPath {
@@ -47,12 +50,12 @@ extension ProviderLoop {
             guard servingDrain.owner == .modelSwitch, !isShuttingDown, !Task.isCancelled else { throw error }
             do {
                 if mutationStarted { try await applyModelSelection(previous) }
-                await client.stageModelSelection(previous)
+                await client.stageModelSelection(previous.models)
                 if saved, let path = loopConfig.configPath, let previousSelection {
                     try ProviderModelSelection.save(previousSelection, configPath: path)
                     hasPersistedModelSwitch = previouslyPersistedSwitch
                 }
-                try await client.replaceModelsAfterDrain(previous, drainID: drainID, timeout: .seconds(30))
+                try await client.replaceModelsAfterDrain(previous.models, drainID: drainID, timeout: .seconds(30))
                 await resumeAfterModelSwitch()
             } catch let rollbackError {
                 throw ModelSelectionFailure("Switch failed: \(error). Restoring the previous selection is unconfirmed: \(rollbackError).")
@@ -64,7 +67,8 @@ extension ProviderLoop {
     /// Uses the normal unload/resource retirement and KV re-slice paths. The
     /// advertised set changes only after resident survivors pass the same floor
     /// check used by prefetch. New slots still use ensureModelLoaded on demand.
-    internal func applyModelSelection(_ models: [ModelInfo]) async throws {
+    internal func applyModelSelection(_ selection: ProviderModelSwitchValidation.Result) async throws {
+        let models = selection.models
         try checkModelSwitchOwnership()
         try validateModelSwitchSelfTests(models)
         guard !isLoadingAny, modelsLoading.isEmpty else {
@@ -100,7 +104,7 @@ extension ProviderLoop {
             model.weightHash.map { (model.id, $0) }
         })
         liveModelHashes = modelHashes
-        modelHashFingerprints = modelHashFingerprints.filter { next[$0.key] != nil }
+        modelHashFingerprints = selection.fingerprints
         if let error = lastModelLoadError, next[error.model] == nil { lastModelLoadError = nil }
         syncWarmModelState()
         await refreshActivationReserve()

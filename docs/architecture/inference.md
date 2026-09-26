@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-06
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -430,6 +430,17 @@ constraints retain their ordinary-decode exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
 retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
+`[backend] mtp_acceptance = "typical"`, or the `mtp_acceptance_by_model`
+table, installs typical acceptance for sampled rows of that model: a draft is
+kept when the sampler-filtered target row gives it probability above
+`min(1, 0.2 * exp(-H))`, `H` the row's entropy in nats; the first rejected
+position and the bonus position still commit the keyed target sample. Output
+is then not distribution-exact for the target. Greedy rows keep the exact
+walk, and the default is `exact` (`MTPAcceptancePolicy.resolve`;
+`CBv2MTPAcceptance` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`;
+`mtp_acceptance` in slot posture telemetry). Design record:
+[`../design/typical-mtp-acceptance.md`](../design/typical-mtp-acceptance.md).
 Nemotron's assistant uses one speculative request and adaptive depth up to
 seven proposed tokens. Captured target verification, batched M=1 projections
 and KV-only trusted-history priming default on, with separate rollback controls.

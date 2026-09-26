@@ -83,6 +83,10 @@ public struct StandaloneServerConfig: Sendable {
     /// External assistants download asynchronously through the configured catalog.
     public let mtpMode: MTPMode
     public let mtpDrafterPath: String?
+    /// MTP draft acceptance (`[backend] mtp_acceptance`, nil = not set →
+    /// `exact`) and its per-model table. See `MTPAcceptancePolicy`.
+    public let mtpAcceptance: String?
+    public let mtpAcceptanceByModel: [String: String]
     public let coordinatorURL: String
 
     public init(
@@ -98,6 +102,8 @@ public struct StandaloneServerConfig: Sendable {
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         mtpMode: MTPMode = .auto,
         mtpDrafterPath: String? = nil,
+        mtpAcceptance: String? = nil,
+        mtpAcceptanceByModel: [String: String] = [:],
         coordinatorURL: String = CoordinatorSettings().url
     ) {
         self.port = port
@@ -113,6 +119,8 @@ public struct StandaloneServerConfig: Sendable {
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpMode = mtpMode
         self.mtpDrafterPath = mtpDrafterPath
+        self.mtpAcceptance = mtpAcceptance
+        self.mtpAcceptanceByModel = mtpAcceptanceByModel
         self.coordinatorURL = coordinatorURL
     }
 }
@@ -1209,6 +1217,8 @@ public actor StandaloneServer {
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
+                mtpAcceptanceConfig: config.mtpAcceptance,
+                mtpAcceptanceConfigByModel: config.mtpAcceptanceByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,
                 modelArtifactSHA256: modelArtifactSHA256,
                 weightHash: cacheEligibleWeightHash,

@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-09-26 · commit `3e9dcf6b4`
+> Last updated: 2026-09-26 · commit `86895ace9`
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -12,6 +12,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | Runbook | Scope |
 |---|---|
 | [telemetry-history.md](telemetry-history.md) | Copy and verify retained telemetry into queryable history before coordinator changes |
+| [accounting-history.md](accounting-history.md) | Copy exact accounting history into isolated storage and query it with BigQuery |
 | [telemetry-archive.md](telemetry-archive.md) | Capture and verify bounded Parquet snapshots |
 | [telemetry-backfill.md](telemetry-backfill.md) | Run resumable, finite copy-only backfills |
 | [`model-token-promotions.md`](model-token-promotions.md) | Configure capped model-token claims, signup eligibility, paid fallback and provider settlement |

@@ -6,13 +6,8 @@ from pathlib import Path
 
 import pyarrow as pa
 
-TABLES = {
-    "request_profiles": "created_at",
-    "fleet_snapshots": "sampled_at",
-    "request_rejections": "created_at",
-    "inference_routes": "created_at",
-    "request_outcomes": "received_at",
-}
+from .tables import TABLES
+
 FORMAT_VERSION = 1
 # row_json is PostgreSQL's complete row_to_json output, never a field allowlist.
 # The type catalog in the receipt makes it possible to restore new/unprojected fields.
@@ -46,6 +41,17 @@ def stamp(value: datetime) -> str:
     return value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def validate_limits(window):
+    if not 1 <= window.page_rows <= 10_000:
+        raise ValueError("page_rows must be between 1 and 10000")
+    if not 1 <= window.max_rows <= 1_000_000:
+        raise ValueError("max_rows must be between 1 and 1000000")
+    if not 1 <= window.max_raw_bytes <= 2 * 1024**3:
+        raise ValueError("max_raw_bytes must be between 1 byte and 2 GiB")
+    if not 1 <= window.max_seconds <= 300:
+        raise ValueError("max_seconds must be between 1 and 300")
+
+
 @dataclass(frozen=True)
 class Window:
     table: str
@@ -58,7 +64,7 @@ class Window:
 
     def __post_init__(self):
         if self.table not in TABLES:
-            raise ValueError("only the five telemetry tables are supported")
+            raise ValueError("only the explicitly allowed history tables are supported")
         if self.start.tzinfo is None or self.end.tzinfo is None:
             raise ValueError("timestamps must include a timezone")
         if not timedelta(0) < self.end - self.start <= timedelta(hours=1):
@@ -67,18 +73,21 @@ class Window:
         last = (self.end - timedelta(microseconds=1)).astimezone(UTC)
         if start.date() != last.date():
             raise ValueError("split windows at UTC midnight")
-        if not 1 <= self.page_rows <= 10_000:
-            raise ValueError("page_rows must be between 1 and 10000")
-        if not 1 <= self.max_rows <= 1_000_000:
-            raise ValueError("max_rows must be between 1 and 1000000")
-        if not 1 <= self.max_raw_bytes <= 2 * 1024**3:
-            raise ValueError("max_raw_bytes must be between 1 byte and 2 GiB")
-        if not 1 <= self.max_seconds <= 300:
-            raise ValueError("max_seconds must be between 1 and 300")
+        validate_limits(self)
 
     @property
     def date(self) -> str:
         return self.start.astimezone(UTC).date().isoformat()
+
+    @property
+    def partition(self):
+        return "event_date=" + self.date
+
+    def contains(self, source_id, source_time):
+        return self.start <= source_time < self.end
+
+    def order_key(self, source_id, source_time):
+        return source_time, source_id
 
 
 def new_directory(path: Path) -> None:

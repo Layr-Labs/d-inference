@@ -17,6 +17,7 @@ from .journal import Journal, read_json
 from .model import ArchiveError
 from .objects import archive_bucket, check_generations, load_remote, upload
 from .queries import verify_query
+from .scope import require_bucket_scope
 
 
 def database_url() -> str:
@@ -82,6 +83,11 @@ def process_window(dsn, window, storage, bigquery, bucket_name, location):
         result = verify_query(bigquery, verified)
         check_generations(bucket, verified)
         return {
+            **(
+                {"accounting_totals": receipt["stats"]["accounting_totals"]}
+                if "accounting_totals" in receipt["stats"]
+                else {}
+            ),
             "verified": result["verified"],
             "receipt_uri": published["receipt_uri"],
             "artifact_id": receipt["artifact_id"],
@@ -105,6 +111,7 @@ def run_job(args):
     validate_plan(plan)
     if plan["plan_id"] != args.plan_id:
         raise ArchiveError("plan object identity mismatch")
+    require_bucket_scope(bucket, [r["table"] for r in plan["ranges"]])
     dsn = database_url()
     query_client = cloud.bigquery_client(args.project, args.location)
     runner = Runner(

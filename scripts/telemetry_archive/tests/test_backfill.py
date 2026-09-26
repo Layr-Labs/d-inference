@@ -46,8 +46,8 @@ def test_plan_has_exact_coverage_at_midnight(plan):
     assert sum((w.end - w.start).total_seconds() for w in intervals) == 7200
 
 
-def test_financial_plan_and_duplicates_rejected(plan):
-    for ranges in ([dict(plan["ranges"][0], table="ledger_entries")], plan["ranges"] * 2):
+def test_live_state_plan_and_duplicates_rejected(plan):
+    for ranges in ([dict(plan["ranges"][0], table="balances")], plan["ranges"] * 2):
         with pytest.raises(ArchiveError):
             make_plan(ranges)
 

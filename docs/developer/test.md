@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-26 · commit `4c868179d`
+> Last updated: 2026-09-26 · commit `86895ace9`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2348,4 +2348,4 @@ owner authorization while retaining runtime/security denials.
 
 ## Telemetry archive validation
 
-In `scripts/telemetry_archive`, run `uv run ruff check src tests`, `uv run ruff format --check src tests`, and `uv run pytest -q`. Set `TEST_ARCHIVE_DATABASE_URL` only to a disposable local database named `archive_test` for PostgreSQL restoration, snapshot-isolation, and nested-outcome tests. The tests reject remote databases. Production copy/BigQuery verification is a separate gate in [telemetry history](../operations/telemetry-history.md).
+In `scripts/telemetry_archive`, run `uv run ruff check src tests`, `uv run ruff format --check src tests`, and `uv run pytest -q`. Set `TEST_ARCHIVE_DATABASE_URL` only to a disposable local database named `archive_test` for PostgreSQL restoration, snapshot-isolation, and nested-outcome tests. Accounting tests cover signed micro-USD values, sums beyond INT64, backdated timestamps, sparse IDs, late commits, destination separation, and exact restoration of all four accounting tables. The tests reject remote databases. Production copy/BigQuery verification is a separate gate in [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).

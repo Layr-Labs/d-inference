@@ -12,6 +12,7 @@ from google.api_core.exceptions import PreconditionFailed
 from .artifact import json_bytes, read_artifact, validate_receipt
 from .codec import file_sha256, verify_parquet
 from .model import ArchiveError
+from .scope import require_bucket_scope
 
 
 def archive_bucket(client, name: str, location: str):
@@ -67,9 +68,8 @@ def upload(directory: Path, client, bucket_name: str, location: str) -> dict:
     if receipt["source"]["in_recovery"] is not True or receipt["source"]["read_only"] != "on":
         raise ArchiveError("only snapshots captured from a physical read replica can be uploaded")
     bucket = archive_bucket(client, bucket_name, location)
-    name = (
-        f"data/v1/{window.table}/event_date={window.date}/{receipt['stats']['file_sha256']}.parquet"
-    )
+    require_bucket_scope(bucket, [window.table])
+    name = f"data/v1/{window.table}/{window.partition}/{receipt['stats']['file_sha256']}.parquet"
     data = put_verified(
         bucket, name, directory / "data.parquet", content_type="application/octet-stream"
     )
@@ -118,10 +118,10 @@ def load_remote(client, uri: str, location: str) -> tuple[dict, object]:
     published = json.loads(raw)
     snapshot = published["snapshot"]
     window = validate_receipt(snapshot)
+    require_bucket_scope(bucket, [window.table])
     artifact_id = snapshot["artifact_id"]
     expected_data = (
-        f"data/v1/{window.table}/event_date={window.date}/"
-        f"{snapshot['stats']['file_sha256']}.parquet"
+        f"data/v1/{window.table}/{window.partition}/{snapshot['stats']['file_sha256']}.parquet"
     )
     if (
         parsed.path != f"/receipts/v1/{artifact_id}.json"

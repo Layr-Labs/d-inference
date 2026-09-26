@@ -4,9 +4,12 @@ import hashlib
 import json
 from pathlib import Path
 
+from .accounting import validate_totals
 from .codec import encode, verify_parquet
-from .model import FORMAT_VERSION, ArchiveError, Window, new_directory, stamp, utc
+from .model import FORMAT_VERSION, ArchiveError, Window, new_directory
 from .source import snapshot
+from .tables import ACCOUNTING_FIELDS
+from .windows import IDWindow, identity, read_window
 
 
 def json_bytes(value: dict) -> bytes:
@@ -18,15 +21,17 @@ def capture(dsn: str, window: Window, directory: Path, *, require_replica=True) 
     path = directory / "data.parquet"
     with snapshot(dsn, window, require_replica=require_replica) as (source, expected, pages):
         stats = encode(pages, path, window, expected)
+        if window.table in ACCOUNTING_FIELDS and source.get("accounting_totals") != stats.get(
+            "accounting_totals"
+        ):
+            raise ArchiveError("accounting totals differ from the source snapshot")
     # The replica transaction is closed before verification, upload, or BigQuery work.
     verify_parquet(path, window, stats)
     receipt = {
-        "format_version": FORMAT_VERSION,
+        "format_version": 2 if isinstance(window, IDWindow) else FORMAT_VERSION,
         "copy_only": True,
         "retention_eligible": False,
-        "table": window.table,
-        "start": stamp(window.start),
-        "end": stamp(window.end),
+        **identity(window),
         "source": source,
         "stats": stats,
     }
@@ -38,7 +43,7 @@ def capture(dsn: str, window: Window, directory: Path, *, require_replica=True) 
 
 def validate_receipt(receipt: dict) -> Window:
     if (
-        receipt.get("format_version") != FORMAT_VERSION
+        receipt.get("format_version") not in (FORMAT_VERSION, 2)
         or receipt.get("copy_only") is not True
         or receipt.get("retention_eligible") is not False
     ):
@@ -46,10 +51,18 @@ def validate_receipt(receipt: dict) -> Window:
     core = {k: v for k, v in receipt.items() if k != "artifact_id"}
     if hashlib.sha256(json_bytes(core)).hexdigest() != receipt.get("artifact_id"):
         raise ArchiveError("snapshot receipt checksum mismatch")
-    window = Window(receipt["table"], utc(receipt["start"]), utc(receipt["end"]))
+    window = read_window(receipt)
+    if (receipt["format_version"] == 2) != isinstance(window, IDWindow):
+        raise ArchiveError("snapshot version does not match its range kind")
     stats = receipt["stats"]
     if not 0 <= stats["rows"] <= 1_000_000 or not 0 < stats["file_bytes"] <= 2 * 1024**3:
         raise ArchiveError("snapshot exceeds supported verification bounds")
+    validate_totals(window.table, stats.get("accounting_totals"), stats["rows"])
+    if (
+        window.table in ACCOUNTING_FIELDS
+        and receipt["source"].get("accounting_totals") != stats["accounting_totals"]
+    ):
+        raise ArchiveError("accounting receipt differs from source reconciliation")
     return window
 
 

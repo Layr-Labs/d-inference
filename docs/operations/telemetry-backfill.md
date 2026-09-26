@@ -1,6 +1,6 @@
 # Launch the copy-only telemetry backfill
 
-> Last updated: 2026-09-26 · commit `3e9dcf6b4`
+> Last updated: 2026-09-26 · commit `86895ace9`
 
 Run a finite historical copy in us-east4 near the database, with resumable
 Cloud Storage checkpoints and BigQuery verification. This runbook prepares a
@@ -9,9 +9,10 @@ or add a recurring schedule.
 
 ## When to use
 
-Use after the [snapshot pilot](telemetry-archive.md) passes, to copy the four
+Use after the [snapshot pilot](telemetry-archive.md) passes, to copy the five
 telemetry tables across explicit historical ranges. Live routing state, users,
-balances, usage/accounting, and provider earnings are not included. Each leaf
+and balances are not included. For accounting history, use the separate
+[accounting runbook](accounting-history.md) and primary-key batches. Each leaf
 is a read-only snapshot taken when that interval is processed, not a single
 database-wide snapshot or a record of future updates.
 

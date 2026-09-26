@@ -2,7 +2,9 @@
 
 from google.cloud import bigquery
 
+from .accounting import query_aggregates, validate_totals
 from .model import ArchiveError, stamp, utc
+from .windows import IDWindow, read_window
 
 VERIFY_SQL = """
 SELECT COUNT(*) AS row_count, COUNT(DISTINCT source_id) AS distinct_ids,
@@ -19,6 +21,21 @@ def verify_query(client, published: dict, *, maximum_bytes_billed: int = 1024**3
     if not 1 <= maximum_bytes_billed <= 10 * 1024**3:
         raise ArchiveError("BigQuery verification budget must be at most 10 GiB")
     receipt = published["snapshot"]
+    validate_totals(
+        receipt["table"], receipt["stats"].get("accounting_totals"), receipt["stats"]["rows"]
+    )
+    window = read_window(receipt)
+    parameters = (
+        [
+            bigquery.ScalarQueryParameter("id_start", "INT64", window.start),
+            bigquery.ScalarQueryParameter("id_end", "INT64", window.end),
+        ]
+        if isinstance(window, IDWindow)
+        else [
+            bigquery.ScalarQueryParameter("start", "TIMESTAMP", utc(receipt["start"])),
+            bigquery.ScalarQueryParameter("end", "TIMESTAMP", utc(receipt["end"])),
+        ]
+    )
     # The live jobs API rejected NEW_LINE_DELIMITED_MANIFEST in a temporary
     # table definition. Use the exact URI already checked against our manifest;
     # never broaden discovery to a wildcard containing overlapping snapshots.
@@ -31,12 +48,21 @@ def verify_query(client, published: dict, *, maximum_bytes_billed: int = 1024**3
         use_query_cache=False,
         use_legacy_sql=False,
         labels={"purpose": "telemetry-archive-verify", "mode": "copy-only"},
-        query_parameters=[
-            bigquery.ScalarQueryParameter("start", "TIMESTAMP", utc(receipt["start"])),
-            bigquery.ScalarQueryParameter("end", "TIMESTAMP", utc(receipt["end"])),
-        ],
+        query_parameters=parameters,
     )
-    job = client.query(VERIFY_SQL, job_config=config, location=published["location"])
+    aggregates = query_aggregates(receipt["table"])
+    query = VERIFY_SQL
+    if isinstance(window, IDWindow):
+        query = query.replace(
+            "source_time < @start OR source_time >= @end",
+            "source_id < @id_start OR source_id >= @id_end",
+        )
+    if aggregates:
+        query = query.replace(
+            "\nFROM archive_snapshot",
+            ",\n       " + ",\n       ".join(aggregates) + "\nFROM archive_snapshot",
+        )
+    job = client.query(query, job_config=config, location=published["location"])
     rows = list(job.result(timeout=180))
     if len(rows) != 1:
         raise ArchiveError("BigQuery returned an unexpected verification result")
@@ -47,6 +73,12 @@ def verify_query(client, published: dict, *, maximum_bytes_billed: int = 1024**3
     expected = {key: stats[key] for key in ("min_id", "max_id", "first_time", "last_time")}
     expected.update(
         row_count=stats["rows"], distinct_ids=stats["rows"], invalid_hashes=0, outside_window=0
+    )
+    expected.update(
+        {
+            "accounting_" + field: value
+            for field, value in stats.get("accounting_totals", {}).items()
+        }
     )
     if actual != expected:
         raise ArchiveError("BigQuery results differ from the verified source snapshot")

@@ -6,6 +6,7 @@ from .backfill_plan import children, identity, window_key, windows
 from .journal import Journal, read_json
 from .model import ArchiveError, stamp, utc
 from .objects import check_generations
+from .windows import IDWindow, end_boundary
 
 
 def verified_entries(bucket, bucket_name, plan):
@@ -19,7 +20,7 @@ def verified_entries(bucket, bucket_name, plan):
         validator.validate_state(state, window)
         if state["status"] == "split":
             left, right = children(window)
-            if state.get("middle") != identity(left)["end"]:
+            if state.get("middle") != end_boundary(left):
                 raise ArchiveError("catalog split boundary mismatch")
             yield from visit(left)
             yield from visit(right)
@@ -37,6 +38,8 @@ def verified_entries(bucket, bucket_name, plan):
             or receipt["snapshot"]["artifact_id"] != artifact_id
             or receipt["bucket"] != bucket_name
             or receipt["snapshot"]["stats"]["rows"] != result["rows"]
+            or receipt["snapshot"]["stats"].get("accounting_totals")
+            != result.get("accounting_totals")
             or result["objects"] != {key: receipt[key] for key in ("data", "manifest")}
         ):
             raise ArchiveError("catalog checkpoint differs from receipt")
@@ -46,8 +49,13 @@ def verified_entries(bucket, bucket_name, plan):
             "source_uri": f"gs://{bucket_name}/{receipt['data']['name']}",
             "generation": str(receipt["data"]["generation"]),
             "observed_at": stamp(utc(receipt["snapshot"]["source"]["observed_at"])),
-            "window_start": stamp(window.start),
-            "window_end": stamp(window.end),
+            "window_start": None if isinstance(window, IDWindow) else stamp(window.start),
+            "window_end": None if isinstance(window, IDWindow) else stamp(window.end),
+            **(
+                {"id_start": window.start, "id_end": window.end}
+                if isinstance(window, IDWindow)
+                else {}
+            ),
             "row_count": result["rows"],
             "parquet_bytes": result["parquet_bytes"],
             "plan_id": plan["plan_id"],
@@ -63,7 +71,7 @@ def merge_files(entries):
     for entry in entries:
         entry = dict(entry)
         for field in ("observed_at", "window_start", "window_end"):
-            if field in entry:
+            if entry.get(field) is not None:
                 entry[field] = stamp(utc(entry[field]))
         previous = files.get(entry["source_uri"])
         if previous and previous["generation"] != entry["generation"]:

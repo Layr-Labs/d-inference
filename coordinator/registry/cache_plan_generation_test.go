@@ -78,9 +78,13 @@ func TestCachePlanRevalidatesGenerationAfterSidecar(t *testing.T) {
 				}
 			}
 			if change == "cancel" {
+				// Keep the successful response blocked until cancellation returns;
+				// releasing it now races the transport's cancellation observer.
+				defer close(release)
 				cancel()
+			} else {
+				close(release)
 			}
-			close(release)
 			var result CachePlanResult
 			select {
 			case result = <-results:

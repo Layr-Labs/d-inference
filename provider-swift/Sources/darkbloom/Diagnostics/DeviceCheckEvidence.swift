@@ -90,46 +90,10 @@ enum DeviceCheckEvidence {
         try runLog(arguments)
     }
 
-    // MARK: - Extraction
-
-    /// Keeps only lines matching a closed pattern; oldest events are dropped
-    /// past `maxEvents`.
-    static func extract(ndjson: Data) -> [Event] {
-        let expressions = Pattern.allCases.compactMap { pattern in pattern.expression.map { (pattern, $0) } }
-        var events: [Event] = []
-        for line in ndjson.split(separator: UInt8(ascii: "\n")) {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                  let message = object["eventMessage"] as? String else { continue }
-            let range = NSRange(message.startIndex..., in: message)
-            let matches: [Match] = expressions.compactMap { pattern, expression in
-                guard let found = expression.firstMatch(in: message, range: range) else { return nil }
-                var code: Int32?
-                if found.numberOfRanges > 1, let group = Range(found.range(at: 1), in: message) {
-                    code = Int(message[group]).flatMap { Int32(exactly: $0) }
-                }
-                return Match(pattern: pattern, code: code)
-            }
-            guard !matches.isEmpty else { continue }
-            events.append(Event(timestamp: closed(object["timestamp"], limit: 40) ?? "",
-                                category: closed(object["category"], limit: 64),
-                                messageType: closed(object["messageType"], limit: 16),
-                                matches: matches))
-        }
-        return Array(events.suffix(maxEvents))
-    }
-
-    /// Timestamp/category/type are Apple-defined tokens; keep only a bounded,
-    /// conservative character set so no message text can ride along.
-    private static func closed(_ value: Any?, limit: Int) -> String? {
-        guard let text = value as? String, !text.isEmpty, text.count <= limit else { return nil }
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " .:-+_"))
-        return text.unicodeScalars.allSatisfy(allowed.contains) ? text : nil
-    }
-
     // MARK: - Rendering
 
     static func summary(_ events: [Event]) -> String {
-        guard !events.isEmpty else { return scopeDisclaimer + " No devicecheckd/App Attest failure patterns in the last \(window)." }
+        guard !events.isEmpty else { return scopeDisclaimer + " No devicecheckd/App Attest failure patterns in the collected log tail (up to \(window))." }
         var counts: [Pattern: Int] = [:]
         var codes: [Pattern: Set<Int32>] = [:]
         for event in events {
@@ -143,7 +107,7 @@ enum DeviceCheckEvidence {
             let list = codes[pattern].map { " (" + $0.sorted().map(String.init).joined(separator: ", ") + ")" } ?? ""
             return "\(pattern.rawValue) ×\(count)\(list)"
         }
-        return scopeDisclaimer + " Last \(window): " + parts.joined(separator: "; ")
+        return scopeDisclaimer + " Collected log tail (up to \(window)): " + parts.joined(separator: "; ")
     }
 
     static func doctorDiagnostic(_ outcome: Outcome) -> Diagnostic {

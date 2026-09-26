@@ -36,7 +36,7 @@ extension DeviceCheckEvidence {
             }
             throw CocoaError(.executableLoad, userInfo: [NSLocalizedDescriptionKey: "timed out after \(timeout)s"])
         }
-        let errorText = String(decoding: (try? Data(contentsOf: err)) ?? Data(), as: UTF8.self)
-        return (process.terminationStatus, (try? Data(contentsOf: out)) ?? Data(), errorText)
+        let errorText = String(decoding: (try? readTail(err, limit: 4096, wholeLines: false)) ?? Data(), as: UTF8.self)
+        return (process.terminationStatus, (try? readTail(out, limit: maxLogBytes, wholeLines: true)) ?? Data(), errorText)
     }
 }

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `1b961e726`
+> Last updated: 2026-09-26 · commit `24db88e2a`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -838,7 +838,7 @@ darkbloom logs [--file] [--follow] [--last <duration>] [--debug] [--lines <n>]
 | `--debug` | Include debug-level messages |
 | `--lines <n>` | Number of lines (only with `--file`) |
 
-Boot-security diagnostics pass only when SIP and authenticated root are both positively enabled. A missing reading produces a warning, and failed diagnostic commands time out with unknown fields. APNs history is rendered under APNs code-identity readiness on all supported macOS versions, even without an App Attest snapshot. An absent history file is omitted. APNs token presence follows late callbacks; a recorded reply means the local WebSocket write completed, not that the coordinator verified it.
+Boot-security diagnostics pass only when SIP and authenticated root are both positively enabled. A missing reading produces a warning, and failed diagnostic commands time out with unknown fields. APNs history is rendered under APNs code-identity readiness on all supported macOS versions, even without an App Attest snapshot. An absent history file is omitted. Zero observed pushes is `[INFO]` with an indeterminate delivery result, not a warning: cached code identity may avoid APNs entirely. Informational results do not fail `--strict`. APNs token presence follows late callbacks; a recorded reply means the local WebSocket write completed, not that the coordinator verified it.
 
 ## `darkbloom report`
 
@@ -859,7 +859,7 @@ The command runs only when invoked by the provider operator. It collects the
 redaction, and does not include debug-level messages. Automatic report upload is
 disabled.
 
-The device-wide log collector allows 30 seconds, then a 250 ms termination grace before killing an unresponsive child. A timeout returns unavailable evidence without an unbounded wait (`DeviceCheckEvidence.runLog`).
+The device-wide log collector allows 30 seconds, then a 250 ms termination grace before killing an unresponsive child. A timeout returns unavailable evidence without an unbounded wait (`DeviceCheckEvidence.runLog`). Reads retain at most the newest 8 MiB of stdout and 4 KiB of stderr. Parsing skips lines over 64 KiB and retains only the newest 200 matching events in a ring; the output describes the collected log tail rather than claiming complete two-hour coverage.
 
 It also appends App Attest evidence as extra NDJSON lines:
 

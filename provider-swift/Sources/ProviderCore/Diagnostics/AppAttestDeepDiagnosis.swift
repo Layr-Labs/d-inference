@@ -189,9 +189,8 @@ public enum AppAttestDeepDiagnosis {
         let lastReply = summary.lastReplySentAgeSeconds.map { "last reply \(duration($0)) ago" } ?? "no reply recorded"
         let lastPush = summary.lastPushReceivedAgeSeconds.map { "last push \(duration($0)) ago" } ?? "no push ever received"
         if received == 0 {
-            return Diagnostic(section: .attestationReadiness, name: "apns pushes", level: .warn,
-                              message: "no code-identity push received in 24 h (\(lastPush); \(lastReply)). If the coordinator reports unanswered pushes, APNs is not delivering them to this Mac.",
-                              fix: "keep the Mac awake and online (`sudo pmset -a sleep 0`), stay logged in, and check that outbound TCP 5223 to Apple is not blocked.")
+            return Diagnostic(section: .attestationReadiness, name: "apns pushes", level: .info,
+                              message: "no code-identity push observed in 24 h (\(lastPush); \(lastReply)). Delivery is indeterminate: cached code identity can be reused without a new push.")
         }
         let repliedAfter = (summary.lastReplySentAgeSeconds ?? Int.max) <= (summary.lastPushReceivedAgeSeconds ?? Int.max)
         return Diagnostic(section: .attestationReadiness, name: "apns pushes", level: repliedAfter ? .pass : .warn,

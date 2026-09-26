@@ -136,8 +136,11 @@ struct AppAttestDeepDiagnosisTests {
         let noToken = AppAttestDeepDiagnosis.pushDiagnostic(APNsPushHistory(deviceTokenPresent: false), now: now)
         #expect(noToken?.message.contains("APNs registration failed") == true)
         let none = AppAttestDeepDiagnosis.pushDiagnostic(APNsPushHistory(deviceTokenPresent: true), now: now)
-        #expect(none?.level == .warn)
-        #expect(none?.fix?.contains("awake and online") == true)
+        #expect(none?.level == .info)
+        #expect(none?.fix == nil)
+        #expect(none?.message.contains("indeterminate") == true)
+        let old = AppAttestDeepDiagnosis.pushDiagnostic(APNsPushHistory(receivedAt: [1], repliedAt: [2], deviceTokenPresent: true), now: now)
+        #expect(old?.level == .info && old?.fix == nil)
         let unanswered = AppAttestDeepDiagnosis.pushDiagnostic(
             APNsPushHistory(receivedAt: [now - 60], repliedAt: [now - 3_600], deviceTokenPresent: true), now: now)
         #expect(unanswered?.level == .warn)

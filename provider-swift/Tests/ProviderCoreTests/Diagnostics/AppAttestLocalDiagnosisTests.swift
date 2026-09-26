@@ -34,7 +34,7 @@ struct AppAttestLocalDiagnosisTests {
                 }
             }
         }
-        for history in [APNsPushHistory(deviceTokenPresent: false), APNsPushHistory(deviceTokenPresent: true),
+        for history in [APNsPushHistory(deviceTokenPresent: false),
                         APNsPushHistory(receivedAt: [90], deviceTokenPresent: true)] {
             let diagnostics = AppAttestLocalDiagnosis.evaluate(nil, daemonRunning: true,
                 macOSMajorVersion: 26, now: 100, pushHistory: history)

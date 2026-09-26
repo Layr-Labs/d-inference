@@ -41,7 +41,8 @@ public enum ProviderProcessRun {
             processStartedAt: started, now: now.timeIntervalSince1970, previousRun: previous, currentVersion: version,
             stallRestartAt: AppAttestStallRestartMarker(directory: directory).lastRestart()?.timeIntervalSince1970,
             watchdogRestartAt: WatchdogStateStore.read().lastRestartAt,
-            launchedByLaunchd: ProviderStartReason.launchedByLaunchd(environment: environment)))
+            launchedByLaunchd: ProviderStartReason.launchedByLaunchd(environment: environment),
+            processStartMicros: processStartMicros))
         let context = StartContext(processStartedAt: processStartMicros.map { Int64($0 / 1_000_000) },
                                    processStartMicros: processStartMicros,
                                    previousExit: ProviderRunMarker.previousExit(previous, processStartMicros: processStartMicros),

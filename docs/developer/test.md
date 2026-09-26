@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-26 · commit `1b961e726`
+> Last updated: 2026-09-26 · commit `24db88e2a`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2277,7 +2277,11 @@ The private admin queries have PostgreSQL coverage in
 `admin-ui/src/lib/queries/app-attest.test.ts` and
 `admin-ui/src/lib/queries/app-attest-diagnostics.test.ts`. These cover account-scoped
 rotation recovery and aging historical APNs snapshots. `DeviceCheckProcessTests`
-executes a child that ignores SIGTERM to verify bounded log collection, and
+executes a child that ignores SIGTERM to verify bounded log collection.
+`DeviceCheckExtractionBoundsTests` covers bounded file tails, oversized lines and
+ring ordering; `ProviderRunMarkerTests` separates stale version markers from exact
+exec identity, and informational doctor results remain non-failing under `--strict`.
+Also,
 `AppAttestLocalDiagnosisTests` covers APNs history below macOS 27 and missing
 App Attest state.
 

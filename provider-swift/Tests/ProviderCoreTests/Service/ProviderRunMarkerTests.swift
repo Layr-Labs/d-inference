@@ -77,7 +77,7 @@ struct ProviderRunMarkerTests {
         #expect(context.processStartedAt == 2_000)
         #expect(context.processStartMicros == 2_000_500_000)
         #expect(context.previousExit == .unclean)
-        #expect(context.startReason == .update, "a different previous version wins over launchd")
+        #expect(context.startReason == .launchd, "a version change without a recent update exit does not explain this start")
         let written = ProviderRunMarker(directory: dir).read()
         #expect(written?.state == .running)
         #expect(written?.processStartMicros == 2_000_500_000)
@@ -108,6 +108,22 @@ struct ProviderRunMarkerTests {
         let oldExit = ProviderRunMarker.Record(state: .clean, processStartMicros: 1_000_000, version: "1",
                                                exitCause: .lifecycleCommand, exitedAt: 1_000)
         #expect(ProviderStartReason.classify(evidence(previous: oldExit, stall: 1_000, watchdog: 2_000)) == .launchd)
+    }
+
+    @Test func updateRequiresRecentExitOrExactExecIdentity() {
+        let old = ProviderRunMarker.Record(state: .clean, processStartMicros: 1_000_000, version: "0",
+                                           exitCause: .update, exitedAt: 1_000)
+        #expect(ProviderStartReason.classify(evidence(previous: old)) == .launchd)
+        #expect(ProviderStartReason.classify(evidence(previous: old, launchd: false)) == .manual)
+        let recent = ProviderRunMarker.Record(state: .clean, processStartMicros: 1_000_000, version: "0",
+                                              exitCause: .update, exitedAt: 9_990)
+        #expect(ProviderStartReason.classify(evidence(previous: recent)) == .update)
+        var current = evidence(previous: .init(state: .running, processStartMicros: 10_000_000_100, version: "0"))
+        #expect(ProviderStartReason.classify(current) == .launchd, "unknown identity cannot prove exec")
+        current.processStartMicros = 10_000_000_100
+        #expect(ProviderStartReason.classify(current) == .update)
+        current.processStartMicros = 10_000_000_900
+        #expect(ProviderStartReason.classify(current) == .launchd, "same second is not the same kernel process")
     }
 
     @Test func launchdDetectionNeedsTheProviderLabel() {

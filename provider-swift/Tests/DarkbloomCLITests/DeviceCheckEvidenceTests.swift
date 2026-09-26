@@ -130,3 +130,35 @@ struct ReportConfigPathTests {
         #expect(ReportAppAttestEvidence.adoptInvokingUserFiles(environment: ["SUDO_USER": "someone"]) == nil)
     }
 }
+
+@Suite("Bounded DeviceCheck log extraction")
+struct DeviceCheckExtractionBoundsTests {
+    private func line(_ index: Int) -> String {
+        "{\"timestamp\":\"\(index)\",\"eventMessage\":\"invalidKey\"}\n"
+    }
+
+    @Test func ringPreservesTheNewestTwoHundredMatchesInOrder() {
+        let data = Data((0..<5_000).map { line($0) }.joined().utf8)
+        let events = DeviceCheckEvidence.extract(ndjson: data)
+        #expect(events.count == 200)
+        #expect(events.map(\.timestamp) == (4800..<5000).map(String.init))
+    }
+
+    @Test func byteAndLineBoundsPreserveRecentCompleteLines() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("devicecheck-tail-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: url) }
+        // An oversized, unterminated prefix cannot force full-file reads or JSON parsing.
+        var data = Data(repeating: UInt8(ascii: "x"), count: DeviceCheckEvidence.maxLogBytes + 100)
+        data.append(Data(("\n" + line(1) + line(2)).utf8))
+        try data.write(to: url)
+        let tail = try DeviceCheckEvidence.readTail(url, limit: DeviceCheckEvidence.maxLogBytes, wholeLines: true)
+        #expect(tail.count <= DeviceCheckEvidence.maxLogBytes)
+        #expect(DeviceCheckEvidence.extract(ndjson: tail).map(\.timestamp) == ["1", "2"])
+        #expect(DeviceCheckEvidence.extract(ndjson: data).map(\.timestamp) == ["1", "2"])
+        let hugeJSON = "{\"timestamp\":\"oversize\",\"eventMessage\":\"invalidKey "
+            + String(repeating: "x", count: DeviceCheckEvidence.maxLogLineBytes) + "\"}\n"
+        #expect(DeviceCheckEvidence.extract(ndjson: Data((hugeJSON + line(3)).utf8)).map(\.timestamp) == ["3"])
+        let stderr = try DeviceCheckEvidence.readTail(url, limit: 4096, wholeLines: false)
+        #expect(stderr.count == 4096)
+    }
+}

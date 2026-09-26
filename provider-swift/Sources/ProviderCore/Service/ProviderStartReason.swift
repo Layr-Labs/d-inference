@@ -11,6 +11,7 @@ public enum ProviderStartReason {
 
     public struct Evidence: Sendable, Equatable {
         public var processStartedAt: Double
+        public var processStartMicros: UInt64?
         /// When the classification runs.
         public var now: Double
         public var previousRun: ProviderRunMarker.Record?
@@ -21,8 +22,9 @@ public enum ProviderStartReason {
         public var launchedByLaunchd: Bool
 
         public init(processStartedAt: Double, now: Double, previousRun: ProviderRunMarker.Record?, currentVersion: String,
-                    stallRestartAt: Double?, watchdogRestartAt: Double?, launchedByLaunchd: Bool) {
+                    stallRestartAt: Double?, watchdogRestartAt: Double?, launchedByLaunchd: Bool, processStartMicros: UInt64? = nil) {
             self.processStartedAt = processStartedAt
+            self.processStartMicros = processStartMicros
             self.now = now
             self.previousRun = previousRun
             self.currentVersion = currentVersion
@@ -42,7 +44,11 @@ public enum ProviderStartReason {
         let exitedRecently = recent(e.previousRun?.exitedAt)
         if recent(e.stallRestartAt) || (exit == .stallRestart && exitedRecently) { return .stallRestart }
         if recent(e.watchdogRestartAt) { return .watchdog }
-        if let previous = e.previousRun?.version, previous != e.currentVersion { return .update }
+        if let identity = e.processStartMicros, identity > 0,
+           e.previousRun?.processStartMicros == identity,
+           let previous = e.previousRun?.version, !previous.isEmpty, previous != e.currentVersion {
+            return .update // exact kernel process identity survived an exec
+        }
         if exit == .update && exitedRecently { return .update }
         if exit == .lifecycleCommand && exitedRecently { return .manual }
         if !e.launchedByLaunchd { return .manual }

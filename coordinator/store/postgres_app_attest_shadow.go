@@ -11,7 +11,8 @@ import (
 func (s *PostgresStore) GetAppAttestShadowKey(ctx context.Context, id string) (*AppAttestShadowKey, error) {
 	var data []byte
 	var counter uint32
-	err := s.pool.QueryRow(ctx, `SELECT evidence,counter FROM app_attest_shadow_keys WHERE key_id=$1`, id).Scan(&data, &counter)
+	var updated time.Time
+	err := s.pool.QueryRow(ctx, `SELECT evidence,counter,updated_at FROM app_attest_shadow_keys WHERE key_id=$1`, id).Scan(&data, &counter, &updated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -23,6 +24,7 @@ func (s *PostgresStore) GetAppAttestShadowKey(ctx context.Context, id string) (*
 		return nil, err
 	}
 	record.Counter = counter
+	record.UpdatedAt = updated
 	return &record, nil
 }
 

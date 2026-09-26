@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-23 · commit `afb71c63d`
+> Last updated: 2026-09-25 · commit `b6f9574ed`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -252,11 +252,25 @@ the same MicroMDM → APNs channel as SecurityInfo).
 | Fact | Value | Code |
 |---|---|---|
 | When | After a hardware grant on this connection (`mda` scheduler task, or inline for direct callers) | `coordinator/api/provider.go` (`verifyProviderViaMDM`, `verifyAppleDeviceAttestation`); `coordinator/api/mdm_scheduler_exec.go` |
-| Fast path | A durable chain from the store is re-verified against the pinned root and re-bound to this connection's SE key; reused only when `FreshnessCode == SHA-256(SE public key string)` (Apple rate-limits fresh attestations to about one per device per 7 days) | `coordinator/api/provider.go` (`attachCachedMDAProof`, `stageDurableMDAChain`) |
+| Fast path | A durable chain from the store is re-verified against the pinned root and re-bound to this connection's SE key; reused only when `FreshnessCode == SHA-256(SE public key string)` (Apple rate-limits fresh attestations to about one per device per 7 days). App Attest identity candidates stage the chain too (see below) | `coordinator/api/provider.go` (`attachCachedMDAProof`, `stageDurableMDAChain`) |
 | Fresh request | `DeviceInformation` with `Queries = [DeviceAttestation]` and `DeviceAttestationNonce = SHA-256(SE public key string)`; await ≤ 60s | `coordinator/mdm/mdm.go` (`RequestDeviceAttestation`) |
 | Verification | Chain to the embedded Apple Enterprise Attestation Root CA (P-384); leaf OIDs `OIDSIPStatus 1.2.840.113635.100.8.13.1`, `OIDSecureBootStatus …13.2`, `OIDKextStatus …13.3`, `OIDDeviceSerialNumber …9.1`, `OIDDeviceUDID …9.2`, `OIDSoftwareUpdateDeviceID …9.4`, `OIDOSVersion …10.1`, `OIDSepOSVersion …10.2`, `OIDLLBVersion …10.3`, `OIDFreshnessCode …11.1` | `coordinator/attestation/mda.go` (`VerifyMDADeviceAttestation`) |
 | Attach | Only if `TrustLevel == hardware` **and** (`FreshnessCode` binds the SE key **or** the leaf serial equals the blob `serialNumber`); sets `MDAVerified`, `MDACertChain`, `MDAResult`, `SEKeyBound` | `coordinator/registry/provider_evidence.go` (`SetMDAProofIfHardwareBound`) |
 | Exposure | `mda_verified`, `mda_os_version`, `mda_sepos_version` on `GET /v1/providers/attestation` only while the connection holds `hardware`; the chain, serial, and UDID are never published | `coordinator/api/provider.go` (`handleProviderAttestation`) |
+
+App Attest identity candidates (`appAttestIdentityCandidate`, macOS 27 in the
+production rollout cohort) skip serial-based history restore and serial
+duplicate eviction, because their blob serial is self-reported and must not
+become an operational identity. They still stage the newest durable MDA chain
+for that serial in `verifyProviderAttestation`. This adds no trust path: the
+serial only selects a *candidate* chain, and `attachCachedMDAProof` attaches
+it only after the connection holds `hardware`, the chain re-verifies to the
+pinned Apple root, its `FreshnessCode` equals SHA-256 of **this** connection's
+SE key, and any Apple serial equals the attested one. A chain earned under
+another SE key — another machine claiming the serial, or a rotated key —
+never attaches, and `mda_verified` never changes the trust level or App Attest
+authorization. Staging it keeps a candidate whose App Attest key has died
+from also losing `mda_verified` on reconnect.
 
 ### Flag — APNs code identity
 
@@ -280,10 +294,10 @@ selected by `register.apns_environment`.
 | 2 Loop start | `codeAttestLoop` waits for this connection's first signed challenge, then decides between resume and push | `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`) |
 | 3 Resume | If a durable proof for (SE key, version, APNs token, process key `K`) is younger than `reuseWindow` = 30m, or the exact same process has coordinator-observed verified continuity within `codeAttestContinuityGap` = 120s, or a release-approved transition has a recent APNs proof, the coordinator sends `code_attestation_resume_challenge{code_challenge}` over the WebSocket — a NaCl-Box-sealed nonce to `K` — and waits `resumeTimeout` = 30s. Cached evidence only *authorises* the challenge; the flag is set by the answer | `coordinator/api/provider_codeattest.go` (`sendCodeIdentityResumeChallenge`, `tryCrossVersionReuse`); `coordinator/api/code_attest_throttle.go` (`reuseAttestation`); `coordinator/api/code_attest_coverage.go` |
 | 4 Push | Otherwise a 32-byte nonce is sealed to `K` with `e2e.Encrypt` and sent as APNs JSON `{aps: {"content-available": 1}, code_challenge: {ephemeral_public_key, ciphertext}}`; alert mode adds `aps.alert = {title: "Darkbloom", body: "attestation"}` (safe only because the provider never requests notification authorisation). Headers `apns-topic`, `apns-push-type: background|alert`, `apns-priority: 5|10`, `apns-expiration = now + challengeExpirySeconds` (300). Provider-token JWT (ES256) cached `jwtMaxAge` = 50m; HTTP timeout 15s | `coordinator/apns/attestor.go` (`BuildCodeChallengePayload`, `SendChallenge`) |
-| 5 Throttle | Per device: at most one push per `backgroundPushCooldown` = 20m (background) or `alertPushCooldown` = 75s (alert); `maxAttempts` = 3 per loop; retry delay `retrySpacing` = 15s + jitter in [0, `retryJitter` = 15s); a pushed nonce is accepted for `challengeValidity` = `CodeAttestResponseTimeout` = 300s; token-rotation budget resets at most once per `budgetClearCooldown` = 20m | `coordinator/api/code_attest_throttle.go` |
+| 5 Throttle | Per device: at most one push per `backgroundPushCooldown` = 20m (background) or `alertPushCooldown` = 75s (alert); `maxAttempts` = 3 pushes per loop on the fast cadence, then at most one push per `slowRetryInterval` = 60m; retry delay `retrySpacing` = 15s + jitter in [0, `retryJitter` = 15s); a pushed nonce is accepted for `challengeValidity` = `CodeAttestResponseTimeout` = 300s; token-rotation budget resets at most once per `budgetClearCooldown` = 20m | `coordinator/api/code_attest_throttle.go`; `coordinator/api/code_attest_push_schedule.go` (`codeAttestPushSchedule`) |
 | 6 Reply | `code_attestation_response{nonce, signature}`: the nonce must match the outstanding challenge recorded for **this** SE key + APNs token + `K` (`matchChallengeForIdentity` / `matchResumeChallenge`); `signature` = ECDSA over the nonce bytes, verified against the **registration** SE key; consumed atomically; `GrantProcessCodeAttested` refuses if the token or `K` rotated meanwhile | `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`); `coordinator/registry/provider_evidence.go` (`GrantProcessCodeAttested`) |
 | 7 Persist | An APNs-proven round-trip is upserted as `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}` so step 3 can authorise a resume on a later connection; the push budget (`CodeAttestPushBudget`) stores only the token hash | `coordinator/api/code_attest_throttle.go` (`persistCodeAttestation`); `coordinator/store/interface.go` (`CodeAttestation`, `CodeAttestPushBudget`) |
-| 8 Exhaustion | After `maxAttempts` unanswered pushes the loop stops and waits for a later reconnect; `CodeAttested` stays false. Token rotation or hard untrust clears an existing flag | `coordinator/api/provider_codeattest.go`; `coordinator/registry/attestation_policy.go` (`MarkUntrusted`) |
+| 8 Slow retry | After `maxAttempts` unanswered pushes (`code_attest` outcome `max_attempts`) the loop keeps running while the connection is alive and `CodeAttested` is false: every `slowRetryInterval` it reserves one more push through `reservePush` and the durable per-device budget (outcome `slow_retry`). It stops on disconnect, loop-generation change (token rotation, re-arm), hard untrust (`ChallengeShouldStop`) or success. Token rotation or hard untrust clears an existing flag | `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`); `coordinator/registry/attestation_policy.go` (`MarkUntrusted`) |
 | 9 Enforcement | `SetCodeAttestationConfigured(true)` when an attestor exists; `SetCodeAttestationDeadline` from `APNS_ENFORCE_AFTER`; `codeAttestationEnforcedLocked` = configured ∧ deadline non-zero ∧ now ≥ deadline. Before that the fleet is measured (`attestation.code_attested`, `attestation.code_enforced`) but routes un-attested providers | `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`); `coordinator/cmd/coordinator/main.go` (`parseAPNsEnforceAfter`) |
 
 Same-process continuity is separate from hardware continuity. The coordinator
@@ -391,7 +405,7 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | MDM `securityinfo-timeout` / `error` | Stays `self_signed`; retried; a late webhook can still grant | `coordinator/api/provider.go` (`ApplyLateSecurityInfo`) |
 | MDM `posture-mismatch` | `untrusted`, terminal for the connection | `coordinator/api/provider.go` |
 | MDA chain invalid or unbound | `mda_verified` stays false; level unaffected | `coordinator/api/provider.go` (`verifyAppleDeviceAttestation`) |
-| No APNs token / no Aqua session / pushes unanswered | `CodeAttested` false; routable in grace mode, derouted from private text after `APNS_ENFORCE_AFTER` | `coordinator/api/provider_codeattest.go` |
+| No APNs token / no Aqua session / pushes unanswered | `CodeAttested` false; routable in grace mode, derouted from private text after `APNS_ENFORCE_AFTER`. Unanswered pushes are retried every `slowRetryInterval` while the connection lives, so a later answer (or a coordinator restart, whose fresh loops honour the durable per-device budget) recovers without provider action | `coordinator/api/provider_codeattest.go` |
 | APNs token rotates after a grant | `CodeAttested` cleared; new challenge cycle | `coordinator/api/provider_codeattest.go` |
 | Reconnect | Level capped to `self_signed`, `MDAVerified` reset; trust reuse may restore `hardware` on the first passing challenge within `defaultTrustReuseWindow` or a measured gap ≤ `defaultTrustReuseReconnectGap` ([Layer 3 trust reuse](#layer-3--mdm-securityinfo-the-hardware-grant)) | `coordinator/registry/persistence.go`, `coordinator/api/trust_reuse.go` |
 

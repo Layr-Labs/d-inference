@@ -63,6 +63,7 @@ func testPostgresStore(t testing.TB) *PostgresStore {
 		"code_attestations",
 		"code_attest_push_budgets",
 		"app_attest_build_qualifications",
+		"app_attest_key_rotations",
 		"app_attest_shadow_keys",
 		"app_attest_enrollments",
 		"app_attest_receipts",

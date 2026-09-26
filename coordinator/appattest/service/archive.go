@@ -77,6 +77,14 @@ func (x *Session) handle(ctx context.Context, reply protocol.AppAttestShadowPayl
 				inputs["apple_error_source"] = reply.AppleErrorSource
 			}
 		}
+		// Runtime context from this attempt's ready reply (or this reply, if
+		// it is itself an archived ready frame); sanitized, never trusted.
+		for key, value := range x.readyDiagnostics {
+			inputs[key] = value
+		}
+		for key, value := range reply.RuntimeDiagnosticFields(time.Now()) {
+			inputs[key] = value
+		}
 		inputs["proof_field_sha256"] = hex.EncodeToString(sum[:])
 		inputs["proof_field_checksum_encoding"] = "proof_field_utf8"
 		inputs["proof_decode_valid"] = decodeErr == nil

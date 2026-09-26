@@ -1,6 +1,6 @@
 # Glossary — the one name for each thing
 
-> Last updated: 2026-09-21 · commit `ce809b792`
+> Last updated: 2026-09-25 · commit `b6f9574ed`
 
 Canonical terms used across the docs and the code, one line each, with the page
 that owns the full definition. Use these spellings everywhere (including code
@@ -24,7 +24,7 @@ owner page. Terms are grouped by concern and alphabetical within a group.
 
 | Term | Meaning | Owner page |
 |---|---|---|
-| **APNs code identity** (code attestation) | Proof that the provider process is the genuine signed binary: a nonce sealed to the process key is pushed via Apple Push Notification service and signed back with the Secure Enclave key. Flags `CodeAttested` / `FreshCodeAttested`; throttle and resume constants (`reuseWindow`, `backgroundPushCooldown`, `alertPushCooldown`, `maxAttempts`, `challengeValidity`) are in the owner section | [`architecture/security/attestation.md#flag--apns-code-identity`](architecture/security/attestation.md#flag--apns-code-identity) |
+| **APNs code identity** (code attestation) | Proof that the provider process is the genuine signed binary: a nonce sealed to the process key is pushed via Apple Push Notification service and signed back with the Secure Enclave key. Flags `CodeAttested` / `FreshCodeAttested`; throttle and resume constants (`reuseWindow`, `backgroundPushCooldown`, `alertPushCooldown`, `maxAttempts`, `slowRetryInterval`, `challengeValidity`) are in the owner section | [`architecture/security/attestation.md#flag--apns-code-identity`](architecture/security/attestation.md#flag--apns-code-identity) |
 | **Challenge** (SE liveness challenge) | Coordinator-initiated Secure Enclave signature check on a fixed cadence (`DefaultChallengeInterval`); a provider is routable while its last verified challenge is younger than `challengeFreshnessMaxAge`, and consecutive failures up to `MaxFailedChallenges` untrust it | [`architecture/security/attestation.md#layer-2--periodic-challenge`](architecture/security/attestation.md#layer-2--periodic-challenge) |
 | **Enrollment** | Getting a Mac into Darkbloom's MDM (SCEP profile, webhook) so `SecurityInfo` can be read | [`architecture/security/enrollment.md`](architecture/security/enrollment.md) |
 | **Hop-by-hop encryption** | The privacy model: three independent NaCl `box` (X25519 + XSalsa20-Poly1305) hops — consumer → coordinator, coordinator → provider, provider → coordinator. The coordinator decrypts in memory to route and bill; it does not retain prompt content | [`architecture/security/encryption.md`](architecture/security/encryption.md) |

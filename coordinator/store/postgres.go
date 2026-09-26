@@ -1145,6 +1145,13 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// index on these tables must be built CONCURRENTLY outside this loop
 		// (see ensureProviderEarningsJobIndex). The request_waterfall view is NOT
 		// here — it is applied by hand from store/migrations/request_waterfall.sql.
+		modelDemandTableDDL,
+		modelDemandHourlyDDL,
+		modelDemandRollupFunctionDDL,
+		modelDemandRollupTriggerDDL,
+		`CREATE INDEX IF NOT EXISTS idx_model_demand_received ON model_demand_requests (received_at)`,
+		`CREATE TABLE IF NOT EXISTS model_demand_collection (singleton BOOLEAN PRIMARY KEY CHECK(singleton), started_at TIMESTAMPTZ NOT NULL)`,
+		`INSERT INTO model_demand_collection (singleton,started_at) VALUES (TRUE,NOW()) ON CONFLICT DO NOTHING`,
 		requestOutcomesTableDDL,
 		`CREATE INDEX IF NOT EXISTS idx_request_outcomes_received ON request_outcomes (received_at, coord_request_id)`,
 		requestProfilesTableDDL,

@@ -5,10 +5,11 @@ import (
 	"time"
 )
 
-// acquireStorage bounds all shadow session database work, including rejected
+// acquireStorage bounds proof-related shadow session database work, including rejected
 // proofs, deferred archive completion, standalone events, and enrollment writes.
 // It never waits for the shared pool. Inventory and receipt renewal retain their
-// separate worker limits. Nested observations reuse the session's permit.
+// separate worker limits; optional lifecycle reads use diagnosticSlots.
+// Nested observations reuse the session's permit.
 // Only the serialized session worker may call this method.
 func (x *Session) acquireStorage() (release func(), ok bool) {
 	if x.storageSlotHeld {

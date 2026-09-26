@@ -657,8 +657,9 @@ private actor PreloadRaceGateCatalog: SpecDecCatalogLooking {
 /// it reaches the admission gates under test). Returns the `models--...`
 /// directory for cleanup.
 private func makeFakeHFSnapshot(modelId: String) throws -> URL {
-    let cacheDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+    let cacheDir = ModelScanner.defaultCacheDirectory()
+        ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
     let modelDir = cacheDir.appendingPathComponent(
         "models--\(modelId.replacingOccurrences(of: "/", with: "--"))", isDirectory: true)
     let snapshot = modelDir

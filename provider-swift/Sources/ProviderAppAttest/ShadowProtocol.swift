@@ -33,6 +33,19 @@ public struct AppAttestShadowPayload: Codable, Sendable, Equatable {
     public var bootTime: Int64?
     /// Present only with result `busy`, 1...`AppleOperationStall.maxReportedSeconds`.
     public var operationStalledSeconds: Int?
+    /// Further `ready`-only diagnostics (see AppAttestReadyDiagnostics.swift).
+    public var processStartedAt: Int64?
+    public var previousExit: AppAttestPreviousExit?
+    public var startReason: AppAttestStartReason?
+    public var consoleUserActive: Bool?
+    public var sipEnabled: Bool?
+    public var authenticatedRoot: Bool?
+    public var preflight: AppAttestPreflight?
+    public var keyHistory: AppAttestKeyHistory?
+    public var pushHistory: AppAttestPushHistory?
+    /// Failed attestation/assertion replies with result apple_error or
+    /// apple_invalid_key only: the closed NSError chain, top level first.
+    public var nativeErrorChain: [AppAttestNativeErrorEntry]?
 
     public init(action: String, session: String) { self.action = action; self.session = session }
     enum CodingKeys: String, CodingKey {
@@ -49,6 +62,16 @@ public struct AppAttestShadowPayload: Codable, Sendable, Equatable {
         case launchSession = "launch_session"
         case bootTime = "boot_time"
         case operationStalledSeconds = "operation_stalled_seconds"
+        case processStartedAt = "process_started_at"
+        case previousExit = "previous_exit"
+        case startReason = "start_reason"
+        case consoleUserActive = "console_user_active"
+        case sipEnabled = "sip_enabled"
+        case authenticatedRoot = "authenticated_root"
+        case preflight
+        case keyHistory = "key_history"
+        case pushHistory = "push_history"
+        case nativeErrorChain = "native_error_chain"
     }
 
     public func clientHash(publicKey: String) -> Data {
@@ -100,6 +123,19 @@ public struct ShadowKeyRecord: Codable, Sendable {
     /// Persisted before the one-time Apple enrollment call. A process exit or
     /// late callback cannot make an uncertain key look safe to attest again.
     public var attestationStartedAt: Date?
+    // Diagnostics only (`key_history`); nil in records written by older
+    // providers. None of these gates enrollment, rotation or cooldowns.
+    /// `kern.boottime` when the key's pre-generation marker was written.
+    public var createdBootTime: Int64?
+    /// Provider version that generated the key.
+    public var createdAppVersion: String?
+    /// Last successful attestKey/generateAssertion with this key.
+    public var lastSuccessAt: Date?
+    /// Apple-call assertion failures with this key since its last success.
+    public var consecutiveAssertionFailures: Int?
+    /// Budget record only: the last `KeyGenerationHistory.cap` generation
+    /// attempts across account scopes.
+    public var generationHistory: [Date]?
 }
 
 public protocol ShadowKeyStorage: Sendable {

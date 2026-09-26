@@ -120,7 +120,7 @@ extension ProviderLoop {
             return true
         }
         do {
-            try ProcessLifecycle.restartAfterUpdate()
+            try ProcessLifecycle.restartAfterUpdate(cause: .stallRestart)
         } catch {
             logger.warning("App Attest: stall restart failed: \(error)")
             try? updater.cancelPendingCandidateAttempt(operation: "app-attest-stall-restart-failure")

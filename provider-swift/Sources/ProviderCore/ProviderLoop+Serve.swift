@@ -192,11 +192,18 @@ extension ProviderLoop {
         // replying over THIS WebSocket. The app delegate delivers pushes via the
         // bridge; we hop into the actor to use K + the signer + this send handle.
         #if os(macOS)
+        let pushHistory = apnsPushHistory
+        APNsBridge.shared.trackDeviceToken(in: pushHistory)
         APNsBridge.shared.setPushHandler { [weak self] userInfo in
+            // Receipt is recorded before any parsing or validation so doctor
+            // and `push_history` can tell "never delivered" from "not answered".
+            pushHistory.recordReceipt()
             // Extract the Sendable EncryptedPayload synchronously here so the
             // non-Sendable [String: Any] never crosses into the actor Task.
             guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
-            Task { await self.handleCodeChallenge(challenge, send: send) }
+            // Only a push-delivered challenge counts as a push reply; resume
+            // challenges arrive over the WebSocket through the same handler.
+            Task { await self.handleCodeChallenge(challenge, send: send, onWritten: { pushHistory.recordReply() }) }
         }
 
         // If the device token wasn't ready at registration (APNs slow / GUI

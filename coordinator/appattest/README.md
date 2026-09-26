@@ -14,6 +14,7 @@ appattest/
     config.go, rollout.go          Configuration and supported-client/account cohort rules
     session.go, exchange.go        Bounded connection worker and proof exchanges
     retry.go, key_rotation.go      Bounded retries, dead-key rotation and its short retry
+    ready_diagnostics.go           Ready-reply diagnostics carried through an attempt; derived reboot/restart fields
     enrollment_backoff.go          Six-hour wait after repeated fresh-key invalid-key enrollments
     archive.go, storage.go         Durable evidence recording and shared storage limits
     receipt*.go, maintenance.go    Receipt renewal and evidence recovery

@@ -86,36 +86,8 @@ enum DeviceCheckEvidence {
         status == 77 || stderr.localizedCaseInsensitiveContains("Operation not permitted")
     }
 
-    /// stdout/stderr go to temporary files (no pipe backpressure on a large
-    /// log); the child is terminated past `timeoutSeconds`.
     private static func liveRun(_ arguments: [String]) throws -> (status: Int32, stdout: Data, stderr: String) {
-        let directory = FileManager.default.temporaryDirectory
-        let out = directory.appendingPathComponent("darkbloom-devicecheck-\(UUID().uuidString).out")
-        let err = directory.appendingPathComponent("darkbloom-devicecheck-\(UUID().uuidString).err")
-        for url in [out, err] {
-            guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
-            else { throw CocoaError(.fileWriteUnknown) }
-        }
-        defer { for url in [out, err] { try? FileManager.default.removeItem(at: url) } }
-        let stdout = try FileHandle(forWritingTo: out)
-        let stderr = try FileHandle(forWritingTo: err)
-        defer { try? stdout.close(); try? stderr.close() }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-        process.arguments = arguments
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
-        while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-        if process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
-            throw CocoaError(.executableLoad, userInfo: [NSLocalizedDescriptionKey: "timed out after \(Int(timeoutSeconds))s"])
-        }
-        process.waitUntilExit()
-        let errorText = String(decoding: (try? Data(contentsOf: err)) ?? Data(), as: UTF8.self)
-        return (process.terminationStatus, (try? Data(contentsOf: out)) ?? Data(), errorText)
+        try runLog(arguments)
     }
 
     // MARK: - Extraction

@@ -78,7 +78,7 @@ export default async function AppAttestDiagnosticsPage({ searchParams }: { searc
           <td>{d.previous_exit ?? "—"} / {d.start_reason ?? "—"} / {d.launch_session ?? "—"}</td><td className="mono">{d.native_error_chain ?? "—"}</td></tr>)}
       </tbody></table></div>) : unavailable(deaths.reason)}
     </Section>
-    <Section title="Key rotation" note="Durable rotation requests and whether a different key in the same scope (machine, or account fallback) later attested and verified an assertion within 7 days. Decisions come from coordinator rotation events.">
+    <Section title="Key rotation" note="Durable rotation requests and whether a different key for the same account and scope (machine, or account fallback) later attested and verified an assertion within 7 days. Decisions come from coordinator rotation events.">
       {rotations.status === "fulfilled" ? (rotations.value.length === 0 ? noData : <table className="w-full text-left text-sm"><thead><tr><th>Reason</th><th>Requested</th><th>Scopes</th><th>Replacement attested</th><th>Replacement verified</th><th>Median to verified</th></tr></thead><tbody>
         {rotations.value.map(r => <tr key={r.reason} className={row}><td className="py-2">{r.reason}</td><td>{r.requested}</td><td>{r.scopes}</td><td>{r.replacement_attested}</td><td>{r.replacement_verified}</td>
           <td>{r.median_seconds_to_verified == null ? "—" : `${Math.round(r.median_seconds_to_verified)} s`}</td></tr>)}
@@ -87,12 +87,12 @@ export default async function AppAttestDiagnosticsPage({ searchParams }: { searc
         {rotationEvents.value.map(r => <tr key={`${r.stage}:${r.outcome}`} className={row}><td className="py-2">{r.stage}</td><td>{r.outcome}</td><td>{r.machines}</td><td>{r.events}</td></tr>)}
       </tbody></table>) : unavailable(rotationEvents.reason)}
     </Section>
-    <Section title="APNs push receipt" note="All OS versions (legacy macOS < 27 waits on code-identity pushes). Latest ready reply per machine in the window, from provider-reported push_history. “Unanswered” means the last received push has no reply sent after it. Machines on older clients count as no data.">
+    <Section title="APNs push receipt" note="All OS versions (legacy macOS < 27 waits on code-identity pushes). Latest ready snapshot per machine in the window. Token presence and 24-hour counts describe that snapshot, not current state. Ages advance to now for the last observed push; later activity is unknown. “Unanswered” means no reply was recorded after that push at snapshot time. Machines on older clients count as no data.">
       {pushes.status === "fulfilled" ? (pushes.value.length === 0 ? noData : <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead>
-        <tr><th rowSpan={2}>OS</th><th rowSpan={2}>Machines</th><th colSpan={3}>Device token present</th><th colSpan={5}>Pushes received, last 24 h</th><th colSpan={4}>Last push received</th><th rowSpan={2}>Last push unanswered</th></tr>
-        <tr>{["true", "false", "no data", "0", "1–3", "4–10", ">10", "no data", "<1 h", "1–24 h", ">24 h", "never / no data"].map((h, i) => <th key={i} className="font-normal text-[var(--text-dim)]">{h}</th>)}</tr>
+        <tr><th rowSpan={2}>OS</th><th rowSpan={2}>Machines</th><th colSpan={3}>Snapshot age</th><th colSpan={3}>Token at snapshot</th><th colSpan={5}>Pushes in 24 h before snapshot</th><th colSpan={4}>Last observed push age now</th><th rowSpan={2}>Unanswered at snapshot</th></tr>
+        <tr>{["<1 h", "1–24 h", ">24 h", "true", "false", "no data", "0", "1–3", "4–10", ">10", "no data", "<1 h", "1–24 h", ">24 h", "never / no data"].map((h, i) => <th key={i} className="font-normal text-[var(--text-dim)]">{h}</th>)}</tr>
       </thead><tbody>{pushes.value.map(r => <tr key={r.os_group} className={row}><td className="py-2">{r.os_group}</td>
-        {[r.machines, r.token_true, r.token_false, r.token_no_data, r.pushes_0, r.pushes_1_3, r.pushes_4_10, r.pushes_over_10, r.pushes_no_data,
+        {[r.machines, r.snapshot_under_1h, r.snapshot_1_24h, r.snapshot_over_24h, r.token_true, r.token_false, r.token_no_data, r.pushes_0, r.pushes_1_3, r.pushes_4_10, r.pushes_over_10, r.pushes_no_data,
           r.age_under_1h, r.age_1_24h, r.age_over_24h, r.age_never_or_no_data, r.last_push_unanswered].map((v, i) => <td key={i} className="tabular-nums">{v}</td>)}</tr>)}
       </tbody></table></div>) : unavailable(pushes.reason)}
     </Section>

@@ -178,10 +178,10 @@ public enum AppAttestDeepDiagnosis {
     // MARK: - APNs pushes
 
     static func pushDiagnostic(_ history: APNsPushHistory?, now: Double) -> Diagnostic? {
-        guard let history else { return nil }
+        guard let history, history != APNsPushHistory() else { return nil }
         let summary = history.summary(deviceTokenPresent: history.deviceTokenPresent, now: Date(timeIntervalSince1970: now))
         if history.deviceTokenPresent == false {
-            return Diagnostic(section: .appAttest, name: "apns pushes", level: .warn,
+            return Diagnostic(section: .attestationReadiness, name: "apns pushes", level: .warn,
                               message: "the provider has no APNs device token, so the coordinator cannot push code-identity checks (APNs registration failed).",
                               fix: "keep the provider running inside the logged-in GUI session with network access, then `darkbloom restart`.")
         }
@@ -189,12 +189,12 @@ public enum AppAttestDeepDiagnosis {
         let lastReply = summary.lastReplySentAgeSeconds.map { "last reply \(duration($0)) ago" } ?? "no reply recorded"
         let lastPush = summary.lastPushReceivedAgeSeconds.map { "last push \(duration($0)) ago" } ?? "no push ever received"
         if received == 0 {
-            return Diagnostic(section: .appAttest, name: "apns pushes", level: .warn,
+            return Diagnostic(section: .attestationReadiness, name: "apns pushes", level: .warn,
                               message: "no code-identity push received in 24 h (\(lastPush); \(lastReply)). If the coordinator reports unanswered pushes, APNs is not delivering them to this Mac.",
                               fix: "keep the Mac awake and online (`sudo pmset -a sleep 0`), stay logged in, and check that outbound TCP 5223 to Apple is not blocked.")
         }
         let repliedAfter = (summary.lastReplySentAgeSeconds ?? Int.max) <= (summary.lastPushReceivedAgeSeconds ?? Int.max)
-        return Diagnostic(section: .appAttest, name: "apns pushes", level: repliedAfter ? .pass : .warn,
+        return Diagnostic(section: .attestationReadiness, name: "apns pushes", level: repliedAfter ? .pass : .warn,
                           message: "\(received) code-identity push(es) received in 24 h (\(lastPush); \(lastReply)).",
                           fix: repliedAfter ? nil : "the latest push was received but not answered; `darkbloom restart` and re-run `darkbloom doctor`.")
     }

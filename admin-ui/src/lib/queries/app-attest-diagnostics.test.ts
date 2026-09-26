@@ -159,6 +159,25 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
     ]);
   });
 
+  it("does not attribute another account's key on the same machine to a rotation", async () => {
+    await pool.query("SAVEPOINT accounts");
+    try {
+      await pool.query("UPDATE darkbloom_machine_sessions SET account_id='other' WHERE session_id='s-rep'");
+      expect((await appAttestRotationOutcomes(1))[0]).toMatchObject({
+        replacement_attested: "0", replacement_verified: "0", median_seconds_to_verified: null,
+      });
+      await session("s-own", "m-rep", 27, "27A100");
+      await pool.query(`INSERT INTO app_attest_evidence(id,session_id,key_id,received_at,action,sha256,context,outcome) VALUES
+        ('own-a','s-own','own-key',NOW()-INTERVAL '3 hours','attestation','sum','{}','verified'),
+        ('own-b','s-own','own-key',NOW()-INTERVAL '2 hours','assertion','sum','{}','verified')`);
+      expect((await appAttestRotationOutcomes(1))[0]).toMatchObject({
+        replacement_attested: "1", replacement_verified: "1", median_seconds_to_verified: 10800,
+      });
+    } finally {
+      await pool.query("ROLLBACK TO SAVEPOINT accounts");
+    }
+  });
+
   it("finds replacement proofs after chained machine merges and preserves account scopes", async () => {
     await pool.query("SAVEPOINT merged_rotation");
     try {
@@ -184,6 +203,36 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
     }
   });
 
+  it("advances old push ages while keeping counts explicitly tied to their snapshot", async () => {
+    await pool.query("SAVEPOINT stale_pushes");
+    try {
+      await pool.query("DELETE FROM app_attest_shadow_events WHERE session_id='s-26'");
+      await event("stale-26", "s-26", "ready", "unsupported", { push_history: {
+        device_token_present: true, pushes_received_last_24h: 5,
+        last_push_received_age_seconds: 600, last_reply_sent_age_seconds: 500,
+      } }, 6 * 24);
+      const old = (await appAttestPushReceipt(7)).find(r => r.os_group === "<27");
+      expect(old).toMatchObject({ snapshot_over_24h: "1", snapshot_under_1h: "0",
+        pushes_4_10: "1", age_under_1h: "0", age_over_24h: "1", last_push_unanswered: "0" });
+      expect((await appAttestPushReceipt(1)).find(r => r.os_group === "<27")).toBeUndefined();
+      // A newer event wins even when it omits the optional history.
+      await event("new-26", "s-26", "ready", "unsupported", {}, 0);
+      expect((await appAttestPushReceipt(7)).find(r => r.os_group === "<27")).toMatchObject({
+        snapshot_under_1h: "1", snapshot_over_24h: "0", pushes_no_data: "1", age_never_or_no_data: "1",
+      });
+      // An hour-old snapshot advances a ten-minute age into the 1–24 h bucket.
+      await event("hour-26", "s-26", "ready", "unsupported", { push_history: {
+        last_push_received_age_seconds: 600,
+      } }, 1);
+      await pool.query("DELETE FROM app_attest_shadow_events WHERE id='new-26'");
+      expect((await appAttestPushReceipt(7)).find(r => r.os_group === "<27")).toMatchObject({
+        snapshot_1_24h: "1", age_under_1h: "0", age_1_24h: "1", last_push_unanswered: "1",
+      });
+    } finally {
+      await pool.query("ROLLBACK TO SAVEPOINT stale_pushes");
+    }
+  });
+
   it("summarizes APNs push receipt from the latest ready per machine on every OS", async () => {
     await pool.query("SAVEPOINT pushes");
     try {
@@ -197,10 +246,10 @@ describe.skipIf(!enabled)("App Attest failure diagnostics on PostgreSQL", () => 
         last_push_received_age_seconds: 30, last_reply_sent_age_seconds: 10 } }, 0);
       // s-old's latest ready predates push_history (old client).
       expect(await appAttestPushReceipt(1)).toEqual([
-        { os_group: "<27", machines: "1", token_true: "1", token_false: "0", token_no_data: "0",
+        { os_group: "<27", machines: "1", snapshot_under_1h: "1", snapshot_1_24h: "0", snapshot_over_24h: "0", token_true: "1", token_false: "0", token_no_data: "0",
           pushes_0: "0", pushes_1_3: "0", pushes_4_10: "1", pushes_over_10: "0", pushes_no_data: "0",
           age_under_1h: "0", age_1_24h: "1", age_over_24h: "0", age_never_or_no_data: "0", last_push_unanswered: "1" },
-        { os_group: ">=27", machines: "3", token_true: "0", token_false: "1", token_no_data: "2",
+        { os_group: ">=27", machines: "3", snapshot_under_1h: "2", snapshot_1_24h: "1", snapshot_over_24h: "0", token_true: "0", token_false: "1", token_no_data: "2",
           pushes_0: "1", pushes_1_3: "0", pushes_4_10: "0", pushes_over_10: "0", pushes_no_data: "2",
           age_under_1h: "1", age_1_24h: "0", age_over_24h: "0", age_never_or_no_data: "2", last_push_unanswered: "0" },
       ]);

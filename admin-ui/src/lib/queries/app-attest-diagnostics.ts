@@ -197,6 +197,7 @@ export async function appAttestRotationOutcomes(days: number) {
      FROM darkbloom_machine_sessions s JOIN app_attest_evidence e ON e.session_id=s.session_id
       AND e.received_at>=r.requested_at AND e.received_at<r.requested_at+INTERVAL '7 days'
      WHERE s.last_seen>=r.requested_at AND e.outcome='verified' AND e.key_id<>r.key_id
+      AND s.account_id=r.account_id
       AND (s.machine_id=r.canonical_scope OR (r.machine_id LIKE 'account:%' AND s.account_id=substr(r.machine_id,9)))
     ) rep ON TRUE
     GROUP BY r.reason ORDER BY requested DESC,r.reason`, [days]);
@@ -214,6 +215,7 @@ export async function appAttestRotationEvents(days: number) {
 }
 
 export interface PushReceiptRow {
+  snapshot_under_1h: string; snapshot_1_24h: string; snapshot_over_24h: string;
   os_group: string; machines: string; token_true: string; token_false: string; token_no_data: string;
   pushes_0: string; pushes_1_3: string; pushes_4_10: string; pushes_over_10: string; pushes_no_data: string;
   age_under_1h: string; age_1_24h: string; age_over_24h: string; age_never_or_no_data: string; last_push_unanswered: string;
@@ -222,11 +224,14 @@ export interface PushReceiptRow {
 // Provider-side APNs code-identity push receipt for ALL OS versions (legacy
 // macOS < 27 is the cohort that waits on pushes). One row per OS group from the
 // latest ready event per machine in the window. push_history members are
-// optional; a missing or non-numeric value counts as "no data". The latest push
+// optional; a missing or non-numeric value counts as "no data". Counts and
+// token presence describe the snapshot, not the current 24-hour window. Ages
+// advance by elapsed coordinator time; no later receipt is inferred. The latest observed push
 // is unanswered when no reply was sent after it (reply age older than push age).
 export async function appAttestPushReceipt(days: number) {
   return query<PushReceiptRow>(`WITH latest AS (
-    SELECT DISTINCT ON (s.machine_id) s.machine_id,s.observation AS o,e.fields->'push_history' AS p
+    SELECT DISTINCT ON (s.machine_id) s.machine_id,s.observation AS o,e.fields->'push_history' AS p,
+     GREATEST(0,EXTRACT(EPOCH FROM NOW()-e.observed_at)) AS snapshot_age
     FROM app_attest_shadow_events e JOIN darkbloom_machine_sessions s ON s.session_id=e.session_id
     WHERE e.observed_at>=NOW()-$1::int*INTERVAL '1 day' AND e.stage='ready'
     ORDER BY s.machine_id,e.observed_at DESC,e.id
@@ -237,12 +242,16 @@ export async function appAttestPushReceipt(days: number) {
      CASE WHEN jsonb_typeof(p->'pushes_received_last_24h')='number' AND (p->>'pushes_received_last_24h')::numeric>=0
       THEN (p->>'pushes_received_last_24h')::numeric END AS pushes,
      CASE WHEN jsonb_typeof(p->'last_push_received_age_seconds')='number' AND (p->>'last_push_received_age_seconds')::numeric>=0
-      THEN (p->>'last_push_received_age_seconds')::numeric END AS push_age,
+      THEN (p->>'last_push_received_age_seconds')::numeric+snapshot_age END AS push_age,
      CASE WHEN jsonb_typeof(p->'last_reply_sent_age_seconds')='number' AND (p->>'last_reply_sent_age_seconds')::numeric>=0
-      THEN (p->>'last_reply_sent_age_seconds')::numeric END AS reply_age
+      THEN (p->>'last_reply_sent_age_seconds')::numeric+snapshot_age END AS reply_age,
+     snapshot_age
     FROM latest
   )
   SELECT os_group,COUNT(*) AS machines,
+   COUNT(*) FILTER(WHERE snapshot_age<3600) AS snapshot_under_1h,
+   COUNT(*) FILTER(WHERE snapshot_age>=3600 AND snapshot_age<=86400) AS snapshot_1_24h,
+   COUNT(*) FILTER(WHERE snapshot_age>86400) AS snapshot_over_24h,
    COUNT(*) FILTER(WHERE token) AS token_true,COUNT(*) FILTER(WHERE NOT token) AS token_false,
    COUNT(*) FILTER(WHERE token IS NULL) AS token_no_data,
    COUNT(*) FILTER(WHERE pushes=0) AS pushes_0,COUNT(*) FILTER(WHERE pushes BETWEEN 1 AND 3) AS pushes_1_3,

@@ -177,7 +177,7 @@ Current release-sensitive pieces:
 
 - Prod coordinator runs on the GCE VM `darkbloom-coordinator` in the
   `darkbloom-mainnet` project at `api.darkbloom.dev`. Build target:
-  `coordinator/Dockerfile`. Dev runs in the separate `sepolia-ai` project.
+  `coordinator/Dockerfile`. Dev runs in the separate `darkbloom-dev` project.
 - Provider bundle creation (staging, .app wrapping, signing, notarization) lives inline in `.github/workflows/release-swift.yml` (bundle steps ~341-617); there is no standalone bundling script.
 - Installer flow lives in `scripts/install.sh`.
 - Provider update checks read the latest registered release from the store (CI registers via `POST /v1/releases`). The installer and `darkbloom update` hit `GET /v1/releases/latest`, which returns **404 when no release row exists** — a missing/mis-registered release row breaks installs and self-updates and is fixed by registering the release, not by bumping code. `LatestProviderVersion` in `coordinator/api/server.go` is only the no-release-row fallback for the version *display* path and must stay in sync with `ProviderCore.version`.

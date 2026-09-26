@@ -24,7 +24,7 @@ exec > >(tee /var/log/d-inference-startup.log) 2>&1
 echo "==> Startup at $(date -Iseconds)"
 
 REGISTRY_HOST="us-central1-docker.pkg.dev"
-IMAGE_REPO="${REGISTRY_HOST}/sepolia-ai/coordinator/coordinator"
+IMAGE_REPO="${REGISTRY_HOST}/darkbloom-dev/coordinator/coordinator"
 
 DATA_DEV="/dev/disk/by-id/google-d-inference-dev-data"
 DATA_MOUNT="/mnt/disks/userdata"
@@ -168,7 +168,7 @@ cat > /usr/local/bin/d-inference-run.sh <<'WRAPPER'
 set -euo pipefail
 META="http://metadata.google.internal/computeMetadata/v1/instance"
 TAG=$(curl -fsSL -H "Metadata-Flavor: Google" "$META/attributes/DINF_IMAGE_TAG" 2>/dev/null || echo latest)
-IMAGE="us-central1-docker.pkg.dev/sepolia-ai/coordinator/coordinator:${TAG}"
+IMAGE="us-central1-docker.pkg.dev/darkbloom-dev/coordinator/coordinator:${TAG}"
 echo "Starting coordinator with image $IMAGE"
 
 # Fetch an access token for the VM's default SA and docker login.

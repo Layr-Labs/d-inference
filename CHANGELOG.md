@@ -2,11 +2,14 @@
 
 ## Unreleased
 
+- Replace provider reputation ratings with total, successful, and failed job counts. Remove the composite score calculation and owner API field; historical job failures no longer imply reduced routing priority in the dashboard.
+
 ### Public model demand
 
 - Add model demand and fulfillment to Stats, with 24-hour, 7-day and 30-day windows, shared-scale request bars, sorting, expandable outcome counts, per-model timeline charts, an exact interval table, and CSV export. Separate capacity rejections, predicted latency limits, actual timeouts, service errors, client departures and unknown outcomes; HTTP 429 is an overlapping diagnostic.
 - Scope new public routing-admission observations explicitly and persist revision-aware hourly aggregates for 31 days. Delay publication by at least one hour and suppress cohorts with fewer than 20 requests or 3 consumer accounts. Label recorded-request coverage and partial collection history; token demand and network-wide completeness claims remain unavailable.
 - Preserve compact outcome conflicts and original receipt/model/consumer identity after the detailed diagnostic ledger expires; contradictory replays remain unknown rather than rewriting historical fulfillment counts.
+- Count full request queues as capacity rejections and queued first-content deadline expiry as timeouts in public model-demand history, rather than reporting either as unknown.
 
 ### App Attest dead-key recovery and release-recovery fixes
 

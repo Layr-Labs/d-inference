@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-26 · commit `abfb4e1c1`
+> Last updated: 2026-09-26 · commit `a9d070236`
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The public Stats page exposes a narrower, explicitly scoped recorded-request view; it does not establish traffic-wide completeness.
 
@@ -107,9 +107,11 @@ inference. Early model-shedding rejections and other exits before admission
 are outside this cohort. Admin-key traffic is excluded. Unlabelled authenticated load tests are included.
 
 `publicDemandOutcome` assigns one closed outcome per observation. Completed
-requests use the ledger's completion contract; explicit capacity reasons map
-to `capacity_rejected`; predictive TTFT refusals map to `latency_rejected`;
-first-content/queue timeouts map to `timed_out`. Failed/interrupted responses,
+requests use the ledger's completion contract; explicit capacity reasons,
+including `queue_full`, map to `capacity_rejected`; predictive TTFT refusals map
+to `latency_rejected`. First-content/queue timeouts, including expiry of the
+absolute first-content clock while queued (`queue_deadline`), map to `timed_out`.
+Failed/interrupted responses,
 client departures and unknown observations remain separate. Validation,
 balance and model-resolution failures are excluded. Unknown 429 reasons stay
 unknown. HTTP 429 is counted separately and overlaps outcomes.

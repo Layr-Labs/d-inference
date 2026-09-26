@@ -83,7 +83,6 @@ export interface MyBackendCapacity {
 }
 
 export interface MyReputation {
-  score: number;
   total_jobs: number;
   successful_jobs: number;
   failed_jobs: number;

@@ -47,11 +47,11 @@ func publicDemandOutcome(r store.RequestOutcomeRecord) string {
 		return "excluded"
 	}
 	switch r.RawReason {
-	case "first_chunk_timeout", "queue_timeout":
+	case "first_chunk_timeout", "queue_timeout", "queue_deadline":
 		return "timed_out"
 	case "ttft_too_slow", "deadline_unreachable":
 		return "latency_rejected"
-	case "machine_busy", "capacity_exhausted", "routing_saturated", "no_provider":
+	case "machine_busy", "capacity_exhausted", "routing_saturated", "no_provider", "queue_full":
 		if r.HTTPStatus == http.StatusTooManyRequests || r.HTTPStatus == http.StatusServiceUnavailable {
 			return "capacity_rejected"
 		}

@@ -1,8 +1,8 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-26 · commit `c0d06f9ba`
+> Last updated: 2026-09-26 · commit `a9d070236`
 
-The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 117 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -415,7 +415,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 |---|---|---|
 | `/v1/` | `handleUnimplementedEndpoint` | Any `/v1/*` request matching no registered method+path — including a wrong method on a real path — gets 404 `invalid_request_error` with message `endpoint <METHOD> <path> is not implemented` |
 
-Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 5 + 5 + 3 + 1 + 41 + 1 = **116 registrations**, matching `routes()`.
+Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 6 + 5 + 3 + 1 + 41 + 1 = **117 registrations**, matching `routes()`.
 
 
 ## Exact cache status
@@ -455,6 +455,21 @@ through the existing authenticated `GET /v1/admin/metrics` endpoint and Datadog.
 They add no model identifiers or fields to `GET /v1/cache/status`. See the
 [internal cache metric inventory](telemetry-inventory.md#cache-results-by-model-internal)
 for `cache_model_*` labels and populations (`coordinator/api/cache_model_telemetry.go`).
+
+## Provider operational metrics
+
+`GET /v1/me/providers` returns a `reputation` object on each machine with
+`total_jobs`, `successful_jobs`, `failed_jobs`, `total_uptime_seconds`,
+`avg_response_time_ms`, `challenges_passed`, and `challenges_failed`
+(`coordinator/api/me_handlers.go`, `myReputation`). The legacy object name is
+retained for the raw metrics; its former `score` field has been removed.
+Live and stored/offline snapshots have the same shape. The console displays
+job counts, tokens, uptime, and response timing without a reputation rating.
+
+Deploy the updated console before the coordinator field removal: older console
+bundles dereference `reputation.score` and cannot consume the new response.
+Existing tabs running an older bundle must reload. The updated console also
+accepts older responses containing the extra field.
 
 ## Provider capacity observations
 

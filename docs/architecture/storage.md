@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-26 · commit `4c84e0065`
+> Last updated: 2026-09-26 · commit `a9d070236`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -49,15 +49,15 @@ Keychain. Nothing prompt-derived is stored on either side.
 
 ### The store interface
 
-`Store` (`coordinator/store/interface.go`) is the union of thirteen domain
-interfaces declared in `coordinator/store/interface_domains.go`. Callers depend
-on the narrow slice they need; both implementations satisfy all thirteen.
+`Store` (`coordinator/store/interface.go`) is the union of thirteen embedded
+domain interfaces. Most are declared in `coordinator/store/interface_domains.go`;
+`RequestOutcomeStore` lives in `coordinator/store/request_outcomes.go`. Callers
+depend on the narrow slice they need; both implementations satisfy all thirteen.
 
 | Sub-interface | Owns |
 |---|---|
 | `APIKeyStore` | Consumer API keys: create, seed, validate, per-key limits and counts. |
 | `UsageStore` | Usage events and settled payments plus the totals, time-series, geo and leaderboard aggregations behind `/v1/stats`. |
-| `ModelDemandStore` | Compact, revision-aware public demand projections and hourly per-model/consumer/outcome counters retained for 31 days; aggregated reads use bounded read-only transactions. `store.As` unwraps decorators. |
 | `RequestOutcomeStore` | Versioned unsampled `request_outcomes`, unique on coordinator UUID, with bounded compact attempt evidence; see [incoming request accounting](request-accounting.md). |
 | `TelemetryStore` | Routing-decision snapshots (`inference_routes`), rejection records and the profiler's `request_profiles`/`fleet_snapshots`; prompt-free by construction. |
 | `LedgerStore` | The double-entry balance ledger; every amount is micro-USD. |
@@ -69,6 +69,13 @@ on the narrow slice they need; both implementations satisfy all thirteen.
 | `InviteStore` | Invite codes and redemptions. |
 | `ProviderEarningsStore` | Per-node earnings, payouts and the base-rewards settlement rows. |
 | `ProviderStore` | Provider records and sessions, reputation, the APNs code-identity and trust-reuse caches, verification jobs and log reports. |
+
+`ModelDemandStore` (`coordinator/store/model_demand.go`) is an optional capability,
+not an embedded member of `Store`. Both backends implement it; callers discover
+it through `store.As[store.ModelDemandStore]`, which unwraps decorators. It owns
+compact, revision-aware public demand projections and hourly
+per-model/consumer/outcome counters retained for 31 days; PostgreSQL aggregate
+reads use bounded read-only transactions.
 
 Telemetry *events* are not in the store at all: `TelemetryEventRecord` goes to
 Datadog only (see [`telemetry.md`](telemetry.md)).

@@ -26,6 +26,8 @@ func TestPublicDemandOutcome(t *testing.T) {
 		{"busy", "rejected", "preflight_capacity", "machine_busy", 429, false, "capacity_rejected"},
 		{"no eligible provider", "rejected", "preflight_capacity", "no_provider", 429, false, "capacity_rejected"},
 		{"coordinator capacity", "rejected", "preflight_capacity", "routing_saturated", 429, false, "capacity_rejected"},
+		{"queue full", "rejected", "queue", "queue_full", 429, false, "capacity_rejected"},
+		{"queued first-content deadline", "rejected", "dispatch", "queue_deadline", 429, false, "timed_out"},
 		{"first content timeout", "rejected", "dispatch", "first_chunk_timeout", 429, false, "timed_out"},
 		{"predicted latency", "rejected", "routing_ttft", "ttft_too_slow", 429, false, "latency_rejected"},
 		{"deadline refusal", "rejected", "dispatch", "deadline_unreachable", 429, false, "latency_rejected"},

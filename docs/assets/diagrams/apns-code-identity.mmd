@@ -14,7 +14,7 @@ sequenceDiagram
     alt durable proof for (SE key, version, APNs token, K) younger than reuseWindow = 30m,<br/>or an approved cross-version release transition
         K->>P: code_attestation_resume_challenge {code_challenge = nonce sealed to K}
         P->>K: code_attestation_response {nonce, signature} within resumeTimeout = 30s
-    else push (maxAttempts = 3 per loop)
+    else push (maxAttempts = 3 fast, then 1 per slowRetryInterval = 60m while connected and unattested)
         K->>K: throttle: backgroundPushCooldown 20m / alertPushCooldown 75s per device,<br/>retrySpacing 15s + jitter [0, 15s), budgetClearCooldown 20m
         K->>A: POST /3/device/{token}<br/>{aps: {content-available: 1}, code_challenge: {ephemeral_public_key, ciphertext}}<br/>apns-topic io.darkbloom.provider · apns-push-type background · apns-priority 5<br/>apns-expiration now + 300s · JWT ES256 cached jwtMaxAge = 50m
         A->>P: delivery to the Team-ID-signed bundle with aps-environment

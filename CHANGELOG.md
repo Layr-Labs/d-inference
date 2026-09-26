@@ -1,8 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Replace provider reputation ratings with total, successful, and failed job counts. Remove the composite score calculation and owner API field; historical job failures no longer imply reduced routing priority in the dashboard.
+- Add `darkbloom switch` to replace the running provider's hosted model selection after a graceful drain, without process restart, coordinator reconnect or re-attestation. Reuse the catalog picker, reject invalid selections as a whole, preserve accepted work on timeout, and persist confirmed selections for launchd restart, watchdog recovery and subsequent scheduled serving windows.
+- Live model switching preserves owner-only off-catalog inventory, handles an already-idle `--timeout 0` without skipping coordinator settlement, and lets shutdown preempt read-only weight verification. Switch requests are consumed once across schedule windows; replacement start saves configuration before draining or stopping the current provider.
+
+## Unreleased — App Attest dead-key recovery and release-recovery fixes
+
+- Replace App Attest keys the Secure Enclave can no longer use. After two consecutive DeviceCheck code-0/2 (or uncoded) assertion failures since the key's last verified assertion, the coordinator asks for a fresh attestation instead of another assertion. Released 0.9.8 and 0.9.9 providers answer by retiring the dead key and enrolling a new one, which must pass the full attestation, receipt, build-qualification and assertion checks. Rotations are durable, limited to one per machine per hour and four per 24 hours (limits carry over when two machine records are merged), controlled by `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT` (default 100), and never revoke or deny serving.
+- Serialize App Attest rotation admission with machine merges and resolve stale machine IDs before checking the shared budget, preventing overlapping old/new identities from bypassing rotation limits.
+- Back off fresh-key enrollment for 6 hours after a machine's third `invalidKey` attestation failure in 24 hours, instead of generating a new key every few minutes. Reconnects, coordinator restarts and releases do not cut the backoff short.
+- Keep retrying the APNs code-identity check on a live connection after the first three pushes go unanswered, at most once per hour through the existing per-device push budget, instead of waiting for a reconnect. Machines that missed the check after a release now recover without a restart.
+- Stage the durable Apple device-attestation chain for macOS 27 App Attest candidates too. It attaches only after hardware trust, when it re-verifies to Apple's root and binds this connection's Secure Enclave key; serial restore and serial dedupe stay skipped for candidates.
+- Provider: report `launch_session`, `boot_time` and `operation_stalled_seconds` on App Attest `ready` replies (outside the signed transcript). A DeviceCheck call that never answers is reported after 15 minutes and triggers one graceful self-restart when idle, at most every 6 hours, never while a stop or OS shutdown is draining the provider. An attempt that cannot restart does not close admission again on the next check: it waits 15 minutes after an unfinished drain, and 6 hours when its restart marker cannot be saved. `darkbloom doctor` adds an APP ATTEST section with the local key state, launch session and advice for unsupported Macs.
+
 ## Release candidate v0.9.9 — App Attest recovery and snapshot accuracy (not shipped; 2026-09-22)
 
-- Add `darkbloom switch` to replace the running provider's hosted model selection after a graceful drain, without process restart, coordinator reconnect or re-attestation. Reuse the catalog picker, reject invalid selections as a whole, preserve accepted work on timeout, and persist confirmed selections for launchd restart, watchdog recovery and subsequent scheduled serving windows.
 - Distinguish signed-app availability failures and synthetic Apple callback/proof errors with closed, privacy-bounded diagnostics. Keep the result and trust policy unchanged; native `NSError` codes remain separate.
 - Align `ProviderCore.version` and the coordinator display fallback at 0.9.9. Deploy coordinator and console fixes before publishing the separately qualified signed provider.
 - Retire failed or interrupted one-time App Attest enrollment keys instead of retrying them indefinitely. Preserve server-unavailable retries, cached enrollment proofs, accepted assertion credentials, account identity, and persisted generation limits.

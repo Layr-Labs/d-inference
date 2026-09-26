@@ -36,6 +36,74 @@ private extension ProviderLoop {
     func holdSwitchRequest(_ id: String) { acceptedLifecycleRequests.insert(id) }
     func finishSwitchRequest(_ id: String) { acceptedLifecycleRequests.remove(id) }
     func failSwitchModel(_ model: ModelInfo) { failedSelfTestHashes[model.id] = model.weightHash ?? "" }
+    func useSwitchSnapshot(_ snapshot: URL, gate: SwitchHashGate? = nil) {
+        modelSwitchSnapshotResolver = { _ in snapshot }
+        if let gate { modelSwitchWeightHasher = { gate.hash(snapshot: $0, modelID: $1) } }
+    }
+    func stopSwitchForTeardown() async {
+        isShuttingDown = true
+        await cancelModelSwitchAndWait()
+        state.refusingNewWork = true
+    }
+}
+
+private func switchSnapshot(in root: URL) throws -> URL {
+    let snapshot = root.appendingPathComponent("snapshot")
+    try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+    try Data(#"{"model_type":"gpt_oss"}"#.utf8).write(to: snapshot.appendingPathComponent("config.json"))
+    try Data(repeating: 0x61, count: 1024).write(to: snapshot.appendingPathComponent("model.safetensors"))
+    return snapshot
+}
+
+private func connectSwitchLoop(_ loop: ProviderLoop, url: String) async -> (CoordinatorClient, Task<Void, Never>) {
+    let client = CoordinatorClient(config: .init(url: url, hardware: switchHardware(),
+        models: [switchModel("old-model")], backendName: "mlx-swift", heartbeatInterval: 60,
+        publicKey: "cHVibGlj"), stats: AtomicProviderStats(), state: await loop.state, liveAPNsToken: { nil })
+    let (events, _) = await client.start()
+    for await event in events { if case .connected = event { break } }
+    await loop.setCoordinatorClientForTesting(client)
+    let reader = Task {
+        for await event in events {
+            if case .drainAck(let id) = event { await client.completeDrainAcknowledgement(id) }
+        }
+    }
+    return (client, reader)
+}
+
+private func switchEventually(_ condition: () async -> Bool) async throws -> Bool {
+    for _ in 0..<300 {
+        if await condition() { return true }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    return await condition()
+}
+
+private final class SwitchHashGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var entered = false
+    private var released = false
+    private var finished = false
+
+    var isEntered: Bool { condition.lock(); defer { condition.unlock() }; return entered }
+    var isFinished: Bool { condition.lock(); defer { condition.unlock() }; return finished }
+
+    func release() {
+        condition.lock(); defer { condition.unlock() }
+        released = true
+        condition.broadcast()
+    }
+
+    func hash(snapshot: URL, modelID: String) -> String? {
+        condition.lock()
+        entered = true
+        while !released { condition.wait() }
+        condition.unlock()
+        // Only timing is controlled; production hashing still validates bytes.
+        let hash = WeightHasher.computeHash(snapshotDir: snapshot, modelID: modelID)
+        condition.lock(); defer { condition.unlock() }
+        finished = true
+        return hash
+    }
 }
 
 @Suite("Live provider model selection", .serialized)
@@ -56,6 +124,147 @@ struct ProviderModelSwitchTests {
         #expect(await loop.servingDrain.owner == .modelSwitch)
         #expect(throws: (any Error).self) { try tracker.admit() }
         #expect(try ConfigManager.load(from: root.appendingPathComponent("provider.toml")).backend.enabledModels == ["old-model"])
+    }
+
+    @Test func zeroTimeoutSwitchesSettledProviderThroughCoordinatorBarrier() async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.useSwitchSnapshot(try switchSnapshot(in: root))
+        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        defer { reader.cancel(); Task { await client.shutdown() } }
+        let request = ProviderModelSwitchRequest(target: try #require(ProcessIdentity.current()),
+            models: ["new-model"], timeoutSeconds: 0)
+        let result = await loop.switchModels(request: request)
+        #expect(result.outcome == .switched)
+        #expect(await loop.advertisedLocalModelIds() == ["new-model"])
+        #expect(await client.currentAdvertisedModels().map(\.id) == ["new-model"])
+        #expect(mock.snapshot().drainBarriers.count == 1)
+        #expect(mock.snapshot().modelsReplacements.map(\.validateOnly) == [true, false])
+        #expect(mock.snapshot().registers.count == 1)
+        #expect(await !loop.state.refusingNewWork)
+        #expect(try ConfigManager.load(from: root.appendingPathComponent("provider.toml")).backend.enabledModels == ["new-model"])
+    }
+
+    @Test(arguments: [false, true])
+    func zeroTimeoutDoesNotWaitForInferenceOrModelMutation(mutation: Bool) async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
+        defer { try? FileManager.default.removeItem(at: root) }
+        await loop.useSwitchSnapshot(try switchSnapshot(in: root))
+        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        defer { reader.cancel(); Task { await client.shutdown() } }
+        let tracker = await loop.localResponseTracker
+        let lease = mutation ? nil : try tracker.admit()
+        defer { lease?.release() }
+        if mutation { await loop.acquireResliceGateForTesting() }
+        else { await loop.holdSwitchRequest("accepted") }
+        let result = await loop.switchModels(request: .init(target: try #require(ProcessIdentity.current()),
+            models: ["new-model"], timeoutSeconds: 0))
+        #expect(result.outcome == .timedOut)
+        #expect(mock.snapshot().drainBarriers.isEmpty)
+        #expect(mock.snapshot().modelsReplacements.isEmpty)
+        #expect(await loop.advertisedLocalModelIds() == ["old-model"])
+        #expect(await loop.state.refusingNewWork)
+        if mutation {
+            #expect(await !loop.modelSwitchMutationsSettled)
+            await loop.releaseResliceGateForTesting()
+        } else {
+            #expect(await loop.lifecycleRemaining == 2)
+            await loop.finishSwitchRequest("accepted")
+        }
+    }
+
+    @Test(arguments: ["graceful", "force", "teardown"])
+    func lifecyclePreemptsReadOnlyHashAndLateCompletionCannotPublish(mode: String) async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = SwitchHashGate()
+        defer { gate.release() }
+        await loop.useSwitchSnapshot(try switchSnapshot(in: root), gate: gate)
+        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        defer { reader.cancel(); Task { await client.shutdown() } }
+        let identity = try #require(ProcessIdentity.current())
+        let request = ProviderModelSwitchRequest(target: identity, models: ["new-model"], timeoutSeconds: 0)
+        let switching = Task { await loop.switchModels(request: request) }
+        #expect(try await switchEventually { gate.isEntered })
+        let stopping = Task {
+            if mode == "teardown" {
+                await loop.stopSwitchForTeardown()
+            } else {
+                let result = await loop.drainForLifecycle(request: .init(target: identity,
+                    timeoutSeconds: 1, force: mode == "force"))
+                #expect(result.outcome == (mode == "force" ? .forced : .drained))
+            }
+        }
+        let preempted = try await switchEventually {
+            if mode == "teardown" { return await loop.modelSwitchStatus.outcome == .failed }
+            return await loop.lifecycleStatus.outcome == (mode == "force" ? .forced : .drained)
+        }
+        #expect(preempted, "Lifecycle must finish while read-only hashing is still held")
+        if !preempted { gate.release() }
+        await stopping.value
+        #expect(await switching.value.outcome == .failed)
+        #expect(!gate.isFinished || !preempted)
+        #expect(await loop.advertisedLocalModelIds() == ["old-model"])
+        #expect(mock.snapshot().modelsReplacements.isEmpty)
+
+        // A later scheduled loop reuses this process's state/receipt paths.
+        let (next, nextRoot) = try await switchLoop()
+        defer { try? FileManager.default.removeItem(at: nextRoot) }
+        let statePath = root.appendingPathComponent("state.json")
+        await next.setDaemonStateFileForTesting(statePath)
+        await next.publishModelSwitchStatus()
+        let nextRequest = ProviderModelSwitchRequest(target: identity, models: ["later-model"], timeoutSeconds: 0)
+        let nextResult = await next.switchModels(request: nextRequest)
+        #expect(nextResult.outcome == .busy)
+        let mailbox = LifecycleMailbox(identity: identity, directory: root.appendingPathComponent("lifecycle"))
+        let nextState = try Data(contentsOf: statePath)
+        #expect(mailbox.readSwitchStatus()?.requestID == nextRequest.id)
+        gate.release()
+        #expect(try await switchEventually { gate.isFinished })
+        #expect(await loop.modelSwitchStatus.requestID == request.id)
+        #expect(await loop.modelSwitchStatus.outcome == .failed)
+        #expect(await loop.advertisedLocalModelIds() == ["old-model"])
+        #expect(await next.advertisedLocalModelIds() == ["old-model"])
+        #expect(mailbox.readSwitchStatus() == nextResult)
+        #expect(try Data(contentsOf: statePath) == nextState)
+        #expect(mock.snapshot().modelsReplacements.isEmpty)
+        #expect(await loop.state.refusingNewWork)
+        #expect(await !next.state.refusingNewWork)
+        if mode != "teardown" { #expect(await loop.servingDrain.owner == .lifecycle) }
+    }
+
+    @Test func laterLoopMonitorConsumesOnlyNewPublication() async throws {
+        let (first, root) = try await switchLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let identity = try #require(ProcessIdentity.current())
+        let mailbox = LifecycleMailbox(identity: identity, directory: root.appendingPathComponent("lifecycle"))
+        let old = ProviderModelSwitchRequest(target: identity, models: ["old-selection"], timeoutSeconds: 0)
+        try mailbox.writeSwitchRequest(old)
+        let firstAccepted = try #require(await first.acceptPendingModelSwitch(from: mailbox))
+        #expect(await firstAccepted.value.requestID == old.id)
+
+        let (next, nextRoot) = try await switchLoop()
+        defer { try? FileManager.default.removeItem(at: nextRoot) }
+        await next.setDaemonStateFileForTesting(root.appendingPathComponent("state.json"))
+        await next.publishModelSwitchStatus()
+        // Poll the same production acceptance path in a new loop lifetime.
+        #expect(await next.acceptPendingModelSwitch(from: mailbox) == nil)
+        #expect(mailbox.readSwitchStatus()?.requestID == nil)
+        let new = ProviderModelSwitchRequest(target: identity, models: ["new-selection"], timeoutSeconds: 0)
+        try mailbox.writeSwitchRequest(new)
+        let nextAccepted = try #require(await next.acceptPendingModelSwitch(from: mailbox))
+        #expect(await nextAccepted.value.requestID == new.id)
+        #expect(mailbox.readSwitchStatus()?.outcome == .busy)
+        #expect(mailbox.claimSwitchRequest() == nil)
     }
 
     @Test func lifecycleStopCannotBeReopenedBySwitchCompletion() async throws {

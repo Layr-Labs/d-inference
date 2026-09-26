@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-26 · commit `02048322b`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -85,11 +85,12 @@ a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
 
-A replacement start completes the picker/preflight first, then drains and stops
-the old provider before installing the chosen configuration. Foreground/local
-starts also require a drained handoff. The process-lifetime kernel lock refuses
-a live owner; it never silently sends SIGKILL after a short grace period.
-The selected IDs are saved to `backend.enabled_models` before daemon installation.
+A replacement start completes the picker/preflight and saves the selected IDs
+under `backend.enabled_models` while holding the lifecycle lease, before it
+disables recovery or drains/stops the current provider. A persistence failure
+leaves the current service unchanged. Only then does it drain, stop, and install
+the chosen configuration. Foreground/local starts also require a drained handoff;
+the process-lifetime kernel lock never silently sends SIGKILL after a short grace period.
 On launchd-managed foreground starts (including restart and watchdog recovery),
 an explicitly pinned `enabled_models` takes precedence over old `--model` plist
 arguments. A directly invoked foreground `--model` still overrides config
@@ -101,7 +102,7 @@ arguments. A directly invoked foreground `--model` still overrides config
 |---|---|---|---|
 | `--model <id>` | `[String]`, repeatable | `[]` | Replace the complete hosted selection with these local IDs; any invalid ID rejects the whole selection |
 | `--all` | flag | `false` | Select all eligible local models; mutually exclusive with `--model` |
-| `--timeout <seconds>` | integer, 0–3600 | `600` | Graceful drain deadline; never cancels accepted requests |
+| `--timeout <seconds>` | integer, 0–3600 | `600` | Graceful drain deadline; `0` refuses unfinished work immediately but still acknowledges an already-settled drain |
 
 With neither selection flag, this command reuses the `start` catalog picker and
 downloader. It checks fresh daemon identity and switch capability before opening
@@ -120,6 +121,21 @@ loaded; new models load on demand under the existing memory safeguards.
 The coordinator must support `models_replace`; deploy the coordinator upgrade
 before enabling this command on providers. Unsupported or missing receipts fail
 closed rather than forcing a reconnect.
+
+With `--timeout 0`, an already-idle provider still waits up to 30 seconds for the
+coordinator's terminal barrier; zero never skips usage settlement. Nonzero
+deadlines retain their full drain-and-barrier budget. Artifact validation occurs
+before this deadline and can be preempted by stop/restart or OS shutdown; a late
+hash result cannot change provider state. Each switch request is atomically
+consumed, so a later scheduled window in the same process cannot replay it.
+Sources: `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSwitch.swift`
+(`drainForModelSwitch`, `cancelModelSwitchAndWait`),
+`provider-swift/Sources/ProviderCore/Service/LifecycleMailbox.swift` (`claimSwitchRequest`).
+
+Eligible local off-catalog models can remain in the selection for owner-only
+inference, just as at registration. They do not become publicly routable; tracked
+models still need their pinned catalog hashes and required runtime capabilities
+(`coordinator/registry/provider_models_replace.go`, `ReplaceProviderModels`).
 
 Success requires a matching completion receipt from the running provider, not
 just mailbox publication. A successful selection is persisted for later restart,
@@ -191,8 +207,9 @@ vetoes (`provider-swift/Sources/darkbloom/DoctorCommand.swift`,
 [guard recovery](./troubleshooting.md#kv-backend-crash-loop-guard).
 
 Exit 1 when any detailed check or diagnosis line is FAIL (or WARN with
-`--strict`). The check names are listed in
-[troubleshooting](./troubleshooting.md#doctor-checks).
+`--strict`). On macOS 27 or later the diagnosis includes an `APP ATTEST`
+section with the daemon's local key state and launch session. The check names
+are listed in [troubleshooting](./troubleshooting.md#doctor-checks).
 
 ### `darkbloom verify`
 
@@ -936,6 +953,7 @@ manual use.
 | Warm-model journal | `~/.darkbloom/loaded-models.json` (`DARKBLOOM_LOADED_MODELS_FILE`) | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` |
 | Watchdog state | `~/.darkbloom/watchdog-state.json` (`DARKBLOOM_WATCHDOG_STATE`) | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` |
 | KV-backend crash-loop guard | `~/.darkbloom/kv-backend-guard.json` (`DARKBLOOM_KV_BACKEND_GUARD`) | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
+| App Attest stall restart marker | `app-attest-stall-restart.json` beside the daemon state file, `0600`; time of the last automatic restart for a stalled DeviceCheck call ([limits](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)) | `provider-swift/Sources/ProviderAppAttest/AppAttestStallRestart.swift` (`AppAttestStallRestartMarker`) |
 | Provider LaunchAgent | label `io.darkbloom.provider`; `~/Library/LaunchAgents/io.darkbloom.provider.plist`; `RunAtLoad = true`, `KeepAlive = false`; stdout/stderr → `~/.darkbloom/provider.log` | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`label`, `plistPath`, `logPath`) |
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |

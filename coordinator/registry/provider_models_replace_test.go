@@ -18,9 +18,12 @@ func TestReplaceProviderModelsRejectsAtomicallyAndCanResumeOldSet(t *testing.T) 
 		{"wrong drain", "other", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}}, nil},
 		{"empty", "drain", nil, nil},
 		{"duplicate", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}, {ID: "new", WeightHash: "hash"}}, nil},
-		{"unknown after valid", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}, {ID: "unknown"}}, nil},
+		{"empty ID after valid", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}, {ID: ""}}, nil},
 		{"hash after valid", "drain", []protocol.ModelInfo{{ID: drainStateTestModel}, {ID: "new", WeightHash: "wrong"}}, nil},
+		{"hash after off-catalog", "drain", []protocol.ModelInfo{{ID: "local/model"}, {ID: "new", WeightHash: "wrong"}}, nil},
+		{"missing hash after off-catalog", "drain", []protocol.ModelInfo{{ID: "local/model"}, {ID: "new"}}, nil},
 		{"capability after valid", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}, {ID: "protected"}}, nil},
+		{"off-catalog capability after valid", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}, {ID: Qwen38NAXModelID}}, nil},
 		{"unknown tool", "drain", []protocol.ModelInfo{{ID: "new", WeightHash: "hash"}}, []string{"other"}},
 	}
 	for _, tc := range cases {
@@ -41,6 +44,84 @@ func TestReplaceProviderModelsRejectsAtomicallyAndCanResumeOldSet(t *testing.T) 
 			if err != nil || r.ProviderDraining(p.ID) {
 				t.Fatalf("old inventory could not resume: %v", err)
 			}
+		})
+	}
+}
+
+func TestReplaceProviderModelsAllowsOwnerOnlyOffCatalogInventory(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		privateOnly bool
+		accountID   string
+	}{
+		{"shared", false, "owner"},
+		{"private", true, "owner"},
+		{"unlinked", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New(testLogger())
+			r.SetModelCatalog([]CatalogEntry{{ID: "catalog/model", WeightHash: "catalog-hash"}})
+			// Registration retains the old off-catalog model before owner linking.
+			p := registerDrainStateProvider(t, r, "session", 100)
+			p.PrivateOnly = tc.privateOnly
+			setProviderAccount(p, tc.accountID)
+			old := append([]protocol.ModelInfo(nil), p.Models...)
+			models := append(append([]protocol.ModelInfo(nil), old...),
+				protocol.ModelInfo{ID: "catalog/model", WeightHash: "catalog-hash"},
+				protocol.ModelInfo{ID: "local/new", WeightHash: "local-hash"})
+			trust, challenge := p.TrustLevel, p.LastChallengeVerified
+			generation := r.CommitProviderDrain(p, "drain")
+			r.CompleteProviderDrain(p, "drain", generation)
+			msg := &protocol.ModelsReplaceMessage{
+				RequestID: "validate", DrainRequestID: "drain", ValidateOnly: true, Models: models,
+			}
+			if _, _, err := r.ReplaceProviderModels(p, msg); err != nil {
+				t.Fatalf("off-catalog preflight rejected: %v", err)
+			}
+			if !reflect.DeepEqual(p.Models, old) || !r.ProviderDraining(p.ID) || !p.drainReady {
+				t.Fatal("preflight changed inventory or consumed the settled drain")
+			}
+			msg.RequestID, msg.ValidateOnly = "replace", false
+			if _, _, err := r.ReplaceProviderModels(p, msg); err != nil {
+				t.Fatalf("off-catalog replacement rejected: %v", err)
+			}
+			if !reflect.DeepEqual(p.Models, models) || r.ProviderDraining(p.ID) {
+				t.Fatal("replacement did not install the complete set and resume")
+			}
+			if r.GetProvider(p.ID) != p || p.TrustLevel != trust || p.LastChallengeVerified != challenge {
+				t.Fatal("replacement changed session trust")
+			}
+			if tc.accountID == "" {
+				unlinked := &PendingRequest{RequestID: "unlinked", Model: "local/new", RequestedMaxTokens: 64, SelfRouteOnly: true, OwnerAccountID: "owner"}
+				if selected := r.ReserveProvider(unlinked.Model, unlinked); selected != nil {
+					t.Fatal("advertising a local model granted owner routing before linking")
+				}
+				setProviderAccount(p, "owner")
+			}
+			for _, model := range models {
+				for _, preferOwner := range []bool{false, true} {
+					req := &PendingRequest{
+						RequestID: "owner", Model: model.ID, EstimatedPromptTokens: 100, RequestedMaxTokens: 64,
+						OwnerAccountID: "owner", SelfRouteOnly: !preferOwner, PreferOwner: preferOwner,
+					}
+					selected, decision := r.ReserveProviderEx(model.ID, req)
+					if selected != p {
+						t.Fatalf("owner route for %q (prefer=%v) selected %v: %+v", model.ID, preferOwner, selected, decision)
+					}
+					p.RemovePending(req.RequestID)
+				}
+				public := &PendingRequest{RequestID: "public", Model: model.ID, EstimatedPromptTokens: 100, RequestedMaxTokens: 64}
+				selected := r.ReserveProvider(model.ID, public)
+				if model.ID == "catalog/model" && !tc.privateOnly {
+					if selected != p {
+						t.Fatal("catalog model lost public routing after replacement")
+					}
+					p.RemovePending(public.RequestID)
+				} else if selected != nil {
+					t.Fatalf("public route reached private or off-catalog model %q", model.ID)
+				}
+			}
+			assertModelIndexConsistent(t, r)
 		})
 	}
 }

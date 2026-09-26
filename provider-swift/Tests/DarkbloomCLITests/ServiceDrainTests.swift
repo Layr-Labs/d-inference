@@ -120,6 +120,36 @@ struct ServiceDrainTests {
 
 @Suite("Lifecycle recovery rollback")
 struct LifecycleRecoveryRollbackTests {
+    @Test func unwritableSelectionDoesNotPublishDrainOrDisableRecovery() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let nonDirectory = root.appendingPathComponent("not-a-directory")
+        try Data("keep".utf8).write(to: nonDirectory)
+        let recovery = root.appendingPathComponent("recovery-state")
+        try Data("enabled".utf8).write(to: recovery)
+        let identity = try #require(ProcessIdentity.current())
+        let mailbox = LifecycleMailbox(identity: identity, directory: root.appendingPathComponent("lifecycle"))
+        let request = ProviderDrainRequest(target: identity, timeoutSeconds: 1)
+        #expect(throws: (any Error).self) {
+            try ServiceDrain.publishWithRecoveryRollback(prepare: {
+                try ProviderModelSelection.save(["replacement"],
+                    configPath: nonDirectory.appendingPathComponent("provider.toml"))
+            }, disable: {
+                try Data("disabled".utf8).write(to: recovery)
+            }, publish: {
+                try mailbox.writeRequest(request)
+            }, restore: {
+                // An untouched recovery configuration must not be rewritten.
+                try Data("restored".utf8).write(to: recovery)
+            })
+        }
+        #expect(mailbox.readRequest() == nil)
+        #expect(try String(contentsOf: recovery, encoding: .utf8) == "enabled")
+        #expect(try String(contentsOf: nonDirectory, encoding: .utf8) == "keep")
+        #expect(identity.isCurrent())
+    }
+
     @Test func failedPublicationRestoresPriorRecovery() {
         struct Failure: Error {}
         var calls: [String] = []

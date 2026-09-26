@@ -39,9 +39,11 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		if _, duplicate := selected[model.ID]; duplicate {
 			return nil, nil, errors.New("invalid_models")
 		}
-		entry, exists := r.modelCatalog[model.ID]
-		if (r.modelCatalog != nil && !exists) ||
-			!capabilitySetContainsAll(p.RuntimeCapabilities, effectiveRequiredProviderCapabilities(model.ID, entry.RequiredProviderCapabilities)) ||
+		// Like registration, inventory may include off-catalog local models
+		// regardless of ownership or PrivateOnly. A configured catalog still
+		// excludes them from public routing; hashes and capabilities fail closed.
+		entry := r.modelCatalog[model.ID]
+		if !r.providerMeetsModelRequirementsLocked(p, model.ID) ||
 			(entry.WeightHash != "" && !strings.EqualFold(model.WeightHash, entry.WeightHash)) {
 			return nil, nil, errors.New("invalid_models")
 		}

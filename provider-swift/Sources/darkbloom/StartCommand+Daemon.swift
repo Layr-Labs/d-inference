@@ -64,10 +64,11 @@ extension Start {
 
         // Resolve selection before closing admission; a cancelled picker never
         // disturbs the existing provider. Keep the update lease through install.
-        let replacement = try await ServiceDrain.prepare(options: drain)
+        let replacement = try await ServiceDrain.prepare(options: drain) {
+            try ProviderModelSelection.save(selectedModelIDs, configPath: snapshot.configPath)
+        }
         defer { replacement.release() }
         try await ServiceDrain.stopDrainedProvider()
-        try ProviderModelSelection.save(selectedModelIDs, configPath: snapshot.configPath)
         try LaunchAgent.installAndStart(
             coordinatorURL: coordinatorURL,
             models: selectedModelIDs,

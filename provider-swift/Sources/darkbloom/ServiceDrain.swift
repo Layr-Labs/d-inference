@@ -16,7 +16,7 @@ struct DrainOptions: ParsableArguments {
 /// The CLI never initiates graceful stop with bootout/kickstart. The signed
 /// daemon owns admission, accepted requests, terminal delivery and the barrier.
 enum ServiceDrain {
-    static func prepare(options: DrainOptions) async throws -> SelfUpdater.UpdateSession {
+    static func prepare(options: DrainOptions, beforeDrain: () throws -> Void = {}) async throws -> SelfUpdater.UpdateSession {
         let state = DaemonStateFile.read()
         let updater = SelfUpdater(coordinatorBaseURL: state?.coordinatorUrl ?? "https://api.darkbloom.dev")
         let session = try updater.beginUpdateSession(operation: "provider-lifecycle", timeout: 0)
@@ -34,7 +34,7 @@ enum ServiceDrain {
             let request = identity.flatMap { hasControl ? ProviderDrainRequest(target: $0, timeoutSeconds: options.timeout, force: options.force) : nil }
             let mailbox = identity.map { LifecycleMailbox(identity: $0) }
             let recovery = try ServiceRecoverySnapshot.capture()
-            try publishWithRecoveryRollback(disable: {
+            try publishWithRecoveryRollback(prepare: beforeDrain, disable: {
                 try WatchdogAgent.stop()
                 try LaunchAgent.disableAutomaticStartup()
             }, publish: {

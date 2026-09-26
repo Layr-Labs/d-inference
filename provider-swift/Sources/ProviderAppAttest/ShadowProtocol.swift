@@ -27,6 +27,12 @@ public struct AppAttestShadowPayload: Codable, Sendable, Equatable {
     public var appleErrorSource: AppAttestAppleErrorSource?
     public var proof: String?
     public var encryptedChallenge: ShadowEncryptedChallenge?
+    /// Diagnostics on `ready` replies only. Never part of `clientHash`; the
+    /// coordinator strips invalid values instead of rejecting the frame.
+    public var launchSession: AppAttestLaunchSession?
+    public var bootTime: Int64?
+    /// Present only with result `busy`, 1...`AppleOperationStall.maxReportedSeconds`.
+    public var operationStalledSeconds: Int?
 
     public init(action: String, session: String) { self.action = action; self.session = session }
     enum CodingKeys: String, CodingKey {
@@ -40,6 +46,9 @@ public struct AppAttestShadowPayload: Codable, Sendable, Equatable {
         case appleError = "apple_error"
         case availabilityReason = "availability_reason"
         case appleErrorSource = "apple_error_source"
+        case launchSession = "launch_session"
+        case bootTime = "boot_time"
+        case operationStalledSeconds = "operation_stalled_seconds"
     }
 
     public func clientHash(publicKey: String) -> Data {
@@ -70,6 +79,9 @@ public protocol AppAttestService: Sendable {
     func generateKey() async throws -> String
     func attestKey(_ id: String, hash: Data) async throws -> Data
     func generateAssertion(_ id: String, hash: Data) async throws -> Data
+    /// When the outstanding uncancellable Apple call was admitted, or nil.
+    /// No default: a silent nil would hide a stalled gate.
+    func operationHeldSince() async -> Date?
 }
 
 public struct ShadowKeyRecord: Codable, Sendable {

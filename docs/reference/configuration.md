@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-26 · commit `02048322b`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -9,14 +9,14 @@ symbol; a production or dev host may pin a different value in its environment
 file. Secrets are named, never valued. Unless a row says *live*, the variable is
 read once at process start and a restart applies a change.
 
-[App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. [Durable build approvals](provider-authorization.md#durable-build-qualification) replace per-release env edits; existing env pairs are a bootstrap fallback that cannot override a durable revocation. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
+[App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT` (default `100`) selects the separate account cohort for coordinator-requested [dead-key rotation](app-attest-shadow.md#dead-key-rotation). [Durable build approvals](provider-authorization.md#durable-build-qualification) replace per-release env edits; existing env pairs are a bootstrap fallback that cannot override a durable revocation. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
 
 ## Provider drain deadline
 
 | Setting | Default / bounds | Consumer |
 |---|---|---|
 | `darkbloom start/stop/restart/update --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
-| `darkbloom switch --timeout` | `600` seconds; 0–3600; no force mode | `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`) |
+| `darkbloom switch --timeout` | `600` seconds; 0–3600; `0` means no waiting for unfinished work, with a 30-second barrier allowance when already settled; no force mode | `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSwitch.swift` (`drainForModelSwitch`) |
 | `darkbloom restart --startup-timeout` | `180` seconds; 1–3600 | `provider-swift/Sources/darkbloom/RestartCommand.swift` (`Restart`) |
 | `DARKBLOOM_DRAIN_TIMEOUT_SECONDS` | `600` seconds when missing/invalid; valid 1–3600 | Signal/AppKit and planned metadata-reconnect drain in `provider-swift/Sources/ProviderCore/Service/ProviderTermination.swift` (`timeoutSeconds`); launchd environment allowlist preserves it |
 | launchd `ExitTimeOut` | `3660` seconds on install or CLI restart | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`makeServicePlist`, `refreshTerminationAllowance`) |
@@ -39,8 +39,9 @@ time; they are not network control endpoints or serving credentials.
 | direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runForeground`) |
 | later scheduled serving windows | Keep the initial foreground selection until a live switch or saved `enabled_models` change; then reload only that selection, validating exact local models and refreshing weight hashes before each window | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runScheduled`) |
 
-`start` saves its selected models before installing the daemon. Live
-[`switch`](../provider/cli-reference.md#darkbloom-switch) uses the running
+`start` saves its selected models under the lifecycle lease before disabling
+recovery or draining/stopping the current daemon; persistence failure leaves it
+running. Live [`switch`](../provider/cli-reference.md#darkbloom-switch) uses the running
 daemon's resolved config path and does not optimistically write from the CLI.
 The daemon persists the accepted selection using a stable config sidecar lock,
 reloading before saving so unrelated settings survive concurrent config writes.

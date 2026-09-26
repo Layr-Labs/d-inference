@@ -182,6 +182,16 @@ public actor ProviderLoop {
     internal var appAttestShadowClient: AppAttestShadowClient?
     internal var appAttestShadowTask: Task<Void, Never>?
     internal var appAttestShadowGeneration: UInt64 = 0
+    /// Last local App Attest observation, published in the daemon state file.
+    internal var appAttestLocalStatus: AppAttestLocalStatus?
+    /// Watches a stalled DeviceCheck operation until a restart is safe.
+    internal var appAttestStallMonitorTask: Task<Void, Never>?
+    /// Last logged reason for deferring the stall restart (log on change only).
+    internal var appAttestStallLastSkip: AppAttestStallRestartPolicy.SkipReason?
+    /// After a stall-restart attempt drained but could not restart, the next
+    /// attempt waits until this instant (monotonic; this process only, since a
+    /// new process has no stalled call).
+    internal var appAttestStallRetryAt: ContinuousClock.Instant?
     internal let loopConfig: ProviderLoopConfig
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?
@@ -328,6 +338,9 @@ public actor ProviderLoop {
     internal var lifecycleMonitorTask: Task<Void, Never>?
     internal var modelSwitchTask: Task<ProviderModelSwitchStatus, Never>?
     internal var modelSwitchStatus = ProviderModelSwitchStatus()
+    /// IO-only seams keep validation on real scanner/hash paths in lifecycle tests.
+    internal var modelSwitchSnapshotResolver: @Sendable (String) -> URL? = { ModelScanner.resolveLocalPath(modelID: $0) }
+    internal var modelSwitchWeightHasher: @Sendable (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
     /// Invalidates prefetch work begun before an operator replaced the set.
     internal var modelSelectionRevision: UInt64 = 0
     internal var modelAdvertisementsInFlight = 0

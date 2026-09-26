@@ -15,7 +15,7 @@ struct Switch: AsyncParsableCommand {
     @Flag(help: "Host all eligible local models (skips the picker).")
     var all = false
 
-    @Option(help: "Graceful drain deadline in seconds (0...3600). No requests are cancelled on timeout.")
+    @Option(help: "Graceful drain deadline in seconds (0...3600). Zero does not wait for unfinished work; an idle provider still allows up to 30 seconds for the coordinator barrier. No requests are cancelled on timeout.")
     var timeout: Int = 600
 
     mutating func validate() throws {
@@ -131,7 +131,7 @@ struct Switch: AsyncParsableCommand {
                 case .validating:
                     deadline = nil // Hashing precedes the daemon's drain deadline.
                 case .draining:
-                    deadline = .now.advanced(by: .seconds(request.timeoutSeconds + 10))
+                    deadline = .now.advanced(by: .seconds((request.timeoutSeconds == 0 ? 30 : request.timeoutSeconds) + 10))
                 case .switching:
                     deadline = .now.advanced(by: .seconds(120))
                 default:

@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-26 · commit `02048322b`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -676,30 +676,20 @@ of a live gate is never pruned.
 `site:`, via `SetGateWaitObserver`) records a recorder's `gate.mu`
 acquisition wait when it exceeds `gateWaitReportThreshold = time.Millisecond`.
 
-### Reputation
+### Provider operational history
 
-`Reputation.Score` (`coordinator/registry/reputation.go`) is
+`Reputation` (`coordinator/registry/reputation.go`) retains job success/failure
+counts, accumulated uptime, attestation challenge counts, and the
+prefill-adjusted first-content latency EWMA (`RecordLatency`,
+`ttftEWMAAlpha = 0.2`). These values are persisted and exposed as raw metrics
+in the owner provider API. There is no composite reputation score.
 
-```text
-score = 0.4 × jobRate + 0.3 × uptimeRate + 0.2 × challengeRate + 0.1 × responseTimeFactor
-```
-
-- `jobRate` = `SuccessfulJobs / TotalJobs` (`0.5` with no jobs).
-- `uptimeRate` = `TotalUptime / 24h`, floored at `0.5`, capped at `1.0`.
-- `challengeRate` = passed / (passed + failed) (`0.5` with no challenges).
-- `responseTimeFactor` = `1.0` at ≤ 1 000 ms average, `0.0` at ≥ 10 000 ms,
-  linear between (`0.5` with no data). The average is an EWMA of
-  prefill-adjusted first-content latency, `ttftEWMAAlpha = 0.2`
-  (`RecordLatency`).
-
-A provider with no history scores `0.5`. The score is exposed on the
-provider-facing `/me` endpoints (`coordinator/api/me_handlers.go`) and
-persisted; **it is not a term in the routing cost** — `buildCandidateInto`
-never reads it. The header comment in `reputation.go` still says the score
-factors into routing; the code does not. Reputation inputs do reach routing
-indirectly: `RecordChallengeFailure` feeds `challenge_stale`, and the latency
-EWMA is fed only by non-cache, non-hedge first-content samples
-(`coordinator/api/dispatch.go`).
+The dashboard presents job counts; low historical success rate is an
+informational warning, not a reduced-routing-priority signal
+(`console-ui/src/app/providers/warnings.ts`, `computeWarnings`). Routing uses
+the cost function and live gates described above, not these historical
+counters. Attestation failures still update their separate live trust state
+through `RecordChallengeFailure`.
 
 ### `Retry-After` derivation
 
@@ -829,7 +819,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Budget clamp | `coordinator/registry/budget_clamp.go` — `recordBudgetClampLocked`, `releaseBudgetClampsOnHeartbeat` |
 | Capacity-rate penalty and cooldown | `coordinator/registry/capacity_rate.go`, `coordinator/registry/capacity_cooldown.go` |
 | Breakers and ejection | `coordinator/registry/error_cooldown.go`, `coordinator/registry/provider_breaker.go`, `coordinator/registry/health_ejection.go` |
-| Reputation | `coordinator/registry/reputation.go` — `Score`, `RecordLatency` |
+| Provider operational history | `coordinator/registry/reputation.go` — `Reputation`, `RecordLatency` |
 | TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/settlement.go` |
 | Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |
 | Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |

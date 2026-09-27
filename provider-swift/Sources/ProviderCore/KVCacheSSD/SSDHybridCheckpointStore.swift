@@ -159,13 +159,16 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
         staged?.close()
     }
 
+    /// Retires a staged read. The request itself continues: the bridge
+    /// abandons staging and then retries the same receipt cold, and its
+    /// completion still consults the demand hint, so the hint stays until
+    /// `completeStaging` (terminal) or an explicit `discardDonationDemand`.
     func abandonStaging(requestID: CBv2RequestID) async {
         let (stage, reservation, access) = lock.withLock {
             let access = reading.removeValue(forKey: requestID)
             authenticatedReceipts.removeValue(forKey: requestID)
             return (stages.removeValue(forKey: requestID), stageReservations.removeValue(forKey: requestID), access)
         }
-        donationDemandHints.discard(requestID)
         access?.cancel()
         stage?.close()
         await reservation?.waitForRefund()

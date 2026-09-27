@@ -145,7 +145,7 @@ struct SSDCheckpointDemandAdmissionTests {
         await second.closeAndWait()
     }
 
-    @Test("hints are per receipt, cleared with staging, and bounded")
+    @Test("hints are per receipt, survive an abandoned stage, clear at terminal, and are bounded")
     func hintLifecycle() async throws {
         let fixture = try SSDHybridCheckpointTestFixture()
         defer { fixture.remove() }
@@ -158,8 +158,13 @@ struct SSDCheckpointDemandAdmissionTests {
         store.completeStaging(requestID: .init(20))
         #expect(store.donationDemandHints.count == 0)
 
+        // Abandoning a staged read does not end the request: the bridge retries
+        // the same receipt cold, and its completion still consults the hint.
         store.registerDonationDemand(.init(repeatedPrefixTokens: 0), requestID: .init(22))
         await store.abandonStaging(requestID: .init(22))
+        #expect(store.donationDemandHints.demand(for: .init(22))?.repeatedPrefixTokens == 0)
+        #expect(store.demandRefusal(requestID: .init(22), localRepeat: false) == .skippedNovel)
+        store.completeStaging(requestID: .init(22))
         #expect(store.donationDemandHints.count == 0)
 
         store.registerDonationDemand(.init(repeatedPrefixTokens: 0), requestID: .init(23))

@@ -272,7 +272,9 @@ extension EngineV2Bridge {
                 readyReceiptRegistered = true
             }
             // The donate contract has no slot for coordinator metadata, so the
-            // demand hint rides the receipt ID. Cleared with staging/receipts.
+            // demand hint rides the receipt ID. It survives an abandoned stage
+            // (the same receipt retries cold) and clears at terminal or when the
+            // request ends in error below.
             if let donationDemand, let store = ssdHybridCheckpointStore {
                 store.registerDonationDemand(donationDemand, requestID: receiptID)
             }
@@ -439,6 +441,9 @@ extension EngineV2Bridge {
                     if readyReceiptRegistered {
                         discardPrefixReadyReceipt(requestID: prefixCacheReceiptID)
                     }
+                    // The request ends here, so its demand hint is no longer
+                    // needed (abandoning staging alone keeps it for a cold retry).
+                    ssdHybridCheckpointStore?.discardDonationDemand(requestID: prefixCacheReceiptID)
                 }
                 usageSignal?.finalizeLookup(
                     failure: .capacity,

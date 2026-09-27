@@ -57,7 +57,7 @@ extension Start {
 
         let baseURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
         print("darkbloom \(ProviderCore.version) (local / direct mode)")
-        print("Listening on \(bind):\(port)")
+        print("Preparing local server on \(bind):\(port)")
         print("Models: \(advertised.count)")
         for m in advertised {
             print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
@@ -106,6 +106,11 @@ extension Start {
             ),
             models: advertised
         )
+        if config.backend.startupPreload {
+            let summary = await server.preloadSelectedModels(
+                configuredModelIDs: config.backend.preloadModels)
+            print("Startup preload: \(summary.loaded.count) model(s) loaded")
+        }
         try await server.start()
         await ProviderTermination.shared.install {
             await server.drainAndStop(timeoutSeconds: ProviderTermination.timeoutSeconds)
@@ -123,6 +128,7 @@ extension Start {
             printError("Local server failed to bind \(bind):\(port) within 5s — is the port already in use?")
             throw ExitCode.failure
         }
+        print("Listening on \(bind):\(port)")
 
         await server.startLifecycleControl()
 

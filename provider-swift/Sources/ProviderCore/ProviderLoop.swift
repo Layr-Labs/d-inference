@@ -514,12 +514,15 @@ public actor ProviderLoop {
     internal var preloadTasks: [String: Task<Void, Never>] = [:]
 
     /// Startup preload driver (`ProviderLoop+StartupPreload`). Non-nil while
-    /// the boot-time preload of the configured/previously-served model set is
+    /// the boot-time preload of the selected model set is
     /// still running — it may outlive the registration gate when the
     /// `startup_preload_timeout_secs` deadline passes (loads continue in the
     /// background). Cancelled and awaited on shutdown alongside the
     /// coordinator-driven preloads.
     internal var startupPreloadTask: Task<Void, Never>?
+    /// Suffix of the startup plan not yet completed by the driver. Exposed in
+    /// the daemon state so status can distinguish warmup from request loading.
+    internal var startupPreloadPendingModels: [String] = []
 
     /// Test seam: overrides the loaded-models persistence file
     /// (default: `LoadedModelsStore.path()`).

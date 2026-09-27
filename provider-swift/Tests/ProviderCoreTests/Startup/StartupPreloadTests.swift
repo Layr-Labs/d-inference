@@ -169,6 +169,22 @@ struct StartupPreloaderTests {
         #expect(!warns.isEmpty)
     }
 
+    @Test("a skipped candidate does not consume the live slot limit")
+    func skippedCandidateAllowsLaterFit() async {
+        let recorder = PreloadRecorder()
+        var deps = makeDeps(recorder: recorder, freeMemoryGb: 8)
+        deps.canLoadMore = { recorder.loads.count < 1 }
+        let summary = await StartupPreloader(deps: deps).run(candidates: [
+            candidate("too-big", requiredGb: 30),
+            candidate("fits", requiredGb: 2),
+            candidate("past-cap", requiredGb: 2),
+        ])
+
+        #expect(summary.skippedInsufficientMemory == ["too-big"])
+        #expect(summary.loaded == ["fits"])
+        #expect(recorder.loads == ["fits"])
+    }
+
     @Test("a failed load logs, is recorded, and does not stop later candidates")
     func loadFailureContinues() async {
         let recorder = PreloadRecorder()
@@ -320,6 +336,10 @@ private func makePreloadLoop(
                 .appendingPathComponent("darkbloom-preload-tests", isDirectory: true)
                 .appendingPathComponent("\(UUID().uuidString).json"))
     }
+    await loop.setDaemonStateFileForTesting(
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-preload-tests", isDirectory: true)
+            .appendingPathComponent("\(UUID().uuidString)-state.json"))
     // Deterministic admission for gate tests (the real probe reads live memory).
     await loop.setStartupPreloadFreeMemoryOverrideForTesting({ 1_000 })
     return loop
@@ -370,8 +390,59 @@ struct StartupPreloadPlanTests {
         #expect(plan.map(\.modelId) == ["big-26b", "small-1b"])
     }
 
-    @Test("plan is capped at max_model_slots")
-    func planCapsAtMaxModelSlots() async throws {
+    @Test("a fresh start preloads selected models under every idle policy", arguments: [UInt64(0), 45, 60])
+    func freshStartPreloadsSelection(idleMinutes: UInt64) async throws {
+        let recorder = PreloadRecorder()
+        let loop = try await makePreloadLoop(
+            models: [
+                preloadModelInfo("a", memoryGb: 2),
+                preloadModelInfo("b", memoryGb: 2),
+            ],
+            backend: BackendSettings(idleTimeoutMins: idleMinutes, startupSelftest: false))
+        await loop.setStartupPreloadLoadOverrideForTesting { recorder.recordLoad($0) }
+
+        let outcome = await loop.runStartupPreloadGateForTesting()
+
+        #expect(outcome == .warm)
+        #expect(recorder.loads == ["a", "b"])
+    }
+
+    @Test("the default idle policy keeps previously loaded models first and fills unused slots")
+    func defaultPolicyExtendsPersistedSet() async throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-preload-tests", isDirectory: true)
+            .appendingPathComponent("\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        LoadedModelsStore.write(["b"], to: file)
+
+        let loop = try await makePreloadLoop(
+            models: [
+                preloadModelInfo("a", memoryGb: 2),
+                preloadModelInfo("b", memoryGb: 2),
+                preloadModelInfo("c", memoryGb: 2),
+            ],
+            backend: BackendSettings(maxModelSlots: 2),
+            loadedModelsFile: file)
+
+        let plan = await loop.startupPreloadPlanForTesting()
+        #expect(plan.map(\.modelId) == ["b", "a", "c"])
+    }
+
+    @Test("an explicit preload list stays authoritative under the default idle policy")
+    func defaultPolicyHonorsExplicitPreloadList() async throws {
+        let loop = try await makePreloadLoop(
+            models: [
+                preloadModelInfo("a", memoryGb: 2),
+                preloadModelInfo("b", memoryGb: 2),
+            ],
+            backend: BackendSettings(preloadModels: ["b"]))
+
+        let plan = await loop.startupPreloadPlanForTesting()
+        #expect(plan.map(\.modelId) == ["b"])
+    }
+
+    @Test("plan retains overflow candidates to backfill failed loads")
+    func planKeepsOverflowCandidates() async throws {
         let loop = try await makePreloadLoop(
             models: [
                 preloadModelInfo("a", memoryGb: 2),
@@ -383,13 +454,13 @@ struct StartupPreloadPlanTests {
 
         let plan = await loop.startupPreloadPlanForTesting()
 
-        #expect(plan.map(\.modelId) == ["a"])
+        #expect(plan.map(\.modelId) == ["a", "b"])
     }
 
-    @Test("no persisted set and no configured list means nothing to preload")
-    func emptyPlanWhenNoHistory() async throws {
+    @Test("no selected, persisted, or configured models means nothing to preload")
+    func emptyPlanWhenNoModels() async throws {
         let loop = try await makePreloadLoop(
-            models: [preloadModelInfo("a", memoryGb: 2)],
+            models: [],
             backend: BackendSettings())
 
         let plan = await loop.startupPreloadPlanForTesting()
@@ -449,6 +520,11 @@ struct StartupPreloadGateTests {
                 preloadModels: ["a"],
                 startupPreloadTimeoutSecs: 1,  // minimum configurable gate
                 startupSelftest: false))
+        let stateFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-preload-tests", isDirectory: true)
+            .appendingPathComponent("\(UUID().uuidString)-state.json")
+        defer { try? FileManager.default.removeItem(at: stateFile) }
+        await loop.setDaemonStateFileForTesting(stateFile)
         // EVENT-DRIVEN, not timer-vs-timer. This used to race a 1s gate
         // against a 3s scripted load and assert the gate's wall-clock
         // elapsed stayed under 2.8s — which measured the machine's
@@ -504,6 +580,7 @@ struct StartupPreloadGateTests {
         // (still parked on releaseLoad) provably had not finished.
         #expect(outcome == .timedOut)
         #expect(recorder.loads.isEmpty)
+        #expect(DaemonStateFile.read(from: stateFile)?.startupPreloadPendingModels == ["a"])
 
         // The driver keeps warming in the background after the gate released.
         releaseLoad.signal()
@@ -521,6 +598,7 @@ struct StartupPreloadGateTests {
             waited += 1
         }
         #expect(await loop.startupPreloadTaskRunningForTesting() == false)
+        #expect(DaemonStateFile.read(from: stateFile)?.startupPreloadPendingModels == [])
     }
 
     @Test("fail-closed self-test failure retires the model from the advertised set")

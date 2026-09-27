@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-09-18 · commit `5fc48d460`
+> Last updated: 2026-09-27 · commit `bcf55d174`
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -36,10 +36,13 @@ Requests never leave the machine and are never billed.
    ```
 
    `--port` defaults to `8000`, `--bind` to `127.0.0.1`. Before serving,
-   `Start.runLocalServe` (`provider-swift/Sources/darkbloom/StartCommand+Modes.swift`)
+   `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
    engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
-   serve.` if none remain), waits for the socket to bind (`waitUntilBound`,
+   serve.` if none remain), and preloads the selected models before listening
+   when `[backend] startup_preload` is enabled (the default). The explicit
+   `preload_models` list takes precedence; slot and memory limits can skip a
+   model, which still loads on request. It then waits for the socket to bind (`waitUntilBound`,
    bounded by the local bind wait in [runtime constants](./cli-reference.md#runtime-constants);
    `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the
    discovery file and holds a fan-control lease while running

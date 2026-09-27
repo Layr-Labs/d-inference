@@ -7,7 +7,8 @@
 /// was cold at once (first_chunk_timeout storm).
 ///
 /// Now `run()` calls `runStartupPreloadGate()` BEFORE the coordinator client
-/// is created: the previously-served (or operator-configured) model set is
+/// is created: the previously-served (or operator-configured) model set, plus
+/// newly selected models, is
 /// loaded via the normal `ensureModelLoaded` path (weights + EngineV2 bridge),
 /// optionally followed by a 1-token greedy
 /// decode through the real serving path so Metal JIT, compiled buckets, and
@@ -39,8 +40,8 @@ extension ProviderLoop {
     internal enum StartupPreloadGateOutcome: Sendable, Equatable {
         /// `startup_preload = false`.
         case disabled
-        /// Nothing to preload (no config list, no persisted set, or nothing
-        /// advertised) — legacy register-immediately timing.
+        /// Nothing to preload (no configured, previously-served or selected
+        /// model) — legacy register-immediately timing.
         case nothingToPreload
         /// Preload finished within the timeout — registering fully warm.
         case warm
@@ -107,12 +108,15 @@ extension ProviderLoop {
     /// Build the ordered startup preload plan:
     ///   * `preload_models` non-empty → that list, in operator order;
     ///   * otherwise → the persisted previously-served set, biggest first
-    ///     (the largest model loads while memory is emptiest).
-    /// Ids not in the advertised set are skipped with a WARN; the plan is
-    /// de-duplicated and capped at `maxModelSlots`.
+    ///     (the largest model loads while memory is emptiest);
+    ///   * append newly selected models so a fresh start warms them without
+    ///     waiting for their first request, regardless of idle-unload policy.
+    /// Ids not in the advertised set are skipped with a WARN. Retain every
+    /// candidate so a later small model can fill a slot when an earlier load
+    /// is skipped or fails; the driver checks the live slot cap before each.
     internal func startupPreloadPlan() -> [StartupPreloader.Candidate] {
         let backend = loopConfig.config.backend
-        let ids: [String]
+        var ids: [String]
         if !backend.preloadModels.isEmpty {
             ids = backend.preloadModels
         } else {
@@ -120,6 +124,7 @@ extension ProviderLoop {
                 (advertisedModels[$0]?.estimatedMemoryGb ?? 0)
                     > (advertisedModels[$1]?.estimatedMemoryGb ?? 0)
             }
+            ids.append(contentsOf: loopConfig.models.map(\.id))
         }
 
         var seen = Set<String>()
@@ -128,11 +133,6 @@ extension ProviderLoop {
             guard seen.insert(id).inserted else { continue }
             guard let info = advertisedModels[id] else {
                 logger.warning("Startup preload: '\(id)' is not in the advertised model set — skipping")
-                continue
-            }
-            guard plan.count < maxModelSlots else {
-                logger.warning(
-                    "Startup preload: plan exceeds max_model_slots=\(self.maxModelSlots) — skipping '\(id)'")
                 continue
             }
             plan.append(
@@ -175,6 +175,8 @@ extension ProviderLoop {
             logger.info("Startup preload: nothing to preload — registering immediately")
             return .nothingToPreload
         }
+        startupPreloadPendingModels = plan.map(\.modelId)
+        writeDaemonState()
 
         let timeout = Duration.seconds(Int64(max(1, backend.startupPreloadTimeoutSecs)))
         logger.info(
@@ -208,7 +210,9 @@ extension ProviderLoop {
             retire: { modelId in await me.retireModelAfterFailedSelfTest(modelId: modelId) },
             onSelfTestFailed: onSelfTestFailed,
             log: { line in log.info("\(line)") },
-            currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) }
+            currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) },
+            canLoadMore: { await me.startupPreloadHasFreeSlot() },
+            onCandidateStarted: { modelId in await me.markStartupPreloadReached(modelId) }
         )
 
         let preloader = StartupPreloader(deps: deps)
@@ -236,6 +240,7 @@ extension ProviderLoop {
     /// actor whether the gate was still waiting or had already timed out.
     private func finishStartupPreload(summary: StartupPreloader.Summary, elapsed: Duration) {
         startupPreloadTask = nil
+        startupPreloadPendingModels = []
         var parts = ["loaded=\(summary.loaded.count)"]
         if !summary.skippedInsufficientMemory.isEmpty {
             parts.append("skipped_memory=[\(summary.skippedInsufficientMemory.joined(separator: ", "))]")
@@ -251,6 +256,17 @@ extension ProviderLoop {
         }
         logger.info(
             "Startup preload complete in \(StartupPreloader.secs(elapsed)): \(parts.joined(separator: " "))")
+        writeDaemonState()
+    }
+
+    private func startupPreloadHasFreeSlot() -> Bool {
+        modelSlots.count < maxModelSlots
+    }
+
+    private func markStartupPreloadReached(_ modelID: String) {
+        if let index = startupPreloadPendingModels.firstIndex(of: modelID), index > 0 {
+            startupPreloadPendingModels.removeFirst(index)
+        }
         writeDaemonState()
     }
 

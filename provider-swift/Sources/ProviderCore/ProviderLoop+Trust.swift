@@ -46,6 +46,7 @@ extension ProviderLoop {
             currentModel: state.currentModel,
             warmModels: state.warmModels,
             advertisedModels: advertisedModels.keys.sorted(),
+            startupPreloadPendingModels: startupPreloadPendingModels,
             inferenceActive: state.inferenceActive,
             lifecycle: lifecycleStatus,
             modelSwitch: modelSwitchStatus,

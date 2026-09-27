@@ -198,17 +198,17 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// under `[backend]`, TOML table of model id → "auto" | "paged" |
     /// "contiguous"). Missing ids use `engineV2KVBackend`.
     public var engineV2KVBackendByModel: [String: String]
-    /// Startup model preload (default true). On boot the provider loads the
-    /// `preload_models` set (or, when that is empty, the models it was serving
-    /// before the last restart — see `LoadedModelsStore`) BEFORE registering
-    /// with the coordinator, so a release restart never advertises models it
-    /// hasn't warmed. `startup_preload = false` restores the old
-    /// register-immediately behavior.
+    /// Startup model preload (default true) for coordinator and standalone
+    /// serving. An explicit `preload_models` list takes precedence; otherwise
+    /// previously loaded models go first, then the selected models. The
+    /// coordinator path preloads before registration, bounded by the timeout
+    /// below. The standalone path preloads before its HTTP listener starts.
+    /// `startup_preload = false` disables the startup load in either mode.
     public var startupPreload: Bool
-    /// Models to preload at startup, in this order. Empty (default) means
-    /// "the models that were loaded before the last restart" (persisted set,
-    /// loaded biggest-first). Ids not in the advertised model set are skipped
-    /// with a warning. Set `preload_models = ["..."]` under `[backend]`.
+    /// Models to preload at startup, in this order. Empty (default) uses the
+    /// selected serving set, prioritizing previously loaded models on the
+    /// coordinator path. Ids outside the selected set are skipped with a
+    /// warning. Set `preload_models = ["..."]` under `[backend]`.
     public var preloadModels: [String]
     /// Upper bound (seconds) the provider defers coordinator registration while
     /// the startup preload runs. If the preload finishes sooner, it registers

@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-27 · commit `f6f1bf4fd`
+> Last updated: 2026-09-27 · commit `83f3332c1`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -202,7 +202,7 @@ process start.
 
 | # | Knob | Value | Effect (from the proposal) |
 |---|---|---|---|
-| 0.1 | `EIGENINFERENCE_MIN_PROVIDER_VERSION` | `0.7.5` today → `0.8.12`, then `0.8.15` | Deroutes the ~4 % of the fleet on old builds that produce a large share of `first_chunk_timeout`; staged so no more than that share drops at once. The floor is manual by design (`coordinator/api/server.go`, `SetMinProviderVersion`). |
+| 0.1 | `EIGENINFERENCE_MIN_PROVIDER_VERSION` | at least `0.9.5` (the reference `deploy/environments/prod.env` value) | Deroutes old builds, which produce a large share of `first_chunk_timeout`. Coordinators built after v0.9.10 assume nothing below 0.9.5 is routable, so the live floor must reach 0.9.5 before the first such deploy. The key already exists on the host, so `refresh-env.sh` never changes it: raise it by hand as in [the deploy runbook](coordinator-deploy.md#raise-the-provider-version-floor-first-deploy-after-v0910). The floor is manual by design (`coordinator/api/server.go`, `SetMinProviderVersion`). |
 | 0.3 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `qwen3-vl-30b-a3b-instruct=off` | Removes the hardcoded 4 s first-content cutoff for that model (`0`/`off` deletes the built-in entry so the model uses the global base; parsed by `main` in `coordinator/cmd/coordinator/main.go`). Risk removal for the 2026-08-31 class of incident. |
 | 0.5 | `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | operator decision, `0..1` (default `0.1`) | Today ≈53 % of successes are recorded because every non-success / slow / retried request bypasses sampling (`coordinator/api/profiler.go`, `profiler.sampled`). Decide whether ~9 GB/day of `request_profiles` is intended before touching it; `EIGENINFERENCE_PROFILER=off` is the kill switch. |
 

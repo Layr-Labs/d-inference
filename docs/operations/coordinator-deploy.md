@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-27 · commit `219df8d38`
+> Last updated: 2026-09-27 · commit `83f3332c1`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -15,6 +15,11 @@ App Attest cohort, and mixed-version checks in the
 [0.9.10 rollout order](provider-release.md#0910-rollout-order) before and after
 the container swap. The production operation still requires the approval and
 image/digest preflight below.
+
+The first swap to a coordinator built after v0.9.10 also needs the
+[retired-backfill marker check](#2-pre-swap-checks-vm-and-db) and the
+[provider version floor raise](#raise-the-provider-version-floor-first-deploy-after-v0910)
+before the container swap.
 
 For the remaining coordinator performance upgrade, also follow
 [the Tiers 2 and 3 rollout checks](coordinator-perf-tier23-rollout.md).
@@ -120,6 +125,17 @@ psql "$PROD_DB_URL" -c "select pid, now()-query_start as runtime, state, left(qu
 psql "$PROD_DB_URL" -c "select count(*) as blocked from pg_locks where granted = false;"
 ```
 
+A coordinator built after v0.9.10 refuses to start on a database that holds
+billing, usage or earnings rows but never ran the retired one-shot backfills
+(`checkRetiredBackfills`, see
+[storage](../architecture/storage.md#migrations-run-inside-the-process-at-every-boot)).
+Production ran them; confirm all three markers before the swap (three rows):
+
+```bash
+psql "$PROD_DB_URL" -c "select id, applied_at from schema_migrations where id in
+  ('backfill_withdrawable_balance_v1', 'backfill_usage_totals_v1', 'backfill_earnings_summary_v1');"
+```
+
 On the VM, pull the candidate and prove it is the reviewed commit:
 
 ```bash
@@ -221,6 +237,33 @@ sudo cmp /tmp/darkbloom-cache-env.before.sha256 /tmp/darkbloom-cache-env.pre-swa
 sudo grep -Fx 'EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS=9000' /etc/d-inference/env   # production first-content base
 sudo grep '^EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS=' /etc/d-inference/env  # exact account selector; verify against the stored user
 ```
+
+#### Raise the provider version floor (first deploy after v0.9.10)
+
+**Human-only.** Coordinators built after v0.9.10 dropped the routing
+compatibility paths for providers older than 0.9.5 (see `CHANGELOG.md`,
+"coordinator legacy-compat cleanup") and assume nothing below 0.9.5 is
+routable. `EIGENINFERENCE_MIN_PROVIDER_VERSION` is what enforces that, and
+`refresh-env.sh` never changes an existing key, so the live value must be
+raised by hand. `deploy/environments/prod.env` already says `0.9.5`, but it is
+only a reference copy.
+
+1. Take a fleet-version census: in Datadog, graph
+   `d_inference.providers.per_version` by `version` over the last 24 hours.
+   Record in the deploy record how many providers run a version below 0.9.5.
+   They stay connected after the swap but get no traffic.
+2. Once that loss is approved, set the floor to at least `0.9.5`. Do this after
+   `--apply`, so the rollback backup keeps the previous value. If the current
+   floor is already 0.9.5 or higher, skip the edit.
+
+```bash
+sudo grep '^EIGENINFERENCE_MIN_PROVIDER_VERSION=' /etc/d-inference/env        # current floor; skip the edit if >= 0.9.5
+sudo sed -i 's/^EIGENINFERENCE_MIN_PROVIDER_VERSION=.*/EIGENINFERENCE_MIN_PROVIDER_VERSION=0.9.5/' /etc/d-inference/env
+sudo grep -Fx 'EIGENINFERENCE_MIN_PROVIDER_VERSION=0.9.5' /etc/d-inference/env
+```
+
+After the swap, `coordinator.min_provider_version_set{min_version:0.9.5}`
+confirms the running floor.
 
 Record the current container's immutable image and persist the rollback state
 root-only, then confirm the running image is the approved rollback target
@@ -415,6 +458,7 @@ reference copy; editing it changes nothing on the host.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | No `/health` after 60 s | migration behind an RDS relation lock | `pg_stat_activity` → `pg_terminate_backend(<pid>)`; do not restart the container |
+| Exit at boot with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | the database never ran a one-shot backfill retired after v0.9.10 (not production, which has all three markers) | roll back to the captured image, which runs the backfills at start, then redeploy the candidate |
 | Fleet drops to `self_signed`; "device not found in MDM" storm | container started without `-v /mnt/disks/userdata:/mnt/disks/userdata` (blank MicroMDM) | Rollback, then redo the swap with the mount |
 | `/v1/models` empty; providers `self_signed` | MicroMDM not running or `MICROMDM_API_KEY` ≠ `EIGENINFERENCE_MDM_API_KEY` | fix the env file, recreate the container |
 | Port conflict / crash loop | a second host-network container is running | `docker ps`; stop the old one first |

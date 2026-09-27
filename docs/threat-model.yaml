@@ -39,8 +39,8 @@ created: "2026-05-14"
 # verification public key, preventing substitution of model/runtime signature
 # credentials during the later trust transition. Reward rules are unchanged.
 # 2026-09-27: the coordinator serves App Attest protocol 3 only. It replaces the
-# fixed 0.9.4 version gate (protocol 3 first shipped in 0.9.4; protocol 2 only in
-# 0.9.3). Protocol 1/2 registrations get no frames and are counted as
+# fixed 0.9.4 version gate (protocol 3 was introduced in 0.9.4, which never
+# shipped, and first shipped in 0.9.5; protocol 2 only in 0.9.3). Protocol 1/2 registrations get no frames and are counted as
 # rollout/provider_upgrade_required; pre-v3 stored enrollments never resume.
 # MDM-optional authorization added 2026-09-15: explicit serving opt-in consumes
 # qualified protocol3 evidence; it never sets legacy MDA/APNs flags. Fresh
@@ -463,9 +463,11 @@ trust_boundaries:
       the Security framework (PersistentEnclaveKey.swift). On first launch the key is
       created with kSecAttrIsPermanent=true, bound to the keychain access group
       SLDQ2GJ6TL.io.darkbloom.provider (team-scoped), and labeled
-      io.darkbloom.provider.attestation-signing.v2 (the current defaultLabel; a
-      legacy v1 key from earlier builds is auto-migrated to v2 on load). Subsequent
-      launches load the existing key by access group and label query. The private key
+      io.darkbloom.provider.attestation-signing.v2 (the current defaultLabel). A
+      legacy v1 keychain item is never read: releases after v0.9.10 dropped the
+      v1-to-v2 migration, so a host that holds only a v1 key creates a fresh v2
+      key, and with it a new SE identity. Subsequent launches load the existing
+      key by access group and label query. The private key
       never leaves the SE silicon. Two operations are performed with it: (1) ECDSA
       signing of attestation blobs, and (2) ECIES unwrap/decryption — when the
       default EngineV2 SSD cache is active (unless the single
@@ -483,8 +485,8 @@ trust_boundaries:
 
       The X25519 encryption key pair is generated ephemerally in memory using libsodium
       (NodeKeyPair.swift). It is NOT persisted to disk (the pre-v0.5 on-disk
-      node_key files were purged by every release through v0.9.9; v0.9.10 drops
-      that sweep). The secret key exists only in process memory, protected by Hardened
+      node_key files were purged by every release through v0.9.10; later releases
+      drop that sweep). The secret key exists only in process memory, protected by Hardened
       Runtime (kernel denies task_for_pid).
 
       The provider config file (~/.config/darkbloom/provider.toml) stores only
@@ -825,8 +827,9 @@ trust_boundaries:
       SE key lifecycle: PersistentEnclaveKey.swift creates or loads a persistent
       SecureEnclave P-256 signing key stored in the macOS keychain under access group
       SLDQ2GJ6TL.io.darkbloom.provider (team ID prefix) with label
-      io.darkbloom.provider.attestation-signing.v2 (legacy v1 keys are migrated to v2
-      on load) and kSecAttrIsPermanent=true.
+      io.darkbloom.provider.attestation-signing.v2 and kSecAttrIsPermanent=true. A
+      legacy v1 key is never read or migrated; a host that holds only a v1 key
+      creates a fresh v2 key.
       The same public key is reused across restarts, giving the provider a stable
       hardware-bound identity. The private key never leaves the SE silicon. The public
       key (raw 64-byte X||Y without 0x04 prefix, base64-encoded) is bound to the X25519
@@ -1938,9 +1941,10 @@ threats:
           IMPLEMENTED for the v2 SSD tier (v0.7.5): file names, index keys, and
           metadata carry only HMAC-SHA256 tags under K_lookup =
           HKDF(SE-rooted KEK, "dbkv3-lookup-v1"), with the request salt
-          length-prefix-folded into the tag input (SSDLookupKeys). The v0.7.5
-          startup sweep deletes the retired tier's old files, and the new tier
-          never reads them.
+          length-prefix-folded into the tag input (SSDLookupKeys). The new tier
+          never reads the retired tier's files under darkbloom/kv/. Releases
+          through v0.9.10 deleted them in a startup sweep; later releases leave
+          any remaining ones in place (KEK wipe is the crypto purge).
         status: implemented
     open_findings: [SEC-035]
     severity: medium
@@ -1957,8 +1961,8 @@ threats:
       tag truncation), to the DBK3 metadata fields or AAD construction
       (SSDBlockStore — nothing prompt-derived beyond the keyed lookupTag may
       ever be added), to the purge points or the tier's own on-disk root
-      (darkbloom/kv3 — deliberately OUTSIDE the legacy kv/ root that the
-      upgrade sweeper sheds; KEK wipe remains the crypto purge), or to the
+      (darkbloom/kv3 — deliberately OUTSIDE the retired kv/ root, which is
+      never read or written; KEK wipe remains the crypto purge), or to the
       staging-reservation release paths
       (SSDPrefixCache.endAdoption/completeStaging, EngineV2Bridge backstops).
       Also still: coordinator-authenticated scope derivation

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-27 · commit `c2fa18e02`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -728,14 +728,15 @@ A number measured on macOS can differ from the Linux number in CI.
 CI also applies the [restored-resource cleanup](build.md#restored-swiftpm-runtime-resources)
 before building the debug test product.
 
-`BetaCommandTests` and `IdleCommandTests` pass `migrateOnDisk: false` through
-`setBetaFeature` and `setIdleUnloadMinutes` to the existing runtime-snapshot
-loader. Their unique temporary config directories are the only mutation and
-cleanup targets; they never create or remove the operator's canonical config.
-The mixed-mutation fixture checks both explicit pins and unrelated legacy
-settings. Run these with `RuntimeSnapshotConfigTests` when changing
-`provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`).
-CLI calls retain default-on migration before the sidecar lock and reload.
+`BetaCommandTests` and `IdleCommandTests` drive `setBetaFeature` and
+`setIdleUnloadMinutes` with an explicit `configPath` in a unique temporary
+directory. That directory is the only mutation and cleanup target; the tests
+never create or remove the operator's canonical config. The mixed-mutation
+fixture checks both explicit pins and unrelated settings. Run these with
+`RuntimeSnapshotConfigTests` when changing
+`provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`),
+which loads the runtime snapshot, takes the sidecar lock, reloads and saves;
+loading a config never migrates or rewrites it.
 
 `WatchdogCommandTests` fails immediately if writing its temporary TOML fails.
 Config-only assertions supply an empty environment to `Watchdog.settings`, while

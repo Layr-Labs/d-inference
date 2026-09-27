@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-27 · commit `a2ccc2499`
+> Last updated: 2026-09-27 · commit `c2fa18e02`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -964,7 +964,7 @@ darkbloom enroll [--coordinator <url>] [--no-open]
 
 Without a flag, ask whether to fully exit Darkbloom or remove only MDM and keep serving with App Attest. Enter or closed input cancels without changing anything. The App Attest option requires macOS 27 or later and fresh coordinator removal approval; an unsupported/unqualified choice never falls back to cleanup.
 
-Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup list includes the current and legacy Secure Enclave signing keys. Model downloads and server-side account history remain intact.
+Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup removes the current (v2) Secure Enclave signing key; a leftover v1 keychain item is neither read nor removed. Model downloads and server-side account history remain intact.
 
 If profile inventory needs administrator access, run this command in the foreground of an interactive terminal. `sudo` prompts there with terminal echo disabled; only the fixed, read-only profile inventory command is elevated. A denied prompt, noninteractive session, or background terminal job withholds profile-removal guidance. The command does not remove a profile itself; confirm the exact Darkbloom profile in System Settings. See [`attestation.md`](./attestation.md#app-attest-without-darkbloom-mdm).
 
@@ -1053,10 +1053,10 @@ account, macOS answers `Operation not permitted`. The command reports this and
 still uploads the App Attest snapshot. To include the logs, run it from an
 administrator account, or run `sudo darkbloom report` if this account is allowed
 to use sudo. Under `sudo` it reads the invoking user's daemon state and provider
-config (unless `--config` is given), plus canonical then legacy credentials
-through `AuthTokenStore.loadReadOnly`. It does not migrate config or token files
-as root. An explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` overrides that lookup
-and suppresses legacy fallback. See `ReportAppAttestEvidence` in
+config (unless `--config` is given), plus that user's `~/.darkbloom/auth_token`
+through `AuthTokenStore.loadReadOnly`. It writes no config or token file as
+root. An explicit nonempty `DARKBLOOM_AUTH_TOKEN_PATH` replaces that token
+path. See `ReportAppAttestEvidence` in
 `provider-swift/Sources/darkbloom/Diagnostics/`. `--dry-run` prints every appended
 line before anything is uploaded.
 

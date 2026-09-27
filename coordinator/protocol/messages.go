@@ -170,13 +170,13 @@ type ModelInfo struct {
 	// NativeMediaTools covers forced media tool choice and media-bearing tool
 	// results. Missing/false must never be inferred from a parser or model name.
 	NativeMediaTools bool `json:"native_media_tools,omitempty"`
-	// TemplateRenderOK is set by 0.6.5+ providers after rendering the model's
+	// TemplateRenderOK is set by the provider after rendering the model's
 	// chat template against canonical fixtures (tool schemas with nullable or
 	// missing types, multimodal content parts). false means the template render
 	// CRASHES on those shapes (e.g. Gemma's "upper filter requires string" on
 	// OpenAI tool schemas) and the provider must be excluded from tool-bearing
-	// requests for this model. nil means a pre-0.6.5 provider with no opinion
-	// (allowed, subject to capability version floors). Pointer + omitempty so
+	// requests for this model. nil means the provider found no chat template
+	// to render (no opinion; allowed). Pointer + omitempty so
 	// explicit false SURVIVES the wire — false is the exclusion signal, while
 	// nil is omitted entirely.
 	TemplateRenderOK *bool `json:"template_render_ok,omitempty"`

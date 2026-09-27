@@ -274,7 +274,7 @@ func TestRevokeKeySoftDisables(t *testing.T) {
 	_ = rec
 }
 
-func TestValidateKeyEnforcesExpiry(t *testing.T) {
+func TestAuthenticateKeyEnforcesExpiry(t *testing.T) {
 	s := NewMemory(Config{})
 	past := time.Now().Add(-time.Hour)
 	raw, _, _ := s.CreateAPIKey("acct-1", APIKeyCreate{Name: "k", ExpiresAt: &past})

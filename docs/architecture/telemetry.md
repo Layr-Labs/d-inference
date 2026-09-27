@@ -305,7 +305,7 @@ and the `inference.timing.*` histograms are built from the same
 | Heartbeat prefix-cache telemetry fails validation | dropped for that frame | `routing.cache_telemetry_rejected{source:heartbeat}` |
 | Provider older than the profiler slice | `slots[].telemetry` absent; wedge metrics silent for all-zero slots; `fleet_snapshots` telemetry columns zero | `provider_version` column |
 | Abrupt disconnect at high memory pressure | classified OOM (`≥ 0.90`, or `≥ 0.80` with in-flight work) | `provider.oom_suspected`, `ws.disconnects`, `provider_sessions.disconnect_reason` |
-| Allowlist edited in one mirror only | CI fails | `TestTelemetryAllowlistThreeWayParity` |
+| Event enum or encoding edited in one mirror only | CI fails | `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` (`coordinator/protocol/telemetry_symmetry_test.go`) |
 | Expecting trace correlation | `dd.trace_id` never present (no spans) | use `request_id` |
 
 Cache receipt diagnostics use `exact_cache.receipt` (Datadog) and

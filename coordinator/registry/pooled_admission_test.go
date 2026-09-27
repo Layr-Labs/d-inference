@@ -1132,18 +1132,18 @@ func TestPooledRemainingTokensMatchesAdmits(t *testing.T) {
 	}
 }
 
-// TestFreeMemoryAdmitsLegacyProviderUnchanged: providers that report no token
-// budget (ActiveTokenBudgetMax == 0) never reach the budget branch — the
-// legacy memory-estimation path is untouched by the pooled fields.
-func TestFreeMemoryAdmitsLegacyProviderUnchanged(t *testing.T) {
+// TestFreeMemoryAdmitsBudgetlessSlotUnchanged: a slot that reports no token
+// budget (ActiveTokenBudgetMax == 0) never reaches the budget branch — the
+// memory-estimation path is untouched by the pooled fields.
+func TestFreeMemoryAdmitsBudgetlessSlotUnchanged(t *testing.T) {
 	snap := routingSnapshot{
 		modelLoaded:               true,
 		totalMemoryGB:             64,
 		gpuMemoryActiveGB:         10,
 		modelSizeGB:               14,
-		pendingMaxTokensAllModels: 1 << 30, // must be ignored on the legacy path
+		pendingMaxTokensAllModels: 1 << 30, // must be ignored on the memory-estimation path
 	}
 	if !freeMemoryAdmits(snapPtr(snap), 100, 1_900) {
-		t.Fatal("legacy (budget-less) admission changed: loaded model with free memory must admit")
+		t.Fatal("budget-less admission changed: loaded model with free memory must admit")
 	}
 }

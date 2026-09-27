@@ -9,7 +9,7 @@ import (
 // storeBackends (memory always; postgres when DATABASE_URL is set), replacing
 // the previous copy-pasted TestX / TestPostgresX pairs.
 
-func TestCreateKey(t *testing.T) {
+func TestCreateAPIKeyIsPrefixedAndCounted(t *testing.T) {
 	for name, s := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			acct := uniqueID("acct")
@@ -33,7 +33,7 @@ func TestCreateKey(t *testing.T) {
 	}
 }
 
-func TestCreateMultipleKeys(t *testing.T) {
+func TestCreateAPIKeyIsUnique(t *testing.T) {
 	for name, s := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			acct := uniqueID("acct")
@@ -51,7 +51,7 @@ func TestCreateMultipleKeys(t *testing.T) {
 	}
 }
 
-func TestValidateKeyInvalid(t *testing.T) {
+func TestAuthenticateKeyRejectsUnknown(t *testing.T) {
 	for name, s := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			if keyAuthenticates(s, "wrong-key") {

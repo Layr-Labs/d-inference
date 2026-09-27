@@ -370,8 +370,10 @@ type Server struct {
 	hedgeGov *hedgeGovernor
 
 	// minProviderVersion is the minimum provider version accepted for routing.
-	// Providers below this version are excluded and told to update.
-	// Set from EIGENINFERENCE_MIN_PROVIDER_VERSION env var or derived from latest release.
+	// Providers below this version (or reporting no version) stay connected
+	// but are excluded from routing; see belowMinProviderVersion. Set only
+	// from the EIGENINFERENCE_MIN_PROVIDER_VERSION env var — never derived
+	// from the latest release.
 	minProviderVersion string
 
 	// releaseKey is a scoped credential for the GitHub Action to register releases.
@@ -1007,6 +1009,27 @@ func (s *Server) SetAdminKey(key string) {
 // SetMinProviderVersion sets the minimum provider version for routing.
 func (s *Server) SetMinProviderVersion(v string) {
 	s.minProviderVersion = strings.TrimSpace(v)
+}
+
+// belowMinProviderVersion reports whether a provider reporting version falls
+// below the configured routing floor. With no floor configured nothing is
+// below it. With a floor configured, an EMPTY version counts as below it: the
+// version is optional on the wire, and every provider build that clears any
+// real floor reports one, so a missing version must not bypass the floor.
+func (s *Server) belowMinProviderVersion(version string) bool {
+	if s.minProviderVersion == "" {
+		return false
+	}
+	return version == "" || semverLess(version, s.minProviderVersion)
+}
+
+// providerVersionMetricTag is the Datadog tag value for a provider version,
+// naming the empty (unreported) version explicitly.
+func providerVersionMetricTag(version string) string {
+	if version == "" {
+		return "version:unknown"
+	}
+	return "version:" + version
 }
 
 // SetBaseURL sets the coordinator's public URL (used to template install.sh).
@@ -1880,8 +1903,7 @@ func (s *Server) deriveApprovedReleaseTransition(
 	if !runtimeVerified || !manifestChecked || !metallibVerified {
 		return s.evidenceRejected(evidenceReasonRuntimeGate)
 	}
-	if s.minProviderVersion != "" &&
-		(version == "" || semverLess(version, s.minProviderVersion)) {
+	if s.belowMinProviderVersion(version) {
 		return s.evidenceRejected(evidenceReasonVersionFloor)
 	}
 	// Registration-time binary_hash is optional and the production fleet omits
@@ -2217,10 +2239,8 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		if s.knownRuntimeManifest == nil {
 			// Manifest was withdrawn — keep the process proof, but deroute the
 			// provider until policy once again approves its reported runtime.
-		} else if s.minProviderVersion != "" &&
-			version != "" &&
-			semverLess(version, s.minProviderVersion) {
-			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", "version:" + version})
+		} else if s.belowMinProviderVersion(version) {
+			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", providerVersionMetricTag(version)})
 		} else {
 			runtimeOK, _ := s.verifyRuntimeHashesForBackend(
 				backend,

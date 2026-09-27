@@ -543,14 +543,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 
 			// Version cutoff check — runs AFTER runtime check so it takes precedence.
-			// If version is below minimum, override RuntimeVerified to false.
-			if s.minProviderVersion != "" && regMsg.Version != "" && semverLess(regMsg.Version, s.minProviderVersion) {
+			// If version is below minimum (or missing while a floor is set),
+			// override RuntimeVerified to false.
+			if s.belowMinProviderVersion(regMsg.Version) {
 				s.logger.Warn("provider version below minimum — excluded from routing",
 					"provider_id", providerID,
 					"version", regMsg.Version,
 					"min_version", s.minProviderVersion,
 				)
-				s.ddIncr("provider_version_below_minimum", []string{"gate:registration", "version:" + regMsg.Version})
+				s.ddIncr("provider_version_below_minimum", []string{"gate:registration", providerVersionMetricTag(regMsg.Version)})
 				provider.Mu().Lock()
 				provider.RuntimeVerified = false
 				provider.RuntimeManifestChecked = false
@@ -1619,7 +1620,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			"version", version,
 			"min_version", s.minProviderVersion,
 		)
-		s.ddIncr("provider_version_below_minimum", []string{"gate:challenge_revalidation", "version:" + version})
+		s.ddIncr("provider_version_below_minimum", []string{"gate:challenge_revalidation", providerVersionMetricTag(version)})
 		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
 		return
 	}
@@ -1818,9 +1819,7 @@ func (s *Server) applyChallengeMinVersionPolicy(
 	provider.Mu().Lock()
 	defer provider.Mu().Unlock()
 	version := provider.Version
-	if s.minProviderVersion == "" ||
-		version == "" ||
-		!semverLess(version, s.minProviderVersion) {
+	if !s.belowMinProviderVersion(version) {
 		return version, true
 	}
 	provider.RuntimeVerified = false

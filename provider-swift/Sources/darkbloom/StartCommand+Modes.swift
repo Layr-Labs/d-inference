@@ -13,7 +13,6 @@ extension Start {
     internal func runLocalStandalone(
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
-        hardware: HardwareInfo,
         runtimeCapabilities: Set<ProviderRuntimeCapability>,
         bootSecuritySnapshot: BootSecuritySnapshot = .live()
     ) async throws {
@@ -93,7 +92,6 @@ extension Start {
                 host: bind,
                 maxCachedModels: Int(clamping: config.backend.maxModelSlots),
                 authToken: token,
-                hardware: hardware,
                 runtimeCapabilities: runtimeCapabilities,
                 engineV2MaxConcurrent: config.backend.engineV2MaxConcurrent,
                 engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,

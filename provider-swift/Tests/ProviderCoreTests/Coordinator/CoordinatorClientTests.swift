@@ -24,7 +24,6 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
         models: [clientSampleModel()],
         backendName: "mlx_swift_lm",
         publicKey: "cHVibGlj",
-        walletAddress: "0x1234567890abcdef1234567890abcdef12345678",
         attestation: RawJSON(rawBytes: Data(rawAttestation.utf8)),
         authToken: "device-token",
         runtimeHashes: RuntimeHashes(templateHashes: ["chatml": "templatehash"])

@@ -517,7 +517,7 @@ struct MTPResliceFallbackTests {
         defer { try? FileManager.default.removeItem(at: fakeDir) }
 
         let server = StandaloneServer(
-            config: .init(maxCachedModels: 3, mtp: true),
+            config: .init(maxCachedModels: 3, mtpMode: .on),
             models: [ModelInfo(
                 id: fakeId, modelType: "gemma4", parameters: nil,
                 quantization: nil, sizeBytes: 1, estimatedMemoryGb: 0.01)],

@@ -496,22 +496,6 @@ set -eu
 echo "  Binaries installed ✓"
 echo "  Shortcut: darkbloom"
 
-# ─── Migrate from old installs ───────────────────────────────
-# Migration chain: ~/.dginf → ~/.eigeninference → ~/.darkbloom
-for OLD_DIR in "$HOME/.dginf" "$HOME/.eigeninference"; do
-    if [ -d "$OLD_DIR" ] && [ ! -L "$OLD_DIR" ]; then
-        echo ""
-        echo "  Migrating from $OLD_DIR..."
-        for f in enclave_key.data wallet_key auth_token; do
-            [ -f "$OLD_DIR/$f" ] && cp -n "$OLD_DIR/$f" "$INSTALL_DIR/$f" 2>/dev/null || true
-        done
-        # Symlink old path so stragglers still work, then drop the old python/
-        # subtree -- the Swift release no longer needs it.
-        ln -sfn "$INSTALL_DIR" "$OLD_DIR" 2>/dev/null || true
-        echo "  Migration complete ✓"
-    fi
-done
-
 # ─── Step 3: Secure Enclave identity ─────────────────────────
 echo ""
 echo "→ [3/5] Provisioning Secure Enclave identity..."

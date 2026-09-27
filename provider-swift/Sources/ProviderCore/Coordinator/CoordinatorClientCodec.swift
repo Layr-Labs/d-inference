@@ -49,7 +49,6 @@ public enum CoordinatorClientCodec {
             version: version,
             publicKey: config.publicKey,
             encryptedResponseChunks: true,
-            walletAddress: config.walletAddress,
             attestation: config.registrationAttestation(),
             authToken: config.authToken,
             templateHashes: config.runtimeHashes?.templateHashes ?? [:],

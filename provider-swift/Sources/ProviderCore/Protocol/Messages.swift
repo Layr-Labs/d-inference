@@ -200,7 +200,6 @@ public enum ProviderMessage: Sendable, Equatable {
         public var version: String?
         public var publicKey: String?
         public var encryptedResponseChunks: Bool
-        public var walletAddress: String?
         public var attestation: RawJSON?
         public var prefillTps: Double?
         public var decodeTps: Double?
@@ -236,7 +235,6 @@ public enum ProviderMessage: Sendable, Equatable {
             version: String? = nil,
             publicKey: String? = nil,
             encryptedResponseChunks: Bool = false,
-            walletAddress: String? = nil,
             attestation: RawJSON? = nil,
             prefillTps: Double? = nil,
             decodeTps: Double? = nil,
@@ -262,7 +260,6 @@ public enum ProviderMessage: Sendable, Equatable {
             self.version = version
             self.publicKey = publicKey
             self.encryptedResponseChunks = encryptedResponseChunks
-            self.walletAddress = walletAddress
             self.attestation = attestation
             self.prefillTps = prefillTps
             self.decodeTps = decodeTps
@@ -867,7 +864,6 @@ extension ProviderMessage: Codable {
         case hardware, models, backend, version
         case publicKey = "public_key"
         case encryptedResponseChunks = "encrypted_response_chunks"
-        case walletAddress = "wallet_address"
         case attestation
         case prefillTps = "prefill_tps"
         case decodeTps = "decode_tps"
@@ -975,7 +971,6 @@ extension ProviderMessage: Codable {
             if r.encryptedResponseChunks {
                 try container.encode(true, forKey: .encryptedResponseChunks)
             }
-            try container.encodeIfPresent(r.walletAddress, forKey: .walletAddress)
             try container.encodeIfPresent(r.attestation, forKey: .attestation)
             try container.encodeIfPresent(r.prefillTps, forKey: .prefillTps)
             try container.encodeIfPresent(r.decodeTps, forKey: .decodeTps)
@@ -1238,7 +1233,6 @@ extension ProviderMessage: Codable {
                 version: try container.decodeIfPresent(String.self, forKey: .version),
                 publicKey: try container.decodeIfPresent(String.self, forKey: .publicKey),
                 encryptedResponseChunks: try container.decodeIfPresent(Bool.self, forKey: .encryptedResponseChunks) ?? false,
-                walletAddress: try container.decodeIfPresent(String.self, forKey: .walletAddress),
                 attestation: try container.decodeIfPresent(RawJSON.self, forKey: .attestation),
                 prefillTps: try container.decodeIfPresent(Double.self, forKey: .prefillTps),
                 decodeTps: try container.decodeIfPresent(Double.self, forKey: .decodeTps),

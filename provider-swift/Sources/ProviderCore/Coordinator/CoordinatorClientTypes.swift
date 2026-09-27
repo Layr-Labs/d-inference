@@ -148,7 +148,6 @@ public struct CoordinatorClientConfig: Sendable {
     public let backendName: String
     public let heartbeatInterval: TimeInterval
     public let publicKey: String?
-    public let walletAddress: String?
     public let attestation: RawJSON?
     /// Called for every WebSocket registration, including reconnects. Production
     /// re-signs a fresh timestamp while preserving the same bound claims.
@@ -179,7 +178,6 @@ public struct CoordinatorClientConfig: Sendable {
         backendName: String,
         heartbeatInterval: TimeInterval = 30.0,
         publicKey: String? = nil,
-        walletAddress: String? = nil,
         attestation: RawJSON? = nil,
         registrationAttestation: (@Sendable () -> RawJSON?)? = nil,
         authToken: String? = nil,
@@ -198,7 +196,6 @@ public struct CoordinatorClientConfig: Sendable {
         self.backendName = backendName
         self.heartbeatInterval = heartbeatInterval
         self.publicKey = publicKey
-        self.walletAddress = walletAddress
         self.attestation = attestation
         self.registrationAttestation = registrationAttestation ?? { attestation }
         self.authToken = authToken

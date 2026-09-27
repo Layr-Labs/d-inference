@@ -98,7 +98,6 @@ public enum ProviderProtocolCodec {
         if register.encryptedResponseChunks {
             try fields.append(("encrypted_response_chunks", encodeValue(true)))
         }
-        try appendIfPresent(register.walletAddress, key: "wallet_address", to: &fields)
         if let attestation = register.attestation {
             try validateRawJSON(attestation.rawBytes)
             fields.append(("attestation", attestation.rawBytes))

@@ -162,7 +162,6 @@ extension ProviderLoop {
             backendName: "mlx-swift",
             heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
             publicKey: keyPair.publicKeyBase64,
-            walletAddress: nil,
             attestation: nil,
             registrationAttestation: registrationAttestation,
             authToken: loopConfig.authToken,

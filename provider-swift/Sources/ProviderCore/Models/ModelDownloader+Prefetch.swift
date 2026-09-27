@@ -128,20 +128,6 @@ extension ModelDownloader {
         return entries.contains { !$0.hasPrefix(".") }
     }
 
-    static func parseShardNames(indexPath: URL) throws -> [String] {
-        let data = try Data(contentsOf: indexPath)
-        let any = try JSONSerialization.jsonObject(with: data, options: [])
-        guard let dict = any as? [String: Any],
-              let weightMap = dict["weight_map"] as? [String: String]
-        else {
-            throw ModelCatalogError.downloadFailed(
-                "model.safetensors.index.json missing weight_map"
-            )
-        }
-        let unique = Set(weightMap.values)
-        return unique.sorted()
-    }
-
     /// Bytes still to fetch on a (possibly resumed) prefetch/download. For each
     /// file not already fully valid on disk, this is its size MINUS any bytes
     /// already saved in its resumable `.part` file — a byte-resume appends to that

@@ -7,7 +7,6 @@
 //   attest --pub-key <b64>  Build a signed attestation blob and print JSON.
 //   sign   --message <s>    Sign a message with the SE key (base64 DER sig).
 //   info                    Print public key info (base64 + hex).
-//   wallet-address          Print the deterministic identifier derived from the SE key.
 //
 // All operations create a fresh, ephemeral Secure Enclave key pair. The
 // tool is stateless: there is no on-disk key material.
@@ -17,7 +16,6 @@
 // as `darkbloom-enclave`.
 
 import ArgumentParser
-import CryptoKit
 import Foundation
 import ProviderCore
 
@@ -26,7 +24,7 @@ struct DarkbloomEnclave: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "darkbloom-enclave",
         abstract: "Secure Enclave attestation/signing helper.",
-        subcommands: [Attest.self, Sign.self, Info.self, WalletAddress.self],
+        subcommands: [Attest.self, Sign.self, Info.self],
         defaultSubcommand: Info.self
     )
 }
@@ -111,25 +109,5 @@ struct Info: ParsableCommand {
         )
         FileHandle.standardOutput.write(data)
         FileHandle.standardOutput.write(Data("\n".utf8))
-    }
-}
-
-// MARK: - wallet-address
-
-struct WalletAddress: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        abstract: "Print a stable identifier (0x-prefixed 20-byte hex) derived from the SE public key."
-    )
-
-    func run() throws {
-        // The SE produces P-256 keys, not secp256k1; we expose a stable
-        // identifier derived from the SE pubkey rather than an Ethereum
-        // address. Coordinators that previously used Ethereum-style hex
-        // wallets accept any 20-byte hex prefixed with "0x".
-        let identity = try loadIdentity()
-        let pubKeyHash = SHA256.hash(data: identity.publicKey.rawRepresentation)
-        let last20 = Array(pubKeyHash).suffix(20)
-        let hex = last20.map { String(format: "%02x", $0) }.joined()
-        print("0x\(hex)")
     }
 }

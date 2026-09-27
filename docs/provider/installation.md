@@ -93,11 +93,10 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    `alias eigeninf`, `alias dginf`, `# EigenInference` and `# Darkbloom` are
    deleted and `# Darkbloom` + `export PATH="$HOME/.darkbloom/bin:$PATH"` is
    appended; the rc is then sourced.
-5. **Legacy install migration.** For each real directory `~/.dginf` and
-   `~/.eigeninference`: `cp -n` of `enclave_key.data`, `wallet_key` and
-   `auth_token` into `~/.darkbloom`, then the old directory is replaced by a
-   symlink to `~/.darkbloom`. `provider.toml` is not migrated; the CLI reads
-   only `~/.config/darkbloom/provider.toml` or an explicit `--config` path
+5. **Config location.** The script does not create, copy or migrate
+   `provider.toml` (retired `~/.dginf` / `~/.eigeninference` installs are no
+   longer migrated); the CLI reads only `~/.config/darkbloom/provider.toml` or
+   an explicit `--config` path
    (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
    `defaultConfigPath`).
 6. **Step 3/5 — Secure Enclave identity.** Runs `darkbloom-enclave info`

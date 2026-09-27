@@ -198,6 +198,9 @@ export interface MySummaryResponse {
 export interface PrefixCacheTelemetry {
   kind: "attention_blocks" | "complete_checkpoint";
   ttl_expired_total?: number;
+  // complete_checkpoint only: recurrent donors whose capture stopped because
+  // the prefill chunk cap changed mid-prompt, once per request.
+  recurrent_capture_disarmed_chunk_change_total?: number;
   io?: PrefixCacheIOTelemetry;
   generation: number;
   sample_seq: number;

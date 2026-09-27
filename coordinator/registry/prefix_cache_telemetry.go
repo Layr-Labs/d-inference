@@ -19,8 +19,12 @@ func clampPrefixCacheTelemetry(s *protocol.PrefixCacheTelemetry) *protocol.Prefi
 	if s.TTLExpiredTotal != nil {
 		*s.TTLExpiredTotal = min(*s.TTLExpiredTotal, maxCapacitySampleValue)
 	}
+	if s.RecurrentCaptureDisarmedChunkChangeTotal != nil {
+		*s.RecurrentCaptureDisarmedChunkChangeTotal = min(*s.RecurrentCaptureDisarmedChunkChangeTotal, maxCapacitySampleValue)
+	}
 	if s.Kind != "complete_checkpoint" {
 		s.IO = nil
+		s.RecurrentCaptureDisarmedChunkChangeTotal = nil
 	}
 	if s.IO != nil {
 		s.IO.StagingPeakBytes = min(s.IO.StagingPeakBytes, maxCapacitySampleGaugeBytes)

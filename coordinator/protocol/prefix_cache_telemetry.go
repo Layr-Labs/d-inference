@@ -4,21 +4,26 @@ package protocol
 // input. Generation identifies a loaded cache only within this provider process;
 // SampleSeq advances on a new observation, SampleAgeMS advances on heartbeats.
 type PrefixCacheTelemetry struct {
-	Kind               string                  `json:"kind"`
-	Generation         uint64                  `json:"generation"`
-	SampleSeq          uint64                  `json:"sample_seq"`
-	SampleAgeMS        uint64                  `json:"sample_age_ms"`
-	Entries            uint64                  `json:"entries"`
-	DiskBytes          uint64                  `json:"disk_bytes"`
-	StagingBytes       uint64                  `json:"staging_bytes"`
-	StagesTotal        uint64                  `json:"stages_total"`
-	FilesWrittenTotal  uint64                  `json:"files_written_total"`
-	WrittenBytesTotal  uint64                  `json:"written_bytes_total"`
-	DonationDropsTotal uint64                  `json:"donation_drops_total"`
-	CorruptDropsTotal  uint64                  `json:"corrupt_drops_total"`
-	EvictionsTotal     uint64                  `json:"evictions_total"`
-	TTLExpiredTotal    *uint64                 `json:"ttl_expired_total,omitempty"`
-	IO                 *PrefixCacheIOTelemetry `json:"io,omitempty"`
+	Kind               string  `json:"kind"`
+	Generation         uint64  `json:"generation"`
+	SampleSeq          uint64  `json:"sample_seq"`
+	SampleAgeMS        uint64  `json:"sample_age_ms"`
+	Entries            uint64  `json:"entries"`
+	DiskBytes          uint64  `json:"disk_bytes"`
+	StagingBytes       uint64  `json:"staging_bytes"`
+	StagesTotal        uint64  `json:"stages_total"`
+	FilesWrittenTotal  uint64  `json:"files_written_total"`
+	WrittenBytesTotal  uint64  `json:"written_bytes_total"`
+	DonationDropsTotal uint64  `json:"donation_drops_total"`
+	CorruptDropsTotal  uint64  `json:"corrupt_drops_total"`
+	EvictionsTotal     uint64  `json:"evictions_total"`
+	TTLExpiredTotal    *uint64 `json:"ttl_expired_total,omitempty"`
+	// RecurrentCaptureDisarmedChunkChangeTotal counts, once per request, the
+	// recurrent donors whose checkpoint capture stopped because the prefill
+	// chunk cap changed mid-prompt. Complete-checkpoint caches only; absent
+	// from attention-block caches and older providers.
+	RecurrentCaptureDisarmedChunkChangeTotal *uint64                 `json:"recurrent_capture_disarmed_chunk_change_total,omitempty"`
+	IO                                       *PrefixCacheIOTelemetry `json:"io,omitempty"`
 }
 
 type PrefixCacheIOTelemetry struct {
@@ -45,6 +50,10 @@ func (s *PrefixCacheTelemetry) Clone() *PrefixCacheTelemetry {
 	if s.TTLExpiredTotal != nil {
 		value := *s.TTLExpiredTotal
 		copy.TTLExpiredTotal = &value
+	}
+	if s.RecurrentCaptureDisarmedChunkChangeTotal != nil {
+		value := *s.RecurrentCaptureDisarmedChunkChangeTotal
+		copy.RecurrentCaptureDisarmedChunkChangeTotal = &value
 	}
 	if s.IO != nil {
 		value := *s.IO

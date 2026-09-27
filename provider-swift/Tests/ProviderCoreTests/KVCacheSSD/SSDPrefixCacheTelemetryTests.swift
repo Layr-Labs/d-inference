@@ -12,19 +12,51 @@ struct SSDPrefixCacheTelemetryTests {
         stats.entries = 2; stats.bytesOnDisk = 4096; stats.stagedBytesInUse = 0
         stats.stageMilliseconds = 125.125; stats.writeMilliseconds = 250.5
         stats.bytesRead = 4096; stats.stageReadBytes = 3072; stats.donationReadBytes = 1024
+        stats.recurrentCaptureDisarmedChunkChange = 4
         let sample = PrefixCacheTelemetry(complete: stats)
         #expect(sample.io?.stageUsTotal == 125125)
         #expect(sample.io?.writeUsTotal == 250500)
         #expect(sample.io?.stageReadBytesTotal == 3072)
         #expect(sample.stagingBytes == 0)
         #expect(sample.ttlExpiredTotal == nil)
+        #expect(sample.recurrentCaptureDisarmedChunkChangeTotal == 4)
+        let completeJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(sample)) as? [String: Any]
+        #expect(completeJSON?["recurrent_capture_disarmed_chunk_change_total"] as? Int == 4,
+                "the Go and TypeScript mirrors read this key")
         let attention = PrefixCacheTelemetry(attention: SSDPrefixCacheStats())
         #expect(attention.io == nil)
+        #expect(attention.recurrentCaptureDisarmedChunkChangeTotal == nil)
         let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(attention)) as? [String: Any]
         #expect(json?["kind"] as? String == "attention_blocks")
         #expect(json?["io"] == nil)
+        #expect(json?["recurrent_capture_disarmed_chunk_change_total"] == nil,
+                "attention-block caches have no recurrent donors")
         #expect(json?["ttl_expired_total"] as? Int == 0)
         #expect(try JSONDecoder().decode(PrefixCacheTelemetry.self, from: JSONEncoder().encode(sample)) == sample)
+        // A legacy sample without the key decodes with the counter absent.
+        let legacy = try JSONDecoder().decode(PrefixCacheTelemetry.self, from: Data(
+            """
+            {"kind":"complete_checkpoint","generation":1,"sample_seq":1,"sample_age_ms":0,"entries":0,\
+            "disk_bytes":0,"staging_bytes":0,"stages_total":0,"files_written_total":0,"written_bytes_total":0,\
+            "donation_drops_total":0,"corrupt_drops_total":0,"evictions_total":0}
+            """.utf8))
+        #expect(legacy.recurrentCaptureDisarmedChunkChangeTotal == nil)
+    }
+
+    @Test("the store counts a recurrent chunk-cap disarm once per report and the stats line carries it")
+    func recurrentDisarmCounter() async throws {
+        let f = try SSDHybridCheckpointTestFixture()
+        defer { f.remove() }
+        let store = try f.makeStore()
+        #expect(store.stats().recurrentCaptureDisarmedChunkChange == 0)
+        store.recordRecurrentCaptureDisarmed(chunkSizeChangedAt: 4096)
+        store.recordRecurrentCaptureDisarmed(chunkSizeChangedAt: 2048)
+        #expect(store.stats().recurrentCaptureDisarmedChunkChange == 2)
+        let sample = PrefixCacheTelemetry(complete: store.stats())
+        #expect(sample.recurrentCaptureDisarmedChunkChangeTotal == 2)
+        #expect(String(describing: sample).contains("recurrentCaptureDisarmedChunkChangeTotal: Optional(2)"),
+                "the prefix cache stats log line prints the sample's description")
+        await store.closeAndWait()
     }
 
     @Test("sample age advances without resampling and reload creates a new baseline")

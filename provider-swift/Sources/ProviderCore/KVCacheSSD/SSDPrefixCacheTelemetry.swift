@@ -28,6 +28,7 @@ extension PrefixCacheTelemetry {
         donationDropsTotal = UInt64(clamping: s.writesDropped)
         corruptDropsTotal = UInt64(clamping: s.corruptDropped)
         evictionsTotal = UInt64(clamping: s.evictions)
+        recurrentCaptureDisarmedChunkChangeTotal = UInt64(clamping: s.recurrentCaptureDisarmedChunkChange)
         io = PrefixCacheIOTelemetry(
             stagingPeakBytes: UInt64(clamping: s.peakStagingReservationBytes),
             filesReadTotal: UInt64(clamping: s.filesRead),

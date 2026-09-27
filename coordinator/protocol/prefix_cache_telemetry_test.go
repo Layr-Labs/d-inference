@@ -88,7 +88,30 @@ func TestPrefixCacheTelemetryOptionalWire(t *testing.T) {
 	if string(data) != wire {
 		t.Fatalf("Swift-mirrored field shape changed: %s", data)
 	}
-	if sample.TTLExpiredTotal != nil {
+	if sample.TTLExpiredTotal != nil || sample.RecurrentCaptureDisarmedChunkChangeTotal != nil {
 		t.Fatal("missing optional measurement invented")
+	}
+	// A current complete-checkpoint provider adds the recurrent disarm
+	// counter; it round-trips beside the other optional fields and the
+	// clone does not alias it.
+	const withDisarm = `{"kind":"complete_checkpoint","generation":7,"sample_seq":3,"sample_age_ms":0,"entries":2,"disk_bytes":4096,"staging_bytes":0,"stages_total":1,"files_written_total":2,"written_bytes_total":8192,"donation_drops_total":0,"corrupt_drops_total":0,"evictions_total":0,"recurrent_capture_disarmed_chunk_change_total":5}`
+	var disarm PrefixCacheTelemetry
+	if err := json.Unmarshal([]byte(withDisarm), &disarm); err != nil {
+		t.Fatal(err)
+	}
+	if disarm.RecurrentCaptureDisarmedChunkChangeTotal == nil || *disarm.RecurrentCaptureDisarmedChunkChangeTotal != 5 {
+		t.Fatalf("recurrent disarm counter: %+v", disarm)
+	}
+	data, err = json.Marshal(disarm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != withDisarm {
+		t.Fatalf("Swift-mirrored field shape changed: %s", data)
+	}
+	cloned := disarm.Clone()
+	*cloned.RecurrentCaptureDisarmedChunkChangeTotal = 9
+	if *disarm.RecurrentCaptureDisarmedChunkChangeTotal != 5 {
+		t.Fatal("clone aliases the recurrent disarm counter")
 	}
 }

@@ -29,9 +29,11 @@ func TestPrefixCacheTelemetryFlowsThroughAcceptedHeartbeat(t *testing.T) {
 		return flush()
 	}
 	sample := func(generation, seq, age, bytes uint64) *protocol.PrefixCacheTelemetry {
+		disarmed := bytes / 10
 		return &protocol.PrefixCacheTelemetry{Kind: "complete_checkpoint", Generation: generation, SampleSeq: seq,
 			SampleAgeMS: age, Entries: 2, DiskBytes: 4096, WrittenBytesTotal: bytes,
-			IO: &protocol.PrefixCacheIOTelemetry{ReadBytesTotal: bytes * 2, StageUSTotal: bytes * 3}}
+			RecurrentCaptureDisarmedChunkChangeTotal: &disarmed,
+			IO:                                       &protocol.PrefixCacheIOTelemetry{ReadBytesTotal: bytes * 2, StageUSTotal: bytes * 3}}
 	}
 	expect := func(packets []string, wants ...string) {
 		t.Helper()
@@ -58,21 +60,36 @@ func TestPrefixCacheTelemetryFlowsThroughAcceptedHeartbeat(t *testing.T) {
 	}
 	second := apply(sample(1, 2, 0, 20), 3)
 	expect(second, "prefix_cache.written_bytes:10|c", "prefix_cache.read_bytes:20|c",
-		"prefix_cache.stage_duration_us:30|c", "prefix_cache.sweep.ttl_expired:2|c")
+		"prefix_cache.stage_duration_us:30|c", "prefix_cache.sweep.ttl_expired:2|c",
+		"prefix_cache.recurrent_capture_disarmed_chunk_change:1|c")
+	// An older provider without the counter contributes no delta, and
+	// its later appearance seeds a baseline rather than a count.
+	legacy := sample(1, 3, 0, 30)
+	legacy.RecurrentCaptureDisarmedChunkChangeTotal = nil
+	withoutCounter := apply(legacy, 3)
+	expect(withoutCounter, "prefix_cache.written_bytes:10|c")
+	if hasMetric(withoutCounter, "recurrent_capture_disarmed_chunk_change") {
+		t.Fatalf("absent counter emitted a delta: %v", withoutCounter)
+	}
+	reappeared := apply(sample(1, 4, 0, 40), 3)
+	if hasMetric(reappeared, "recurrent_capture_disarmed_chunk_change") {
+		t.Fatalf("reappearing counter emitted a delta without a baseline: %v", reappeared)
+	}
+	expect(apply(sample(1, 5, 0, 60), 3), "prefix_cache.recurrent_capture_disarmed_chunk_change:2|c")
 	if hasMetric(second, "stage_duration_us:30|h") {
 		t.Fatal("cumulative duration was emitted as latency sample")
 	}
-	repeated := apply(sample(1, 2, 90000, 999), 3)
+	repeated := apply(sample(1, 5, 90000, 999), 3)
 	noCounts(repeated)
 	if hasMetric(repeated, "prefix_cache.entries:") {
 		t.Fatalf("repeated sample was sampled again: %v", repeated)
 	}
 	expect(repeated, "prefix_cache.sample_age_ms:90000|h")
 	// Regressed low-rate sample inside a newer heartbeat cannot roll back its
-	// baseline. A later sequence sees only the change since accepted sample 2.
+	// baseline. A later sequence sees only the change since accepted sample 5.
 	noCounts(apply(sample(1, 1, 0, 0), 3))
-	expect(apply(sample(1, 3, 0, 30), 3), "prefix_cache.written_bytes:10|c")
-	stale := apply(sample(1, 4, capacitySampleFreshMS+1, 40), 3)
+	expect(apply(sample(1, 6, 0, 70), 3), "prefix_cache.written_bytes:10|c")
+	stale := apply(sample(1, 7, capacitySampleFreshMS+1, 80), 3)
 	expect(stale, "prefix_cache.sample_fresh:0|h")
 	if hasMetric(stale, "prefix_cache.entries:") {
 		t.Fatalf("stale sample emitted a current gauge: %v", stale)

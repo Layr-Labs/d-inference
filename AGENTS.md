@@ -39,7 +39,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── telemetry/        telemetry event emitter (process logs + Datadog forwarding)
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
 ├── deploy/           container entrypoint (start.sh)
-└── internal/e2e/     X25519 request-encryption helpers (+ cross-compat/tamper tests)
+└── internal/e2e/     X25519 request-encryption helpers (+ tamper tests)
 
 e2e/                  System-level E2E testing framework
 ├── integration_test.go  14 E2E tests (streaming, billing, encryption, attestation, etc.)

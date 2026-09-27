@@ -70,9 +70,12 @@ jobs:
           DATABASE_URL: postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable
         run: |
           # Word splitting is the point here: one argument per package path,
-          # and Go package paths contain no spaces.
+          # and Go package paths contain no spaces. Only the top-level e2e
+          # integration package is excluded (it needs a real Swift provider,
+          # see integration.yml); coordinator/internal/e2e and e2e/testbed/...
+          # are ordinary unit tests and run here.
           # shellcheck disable=SC2046
-          go test -race -coverprofile="$RUNNER_TEMP/coverage.out" -covermode=atomic $(go list ./... | grep -v /e2e)
+          go test -race -coverprofile="$RUNNER_TEMP/coverage.out" -covermode=atomic $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
       - name: Check formatting
         run: |
           set -o pipefail

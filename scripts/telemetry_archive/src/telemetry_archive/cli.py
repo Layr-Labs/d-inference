@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 from . import cloud
+from .analytics_preview import preview
+from .analytics_sql import METRICS, QUERIES, WINDOWS
 from .artifact import capture, read_artifact
 from .backfill import BackfillIncomplete
 from .backfill_job import run_job
@@ -66,13 +68,25 @@ def parser():
     catalog.add_argument("--plan-ids", nargs="+", required=True)
     catalog.add_argument("--bucket", required=True)
     catalog.add_argument("--dataset", required=True)
-    for command in (send, remote, publish, run, catalog):
+    analytics = commands.add_parser("analytics-preview", help="compile or run shadow analytics SQL")
+    analytics.add_argument("--dataset", required=True)
+    analytics.add_argument("--catalog", required=True)
+    analytics.add_argument("--query", choices=QUERIES, required=True)
+    analytics.add_argument("--window", choices=WINDOWS, default="24h")
+    analytics.add_argument("--as-of", type=utc, required=True)
+    analytics.add_argument("--metric", choices=METRICS, default="earnings")
+    analytics.add_argument("--limit", type=int, default=50)
+    analytics.add_argument("--maximum-bytes-billed", type=int, default=1024**3)
+    analytics.add_argument("--execute", action="store_true")
+    for command in (send, remote, publish, run, catalog, analytics):
         command.add_argument("--project", required=True)
         command.add_argument("--location", default="us-east4")
     return root
 
 
 def execute(args):
+    if args.command == "analytics-preview":
+        return preview(args)
     if args.command == "publish-catalog":
         return publish_catalog(args)
     if args.command == "prepare-plan":

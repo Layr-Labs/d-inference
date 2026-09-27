@@ -183,3 +183,33 @@ generated with `uv export --frozen --no-dev --no-emit-project --no-header --form
 requirements-txt --output-file requirements.lock`; keep them aligned.
 
 See [the operator runbook](../../docs/operations/telemetry-archive.md).
+
+## Preview future analytics reads
+
+`analytics-preview` compiles SQL by default. Add `--execute` for a SELECT-only
+BigQuery check against one published catalog generation; it never changes a
+view or the serving API. The output is explicitly shadow data with
+`serving_eligible=false`, `retention_eligible=false`, and uncertified source
+completeness. An empty result from an incomplete archive does not mean no
+production activity occurred.
+
+```sh
+uv run telemetry-archive analytics-preview \
+  --project darkbloom-mainnet --dataset accounting_history \
+  --catalog CATALOG_VERSION --query leaderboard --metric earnings \
+  --window 7d --as-of 2026-09-26T12:00:00Z
+```
+
+Queries: `leaderboard`, `network-totals`, `usage-timeseries`. Windows: `24h`,
+`7d`, `30d`, `all` (execution of usage time series requires a finite window).
+Leaderboard limits are 1–200. `--maximum-bytes-billed` defaults to 1 GiB and
+cannot exceed 10 GiB; it caps both catalog and data queries. The client timeout
+is 120 seconds. A timeout does not prove a server job has stopped; inspect the
+BigQuery job before retrying. Financial sums serialize as exact decimal strings,
+not floating-point JSON numbers. Preview files contain private account IDs and
+must not be served publicly.
+
+The [next-stage design](../../docs/design/archive-analytics-retention.md) and
+`retention-policy.proposed.json` record the approved 5-minute public refresh
+target and proposed disabled 14-day source-retention policy. The policy file is
+not runtime configuration. Existing receipts cannot enable deletion.

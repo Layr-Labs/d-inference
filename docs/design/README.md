@@ -68,3 +68,9 @@ Write the record and make line 5 — directly under the freshness stamp — read
 here and stop editing the body once it lands. When the design ships, fold the
 as-built facts into `architecture/` and change only the status line. See
 [`../AGENTS.md`](../AGENTS.md) §8.
+
+## Storage and analytics
+
+| Record | Status | Date | One line |
+|---|---|---|---|
+| [archive-analytics-retention.md](archive-analytics-retention.md) | In progress | 2026-09-26 | Copy-first archive, five-minute public analytics snapshots and gated 14-day detail retirement |

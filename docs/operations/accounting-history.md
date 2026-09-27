@@ -1,6 +1,6 @@
 # Queryable accounting history
 
-> Last updated: 2026-09-26 · commit `86895ace9`
+> Last updated: 2026-09-26 · commit `bcf5dcce9`
 
 Preserve complete accounting-history snapshots in private Cloud Storage and
 query them through BigQuery. This copy-only phase does not change billing,
@@ -117,6 +117,18 @@ late commits or updates; this exporter is not a change-data-capture system.
 All receipts remain `retention_eligible=false`. Archival completion never
 authorizes source retirement; billing readers and settlement deduplication
 must be redesigned and separately qualified before that phase.
+
+## Prepare analytics and source retention
+
+Follow the [next-stage design](../design/archive-analytics-retention.md) for
+reader dependencies, five-minute public snapshots and retention gates.
+Compile a catalog-pinned query with `telemetry-archive analytics-preview`;
+add `--execute` to query BigQuery with a scan cap. See the
+[command reference](../../scripts/telemetry_archive/README.md#preview-future-analytics-reads).
+These commands perform SELECTs only and return private shadow results. They
+cannot certify complete production totals or publish a product-serving snapshot.
+The proposed policy has deletion disabled; it does not alter the existing
+profiler sweeper or billing readers.
 
 ## Rollback
 

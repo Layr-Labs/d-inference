@@ -217,6 +217,11 @@ public struct StartupPreloader: Sendable {
             || (message.hasPrefix("Model '")
                 && (message.contains("' loaded but has insufficient KV headroom under the memory cap")
                     || message.contains("' loaded but its engine build left insufficient KV headroom under the memory cap")))
+            || ((message.hasPrefix("loading '")
+                    || (message.hasPrefix("Model '")
+                        && message.contains(" MTP fallback engine construction failed:")))
+                && message.contains("' would re-slice some model's KV grant below the ")
+                && message.contains(" GB serviceability floor "))
     }
 
     // MARK: - Formatting helpers

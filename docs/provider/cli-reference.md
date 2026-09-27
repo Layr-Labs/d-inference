@@ -596,7 +596,7 @@ Output includes:
   the `Cold load blocked` label when it still cannot fit.
   A memory skip also writes a fixed public category to `darkbloom logs`; model
   loads refused at final admission, allocation recheck, or measured post-load
-  KV headroom use the same warning.
+  KV headroom, or fleet KV re-slice serviceability use the same warning.
   Model names and exact load figures remain private there and appear in the owner's
   live `status` and `doctor` output instead.
 - Per-slot posture: the KV backend each loaded model actually resolved to

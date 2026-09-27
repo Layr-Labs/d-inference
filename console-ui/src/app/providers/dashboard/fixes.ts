@@ -80,7 +80,7 @@ const FIX_TABLE: Record<string, FixAction> = {
     kind: "command",
     label: "Check model load memory",
     command: "darkbloom doctor",
-    note: "Free the cold-load shortfall shown for this Mac, then rerun doctor before restarting.",
+    note: "Free the cold-load shortfall shown for this Mac, rerun doctor, then retry a request for this model.",
   },
 
   // ── Degrading ──────────────────────────────────────────────────────────

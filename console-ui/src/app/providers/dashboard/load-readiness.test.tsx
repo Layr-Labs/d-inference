@@ -45,6 +45,7 @@ describe("owner model load readiness", () => {
     const warning = computeWarnings(cold, ctx).find((item) => item.id === "model_load_memory");
     expect(resolveFix(warning!.id)).toEqual(expect.objectContaining({
       kind: "command", command: "darkbloom doctor",
+      note: expect.stringContaining("retry a request for this model"),
     }));
   });
 

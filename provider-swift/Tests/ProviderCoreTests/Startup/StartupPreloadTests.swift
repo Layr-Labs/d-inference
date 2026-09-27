@@ -214,6 +214,8 @@ struct StartupPreloaderTests {
             "Insufficient memory for 'raced' at allocation: load headroom changed",
             "Model 'raced' loaded but has insufficient KV headroom under the memory cap (0.1 GB free, need 1.0 GB to serve) — unloaded",
             "Model 'raced' loaded but its engine build left insufficient KV headroom under the memory cap (0.1 GB free) — unloaded",
+            "loading 'raced' would re-slice some model's KV grant below the 1.0 GB serviceability floor (fleet KV budget 123 B across 2 slots) — refused",
+            "Model 'raced' MTP fallback engine construction failed: model load failed: loading 'raced' would re-slice some model's KV grant below the 1.0 GB serviceability floor (fleet KV budget 123 B across 2 slots) — refused — unloaded",
         ] {
             let recorder = PreloadRecorder()
             var deps = makeDeps(
@@ -224,6 +226,19 @@ struct StartupPreloaderTests {
             #expect(summary.failed == ["raced"])
             #expect(recorder.logs.filter { $0 == "public memory warning" }.count == 1)
         }
+    }
+
+    @Test("non-memory load failures do not emit the public memory warning")
+    func nonMemoryLoadFailureKeepsWarningClosed() async {
+        let recorder = PreloadRecorder()
+        var deps = makeDeps(
+            recorder: recorder,
+            loadError: { id in id == "broken" ? InferenceError.modelLoadFailed(
+                "Model 'broken' MTP fallback engine construction failed: invalid tokenizer — unloaded") : nil })
+        deps.onInsufficientMemory = { recorder.recordLog("public memory warning") }
+        let summary = await StartupPreloader(deps: deps).run(candidates: [candidate("broken")])
+        #expect(summary.failed == ["broken"])
+        #expect(!recorder.logs.contains("public memory warning"))
     }
 
     @Test("self-test runs once per LOADED model, not for skipped/failed ones")

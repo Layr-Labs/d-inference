@@ -122,23 +122,31 @@ extension ProviderLoop {
         }
     }
 
-    internal func waitForPreloads(_ preloads: [Task<Void, Never>], timeout: Duration) async -> Bool {
+    internal func waitForPreloads(
+        _ preloads: [Task<Void, Never>], timeout: Duration,
+        returnOnCancellation: Bool = false,
+        wake: OneShotBoolContinuation? = nil
+    ) async -> Bool {
         guard !preloads.isEmpty else { return true }
-        return await withCheckedContinuation { continuation in
-            let oneShot = OneShotBoolContinuation(continuation)
+        let oneShot = wake ?? OneShotBoolContinuation()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                oneShot.install(continuation)
 
-            Task {
-                for task in preloads { await task.value }
-                oneShot.resume(returning: true)
-            }
+                Task {
+                    for task in preloads { await task.value }
+                    oneShot.resume(returning: true)
+                }
 
-            // Structured timeout: first resume wins (OneShotBoolContinuation
-            // dedupes), so a slept Task replaces the GCD asyncAfter without
-            // changing the race semantics.
-            Task {
-                try? await taskSleep( timeout)
-                oneShot.resume(returning: false)
+                // First resume wins; the timer cannot re-resume a completed
+                // or cancelled wait.
+                Task {
+                    try? await taskSleep(timeout)
+                    oneShot.resume(returning: false)
+                }
             }
+        } onCancel: {
+            if returnOnCancellation { oneShot.cancel() }
         }
     }
 

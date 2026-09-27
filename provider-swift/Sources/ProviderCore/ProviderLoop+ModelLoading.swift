@@ -705,6 +705,16 @@ extension ProviderLoop {
                 + Double(loadElapsed.components.attoseconds) / 1e15
             await engineV2Bridge.recordModelLoadTime(ms: Int64(max(0, loadMs.rounded())))
 
+            // A startup stop can arrive during bridge construction or the
+            // timing await above. Never install a new slot after teardown has
+            // begun; unwind the bridge and weights under the re-slice gate.
+            if isShuttingDown || Task.isCancelled {
+                await unwindBuiltSlotAndRegrow(
+                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                releaseResliceGate()
+                throw CancellationError()
+            }
+
             guard let installContainer = newcomer.modelContainer else {
                 // Unreachable (the box is drained only on failure paths) —
                 // defensive so a wiring bug can never leak the re-slice gate

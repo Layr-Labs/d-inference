@@ -128,11 +128,11 @@ struct Status: AsyncParsableCommand {
         }
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
-        if let line = Self.notLoadedLine(
+        for line in Self.notLoadedLines(
             advertised: state.advertisedModels,
             warmModels: state.warmModels,
             currentModel: state.currentModel,
-            idleTimeoutMins: config.backend.idleTimeoutMins)
+            startupPreloadPendingModels: state.startupPreloadPendingModels)
         {
             print(line)
         }
@@ -203,26 +203,30 @@ struct Status: AsyncParsableCommand {
             + "out of date"
     }
 
-    /// Advertised models with no resident engine right now. Under an idle
-    /// policy that is the expected steady state between bursts ("reload on
-    /// demand"), so it is reported as information, not as a fault; under
-    /// "always ready" the same gap means the model has simply not been asked
-    /// for since start. nil when every advertised model is warm (or the daemon
-    /// predates `advertisedModels`).
-    static func notLoadedLine(
+    /// Separate models still queued for startup preload from those that will
+    /// load on a request. The latter include idle-unloaded, skipped and failed
+    /// preloads; `Last model-load error` below supplies a known failure cause.
+    static func notLoadedLines(
         advertised: [String]?,
         warmModels: [String],
         currentModel: String?,
-        idleTimeoutMins: UInt64
-    ) -> String? {
-        guard let advertised else { return nil }
+        startupPreloadPendingModels: [String]?
+    ) -> [String] {
+        guard let advertised else { return [] }
         var resident = Set(warmModels)
         if let currentModel, !currentModel.isEmpty { resident.insert(currentModel) }
         let notLoaded = advertised.filter { !resident.contains($0) }
-        guard !notLoaded.isEmpty else { return nil }
-        let why = idleTimeoutMins == IdleUnloadPolicy.alwaysReadyMinutes
-            ? "loads on first request" : "unloaded when idle; reloads on demand"
-        return "Not loaded (\(why)): \(notLoaded.joined(separator: ", "))"
+        let pending = Set(startupPreloadPendingModels ?? [])
+        let preloading = notLoaded.filter { pending.contains($0) }
+        let onRequest = notLoaded.filter { !pending.contains($0) }
+        var lines: [String] = []
+        if !preloading.isEmpty {
+            lines.append("Startup preload pending: \(preloading.joined(separator: ", "))")
+        }
+        if !onRequest.isEmpty {
+            lines.append("Not loaded (loads on request): \(onRequest.joined(separator: ", "))")
+        }
+        return lines
     }
 
     private func formatUptime(_ seconds: Double) -> String {

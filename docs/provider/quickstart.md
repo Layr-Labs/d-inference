@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-09-18 · commit `397b4d902`
+> Last updated: 2026-09-27 · commit `4ad3034df`
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
@@ -51,6 +51,9 @@ you are not logged in, shows an interactive model picker, asks whether models
 should stay loaded while idle (`Always ready`) or be unloaded after 60 minutes
 without requests and reloaded on demand (`Free when idle`, the default; or a
 custom window), then installs and starts a `launchd` user agent.
+Every idle-memory choice starts loading selected models before the daemon
+registers with the coordinator, subject to the startup timeout, model-slot
+limit and available memory ([startup preload details](./cli-reference.md#darkbloom-start)).
 
 `darkbloom models download` (`provider-swift/Sources/darkbloom/ModelsCommand.swift`)
 resolves the catalog entry and fetches from `https://models.darkbloom.ai`

@@ -45,6 +45,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// memory filters) — doctor's serving-set floor basis when fresh.
     /// Optional so state files from older daemons continue to decode.
     public var advertisedModels: [String]?
+    /// Remaining startup preload plan, including the candidate currently
+    /// loading. nil means an older daemon did not report this field.
+    public var startupPreloadPendingModels: [String]?
     public var lifecycle: ProviderDrainStatus?
     public var modelSwitch: ProviderModelSwitchStatus?
     public var configPath: String?
@@ -225,6 +228,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         currentModel: String? = nil,
         warmModels: [String] = [],
         advertisedModels: [String]? = nil,
+        startupPreloadPendingModels: [String]? = nil,
         inferenceActive: Bool = false,
         lifecycle: ProviderDrainStatus? = nil,
         modelSwitch: ProviderModelSwitchStatus? = nil,
@@ -250,6 +254,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.currentModel = currentModel
         self.warmModels = warmModels
         self.advertisedModels = advertisedModels
+        self.startupPreloadPendingModels = startupPreloadPendingModels
         self.lifecycle = lifecycle
         self.modelSwitch = modelSwitch
         self.configPath = configPath

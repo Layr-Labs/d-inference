@@ -1,12 +1,12 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-27 · commit `2af1af5b6`
+> Last updated: 2026-09-27 · commit `b4d3a9f6d`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.10` in
+version `ProviderCore.version` = `0.9.11` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 

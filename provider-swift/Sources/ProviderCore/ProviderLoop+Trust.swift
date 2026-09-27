@@ -52,6 +52,7 @@ extension ProviderLoop {
                 inflight: hasInflightWork, capacity: cap),
             loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
                 || !startupPreloadPendingModels.isEmpty
+                || mtpStagingReservations.hasRetainedTargets
                 || cap?.slots.contains { $0.state == "reloading" } == true,
             lifecycle: lifecycleStatus,
             modelSwitch: modelSwitchStatus,
@@ -72,6 +73,7 @@ extension ProviderLoop {
                     freeForLoadGb: $0.freeForLoadGb,
                     loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
                         || !startupPreloadPendingModels.isEmpty
+                        || mtpStagingReservations.hasRetainedTargets
                         || $0.slots.contains { $0.state == "reloading" })
             },
             lastModelLoadError: lastModelLoadError,

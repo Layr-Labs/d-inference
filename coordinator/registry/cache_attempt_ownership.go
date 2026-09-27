@@ -2,7 +2,6 @@ package registry
 
 import (
 	"sync/atomic"
-	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -108,7 +107,9 @@ func (r *Registry) publishCacheAttempt(
 	return published
 }
 
-func (pr *PendingRequest) markCacheAttemptTerminal(now time.Time) {
+// The terminal timestamp comes from the owning tracker's clock so the
+// shortened attempt TTL agrees with receipt and sweep time.
+func (pr *PendingRequest) markCacheAttemptTerminal() {
 	pr.cacheAttemptMu.Lock()
 	pr.cachePreparationClosed = true
 	pr.cachePreparationTicket++
@@ -118,7 +119,7 @@ func (pr *PendingRequest) markCacheAttemptTerminal(now time.Time) {
 	}
 	pr.cacheAttemptMu.Unlock()
 	if owner != nil {
-		owner.tracker.markAttemptTerminal(owner.nonce, now)
+		owner.tracker.markAttemptTerminal(owner.nonce, owner.tracker.now())
 	}
 }
 

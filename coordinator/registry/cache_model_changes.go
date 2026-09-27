@@ -36,3 +36,33 @@ func changedPrefixCacheModels(beforeSSD, afterSSD, beforeMemory, afterMemory map
 	compare(beforeMemory, afterMemory)
 	return changes
 }
+
+// reconcileFences lifts the proof fence on any of this provider's model/tier
+// pairs whose advertised capability was replaced, at the moment the heartbeat
+// lands rather than at the next query, so fenced_capabilities never counts a
+// dead record. A pair that is merely absent keeps its record: a protocol
+// toggle that re-advertises the identical capability must not clear
+// quarantine, and an unrelated model's update never touches another model.
+func (t *cacheRoutingTracker) reconcileFences(
+	providerID string,
+	ssd, memory map[string]protocol.PrefixCacheV2Capability,
+) {
+	if t == nil || providerID == "" {
+		return
+	}
+	now := t.now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for key, fence := range t.rejectedV2 {
+		if key.ProviderID != providerID {
+			continue
+		}
+		current := ssd
+		if key.Tier == "memory" {
+			current = memory
+		}
+		if capability, ok := current[key.ModelID]; ok && capability != fence.capability {
+			t.forgetFenceLocked(key, fence, now)
+		}
+	}
+}

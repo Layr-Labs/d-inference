@@ -3,6 +3,7 @@ package registry
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -269,7 +270,9 @@ type cacheRoutingTracker struct {
 	attemptOrder        cacheAttemptOrderHeap
 	attemptOrderByNonce map[string]*cacheAttemptOrderEntry
 	v2Sequences         map[cacheV2SequenceKey]uint64
-	rejectedV2          map[cacheV2ProviderModelKey]protocol.PrefixCacheV2Capability
+	rejectedV2          map[cacheV2ProviderModelKey]cacheV2Fence
+	fencesApplied       uint64
+	fencesExpired       uint64
 	ssdLookups          uint64
 	ssdHits             uint64
 	ssdMisses           uint64
@@ -277,6 +280,33 @@ type cacheRoutingTracker struct {
 	holderAdded         uint64
 	holderRemoved       map[string]uint64
 	donationOutcomes    map[string]uint64
+	// clock is read outside t.mu on every receipt; tests replace it before
+	// traffic, so it is atomic rather than lock-guarded. Nil means time.Now.
+	clock atomic.Pointer[func() time.Time]
+}
+
+func (t *cacheRoutingTracker) now() time.Time {
+	if clock := t.clock.Load(); clock != nil {
+		return (*clock)()
+	}
+	return time.Now()
+}
+
+// SetCacheRoutingClockForTest replaces the clock the exact-cache tracker uses
+// for attempt and receipt timestamps, holder expiry at receipt and at routing,
+// proof-fence windows and the lifecycle status. Demand observation,
+// activation sampling and TTFT calibration keep the wall clock. It applies to
+// the current tracker only; ConfigureCacheRouting installs a fresh one.
+func (r *Registry) SetCacheRoutingClockForTest(now func() time.Time) {
+	if r == nil || now == nil {
+		return
+	}
+	r.mu.RLock()
+	tracker := r.cacheRouting
+	r.mu.RUnlock()
+	if tracker != nil {
+		tracker.clock.Store(&now)
+	}
 }
 
 func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTracker {
@@ -293,7 +323,7 @@ func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTrac
 		holders: make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
 		holderOrderByRef: make(map[cacheHolderRef]*cacheHolderOrderEntry), attemptOrderByNonce: make(map[string]*cacheAttemptOrderEntry),
 		v2Sequences:      make(map[cacheV2SequenceKey]uint64),
-		rejectedV2:       make(map[cacheV2ProviderModelKey]protocol.PrefixCacheV2Capability),
+		rejectedV2:       make(map[cacheV2ProviderModelKey]cacheV2Fence),
 		holderRemoved:    make(map[string]uint64),
 		donationOutcomes: make(map[string]uint64),
 	}
@@ -313,18 +343,23 @@ func (r *Registry) CacheRoutingStateCounts() (holders, attempts int) {
 	}
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
-	tracker.sweepIfDueLocked(time.Now())
+	tracker.sweepIfDueLocked(tracker.now())
 	return tracker.holderCount, len(tracker.attempts)
 }
 
+// CacheRoutingLifecycleStatus carries aggregate counts only. The fence fields
+// count windows, never the providers, models or tiers they quarantined.
 type CacheRoutingLifecycleStatus struct {
-	SSDLookups       uint64            `json:"ssd_lookups"`
-	SSDHits          uint64            `json:"ssd_hits"`
-	SSDMisses        uint64            `json:"ssd_misses"`
-	SSDDonations     uint64            `json:"ssd_donations"`
-	HolderAdded      uint64            `json:"holder_added"`
-	HolderRemoved    map[string]uint64 `json:"holder_removed"`
-	DonationOutcomes map[string]uint64 `json:"donation_outcomes"`
+	SSDLookups         uint64            `json:"ssd_lookups"`
+	SSDHits            uint64            `json:"ssd_hits"`
+	SSDMisses          uint64            `json:"ssd_misses"`
+	SSDDonations       uint64            `json:"ssd_donations"`
+	HolderAdded        uint64            `json:"holder_added"`
+	HolderRemoved      map[string]uint64 `json:"holder_removed"`
+	DonationOutcomes   map[string]uint64 `json:"donation_outcomes"`
+	FencesApplied      uint64            `json:"fences_applied"`
+	FencesExpired      uint64            `json:"fences_expired"`
+	FencedCapabilities int               `json:"fenced_capabilities"`
 }
 
 func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
@@ -347,11 +382,16 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 	for outcome, count := range tracker.donationOutcomes {
 		donationOutcomes[outcome] = count
 	}
+	// Settle lapsed windows first so fences_expired and fenced_capabilities
+	// agree within one scrape.
+	fenced := tracker.sweepFencesLocked(tracker.now())
 	return CacheRoutingLifecycleStatus{
 		SSDLookups: tracker.ssdLookups, SSDHits: tracker.ssdHits,
 		SSDMisses: tracker.ssdMisses, SSDDonations: tracker.ssdDonations,
 		HolderAdded: tracker.holderAdded, HolderRemoved: holderRemoved,
 		DonationOutcomes: donationOutcomes,
+		FencesApplied:    tracker.fencesApplied, FencesExpired: tracker.fencesExpired,
+		FencedCapabilities: fenced,
 	}
 }
 

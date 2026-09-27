@@ -130,8 +130,6 @@ export interface MyProvider {
   mda_sepos_version?: string;
 
   runtime_verified: boolean;
-  python_hash?: string;
-  runtime_hash?: string;
 
   last_challenge_verified?: string;
   failed_challenges: number;

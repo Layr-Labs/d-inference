@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-27 · commit `d0c1edfa8`
+> Last updated: 2026-09-27 · commit `03f16cbe4`
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -17,7 +17,7 @@ The console exists so a person can use Darkbloom without writing code: sign in, 
 
 `console-ui/src/app/layout.tsx` (`RootLayout`) mounts, in order: `<Analytics/>` (`@vercel/analytics/next`), `GoogleAnalytics`, `TelemetryInitializer`, `DatadogRUM`, then `ThemeProvider` → `PrivyClientProvider` → `VerificationModeProvider` → `AppShell` → the page. Route entry points compose client workspaces; there is no `not-found.tsx` or `loading.tsx`, and `console-ui/src/app/global-error.tsx` is the root error boundary. Dependencies of note (`console-ui/package.json`): `@privy-io/react-auth`, `zustand`, `tweetnacl`, `@datadog/browser-rum`, `react-markdown`, Tailwind 4. `console-ui/next.config.ts` sets `typescript.ignoreBuildErrors: true`, so type errors do not fail `next build`.
 
-### Page routes (14)
+### Page routes (13)
 
 Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; nothing is enforced by the request interceptor.
 
@@ -25,7 +25,6 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 |---|---|---|---|
 | `/` | `page.tsx` | Server redirect to `/providers` | Public |
 | `/chat` | `chat/page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `authenticated && apiKeyReady` (`useAuth`) |
-| `/login` | `login/page.tsx` | Legacy Privy login page (redirects to `?next=` once authenticated) | **Unreachable** — `console-ui/src/proxy.ts` redirects `/login` to `/` |
 | `/link` | `link/page.tsx`, `link/DeviceLinkForm.tsx` | RFC 8628 device-code approval for `darkbloom login`: `POST /api/device/approve` with `Authorization: Bearer <Privy token>` | Privy |
 | `/settings` | `settings/page.tsx`, `settings/useConsoleSettings.ts` | Theme, API example URL (`darkbloom_api_example_url`), health check via `/api/health`, and encrypt-to-coordinator toggle | None |
 | `/models` | `models/page.tsx` | Catalog and pricing table from `/api/models` and `/api/pricing` (`console-ui/src/lib/api/models.ts`, `console-ui/src/lib/api/pricing.ts`) | Public; `x-api-key` sent when cached, which switches `/api/models` to the keyed `/v1/models` path |
@@ -157,7 +156,7 @@ The console key is provisioned by `provisionConsoleKey` (`console-ui/src/hooks/u
 
 ### Authentication (Privy)
 
-`PrivyClientProvider` (`console-ui/src/components/app-providers/PrivyClientProvider.tsx`) loads `PrivyRealProvider` as an on-demand chunk (`next/dynamic`, `ssr: false`) and exposes `useAuthContext()` → `{ready, authenticated, user, login, logout, getAccessToken}`. `PrivyRealProvider` (`console-ui/src/components/app-providers/PrivyRealProvider.tsx`) configures `loginMethods: ["email"]` — email OTP is the only sign-in method — with `embeddedWallets: { createOnLogin: "off" }`. Login is an in-page modal (`login()`), triggered from the shell and page CTAs; there is no login page (see `/login` above).
+`PrivyClientProvider` (`console-ui/src/components/app-providers/PrivyClientProvider.tsx`) loads `PrivyRealProvider` as an on-demand chunk (`next/dynamic`, `ssr: false`) and exposes `useAuthContext()` → `{ready, authenticated, user, login, logout, getAccessToken}`. `PrivyRealProvider` (`console-ui/src/components/app-providers/PrivyRealProvider.tsx`) configures `loginMethods: ["email"]` — email OTP is the only sign-in method — with `embeddedWallets: { createOnLogin: "off" }`. Login is an in-page modal (`login()`), triggered from the shell and page CTAs; there is no login page — `console-ui/src/proxy.ts` redirects `/login` to `/` so old links still land in the app.
 
 **Mock auth.** When `NEXT_PUBLIC_PRIVY_APP_ID` is unset or equals the literal `"placeholder"` (`IS_PRIVY_CONFIGURED`), the provider is replaced by `MOCK_AUTH`: `ready: true`, `authenticated: true`, `user: null`, `getAccessToken` resolving to `null`, and `login`/`logout` no-ops. Every visitor appears signed in, but no Privy token exists (consequences under [Failure modes](#failure-modes)). This is the local-preview mode; it must not ship.
 

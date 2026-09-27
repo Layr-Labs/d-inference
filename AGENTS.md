@@ -67,7 +67,7 @@ provider-swift/       Swift provider CLI for Apple Silicon Macs
 └── Tests/                            ProviderCore, ProviderCoreFoundation, CLI, and publish tests
 
 console-ui/           Next.js 16 / React 19 frontend
-├── src/app/          chat (/), billing, models, stats, providers, settings, link, api-console, earn, login
+├── src/app/          chat (/), billing, models, stats, providers, settings, link, api-console, earn
 ├── src/app/api/      chat, auth/keys, keys, payments/*, invite, models, health, pricing, stats,
 │                     telemetry, attestation, device, encryption-key, leaderboard, me, network, admin
 ├── src/components/   chat UI, sidebar, top bar, trust badge, verification panel, invite banner

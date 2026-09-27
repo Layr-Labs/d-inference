@@ -192,7 +192,7 @@ sequenceDiagram
 | `ThemeProvider` | `console-ui/src/components/app-providers/ThemeProvider.tsx` | Theme | localStorage `darkbloom-theme` |
 | `VerificationModeProvider` | `console-ui/src/components/app-providers/verification-mode.tsx` | `mode` ∈ `normal`, `technical` (verification-panel display mode; changes no request) | localStorage `darkbloom-verification-mode` (`STORAGE_KEYS.verificationMode`) |
 
-Other localStorage keys: `STORAGE_KEYS` (`console-ui/src/lib/storage-keys.ts`) = `darkbloom_api_key`, `eigeninference_api_key` (legacy), `darkbloom_console_key_id`, `darkbloom_coordinator_url`; `darkbloom_encrypt_to_coordinator`; `darkbloom_coord_enc_key_v2`; `darkbloom_invite_dismissed` (`INVITE_DISMISSED_KEY`, `console-ui/src/components/InviteCodeBanner.tsx`); `darkbloom_ga_consent` (`GA_CONSENT_STORAGE_KEY`, also a cookie).
+Other localStorage keys: `STORAGE_KEYS` (`console-ui/src/lib/storage-keys.ts`) = `darkbloom_api_key`, `eigeninference_api_key` (legacy), `darkbloom_console_key_id`, `darkbloom_coordinator_url`; `darkbloom_encrypt_to_coordinator`; `darkbloom_coord_enc_key_v2`; `darkbloom_invite_dismissed` (`INVITE_DISMISSED_KEY`, `console-ui/src/components/InviteCodeBanner.tsx`). The console no longer writes `darkbloom_ga_consent`; a value left by the removed consent prompt is ignored.
 
 ### Request interceptor (`console-ui/src/proxy.ts`)
 
@@ -204,7 +204,7 @@ Next 16 loads the request interceptor from `src/proxy.ts` (default export `proxy
 
 ### Analytics and telemetry
 
-- **Google Analytics** (`console-ui/src/lib/google-analytics.ts`, `components/GoogleAnalytics.tsx`): gtag loads when `getGoogleAnalyticsMeasurementId()` is non-empty and `hasGoogleAnalyticsConsent()` is true. `getGoogleAnalyticsConsentStatus()` returns `"granted"` for every client — **consent defaults to granted, and there is no prompt**; `revokeGoogleAnalyticsConsent()` removes `darkbloom_ga_consent` from localStorage but still writes the cookie as `granted`, so revocation is not effective. Page-view URLs are sanitised (`buildTrackedPageLocation`) before sending.
+- **Google Analytics** (`console-ui/src/lib/google-analytics.ts`, `components/GoogleAnalytics.tsx`): gtag loads when `getGoogleAnalyticsMeasurementId()` is non-empty and `hasGoogleAnalyticsConsent()` is true. `getGoogleAnalyticsConsentStatus()` returns `"granted"` for every client — **consent defaults to granted, and there is no prompt or opt-out function**. Page-view URLs are sanitised (`buildTrackedPageLocation`) before sending.
 - **Vercel Analytics**: `<Analytics/>` in the layout; no configuration.
 - **Datadog RUM** (`console-ui/src/components/DatadogRUM.tsx`): inert unless both `NEXT_PUBLIC_DD_APPLICATION_ID` and `NEXT_PUBLIC_DD_CLIENT_TOKEN` are set; then `datadogRum.init` with `service: "darkbloom-console"`, `sessionSampleRate: 100`, `sessionReplaySampleRate: 20`, `defaultPrivacyLevel: "mask-user-input"`, and `setUser({id, email})` once authenticated.
 - **Client telemetry is disabled.** `emit()` and `installGlobalHandlers()` (`console-ui/src/lib/telemetry.ts`) are empty functions kept for source compatibility; `TelemetryInitializer` and `global-error.tsx` call them to no effect; `POST /api/telemetry` answers `telemetry_ingest_disabled` without reading the body. The wire types in `console-ui/src/lib/telemetry-types.ts` remain for the tests and the schema in [`../telemetry.md`](../telemetry.md).
@@ -253,7 +253,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 | Visiting `/login` lands on `/` and the `?next=` target is lost | `console-ui/src/proxy.ts` redirects before the page renders | `proxy` |
 | Provisioning stalls for 30 s after a 429 | `provisionBlockedUntil` cooldown | `console-ui/src/hooks/useAuth.ts` |
 | Sidebar or chats "flash" empty on load | Persisted store is applied only after `AppShell` calls `useStore.persist.rehydrate()` (`skipHydration`) | `console-ui/src/lib/store.ts`, `console-ui/src/components/AppShell.tsx` |
-| GA cannot be turned off from the UI | `getGoogleAnalyticsConsentStatus()` always returns `"granted"`; `revokeGoogleAnalyticsConsent` writes the cookie as `granted` | `console-ui/src/lib/google-analytics.ts` |
+| GA cannot be turned off from the UI | `getGoogleAnalyticsConsentStatus()` always returns `"granted"` and nothing in the console grants or revokes consent | `console-ui/src/lib/google-analytics.ts` |
 
 ## Code map
 

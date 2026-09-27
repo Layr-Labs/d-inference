@@ -42,10 +42,19 @@ func validateWindow(w Window) error {
 			return err
 		}
 	}
-	// A full ranking must contain the same provider cohort for every metric.
-	// For larger cohorts, different top-200 sets are legitimate.
-	if expected == w.Totals.ActiveAccounts && int64(len(common)) != expected {
-		return errors.New("complete analytics rankings disagree on provider cohort")
+	// Each metric contains expected distinct IDs, so this also forces identical
+	// complete cohorts. Larger top-200 sets may differ within the actual cohort.
+	if int64(len(common)) > w.Totals.ActiveAccounts {
+		return errors.New("analytics rankings exceed provider cohort")
+	}
+	remainingJobs := w.Totals.Jobs
+	for _, row := range common {
+		// Count each account once across metrics, without overflowing INT64.
+		// Totals may include anonymous work, so equality is not required.
+		if row.Jobs > remainingJobs {
+			return errors.New("ranked job counts exceed network total")
+		}
+		remainingJobs -= row.Jobs
 	}
 	return nil
 }

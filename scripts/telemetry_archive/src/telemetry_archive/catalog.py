@@ -65,14 +65,66 @@ def verified_entries(bucket, bucket_name, plan):
         yield from visit(window)
 
 
+def _normalized(entry):
+    entry = dict(entry)
+    for field in ("observed_at", "window_start", "window_end"):
+        if entry.get(field) is not None:
+            entry[field] = stamp(utc(entry[field]))
+    return entry
+
+
+def merge_coverage(entries):
+    """Preserve every plan/window identity, even when empty windows share a file."""
+    coverage, generations = {}, {}
+    for raw in entries:
+        entry = _normalized(raw)
+        for field in ("window_start", "window_end", "id_start", "id_end"):
+            entry.setdefault(field, None)
+        uri, generation = entry["source_uri"], entry["generation"]
+        if uri in generations and generations[uri] != generation:
+            raise ArchiveError("catalog object generation conflict")
+        generations[uri] = generation
+        key = tuple(
+            entry[field]
+            for field in (
+                "table_name",
+                "plan_id",
+                "window_start",
+                "window_end",
+                "id_start",
+                "id_end",
+            )
+        )
+        previous = coverage.get(key)
+        if (
+            previous
+            and previous["observed_at"] == entry["observed_at"]
+            and any(
+                previous[field] != entry[field]
+                for field in ("source_uri", "generation", "row_count", "parquet_bytes")
+            )
+        ):
+            raise ArchiveError("catalog window has conflicting simultaneous observations")
+        if previous is None or utc(entry["observed_at"]) > utc(previous["observed_at"]):
+            coverage[key] = entry
+    return sorted(
+        coverage.values(),
+        key=lambda row: (
+            row["table_name"],
+            row["plan_id"],
+            row["window_start"] or "",
+            row["window_end"] or "",
+            row["id_start"] if row["id_start"] is not None else -1,
+            row["id_end"] if row["id_end"] is not None else -1,
+        ),
+    )
+
+
 def merge_files(entries):
-    """Repeated identical files are one source; preserve the latest observation."""
+    """Build a unique file inventory independently of plan/window coverage."""
     files = {}
-    for entry in entries:
-        entry = dict(entry)
-        for field in ("observed_at", "window_start", "window_end"):
-            if entry.get(field) is not None:
-                entry[field] = stamp(utc(entry[field]))
+    for raw in entries:
+        entry = _normalized(raw)
         previous = files.get(entry["source_uri"])
         if previous and previous["generation"] != entry["generation"]:
             raise ArchiveError("catalog object generation conflict")

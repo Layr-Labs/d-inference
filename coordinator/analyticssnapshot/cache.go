@@ -12,9 +12,9 @@ import (
 // Cache swaps a fully validated generation atomically. It retains a prior valid
 // snapshot across refresh failures, but Get never serves it past freshness bounds.
 type Cache struct {
-	mu       sync.RWMutex
-	snapshot *Snapshot
-	checksum [32]byte
+	mu        sync.RWMutex
+	snapshot  *Snapshot
+	checksums map[string][32]byte
 }
 
 func (c *Cache) Load(path string, now time.Time) error {
@@ -48,7 +48,7 @@ func (c *Cache) Load(path string, now time.Time) error {
 	checksum := sha256.Sum256(encoded)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.snapshot != nil && c.snapshot.Generation == s.Generation && c.checksum != checksum {
+	if prior, accepted := c.checksums[s.Generation]; accepted && prior != checksum {
 		return errors.New("analytics generation content changed")
 	}
 	if c.snapshot != nil && (s.AsOf.Before(c.snapshot.AsOf) || s.SourceCompleteThrough.Before(c.snapshot.SourceCompleteThrough)) {
@@ -59,7 +59,10 @@ func (c *Cache) Load(path string, now time.Time) error {
 		return errors.New("new analytics generation must advance a source cutoff")
 	}
 	c.snapshot = s
-	c.checksum = checksum
+	if c.checksums == nil {
+		c.checksums = make(map[string][32]byte)
+	}
+	c.checksums[s.Generation] = checksum
 	return nil
 }
 

@@ -186,6 +186,21 @@ requirements-txt --output-file requirements.lock`; keep them aligned.
 
 See [the operator runbook](../../docs/operations/telemetry-archive.md).
 
+## Catalog coverage and unique files
+
+Coverage-format 2 keeps one catalog row per plan/window, including distinct empty
+windows that share identical Parquet bytes. External manifests list each URI once;
+reader queries group catalog observations per file before joining. `verified_windows`
+and `data_files` are separate counters. Snapshot row/file sums still require overlap
+reconciliation; they are not automatically distinct business rows.
+
+The catalog digest includes a format-version domain and tables carry the label
+`archive_coverage=plan_windows_v2`. Existing pinned workers keep their prior behavior.
+After an approved image upgrade, republish every relevant plan from checkpoint trees
+to restore empty-window coverage that older file-only catalogs collapsed. Importing
+prior catalog rows alone cannot recover omitted intervals, and the new format label
+is not a history-completion certificate. Raw files and old catalogs are preserved.
+
 ## Preview future analytics reads
 
 `analytics-preview` compiles SQL by default. Add `--execute` for a SELECT-only

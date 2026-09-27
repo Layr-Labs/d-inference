@@ -1,6 +1,6 @@
 # Serve public analytics from verified snapshots
 
-> Last updated: 2026-09-27 · commit `a7a672cf1`
+> Last updated: 2026-09-27 · commit `7eaf8b148`
 
 Use the opt-in coordinator reader to serve leaderboard, network totals and network usage charts from a
 small local snapshot, removing history scans from those request paths. This
@@ -67,16 +67,19 @@ catalogs are incomplete and cannot supply a qualified production snapshot.
 
 The `coordinator/analyticssnapshot` package validates an 8 MiB cap, complete windows
 and ranks, exact work+reward sums without overflow, source/result freshness,
-cohort cardinality, cross-metric values, deterministic rank order and generation
+cohort cardinality, cross-metric values, unique ranked job counts bounded by
+network job totals, deterministic rank order and generation
 monotonicity. Every different generation must advance `as_of` or
 `source_complete_through`, and neither may regress. Publish corrections with the
 next qualified source cut.
-It rejects changed content under the same generation. An invalid
+It retains checksums for every accepted generation during the process lifetime and
+rejects changed content even if an older generation ID reappears. An invalid
 refresh leaves the prior valid in-memory generation in place; every read checks
 freshness again. Source and as-of age must be at most 10 minutes, result age at
 most 15 minutes; future source times are rejected and generated time allows one
 minute of clock skew. `generated_at` must be at or after `source_complete_through`,
-which must be at or after `as_of`.
+which must be at or after `as_of`. Money and tokens can include signed corrections,
+so they are not constrained by the subset bound used for nonnegative job counts.
 
 With this mode configured, leaderboard/totals/series never fall back to historical
 PostgreSQL queries, even on cold start or expiry. Missing/stale data returns 503.

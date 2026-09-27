@@ -1,6 +1,6 @@
 # Queryable telemetry history
 
-> Last updated: 2026-09-27 · commit `a7a672cf1`
+> Last updated: 2026-09-27 · commit `7eaf8b148`
 
 Copy and verify retained PostgreSQL telemetry into private Cloud Storage, then
 publish BigQuery views without changing coordinator writes, retention, or
@@ -64,6 +64,21 @@ primary's current position. The approved <30-second gate remains mandatory.
    `publish.reader_sql`; never combine independently moving aliases. The
    `archive_coverage` pointer changes last, after every table is ready. Run only
    one publisher at a time.
+
+   Coverage-format 2 catalogs preserve one row per plan/window identity, including
+   distinct empty windows sharing the same Parquet object. File manifests remain
+   deduplicated by URI, and reader SQL groups catalog observations per file before
+   joining data. `verified_windows` counts coverage rows; `data_files` counts unique
+   objects. Sum unique file sizes for storage, not repeated coverage-row sizes.
+
+   This is a publisher code upgrade. Existing pinned workers still emit file-only
+   catalogs. After an explicitly approved image upgrade, republish **every relevant
+   plan ID** from its checkpoints to recover previously collapsed empty intervals;
+   retained file-only catalog rows alone cannot reconstruct them. New catalogs have
+   label `archive_coverage=plan_windows_v2` and a versioned digest domain. A format-2
+   label does not prove old plans were rehydrated or history completed: verify each
+   plan against its checkpoint tree and complete summary. Existing immutable
+   catalogs and source data remain available throughout this migration.
 5. Query `telemetry_history.archive_coverage` first. It lists the exact
    published source windows, snapshot times, rows, and file sizes. Missing
    intervals are not zero traffic. Then query the table-named reader views:

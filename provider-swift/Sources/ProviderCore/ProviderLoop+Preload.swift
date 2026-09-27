@@ -124,10 +124,11 @@ extension ProviderLoop {
 
     internal func waitForPreloads(
         _ preloads: [Task<Void, Never>], timeout: Duration,
-        returnOnCancellation: Bool = false
+        returnOnCancellation: Bool = false,
+        wake: OneShotBoolContinuation? = nil
     ) async -> Bool {
         guard !preloads.isEmpty else { return true }
-        let oneShot = OneShotBoolContinuation()
+        let oneShot = wake ?? OneShotBoolContinuation()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 oneShot.install(continuation)

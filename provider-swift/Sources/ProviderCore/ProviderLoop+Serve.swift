@@ -70,12 +70,20 @@ extension ProviderLoop {
 
         // 1. Apply security hardening
         try await applySecurityHardening()
+        if Task.isCancelled || servingDrain.refusing {
+            await shutdownBeforeRegistration()
+            return
+        }
 
         // MTP catalog metadata is process-local. Give it one short, owned
         // prewarm before either startup preloads or the unified local endpoint
         // can perform the first normal cold target load. This never downloads
         // assistant bytes and fails open on timeout.
         await prewarmSpecDecCatalog()
+        if Task.isCancelled || servingDrain.refusing {
+            await shutdownBeforeRegistration()
+            return
+        }
         startMTPUpgradeMonitor()
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
@@ -110,7 +118,10 @@ extension ProviderLoop {
         let preloadLivenessRefresh = startPreloadLivenessRefresh()
         await runStartupPreloadGate()
         preloadLivenessRefresh.cancel()
-        if Task.isCancelled || servingDrain.phase == .drained { return }
+        if Task.isCancelled || servingDrain.refusing {
+            await shutdownBeforeRegistration()
+            return
+        }
 
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
@@ -167,7 +178,10 @@ extension ProviderLoop {
 
         // A termination received during the APNs/startup awaits can already
         // have drained a process that has no coordinator connection yet.
-        if servingDrain.phase == .drained { return }
+        if Task.isCancelled || servingDrain.refusing {
+            await shutdownBeforeRegistration()
+            return
+        }
         // 4. Create coordinator client and start connection
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
@@ -180,8 +194,16 @@ extension ProviderLoop {
         // already have refreshed a hash, and registration must carry it.
         await coordinator.updateModelWeightHashes(liveModelHashes)
 
-        if servingDrain.phase == .drained { await coordinator.shutdown(); return }
+        if Task.isCancelled || servingDrain.refusing {
+            await coordinator.shutdown()
+            await shutdownBeforeRegistration()
+            return
+        }
         let (events, sendFn) = await coordinator.start()
+        if Task.isCancelled || servingDrain.refusing {
+            await shutdownBeforeRegistration()
+            return
+        }
         // Wire the direct inference-chunk fast path (Optimizations 1-3) alongside
         // the control path. `chunkSender` is a nonisolated handle on the actor;
         // its connection sink is (re)bound per session inside the client.
@@ -241,6 +263,7 @@ extension ProviderLoop {
         // 5. The event reader outlives cancellation of the calling task.
         // Lifecycle shutdown closes admission and drains accepted work plus
         // terminal accounting before ending this stream.
+        coordinatorEventLoopStarted = true
         let eventTask = Task {
             for await event in events {
                 switch event {

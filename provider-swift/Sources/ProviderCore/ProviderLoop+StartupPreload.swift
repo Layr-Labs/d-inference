@@ -168,7 +168,7 @@ extension ProviderLoop {
     /// the background (`startupPreloadTask`); shutdown cancels it.
     @discardableResult
     internal func runStartupPreloadGate() async -> StartupPreloadGateOutcome {
-        guard !Task.isCancelled else { return .cancelled }
+        guard !Task.isCancelled, !servingDrain.refusing else { return .cancelled }
         let backend = loopConfig.config.backend
         guard backend.startupPreload else {
             logger.info("Startup preload disabled (startup_preload=false)")
@@ -228,11 +228,15 @@ extension ProviderLoop {
         }
         startupPreloadTask = driver
 
+        let gateWaiter = OneShotBoolContinuation()
+        startupPreloadGateWaiter = gateWaiter
+        defer { startupPreloadGateWaiter = nil }
         let finishedInTime = await waitForPreloads(
-            [driver], timeout: timeout, returnOnCancellation: true)
-        if Task.isCancelled {
+            [driver], timeout: timeout, returnOnCancellation: true,
+            wake: gateWaiter)
+        if Task.isCancelled || servingDrain.refusing {
             driver.cancel()
-            logger.info("Startup preload gate: serving task cancelled — stopping before registration")
+            logger.info("Startup preload gate: serving stopped — cancelling before registration")
             return .cancelled
         }
         if finishedInTime {

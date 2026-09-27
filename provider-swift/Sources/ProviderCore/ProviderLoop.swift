@@ -537,6 +537,14 @@ public actor ProviderLoop {
     /// background). Cancelled and awaited on shutdown alongside the
     /// coordinator-driven preloads.
     internal var startupPreloadTask: Task<Void, Never>?
+    /// Wakes the registration gate when lifecycle draining starts, even if
+    /// the preload driver is inside a slow model load.
+    internal var startupPreloadGateWaiter: OneShotBoolContinuation?
+    /// Coalesces pre-registration teardown requested by the serve task and a
+    /// concurrent signal handler. Detached from a cancelled schedule task.
+    internal var preRegistrationCleanupTask: Task<Void, Never>?
+    /// Set once the coordinator event reader owns the normal shutdown path.
+    internal var coordinatorEventLoopStarted = false
     /// Suffix of the startup plan not yet completed by the driver. Exposed in
     /// the daemon state so status can distinguish warmup from request loading.
     internal var startupPreloadPendingModels: [String] = []

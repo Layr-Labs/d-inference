@@ -799,6 +799,41 @@ struct StartupPreloadNoEvictTests {
         )
     }
 
+    @Test("termination wakes the startup gate and tears down earlier warm slots")
+    func preRegistrationDrainUnloadsCompletedPreloads() async throws {
+        let releaseLoad = PreloadGate()
+        defer { releaseLoad.signal() }
+        let loop = try await makePreloadLoop(
+            models: [
+                preloadModelInfo("warm", memoryGb: 0.01),
+                preloadModelInfo("pending", memoryGb: 0.01),
+            ],
+            backend: BackendSettings(
+                maxModelSlots: 2, preloadModels: ["pending"],
+                startupPreloadTimeoutSecs: 30, startupSelftest: false))
+        await installStubSlot(loop, "warm")
+        await loop.setStartupPreloadLoadOverrideForTesting { _ in
+            await releaseLoad.wait()
+        }
+
+        let gate = Task { await loop.runStartupPreloadGateForTesting() }
+        var waited = 0
+        while !(await loop.startupPreloadTaskRunningForTesting()), waited < 100 {
+            try await Task.sleep(for: .milliseconds(10))
+            waited += 1
+        }
+        #expect(await loop.startupPreloadTaskRunningForTesting())
+        let stop = Task { await loop.drainAndShutdown(timeoutSeconds: 2) }
+
+        // The lifecycle drain wakes the gate before the parked load is
+        // released; the stop then awaits that load and unloads the warm slot.
+        #expect(await gate.value == .cancelled)
+        releaseLoad.signal()
+        #expect(await stop.value)
+        #expect(await loop.modelSlots.isEmpty)
+        #expect(await loop.state.warmModels.isEmpty)
+    }
+
     @Test("provider concurrent same-model load rechecks residency after MTP preparation")
     func providerPreparationRaceRechecksResidency() async throws {
         let fakeId = "darkbloom-tests/loop-race-\(UUID().uuidString.prefix(8))"

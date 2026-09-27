@@ -888,6 +888,7 @@ func main() {
 	go srv.StartDDGaugeLoop(ctx)
 	go srv.StartWarmPoolTelemetryLoop(ctx)
 	srv.StartProfilerLoops(ctx)
+	srv.StartInferenceReceiptMaintenance(ctx)
 
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
 	go srv.StartReadCacheJanitor(ctx)

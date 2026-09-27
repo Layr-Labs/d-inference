@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-26 · commit `cf7393580`
+> Last updated: 2026-09-27 · commit `d3e3c3a62`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -49,10 +49,10 @@ Keychain. Nothing prompt-derived is stored on either side.
 
 ### The store interface
 
-`Store` (`coordinator/store/interface.go`) is the union of thirteen embedded
+`Store` (`coordinator/store/interface.go`) is the union of fourteen embedded
 domain interfaces. Most are declared in `coordinator/store/interface_domains.go`;
 `RequestOutcomeStore` lives in `coordinator/store/request_outcomes.go`. Callers
-depend on the narrow slice they need; both implementations satisfy all thirteen.
+depend on the narrow slice they need; both implementations satisfy all fourteen.
 
 | Sub-interface | Owns |
 |---|---|
@@ -67,6 +67,7 @@ depend on the narrow slice they need; both implementations satisfy all thirteen.
 | `UserStore` | Privy-linked consumer accounts, role, platform-fee override and Stripe Connect payout fields. |
 | `DeviceAuthStore` | The RFC 8628-style device-code flow and the long-lived provider tokens it mints. |
 | `InviteStore` | Invite codes and redemptions. |
+| `InferenceReceiptStore` | Durable job state and completed signed inference-receipt envelopes; lifecycle and privacy are explained in [inference receipts](inference-receipts.md). |
 | `ProviderEarningsStore` | Per-node earnings, payouts and the base-rewards settlement rows. |
 | `ProviderStore` | Provider records and sessions, reputation, the APNs code-identity and trust-reuse caches, verification jobs and log reports. |
 
@@ -235,6 +236,7 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter kept by `migrateUsageTotals`. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
+| Inference evidence | `inference_receipts` | Unique job IDs and nonces, immutable terminal state, signed envelope only for completed jobs, 90-day public lookup expiry; see [inference receipts](inference-receipts.md). |
 | Bookkeeping | `schema_migrations`, `earnings_summary_backfill_pending` | Completion/plan markers and resumable per-key historical deltas. |
 
 ### Global Payouts state
@@ -258,6 +260,7 @@ The store keeps most business rows forever; the loops that exist are narrow.
 | Memory-store pruner, every 15 minutes | `coordinator/cmd/coordinator/main.go` (`memory_store_pruner`, `MemoryStore.Prune`) | Append-only history slices to `DefaultPruneMaxEntries` (100 000); memory store only. |
 | Session reconciliation, once at boot | `coordinator/cmd/coordinator/main.go` (`CloseOpenProviderSessions`) | Closes `provider_sessions` rows whose last heartbeat is more than 3 minutes old, so a blue-green cutover does not truncate live sessions. |
 | Read-cache janitor, every minute | `coordinator/api/server.go` (`StartReadCacheJanitor`) | In-process response cache, not a table. |
+| Inference receipt recovery and expiry, hourly | `coordinator/api/inference_receipt_maintenance.go` (`StartInferenceReceiptMaintenance`) | Interrupts pending receipt rows older than 24 hours and prunes expired receipt rows in bounded batches; public lookups hide expired rows immediately. |
 
 The existing nullable `request_rejections.could_have_served` column stores NULL
 when counterfactual servability is not evaluated. Go reads it as `*bool`
@@ -341,6 +344,7 @@ KV blocks under a per-model key, not tokens.
 | Postgres pool, schema, one-shot migrations | `coordinator/store/postgres.go`, `coordinator/store/postgres_usage_totals_migration.go`, `coordinator/store/postgres_withdrawable_migration.go`, `coordinator/store/postgres_log_report_privacy.go` |
 | Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`, `GetProviderBySerial`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`, `UsageRecordsSince`); `coordinator/store/postgres_row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres_model_registry.go`, `coordinator/store/postgres_base_rewards.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/route_telemetry.go`, `coordinator/store/usage_time_series.go`, `coordinator/store/apikey.go` |
+| Inference receipt contract and backends | `coordinator/store/interface_domains.go` (`InferenceReceiptStore`), `coordinator/store/postgres_inference_receipts.go`, `coordinator/store/memory_inference_receipts.go` |
 | Memory backend | `coordinator/store/memory.go`, `coordinator/store/memory_base_rewards.go` |
 | Manual SQL | `coordinator/store/migrations/` |
 | Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/api/trust_reuse_journal.go`, [`../operations/state-export.md`](../operations/state-export.md) |

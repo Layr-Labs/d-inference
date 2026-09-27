@@ -77,7 +77,7 @@ func TestCORSPreflight(t *testing.T) {
 	srv, _ := testServer(t)
 
 	req := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
-	req.Header.Set("Access-Control-Request-Headers", "authorization, "+metadataDetailsHeader)
+	req.Header.Set("Access-Control-Request-Headers", "authorization, "+metadataDetailsHeader+", "+inferenceReceiptHeader+", "+inferenceReceiptNonceHeader)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -86,6 +86,16 @@ func TestCORSPreflight(t *testing.T) {
 	}
 	if got := w.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(strings.ToLower(got), strings.ToLower(metadataDetailsHeader)) {
 		t.Errorf("Access-Control-Allow-Headers = %q, want %q", got, metadataDetailsHeader)
+	}
+	for _, header := range []string{inferenceReceiptHeader, inferenceReceiptNonceHeader} {
+		if got := w.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(strings.ToLower(got), strings.ToLower(header)) {
+			t.Errorf("Access-Control-Allow-Headers = %q, want %q", got, header)
+		}
+	}
+	for _, header := range []string{inferenceReceiptJobIDHeader, inferenceReceiptHashHeader} {
+		if got := w.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(strings.ToLower(got), strings.ToLower(header)) {
+			t.Errorf("Access-Control-Expose-Headers = %q, want %q", got, header)
+		}
 	}
 }
 
@@ -131,5 +141,25 @@ func TestCORSPublicEndpointsAllowAnyOrigin(t *testing.T) {
 	}
 	if got := pw.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, PUT, DELETE, OPTIONS" {
 		t.Errorf("DELETE /v1/pricing preflight: Allow-Methods = %q, want the credentialed method set", got)
+	}
+}
+
+func TestCORSReceiptLookupsArePublicReadEndpoints(t *testing.T) {
+	srv, _ := testServer(t)
+
+	for _, path := range []string{
+		"/v1/inference-receipts/keys",
+		"/v1/inference-receipts/jobs/receipt-job-id",
+		"/v1/inference-receipts/hashes/receipt-hash",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("%s: Access-Control-Allow-Origin = %q, want \"*\"", path, got)
+		}
+		if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Errorf("%s: Access-Control-Allow-Credentials = %q, want empty", path, got)
+		}
 	}
 }

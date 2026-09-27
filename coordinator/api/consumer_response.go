@@ -90,6 +90,10 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 									}
 									msg := extractMessage([]string{"data: " + string(encoded)})
 									resp := buildGenericEndpointResponse(pr, msg, completeUsage)
+									if err := s.finalizeInferenceReceipt(w, pr, resp); err != nil {
+										s.writeInferenceReceiptFailure(w, pr)
+										return
+									}
 									s.noteInferenceSuccess(pr)
 									writeNonStreamBody(w, pr.Profile.Parent(), resp)
 									return
@@ -110,6 +114,10 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 									respObj := chatCompletionToResponses(
 										chatResp, consumerModel(pr), pr.SESignature,
 										pr.ResponseHash, pr.Traits)
+									if err := s.finalizeInferenceReceipt(w, pr, respObj); err != nil {
+										s.writeInferenceReceiptFailure(w, pr)
+										return
+									}
 									s.noteInferenceSuccess(pr)
 									writeNonStreamBody(w, pr.Profile.Parent(), respObj)
 									return
@@ -129,6 +137,10 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 							}
 							if isChatCompletionsConsumer(pr) {
 								attachChatCompletionMetadata(obj, pr)
+							}
+							if err := s.finalizeInferenceReceipt(w, pr, obj); err != nil {
+								s.writeInferenceReceiptFailure(w, pr)
+								return
 							}
 							s.noteInferenceSuccess(pr)
 							writeNonStreamBody(w, pr.Profile.Parent(), obj)
@@ -161,6 +173,10 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 					chatResp := buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
 					applyChatCompletionMetadataToResponse(&chatResp, pr)
 					resp = chatResp
+				}
+				if err := s.finalizeInferenceReceipt(w, pr, resp); err != nil {
+					s.writeInferenceReceiptFailure(w, pr)
+					return
 				}
 				s.noteInferenceSuccess(pr)
 				writeNonStreamBody(w, pr.Profile.Parent(), resp)

@@ -169,6 +169,7 @@ type MemoryStore struct {
 	requestOutcomes      map[string]RequestOutcomeRecord
 	modelDemand          map[string]modelDemandObservation
 	modelDemandStartedAt time.Time
+	inferenceReceipts    map[string]InferenceReceiptRecord
 	requestProfiles      []RequestProfileRecord
 	requestProfileKeys   map[string]struct{} // request_id/attempt -> present
 	fleetSnapshots       []FleetSnapshotRow

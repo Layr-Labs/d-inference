@@ -29,7 +29,7 @@
 //
 // Threat model T-041: at-rest artifacts return with this tier, but names/
 // index/metadata carry only HMAC tags under the SE-rooted per-install
-// K_lookup (leak #2 CLOSED), the 15-minute sliding TTL bounds the at-rest
+// K_lookup (leak #2 CLOSED), the 30-minute sliding TTL bounds the at-rest
 // window, and the AES-GCM per-file DEK/KEK scheme is the reviewed legacy
 // core unchanged. Salt scoping is preserved on disk (folded into both the
 // chain hash and the HMAC tag). SEC-035 (in-process TTFT oracle) stays the
@@ -1183,7 +1183,7 @@ public final class SSDPrefixCache:
         // Sliding-TTL bump for the sidecars this donation re-covered, exactly
         // as the block path bumps its reused tags. Without it a conversation
         // can keep its block run warm forever while the sidecars underneath it
-        // expire at 15 minutes — silently re-arming the full replay and paying
+        // expire at the TTL — silently re-arming the full replay and paying
         // their (much larger) write wear again on the next donation.
         if !reused.isEmpty {
             index.touch(tags16: reused, now: now)

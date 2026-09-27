@@ -716,20 +716,32 @@ struct SSDPrefixCacheModeTests {
                 == 50 * gib)
     }
 
-    @Test("SSD knobs: TTL is capped at 15 minutes; write cap parses; stage gates parse")
+    @Test("SSD knobs: TTL is capped at 30 minutes; write cap parses; stage gates parse")
     func ssdKnobs() {
-        #expect(SSDPrefixCachePolicy.ttlSeconds(environment: [:]) == 900)
+        #expect(SSDPrefixCachePolicy.defaultTTLSeconds == 1_800)
+        // Default equals maximum: the env can shorten the TTL, never extend it.
+        #expect(SSDPrefixCachePolicy.maxTTLSeconds == SSDPrefixCachePolicy.defaultTTLSeconds)
+        #expect(SSDPrefixCachePolicy.ttlSeconds(environment: [:]) == 1_800)
         #expect(
             SSDPrefixCachePolicy.ttlSeconds(
                 environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "300"]) == 300)
-        // The env can only SHORTEN the TTL (15-minute maximum) — raising or
-        // disabling attempts fall back to the default.
         #expect(
             SSDPrefixCachePolicy.ttlSeconds(
-                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "86400"]) == 900)
+                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "900"]) == 900)
         #expect(
             SSDPrefixCachePolicy.ttlSeconds(
-                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "0"]) == 900)
+                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "1800"]) == 1_800)
+        // Raising past the maximum or disabling the TTL both fall back to
+        // the default.
+        #expect(
+            SSDPrefixCachePolicy.ttlSeconds(
+                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "1801"]) == 1_800)
+        #expect(
+            SSDPrefixCachePolicy.ttlSeconds(
+                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "86400"]) == 1_800)
+        #expect(
+            SSDPrefixCachePolicy.ttlSeconds(
+                environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "0"]) == 1_800)
         #expect(
             SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: [:])
                 == 150 * 1_000_000_000)

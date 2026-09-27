@@ -236,7 +236,8 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
   - `coordinator/protocol/telemetry.go` (canonical),
   - `provider-swift/Sources/ProviderCore/Telemetry/` (Swift mirror),
   - `console-ui/src/lib/telemetry-types.ts` (TS mirror).
-  Symmetry tests in each language pin enum casing and optional-field omission.
+  The Go and Swift symmetry tests pin enum casing and optional-field omission;
+  the TypeScript mirror has no test of its own, so keep it aligned by hand.
   There is no server-side field allowlist: the coordinator ingests no client
   telemetry, and the privacy backstop is that no ingestion route exists plus
   the fixed operational keys each coordinator emitter call site passes. Never

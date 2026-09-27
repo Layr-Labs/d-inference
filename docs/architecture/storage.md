@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-27 · commit `12b6b7901`
+> Last updated: 2026-09-27 · commit `4320091ca`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -77,8 +77,8 @@ compact, revision-aware public demand projections and hourly
 per-model/consumer/outcome counters retained for 31 days; PostgreSQL aggregate
 reads use bounded read-only transactions.
 
-Telemetry *events* are not in the store at all: `TelemetryEventRecord` goes to
-Datadog only (see [`telemetry.md`](telemetry.md)).
+Telemetry *events* are not in the store at all: the coordinator emitter sends
+them to Datadog only (see [`telemetry.md`](telemetry.md)).
 
 ### Two implementations and when each runs
 

@@ -3,7 +3,8 @@
 // `provider-swift/Sources/ProviderCore/Telemetry/`).
 //
 // Any change here MUST be reflected in the Go canonical type and the Swift
-// mirror. A symmetry test runs against the Go canonical JSON in CI.
+// mirror. The Go and Swift symmetry tests pin the canonical JSON; the event
+// types here only type the inert `telemetry.ts` facade, which sends nothing.
 
 export type TelemetrySource =
   | "coordinator"

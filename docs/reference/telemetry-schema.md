@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-27 · commit `4320091ca`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -68,10 +68,9 @@ be drained without claiming `coordinator_acknowledged = true`. The daemon state 
 
 | Mirror | File | Types | Role today |
 |---|---|---|---|
-| Go (canon) | `coordinator/protocol/telemetry.go` | `TelemetryEvent`, `TelemetryBatch`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | shape and enums |
-| Go emitter | `coordinator/telemetry/emitter.go` | `Emitter.Emit`, `Event` | the only live producer; source forced to `coordinator` |
-| Go store mirror | `coordinator/store/interface.go` | `TelemetryEventRecord` | `TelemetryEvent` + `received_at`; nothing persists it — Datadog is the sole sink |
-| Swift | `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind`, `TelemetryFieldFilter` | inert: `TelemetryClient.swift` is a no-op facade (`emit` discards, `configure`/`shutdown` do nothing), so nothing reaches `TelemetryFieldFilter` |
+| Go (canon) | `coordinator/protocol/telemetry.go` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | shape and enums |
+| Go emitter | `coordinator/telemetry/emitter.go` | `Emitter.Emit`, `Event` | the only live producer; source forced to `coordinator`; Datadog is the sole durable sink |
+| Swift | `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | inert: `TelemetryClient.swift` is a no-op facade (`emit` discards, `configure`/`shutdown` do nothing) |
 | TypeScript | `console-ui/src/lib/telemetry-types.ts` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | types for the no-op `console-ui/src/lib/telemetry.ts` facade |
 
 ## Event fields
@@ -91,13 +90,12 @@ be drained without claiming `coordinator_acknowledged = true`. The daemon state 
 | `message` | `string` | `String` | `string` | req | developer-authored |
 | `fields` | `map[string]any` | `[String: AnyCodableValue]?` | `Record<string, unknown>?` | opt | structured operational fields fixed by the emitting call site |
 | `stack` | `string` | `String?` | `string?` | opt | backtrace (panics) |
-| `received_at` | `time.Time` | — | — | store mirror only | `TelemetryEventRecord` |
 
 Casing and omission rules: every key is snake_case and identical across the
 three mirrors (`TelemetrySymmetryTests.swift` pins the exact encoded string).
 Go optional fields are `omitempty`; Swift uses `encodeIfPresent`; TS marks them
-`?`. The six required keys are always present in every mirror. `TelemetryBatch`
-is `{"events": [TelemetryEvent, …]}`; nothing sends or accepts it.
+`?`. The six required keys are always present in every mirror. There is no
+batch wire type: nothing sends or accepts events.
 
 ## Enums
 
@@ -120,8 +118,7 @@ coordinator emitter does not filter. Each emitting call site passes a fixed set
 of operational keys (bounded enums, counters, byte counts and durations; never
 prompt, completion, media or cache content), enumerated in
 [`telemetry-inventory.md`](telemetry-inventory.md#coordinator-emitted-events).
-The Swift `TelemetryFieldFilter.allowed` set survives only inside the inert
-client facade. To add a field, add it at the call site with a bounded value and
+No mirror carries a field filter. To add a field, add it at the call site with a bounded value and
 list it in the inventory.
 
 ## Coordinator emitter

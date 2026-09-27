@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-27 · commit `4320091ca`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -274,7 +274,7 @@ two profiler tables: [`../architecture/system-profiler.md`](../architecture/syst
 ## Related
 
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — mechanism, invariants, failure modes
-- [`telemetry-schema.md`](telemetry-schema.md) — event contract and allowlist
+- [`telemetry-schema.md`](telemetry-schema.md) — event contract and its Go/Swift/TypeScript mirrors
 - [`protocol-messages.md`](protocol-messages.md) — heartbeat and terminal field tables
 - [`../architecture/system-profiler.md`](../architecture/system-profiler.md) — `profile`, `request_profiles`, `fleet_snapshots`
 - [`../architecture/request-outcome-observability.md`](../architecture/request-outcome-observability.md) — outcome vocabularies behind the request metrics

@@ -24,7 +24,8 @@ const (
 	// cacheRoutingSizingTTL is the longest holder TTL the in-memory caps below
 	// are sized for. Providers keep cache files for 30 minutes, so a longer
 	// routing TTL would only retain evidence for files that are gone. It is a
-	// sizing basis, not a limit: configuration does not enforce it.
+	// sizing basis, not a limit: a longer TTL is accepted with a warning
+	// (warnCacheRoutingTTL).
 	cacheRoutingSizingTTL = 30 * time.Minute
 	// cacheRoutingMaxEntries is the global holder cap. Holders live their whole
 	// TTL, so the steady state is creation rate × TTL. Production creates about
@@ -32,11 +33,12 @@ const (
 	// 30/s: 30/s × 1,800 s (cacheRoutingSizingTTL) = 54,000. 250,000 leaves
 	// more than 4× headroom (about 139/s sustained) before the cap displaces
 	// live evidence and shortens the effective TTL. Measured through the
-	// receipt path (BenchmarkCacheHolderMemory, settled heap): 982 B per
-	// donated holder and 1,126 B per holder recorded by a hit, which adds the
+	// receipt path (BenchmarkCacheHolderMemory, settled heap): 1,020 B per
+	// donated holder and 1,164 B per holder recorded by a hit, which adds the
 	// stage measurement. That covers the holder and its decoded strings, its
-	// bucket map, the expiry-heap entry and both index slots, so a full index
-	// is about 270 MiB and 54,000 holders about 60 MiB.
+	// bucket map, the expiry-heap entry, its by-ref slot and the per-provider
+	// index (38 B, BenchmarkCacheProviderIndexMemory), so a full index is
+	// about 280 MiB and 54,000 holders about 60 MiB.
 	cacheRoutingMaxEntries = 250_000
 	// cacheDemandMaxEntries sizes the observed-demand index for the routing TTL
 	// at fleet rate, not for the holder cap: each plan records ~5 geometric
@@ -209,9 +211,10 @@ func CacheHolderRemovalReasons() []string {
 // min(ttl, cacheRoutingMemoryTTL) while SSD holders live the full ttl, so
 // neither order matches the order of expiry.
 type cacheAttemptOrderEntry struct {
-	nonce     string
-	expiresAt time.Time
-	index     int
+	nonce      string
+	providerID string
+	expiresAt  time.Time
+	index      int
 }
 
 type cacheAttemptOrderHeap []*cacheAttemptOrderEntry
@@ -304,8 +307,9 @@ type cacheRoutingTracker struct {
 	maxAttempts int
 	holderCount int
 	lastSweep   time.Time
-	// sweepBacklog is set when a sweep spent its whole removal budget; the
-	// next tracker operation then continues without waiting for the interval.
+	// sweepBacklog is set when a sweep ran out of budget with expired entries
+	// left; the next tracker operation then continues without waiting for the
+	// interval.
 	sweepBacklog        bool
 	holders             map[string]map[string]cacheHolder
 	attempts            map[string]cacheAttempt
@@ -313,17 +317,23 @@ type cacheRoutingTracker struct {
 	holderOrderByRef    map[cacheHolderRef]*cacheHolderOrderEntry
 	attemptOrder        cacheAttemptOrderHeap
 	attemptOrderByNonce map[string]*cacheAttemptOrderEntry
-	v2Sequences         map[cacheV2SequenceKey]uint64
-	rejectedV2          map[cacheV2ProviderModelKey]cacheV2Fence
-	fencesApplied       uint64
-	fencesExpired       uint64
-	ssdLookups          uint64
-	ssdHits             uint64
-	ssdMisses           uint64
-	ssdDonations        uint64
-	holderAdded         uint64
-	holderRemoved       map[string]uint64
-	donationOutcomes    map[string]uint64
+	// The per-provider indexes hold the same order entries as the heaps and
+	// change only where the heaps change, so a disconnect or a capability
+	// change visits that provider's entries instead of every bucket and
+	// attempt (cache_provider_index.go).
+	holdersByProvider  map[string]map[*cacheHolderOrderEntry]struct{}
+	attemptsByProvider map[string]map[*cacheAttemptOrderEntry]struct{}
+	v2Sequences        map[cacheV2SequenceKey]uint64
+	rejectedV2         map[cacheV2ProviderModelKey]cacheV2Fence
+	fencesApplied      uint64
+	fencesExpired      uint64
+	ssdLookups         uint64
+	ssdHits            uint64
+	ssdMisses          uint64
+	ssdDonations       uint64
+	holderAdded        uint64
+	holderRemoved      map[string]uint64
+	donationOutcomes   map[string]uint64
 	// clock is read outside t.mu on every receipt; tests replace it before
 	// traffic, so it is atomic rather than lock-guarded. Nil means time.Now.
 	clock atomic.Pointer[func() time.Time]
@@ -366,10 +376,12 @@ func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTrac
 		ttl:        ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts,
 		holders: make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
 		holderOrderByRef: make(map[cacheHolderRef]*cacheHolderOrderEntry), attemptOrderByNonce: make(map[string]*cacheAttemptOrderEntry),
-		v2Sequences:      make(map[cacheV2SequenceKey]uint64),
-		rejectedV2:       make(map[cacheV2ProviderModelKey]cacheV2Fence),
-		holderRemoved:    make(map[string]uint64),
-		donationOutcomes: make(map[string]uint64),
+		holdersByProvider:  make(map[string]map[*cacheHolderOrderEntry]struct{}),
+		attemptsByProvider: make(map[string]map[*cacheAttemptOrderEntry]struct{}),
+		v2Sequences:        make(map[cacheV2SequenceKey]uint64),
+		rejectedV2:         make(map[cacheV2ProviderModelKey]cacheV2Fence),
+		holderRemoved:      make(map[string]uint64),
+		donationOutcomes:   make(map[string]uint64),
 	}
 }
 
@@ -477,6 +489,7 @@ func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
 	if err := cfg.Check(); err != nil {
 		return err
 	}
+	r.warnCacheRoutingTTL(cfg)
 	var keys cacheRouteKeys
 	if cfg.Mode != CacheRoutingOff {
 		master, err := decodeCacheMasterKey(cfg.MasterKey)

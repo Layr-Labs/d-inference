@@ -196,19 +196,86 @@ func BenchmarkCacheSweepMassExpiry(b *testing.B) {
 	}
 }
 
-// Not changed by the index-sizing work and reported as a risk: provider
-// disconnects and heartbeat model changes still walk every holder bucket
-// under the tracker lock. The provider here holds nothing, so this is the
-// pure walk.
+// legacyProviderInvalidationWalk is the former invalidateProviderEvidence
+// holder and attempt pass, kept here only as the reference arm.
+func legacyProviderInvalidationWalk(tracker *cacheRoutingTracker, providerID string, reason cacheHolderRemovalReason) {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	for key, holders := range tracker.holders {
+		if _, exists := holders[providerID]; exists {
+			tracker.removeHolderLocked(key, providerID, reason)
+		}
+	}
+	for nonce, attempt := range tracker.attempts {
+		if attempt.ProviderID == providerID {
+			tracker.removeAttemptLocked(nonce)
+		}
+	}
+}
+
+// A disconnect must cost what that provider holds, not what the index holds.
+// Each iteration restores the provider's 64 holders and 8 attempts with the
+// timer stopped, then times one invalidation.
 func BenchmarkCacheProviderInvalidationWalk(b *testing.B) {
+	const held, attempts = 64, 8
 	for _, total := range []int{10_000, cacheRoutingMaxEntries} {
-		b.Run(fmt.Sprintf("holders=%d", total), func(b *testing.B) {
-			tracker := newCacheRoutingTracker(cacheRoutingSizingTTL, defaultCacheRoutingMaxHolders)
-			fillSyntheticHolders(tracker, total, time.Unix(1_700_000_000, 0))
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				tracker.disconnect("absent-provider", cacheHolderRemovalDisconnect)
-			}
-		})
+		for _, arm := range []string{"full_walk", "provider_index"} {
+			b.Run(fmt.Sprintf("holders=%d/held=%d/%s", total, held, arm), func(b *testing.B) {
+				tracker := newCacheRoutingTracker(cacheRoutingSizingTTL, defaultCacheRoutingMaxHolders)
+				tracker.maxEntries = total + held
+				now := time.Unix(1_700_000_000, 0)
+				fillSyntheticHolders(tracker, total, now)
+				restore := func() {
+					tracker.mu.Lock()
+					defer tracker.mu.Unlock()
+					for i := 0; i < held; i++ {
+						tracker.upsertHolderLocked(fmt.Sprintf("victim-%d", i), cacheHolder{
+							ProviderID: "victim", ModelID: "model", UpdatedAt: now, ExpiresAt: now.Add(tracker.ttl),
+						})
+					}
+					for i := 0; i < attempts; i++ {
+						tracker.storeAttemptLocked(fmt.Sprintf("victim-%d", i), cacheAttempt{
+							ProviderID: "victim", Model: "model", CreatedAt: now,
+							ExpiresAt: now.Add(cacheRoutingInFlightAttemptTTL),
+						})
+					}
+				}
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					restore()
+					b.StartTimer()
+					if arm == "full_walk" {
+						legacyProviderInvalidationWalk(tracker, "victim", cacheHolderRemovalDisconnect)
+					} else {
+						tracker.disconnect("victim", cacheHolderRemovalDisconnect)
+					}
+				}
+				b.StopTimer()
+				if holders, _, left, _ := tracker.indexSizes(); holders != total || left != 0 {
+					b.Fatalf("holders=%d attempts=%d after invalidation, want %d/0", holders, left, total)
+				}
+			})
+		}
+	}
+}
+
+// What the per-provider holder index adds to a full holder index spread over
+// 512 providers: the settled heap released by dropping the index alone. Run
+// with -benchtime 1x, without the race detector.
+func BenchmarkCacheProviderIndexMemory(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		tracker := newCacheRoutingTracker(cacheRoutingSizingTTL, defaultCacheRoutingMaxHolders)
+		fillSyntheticHolders(tracker, cacheRoutingMaxEntries, time.Unix(1_700_000_000, 0))
+		with := settledHeapBytes()
+		tracker.mu.Lock()
+		providers := len(tracker.holdersByProvider)
+		tracker.holdersByProvider = nil
+		tracker.mu.Unlock()
+		without := settledHeapBytes()
+		b.ReportMetric(float64(providers), "providers")
+		b.ReportMetric(float64(with-without)/float64(cacheRoutingMaxEntries), "B/holder")
+		b.ReportMetric(float64(with-without)/(1<<20), "MiB/full-index")
+		runtime.KeepAlive(tracker)
 	}
 }

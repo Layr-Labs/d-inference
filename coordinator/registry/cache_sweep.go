@@ -7,8 +7,8 @@ import "time"
 // the routing path also takes (matchingHolders): after a traffic lull longer
 // than the TTL every entry is stale at once, and removing up to
 // cacheRoutingMaxEntries of them in one pass would stall routing. A sweep that
-// spends a budget sets sweepBacklog, so the following tracker operations keep
-// draining instead of waiting for the next interval. At a full index one
+// leaves expired entries behind sets sweepBacklog, so the following tracker
+// operations keep draining instead of waiting for the next interval. At a full index one
 // budget of holders measured 0.7 ms mean and 1.3 ms at most
 // (BenchmarkCacheSweepMassExpiry); 4,096 measured 3 ms and up to 7.6 ms.
 // Correctness never depends on the sweep: activeHolderLocked and
@@ -18,16 +18,18 @@ const cacheRoutingMaxSweepRemovals = 1_024
 
 // sweepLocked expires from the heads of the expiry-ordered heaps. Its cost is
 // O(expired · log n) and independent of how many live entries exist. It
-// reports whether a budget ran out, that is, whether expired entries may
-// remain.
+// reports whether expired entries remain because a budget ran out.
 func (t *cacheRoutingTracker) sweepLocked(now time.Time) bool {
-	holders, _ := t.expireHoldersLocked(now, cacheRoutingMaxSweepRemovals)
-	attempts := t.expireAttemptsLocked(now, cacheRoutingMaxSweepRemovals)
+	t.expireHoldersLocked(now, cacheRoutingMaxSweepRemovals)
+	t.expireAttemptsLocked(now, cacheRoutingMaxSweepRemovals)
 	// Fences are keyed by (provider, model, tier): bounded by the connected
 	// fleet rather than by traffic, and this walk is also the count the
 	// lifecycle status reports.
 	t.sweepFencesLocked(now)
-	return holders == cacheRoutingMaxSweepRemovals || attempts == cacheRoutingMaxSweepRemovals
+	// The heads say exactly whether anything expired is left, so a pass that
+	// happened to end on its budget does not re-arm for nothing.
+	return (len(t.holderOrder) > 0 && !now.Before(t.holderOrder[0].expiresAt)) ||
+		(len(t.attemptOrder) > 0 && !now.Before(t.attemptOrder[0].expiresAt))
 }
 
 // expireHoldersLocked removes at most limit expired holders. examined counts
@@ -91,22 +93,30 @@ func (t *cacheRoutingTracker) stateCounts(now time.Time) (holders, attempts int)
 // has already expired but has not been swept yet is an expiry, not an
 // eviction, so capacity_eviction counts only live evidence that the cap
 // displaced.
+//
+// The loops stop on an empty heap as well: if the heap and the maps ever
+// drifted apart, the index would stay over its cap rather than panic the
+// coordinator.
 func (t *cacheRoutingTracker) enforceCapLocked(now time.Time) {
-	for t.holderCount > t.maxEntries {
+	for t.holderCount > t.maxEntries && len(t.holderOrder) > 0 {
 		head := t.holderOrder[0]
-		reason := cacheHolderRemovalCapacityEviction
-		if !now.Before(head.expiresAt) {
-			reason = cacheHolderRemovalTTL
-		}
-		t.removeHolderLocked(head.ref.key, head.ref.providerID, reason)
+		t.removeHolderLocked(head.ref.key, head.ref.providerID,
+			cacheCapRemovalReason(head.expiresAt, now))
 	}
+}
+
+func cacheCapRemovalReason(expiresAt, now time.Time) cacheHolderRemovalReason {
+	if !now.Before(expiresAt) {
+		return cacheHolderRemovalTTL
+	}
+	return cacheHolderRemovalCapacityEviction
 }
 
 // enforceAttemptCapLocked evicts the attempt that expires first, so terminal
 // attempts waiting only for a late write-behind receipt go before in-flight
 // ones.
 func (t *cacheRoutingTracker) enforceAttemptCapLocked() {
-	for len(t.attempts) > t.maxAttempts {
+	for len(t.attempts) > t.maxAttempts && len(t.attemptOrder) > 0 {
 		t.removeAttemptLocked(t.attemptOrder[0].nonce)
 	}
 }

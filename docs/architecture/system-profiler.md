@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-27 · commit `eafeab723`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -263,7 +263,7 @@ nullable, everything else `NOT NULL DEFAULT` zero. `id BIGSERIAL PRIMARY KEY`,
 | host posture | `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `free_for_load_gb` (nullable: `NULL` = provider never reported it), `memory_pressure`, `cpu_usage`, `thermal_state` (folded), `low_power_mode`, `memory_pressure_level`, `steps_executed`, `step_wall_ns_total`, `decode_rows_total`, `prefill_tokens_total`, `mtp_*_total`, `heartbeat_age_ms`, `wedge_suspected`, `eval_in_flight_ms` |
 | `HeartbeatStats` (lifetime merge) | `requests_served` … `usage_gaps`, `cancel_stage_*_total`, `tokens_after_cancel_total`, `cancel_abort_ns_sum` |
 | coordinator row only | `queue_depth_total`, `queue_depth_by_model` JSONB, `inflight_requests`, `reserve_lock_wait_p95_us`, `profile_sink_depth`, `profile_sink_dropped_total`, `route_sink_dropped_total`, `unknown_request_frames_total`, `goroutines` |
-| capability gating (provider rows) | `provider_version`, `model_vision` (`ModelInfo.IsVision`), `template_render_ok` (`ModelInfo.TemplateRenderOK`; `NULL` = no opinion) — what the tools floor, vision gate and template-render gate compare |
+| capability gating (provider rows) | `provider_version`, `model_vision` (`ModelInfo.IsVision`), `template_render_ok` (`ModelInfo.TemplateRenderOK`; `NULL` = no opinion) — what the version floors, vision gate and template-render gate compare |
 
 Indexes `idx_fleet_snapshots_sampled (sampled_at DESC)`,
 `idx_fleet_snapshots_provider (provider_id, sampled_at DESC)`. INT columns are

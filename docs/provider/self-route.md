@@ -1,6 +1,6 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-09-16 · commit `b564e5828`
+> Last updated: 2026-09-27 · commit `eafeab723`
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK
@@ -124,7 +124,7 @@ Exclusive self-route fails fast with the real cause instead of queueing
 | `409 no_linked_machine` | No provider is linked to the account that owns the key | `darkbloom login` on the Mac under that account |
 | `503 machine_offline` (`Retry-After: 30`) | Linked machine(s) exist but none is online | `darkbloom start`; `darkbloom doctor` for connection problems ([troubleshooting](./troubleshooting.md)) |
 | `503 model_not_loaded` (`Retry-After: 15`) | Online, but no owned machine serves this model id | `darkbloom models download <id>`, then `darkbloom restart`; list ids with the `self` header |
-| `503 model_capability_unsupported` | Machine serves the model but not this request shape (tool calls below the tools version floor, media on a text-only build) | `darkbloom update`; load a vision-capable build |
+| `503 model_capability_unsupported` | Machine serves the model but not this request shape (inference-enforced `tool_choice` without the tool-constraint advertisement, media on a text-only build) | `darkbloom update`; load a vision-capable build |
 | `prefer` requests are billed | Your machine could not serve at that moment, so the fleet did | Check the same causes as above; use `self` if you never want the fallback |
 | Key with `self_route_only` returns 409/503 for every request | The ceiling applies to all traffic on that key | Use a different key for public routing |
 

@@ -1290,10 +1290,9 @@ func (s *Server) dispatchWithReserver(
 		cleanupPending()
 		return nil, nil, decision, plan, "failed to prepare cache-safe request", http.StatusInternalServerError
 	}
-	// Pre-fix providers crash on a vision request carrying sampling penalties;
-	// strip them for those providers only. Protocol-0 providers additionally get
-	// a coordinator-authored prompt_cache_key only inside this sealed body.
-	sealedBody, err := bodyForCacheAttempt(rawBody, requiresVision, provider, pr)
+	// Protocol-0 providers get a coordinator-authored prompt_cache_key only
+	// inside this sealed body.
+	sealedBody, err := bodyForCacheAttempt(rawBody, pr)
 	if err != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
@@ -1382,54 +1381,6 @@ func (s *Server) releaseUnsentDispatch(
 	s.registry.SetProviderIdle(provider.ID)
 }
 
-// penaltySafeProviderVersion is the first provider release whose VLM penalty
-// path handles repetition/presence/frequency penalties without crashing (the
-// TokenRing 2D-prompt fix). Providers below it crash on a vision request that
-// carries any of these fields, so the coordinator strips them before sealing
-// for such a provider. Keep in sync with the release that ships the fix.
-const penaltySafeProviderVersion = "0.6.7"
-
-// visionPenaltyFields crash the pre-fix VLM penalty path on image requests.
-var visionPenaltyFields = []string{"repetition_penalty", "presence_penalty", "frequency_penalty"}
-
-// bodyForProvider returns the request body to seal for `provider`. It equals
-// rawBody, except a vision request routed to a pre-fix provider has the
-// crash-inducing penalty fields stripped. Fixed providers receive the penalties
-// unchanged. Per-provider (not pre-routing) so a retry on a fixed provider keeps
-// them. Remove once MIN_PROVIDER_VERSION clears all pre-fix builds.
-func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Provider) []byte {
-	if !requiresVision {
-		return rawBody
-	}
-	if provider.Version != "" && !semverLess(provider.Version, penaltySafeProviderVersion) {
-		return rawBody // fixed provider — pass penalties through
-	}
-	// A body carrying none of the penalty fields at its top level is returned
-	// unchanged without decoding it — the same outcome the decode path reaches
-	// through changed=false, minus a full-body parse per sizing probe.
-	if has, ok := topLevelObjectHasAnyKey(rawBody, visionPenaltyFields); ok && !has {
-		return rawBody
-	}
-	parsed, err := decodeInferenceJSONObject(rawBody)
-	if err != nil {
-		return rawBody
-	}
-	changed := false
-	for _, key := range visionPenaltyFields {
-		if _, ok := parsed[key]; ok {
-			delete(parsed, key)
-			changed = true
-		}
-	}
-	if !changed {
-		return rawBody
-	}
-	if stripped, err := marshalForwardBody(parsed); err == nil {
-		return stripped
-	}
-	return rawBody
-}
-
 var errProviderBodyTooLarge = errors.New("provider request body too large")
 
 type providerBodyTooLargeError struct {
@@ -1453,22 +1404,8 @@ func oversizedProviderBodyBytes(err error) int {
 	return 0
 }
 
-func legacyCacheBustBodyBytes(
-	rawBody []byte,
-	requiresVision bool,
-	provider *registry.Provider,
-) (int, error) {
-	if provider == nil {
-		return 0, nil
-	}
-	return cacheAttemptSizeError(
-		bodyForProvider(rawBody, requiresVision, provider),
-		strings.Repeat("x", registry.LegacyCacheBustKeyLength))
-}
-
 func providerBodySizeError(
 	rawBody []byte,
-	requiresVision bool,
 	provider *registry.Provider,
 ) (int, error) {
 	if provider == nil {
@@ -1481,24 +1418,23 @@ func providerBodySizeError(
 	if usesLegacyCacheBust {
 		legacyKey = strings.Repeat("x", registry.LegacyCacheBustKeyLength)
 	}
-	return cacheAttemptSizeError(
-		bodyForProvider(rawBody, requiresVision, provider), legacyKey)
+	return cacheAttemptSizeError(rawBody, legacyKey)
 }
 
-func minimumLegacyCacheBustOverflow(rawBody []byte, requiresVision bool) (int, error) {
-	// An empty-version provider exercises the only provider-specific shrinking
-	// transform: legacy vision penalty removal. Raise a fleet-wide protocol floor
-	// only when even that smallest valid protocol-0 body exceeds the cap.
-	return legacyCacheBustBodyBytes(rawBody, requiresVision, &registry.Provider{})
+// minimumLegacyCacheBustOverflow sizes rawBody as a protocol-0 attempt would
+// seal it (with a cache-bust key). Raise a fleet-wide protocol floor only when
+// that body exceeds the cap.
+func minimumLegacyCacheBustOverflow(rawBody []byte) (int, error) {
+	return cacheAttemptSizeError(
+		rawBody, strings.Repeat("x", registry.LegacyCacheBustKeyLength))
 }
 
 func routingTraitsForProviderBody(
 	hasTools bool,
 	providerBody []byte,
-	requiresVision bool,
 ) (registry.RequestTraits, error) {
 	traits := registry.RequestTraits{HasTools: hasTools}
-	_, err := minimumLegacyCacheBustOverflow(providerBody, requiresVision)
+	_, err := minimumLegacyCacheBustOverflow(providerBody)
 	if errors.Is(err, errProviderBodyTooLarge) {
 		traits.MinPrefixCacheProtocol = 1
 	}
@@ -1506,11 +1442,9 @@ func routingTraitsForProviderBody(
 }
 
 // bodyForCacheAttempt returns the body to seal for one dispatch attempt: the
-// provider-specific body (bodyForProvider) with the protocol-0 cache-bust key
-// added as prompt_cache_key when the attempt carries one, size-checked
-// against the sealed-frame cap.
-func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry.Provider, pr *registry.PendingRequest) ([]byte, error) {
-	body := bodyForProvider(rawBody, requiresVision, provider)
+// provider body with the protocol-0 cache-bust key added as prompt_cache_key
+// when the attempt carries one, size-checked against the sealed-frame cap.
+func bodyForCacheAttempt(body []byte, pr *registry.PendingRequest) ([]byte, error) {
 	if pr == nil || pr.LegacyCacheBustKey == "" {
 		if len(body) > maxInferenceBodyBytes {
 			return nil, &providerBodyTooLargeError{size: len(body)}
@@ -2097,7 +2031,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	bodies := newProviderBodyMemo(func(candidateModel string) ([]byte, error) {
 		return s.candidateProviderBody(parsed, runtimeDefaults, candidateModel,
 			serviceChatConsumer, reasoningProvided, isResponsesAPI)
-	}, hasTools, requiresVision)
+	}, hasTools)
 	if body.serialized {
 		bodies.seed(model, providerBody)
 	}
@@ -2902,7 +2836,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
 		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
 		traits, _ := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
+			hasTools, candidateBody)
 		traits.RequiresToolConstraint = requiresToolConstraint
 		traits.RequiresNativeMediaTools = requiresNativeMediaTools
 		traits.ToolChoiceMode = string(validatedMode)
@@ -2913,7 +2847,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	providerBodyErrorForModel := func(candidateModel string) error {
 		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
 		_, sizeErr := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
+			hasTools, candidateBody)
 		return sizeErr
 	}
 	var endpointBody, inferenceBody []byte
@@ -2938,7 +2872,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
 		routingTraits, _ = routingTraitsForProviderBody(
-			hasTools, inferenceBody, requiresVision)
+			hasTools, inferenceBody)
 		routingTraits.RequiresToolConstraint = requiresToolConstraint
 		routingTraits.RequiresNativeMediaTools = requiresNativeMediaTools
 		routingTraits.ToolChoiceMode = string(validatedMode)

@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-09-26 · commit `339a64a88`
+> Last updated: 2026-09-27 · commit `4ad3034df`
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,

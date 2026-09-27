@@ -90,9 +90,11 @@ public enum ModelFitDiagnostic {
         weightGb: Double,
         usableGb: Double,
         alternatives: [ModelOption] = [],
-        servingSetIDs: [String]? = nil
+        servingSetIDs: [String]? = nil,
+        alreadyResident: Bool = false,
+        evictionAwareWeightGb: Double? = nil
     ) -> Diagnostic {
-        guard weightGb > 0, usableGb > 0 else {
+        guard weightGb.isFinite, weightGb > 0, usableGb.isFinite, usableGb >= 0 else {
             return Diagnostic(
                 section: .traffic, name: "model fits in RAM", level: .warn,
                 message: "couldn't determine the model size or available memory; skipping the fit check.",
@@ -114,11 +116,29 @@ public enum ModelFitDiagnostic {
                 UnifiedMemoryCap.loadHeadroomBytes(
                     modelIDs: servingSetIDs.map { $0.isEmpty ? [] : $0 + [modelID] } ?? [modelID]))
                 / (1024.0 * 1024.0 * 1024.0))
+        let shortfall = max(0, needed - usableGb)
+        if alreadyResident {
+            return Diagnostic(
+                section: .traffic, name: "model fits in RAM", level: .info,
+                message: "\(modelID) is already resident; the cold-load fit check does not apply now. "
+                    + "\(fmt(usableGb)) GB remains usable for an additional no-eviction load.",
+                fix: nil)
+        }
         if needed <= usableGb {
             return Diagnostic(
                 section: .traffic, name: "model fits in RAM", level: .pass,
-                message: "\(modelID) needs ~\(fmt(needed)) GB; \(fmt(usableGb)) GB usable.",
+                message: "\(modelID) needs ~\(fmt(needed)) GB; \(fmt(usableGb)) GB usable now.",
                 fix: nil)
+        }
+        if let evictionAwareWeightGb, evictionAwareWeightGb.isFinite,
+           evictionAwareWeightGb >= weightGb {
+            return Diagnostic(
+                section: .traffic, name: "model fits in RAM", level: .warn,
+                message: "\(modelID) needs ~\(fmt(needed)) GB; \(fmt(usableGb)) GB is usable without eviction "
+                    + "(\(fmt(shortfall)) GB short). A request may fit after evicting idle model slots; "
+                    + "startup preload will not evict them.",
+                fix: "No configuration change is required. Check `darkbloom status` for current slots; "
+                    + "free memory if both models should stay resident.")
         }
         // Each alternative is judged with ITS OWN activation floor — the
         // suggestion models what `enabled_models = [candidate]` would require.
@@ -127,14 +147,14 @@ public enum ModelFitDiagnostic {
             .sorted { $0.weightGb > $1.weightGb }
         let suggestion: String
         if fits.isEmpty {
-            suggestion = "this box's RAM is too small for the models on this network; consider a machine with more unified memory."
+            suggestion = "Free at least \(fmt(shortfall)) GB of usable memory and rerun `darkbloom doctor`; restart to preload when enabled, or retry a request. A larger-memory Mac is another option."
         } else {
             let list = fits.prefix(3).map { "\($0.id) (~\(fmt(requiredGb(estimatedMemoryGb: $0.weightGb, modelID: $0.id))) GB)" }.joined(separator: ", ")
-            suggestion = "set `enabled_models` in provider.toml to a model that fits: \(list)."
+            suggestion = "Free at least \(fmt(shortfall)) GB of usable memory and rerun `darkbloom doctor`; restart to preload when enabled, or retry a request. Alternatively set `enabled_models` to a smaller model: \(list)."
         }
         return Diagnostic(
             section: .traffic, name: "model fits in RAM", level: .fail,
-            message: "\(modelID) needs ~\(fmt(needed)) GB but only \(fmt(usableGb)) GB is usable — it will show online but every request fails to load.",
+            message: "\(modelID) needs ~\(fmt(needed)) GB but only \(fmt(usableGb)) GB is usable now (\(fmt(shortfall)) GB short). The `status` hardware budget is not live free RAM; a cold load is blocked at this memory level.",
             fix: suggestion)
     }
 

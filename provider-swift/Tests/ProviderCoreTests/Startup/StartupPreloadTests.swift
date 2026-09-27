@@ -154,7 +154,9 @@ struct StartupPreloaderTests {
         let recorder = PreloadRecorder()
         // 8 GB free: the 30 GB model must be skipped WITHOUT evicting anything;
         // the smaller ones still load.
-        let preloader = StartupPreloader(deps: makeDeps(recorder: recorder, freeMemoryGb: 8))
+        var deps = makeDeps(recorder: recorder, freeMemoryGb: 8)
+        deps.onInsufficientMemory = { recorder.recordLog("public memory warning") }
+        let preloader = StartupPreloader(deps: deps)
 
         let summary = await preloader.run(candidates: [
             candidate("big-26b", requiredGb: 30),
@@ -167,6 +169,7 @@ struct StartupPreloaderTests {
         #expect(summary.loaded == ["mid-8b", "small-1b"])
         let warns = recorder.logs.filter { $0.contains("WARN") && $0.contains("big-26b") }
         #expect(!warns.isEmpty)
+        #expect(recorder.logs.filter { $0 == "public memory warning" }.count == 1)
     }
 
     @Test("a skipped candidate does not consume the live slot limit")

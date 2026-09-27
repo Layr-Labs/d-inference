@@ -25,12 +25,16 @@ struct Status: AsyncParsableCommand {
         print("Backend port: \(config.backend.port)")
         print("Configured model: \(config.backend.model ?? "auto-select")")
         print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: config.backend.idleTimeoutMins)) (manage with `darkbloom idle`)")
+        let preloadSource = config.backend.preloadModels.isEmpty
+            ? "selected models" : "explicit preload_models (\(config.backend.preloadModels.count))"
+        print("Startup preload: \(config.backend.startupPreload ? "on" : "off") "
+              + "(\(preloadSource); timeout \(config.backend.startupPreloadTimeoutSecs)s)")
         print("Beta features: \(betaFeaturesStatus(config)) (manage with `darkbloom beta`)")
         print("Auto-restart: \(autoRestartStatus(config: config))")
 
         if let hardware = snapshot.hardware {
             print("Hardware: \(hardware.chipName), \(hardware.memoryGb) GB RAM, \(hardware.gpuCores) GPU cores")
-            print("Inference memory: \(hardware.memoryAvailableGb) GB available")
+            print("Inference memory: \(hardware.memoryAvailableGb) GB nominal hardware budget (not live free RAM)")
         } else {
             print("Hardware: unavailable (\(snapshot.hardwareError?.localizedDescription ?? "unknown error"))")
         }
@@ -52,7 +56,7 @@ struct Status: AsyncParsableCommand {
 
         // Live daemon state (from the state file the running daemon writes).
         print("")
-        printDaemonStatus(config: config)
+        printDaemonStatus(config: config, models: snapshot.models)
 
         // Crash-loop KV-backend guard — printed whether or not the daemon is
         // up, because the guard's whole story happens while the daemon is
@@ -90,7 +94,7 @@ struct Status: AsyncParsableCommand {
 
     /// Prints the running daemon's live state, including the coordinator's last
     /// trust reason — the answer to "am I earning, and if not, why?".
-    private func printDaemonStatus(config: ProviderConfig) {
+    private func printDaemonStatus(config: ProviderConfig, models: [ModelInfo]) {
         let now = Date().timeIntervalSince1970
         guard let state = DaemonStateFile.read() else {
             print("Daemon: not running (run `darkbloom start`)")
@@ -128,11 +132,19 @@ struct Status: AsyncParsableCommand {
         }
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
+        let readiness = Self.liveLoadReadiness(
+            state: state, models: models, now: now,
+            heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs)
+        if let usable = state.capacity?.loadUsableGb, !readiness.isEmpty {
+            print("Live load memory: \(String(format: "%.1f", usable)) GB usable now (no eviction)")
+        }
         for line in Self.notLoadedLines(
             advertised: state.advertisedModels,
             warmModels: state.warmModels,
             currentModel: state.currentModel,
-            startupPreloadPendingModels: state.startupPreloadPendingModels)
+            startupPreloadPendingModels: state.startupPreloadPendingModels,
+            readiness: readiness,
+            evictionAwareWeightGb: state.capacity?.freeForLoadGb)
         {
             print(line)
         }
@@ -210,7 +222,9 @@ struct Status: AsyncParsableCommand {
         advertised: [String]?,
         warmModels: [String],
         currentModel: String?,
-        startupPreloadPendingModels: [String]?
+        startupPreloadPendingModels: [String]?,
+        readiness: [String: ModelLoadReadiness] = [:],
+        evictionAwareWeightGb: Double? = nil
     ) -> [String] {
         guard let advertised else { return [] }
         var resident = Set(warmModels)
@@ -218,13 +232,37 @@ struct Status: AsyncParsableCommand {
         let notLoaded = advertised.filter { !resident.contains($0) }
         let pending = Set(startupPreloadPendingModels ?? [])
         let preloading = notLoaded.filter { pending.contains($0) }
-        let onRequest = notLoaded.filter { !pending.contains($0) }
+        let blocked = notLoaded.filter {
+            !pending.contains($0) && (readiness[$0]?.shortfallGb ?? 0) > 0
+        }
+        let onRequest = notLoaded.filter { !pending.contains($0) && !blocked.contains($0) }
         var lines: [String] = []
         if !preloading.isEmpty {
             lines.append("Startup preload pending: \(preloading.joined(separator: ", "))")
         }
         if !onRequest.isEmpty {
             lines.append("Not loaded (loads on request): \(onRequest.joined(separator: ", "))")
+        }
+        var coldLoadBlocked = false
+        for model in blocked {
+            guard let budget = readiness[model] else { continue }
+            let mayEvict = evictionAwareWeightGb.map { $0 >= budget.estimatedMemoryGb }
+            if mayEvict == false { coldLoadBlocked = true }
+            let label = mayEvict == true ? "Preload skipped (no eviction)"
+                : mayEvict == false ? "Cold load blocked (memory)" : "Preload blocked (memory)"
+            lines.append(
+                "\(label): \(model) — "
+                + "\(String(format: "%.1f", budget.estimatedMemoryGb)) GB model + "
+                + "\(String(format: "%.1f", budget.headroomGb)) GB serving reserve = "
+                + "\(String(format: "%.1f", budget.requiredGb)) GB needed; "
+                + "\(String(format: "%.1f", budget.usableGb)) GB usable now "
+                + "(\(String(format: "%.1f", budget.shortfallGb)) GB short).")
+            if mayEvict == true {
+                lines.append("  A request may load it after evicting idle slots; startup preload keeps them resident.")
+            }
+        }
+        if coldLoadBlocked {
+            lines.append("  Free memory, confirm with `darkbloom doctor`, then restart to retry the load.")
         }
         return lines
     }

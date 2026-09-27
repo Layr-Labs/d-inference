@@ -1,0 +1,42 @@
+package api
+
+import "math"
+
+// An owner's attention count uses the same live no-eviction figures as the
+// My Macs model-readiness panel. Missing legacy fields never imply a fit or
+// a failure; resident slots do not need another load.
+func coldModelLoadBlocked(p *myProvider) bool {
+	if !p.Online || p.BackendCapacity == nil ||
+		p.BackendCapacity.LoadUsableGB == nil || p.BackendCapacity.LoadHeadroomGB == nil ||
+		p.BackendCapacity.FreeForLoadGB == nil {
+		return false
+	}
+	usable := *p.BackendCapacity.LoadUsableGB
+	headroom := *p.BackendCapacity.LoadHeadroomGB
+	if math.IsNaN(usable) || math.IsInf(usable, 0) || usable < 0 ||
+		math.IsNaN(headroom) || math.IsInf(headroom, 0) || headroom < 0 {
+		return false
+	}
+	resident := make(map[string]bool, len(p.WarmModels)+len(p.BackendCapacity.Slots)+1)
+	for _, id := range p.WarmModels {
+		resident[id] = true
+	}
+	if p.CurrentModel != "" {
+		resident[p.CurrentModel] = true
+	}
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.State == "idle" || slot.State == "running" {
+			resident[slot.Model] = true
+		}
+	}
+	for _, model := range p.Models {
+		if resident[model.ID] || model.EstimatedMemoryGB <= 0 {
+			continue
+		}
+		if model.EstimatedMemoryGB+headroom > usable &&
+			*p.BackendCapacity.FreeForLoadGB < model.EstimatedMemoryGB {
+			return true
+		}
+	}
+	return false
+}

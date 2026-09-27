@@ -85,6 +85,7 @@ func TestBackendSlotCapacityMaxConcurrencyExplicitZeroCompatibility(t *testing.T
 }
 
 func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
+	usable, headroom := 14.3, 6.5
 	cap := BackendCapacity{
 		Slots: []BackendSlotCapacity{
 			{
@@ -108,6 +109,8 @@ func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
 		GPUMemoryPeakGB:   52.1,
 		GPUMemoryCacheGB:  8.3,
 		TotalMemoryGB:     128,
+		LoadUsableGB:      &usable,
+		LoadHeadroomGB:    &headroom,
 		MLXCacheReclaimer: &MLXCacheReclaimerTelemetry{
 			CacheLimitBytes:       8 << 30,
 			SweepSignals:          12,
@@ -130,6 +133,11 @@ func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
 
 	if len(decoded.Slots) != 2 {
 		t.Fatalf("slots len = %d, want 2", len(decoded.Slots))
+	}
+	if decoded.LoadUsableGB == nil || *decoded.LoadUsableGB != usable ||
+		decoded.LoadHeadroomGB == nil || *decoded.LoadHeadroomGB != headroom {
+		t.Fatalf("load diagnostics not preserved: usable=%v headroom=%v",
+			decoded.LoadUsableGB, decoded.LoadHeadroomGB)
 	}
 	if decoded.Slots[0].Model != "mlx-community/Qwen2.5-7B-4bit" {
 		t.Errorf("slot[0].model = %q", decoded.Slots[0].Model)

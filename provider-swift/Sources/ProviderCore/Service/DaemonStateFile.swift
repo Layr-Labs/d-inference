@@ -122,10 +122,20 @@ public struct DaemonState: Codable, Sendable, Equatable {
         /// `ProviderLoop.availableMemoryGb()` even when the OS-available reading
         /// is unavailable.
         public var gpuMemoryCacheGb: Double?
-        public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil) {
+        /// Live no-eviction load figures; nil for older daemon snapshots.
+        public var loadUsableGb: Double?
+        public var loadHeadroomGb: Double?
+        /// Eviction-aware model-weight allowance for request-time cold loads.
+        public var freeForLoadGb: Double?
+        public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil,
+                    loadUsableGb: Double? = nil, loadHeadroomGb: Double? = nil,
+                    freeForLoadGb: Double? = nil) {
             self.totalMemoryGb = totalMemoryGb
             self.gpuMemoryActiveGb = gpuMemoryActiveGb
             self.gpuMemoryCacheGb = gpuMemoryCacheGb
+            self.loadUsableGb = loadUsableGb
+            self.loadHeadroomGb = loadHeadroomGb
+            self.freeForLoadGb = freeForLoadGb
         }
     }
 

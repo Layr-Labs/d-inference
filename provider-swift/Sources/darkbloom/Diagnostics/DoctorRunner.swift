@@ -99,6 +99,9 @@ enum DoctorRunner {
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----
         if let hw = snapshot.hardware {
+            let loadSnapshotFresh = stateFresh && (state?.ageSeconds(now: now) ?? .infinity)
+                <= KVBackendPosture.staleAfterSeconds(
+                    heartbeatIntervalSecs: snapshot.config.coordinator.heartbeatIntervalSecs)
             // Mirror the provider's REAL load gate via ModelFitDiagnostic →
             // ModelLoadAdmission: clamp to live OS-available memory and subtract
             // the OS reserve + resident MLX memory, not raw total−reserve —
@@ -110,12 +113,17 @@ enum DoctorRunner {
             let gpuCacheGb = (stateFresh ? state?.capacity?.gpuMemoryCacheGb : nil) ?? 0
             let bytesPerGb = 1024.0 * 1024.0 * 1024.0
             let systemAvailableGb = SystemMemory.availableBytes().map { Double($0) / bytesPerGb }
-            let usableGb = ModelFitDiagnostic.usableInferenceGb(
+            let independentlySampledUsableGb = ModelFitDiagnostic.usableInferenceGb(
                 totalGb: Double(hw.memoryGb),
                 reserveGb: Double(snapshot.config.provider.memoryReserveGB),
                 systemAvailableGb: systemAvailableGb,
                 gpuActiveGb: gpuActiveGb,
                 gpuCacheGb: gpuCacheGb)
+            // A fresh daemon snapshot is the same no-eviction load gate that
+            // decided startup preload. Prefer it over a second-process sample
+            // so doctor, status and My Macs explain the same decision.
+            let usableGb = (loadSnapshotFresh ? state?.capacity?.loadUsableGb : nil)
+                ?? independentlySampledUsableGb
 
             // Prefer the live loaded model ONLY when the daemon is up and fresh;
             // otherwise diagnose the CONFIGURED model. A stale state file (daemon
@@ -183,7 +191,10 @@ enum DoctorRunner {
                     // offline reconstruction treats empty as "unknown".
                     servingSetIDs: servingSetIsLive
                         ? servingSetIDs
-                        : (servingSetIDs.isEmpty ? nil : servingSetIDs)))
+                        : (servingSetIDs.isEmpty ? nil : servingSetIDs),
+                    alreadyResident: loadSnapshotFresh && (
+                        state?.warmModels.contains(targetID) == true || state?.currentModel == targetID),
+                    evictionAwareWeightGb: loadSnapshotFresh ? state?.capacity?.freeForLoadGb : nil))
             } else if !alternatives.isEmpty {
                 // No specific/known target; check the largest local model fits.
                 if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {

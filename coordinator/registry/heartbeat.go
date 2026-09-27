@@ -74,6 +74,15 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 			bc.FreeForLoadGB = nil
 		}
 	}
+	// Owner-facing load diagnostics must remain optional for older providers.
+	// Drop malformed samples rather than emitting invalid JSON or a false
+	// "fits" verdict in /v1/me/providers.
+	if bc.LoadUsableGB != nil && !validLoadDiagnosticGB(*bc.LoadUsableGB) {
+		bc.LoadUsableGB = nil
+	}
+	if bc.LoadHeadroomGB != nil && !validLoadDiagnosticGB(*bc.LoadHeadroomGB) {
+		bc.LoadHeadroomGB = nil
+	}
 	if m := bc.PrefixCacheMaintenance; m != nil {
 		m.TTLExpiredTotal = min(m.TTLExpiredTotal, maxCapacitySampleValue)
 		m.BudgetEvictedTotal = min(m.BudgetEvictedTotal, maxCapacitySampleValue)
@@ -190,6 +199,10 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 		t.MemoryPressureLevel = t.MemoryPressureLevel.Fold()
 		t.ProcessMemory = validProcessMemoryTelemetry(t.ProcessMemory)
 	}
+}
+
+func validLoadDiagnosticGB(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= maxMemoryGBFloat
 }
 
 // System-profiler heartbeat telemetry bounds (CONTRACT-WIRE.md §2). Pointer
@@ -613,6 +626,14 @@ func cloneBackendCapacityFields(capacity, in *protocol.BackendCapacity) {
 	if in.FreeForLoadGB != nil {
 		free := *in.FreeForLoadGB
 		capacity.FreeForLoadGB = &free
+	}
+	if in.LoadUsableGB != nil {
+		usable := *in.LoadUsableGB
+		capacity.LoadUsableGB = &usable
+	}
+	if in.LoadHeadroomGB != nil {
+		headroom := *in.LoadHeadroomGB
+		capacity.LoadHeadroomGB = &headroom
 	}
 	if in.MLXCacheReclaimer != nil {
 		reclaimer := *in.MLXCacheReclaimer

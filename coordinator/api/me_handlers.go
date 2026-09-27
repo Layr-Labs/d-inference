@@ -254,6 +254,9 @@ func needsAttention(mp *myProvider, minVersion string) bool {
 	if minVersion != "" && mp.Version != "" && semverLess(mp.Version, minVersion) {
 		return true
 	}
+	if coldModelLoadBlocked(mp) {
+		return true
+	}
 	return false
 }
 

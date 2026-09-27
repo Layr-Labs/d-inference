@@ -77,6 +77,9 @@ public struct StartupPreloader: Sendable {
         /// skips. Lets daemon status distinguish pending startup work from
         /// models that will need a request-time load.
         public var onCandidateStarted: (@Sendable (String) async -> Void)?
+        /// Closed-category operational warning; detailed model and memory
+        /// values remain in owner-only state/diagnostics, not public logs.
+        public var onInsufficientMemory: (@Sendable () -> Void)?
 
         public init(
             freeMemoryGb: @escaping @Sendable () async -> Double,
@@ -88,7 +91,8 @@ public struct StartupPreloader: Sendable {
             log: @escaping @Sendable (String) -> Void = { _ in },
             currentRequiredGb: (@Sendable (String) async -> Double?)? = nil,
             canLoadMore: (@Sendable () async -> Bool)? = nil,
-            onCandidateStarted: (@Sendable (String) async -> Void)? = nil
+            onCandidateStarted: (@Sendable (String) async -> Void)? = nil,
+            onInsufficientMemory: (@Sendable () -> Void)? = nil
         ) {
             self.freeMemoryGb = freeMemoryGb
             self.load = load
@@ -100,6 +104,7 @@ public struct StartupPreloader: Sendable {
             self.currentRequiredGb = currentRequiredGb
             self.canLoadMore = canLoadMore
             self.onCandidateStarted = onCandidateStarted
+            self.onInsufficientMemory = onInsufficientMemory
         }
     }
 
@@ -144,6 +149,7 @@ public struct StartupPreloader: Sendable {
             }
             let freeGb = await deps.freeMemoryGb()
             guard freeGb >= requiredGb else {
+                deps.onInsufficientMemory?()
                 deps.log(
                     "WARN: startup preload skipping '\(modelId)': needs "
                         + "\(Self.gb(requiredGb)) GB, \(Self.gb(freeGb)) GB free — "

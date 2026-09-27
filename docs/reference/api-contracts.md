@@ -485,6 +485,16 @@ accepts older responses containing the extra field.
 
 `GET /v1/me/providers` exposes the accepted backend slot snapshot through
 `backend_capacity.slots` (`handleMyProviders`, `coordinator/api/me_handlers.go`). The
+owner-only response also carries optional `backend_capacity.load_usable_gb`
+(live no-eviction load memory before serving headroom),
+`backend_capacity.load_headroom_gb` (activation plus minimum-KV reserve for
+the current serving set), and each model's `estimated_memory_gb`. My Macs
+shows `estimated_memory_gb + load_headroom_gb` against `load_usable_gb` for
+cold models. Missing fields from older providers mean unknown, never zero or
+"fits"; the coordinator does not route from these owner diagnostics.
+The existing `free_for_load_gb` remains the routing input and may credit
+eviction of idle slots, so it is not interchangeable with the no-eviction
+preload budget. The
 optional `paged_storage` object carries bounded allocator observations; omitted
 fields mean uninstrumented. Its exact fields and sample-age rules live in the
 [wire reference](protocol-messages.md#slotspaged_storage). The coordinator

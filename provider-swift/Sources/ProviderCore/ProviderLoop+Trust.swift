@@ -61,7 +61,10 @@ extension ProviderLoop {
                 DaemonState.Capacity(
                     totalMemoryGb: $0.totalMemoryGb,
                     gpuMemoryActiveGb: $0.gpuMemoryActiveGb,
-                    gpuMemoryCacheGb: $0.gpuMemoryCacheGb)
+                    gpuMemoryCacheGb: $0.gpuMemoryCacheGb,
+                    loadUsableGb: $0.loadUsableGb,
+                    loadHeadroomGb: $0.loadHeadroomGb,
+                    freeForLoadGb: $0.freeForLoadGb)
             },
             lastModelLoadError: lastModelLoadError,
             // Joined at WRITE time, not at sample time: a refused explicit

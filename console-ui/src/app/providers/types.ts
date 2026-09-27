@@ -19,6 +19,8 @@ export interface MyHardware {
 export interface MyModelInfo {
   id: string;
   size_bytes?: number;
+  /** Scanner's complete load estimate, including transient model payloads. */
+  estimated_memory_gb?: number;
   model_type?: string;
   quantization?: string;
   weight_hash?: string;
@@ -80,6 +82,12 @@ export interface MyBackendCapacity {
   gpu_memory_peak_gb: number;
   gpu_memory_cache_gb: number;
   total_memory_gb: number;
+  /** Eviction-aware maximum additional model weight, used for cold routing. */
+  free_for_load_gb?: number;
+  /** Live no-eviction memory available to the model-load gate, before headroom. */
+  load_usable_gb?: number;
+  /** Current serving-set activation and minimum-KV allowance. */
+  load_headroom_gb?: number;
 }
 
 export interface MyReputation {

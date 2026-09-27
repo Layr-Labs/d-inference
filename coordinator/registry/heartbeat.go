@@ -318,6 +318,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = backendCapacity
+	p.CapacityAcceptedAt = time.Time{}
+	if backendCapacity != nil {
+		p.CapacityAcceptedAt = now
+	}
 	// Bind the owner-facing readiness model set to this exact applied capacity
 	// snapshot. Catalog changes or model replacements take effect on the next
 	// heartbeat, never halfway through an owner read.

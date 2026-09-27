@@ -23,6 +23,7 @@ describe("owner model load readiness", () => {
   const cold = makeProvider({
     status: "serving", online: true, idle_unload_mins: 0,
     last_heartbeat: new Date().toISOString(),
+    capacity_accepted_at: new Date().toISOString(),
     models: [{ id: "EigenLabs/Qwen3.8-27B-4bit-mtp", estimated_memory_gb: 18.2 }],
     capacity_model_ids: ["EigenLabs/Qwen3.8-27B-4bit-mtp"],
     backend_capacity: cap,
@@ -51,6 +52,7 @@ describe("owner model load readiness", () => {
     for (const provider of [
       makeProvider({ ...cold, backend_capacity: { ...cap, load_usable_gb: undefined } }),
       makeProvider({ ...cold, online: false, status: "offline" }),
+      makeProvider({ ...cold, capacity_accepted_at: undefined }),
       makeProvider({ ...cold, backend_capacity: { ...cap, slots: [{ model: cold.models[0].id,
         state: "idle", num_running: 0, num_waiting: 0, active_tokens: 0, max_tokens_potential: 1000 }] } }),
     ]) {
@@ -81,7 +83,9 @@ describe("owner model load readiness", () => {
   });
 
   it("withholds stale samples and a temporary shortage during active inference", () => {
-    const stale = makeProvider({ ...cold, last_heartbeat: new Date(Date.now() - 120_000).toISOString() });
+    const stale = makeProvider({ ...cold,
+      capacity_accepted_at: new Date(Date.now() - 120_000).toISOString(),
+      last_heartbeat: new Date().toISOString() });
     expect(coldModelReadiness(stale)).toEqual([]);
     expect(computeWarnings(stale, ctx).some((warning) => warning.id === "model_load_memory")).toBe(false);
 
@@ -94,7 +98,14 @@ describe("owner model load readiness", () => {
     expect(computeWarnings(busy, ctx).some((warning) => warning.id === "model_load_memory")).toBe(false);
     render(<LoadReadinessPanel provider={busy} heartbeatTimeoutSeconds={90} />);
     expect(screen.getByText("Temporarily busy")).toBeInTheDocument();
-    expect(screen.getByText(/A request, model load, or reload is active/)).toBeInTheDocument();
+    expect(screen.getByText(/A request is active or queued/)).toBeInTheDocument();
+
+    const queued = makeProvider({ ...cold,
+      backend_capacity: { ...cap, slots: [{ model: "small", state: "idle", num_running: 0,
+        num_waiting: 1, active_tokens: 0, max_tokens_potential: 1000 }] },
+    });
+    expect(coldModelReadiness(queued)[0].busyServing).toBe(true);
+    expect(computeWarnings(queued, ctx).some((warning) => warning.id === "model_load_memory")).toBe(false);
   });
 
   it("withholds a memory failure while a startup load has no slot yet", () => {
@@ -167,5 +178,21 @@ describe("owner model load readiness", () => {
     const warnings = computeWarnings(crashed, ctx);
     expect(warnings.some((warning) => warning.id === "model_load_memory")).toBe(false);
     expect(warnings.some((warning) => warning.id === "backend_crashed")).toBe(true);
+  });
+
+  it("shows crashed and reloading slots in the compact model strip", () => {
+    const provider = makeProvider({ ...cold,
+      models: [...cold.models, { id: "second", estimated_memory_gb: 3 }],
+      backend_capacity: { ...cap, slots: [
+        { model: cold.models[0].id, state: "crashed", num_running: 0, num_waiting: 0,
+          active_tokens: 0, max_tokens_potential: 0 },
+        { model: "second", state: "reloading", num_running: 0, num_waiting: 0,
+          active_tokens: 0, max_tokens_potential: 0 },
+      ] },
+    });
+    render(<ModelsStrip provider={provider} />);
+    expect(screen.getByText("Loaded")).toBeInTheDocument();
+    expect(screen.getByText("crashed")).toBeInTheDocument();
+    expect(screen.getByText("reloading")).toBeInTheDocument();
   });
 });

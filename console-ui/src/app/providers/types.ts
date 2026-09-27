@@ -110,6 +110,8 @@ export interface MyProvider {
   status: "online" | "serving" | "offline" | "untrusted" | "never_seen" | string;
   online: boolean;
   last_heartbeat?: string;
+  /** Coordinator time of the last accepted capacity snapshot, separate from liveness. */
+  capacity_accepted_at?: string;
 
   hardware: MyHardware;
   models: MyModelInfo[];

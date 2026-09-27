@@ -226,7 +226,8 @@ extension ProviderLoop {
             freeForLoadGb: freeForLoadGb,
             loadUsableGb: loadUsableGb,
             loadHeadroomGb: loadHeadroomGb,
-            loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty,
+            loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
+                || !startupPreloadPendingModels.isEmpty,
             mlxCacheReclaimer: reclaimerTelemetry,
             telemetry: capacityTelemetry,
             prefixCacheMaintenance: PrefixCacheMaintenanceTelemetry(SSDWholeRootMaintainer.shared.statsSnapshot())

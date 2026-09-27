@@ -13,13 +13,13 @@ const ownerHeartbeatTimeoutSeconds = 90
 func coldModelLoadBlocked(p *myProvider) bool {
 	if !p.Online || p.BackendCapacity == nil ||
 		p.BackendCapacity.LoadUsableGB == nil || p.BackendCapacity.LoadHeadroomGB == nil ||
-		p.BackendCapacity.FreeForLoadGB == nil || p.LastHeartbeat == nil ||
+		p.BackendCapacity.FreeForLoadGB == nil || p.CapacityAcceptedAt == nil ||
 		p.CapacityModelIDs == nil ||
 		p.PendingRequests > 0 ||
 		(p.BackendCapacity.LoadTransitionActive != nil && *p.BackendCapacity.LoadTransitionActive) {
 		return false
 	}
-	age := time.Since(*p.LastHeartbeat)
+	age := time.Since(*p.CapacityAcceptedAt)
 	if age < -30*time.Second || age > ownerHeartbeatTimeoutSeconds*time.Second {
 		return false
 	}
@@ -36,7 +36,7 @@ func coldModelLoadBlocked(p *myProvider) bool {
 	// Once capacity exists, its slots supersede heartbeat warm/current fields.
 	resident := make(map[string]bool, len(p.BackendCapacity.Slots))
 	for _, slot := range p.BackendCapacity.Slots {
-		if slot.State == "running" || slot.State == "reloading" || slot.NumRunning > 0 {
+		if slot.State == "running" || slot.State == "reloading" || slot.NumRunning > 0 || slot.NumWaiting > 0 {
 			return false // today's shortage may clear when this request ends
 		}
 		if slot.State == "idle" || slot.State == "crashed" {

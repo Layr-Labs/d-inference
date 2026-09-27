@@ -145,7 +145,8 @@ struct Status: AsyncParsableCommand {
             startupPreloadPendingModels: state.startupPreloadPendingModels,
             readiness: readiness,
             evictionAwareWeightGb: state.capacity?.freeForLoadGb,
-            inferenceActive: state.inferenceActive || state.capacity?.loadTransitionActive == true)
+            inferenceActive: state.inferenceActive || state.loadTransitionActive == true
+                || state.capacity?.loadTransitionActive == true)
         {
             print(line)
         }
@@ -251,7 +252,7 @@ struct Status: AsyncParsableCommand {
             lines.append("Not loaded (loads on request): \(onRequest.joined(separator: ", "))")
         }
         if !temporarilyBusy.isEmpty {
-            lines.append("Load readiness temporarily busy: \(temporarilyBusy.joined(separator: ", ")) — a request or model reload is active; recheck when idle.")
+            lines.append("Load readiness temporarily busy: \(temporarilyBusy.joined(separator: ", ")) — a request, model load, or reload is active; recheck when idle.")
         }
         var coldLoadBlocked = false
         var coldShortfallGb = 0.0

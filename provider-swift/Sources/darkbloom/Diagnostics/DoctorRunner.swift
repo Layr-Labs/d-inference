@@ -136,13 +136,12 @@ enum DoctorRunner {
             // absent and doctor would silently diagnose a different (fitting) one
             // instead of flagging the one that will never load.
             let allModels = ModelScanner.scanAllModels(hardwareInfo: hw)
-            let targetID = DoctorModelSelection.preferredTarget(
-                state: state, stateFresh: stateFresh,
-                localModelIDs: Set(allModels.map(\.id)),
-                fallback: snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first)
             let alternatives = allModels.map {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
             }
+            let targets = DoctorModelSelection.diagnosticTargets(
+                state: state, stateFresh: stateFresh, localModels: alternatives,
+                fallback: snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first)
             // The daemon's load gate holds the max activation floor over its
             // WHOLE serving set — mirror the daemon's ADVERTISE basis, not
             // the raw scan: the daemon selects from the memory-filtered
@@ -183,9 +182,10 @@ enum DoctorRunner {
                     ? daemonBasis.map(\.id)
                     : daemonBasis.map(\.id).filter(enabled.contains)
             }
-            if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
+            for target in targets {
+                let targetID = target.id
                 out.append(ModelFitDiagnostic.diagnose(
-                    modelID: targetID, weightGb: target.estimatedMemoryGb,
+                    modelID: targetID, weightGb: target.weightGb,
                     usableGb: usableGb, alternatives: alternatives,
                     // A LIVE empty set is authoritative (the daemon retired
                     // everything) and must reach the verdict as [] — the
@@ -201,14 +201,8 @@ enum DoctorRunner {
                     evictionAwareWeightGb: hasLiveLoadPair ? liveLoadBudget?.freeForLoadGb : nil,
                     loadHeadroomGb: hasLiveLoadPair ? liveLoadBudget?.loadHeadroomGb : nil,
                     busyServing: loadSnapshotFresh &&
-                        (state?.inferenceActive == true || state?.capacity?.loadTransitionActive == true)))
-            } else if !alternatives.isEmpty {
-                // No specific/known target; check the largest local model fits.
-                if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {
-                    out.append(ModelFitDiagnostic.diagnose(
-                        modelID: biggest.id, weightGb: biggest.weightGb,
-                        usableGb: usableGb, alternatives: alternatives))
-                }
+                        (state?.inferenceActive == true || state?.loadTransitionActive == true
+                            || state?.capacity?.loadTransitionActive == true)))
             }
         }
 

@@ -48,6 +48,9 @@ extension ProviderLoop {
             advertisedModels: advertisedModels.keys.sorted(),
             startupPreloadPendingModels: startupPreloadPendingModels,
             inferenceActive: state.inferenceActive,
+            loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
+                || !startupPreloadPendingModels.isEmpty
+                || cap?.slots.contains { $0.state == "reloading" } == true,
             lifecycle: lifecycleStatus,
             modelSwitch: modelSwitchStatus,
             configPath: loopConfig.configPath?.path,
@@ -66,6 +69,7 @@ extension ProviderLoop {
                     loadHeadroomGb: $0.loadHeadroomGb,
                     freeForLoadGb: $0.freeForLoadGb,
                     loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
+                        || !startupPreloadPendingModels.isEmpty
                         || $0.slots.contains { $0.state == "reloading" })
             },
             lastModelLoadError: lastModelLoadError,

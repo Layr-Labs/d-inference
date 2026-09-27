@@ -641,6 +641,8 @@ struct StartupPreloadGateTests {
         #expect(outcome == .timedOut)
         #expect(recorder.loads.isEmpty)
         #expect(DaemonStateFile.read(from: stateFile)?.startupPreloadPendingModels == ["a"])
+        #expect(DaemonStateFile.read(from: stateFile)?.capacity == nil)
+        #expect(DaemonStateFile.read(from: stateFile)?.loadTransitionActive == true)
 
         // The driver keeps warming in the background after the gate released.
         releaseLoad.signal()
@@ -659,6 +661,7 @@ struct StartupPreloadGateTests {
         }
         #expect(await loop.startupPreloadTaskRunningForTesting() == false)
         #expect(DaemonStateFile.read(from: stateFile)?.startupPreloadPendingModels == [])
+        #expect(DaemonStateFile.read(from: stateFile)?.loadTransitionActive == false)
     }
 
     @Test("fail-closed self-test failure retires the model from the advertised set")

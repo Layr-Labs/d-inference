@@ -420,6 +420,40 @@ func TestHeartbeatCapacityModelIDsExcludeOffCatalogOwnerModel(t *testing.T) {
 	}
 }
 
+func TestHeartbeatCapacityAcceptedAtTracksAppliedFrames(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+	frame := func(seq uint64) *protocol.HeartbeatMessage {
+		return &protocol.HeartbeatMessage{
+			Type: protocol.TypeHeartbeat, Status: "idle",
+			BackendCapacity: &protocol.BackendCapacity{CapacitySeq: seq},
+		}
+	}
+	if !reg.Heartbeat(p.ID, frame(1)) || p.CapacityAcceptedAt.IsZero() {
+		t.Fatal("first applied capacity did not set accepted time")
+	}
+	old := time.Now().Add(-2 * time.Minute)
+	p.mu.Lock()
+	p.CapacityAcceptedAt, p.LastHeartbeat = old, old
+	p.mu.Unlock()
+	if reg.Heartbeat(p.ID, frame(1)) {
+		t.Fatal("repeated sequence should be discarded")
+	}
+	p.mu.Lock()
+	acceptedAt, liveAt := p.CapacityAcceptedAt, p.LastHeartbeat
+	p.mu.Unlock()
+	if !acceptedAt.Equal(old) || !liveAt.After(old) {
+		t.Fatal("discarded frame freshened capacity or failed to prove liveness")
+	}
+	if !reg.Heartbeat(p.ID, frame(2)) || !p.CapacityAcceptedAt.After(old) {
+		t.Fatal("next applied capacity did not refresh accepted time")
+	}
+	reg.Heartbeat(p.ID, &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat})
+	if !p.CapacityAcceptedAt.IsZero() {
+		t.Fatal("nil capacity did not clear accepted time")
+	}
+}
+
 func TestHeartbeatCanonicalizationPreservesNilAndEmptySnapshots(t *testing.T) {
 	reg := New(testLogger())
 	p := reg.Register("p1", nil, testRegisterMessage())

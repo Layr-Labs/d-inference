@@ -202,6 +202,10 @@ type Provider struct {
 
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
+	// CapacityAcceptedAt advances only when the backend-capacity frame is
+	// applied. Rejected sequence frames advance LastHeartbeat but leave this
+	// owner-diagnostic clock unchanged. Guarded by p.mu.
+	CapacityAcceptedAt time.Time
 
 	// capacitySamplesAt is the coordinator time of the last accepted slot
 	// sample reconciliation. Separate from LastHeartbeat: rejected capacity

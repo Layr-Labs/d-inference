@@ -21,10 +21,10 @@ export function coldModelReadiness(
   const capacityModelIDs = provider.capacity_model_ids;
   const usableGb = cap?.load_usable_gb;
   const headroomGb = cap?.load_headroom_gb;
-  const heartbeatMs = provider.last_heartbeat ? Date.parse(provider.last_heartbeat) : NaN;
-  const heartbeatAgeMs = nowMs - heartbeatMs;
-  if (!provider.online || !cap || !capacityModelIDs || !Number.isFinite(heartbeatAgeMs) ||
-      heartbeatAgeMs < -30_000 || heartbeatAgeMs > heartbeatTimeoutSeconds * 1000 ||
+  const acceptedMs = provider.capacity_accepted_at ? Date.parse(provider.capacity_accepted_at) : NaN;
+  const capacityAgeMs = nowMs - acceptedMs;
+  if (!provider.online || !cap || !capacityModelIDs || !Number.isFinite(capacityAgeMs) ||
+      capacityAgeMs < -30_000 || capacityAgeMs > heartbeatTimeoutSeconds * 1000 ||
       usableGb === undefined || headroomGb === undefined ||
       !Number.isFinite(usableGb) || !Number.isFinite(headroomGb) || usableGb < 0 || headroomGb < 0) {
     return [];
@@ -41,7 +41,8 @@ export function coldModelReadiness(
     }
   }
   const busyServing = provider.pending_requests > 0 || cap.load_transition_active === true ||
-    cap.slots.some((slot) => slot.state === "running" || slot.state === "reloading" || slot.num_running > 0);
+    cap.slots.some((slot) => slot.state === "running" || slot.state === "reloading"
+      || slot.num_running > 0 || slot.num_waiting > 0);
 
   return provider.models.flatMap((model) => {
     const estimatedGb = model.estimated_memory_gb;

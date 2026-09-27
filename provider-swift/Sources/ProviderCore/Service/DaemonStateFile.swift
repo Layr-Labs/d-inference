@@ -53,6 +53,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public var configPath: String?
     public var runtimeCapabilities: [String]?
     public var inferenceActive: Bool
+    /// Written directly from the loop even before backend capacity exists,
+    /// so doctor can defer a verdict during pre-registration preload.
+    public var loadTransitionActive: Bool?
     public var stats: Stats
     public var system: SystemInfo?
     public var capacity: Capacity?
@@ -244,6 +247,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         advertisedModels: [String]? = nil,
         startupPreloadPendingModels: [String]? = nil,
         inferenceActive: Bool = false,
+        loadTransitionActive: Bool? = nil,
         lifecycle: ProviderDrainStatus? = nil,
         modelSwitch: ProviderModelSwitchStatus? = nil,
         configPath: String? = nil,
@@ -274,6 +278,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.configPath = configPath
         self.runtimeCapabilities = runtimeCapabilities
         self.inferenceActive = inferenceActive
+        self.loadTransitionActive = loadTransitionActive
         self.stats = stats
         self.system = system
         self.capacity = capacity

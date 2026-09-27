@@ -135,7 +135,7 @@ public enum ModelFitDiagnostic {
         if busyServing {
             return Diagnostic(
                 section: .traffic, name: "model fits in RAM", level: .info,
-                message: "\(modelID) needs ~\(fmt(needed)) GB, but a request or model reload is active. "
+                message: "\(modelID) needs ~\(fmt(needed)) GB, but a request, model load, or reload is active. "
                     + "The current load budget is temporary; recheck when this Mac is idle.",
                 fix: nil)
         }

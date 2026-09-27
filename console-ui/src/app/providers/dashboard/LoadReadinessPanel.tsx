@@ -15,7 +15,7 @@ export function LoadReadinessPanel({ provider, heartbeatTimeoutSeconds }: {
     <section className="px-4 pb-3 space-y-2" aria-label="Model load readiness">
       <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-text-tertiary">
         <span>Cold model load readiness</span>
-        <span>Live memory · last heartbeat</span>
+        <span>Live memory · last accepted capacity</span>
       </div>
       {models.map((model) => {
         const cannotPreload = model.shortfallGb > 0;
@@ -49,7 +49,7 @@ export function LoadReadinessPanel({ provider, heartbeatTimeoutSeconds }: {
               </p>
             )}
             {model.busyServing && cannotPreload && (
-              <p className="mt-1 text-text-secondary">A request, model load, or reload is active. Recheck this load budget when the Mac is idle.</p>
+              <p className="mt-1 text-text-secondary">A request is active or queued, or a model load/reload is in progress. Recheck this load budget when the Mac is idle.</p>
             )}
             {cannotPreload && model.canLoadAfterEviction && (
               <p className="mt-1 text-text-secondary">A request may load it after evicting idle models; startup preload keeps existing slots resident.</p>

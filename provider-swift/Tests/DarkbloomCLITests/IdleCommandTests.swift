@@ -263,6 +263,6 @@ struct IdleCommandTests {
             advertised: ["qwen"], warmModels: [], currentModel: nil,
             startupPreloadPendingModels: [], readiness: ["qwen": budget],
             evictionAwareWeightGb: 7.8, inferenceActive: true)
-        #expect(busy == ["Load readiness temporarily busy: qwen — a request or model reload is active; recheck when idle."])
+        #expect(busy == ["Load readiness temporarily busy: qwen — a request, model load, or reload is active; recheck when idle."])
     }
 }

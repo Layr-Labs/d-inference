@@ -48,6 +48,9 @@ type myProvider struct {
 	Status        string     `json:"status"`
 	Online        bool       `json:"online"`
 	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
+	// Last applied backend-capacity frame; rejected sequence frames only advance
+	// LastHeartbeat and must not freshen owner load diagnostics.
+	CapacityAcceptedAt *time.Time `json:"capacity_accepted_at,omitempty"`
 
 	// Identity / hardware
 	Hardware protocol.Hardware    `json:"hardware"`
@@ -611,6 +614,10 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		if live.BackendCapacity != nil {
 			cap := *live.BackendCapacity
 			mp.BackendCapacity = &cap
+			if !live.CapacityAcceptedAt.IsZero() {
+				acceptedAt := live.CapacityAcceptedAt
+				mp.CapacityAcceptedAt = &acceptedAt
+			}
 		}
 		if live.IdleUnloadMins != nil {
 			v := *live.IdleUnloadMins

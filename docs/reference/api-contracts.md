@@ -491,7 +491,11 @@ owner-only response also carries optional `backend_capacity.load_usable_gb`
 the current serving set), each model's `estimated_memory_gb`, and
 `capacity_model_ids`: the catalog/capability-accepted subset to which the
 canonicalized heartbeat slots and memory sample apply. The response also carries
-optional `backend_capacity.load_transition_active`, which marks
+`capacity_accepted_at`, the coordinator time of the last applied capacity
+snapshot. A repeated or out-of-order capacity sequence can advance
+`last_heartbeat` for liveness without refreshing this timestamp. The owner
+load verdict uses `capacity_accepted_at` and withholds stale or absent samples.
+It also carries optional `backend_capacity.load_transition_active`, which marks
 an in-flight model load or load-gate update before a slot exists. The provider
 emits a capacity heartbeat when this transition changes. My Macs and the
 coordinator attention count defer memory failures while it is active.
@@ -500,8 +504,8 @@ cold accepted models. A crashed slot retains weights and gets a separate
 backend warning, not a cold-load verdict. Owner-only/off-catalog models remain
 in `models` but are not assigned a load verdict from a different canonical inventory.
 Missing fields from older providers mean unknown, never zero or
-"fits"; a stale heartbeat, active request, in-flight load or reloading slot
-also withholds a definitive cold-load failure. The coordinator does not route
+"fits"; a stale capacity sample, active or queued request, in-flight load or
+reloading slot also withholds a definitive cold-load failure. The coordinator does not route
 from these owner diagnostics.
 The existing `free_for_load_gb` remains the routing input and may credit
 eviction of idle slots, so it is not interchangeable with the no-eviction

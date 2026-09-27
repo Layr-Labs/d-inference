@@ -20,7 +20,8 @@ export function ModelsStrip({ provider }: { provider: MyProvider }) {
   let warm: string[] = [];
   if (provider.backend_capacity) {
     warm = provider.backend_capacity.slots
-      .filter((slot) => slot.state === "idle" || slot.state === "running")
+      .filter((slot) => slot.state === "idle" || slot.state === "running"
+        || slot.state === "crashed" || slot.state === "reloading")
       .map((slot) => slot.model);
   } else if (provider.warm_models?.length) {
     warm = provider.warm_models;
@@ -59,8 +60,10 @@ export function ModelsStrip({ provider }: { provider: MyProvider }) {
           <p className="text-[10px] uppercase tracking-wider text-text-tertiary">Loaded</p>
           <div className="flex flex-wrap gap-1.5">
             {warm.map((m) => {
-              const active = m === provider.current_model;
-              const tag = SLOT_TAG[slotState.get(m) ?? ""];
+              const state = slotState.get(m);
+              const active = m === provider.current_model &&
+                (!provider.backend_capacity || state === "idle" || state === "running");
+              const tag = SLOT_TAG[state ?? ""];
               return (
                 <span
                   key={m}

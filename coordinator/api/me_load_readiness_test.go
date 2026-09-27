@@ -5,17 +5,35 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
+
+func TestMyProviderExportsCapacityAcceptedAt(t *testing.T) {
+	accepted := time.Now().Add(-time.Minute)
+	live := &registry.Provider{
+		ID: "p1", Status: registry.StatusServing,
+		LastHeartbeat: time.Now(), CapacityAcceptedAt: accepted,
+		BackendCapacity: &protocol.BackendCapacity{Slots: []protocol.BackendSlotCapacity{}},
+	}
+	owner := buildMyProvider(nil, live)
+	if owner.CapacityAcceptedAt == nil || !owner.CapacityAcceptedAt.Equal(accepted) {
+		t.Fatalf("owner capacity time = %v, want %v", owner.CapacityAcceptedAt, accepted)
+	}
+	if owner.LastHeartbeat == nil || !owner.LastHeartbeat.After(accepted) {
+		t.Fatal("liveness and accepted-capacity timestamps were conflated")
+	}
+}
 
 func TestColdModelLoadBlockedUsesLiveNoEvictionBudget(t *testing.T) {
 	usable, headroom := 14.3, 6.5
 	heartbeat := time.Now()
 	accepted := []string{"qwen"}
 	p := &myProvider{
-		Online:           true,
-		LastHeartbeat:    &heartbeat,
-		CapacityModelIDs: &accepted,
-		Models:           []protocol.ModelInfo{{ID: "qwen", EstimatedMemoryGB: 18.2}},
+		Online:             true,
+		LastHeartbeat:      &heartbeat,
+		CapacityAcceptedAt: &heartbeat,
+		CapacityModelIDs:   &accepted,
+		Models:             []protocol.ModelInfo{{ID: "qwen", EstimatedMemoryGB: 18.2}},
 		BackendCapacity: &protocol.BackendCapacity{
 			LoadUsableGB: &usable, LoadHeadroomGB: &headroom,
 		},
@@ -23,16 +41,19 @@ func TestColdModelLoadBlockedUsesLiveNoEvictionBudget(t *testing.T) {
 	noEviction := 7.8
 	p.BackendCapacity.FreeForLoadGB = &noEviction
 	stale := time.Now().Add(-2 * time.Minute)
-	p.LastHeartbeat = &stale
+	p.CapacityAcceptedAt = &stale
 	if coldModelLoadBlocked(p) {
-		t.Fatal("stale heartbeat must withhold live load verdict")
+		t.Fatal("stale accepted capacity must withhold verdict despite fresh heartbeat")
 	}
-	p.LastHeartbeat = &heartbeat
+	p.CapacityAcceptedAt = &heartbeat
 	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: "small", State: "running", NumRunning: 1}}
 	if coldModelLoadBlocked(p) {
 		t.Fatal("active work makes cold-load memory verdict temporary")
 	}
-	p.BackendCapacity.Slots = nil
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: "small", State: "idle", NumWaiting: 1}}
+	if coldModelLoadBlocked(p) {
+		t.Fatal("queued slot work makes cold-load memory verdict temporary")
+	}
 	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: "qwen", State: "reloading"}}
 	if coldModelLoadBlocked(p) {
 		t.Fatal("reloading slot makes memory verdict temporary")

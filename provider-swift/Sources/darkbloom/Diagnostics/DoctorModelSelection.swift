@@ -4,6 +4,30 @@ import ProviderCore
 /// A recently used resident slot must not hide a different selected model
 /// that failed to load.
 enum DoctorModelSelection {
+    /// Diagnose every advertised cold model, largest first so the first
+    /// actionable failure reports the greatest load-memory shortfall.
+    static func diagnosticTargets(
+        state: DaemonState?, stateFresh: Bool,
+        localModels: [ModelFitDiagnostic.ModelOption], fallback: String?
+    ) -> [ModelFitDiagnostic.ModelOption] {
+        let byID = Dictionary(localModels.map { ($0.id, $0) },
+                              uniquingKeysWith: { first, _ in first })
+        if stateFresh, let state {
+            let cold = (state.advertisedModels ?? [])
+                .compactMap { byID[$0] }
+                .filter { !isResident($0.id, state: state) }
+                .sorted { $0.weightGb > $1.weightGb }
+            if !cold.isEmpty { return cold }
+        }
+        if let target = preferredTarget(
+            state: state, stateFresh: stateFresh,
+            localModelIDs: Set(byID.keys), fallback: fallback),
+           let model = byID[target] {
+            return [model]
+        }
+        return localModels.max(by: { $0.weightGb < $1.weightGb }).map { [$0] } ?? []
+    }
+
     static func preferredTarget(
         state: DaemonState?, stateFresh: Bool,
         localModelIDs: Set<String>, fallback: String?

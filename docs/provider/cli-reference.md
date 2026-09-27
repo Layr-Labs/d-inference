@@ -587,7 +587,8 @@ Output includes:
   request-time eviction still cannot fit the model, the cold-load shortfall
   (the amount to free) is shown separately. Older or stale snapshots and
   snapshots taken during active inference, a model load or a reload withhold a
-  definitive verdict.
+  definitive verdict. The daemon writes the load transition during startup
+  preload even before its first backend-capacity snapshot.
   `always ready`
   retains loaded models but does not override the memory load gate.
   An eviction-aware allowance distinguishes a preload that preserves resident
@@ -650,7 +651,9 @@ The operator report begins with a readiness summary and the first concrete
 action. A failed model-fit check names the live usable memory, the required
 load budget and their shortfall; it tells the operator to free memory, rerun
 `doctor` and restart to retry preload when enabled. Interactive terminals color section
-headings and PASS/WARN/FAIL markers. Pipes, `NO_COLOR`, `CLICOLOR=0`, and
+headings and PASS/WARN/FAIL markers. Every advertised cold model is checked,
+largest first, so a small fit cannot hide a larger model's failure.
+Pipes, `NO_COLOR`, `CLICOLOR=0`, and
 `TERM=dumb` retain plain text.
 When the daemon's capacity snapshot is fresh, `doctor` uses its paired
 no-eviction usable memory and serving headroom sample; otherwise it falls back to a local read-only memory

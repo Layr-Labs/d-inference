@@ -293,7 +293,9 @@ func (t *cacheRoutingTracker) now() time.Time {
 }
 
 // SetCacheRoutingClockForTest replaces the clock the exact-cache tracker uses
-// for receipt timestamps, holder expiry and proof-fence windows. It applies to
+// for attempt and receipt timestamps, holder expiry at receipt and at routing,
+// proof-fence windows and the lifecycle status. Demand observation,
+// activation sampling and TTFT calibration keep the wall clock. It applies to
 // the current tracker only; ConfigureCacheRouting installs a fresh one.
 func (r *Registry) SetCacheRoutingClockForTest(now func() time.Time) {
 	if r == nil || now == nil {

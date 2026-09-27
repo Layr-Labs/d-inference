@@ -98,7 +98,7 @@ func (r *Registry) MarkCacheAttemptTerminal(pr *PendingRequest) {
 	if r == nil || pr == nil {
 		return
 	}
-	pr.markCacheAttemptTerminal(time.Now())
+	pr.markCacheAttemptTerminal()
 }
 
 func validCacheOutcome(outcome string) bool {

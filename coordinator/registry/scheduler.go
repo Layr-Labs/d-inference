@@ -613,7 +613,7 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	pr.CacheOpportunity = CacheOpportunity{}
 	if wantHints {
 		pr.cacheRoutingHints, pr.CacheOpportunity = r.cacheRoutingHintsWithObservation(
-			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, time.Now())
+			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, cacheTracker.now())
 	}
 	pr.CacheSelectionMode = ""
 	pr.CacheSelectionTier = ""

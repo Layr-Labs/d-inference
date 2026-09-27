@@ -59,6 +59,9 @@ func TestCacheSnapshotOtherModelCannotClearProofFence(t *testing.T) {
 	if err := r.UpdatePrefixCacheCapabilities(p.ID, 2, []protocol.PrefixCacheV2Capability{a, b}); err != nil {
 		t.Fatal(err)
 	}
+	if status := r.CacheRoutingLifecycleStatus(); status.FencedCapabilities != 1 {
+		t.Fatalf("other model's heartbeat lifted the fence: %+v", status)
+	}
 	if _, ok := r.currentPrefixCacheV2Capability(p.ID, a.ModelID, "ssd"); ok {
 		t.Fatal("unrelated capability change bypassed proof fence")
 	}

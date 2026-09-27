@@ -410,11 +410,19 @@ func TestProofFenceCapabilityChangeClearsAndResetsStrikes(t *testing.T) {
 	if err := r.UpdatePrefixCacheCapabilities(provider.ID, 2, []protocol.PrefixCacheV2Capability{rotated}); err != nil {
 		t.Fatal(err)
 	}
+	// The heartbeat itself lifts the fence: a status scrape before any query
+	// of the replaced capability must not count the dead record.
+	if status := r.CacheRoutingLifecycleStatus(); status.FencedCapabilities != 0 {
+		t.Fatalf("replaced capability still counted as fenced before any query: %+v", status)
+	}
+	r.cacheRouting.mu.Lock()
+	records := len(r.cacheRouting.rejectedV2)
+	r.cacheRouting.mu.Unlock()
+	if records != 0 {
+		t.Fatal("capability change retained the fence record")
+	}
 	if reason := fenceTestCapabilityReason(r, provider); reason != CacheReceiptAccepted {
 		t.Fatalf("capability change did not clear the fence: %s", reason)
-	}
-	if status := r.CacheRoutingLifecycleStatus(); status.FencedCapabilities != 0 {
-		t.Fatalf("cleared fence still counted: %+v", status)
 	}
 	fresh := fenceTestLookup(t, r, provider, rotated, "fresh", plan, strings.Repeat("d", 64), 1)
 	if got := r.ApplyPrefixCacheLookupV2Result(provider.ID, fresh); got.Reason != CacheReceiptPromptMismatch {
@@ -423,6 +431,46 @@ func TestProofFenceCapabilityChangeClearsAndResetsStrikes(t *testing.T) {
 	clock.Advance(cacheProofFenceBase)
 	if reason := fenceTestCapabilityReason(r, provider); reason != CacheReceiptAccepted {
 		t.Fatalf("new capability inherited old strikes: %s", reason)
+	}
+}
+
+// The retention sweep is reached through the paths production actually
+// exercises: a status scrape, the bounded state counts, and a receipt from
+// an unrelated provider (its decision runs the due sweep).
+func TestProofFenceSweepThroughNaturalEntries(t *testing.T) {
+	for name, trigger := range map[string]func(*testing.T, *Registry, protocol.PrefixCacheV2Capability, *fenceTestClock){
+		"lifecycle status": func(_ *testing.T, r *Registry, _ protocol.PrefixCacheV2Capability, _ *fenceTestClock) {
+			r.CacheRoutingLifecycleStatus()
+		},
+		"state counts": func(_ *testing.T, r *Registry, _ protocol.PrefixCacheV2Capability, _ *fenceTestClock) {
+			r.CacheRoutingStateCounts()
+		},
+		"receipt from another provider": func(t *testing.T, r *Registry, capability protocol.PrefixCacheV2Capability, _ *fenceTestClock) {
+			other := checkpointTestProvider(t, r, "machine-b", capability)
+			plan := exactTestPlan(exactTestAnchor(1, "c"))
+			lookup := fenceTestLookup(t, r, other, capability, "other", plan, plan.Boundaries[0].ChainHash, 1)
+			if got := r.ApplyPrefixCacheLookupV2Result(other.ID, lookup); !got.Accepted {
+				t.Fatalf("unrelated provider's proof = %+v", got)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, provider, capability, clock := fenceTestRegistry(t)
+			plan := exactTestPlan(exactTestAnchor(1, "c"))
+			mismatch := fenceTestLookup(t, r, provider, capability, "mismatch", plan, strings.Repeat("d", 64), 1)
+			if got := r.ApplyPrefixCacheLookupV2Result(provider.ID, mismatch); got.Reason != CacheReceiptPromptMismatch {
+				t.Fatalf("decision=%+v", got)
+			}
+			clock.Advance(cacheProofFenceBase + cacheProofFenceRetention)
+			trigger(t, r, capability, clock)
+			tracker := r.cacheRouting
+			tracker.mu.Lock()
+			records, expired := len(tracker.rejectedV2), tracker.fencesExpired
+			tracker.mu.Unlock()
+			if records != 0 || expired != 1 {
+				t.Fatalf("after %s: records=%d fences_expired=%d, want 0 and 1", name, records, expired)
+			}
+		})
 	}
 }
 

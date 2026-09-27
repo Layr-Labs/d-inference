@@ -54,44 +54,38 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 		!validV2Anchor(promptAnchor, blockSize) {
 		return nil
 	}
-	boundaries := make(map[int]string, len(plan.Boundaries))
-	for _, boundary := range plan.Boundaries {
-		if !validV2Anchor(boundary, blockSize) ||
-			boundary.TokenCount > promptAnchor.TokenCount {
-			return nil
-		}
-		if _, duplicate := boundaries[boundary.TokenCount]; duplicate {
-			return nil
-		}
-		boundaries[boundary.TokenCount] = boundary.ChainHash
-	}
-
 	nonce, err := newCacheReceiptNonce()
 	if err != nil {
 		return err
 	}
 	now := time.Now()
 	attempt := cacheAttempt{
-		RequestID:          pr.RequestID,
-		ProviderID:         providerID,
-		Provider:           provider,
-		Model:              pr.Model,
-		CreatedAt:          now,
-		ExpiresAt:          now.Add(cacheRoutingInFlightAttemptTTL),
-		V2:                 true,
-		Plan:               plan,
-		V2Capability:       capability,
-		MemoryCapability:   memoryCapability,
-		ExpectedPrompt:     promptAnchor,
-		ExpectedBoundaries: boundaries,
+		RequestID:        pr.RequestID,
+		ProviderID:       providerID,
+		Provider:         provider,
+		Model:            pr.Model,
+		CreatedAt:        now,
+		ExpiresAt:        now.Add(cacheRoutingInFlightAttemptTTL),
+		V2:               true,
+		Plan:             plan,
+		V2Capability:     capability,
+		MemoryCapability: memoryCapability,
+		ExpectedPrompt:   promptAnchor,
 	}
-	owner := &cacheAttemptOwner{tracker: tracker, generation: plan.generation,
-		nonce: nonce, scope: plan.CacheScope}
-	if capable {
-		owner.boundaryMode = capability.ReadyBoundaryMode
+	if _, valid := cacheAttemptCharge(nonce, attempt); !valid {
+		return nil
 	}
 	tracker.mu.Lock()
-	tracker.storeAttemptLocked(nonce, attempt)
+	if !tracker.storeAttemptLocked(nonce, attempt) {
+		tracker.mu.Unlock()
+		return nil // Optional cache bookkeeping must not reject inference.
+	}
+	admitted := tracker.attempts[nonce]
+	owner := &cacheAttemptOwner{tracker: tracker, generation: admitted.Plan.generation,
+		nonce: nonce, scope: admitted.Plan.CacheScope}
+	if capable {
+		owner.boundaryMode = admitted.V2Capability.ReadyBoundaryMode
+	}
 	if len(tracker.attempts) > tracker.maxAttempts {
 		tracker.enforceAttemptCapLocked()
 	}

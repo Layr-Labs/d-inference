@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-26 · commit `3e9dcf6b4`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -270,6 +270,38 @@ provider epochs ([`EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS`](../reference/confi
 heap-evicted. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
+
+### Attempt-record memory accounting
+
+The tracker admits at most `cacheRoutingMaxAttemptBytes` (67,108,864) logical
+bytes of attempt records in addition to its unchanged 50,000-record count cap.
+`cacheAttemptCharge` in `coordinator/registry/cache_attempt_budget.go` charges
+`2048 + 96*N + 2*sum(boundary hash byte lengths) + 128 + scalar byte lengths`.
+`N` counts input boundaries; both boundary representations are charged, even if
+their detached strings share storage. Scalars include nonce, request/provider/
+model identities, every plan string, expected-prompt hash and all string fields
+of both tier capabilities. The 128-byte allowance prepays both future READY hashes.
+
+`storeAttemptLocked` validates the charge and budget before cloning retained
+strings, boundary slice and map. Checked replacement accounting preserves an
+incumbent on refusal; each removal refunds its stored charge exactly once.
+`PreparePrefixCacheV2Attempt` publishes an owner only after successful insertion
+and uses the admitted detached scope. Refusal returns ordinary cold inference,
+without receipt metadata, cache participation or discarded TTFT calibration.
+The existing count/expiry race can remove a successfully inserted record before
+owner publication; publication is not a promise of continuing map retention.
+
+The two-hour in-flight lifetime, two-minute terminal grace, sweep cadence,
+generation revocation and final dispatch authorization are unchanged. Terminal
+state retains the record's full charge during its late-receipt grace; retiring
+the tracker revokes it before clearing the counter. Validated READY updates clone
+only their prepaid retained hash (`applyReadyV2Decision`).
+
+This is a logical bound on tracked records, not a process RSS or OOM guarantee.
+Request plans, published owners/snapshots, provider and holder state, map capacity,
+temporary replacement allocations and garbage-collection timing have separate
+lifetimes. The budget neither changes encrypted SSD retention nor grants cache
+credit without the existing authenticated receipt and owner checks.
 
 ### Prepared assistant replacement
 

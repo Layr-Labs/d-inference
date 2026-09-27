@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"crypto/rand"
 	"encoding/base64"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -89,7 +90,7 @@ func (t *cacheRoutingTracker) markAttemptTerminal(nonce string, now time.Time) {
 	t.mu.Lock()
 	if attempt, ok := t.activeAttemptLocked(nonce, now); ok {
 		attempt.ExpiresAt = now.Add(cacheRoutingAttemptTTL)
-		t.attempts[nonce] = attempt
+		t.attempts[strings.Clone(nonce)] = attempt
 	}
 	t.mu.Unlock()
 }
@@ -173,22 +174,50 @@ func (t *cacheRoutingTracker) invalidateProviderModels(providerID string, models
 	}
 }
 
-func (t *cacheRoutingTracker) storeAttemptLocked(nonce string, attempt cacheAttempt) {
+func (t *cacheRoutingTracker) storeAttemptLocked(nonce string, attempt cacheAttempt) bool {
 	if t.generation.revoked.Load() {
-		return
+		return false
 	}
-	t.attempts[nonce] = attempt
+	charge, valid := cacheAttemptCharge(nonce, attempt)
+	if !valid {
+		return false
+	}
+	t.sweepIfDueLocked(time.Now())
+	old := t.attempts[nonce].accountedBytes
+	if old > t.attemptBytes {
+		return false
+	}
+	total, valid := checkedCacheAttemptAdd(t.attemptBytes-old, charge)
+	if !valid || total > t.maxAttemptBytes {
+		return false
+	}
+	key, owned, valid := detachCacheAttempt(nonce, attempt)
+	if !valid || t.generation.revoked.Load() {
+		return false
+	}
+	owned.accountedBytes = charge // Never trust a caller-supplied charge.
+	t.attempts[key] = owned
+	t.attemptBytes = total
 	if entry := t.attemptOrderByNonce[nonce]; entry != nil {
 		entry.createdAt = attempt.CreatedAt
 		heap.Fix(&t.attemptOrder, entry.index)
-		return
+		return true
 	}
-	entry := &cacheAttemptOrderEntry{nonce: nonce, createdAt: attempt.CreatedAt}
+	entry := &cacheAttemptOrderEntry{nonce: key, createdAt: attempt.CreatedAt}
 	heap.Push(&t.attemptOrder, entry)
-	t.attemptOrderByNonce[nonce] = entry
+	t.attemptOrderByNonce[key] = entry
+	return true
 }
 
 func (t *cacheRoutingTracker) removeAttemptLocked(nonce string) {
+	if attempt, exists := t.attempts[nonce]; exists {
+		if attempt.accountedBytes > t.attemptBytes {
+			// An inconsistent counter must not grant new cache admission.
+			t.attemptBytes = ^uint64(0)
+		} else {
+			t.attemptBytes -= attempt.accountedBytes
+		}
+	}
 	delete(t.attempts, nonce)
 	if entry := t.attemptOrderByNonce[nonce]; entry != nil {
 		heap.Remove(&t.attemptOrder, entry.index)

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -99,7 +100,7 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 	} else {
 		attempt.LookupSeen = true
 	}
-	t.attempts[msg.CacheReceiptNonce] = attempt
+	t.attempts[strings.Clone(msg.CacheReceiptNonce)] = attempt
 	switch msg.Outcome {
 	case "hit":
 		anchor := *msg.MatchedAnchor

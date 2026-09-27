@@ -74,8 +74,11 @@ func TestCachePreparePublicationRevalidatesOwnership(t *testing.T) {
 			owner := &cacheAttemptOwner{tracker: tracker, generation: tracker.generation, nonce: "staged-nonce", scope: "scope"}
 			revision := p.prefixCacheRevision
 			tracker.mu.Lock()
-			tracker.storeAttemptLocked(owner.nonce, cacheAttempt{RequestID: pr.RequestID, ProviderID: p.ID, Provider: p, Model: pr.Model, ExpiresAt: time.Now().Add(time.Hour)})
+			admitted := tracker.storeAttemptLocked(owner.nonce, cacheAttempt{RequestID: pr.RequestID, ProviderID: p.ID, Provider: p, Model: pr.Model, ExpiresAt: time.Now().Add(time.Hour)})
 			tracker.mu.Unlock()
+			if !admitted {
+				t.Fatal("staged fixture insertion refused")
+			}
 			switch change {
 			case "reconfigure", "off":
 				mode := CacheRoutingOn

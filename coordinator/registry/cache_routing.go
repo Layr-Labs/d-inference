@@ -12,20 +12,21 @@ const (
 	CacheRoutingOff = "off"
 	CacheRoutingOn  = "on"
 
-	defaultCacheRoutingTTL                = 10 * time.Minute
-	defaultCacheRoutingMaxHolders         = 4
-	defaultCacheRoutingActivationPct      = 100.0
-	defaultCacheRoutingMaxPlanQPS         = 0.0
-	maxCacheRoutingPlanQPS                = 1_000_000.0
-	cacheRoutingAttemptTTL                = 2 * time.Minute
-	cacheRoutingInFlightAttemptTTL        = 2 * time.Hour
-	cacheRoutingSweepInterval             = 30 * time.Second
-	cacheRoutingMaxEntries                = 10_000
-	cacheRoutingMaxAttempts               = 50_000
-	cacheRoutingMaxReceiptTokens          = 1_000_000
-	cacheRoutingMaxStageMs                = 10 * 60 * 1000.0
-	cacheRoutingMemoryTTL                 = 30 * time.Second
-	cacheRoutingMaxCheckpointReadyAnchors = 16
+	defaultCacheRoutingTTL                       = 10 * time.Minute
+	defaultCacheRoutingMaxHolders                = 4
+	defaultCacheRoutingActivationPct             = 100.0
+	defaultCacheRoutingMaxPlanQPS                = 0.0
+	maxCacheRoutingPlanQPS                       = 1_000_000.0
+	cacheRoutingAttemptTTL                       = 2 * time.Minute
+	cacheRoutingInFlightAttemptTTL               = 2 * time.Hour
+	cacheRoutingSweepInterval                    = 30 * time.Second
+	cacheRoutingMaxEntries                       = 10_000
+	cacheRoutingMaxAttempts                      = 50_000
+	cacheRoutingMaxAttemptBytes           uint64 = 64 << 20
+	cacheRoutingMaxReceiptTokens                 = 1_000_000
+	cacheRoutingMaxStageMs                       = 10 * 60 * 1000.0
+	cacheRoutingMemoryTTL                        = 30 * time.Second
+	cacheRoutingMaxCheckpointReadyAnchors        = 16
 )
 
 type CachePlan struct {
@@ -91,6 +92,7 @@ type cacheHolder struct {
 }
 
 type cacheAttempt struct {
+	accountedBytes        uint64
 	RequestID             string
 	ProviderID            string
 	Provider              *Provider
@@ -260,6 +262,8 @@ type cacheRoutingTracker struct {
 	maxHolders          int
 	maxEntries          int
 	maxAttempts         int
+	attemptBytes        uint64
+	maxAttemptBytes     uint64
 	holderCount         int
 	lastSweep           time.Time
 	holders             map[string]map[string]cacheHolder
@@ -290,7 +294,8 @@ func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTrac
 		generation: &cacheRoutingGeneration{},
 		demand:     newCacheDemandTracker(cacheRoutingMaxEntries, ttl),
 		ttl:        ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts,
-		holders: make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
+		maxAttemptBytes: cacheRoutingMaxAttemptBytes,
+		holders:         make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
 		holderOrderByRef: make(map[cacheHolderRef]*cacheHolderOrderEntry), attemptOrderByNonce: make(map[string]*cacheAttemptOrderEntry),
 		v2Sequences:      make(map[cacheV2SequenceKey]uint64),
 		rejectedV2:       make(map[cacheV2ProviderModelKey]protocol.PrefixCacheV2Capability),

@@ -23,7 +23,9 @@ func TestCacheRetiredTrackerCannotRepopulateOrQuarantineReplacement(t *testing.T
 		t.Fatal("old nonce donated into replacement tracker")
 	}
 	old.mu.Lock()
-	old.storeAttemptLocked("late", cacheAttempt{ExpiresAt: time.Now().Add(time.Hour)})
+	if old.storeAttemptLocked("late", cacheAttempt{ExpiresAt: time.Now().Add(time.Hour)}) {
+		t.Error("retired tracker admitted a late insertion")
+	}
 	if len(old.attempts) != 0 || old.holderCount != 0 || len(old.v2Sequences) != 0 || len(old.rejectedV2) != 0 {
 		t.Error("retired tracker retained or recreated evidence")
 	}

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-27 · commit `d4817281f`
+> Last updated: 2026-09-27 · commit `2a44db7f7`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their

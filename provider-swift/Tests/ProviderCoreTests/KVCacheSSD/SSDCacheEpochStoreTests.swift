@@ -276,7 +276,7 @@ struct SSDCacheEpochStoreTests {
         #expect(recovered.current != originalEpoch)
     }
 
-    @Test("unloaded deletion blocks reopen and publishes only after mutation")
+    @Test("unloaded deletion blocks reopen and keeps the epoch and sequence")
     func unloadedDeletionSerializesReopen() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("cache-epoch-unloaded-\(UUID().uuidString)", isDirectory: true)
@@ -285,6 +285,7 @@ struct SSDCacheEpochStoreTests {
         let binding = binding(contract: String(repeating: "b", count: 64))
         let original = try SSDCacheEpochStore(root: root, binding: binding)
         let originalEpoch = try #require(original.current)
+        #expect(original.takeNextSequence(expectedEpoch: originalEpoch) == 1)
         let (entered, enteredContinuation) = AsyncStream.makeStream(
             of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let release = DispatchSemaphore(value: 0)
@@ -296,7 +297,9 @@ struct SSDCacheEpochStoreTests {
         }
         var enteredIterator = entered.makeAsyncIterator()
         _ = await enteredIterator.next()
-        #expect(original.current == nil)
+        // Per-file deletion on an unloaded root neither suspends nor
+        // replaces the generation; it only holds the initialization lock.
+        #expect(original.current == originalEpoch)
 
         let openState = EpochOpenState()
         let reopen = Task.detached {
@@ -310,8 +313,25 @@ struct SSDCacheEpochStoreTests {
         release.signal()
         #expect(await mutation.value)
         let reopened = try await reopen.value
-        let current = try #require(reopened.current)
-        #expect(current != originalEpoch)
+        #expect(reopened.current == originalEpoch)
+        #expect(original.current == originalEpoch)
+        #expect(reopened.takeNextSequence(expectedEpoch: originalEpoch) == 2)
+    }
+
+    @Test("unloaded deletion refuses an unreadable epoch record and runs without one")
+    func unloadedDeletionRecordGate() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-epoch-unloaded-gate-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var ran = 0
+        #expect(SSDCacheEpochStore.performUnloadedDestructiveChange(root: root) { ran += 1 })
+        #expect(ran == 1)
+        let record = root.appendingPathComponent("cache-epoch.json")
+        try Data("not json".utf8).write(to: record)
+        #expect(!SSDCacheEpochStore.performUnloadedDestructiveChange(root: root) { ran += 1 })
+        #expect(ran == 1)
+        #expect(try Data(contentsOf: record) == Data("not json".utf8), "the record is never rewritten")
     }
 
     @Test("epoch record accepts its size limit and rejects one extra byte")

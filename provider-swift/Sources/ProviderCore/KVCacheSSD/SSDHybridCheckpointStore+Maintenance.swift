@@ -8,14 +8,13 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
 
     func evictOldestEntry() -> Int {
         for entry in index.oldestEntries() {
-            var freed = 0
-            _ = performIndexedDestructiveChange {
+            let freed = performIndexedRemoval { () -> Int in
                 let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: entry.tag16.hexString)
-                if SSDBlockStore.removeItemIfSafe(at: url, under: self.config.root)
-                    || SSDBlockStore.indexedBlockFileStatus(at: url, under: self.config.root) == .missing {
-                    freed = self.index.remove(tag16: entry.tag16)
-                }
-            }
+                guard SSDBlockStore.removeItemIfSafe(at: url, under: self.config.root)
+                    || SSDBlockStore.indexedBlockFileStatus(at: url, under: self.config.root) == .missing
+                else { return 0 }
+                return self.index.remove(tag16: entry.tag16)
+            } ?? 0
             if freed > 0 {
                 statsBox.update { $0.evictions += 1 }
                 return freed
@@ -30,39 +29,37 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             return SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular
         }
         guard !removed.isEmpty else { return }
-        _ = performIndexedDestructiveChange { removed.forEach { _ = self.index.remove(tag16: $0) } }
+        _ = performIndexedRemoval { removed.forEach { _ = self.index.remove(tag16: $0) } }
     }
 
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool {
-        // Whole-root callers do not know this store's index. Reconcile under
-        // the same epoch barrier so later reconcileAll cannot rotate it again
-        // solely to forget entries whose files this mutation removed.
-        performIndexedDestructiveChange {
+        // Whole-root callers do not know this store's index. Reconcile before
+        // the removal barrier lifts so a reader queued on a removed file sees
+        // its index entry gone at the post-acquire recheck.
+        let completed: Void? = performIndexedRemoval {
             body()
-            self.reconcileIndexWithoutEpoch()
+            self.dropIndexEntriesWithoutFiles()
+        }
+        return completed != nil
+    }
+
+    /// Per-file removal: unlink plus index/accounting update, serialized
+    /// with other removals. The cache epoch is untouched and the capability
+    /// stays advertised. Every other checkpoint remains reusable and the
+    /// coordinator forgets the removed one through an ordinary lookup miss
+    /// (`miss_invalidation`); a stale holder costs one cold serve, never a
+    /// fence. Refused once closed or once this store no longer owns its
+    /// epoch, so a superseded instance cannot unlink a successor's files.
+    private func performIndexedRemoval<T>(_ body: () -> T) -> T? {
+        removalLock.withLock {
+            guard lock.withLock({ !closed }),
+                config.epochStore == nil || config.epochStore?.current != nil
+            else { return nil }
+            return body()
         }
     }
 
-    /// Targeted callers remove their known index entries in the body. Keep
-    /// their epoch fence without checking every unrelated checkpoint's file
-    /// status for each victim in a process-wide budget-enforcement loop.
-    private func performIndexedDestructiveChange(_ body: () -> Void) -> Bool {
-        let accepted = lock.withLock {
-            guard !closed, !destructiveChange else { return false }
-            destructiveChange = true
-            return true
-        }
-        guard accepted else { return false }
-        defer { lock.withLock { destructiveChange = false } }
-        if let epochStore = config.epochStore {
-            let completed: Void? = epochStore.performOwnedDestructiveChange(body)
-            return completed != nil
-        }
-        body()
-        return true
-    }
-
-    private func reconcileIndexWithoutEpoch() {
+    private func dropIndexEntriesWithoutFiles() {
         for tag in index.allTags() {
             let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
             if SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular {
@@ -72,7 +69,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     }
 
     func removeCorrupt(_ tag: Data) {
-        _ = performIndexedDestructiveChange {
+        _ = performIndexedRemoval {
             let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: tag.hexString)
             _ = SSDBlockStore.removeItemIfSafe(at: url, under: self.config.root)
             _ = self.index.remove(tag16: tag)
@@ -121,7 +118,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     }
 
     private func capabilityLocked() -> PrefixCacheV2Capability? {
-        guard !closed, scanReady, !destructiveChange, let epoch = config.epochStore?.current else { return nil }
+        guard !closed, scanReady, let epoch = config.epochStore?.current else { return nil }
         return PrefixCacheV2Capability(
             modelId: config.modelId, modelAggregateHash: identity.modelAggregateHash,
             promptContractId: identity.promptContractID, blockHashVersion: CBv2BlockHasher.version,
@@ -132,7 +129,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     func prefixCacheAdvertisement(base: PrefixCacheModelStatus)
         -> (capability: PrefixCacheV2Capability?, status: PrefixCacheModelStatus) {
         lock.withLock {
-            let ready = !closed && scanReady && !destructiveChange
+            let ready = !closed && scanReady
                 && (config.epochStore == nil || config.epochStore?.current != nil)
             return (capabilityLocked(), PrefixCacheModelStatus(
                 modelId: base.modelId, backend: base.backend, replayStrategy: base.replayStrategy,
@@ -143,7 +140,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
 
     func takeNextPrefixCacheV2Sequence(expectedEpoch: String) -> UInt64? {
         lock.withLock {
-            guard !closed, !destructiveChange else { return nil }
+            guard !closed else { return nil }
             return config.epochStore?.takeNextSequence(expectedEpoch: expectedEpoch)
         }
     }
@@ -173,7 +170,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     /// Called by the engine's handler after durable commit AND donor release.
     func publishReady(requestID: CBv2RequestID, positions: [Int]) {
         let delivery = lock.withLock { () -> (ReadyReceipt, PrefixCacheReadyResult)? in
-            guard !closed, !destructiveChange, let proof = readyReceipts[requestID],
+            guard !closed, let proof = readyReceipts[requestID],
                 epochMatches(proof.epoch) else { return nil }
             var anchors = proof.anchors
             var maximumFileBytes = 0

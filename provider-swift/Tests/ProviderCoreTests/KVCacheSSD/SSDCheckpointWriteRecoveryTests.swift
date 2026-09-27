@@ -39,8 +39,8 @@ struct SSDCheckpointWriteRecoveryTests {
         await store.closeAndWait()
     }
 
-    @Test("unreadable existing data still revokes its epoch and publishes no receipt")
-    func existingFileFailureRevokesEpoch() async throws {
+    @Test("unreadable existing data is removed without rotating the epoch and publishes no receipt")
+    func existingFileFailureKeepsEpoch() async throws {
         let f = try SSDHybridCheckpointTestFixture()
         defer { f.remove() }
         let telemetry = PrefixCacheDonationTelemetry()
@@ -49,7 +49,7 @@ struct SSDCheckpointWriteRecoveryTests {
         let epoch = store.config.epochStore?.current
         try Data([0, 1, 2]).write(to: f.file(store))
         #expect(try await f.donate(store, receipt: 11).isEmpty)
-        #expect(store.config.epochStore?.current != epoch)
+        #expect(store.config.epochStore?.current == epoch)
         #expect(store.index.count == 0)
         #expect(count(.existingCacheUnreadable, in: telemetry) == 1)
         #expect(store.stats().corruptDropped == 1)
@@ -115,7 +115,7 @@ struct SSDCheckpointWriteRecoveryTests {
         }
     }
 
-    @Test("evicting the written endpoint reports eviction before its epoch change")
+    @Test("evicting the written endpoint reports eviction and keeps the epoch")
     func donationEvictedByBudget() async throws {
         let f = try SSDHybridCheckpointTestFixture()
         defer { f.remove() }
@@ -126,7 +126,7 @@ struct SSDCheckpointWriteRecoveryTests {
         #expect(store.stats().filesWritten == 1)
         #expect(store.stats().evictions == 1)
         #expect(store.index.count == 0)
-        #expect(store.config.epochStore?.current != epoch)
+        #expect(store.config.epochStore?.current == epoch)
         #expect(count(.cacheEntryEvicted, in: telemetry) == 1)
         #expect(count(.cacheEpochChanged, in: telemetry) == 0)
         #expect(telemetry.snapshot().reduce(0) { $0 + $1.count } == 1)

@@ -14,6 +14,7 @@ func coldModelLoadBlocked(p *myProvider) bool {
 	if !p.Online || p.BackendCapacity == nil ||
 		p.BackendCapacity.LoadUsableGB == nil || p.BackendCapacity.LoadHeadroomGB == nil ||
 		p.BackendCapacity.FreeForLoadGB == nil || p.LastHeartbeat == nil ||
+		p.CapacityModelIDs == nil ||
 		p.PendingRequests > 0 {
 		return false
 	}
@@ -27,23 +28,22 @@ func coldModelLoadBlocked(p *myProvider) bool {
 		math.IsNaN(headroom) || math.IsInf(headroom, 0) || headroom < 0 {
 		return false
 	}
-	resident := make(map[string]bool, len(p.WarmModels)+len(p.BackendCapacity.Slots)+1)
-	for _, id := range p.WarmModels {
-		resident[id] = true
+	accepted := make(map[string]bool, len(*p.CapacityModelIDs))
+	for _, id := range *p.CapacityModelIDs {
+		accepted[id] = true
 	}
-	if p.CurrentModel != "" {
-		resident[p.CurrentModel] = true
-	}
+	// Once capacity exists, its slots supersede heartbeat warm/current fields.
+	resident := make(map[string]bool, len(p.BackendCapacity.Slots))
 	for _, slot := range p.BackendCapacity.Slots {
 		if slot.State == "running" || slot.NumRunning > 0 {
 			return false // today's shortage may clear when this request ends
 		}
-		if slot.State == "idle" || slot.State == "running" {
+		if slot.State == "idle" {
 			resident[slot.Model] = true
 		}
 	}
 	for _, model := range p.Models {
-		if resident[model.ID] || model.EstimatedMemoryGB <= 0 {
+		if !accepted[model.ID] || resident[model.ID] || model.EstimatedMemoryGB <= 0 {
 			continue
 		}
 		if model.EstimatedMemoryGB+headroom > usable &&

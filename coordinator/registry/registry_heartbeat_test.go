@@ -395,6 +395,31 @@ func TestHeartbeatDropsUnregisteredModelIdentifiersBeforeStateAndMetrics(t *test
 	}
 }
 
+func TestHeartbeatCapacityModelIDsExcludeOffCatalogOwnerModel(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	acceptedID := msg.Models[0].ID
+	msg.Models = append(msg.Models, protocol.ModelInfo{ID: "owner-only", EstimatedMemoryGB: 18.2})
+	reg.SetModelCatalog([]CatalogEntry{{ID: acceptedID}})
+	p := reg.Register("p1", nil, msg)
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle",
+		WarmModels: []string{"owner-only"},
+		BackendCapacity: &protocol.BackendCapacity{Slots: []protocol.BackendSlotCapacity{
+			{Model: "owner-only", State: "idle"},
+		}},
+	})
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.Models) != 2 || len(p.CapacityModelIDs) != 1 || p.CapacityModelIDs[0] != acceptedID {
+		t.Fatalf("models=%v capacity ids=%v, want both owner models but only accepted evidence",
+			p.Models, p.CapacityModelIDs)
+	}
+	if p.BackendCapacity == nil || len(p.BackendCapacity.Slots) != 0 {
+		t.Fatalf("off-catalog slot leaked into accepted capacity: %+v", p.BackendCapacity)
+	}
+}
+
 func TestHeartbeatCanonicalizationPreservesNilAndEmptySnapshots(t *testing.T) {
 	reg := New(testLogger())
 	p := reg.Register("p1", nil, testRegisterMessage())

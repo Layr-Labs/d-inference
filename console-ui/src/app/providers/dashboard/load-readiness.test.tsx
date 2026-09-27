@@ -5,6 +5,7 @@ import { makeProvider } from "./testFixtures";
 import { coldModelReadiness } from "./load-readiness";
 import { LoadReadinessPanel } from "./LoadReadinessPanel";
 import { computeWarnings } from "../warnings";
+import { resolveFix } from "./fixes";
 
 const cap = {
   slots: [], gpu_memory_active_gb: 0, gpu_memory_peak_gb: 0,
@@ -22,6 +23,7 @@ describe("owner model load readiness", () => {
     status: "serving", online: true, idle_unload_mins: 0,
     last_heartbeat: new Date().toISOString(),
     models: [{ id: "EigenLabs/Qwen3.8-27B-4bit-mtp", estimated_memory_gb: 18.2 }],
+    capacity_model_ids: ["EigenLabs/Qwen3.8-27B-4bit-mtp"],
     backend_capacity: cap,
   });
 
@@ -38,25 +40,35 @@ describe("owner model load readiness", () => {
     expect(computeWarnings(cold, ctx)).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "model_load_memory", severity: "blocking" }),
     ]));
+    const warning = computeWarnings(cold, ctx).find((item) => item.id === "model_load_memory");
+    expect(resolveFix(warning!.id)).toEqual(expect.objectContaining({
+      kind: "command", command: "darkbloom doctor",
+    }));
   });
 
   it("does not infer failure from legacy, offline, or resident snapshots", () => {
     for (const provider of [
       makeProvider({ ...cold, backend_capacity: { ...cap, load_usable_gb: undefined } }),
       makeProvider({ ...cold, online: false, status: "offline" }),
-      makeProvider({ ...cold, warm_models: [cold.models[0].id] }),
+      makeProvider({ ...cold, backend_capacity: { ...cap, slots: [{ model: cold.models[0].id,
+        state: "idle", num_running: 0, num_waiting: 0, active_tokens: 0, max_tokens_potential: 1000 }] } }),
     ]) {
       expect(coldModelReadiness(provider)).toEqual([]);
       expect(computeWarnings(provider, ctx).some((warning) => warning.id === "model_load_memory")).toBe(false);
     }
+    const staleWarm = makeProvider({ ...cold, warm_models: [cold.models[0].id], current_model: cold.models[0].id });
+    expect(coldModelReadiness(staleWarm)).toHaveLength(1);
   });
 
   it("separates a no-eviction preload skip from a request that can evict idle slots", () => {
     const withResidentSlot = makeProvider({
       ...cold,
       models: [...cold.models, { id: "small", estimated_memory_gb: 3 }],
+      capacity_model_ids: [cold.models[0].id, "small"],
       warm_models: ["small"],
-      backend_capacity: { ...cap, free_for_load_gb: 19 },
+      backend_capacity: { ...cap, free_for_load_gb: 19,
+        slots: [{ model: "small", state: "idle", num_running: 0,
+          num_waiting: 0, active_tokens: 0, max_tokens_potential: 1000 }] },
     });
     expect(coldModelReadiness(withResidentSlot)[0].canLoadAfterEviction).toBe(true);
     render(<LoadReadinessPanel provider={withResidentSlot} heartbeatTimeoutSeconds={90} />);
@@ -94,5 +106,14 @@ describe("owner model load readiness", () => {
     expect(screen.getByText(/Free at least 4\.2 GB/)).toBeInTheDocument();
     expect(computeWarnings(partlyReclaimable, ctx).find((warning) => warning.id === "model_load_memory")?.detail)
       .toContain("4.2 GB short");
+  });
+
+  it("does not diagnose an off-catalog model from canonical capacity", () => {
+    const ownerOnly = makeProvider({ ...cold,
+      models: [{ id: "owner-only", estimated_memory_gb: 18.2 }],
+      capacity_model_ids: [],
+    });
+    expect(coldModelReadiness(ownerOnly)).toEqual([]);
+    expect(computeWarnings(ownerOnly, ctx).some((warning) => warning.id === "model_load_memory")).toBe(false);
   });
 });

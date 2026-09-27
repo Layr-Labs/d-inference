@@ -18,28 +18,31 @@ export function coldModelReadiness(
   provider: MyProvider, heartbeatTimeoutSeconds = 90, nowMs = Date.now()
 ): ColdModelReadiness[] {
   const cap = provider.backend_capacity;
+  const capacityModelIDs = provider.capacity_model_ids;
   const usableGb = cap?.load_usable_gb;
   const headroomGb = cap?.load_headroom_gb;
   const heartbeatMs = provider.last_heartbeat ? Date.parse(provider.last_heartbeat) : NaN;
   const heartbeatAgeMs = nowMs - heartbeatMs;
-  if (!provider.online || !Number.isFinite(heartbeatAgeMs) ||
+  if (!provider.online || !cap || !capacityModelIDs || !Number.isFinite(heartbeatAgeMs) ||
       heartbeatAgeMs < -30_000 || heartbeatAgeMs > heartbeatTimeoutSeconds * 1000 ||
       usableGb === undefined || headroomGb === undefined ||
       !Number.isFinite(usableGb) || !Number.isFinite(headroomGb) || usableGb < 0 || headroomGb < 0) {
     return [];
   }
 
-  const resident = new Set(provider.warm_models ?? []);
-  if (provider.current_model) resident.add(provider.current_model);
-  for (const slot of cap?.slots ?? []) {
+  const accepted = new Set(capacityModelIDs);
+  // With backend capacity present, slots are authoritative. WarmModels and
+  // CurrentModel are legacy fallbacks and may lag an unload.
+  const resident = new Set<string>();
+  for (const slot of cap.slots) {
     if (slot.state === "idle" || slot.state === "running") resident.add(slot.model);
   }
   const busyServing = provider.pending_requests > 0 ||
-    (cap?.slots ?? []).some((slot) => slot.state === "running" || slot.num_running > 0);
+    cap.slots.some((slot) => slot.state === "running" || slot.num_running > 0);
 
   return provider.models.flatMap((model) => {
     const estimatedGb = model.estimated_memory_gb;
-    if (resident.has(model.id) || estimatedGb === undefined ||
+    if (!accepted.has(model.id) || resident.has(model.id) || estimatedGb === undefined ||
         !Number.isFinite(estimatedGb) || estimatedGb <= 0) return [];
     const requiredGb = estimatedGb + headroomGb;
     const evictionAwareGb = cap?.free_for_load_gb;

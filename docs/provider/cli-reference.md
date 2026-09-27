@@ -656,7 +656,9 @@ sample and does not claim to know the earlier startup decision.
 An already resident target is reported as resident without pretending it needs another cold
 load. When the fresh daemon reports that idle eviction could fit a cold model,
 `doctor` warns about no-eviction preload instead of claiming request-time
-loading is impossible.
+loading is impossible. On a multi-model Mac, a selected cold model with a
+recent load failure is diagnosed before an unrelated recently used resident
+model, so the model-fit line explains the failure the operator came to check.
 
 Two of the detailed checks cover the KV-backend rollout:
 

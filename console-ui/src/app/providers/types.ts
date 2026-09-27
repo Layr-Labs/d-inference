@@ -111,6 +111,8 @@ export interface MyProvider {
 
   hardware: MyHardware;
   models: MyModelInfo[];
+  /** Canonical catalog/capability-accepted inventory behind backend capacity. */
+  capacity_model_ids?: string[];
   backend?: string;
   version?: string;
   /** Current/last app-reported macOS version; this is not a trust credential. */

@@ -131,18 +131,15 @@ enum DoctorRunner {
                 ? (liveLoadBudget?.loadUsableGb ?? independentlySampledUsableGb)
                 : independentlySampledUsableGb
 
-            // Prefer the live loaded model ONLY when the daemon is up and fresh;
-            // otherwise diagnose the CONFIGURED model. A stale state file (daemon
-            // stopped/crashed, then provider.toml changed to a larger model)
-            // would otherwise check last session's model and miss the new misfit.
-            let liveModel = stateFresh ? state?.currentModel : nil
-            let targetID = liveModel ?? snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first
-
             // Use the UNFILTERED model list: ModelScanner.scanModels drops models
             // too large for this box, so a too-large CONFIGURED model would be
             // absent and doctor would silently diagnose a different (fitting) one
             // instead of flagging the one that will never load.
             let allModels = ModelScanner.scanAllModels(hardwareInfo: hw)
+            let targetID = DoctorModelSelection.preferredTarget(
+                state: state, stateFresh: stateFresh,
+                localModelIDs: Set(allModels.map(\.id)),
+                fallback: snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first)
             let alternatives = allModels.map {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
             }
@@ -198,8 +195,9 @@ enum DoctorRunner {
                     servingSetIDs: servingSetIsLive
                         ? servingSetIDs
                         : (servingSetIDs.isEmpty ? nil : servingSetIDs),
-                    alreadyResident: loadSnapshotFresh && (
-                        state?.warmModels.contains(targetID) == true || state?.currentModel == targetID),
+                    alreadyResident: loadSnapshotFresh && state.map {
+                        DoctorModelSelection.isResident(targetID, state: $0)
+                    } == true,
                     evictionAwareWeightGb: hasLiveLoadPair ? liveLoadBudget?.freeForLoadGb : nil,
                     loadHeadroomGb: hasLiveLoadPair ? liveLoadBudget?.loadHeadroomGb : nil,
                     busyServing: loadSnapshotFresh && state?.inferenceActive == true))

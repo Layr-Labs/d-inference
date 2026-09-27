@@ -50,12 +50,16 @@ type myProvider struct {
 	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
 
 	// Identity / hardware
-	Hardware     protocol.Hardware    `json:"hardware"`
-	Models       []protocol.ModelInfo `json:"models"`
-	Backend      string               `json:"backend,omitempty"`
-	Version      string               `json:"version,omitempty"`
-	OSVersion    string               `json:"os_version,omitempty"` // Current or last app-reported macOS version.
-	serialNumber string
+	Hardware protocol.Hardware    `json:"hardware"`
+	Models   []protocol.ModelInfo `json:"models"`
+	// CapacityModelIDs is the catalog/capability-accepted subset used to
+	// canonicalize warm models and backend slots. Present-empty means none;
+	// omitted means no live capacity evidence (offline/legacy).
+	CapacityModelIDs *[]string `json:"capacity_model_ids,omitempty"`
+	Backend          string    `json:"backend,omitempty"`
+	Version          string    `json:"version,omitempty"`
+	OSVersion        string    `json:"os_version,omitempty"` // Current or last app-reported macOS version.
+	serialNumber     string
 
 	// Trust & attestation
 	TrustLevel  string `json:"trust_level"`
@@ -552,6 +556,10 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		// the provider may have re-registered with new specs.
 		mp.Hardware = live.Hardware
 		mp.Models = append([]protocol.ModelInfo{}, live.Models...)
+		if live.CapacityModelIDs != nil {
+			ids := append([]string{}, live.CapacityModelIDs...)
+			mp.CapacityModelIDs = &ids
+		}
 		mp.Backend = live.Backend
 		mp.Version = live.Version
 		mp.OSVersion = "" // A live connection must not inherit a previous OS report.

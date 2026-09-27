@@ -45,7 +45,11 @@ type Provider struct {
 	ID       string
 	Hardware protocol.Hardware
 	Models   []protocol.ModelInfo
-	Backend  string
+	// CapacityModelIDs is the catalog/capability-accepted inventory used by
+	// the last applied heartbeat to canonicalize warm models and slots.
+	// Guarded by mu; nil until the first applied heartbeat.
+	CapacityModelIDs []string
+	Backend          string
 	// ReportedRuntimeCapabilities is normalized but untrusted Register input.
 	// RuntimeCapabilities remains empty until ReconcileAttestedRuntimeCapabilities
 	// binds that report to signed claims and approved runtime evidence.

@@ -488,9 +488,13 @@ accepts older responses containing the extra field.
 owner-only response also carries optional `backend_capacity.load_usable_gb`
 (live no-eviction load memory before serving headroom),
 `backend_capacity.load_headroom_gb` (activation plus minimum-KV reserve for
-the current serving set), and each model's `estimated_memory_gb`. My Macs
+the current serving set), each model's `estimated_memory_gb`, and
+`capacity_model_ids`: the catalog/capability-accepted subset to which the
+canonicalized heartbeat slots and memory sample apply. My Macs
 shows `estimated_memory_gb + load_headroom_gb` against `load_usable_gb` for
-cold models. Missing fields from older providers mean unknown, never zero or
+cold accepted models. Owner-only/off-catalog models remain in `models` but
+are not assigned a load verdict from a different canonical inventory.
+Missing fields from older providers mean unknown, never zero or
 "fits"; a stale heartbeat or active request also withholds a definitive
 cold-load failure. The coordinator does not route from these owner diagnostics.
 The existing `free_for_load_gb` remains the routing input and may credit

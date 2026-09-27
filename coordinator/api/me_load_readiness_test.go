@@ -10,10 +10,12 @@ import (
 func TestColdModelLoadBlockedUsesLiveNoEvictionBudget(t *testing.T) {
 	usable, headroom := 14.3, 6.5
 	heartbeat := time.Now()
+	accepted := []string{"qwen"}
 	p := &myProvider{
-		Online:        true,
-		LastHeartbeat: &heartbeat,
-		Models:        []protocol.ModelInfo{{ID: "qwen", EstimatedMemoryGB: 18.2}},
+		Online:           true,
+		LastHeartbeat:    &heartbeat,
+		CapacityModelIDs: &accepted,
+		Models:           []protocol.ModelInfo{{ID: "qwen", EstimatedMemoryGB: 18.2}},
 		BackendCapacity: &protocol.BackendCapacity{
 			LoadUsableGB: &usable, LoadHeadroomGB: &headroom,
 		},
@@ -45,10 +47,20 @@ func TestColdModelLoadBlockedUsesLiveNoEvictionBudget(t *testing.T) {
 	}
 	p.BackendCapacity.FreeForLoadGB = &noEviction
 	p.WarmModels = []string{"qwen"}
-	if coldModelLoadBlocked(p) {
-		t.Fatal("resident model needs no cold load")
+	if !coldModelLoadBlocked(p) {
+		t.Fatal("stale warm_models cannot override empty authoritative slots")
 	}
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: "qwen", State: "idle"}}
+	if coldModelLoadBlocked(p) {
+		t.Fatal("resident capacity slot needs no cold load")
+	}
+	p.BackendCapacity.Slots = nil
 	p.WarmModels = nil
+	p.Models = []protocol.ModelInfo{{ID: "off-catalog", EstimatedMemoryGB: 18.2}}
+	if coldModelLoadBlocked(p) {
+		t.Fatal("off-catalog model lacks accepted capacity evidence")
+	}
+	p.Models = []protocol.ModelInfo{{ID: "qwen", EstimatedMemoryGB: 18.2}}
 	p.BackendCapacity.LoadUsableGB = nil
 	if coldModelLoadBlocked(p) {
 		t.Fatal("older provider without live budget has unknown readiness")

@@ -2990,6 +2990,57 @@ struct SSDWholeRootMaintenanceTests {
         #expect(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: original.cacheEpoch) == 1)
     }
 
+    @Test("a disowned, unclosed cache cannot stop whole-root TTL expiry under its root")
+    func disownedCacheDoesNotBlockExpiry() async throws {
+        let root = tempDir("whole-root-disowned")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let modelKey = "666666666666"
+        let modelRoot = root.appendingPathComponent(modelKey, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: modelRoot, withIntermediateDirectories: true)
+        func binding(_ fingerprint: String) -> SSDCacheEpochStore.Binding {
+            SSDCacheEpochStore.Binding(
+                modelId: "test-model",
+                modelAggregateHash: "test-weight-hash",
+                promptContractId: "test-prompt-contract",
+                blockHashVersion: CBv2BlockHasher.version,
+                blockSize: fixtureBlockSize,
+                layoutEpoch: SSDBlockStore.layoutEpoch(
+                    blockSize: fixtureBlockSize, layerKinds: fixtureLayerKinds),
+                keyFingerprint: fingerprint)
+        }
+        // The maintainer finds active stores through the shared budget.
+        let cache = makeCache(
+            dir: modelRoot,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            diskBudget: .shared,
+            epochStore: try SSDCacheEpochStore(
+                root: modelRoot, binding: binding(String(repeating: "d", count: 64))))
+        defer { cache.close() }
+        #expect(cache.ownsEvictionRoot)
+
+        let successor = try SSDCacheEpochStore(
+            root: modelRoot, binding: binding(String(repeating: "f", count: 64)))
+        let epoch = try #require(successor.current)
+        #expect(!cache.ownsEvictionRoot)
+
+        let expired = try writeOwnedFile(
+            root: root,
+            modelKey: modelKey,
+            tagHex: "6600112233445566778899aabbccddee",
+            modifiedAt: 1_000)
+        let result = SSDWholeRootMaintainer.shared.maintain(
+            root: root,
+            ttlSeconds: 900,
+            nowSeconds: 2_000,
+            budgetBytes: Int.max)
+        #expect(result.ttlExpired == 1)
+        #expect(!FileManager.default.fileExists(atPath: expired.path))
+        // Expiry is a per-file removal: the successor's epoch is untouched.
+        #expect(successor.current == epoch)
+    }
+
     @Test("young temp bytes consume global budget without making the active temp evictable")
     func youngTempBudgetAccounting() throws {
         let root = tempDir("whole-root-temp-budget")

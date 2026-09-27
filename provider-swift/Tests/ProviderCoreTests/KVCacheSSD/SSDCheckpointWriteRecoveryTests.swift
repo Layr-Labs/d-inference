@@ -56,18 +56,27 @@ struct SSDCheckpointWriteRecoveryTests {
         await store.closeAndWait()
     }
 
-    @Test("maintenance refusal is distinguished and does not poison a later donation")
-    func maintenanceRefusalCanRecover() async throws {
+    @Test("a donation during whole-root maintenance is written, not refused as busy")
+    func donationDuringMaintenanceIsWritten() async throws {
         let f = try SSDHybridCheckpointTestFixture()
         defer { f.remove() }
         let telemetry = PrefixCacheDonationTelemetry()
         let store = try f.makeStore(donationRecorder: telemetry)
-        store.lock.withLock { store.destructiveChange = true }
-        #expect(try await f.donate(store).isEmpty)
-        #expect(count(.cacheMaintenanceBusy, in: telemetry) == 1)
-        store.lock.withLock { store.destructiveChange = false }
-        #expect(try await f.donate(store, receipt: 11) == [256])
+        let barrier = SSDCheckpointCoordinationTestSupport.Barrier()
+        defer { barrier.release() }
+        // Hold the store inside a maintenance removal. Per-file maintenance
+        // keeps the epoch and the capability, so it no longer fences writes.
+        let maintenance = Task.detached {
+            store.performExternalDestructiveChange { try? barrier.block() }
+        }
+        try await SSDCheckpointCoordinationTestSupport.waitUntil { barrier.isEntered }
+        #expect(try await f.donate(store) == [256])
         #expect(count(.donated, in: telemetry) == 1)
+        #expect(count(.cacheMaintenanceBusy, in: telemetry) == 0)
+        barrier.release()
+        #expect(await maintenance.value)
+        #expect(store.index.count == 1, "reconciliation keeps a checkpoint whose file exists")
+        #expect(telemetry.snapshot().reduce(0) { $0 + $1.count } == 1)
         await store.closeAndWait()
     }
 

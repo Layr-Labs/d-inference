@@ -3,6 +3,10 @@ import MLXLMCommon
 
 extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenceSource {
     var evictionRoot: URL { config.root }
+    var ownsEvictionRoot: Bool {
+        lock.withLock { !closed }
+            && (config.epochStore == nil || config.epochStore?.current != nil)
+    }
     var diskBytesOnDisk: Int { index.totalBytes }
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
 
@@ -72,9 +76,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     /// (`SSDCacheEpochStore.removeStaleBlock`).
     private func performIndexedRemoval<T>(_ body: () -> T) -> T? {
         removalLock.withLock {
-            guard lock.withLock({ !closed }),
-                config.epochStore == nil || config.epochStore?.current != nil
-            else { return nil }
+            guard ownsEvictionRoot else { return nil }
             return body()
         }
     }

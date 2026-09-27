@@ -204,10 +204,10 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 		promptcontract.PreloadControllerConfig{PollInterval: 50 * time.Millisecond},
 	)
 	require.NoError(t, err)
-	restartedPreloader.Start(suite.Ctx)
 	t.Cleanup(restartedPreloader.Close)
 	suite.Coordinator.Server.SetPromptContractClient(restartedSupervisor.Client())
 	suite.Coordinator.Server.SetPromptPreloadController(restartedPreloader)
+	restartedPreloader.Start(suite.Ctx)
 	waitForPreloadedContract(t, restartedPreloader, contractID, 30*time.Second)
 	restored := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
 	require.Positive(t, restored.cachedTokens, "exact-cache routing did not reopen after re-preload")

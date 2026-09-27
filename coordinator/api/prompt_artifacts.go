@@ -16,6 +16,12 @@ func (s *Server) SetPromptContractClient(client *promptcontract.Client) {
 }
 
 func (s *Server) SetPromptPreloadController(controller *promptcontract.PreloadController) {
+	if controller != nil && !controller.SetSelectionSource(s.cachePreloadSelection) {
+		// Startup-only installation. A running controller cannot silently keep
+		// a foreign/missing Registry projection and gain API participation.
+		s.promptPreloader = nil
+		return
+	}
 	s.promptPreloader = controller
 }
 

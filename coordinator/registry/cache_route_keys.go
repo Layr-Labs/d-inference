@@ -117,37 +117,16 @@ func (r *Registry) PlanCacheRouteWithResult(
 	client *promptcontract.Client,
 	input CachePlanInput,
 ) CachePlanResult {
-	if r == nil || client == nil || input.HasMedia ||
-		input.Account == "" || input.Model == "" ||
-		!validLowerHex256(input.PromptContractID) ||
-		!validLowerHex256(input.ModelAggregateSHA256) || len(input.Body) == 0 {
+	if r == nil || cachePlanInputIneligible(client != nil, input) {
 		return CachePlanResult{Outcome: CachePlanIneligible}
 	}
 
-	r.mu.RLock()
-	mode := r.cacheRoutingMode
-	tracker := r.cacheRouting
-	keys := cacheRouteKeys{
-		route:      append([]byte(nil), r.cacheRouteKeys.route...),
-		scope:      append([]byte(nil), r.cacheRouteKeys.scope...),
-		activation: append([]byte(nil), r.cacheRouteKeys.activation...),
+	state := r.snapshotCachePlanAuthority(input.Model, true)
+	if outcome := cachePlanAuthorityRejection(state, input); outcome != "" {
+		return CachePlanResult{Outcome: outcome}
 	}
-	activation := r.cacheActivation
-	artifacts := r.cacheRoutingAllowedArtifacts
-	catalog, ok := r.modelCatalog[input.Model]
-	r.mu.RUnlock()
-	if mode != CacheRoutingOn || tracker == nil || tracker.generation.revoked.Load() {
-		return CachePlanResult{Outcome: CachePlanOff}
-	}
-	aggregateHash := strings.ToLower(strings.TrimSpace(catalog.WeightHash))
-	if !ok || len(keys.route) == 0 || len(keys.activation) == 0 ||
-		!validLowerHex256(aggregateHash) || aggregateHash != input.ModelAggregateSHA256 {
-		return CachePlanResult{Outcome: CachePlanIneligible}
-	}
-
-	if !artifacts.allows(input) {
-		return CachePlanResult{Outcome: CachePlanIneligible}
-	}
+	tracker, keys, activation := state.tracker, state.keys, state.activation
+	aggregateHash := strings.ToLower(strings.TrimSpace(state.catalog.WeightHash))
 
 	scope := providerCacheScope(
 		keys.scope,
@@ -164,7 +143,26 @@ func (r *Registry) PlanCacheRouteWithResult(
 	// keyed digest reaches the gate; raw identity/prompt bytes are never stored,
 	// logged, persisted, tagged, or returned.
 	cohort := cacheActivationCohort(keys.activation, input.Account, input.Model, input.Body)
-	switch activation.allow(cohort, time.Now()) {
+	// The diagnostic preflight is not authorization. Revalidate current policy
+	// at the one activation commit; no callback, HMAC or IO runs under this lock.
+	// Gate.allow holds only its own scalar counter/token mutex and never enters r.
+	r.mu.RLock()
+	currentAuthority := r.cachePlanAuthorityLocked(input.Model, false)
+	if r.cacheRouting != tracker || tracker.generation.revoked.Load() {
+		outcome := CachePlanIneligible
+		if currentAuthority.mode != CacheRoutingOn {
+			outcome = CachePlanOff
+		}
+		r.mu.RUnlock()
+		return CachePlanResult{Outcome: outcome}
+	}
+	if outcome := cachePlanAuthorityRejection(currentAuthority, input); outcome != "" {
+		r.mu.RUnlock()
+		return CachePlanResult{Outcome: outcome}
+	}
+	decision := activation.allow(cohort, time.Now())
+	r.mu.RUnlock()
+	switch decision {
 	case cacheActivationSampledOut:
 		return CachePlanResult{Outcome: CachePlanSampledOut}
 	case cacheActivationThrottled:

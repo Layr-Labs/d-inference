@@ -103,6 +103,16 @@ and actual runtime readiness still gate participation; see
 [per-contract readiness](prompt-contract-sidecar.md#process-and-lifecycle).
 See [the metric populations](../reference/telemetry-inventory.md#optional-cache-planning-decisions).
 
+Current tokenizer acknowledgement and current routing participation are distinct.
+The API uses the Registry's read-only canonical pre-activation classification
+without consuming sampling, QPS or counters. It preserves existing `off` and
+`ineligible` outcomes only after confirming native acknowledgement; stopped,
+stale or never-acknowledged contracts remain `preload_not_ready`. A fresh check
+before commitment handles policy drift conservatively, and the actual Registry
+plan revalidates authority before consuming activation once
+(`CachePlanRejection`, `coordinator/registry/cache_plan_preflight.go`;
+`commitCachePlanning`, `coordinator/api/cache_preload_selection.go`).
+
 An optional exact-artifact list runs before the cohort, QPS gate and sidecar
 plan. `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` matches the resolved model
 ID, verified aggregate and prompt-contract ID together; changing weights or the
@@ -111,6 +121,13 @@ preserves existing eligibility, while `[]` declines every request. Excluded
 requests return `ineligible` with no participating plan or reusable remote scope
 (`coordinator/registry/cache_artifact_allowlist.go`, `cacheArtifactAllowlist.allows`;
 `coordinator/registry/cache_route_keys.go`, `PlanCacheRouteWithResult`).
+
+An authenticated eligible request can record bounded demand for its exact resolved
+artifact tuple before tokenizer readiness, without waiting for tokenizer preload
+or changing its original deadline. Overflow selection retains the full verified
+catalog and never raises the sidecar's configured capacity. See the canonical
+[tokenizer preload policy](prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
+Advisory public provider availability is neither cache ownership nor authorization.
 
 Without authenticated scope, `RemotePrefixCacheContext.cacheEnabled` is false
 and the provider forwards `prefixCacheEnabled=false` to the engine. This gates

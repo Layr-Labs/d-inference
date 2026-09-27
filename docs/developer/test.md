@@ -919,8 +919,92 @@ tests executed, not merely compile or return zero selected tests.
 These are tokenizer/readiness and ownership gates, not native KV adoption,
 hosted routing, performance or release certification. Original request
 deadlines, source/authentication checks and configured capacities remain in
-force. A catalog exceeding the configured distinct-contract capacity is still
-rejected; this slice does not implement an overflow selection policy.
+force. Direct client and Rust over-capacity submissions still reject; the
+controller selects a bounded set under the
+[overflow policy](../architecture/prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
+
+#### Bounded preload selection and real HTTP overflow
+
+The pure `preload_active_set*_test.go` cases cover full verified-set preservation,
+deduplication, eligible demand, expiry, residence, fair waiting, failure backoff,
+same-generation verified-set growth and irreversible in-flight ABA fencing.
+Controller tests additionally cover completed native acknowledgement versus
+current participation, forced polls during partial-backoff admissibility drift,
+capture-through-apply ordering, background-only advisory refresh, HTTP 409
+retirement and standalone tokenizer readiness without authorization. API tests
+retain the original planning reason and sampling/QPS assertions and check policy
+drift between classification and commitment. Use the ordinary and race gates for
+`coordinator/promptcontract`, `coordinator/registry` and `coordinator/api`; no pure
+helper result substitutes for actual sidecar/HTTP qualification.
+
+`TestPromptArtifactCapacityRealSidecarAndAuthenticatedNinth` uses the candidate
+service path/hash and private UDS parent bindings above. Its two fixture files,
+`coordinator/api/prompt_artifacts_capacity_fixture_test.go` and
+`coordinator/api/prompt_artifacts_capacity_test.go`, use public lifecycle APIs
+available on the old controller as well, so the same oracle can establish the
+original whole-catalog refusal before qualifying a candidate. Preserve the exact
+old/candidate Go trees and test overlay in the runner receipt; an intended red is
+not a pass or a fixture failure.
+
+The fixture verifies nine tiny local artifacts through Store, catalog and
+Provisioner; first loads/plans all nine in legal direct Rust batches; and retains
+both the Go and independent Rust nine-ID rejection controls at configured capacity
+eight. Authenticated encrypted fake-provider HTTP requests supply demand. The
+candidate must preload at most eight, return the cold ninth request without
+waiting for residence, then eventually plan the demanded ninth without pruning
+verification, raising capacity or restarting the child. A nine-model/eight-shared-
+contract control must preserve full within-capacity behavior. The bounded residence
+wait is intentional; allow the fixture's full cleanup deadline:
+
+```bash
+go test ./coordinator/api -run '^TestPromptArtifactCapacityRealSidecarAndAuthenticatedNinth$' -count=1 -timeout=4m
+```
+
+Keep `TestCachePlanningRealSidecarHealthyMemberHTTP` alongside that oracle. It
+exercises the real healthy-subset path across four endpoints, streaming and
+non-streaming, and pending/failed peers. These local tokenizer/planning tests do
+not load a model, prove SSD adoption, measure a production hit rate or explain a
+historical fleet percentage. Preserve passes, intended baseline failures, skips,
+binary/source receipts and owned-child cleanup separately.
+
+#### Simultaneous connected-cache restoration
+
+After the source-matched B1 smoke, `TestIntegrationConnectedCacheBatching`
+requires a serial reference followed by two simultaneous successful requests.
+It checks actual native multirow processing, distinct encrypted dispatches and
+terminals, output/finish/non-cache usage equality, and real SSD adoption rather
+than inferring batching or reuse from configuration.
+
+Prepare two immutable connected-input JSON files using the existing
+`e2e/connected_cache_input_test.go` schema. Keep model, prompt, contract, binary
+and resource hashes equal; set `max_concurrent: 2`, `backend: "paged"`,
+`mtp_mode: "off"`, and change only `cache_mode` between `"off"` and `"ssd"`.
+The fixture validates these settings and protects the existing host config.
+Use a fresh nonexistent output path for each arm:
+
+```bash
+DARKBLOOM_CONNECTED_BATCH_INPUT=/absolute/path/to/b2-ssd.json \
+DARKBLOOM_CONNECTED_BATCH_OUTPUT=/absolute/path/to/new-owned-output \
+go test ./e2e -run '^TestIntegrationConnectedCacheBatching$' -count=1 -timeout=15m -v
+```
+
+Require both workers to finish, the native slot to drain, no dropped relay
+events, and two actual lookup/hit receipts in the SSD arm. Compare reports across
+arms too, excluding only opaque request/tool IDs, chunk boundaries and the
+intended cached-token discount; preserve reasoning and every other usage detail.
+The equal-prompt B2 fixture is not arbitrary mixed-cohort or cross-host coverage.
+Its test trust/billing and ephemeral cache keys are not production attestation or
+persistent-Keychain restart.
+
+The observer refusal controls run without a model:
+
+```bash
+go test -race ./e2e -run '^TestConnectedBatch' -count=1
+```
+
+They reject missing/duplicate/unencrypted dispatches, missing terminal adoption,
+serial-only execution, malformed counts and changed non-cache usage details.
+Source selectors and compilation alone are not an executed native B2 pass.
 
 #### Rust component checks
 
@@ -2281,13 +2365,28 @@ DARKBLOOM_RELEASE_DEFAULT_OUTPUT=/absolute/new-defaults-output \
 
 The two B1 requests check actual paged activation, automatic MTP selection,
 complete cold/repeat output and token accounting, and model-scoped cache
-capability. Qwen and exact `gpt-oss-20b` require a ready SSD capability and an
-accepted repeat hit; GPT-OSS still requires MTP inactivity under automatic
+capability. Qwen, exact `gpt-oss-20b` and `ternary-bonsai-2-27b` require a ready
+SSD capability and an accepted repeat hit; GPT-OSS and Bonsai still require MTP inactivity under automatic
 selection. The older Gemma QAT helper retains its cache-inactive expectation and
 does not qualify the current Gemma default. The report retains the actual
 generated provider configuration. This smoke does not establish raw token-ID
 parity, concurrent widths, cancellation, restart, or selection between providers;
 run the corresponding native and connected gates separately. CPU helper checks:
+
+Install each controller with `SetPromptPreloadController` before calling
+`PreloadController.Start`, including fresh controllers after a sidecar restart.
+The shared `startExactCacheSidecar` fixture follows this production ordering.
+An already-started controller is deliberately rejected: successful native
+preload alone does not establish API readiness or current Registry participation.
+With the same immutable input and verified Rust sidecar, the CPU-only
+`TestExactCacheSidecarPublishesAPIReadiness` regression checks all three, and
+rejects a demand identity missing its catalog generation. It never loads a
+provider or model:
+
+```bash
+DARKBLOOM_RELEASE_DEFAULT_INPUT=/absolute/defaults.json \
+  go test -short ./e2e -run '^TestExactCacheSidecarPublishesAPIReadiness$' -count=1
+```
 
 ```bash
 go test -short ./e2e ./e2e/testbed \

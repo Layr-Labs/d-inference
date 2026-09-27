@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-26 · commit `b1aac01b5`
+> Last updated: 2026-09-27 · commit `d621f9772`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -244,6 +244,13 @@ its test binary after helper or lifecycle changes. The CPU-only
 types to prepare canonical catalog entries before a physical run. The helper waits within the existing
 five-minute prelaunch bound for GPU ≤42°C and load1 ≤4, under the same control
 lease used after launch. See the [test procedure](test.md#connected-coordinatorprovider-http-cache-gate).
+
+Rebuild the E2E test executable after shared sidecar lifecycle or release-default
+fixture changes. `startExactCacheSidecar` and the restart fixtures install the
+API preload controller before starting it, matching coordinator startup. The
+CPU-only API-readiness regression in the linked procedure uses a verified
+Rust sidecar and immutable prompt artifacts; compiling it does not execute the
+provider/API cache smoke or qualify model restoration.
 
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).

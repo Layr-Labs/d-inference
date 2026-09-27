@@ -86,7 +86,10 @@ func (f *readinessControllerFixture) verified(ids ...string) {
 	f.provisioner.mu.Lock()
 	f.provisioner.statuses = make(map[string]ProvisionStatus, len(ids))
 	for i, id := range ids {
-		f.provisioner.statuses[fmt.Sprint(i)] = ProvisionStatus{PromptContractID: id, ArtifactReady: true}
+		// Exact tuple snapshots require a verified aggregate too. This is only
+		// synthetic setup; no readiness, generation or transport assertion changes.
+		f.provisioner.statuses[fmt.Sprint(i)] = ProvisionStatus{PromptContractID: id, ArtifactReady: true,
+			ModelAggregateSHA256: strings.Repeat("e", 64)}
 	}
 	f.provisioner.mu.Unlock()
 }
@@ -153,7 +156,10 @@ func TestPreloadVerifiedSetGrowthBypassesOldBackoff(t *testing.T) {
 	}
 }
 
-func TestPreloadOversizedAndEmptySetsCloseBeforePolling(t *testing.T) {
+// The original b8eba688 controller-capacity oracle remains the old-source
+// control. Overflow selection intentionally no longer submits all nine IDs;
+// Client's direct pre-HTTP nine-ID rejection below remains unchanged.
+func TestPreloadOverflowSelectionAndEmptySetsCloseBeforePolling(t *testing.T) {
 	a := strings.Repeat("a", 64)
 	f := newReadinessControllerFixture(t, func(_ context.Context, _ int64, ids []string) PreloadReport { return readinessReport(ids, "") })
 	f.verified(a)
@@ -167,8 +173,11 @@ func TestPreloadOversizedAndEmptySetsCloseBeforePolling(t *testing.T) {
 		t.Fatal("oversized same-generation catalog remained usable")
 	}
 	f.controller.reconcile(context.Background())
-	if f.preloads.Load() != 1 || f.controller.Status().Failures != 1 {
-		t.Fatal("capacity refusal bypassed old client/pre-HTTP contract")
+	if f.preloads.Load() != 1 || f.controller.Status().Failures != 0 || f.controller.Status().LastError != "capacity_deferred" {
+		t.Fatal("no eligible overflow demand must stay closed without a fake failed runtime load")
+	}
+	if _, err := f.controller.client.Preload(context.Background(), ids); err == nil || f.preloads.Load() != 1 {
+		t.Fatal("direct over-capacity request bypassed the unchanged Client/pre-HTTP guard")
 	}
 	f.verified()
 	f.controller.reconcile(context.Background())

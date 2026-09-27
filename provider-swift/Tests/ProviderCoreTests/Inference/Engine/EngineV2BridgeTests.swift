@@ -361,6 +361,72 @@ private struct EngineV2BridgePumpReceiptTests {
         #expect(store.stats().stagedBytesInUse == 0)
         await bridge.shutdown()
     }
+
+    @Test("a coordinator hint of 0 reaches the store through the receipt and skips the write")
+    func novelDemandHintSkipsDonation() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let outcomes = PrefixCacheDonationTelemetry()
+        let store = try fixture.makeStore(useGlobalBudget: false, donationRecorder: outcomes)
+        let model = PumpReceiptModel()
+        defer { model.allowForward() }
+        let owned = engine(model: model, store: store)
+        let bridge = makeBridge(
+            engine: owned, modelId: "fixture-model", ssdHybridCheckpointStore: store)
+        let received = ReceiptNonceBox()
+        let stream = await bridge.submitTokenized(
+            promptTokens: fixture.tokens, request: makeRequest(maxTokens: 1),
+            requestId: "receipt-pump-novel", cacheScope: "tenant-a",
+            usageSignal: EngineV2RequestUsageSignal(onCacheReady: {
+                received.append(nonce: "durable", result: $0)
+            }),
+            donationDemand: .init(repeatedPrefixTokens: 0))
+        #expect(store.donationDemandHints.count == 1)
+        model.allowForward()
+        _ = await record(stream)
+        await store.waitForWritesForTesting()
+        #expect(store.stats().filesWritten == 0)
+        // Capture publishes the first and latest endpoints, so one request can
+        // settle skipped_novel more than once; none may settle donated.
+        let settled = outcomes.snapshot()
+        #expect(settled.contains { $0.outcome == .skippedNovel && $0.count >= 1 }, "outcomes: \(settled)")
+        #expect(!settled.contains { $0.outcome == .donated }, "outcomes: \(settled)")
+        #expect(received.snapshot.isEmpty)
+        #expect(store.donationDemandHints.count == 0)
+        #expect(store.lock.withLock { store.readyReceipts.isEmpty })
+        #expect(store.stats().stagedBytesInUse == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("a coordinator hint at the floor writes and publishes the ready receipt")
+    func repeatedDemandHintDonates() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let outcomes = PrefixCacheDonationTelemetry()
+        let store = try fixture.makeStore(useGlobalBudget: false, donationRecorder: outcomes)
+        let model = PumpReceiptModel()
+        defer { model.allowForward() }
+        let owned = engine(model: model, store: store)
+        let bridge = makeBridge(
+            engine: owned, modelId: "fixture-model", ssdHybridCheckpointStore: store)
+        let received = ReceiptNonceBox()
+        let stream = await bridge.submitTokenized(
+            promptTokens: fixture.tokens, request: makeRequest(maxTokens: 1),
+            requestId: "receipt-pump-repeat", cacheScope: "tenant-a",
+            usageSignal: EngineV2RequestUsageSignal(onCacheReady: {
+                received.append(nonce: "durable", result: $0)
+            }),
+            donationDemand: .init(repeatedPrefixTokens: 256))
+        model.allowForward()
+        _ = await record(stream)
+        #expect(store.stats().filesWritten > 0)
+        #expect(await received.waitForCount(1))
+        #expect(received.snapshot == ["durable:512"])
+        #expect(outcomes.snapshot().contains { $0.outcome == .donated })
+        #expect(!outcomes.snapshot().contains { $0.outcome == .skippedNovel })
+        #expect(store.donationDemandHints.count == 0)
+        await bridge.shutdown()
+    }
 }
 
 private func makeBridge(

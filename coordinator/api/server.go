@@ -159,7 +159,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.9.10"
+var LatestProviderVersion = "0.9.11"
 
 // latestReleasedVersion returns the highest active release version from
 // the store, falling back to the hardcoded LatestProviderVersion when

@@ -107,6 +107,9 @@ public enum CoordinatorEvent: Sendable {
         cacheScope: String?,
         prefixCacheProtocol: Int?,
         cacheReceiptBoundaryMode: String? = nil,
+        /// Coordinator-observed fleet-wide repeat demand (token count); nil
+        /// from an older coordinator. See `InferenceRequest.cacheRepeatedPrefixTokens`.
+        cacheRepeatedPrefixTokens: Int? = nil,
         toolSchemaMetadataProtocol: Int?,
         firstContentDeadline: FirstContentDeadline?,
         receivedAt: ContinuousClock.Instant,

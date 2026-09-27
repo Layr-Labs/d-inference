@@ -70,12 +70,13 @@ struct DiffusionGemmaEncryptedHandlerLiveTests {
             pump = Task {
                 for await event in events {
                     if case .inferenceRequest(let id, let ciphertext, let sender, let nonce,
-                        let scope, let version, let boundary, let toolProtocol, let deadline,
-                        let received, let profile) = event {
+                        let scope, let version, let boundary, let repeatedPrefixTokens, let toolProtocol,
+                        let deadline, let received, let profile) = event {
                         await loop.handleInferenceRequest(requestId: id, ciphertext: ciphertext,
                             senderPublicKey: sender, cacheReceiptNonce: nonce,
                             authenticatedCacheScope: scope, prefixCacheProtocol: version,
-                            cacheReceiptBoundaryMode: boundary, toolSchemaMetadataProtocol: toolProtocol,
+                            cacheReceiptBoundaryMode: boundary, cacheRepeatedPrefixTokens: repeatedPrefixTokens,
+                            toolSchemaMetadataProtocol: toolProtocol,
                             firstContentDeadline: deadline, receivedAt: received, profile: profile, send: send)
                     }
                 }

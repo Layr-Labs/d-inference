@@ -10,8 +10,12 @@ re-downloads artifacts and requires independent App Attest qualification before
 activating a production release. Staging/publication failures retry the retained
 artifact; GitHub and R2 publication are separate recoverable steps.
 
-The prepared version is **0.9.10**; its source changes since `v0.9.9` are
-collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
+The prepared version is **0.9.11**; its source changes since `v0.9.9` are
+collected in [`CHANGELOG.md`](../../CHANGELOG.md) (the unshipped 0.9.10
+candidate plus the prefix-cache hit-rate set, whose rollout steps are in
+[`cache-routing-rollout.md`](cache-routing-rollout.md)). The 0.9.10 rollout
+order below applies unchanged: the new inference-request field is optional in
+both directions. The version bump prepares
 the source for the provider bundle. Publication and coordinator deployment remain
 separate operations; the bump alone does not change the registered release
 returned by `GET /v1/releases/latest`.

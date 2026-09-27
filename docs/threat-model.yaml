@@ -1797,7 +1797,7 @@ threats:
       (bound 1,536) therefore skips never-adoptable sub-~2.5k donations
       (pure wear savings); gemma-4 (bound 25,600) caches exactly its
       >26.6k long-context tail — at-rest exposure UNCHANGED IN KIND
-      (same HMAC names, same 15-min TTL, same crypto), merely extended to
+      (same HMAC names, same sliding TTL — 30 minutes since 2026-09-26 — same crypto), merely extended to
       gemma's long-context traffic. SSD construction can be disabled by the
       single DARKBLOOM_PREFIX_CACHE kill switch or an unavailable KEK; when
       active, individual donations
@@ -1814,8 +1814,10 @@ threats:
             observer cannot test a guessed prefix against anything. The
             long-open HMAC mitigation ships IMPLEMENTED with the tier that
             re-opened it.
-        (b) The at-rest window is bounded by a 15-MINUTE sliding TTL
-            (DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS can only shorten it;
+        (b) The at-rest window is bounded by a 30-MINUTE sliding TTL
+            (raised from 15 minutes on 2026-09-26 by operator decision, the
+            SEC-035 re-acceptance recorded in detection_hint below;
+            DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS can only shorten it;
             sliding on hit; opportunistic sweep on write + periodic task);
             a default box-wide LRU disk budget of half the currently available
             disk space, with no fixed ceiling, unlinks oldest-by-last-hit.
@@ -1850,8 +1852,8 @@ threats:
       SEC-035 (leak #1, the in-process TTFT oracle) is UNCHANGED IN KIND
       and stays the accepted risk — with one extension for this sign-off:
       durability extends the oracle across restarts/idle-unloads within
-      the 15-minute TTL window (a co-tenant can probe whether a prefix was
-      cached earlier the same quarter-hour). Cache scope is coordinator-authored
+      the 30-minute TTL window (a co-tenant can probe whether a prefix was
+      cached earlier the same half-hour). Cache scope is coordinator-authored
       from authenticated account, model build, and prompt-contract identity;
       callers cannot choose or override it.
     adversaries: [ADV-002]
@@ -1896,7 +1898,7 @@ threats:
           outside that scope. Caller prompt_cache_key/user values are ignored.
         status: implemented
       - description: >
-          SSD tier at-rest window bound: 15-minute sliding TTL (env can only
+          SSD tier at-rest window bound: 30-minute sliding TTL (env can only
           shorten), default available-disk/2 box-wide LRU disk budget without
           a fixed ceiling (20 GiB fallback when unavailable;
           DARKBLOOM_PREFIX_CACHE_DISK_GB overrides), a fixed 20 GiB pre-write
@@ -1928,7 +1930,7 @@ threats:
           closes cross-account reuse, per-donation gating caches only adoptable
           long prefixes, and DARKBLOOM_PREFIX_CACHE=0 survives restarts. The
           residual same-account in-process TTFT oracle can extend across
-          restarts within the 15-minute TTL, as accepted in the description.
+          restarts within the 30-minute TTL, as accepted in the description.
         status: open
       - description: >
           Per-deployment gating by trust level (e.g. force-off for shared/untrusted
@@ -1955,7 +1957,7 @@ threats:
       the SSD tier is default-on with a PER-DONATION gate: adoption bound +
       benefit floor in SSDPrefixCache.donate; loosening it widens the
       at-rest surface), to the TTL or disk-budget
-      policy (SSDPrefixCachePolicy.ttlSeconds 15-min max,
+      policy (SSDPrefixCachePolicy.ttlSeconds, 30-min max since 2026-09-26,
       PrefixCachePolicy.ssdDiskBudgetBytes), to the NAME DERIVATION
       (SSDLookupKeys: HKDF info string, HMAC domain tag, salt length-prefix,
       tag truncation), to the DBK3 metadata fields or AAD construction
@@ -1968,8 +1970,16 @@ threats:
       Also still: coordinator-authenticated scope derivation
       (coordinator/registry/cache_route_keys.go), cacheScope →
       CBv2Request.cacheSalt plumbing, and EngineV2Factory production SSD
-      construction. Raising the TTL past 15 minutes or weakening authenticated
-      account isolation needs a fresh SEC-035 sign-off.
+      construction. Raising the TTL past 30 minutes or weakening authenticated
+      account isolation needs a fresh SEC-035 sign-off. Sign-off history:
+      15 minutes at the tier's introduction; 30 minutes on 2026-09-26
+      (operator decision, SSDPrefixCachePolicy.defaultTTLSeconds =
+      maxTTLSeconds = 1800, so the environment override still only
+      shortens). The same change set stops per-file eviction, TTL expiry
+      and corrupt-file removal from rotating the cache epoch; the epoch is
+      a coordinator routing-evidence generation, not an at-rest purge
+      primitive, so that leaves the mitigations above unchanged (the KEK
+      wipe and per-file AES-GCM authentication are untouched).
 
   # ── TB-008: Coordinator → Payments ───────────────────────────
 

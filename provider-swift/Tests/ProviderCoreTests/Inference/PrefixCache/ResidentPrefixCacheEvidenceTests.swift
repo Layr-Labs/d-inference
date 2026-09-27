@@ -188,7 +188,7 @@ struct ResidentPrefixCacheEvidenceTests {
         #expect(state.prefixCacheV2Advertisement().protocolVersion == 1)
     }
 
-    @Test("Resident wire preserves 16 verified checkpoints without widening the SSD limit")
+    @Test("Resident and SSD wire receipts both preserve 16 verified checkpoints")
     func tierSpecificWireLimit() throws {
         let source = try evidence()
         let proof = try #require(source.promptProof(tokens: Array(repeating: 7, count: 20 * 4096 + 1), scope: "tenant"))
@@ -209,6 +209,8 @@ struct ResidentPrefixCacheEvidenceTests {
         let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: data)
         guard case .prefixCacheReadyV2(let message) = decoded else { Issue.record("Wrong message kind"); return }
         #expect(message.readyAnchors == publication.readyAnchors)
-        #expect(ready(tier: .ssd).readyAnchors.count == 2)
+        // SSD checkpoint receipts carry every retained historical boundary
+        // (K per donor); the coordinator's explicit-checkpoint limit is 16.
+        #expect(ready(tier: .ssd).readyAnchors.count == 16)
     }
 }

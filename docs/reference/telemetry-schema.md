@@ -26,6 +26,9 @@ Cache donation outcomes also use the separate typed heartbeat protocol:
 reason and a cumulative count. Complete-checkpoint providers distinguish host
 memory refusal, epoch invalidation, maintenance contention, insufficient disk
 space, unsafe roots, write I/O failure, unreadable existing files and eviction.
+`skipped_novel` identifies a complete checkpoint declined before any write
+budget was charged because neither the coordinator's
+`cache_repeated_prefix_tokens` nor local tag history showed repeat demand.
 `write_priority_limited` identifies exhaustion of the novel-checkpoint write
 share; `write_rate_limited` identifies exhaustion of the total write budget.
 See the [SSD write policy](ssd-kv-cache.md#size-and-eviction-rules) for admission

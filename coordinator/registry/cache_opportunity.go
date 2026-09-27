@@ -4,7 +4,11 @@ package registry
 // evaluation. RepeatedPrefixTokens is observed demand, not saved work or proof
 // that any machine holds the prefix. Holder counts are providers, not requests.
 type CacheOpportunity struct {
-	AffinityApplied      bool
+	AffinityApplied bool
+	// CreditWonNearTie: the reserved candidate carried a positive cache credit
+	// and cost more than the pool minimum; the near-tie credit preference
+	// chose it over a cheaper cold peer.
+	CreditWonNearTie     bool
 	Evaluated            bool
 	RepeatedPrefixTokens int
 	MatchingHolders      int
@@ -21,10 +25,13 @@ func (pr *PendingRequest) CacheOpportunityReason() string {
 	if pr == nil || !pr.CacheOpportunity.Evaluated {
 		return "not_evaluated"
 	}
+	o := pr.CacheOpportunity
 	if pr.CacheSelectionSelected {
+		if o.CreditWonNearTie {
+			return "selected_near_tie"
+		}
 		return "selected"
 	}
-	o := pr.CacheOpportunity
 	if o.MatchingHolders == 0 {
 		if o.RepeatedPrefixTokens == 0 {
 			return "no_repeat_observed"

@@ -26,7 +26,7 @@ var retiredBackfills = []struct{ id, dataTable string }{
 
 // retiredBackfillRemedy tells the operator how to repair a database that
 // skipped the retired backfills.
-const retiredBackfillRemedy = "boot a coordinator built from v0.9.10 (the last release that runs them) " +
+const retiredBackfillRemedy = "boot a coordinator built from v0.9.10 (which still runs them) " +
 	"against this database once so it applies the retired backfills and records their markers, " +
 	"then start this build"
 

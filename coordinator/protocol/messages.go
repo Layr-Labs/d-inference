@@ -738,6 +738,16 @@ type InferenceRequestMessage struct {
 	// Echoed only for a negotiated checkpoint receipt attempt. An older
 	// coordinator omits this, so new providers suppress checkpoint receipts.
 	CacheReceiptBoundaryMode string `json:"cache_receipt_boundary_mode,omitempty"`
+	// CacheRepeatedPrefixTokens is the coordinator's observed fleet-wide repeat
+	// demand for this prompt: the deepest boundary another plan shared within
+	// the routing TTL among those a plan observes, which are the multiples of
+	// 1,024 tokens and its final boundary, 0 when none did. It is an integer count
+	// only, never a key, hash, boundary or prompt-derived identifier. It is set
+	// only with a granted cache scope, so a pointer keeps three states on the
+	// wire: absent (older coordinator or no scope, provider keeps writing every
+	// checkpoint), 0 (novel fleet-wide) and n > 0 (repeated). The provider
+	// gates complete-checkpoint donations on it (`skipped_novel`).
+	CacheRepeatedPrefixTokens *int `json:"cache_repeated_prefix_tokens,omitempty"`
 	// ToolSchemaMetadataProtocol authenticates coordinator-owned schema
 	// metadata carried inside the encrypted body. Version 1 means the
 	// coordinator rejected client-forged reserved keys before normalization.

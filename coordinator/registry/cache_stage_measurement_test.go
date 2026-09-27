@@ -76,8 +76,13 @@ func TestSSDMeasuredStageSurvivesReadyAndChangesRouting(t *testing.T) {
 		name               string
 		measured, estimate float64
 		winner             string
+		path               SelectionPath
 	}{
-		{"slow_read_not_erased", 900, 100, "cold"}, {"fast_read_not_overpriced", 100, 900, "ssd"},
+		// The slow read is a restore penalty: it competes on strict cost and
+		// leaves the cheaper cold peer alone in the band.
+		{"slow_read_not_erased", 900, 100, "cold", SelectionUniqueMin},
+		// The fast read is credited; the cold peer inside the band loses to it.
+		{"fast_read_not_overpriced", 100, 900, "ssd", SelectionCacheCredit},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newStageMeasurementFixture(t)
@@ -100,7 +105,7 @@ func TestSSDMeasuredStageSurvivesReadyAndChangesRouting(t *testing.T) {
 			}
 			request := &PendingRequest{RequestID: "repeat", Model: "model", CachePlan: f.plan, EstimatedPromptTokens: f.plan.PromptTokenCount, RequestedMaxTokens: 128}
 			selected, decision := f.r.ReserveProviderEx("model", request)
-			if selected == nil || selected.ID != tc.winner || decision.SelectionPath != SelectionUniqueMin {
+			if selected == nil || selected.ID != tc.winner || decision.SelectionPath != tc.path {
 				t.Fatalf("want %s: selected=%v decision=%+v", tc.winner, selected, decision)
 			}
 			selected.RemovePending(request.RequestID)

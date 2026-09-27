@@ -1861,7 +1861,7 @@ coordinator-provisioned artifacts. What the vectors protect is explained in
 
 The pinned inventory contains seven artifacts: the five release models and two
 additional Gemma variants. All 18 shared cases run against every artifact,
-producing 126 token-array and scoped-hash comparisons. The common corpus uses
+producing 154 token-array and scoped-hash comparisons. The common corpus uses
 histories and reasoning settings accepted by each family; family-specific argument and
 Harmony regressions remain in the provider's focused test suites.
 
@@ -1984,7 +1984,11 @@ DARKBLOOM_LIVE_MLX_GPTOSS_MODEL_DIRECTORY=/absolute/verified-gpt-oss-20b \
 ```
 
 `provider-swift/Tests/ProviderCoreTests/Inference/Live/GPTOSS/GPTOSSCheckpointRestartLiveTests.swift`
-(`sameKeyNewEngineRestoresBranchedPrompt`) donates a complete encrypted historical
+(`sameKeyNewEngineRestoresBranchedPrompt`; the same file also gates
+`batchedDonorRestoresDeepBoundary`, whose donor starts solo and gains decode
+company and must restore at least 5,120 of about 6,400 tokens,
+`growingConversationRestoresDeepest`, and `forkedPromptRestoresHintedBoundary`,
+which restores the boundary a coordinator hint named) donates a complete encrypted historical
 checkpoint, shuts down the engine/store, reconstructs both and requests a branched
 prompt first. It requires disk reads, exact checkpoint-boundary hit accounting,
 expected answer markers, tenant and changed-prefix misses, cache-off controls,

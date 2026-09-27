@@ -3,7 +3,7 @@
 ## Unreleased — coordinator legacy-compat cleanup
 
 - `EIGENINFERENCE_MIN_PROVIDER_VERSION` now also excludes providers that report no version from routing. The reference `deploy/environments/prod.env` now says 0.9.5 instead of 0.7.5, but that file changes nothing on the host: the live value in `/etc/d-inference/env` must be raised to at least 0.9.5 by a human, after a fleet-version census, before this coordinator is deployed (`docs/operations/coordinator-deploy.md`). Every registration attestation must carry a fresh timestamp, including from a provider that reports no version.
-- The one-shot `backfill_withdrawable_balance_v1`, `backfill_usage_totals_v1` and `backfill_earnings_summary_v1` migrations are retired. Production already ran them. The coordinator now refuses to start on a database whose `balances`, `usage` or `provider_earnings` rows never went through them (or whose `balances` lacks `withdrawable_micro_usd`), naming the missing marker; boot a coordinator built from v0.9.10, the last release that runs them, once to apply them. An empty database records the markers at first boot.
+- The one-shot `backfill_withdrawable_balance_v1`, `backfill_usage_totals_v1` and `backfill_earnings_summary_v1` migrations are retired. Production already ran them. The coordinator now refuses to start on a database whose `balances`, `usage` or `provider_earnings` rows never went through them (or whose `balances` lacks `withdrawable_micro_usd`), naming the missing marker; boot a coordinator built from v0.9.10, which still runs them, once to apply them. An empty database records the markers at first boot.
 - Remove the Python-era wire fields: `python_hash`/`runtime_hash` (registration, attestation response, signed status), `hypervisor_active`, and the `python_runtime_locked`/`dangerous_modules_blocked` privacy flags. Providers that still send them keep working. `POST /v1/releases` now rejects `python_hash`/`runtime_hash`; `/v1/runtime/manifest` and `/v1/me` no longer return them.
 - Drop compatibility paths for providers below the new floor: the pre-0.6.7 vision penalty strip and the `desired_models` version gate. The tool-call 503 no longer cites a provider version.
 - Security: remove the unauthenticated `GET /v1/provider/earnings?wallet=…` lookup, which returned any account's balance and ledger to anyone holding its ID (threat model T-031). It now returns 404; earnings stay available through the authenticated account endpoints.
@@ -21,6 +21,36 @@
 - Model downloads fail closed for a catalog entry without a verified manifest (`r2_prefix` + `aggregate_sha256`).
 - Removed: `darkbloom-enclave wallet-address`; Rust-era credential, launchd-label and Secure Enclave v1 key fallbacks; the provider's App Attest shadow protocols 1 and 2 (protocol 3 only).
 - The bare `runtime-smoke` self-bootstrap for pre-0.8.10 updaters is gone: an updater from 0.7.8–0.8.9 may fail the packaged smoke check (it fails only on hosts where MLX touches Metal early) and then needs an `install.sh` reinstall. Those versions are below the 0.9.5 routing floor anyway.
+
+## Release candidate v0.9.11 — prefix cache hit rate (not shipped; 2026-09-27)
+
+- Align `ProviderCore.version` and the coordinator display fallback at 0.9.11. The new inference-request field is optional in both directions, so the coordinator and providers can be upgraded in either order; upgrade the coordinator first to keep the 0.9.10 rollout order.
+
+Production ran exact prefix-cache routing at 100% and measured a 1.4–5.2% hit rate per model. See the [analysis](docs/reports/2026-09-26-prefix-cache-hit-rate-analysis.md) and the [rollout procedure](docs/operations/cache-routing-rollout.md). Coordinator and provider changes are independent on the wire: an older provider ignores the new request field, and an older coordinator leaves providers on their previous donation behavior.
+
+### Provider
+
+- Keep the SSD cache epoch across budget eviction, TTL expiry and corrupt-file removal. Only a whole-root rebuild at load mints a new epoch, so the coordinator no longer forgets a provider's remaining checkpoints each time one file is removed.
+- Raise the SSD prefix-cache TTL from 15 to 30 minutes (default equals maximum; the environment override can only shorten it). Recorded as the SEC-035 re-acceptance in the threat model.
+- Write a complete checkpoint only on evidence of demand: the coordinator's `cache_repeated_prefix_tokens` at or above the 1,024-token floor, or a prior local sighting. Fleet-novel checkpoints report `skipped_novel` and touch neither disk nor the write budget. The first request for a prefix is served cold and not written, the second is written, the third can hit.
+- Capture GPT-OSS 20B and Gemma QAT checkpoints at every 1,024-token boundary regardless of prefill chunk size, including inside a solo stripe, and retain at most three per donor: the first boundary, the boundary at the observed shared-prefix length, and the deepest. Qwen capture is unchanged.
+- Report a file that disappeared under a reader as an absent miss rather than corruption; let expiry proceed when a root's only registered store has lost ownership.
+
+### Coordinator
+
+- Prefer a proven cache holder inside the existing 3-second near-tie band instead of collapsing the band whenever a cache credit exists. New selection path `cache_credit` and opportunity reason `selected_near_tie`.
+- Bound the proof fence to 60 seconds, doubling per consecutive mismatch to a 10-minute maximum, and drop only the mismatched prompt's holders. Previously a mismatch fenced the capability until the provider's epoch changed and dropped every holder for the model.
+- Drop a provider's deeper holders when it proves a hit at a shorter boundary (`shorter_hit`).
+- Size the holder index (250,000) and observed-demand index (1,000,000) for a 30-minute window and expire holders from an expiry-ordered heap in bounded passes.
+- Forward observed repeat demand to providers as `cache_repeated_prefix_tokens`.
+
+### Prompt sidecar
+
+- Mirror five provider prompt transformations that caused proof mismatches: tool-call argument key order, integral doubles in arguments, extra keys in tool `function` objects, Harmony channel framing in assistant history, and `output_text` content parts. Prompt-contract IDs are unchanged. Decline to plan for decomposed Unicode object keys and for Harmony control tokens that share a grapheme with a neighbour.
+
+### Operations
+
+- Rollout procedure for sidecar capacity, plan QPS, holder TTL and the Nemotron Lightning and Bonsai 2 allowlist tuples. The sanitized production env reference now matches the live cache-routing values.
 
 ## Release candidate v0.9.10 — live switching and App Attest recovery (not shipped; 2026-09-27)
 

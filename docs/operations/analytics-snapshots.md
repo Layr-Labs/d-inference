@@ -1,6 +1,6 @@
 # Serve public analytics from verified snapshots
 
-> Last updated: 2026-09-26 · commit `002317b97`
+> Last updated: 2026-09-27 · commit `64c621e14`
 
 Use the opt-in coordinator reader to serve leaderboard, network totals and network usage charts from a
 small local snapshot, removing history scans from those request paths. This
@@ -36,7 +36,8 @@ catalogs are incomplete and cannot supply a qualified production snapshot.
    `totals` matching `store.NetworkTotalsRow` and `leaderboards` for earnings,
    tokens and jobs matching `store.LeaderboardRow`. Supply exactly
    min(active_accounts,200) rows for each metric, ranked descending with account
-   ID ascending as the tie breaker. Empty rankings must be arrays, not null.
+   ID ascending as the tie breaker. When there are at most 200 active accounts,
+   all metrics must contain the same account-ID set. Empty rankings must be arrays, not null.
    Use integer JSON amounts within signed INT64; never float-round or truncate.
    Include `series` for 30m/24h/7d/30d with `start_at`, `end_at`,
    `bucket_seconds` (60/1800/14400/43200), and `buckets` shaped as
@@ -67,7 +68,10 @@ catalogs are incomplete and cannot supply a qualified production snapshot.
 The `coordinator/analyticssnapshot` package validates an 8 MiB cap, complete windows
 and ranks, exact work+reward sums without overflow, source/result freshness,
 cohort cardinality, cross-metric values, deterministic rank order and generation
-monotonicity. It rejects changed content under the same generation. An invalid
+monotonicity. Every different generation must advance `as_of` or
+`source_complete_through`, and neither may regress. Publish corrections with the
+next qualified source cut.
+It rejects changed content under the same generation. An invalid
 refresh leaves the prior valid in-memory generation in place; every read checks
 freshness again. Source and as-of age must be at most 10 minutes, result age at
 most 15 minutes; future source times are rejected and generated time allows one

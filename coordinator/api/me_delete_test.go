@@ -55,7 +55,7 @@ func TestDeleteMyProvider_OwnerSucceeds(t *testing.T) {
 		t.Fatalf("delete response exposed serial data: %s", w.Body.String())
 	}
 
-	if rec, _ := st.GetProviderBySerial(context.Background(), "SER-1"); rec != nil {
+	if rec, _ := st.GetProviderForRestore(context.Background(), "SER-1", "", nil); rec != nil {
 		t.Fatal("record still present after delete")
 	}
 	recs, _ := st.ListProvidersByAccount(context.Background(), "acct-1")
@@ -76,7 +76,7 @@ func TestDeleteMyProvider_CrossAccount403(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403: %s", w.Code, w.Body.String())
 	}
-	if rec, _ := st.GetProviderBySerial(context.Background(), "SER-1"); rec == nil {
+	if rec, _ := st.GetProviderForRestore(context.Background(), "SER-1", "", nil); rec == nil {
 		t.Fatal("record was deleted by a non-owner")
 	}
 }
@@ -124,7 +124,7 @@ func TestDeleteMyProvider_OnlineConflict409(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
 	}
-	if rec, _ := st.GetProviderBySerial(context.Background(), "SER-ON"); rec == nil {
+	if rec, _ := st.GetProviderForRestore(context.Background(), "SER-ON", "", nil); rec == nil {
 		t.Fatal("online machine record was deleted despite 409")
 	}
 }

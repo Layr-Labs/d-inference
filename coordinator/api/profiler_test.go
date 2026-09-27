@@ -208,12 +208,12 @@ func TestProfileSinkBatchesIntoStoreAndAdminEndpointsServeThem(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(srv.store.RequestProfilesSince(time.Time{})) == 100 {
+		if len(srv.store.RequestProfilesSinceFiltered(time.Time{}, store.RequestProfileFilter{})) == 100 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if n := len(srv.store.RequestProfilesSince(time.Time{})); n != 100 {
+	if n := len(srv.store.RequestProfilesSinceFiltered(time.Time{}, store.RequestProfileFilter{})); n != 100 {
 		t.Fatalf("expected 100 persisted profiles, got %d", n)
 	}
 

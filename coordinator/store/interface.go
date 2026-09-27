@@ -439,19 +439,6 @@ type LedgerEntry struct {
 	CreatedAt      time.Time       `json:"created_at"`
 }
 
-// PaymentRecord captures a settled payment.
-type PaymentRecord struct {
-	TxHash           string    `json:"tx_hash"`
-	ConsumerAddress  string    `json:"consumer_address"`
-	ProviderAddress  string    `json:"provider_address"`
-	AmountUSD        string    `json:"amount_usd"`
-	Model            string    `json:"model"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	Memo             string    `json:"memo"`
-	CreatedAt        time.Time `json:"created_at"`
-}
-
 // Referrer represents a registered referral partner.
 type Referrer struct {
 	AccountID string    `json:"account_id"`

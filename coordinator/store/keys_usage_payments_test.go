@@ -12,21 +12,22 @@ import (
 func TestCreateKey(t *testing.T) {
 	for name, s := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			key, err := s.CreateKey()
+			acct := uniqueID("acct")
+			key, _, err := s.CreateAPIKey(acct, APIKeyCreate{})
 			if err != nil {
-				t.Fatalf("CreateKey: %v", err)
+				t.Fatalf("CreateAPIKey: %v", err)
 			}
 
 			if !strings.HasPrefix(key, KeyPrefix) {
 				t.Errorf("key %q does not have %q prefix", key, KeyPrefix)
 			}
 
-			if !s.ValidateKey(key) {
+			if !keyAuthenticates(s, key) {
 				t.Error("created key should be valid")
 			}
 
-			if s.KeyCount() != 1 {
-				t.Errorf("key count = %d, want 1", s.KeyCount())
+			if n := activeKeyCount(t, s, acct); n != 1 {
+				t.Errorf("key count = %d, want 1", n)
 			}
 		})
 	}
@@ -35,15 +36,16 @@ func TestCreateKey(t *testing.T) {
 func TestCreateMultipleKeys(t *testing.T) {
 	for name, s := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			key1, _ := s.CreateKey()
-			key2, _ := s.CreateKey()
+			acct := uniqueID("acct")
+			key1, _, _ := s.CreateAPIKey(acct, APIKeyCreate{})
+			key2, _, _ := s.CreateAPIKey(acct, APIKeyCreate{})
 
 			if key1 == key2 {
 				t.Error("keys should be unique")
 			}
 
-			if s.KeyCount() != 2 {
-				t.Errorf("key count = %d, want 2", s.KeyCount())
+			if n := activeKeyCount(t, s, acct); n != 2 {
+				t.Errorf("key count = %d, want 2", n)
 			}
 		})
 	}
@@ -52,10 +54,10 @@ func TestCreateMultipleKeys(t *testing.T) {
 func TestValidateKeyInvalid(t *testing.T) {
 	for name, s := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			if s.ValidateKey("wrong-key") {
+			if keyAuthenticates(s, "wrong-key") {
 				t.Error("wrong key should not be valid")
 			}
-			if s.ValidateKey("") {
+			if keyAuthenticates(s, "") {
 				t.Error("empty key should not be valid")
 			}
 		})
@@ -65,19 +67,20 @@ func TestValidateKeyInvalid(t *testing.T) {
 func TestRevokeKey(t *testing.T) {
 	for name, s := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			key, _ := s.CreateKey()
-			if !s.ValidateKey(key) {
+			acct := uniqueID("acct")
+			key, _, _ := s.CreateAPIKey(acct, APIKeyCreate{})
+			if !keyAuthenticates(s, key) {
 				t.Fatal("key should be valid before revoke")
 			}
 
 			if !s.RevokeKey(key) {
 				t.Error("RevokeKey should return true for existing key")
 			}
-			if s.ValidateKey(key) {
+			if keyAuthenticates(s, key) {
 				t.Error("key should be invalid after revoke")
 			}
-			if s.KeyCount() != 0 {
-				t.Errorf("key count = %d, want 0 after revoke", s.KeyCount())
+			if n := activeKeyCount(t, s, acct); n != 0 {
+				t.Errorf("key count = %d, want 0 after revoke", n)
 			}
 		})
 	}
@@ -146,33 +149,6 @@ func TestUsageRecordsEmpty(t *testing.T) {
 			records := s.UsageRecords()
 			if len(records) != 0 {
 				t.Errorf("usage records = %d, want 0", len(records))
-			}
-		})
-	}
-}
-
-func TestRecordPayment(t *testing.T) {
-	for name, s := range storeBackends(t) {
-		t.Run(name, func(t *testing.T) {
-			err := s.RecordPayment("0xabc123", "0xconsumer", "0xprovider", "0.05", "qwen3.5-9b", 50, 100, "test payment")
-			if err != nil {
-				t.Fatalf("RecordPayment: %v", err)
-			}
-		})
-	}
-}
-
-func TestRecordPaymentDuplicateTxHash(t *testing.T) {
-	for name, s := range storeBackends(t) {
-		t.Run(name, func(t *testing.T) {
-			err := s.RecordPayment("0xabc123", "0xconsumer", "0xprovider", "0.05", "qwen3.5-9b", 50, 100, "")
-			if err != nil {
-				t.Fatalf("first RecordPayment: %v", err)
-			}
-
-			err = s.RecordPayment("0xabc123", "0xconsumer", "0xprovider", "0.05", "qwen3.5-9b", 50, 100, "")
-			if err == nil {
-				t.Error("expected error for duplicate tx_hash")
 			}
 		})
 	}

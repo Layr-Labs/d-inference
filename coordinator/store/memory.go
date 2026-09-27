@@ -51,7 +51,6 @@ type MemoryStore struct {
 	keysByID      map[string]string  // public key ID → raw key
 	keySpend      map[string]*keySpend
 	usage         []UsageRecord
-	payments      []PaymentRecord
 	balances      map[string]int64 // accountID → micro-USD
 	withdrawable  map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
 	ledgerEntries []LedgerEntry
@@ -123,9 +122,8 @@ type MemoryStore struct {
 	releases map[string]*Release // "version:platform" → Release
 
 	// Provider fleet persistence
-	providerRecords    map[string]*ProviderRecord   // providerID → record
-	reputationRecords  map[string]*ReputationRecord // providerID → reputation
-	serialToProviderID map[string]string            // serialNumber → providerID
+	providerRecords   map[string]*ProviderRecord   // providerID → record
+	reputationRecords map[string]*ReputationRecord // providerID → reputation
 
 	// APNs code-identity attestation reuse cache (W5 Fix 2). Keyed by SE pubkey.
 	// In the memory store this is lost on restart (same as the in-memory throttle
@@ -185,7 +183,6 @@ func NewMemory(scfg Config) *MemoryStore {
 		keysByID:                      make(map[string]string),
 		keySpend:                      make(map[string]*keySpend),
 		usage:                         make([]UsageRecord, 0),
-		payments:                      make([]PaymentRecord, 0),
 		balances:                      make(map[string]int64),
 		withdrawable:                  make(map[string]int64),
 		ledgerEntries:                 make([]LedgerEntry, 0),
@@ -219,7 +216,6 @@ func NewMemory(scfg Config) *MemoryStore {
 		releases:                      make(map[string]*Release),
 		providerRecords:               make(map[string]*ProviderRecord),
 		reputationRecords:             make(map[string]*ReputationRecord),
-		serialToProviderID:            make(map[string]string),
 		codeAttestations:              make(map[string]CodeAttestation),
 		codeAttestPushBudgets:         make(map[string]CodeAttestPushBudget),
 		providerTrustReuse:            make(map[string]ProviderTrustReuse),
@@ -270,9 +266,6 @@ func (s *MemoryStore) Prune(maxEntries int) {
 	if n := len(s.usage); n > maxEntries {
 		s.usage = append([]UsageRecord(nil), s.usage[n-maxEntries:]...)
 	}
-	if n := len(s.payments); n > maxEntries {
-		s.payments = append([]PaymentRecord(nil), s.payments[n-maxEntries:]...)
-	}
 	if n := len(s.ledgerEntries); n > maxEntries {
 		s.ledgerEntries = append([]LedgerEntry(nil), s.ledgerEntries[n-maxEntries:]...)
 	}
@@ -309,13 +302,6 @@ func (s *MemoryStore) Prune(maxEntries int) {
 			delete(s.deviceCodesByUserCode, dc.UserCode)
 		}
 	}
-}
-
-// CreateKey generates a cryptographically random API key, stores it, and
-// returns it. The key is unlinked to any account (legacy bootstrap helper).
-func (s *MemoryStore) CreateKey() (string, error) {
-	raw, _, err := s.CreateAPIKey("", APIKeyCreate{})
-	return raw, err
 }
 
 // CreateKeyForAccount generates a new API key linked to a specific account.
@@ -356,22 +342,6 @@ func (s *MemoryStore) CreateAPIKey(accountID string, opts APIKeyCreate) (string,
 	s.mu.Unlock()
 	out := *rec
 	return raw, &out, nil
-}
-
-// ValidateKey returns true if the given key exists, is active, and is not
-// expired. Expiry is enforced here (not just in AuthenticateKey) so callers
-// like telemetry attribution don't treat an expired key as a live account.
-func (s *MemoryStore) ValidateKey(key string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	rec, ok := s.keyRecords[key]
-	if !ok || rec.Disabled {
-		return false
-	}
-	if rec.ExpiresAt != nil && time.Now().After(*rec.ExpiresAt) {
-		return false
-	}
-	return true
 }
 
 // GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
@@ -584,32 +554,6 @@ func (s *MemoryStore) RecordUsage(providerID, consumerKey, model string, promptT
 		CompletionTokens: completionTokens,
 		Timestamp:        time.Now(),
 	})
-}
-
-// RecordPayment appends a payment record to the in-memory log.
-func (s *MemoryStore) RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Check for duplicate tx_hash.
-	for _, p := range s.payments {
-		if p.TxHash == txHash && txHash != "" {
-			return fmt.Errorf("duplicate tx_hash: %s", txHash)
-		}
-	}
-
-	s.payments = append(s.payments, PaymentRecord{
-		TxHash:           txHash,
-		ConsumerAddress:  consumerAddr,
-		ProviderAddress:  providerAddr,
-		AmountUSD:        amountUSD,
-		Model:            model,
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		Memo:             memo,
-		CreatedAt:        time.Now(),
-	})
-	return nil
 }
 
 // UsageRecords returns a copy of all usage records.
@@ -976,13 +920,9 @@ func (s *MemoryStore) RecordRequestProfiles(records []*RequestProfileRecord) err
 	return nil
 }
 
-// RequestProfilesSince returns profiles created at or after since, newest
-// first (reverse insertion order), capped at maxTelemetryReadRows.
-func (s *MemoryStore) RequestProfilesSince(since time.Time) []RequestProfileRecord {
-	return s.RequestProfilesSinceFiltered(since, RequestProfileFilter{})
-}
-
-// RequestProfilesSinceFiltered applies the filter before the read cap.
+// RequestProfilesSinceFiltered returns profiles created at or after since,
+// newest first (reverse insertion order), capped at maxTelemetryReadRows. It
+// applies the filter before the read cap.
 func (s *MemoryStore) RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1291,19 +1231,6 @@ func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]
 	return out, nil
 }
 
-// KeyCount returns the number of active API keys.
-func (s *MemoryStore) KeyCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	n := 0
-	for _, rec := range s.keyRecords {
-		if !rec.Disabled {
-			n++
-		}
-	}
-	return n
-}
-
 // GetBalance returns the current balance in micro-USD for an account.
 func (s *MemoryStore) GetBalance(accountID string) int64 {
 	s.mu.RLock()
@@ -1359,34 +1286,6 @@ func (s *MemoryStore) CreditWithdrawableOnce(accountID string, amountMicroUSD in
 	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
 	s.withdrawable[accountID] += amountMicroUSD
 	return true, nil
-}
-
-// DebitWithdrawable subtracts micro-USD from both the total balance and
-// the withdrawable balance. Returns error if withdrawable is insufficient.
-func (s *MemoryStore) DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.withdrawable[accountID] < amountMicroUSD {
-		return fmt.Errorf("insufficient withdrawable balance: have %d, need %d micro-USD", s.withdrawable[accountID], amountMicroUSD)
-	}
-	if s.balances[accountID] < amountMicroUSD {
-		return fmt.Errorf("insufficient balance: have %d, need %d micro-USD", s.balances[accountID], amountMicroUSD)
-	}
-
-	s.balances[accountID] -= amountMicroUSD
-	s.withdrawable[accountID] -= amountMicroUSD
-	s.ledgerSeq++
-	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
-		ID:             s.ledgerSeq,
-		AccountID:      accountID,
-		Type:           entryType,
-		AmountMicroUSD: -amountMicroUSD,
-		BalanceAfter:   s.balances[accountID],
-		Reference:      reference,
-		CreatedAt:      time.Now(),
-	})
-	return nil
 }
 
 // Debit subtracts micro-USD from an account. Returns ErrInsufficientBalance
@@ -1794,11 +1693,6 @@ func (s *MemoryStore) SetModelStatus(modelID, status string) error {
 	return nil
 }
 
-func (s *MemoryStore) ListActiveModelRegistry() []ModelRegistryRecord {
-	records, _ := s.ListActiveModelRegistryWithError()
-	return records
-}
-
 func (s *MemoryStore) ListActiveModelRegistryWithError() ([]ModelRegistryRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -2186,19 +2080,6 @@ func (s *MemoryStore) SetUserPlatformFeePercent(accountID string, feePercent *in
 }
 
 // --- Stripe Withdrawals ---
-
-func (s *MemoryStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
-	if w == nil || w.ID == "" {
-		return errors.New("stripe withdrawal id is required")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.stripeWithdrawalsByID[w.ID]; exists {
-		return fmt.Errorf("stripe withdrawal %q already exists", w.ID)
-	}
-	s.createStripeWithdrawalLocked(w)
-	return nil
-}
 
 // createStripeWithdrawalLocked inserts the row and its secondary indexes.
 // Caller must hold s.mu and must have validated w.
@@ -2681,26 +2562,6 @@ func (s *MemoryStore) RecordProviderEarning(earning *ProviderEarning) error {
 	return nil
 }
 
-// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
-func (s *MemoryStore) GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var results []ProviderEarning
-	for i := len(s.providerEarnings) - 1; i >= 0; i-- {
-		if s.providerEarnings[i].ProviderKey == providerKey {
-			results = append(results, s.providerEarnings[i])
-			if limit > 0 && len(results) >= limit {
-				break
-			}
-		}
-	}
-	if results == nil {
-		return []ProviderEarning{}, nil
-	}
-	return results, nil
-}
-
 // GetAccountEarnings returns all earnings across all nodes for an account, newest first.
 func (s *MemoryStore) GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error) {
 	s.mu.RLock()
@@ -2719,28 +2580,6 @@ func (s *MemoryStore) GetAccountEarnings(accountID string, limit int) ([]Provide
 		return []ProviderEarning{}, nil
 	}
 	return results, nil
-}
-
-// GetProviderEarningsSummary returns lifetime aggregates for a provider node.
-func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var summary ProviderEarningsSummary
-	for _, earning := range s.providerEarnings {
-		if earning.ProviderKey != providerKey {
-			continue
-		}
-		summary.TotalMicroUSD += earning.AmountMicroUSD
-		// base_reward rows add money but are not inference jobs.
-		if earning.Model != "base_reward" {
-			summary.Count++
-			summary.PromptTokens += int64(earning.PromptTokens)
-			summary.CompletionTokens += int64(earning.CompletionTokens)
-		}
-	}
-
-	return summary, nil
 }
 
 // GetAccountEarningsSummary returns lifetime aggregates for an account.
@@ -2889,15 +2728,6 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 }
 
 func (s *MemoryStore) upsertProviderRecordLocked(p ProviderRecord) {
-	// Update serial index
-	if p.SerialNumber != "" {
-		// Remove old serial mapping if exists
-		if old, ok := s.providerRecords[p.ID]; ok && old.SerialNumber != "" && old.SerialNumber != p.SerialNumber {
-			delete(s.serialToProviderID, old.SerialNumber)
-		}
-		s.serialToProviderID[p.SerialNumber] = p.ID
-	}
-
 	cp := p
 	if p.Location != nil {
 		loc := *p.Location
@@ -2913,26 +2743,6 @@ func (s *MemoryStore) GetProviderRecord(_ context.Context, id string) (*Provider
 	p, ok := s.providerRecords[id]
 	if !ok {
 		return nil, fmt.Errorf("provider %q not found", id)
-	}
-	cp := *p
-	if p.Location != nil {
-		loc := *p.Location
-		cp.Location = &loc
-	}
-	return &cp, nil
-}
-
-func (s *MemoryStore) GetProviderBySerial(_ context.Context, serial string) (*ProviderRecord, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	id, ok := s.serialToProviderID[serial]
-	if !ok {
-		return nil, fmt.Errorf("provider with serial %q not found", serial)
-	}
-	p, ok := s.providerRecords[id]
-	if !ok {
-		return nil, fmt.Errorf("provider %q not found (stale serial index)", id)
 	}
 	cp := *p
 	if p.Location != nil {
@@ -2967,22 +2777,6 @@ func (s *MemoryStore) GetMDAChainBySerial(_ context.Context, serial string) (jso
 	out := make(json.RawMessage, len(best.MDACertChain))
 	copy(out, best.MDACertChain)
 	return out, nil
-}
-
-func (s *MemoryStore) ListProviderRecords(_ context.Context) ([]ProviderRecord, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	records := make([]ProviderRecord, 0, len(s.providerRecords))
-	for _, p := range s.providerRecords {
-		cp := *p
-		if p.Location != nil {
-			loc := *p.Location
-			cp.Location = &loc
-		}
-		records = append(records, cp)
-	}
-	return records, nil
 }
 
 func (s *MemoryStore) ListProvidersByAccount(_ context.Context, accountID string) ([]ProviderRecord, error) {
@@ -3033,10 +2827,6 @@ func (s *MemoryStore) DeleteProvidersBySerial(_ context.Context, ownerAccountID,
 	}
 
 	for _, id := range matched {
-		rec := s.providerRecords[id]
-		if rec.SerialNumber != "" && s.serialToProviderID[rec.SerialNumber] == id {
-			delete(s.serialToProviderID, rec.SerialNumber)
-		}
 		delete(s.providerRecords, id)
 		delete(s.reputationRecords, id)
 		// usage, provider_earnings and provider_sessions are intentionally

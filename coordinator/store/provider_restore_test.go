@@ -60,30 +60,6 @@ func TestProviderRestoreSelectsLatestPriorIdentity(t *testing.T) {
 	}
 }
 
-func TestListProviderRecordsRejectsPartialScan(t *testing.T) {
-	databaseURL := newThrowawayTestDatabase(t)
-	s, err := NewPostgres(context.Background(), Config{DatabaseURL: databaseURL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	now := time.Now()
-	for i, id := range []string{"good", "bad"} {
-		if err := s.UpsertProvider(context.Background(), ProviderRecord{ID: id, Hardware: json.RawMessage(`{}`), Models: json.RawMessage(`[]`), RegisteredAt: now, LastSeen: now.Add(-time.Duration(i) * time.Minute)}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// Deliberately malformed private test schema: the first row scans, then the
-	// next cannot decode. Returning the already-read row would be silent data loss.
-	if _, err := s.pool.Exec(context.Background(), `ALTER TABLE providers ALTER COLUMN failed_challenges TYPE TEXT USING failed_challenges::text; UPDATE providers SET failed_challenges='invalid' WHERE id='bad'`); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := s.ListProviderRecords(context.Background())
-	if err == nil || rows != nil {
-		t.Fatalf("partial success: rows=%v error=%v", rows, err)
-	}
-}
-
 func TestProviderAndReputationPublicationIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	s, err := NewPostgres(ctx, Config{DatabaseURL: newThrowawayTestDatabase(t)})

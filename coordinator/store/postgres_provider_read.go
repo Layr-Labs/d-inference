@@ -49,15 +49,3 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 	}
 	return p, nil
 }
-
-func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	p, err := scanProviderRecord(s.pool.QueryRow(ctx, `SELECT `+providerRecordColumns+`
-		FROM providers WHERE serial_number = $1 AND serial_number != ''
-		ORDER BY last_seen DESC LIMIT 1`, serial))
-	if err != nil {
-		return nil, fmt.Errorf("store: provider with serial not found: %w", err)
-	}
-	return p, nil
-}

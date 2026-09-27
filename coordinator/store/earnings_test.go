@@ -60,51 +60,6 @@ func TestProviderEarnings_RecordAndGetByAccount(t *testing.T) {
 	}
 }
 
-func TestProviderEarnings_GetByProviderKey(t *testing.T) {
-	s := NewMemory(Config{})
-
-	// Record earnings for two different nodes.
-	for i := range 5 {
-		key := "key-A"
-		if i%2 == 0 {
-			key = "key-B"
-		}
-		_ = s.RecordProviderEarning(&ProviderEarning{
-			AccountID: "acct-1", ProviderID: "prov-X", ProviderKey: key,
-			JobID: "job-" + string(rune('a'+i)), Model: "test-model",
-			AmountMicroUSD: int64(1000 * (i + 1)),
-			PromptTokens:   10, CompletionTokens: 50,
-		})
-	}
-
-	// key-A should have 2 earnings (i=1, i=3)
-	earningsA, err := s.GetProviderEarnings("key-A", 50)
-	if err != nil {
-		t.Fatalf("GetProviderEarnings key-A: %v", err)
-	}
-	if len(earningsA) != 2 {
-		t.Errorf("expected 2 earnings for key-A, got %d", len(earningsA))
-	}
-
-	// key-B should have 3 earnings (i=0, i=2, i=4)
-	earningsB, err := s.GetProviderEarnings("key-B", 50)
-	if err != nil {
-		t.Fatalf("GetProviderEarnings key-B: %v", err)
-	}
-	if len(earningsB) != 3 {
-		t.Errorf("expected 3 earnings for key-B, got %d", len(earningsB))
-	}
-
-	// Nonexistent key should return empty slice.
-	earningsC, err := s.GetProviderEarnings("key-C", 50)
-	if err != nil {
-		t.Fatalf("GetProviderEarnings key-C: %v", err)
-	}
-	if len(earningsC) != 0 {
-		t.Errorf("expected 0 earnings for key-C, got %d", len(earningsC))
-	}
-}
-
 func TestProviderEarnings_NewestFirst(t *testing.T) {
 	s := NewMemory(Config{})
 
@@ -117,7 +72,7 @@ func TestProviderEarnings_NewestFirst(t *testing.T) {
 		})
 	}
 
-	earnings, _ := s.GetProviderEarnings("key-1", 50)
+	earnings, _ := s.GetAccountEarnings("acct-1", 50)
 	if len(earnings) != 5 {
 		t.Fatalf("expected 5 earnings, got %d", len(earnings))
 	}
@@ -142,9 +97,9 @@ func TestProviderEarnings_LimitRespected(t *testing.T) {
 	}
 
 	// Limit to 3.
-	earnings, err := s.GetProviderEarnings("key-1", 3)
+	earnings, err := s.GetAccountEarnings("acct-1", 3)
 	if err != nil {
-		t.Fatalf("GetProviderEarnings: %v", err)
+		t.Fatalf("GetAccountEarnings: %v", err)
 	}
 	if len(earnings) != 3 {
 		t.Errorf("expected 3 earnings with limit=3, got %d", len(earnings))
@@ -154,7 +109,7 @@ func TestProviderEarnings_LimitRespected(t *testing.T) {
 		t.Errorf("first earning ID = %d, want 10", earnings[0].ID)
 	}
 
-	// Limit also works for account earnings.
+	// A second limit returns that many.
 	acctEarnings, err := s.GetAccountEarnings("acct-1", 5)
 	if err != nil {
 		t.Fatalf("GetAccountEarnings: %v", err)
@@ -197,8 +152,8 @@ func TestProviderEarnings_DifferentAccounts(t *testing.T) {
 }
 
 // TestRecordProviderEarningMaintainsSummaryWithoutRestart: a retried
-// earning (same job_id) updates the account and provider summaries exactly
-// once, live, and never touches balances.
+// earning (same job_id) updates the account summary exactly once, live, and
+// never touches balances.
 func TestRecordProviderEarningMaintainsSummaryWithoutRestart(t *testing.T) {
 	s := testPostgresStore(t)
 	e := &ProviderEarning{AccountID: uniqueID("account"), ProviderKey: uniqueID("key"), ProviderID: "p", JobID: uniqueID("job"), Model: "m", AmountMicroUSD: 100, PromptTokens: 20, CompletionTokens: 30}
@@ -207,14 +162,12 @@ func TestRecordProviderEarningMaintainsSummaryWithoutRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, key := range []string{e.AccountID, e.ProviderKey} {
-		var count, money, prompt, completion int64
-		if err := s.pool.QueryRow(context.Background(), `SELECT total_count,total_micro_usd,total_prompt_tokens,total_completion_tokens FROM earnings_summary WHERE key=$1`, key).Scan(&count, &money, &prompt, &completion); err != nil {
-			t.Fatal(err)
-		}
-		if count != 1 || money != 100 || prompt != 20 || completion != 30 {
-			t.Fatalf("summary doubled/lost: %d %d %d %d", count, money, prompt, completion)
-		}
+	var count, money, prompt, completion int64
+	if err := s.pool.QueryRow(context.Background(), `SELECT total_count,total_micro_usd,total_prompt_tokens,total_completion_tokens FROM earnings_summary WHERE key=$1 AND key_type='account'`, e.AccountID).Scan(&count, &money, &prompt, &completion); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || money != 100 || prompt != 20 || completion != 30 {
+		t.Fatalf("summary doubled/lost: %d %d %d %d", count, money, prompt, completion)
 	}
 	var balanceRows int
 	if err := s.pool.QueryRow(context.Background(), `SELECT count(*) FROM balances WHERE account_id=$1`, e.AccountID).Scan(&balanceRows); err != nil || balanceRows != 0 {
@@ -223,8 +176,8 @@ func TestRecordProviderEarningMaintainsSummaryWithoutRestart(t *testing.T) {
 }
 
 // TestBaseRewardEarningPathsExcludeInferenceWork: base-reward earnings add
-// money to both summaries but never inference work (count or tokens), on
-// both the record-only and the credit path, in both store backends.
+// money to the account summary but never inference work (count or tokens),
+// on both the record-only and the credit path, in both store backends.
 func TestBaseRewardEarningPathsExcludeInferenceWork(t *testing.T) {
 	for name, st := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -247,14 +200,8 @@ func TestBaseRewardEarningPathsExcludeInferenceWork(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				providerSummary, err := st.GetProviderEarningsSummary(key)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, summary := range []ProviderEarningsSummary{accountSummary, providerSummary} {
-					if summary.Count != 0 || summary.TotalMicroUSD != 800 || summary.PromptTokens != 0 || summary.CompletionTokens != 0 {
-						t.Fatalf("base reward counted as work: %+v", summary)
-					}
+				if accountSummary.Count != 0 || accountSummary.TotalMicroUSD != 800 || accountSummary.PromptTokens != 0 || accountSummary.CompletionTokens != 0 {
+					t.Fatalf("base reward counted as work: %+v", accountSummary)
 				}
 			}
 		})

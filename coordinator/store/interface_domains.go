@@ -15,17 +15,11 @@ import (
 	"time"
 )
 
-// APIKeyStore covers consumer API-key lifecycle: the legacy single-key helpers,
-// multi-key management (one account → many named, limited keys), and key counts.
+// APIKeyStore covers consumer API-key lifecycle: the single-key helpers and
+// multi-key management (one account → many named, limited keys).
 type APIKeyStore interface {
-	// CreateKey generates a new API key, persists it, and returns it.
-	CreateKey() (string, error)
-
 	// CreateKeyForAccount generates a new API key linked to a specific account.
 	CreateKeyForAccount(accountID string) (string, error)
-
-	// ValidateKey returns true if the given key exists and is active.
-	ValidateKey(key string) bool
 
 	// GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
 	GetKeyAccount(key string) string
@@ -76,9 +70,6 @@ type APIKeyStore interface {
 	// since the given UTC time. Zero `since` returns lifetime spend. Used to
 	// enforce per-key spend caps before the ledger reservation.
 	KeySpendSince(keyID string, since time.Time) int64
-
-	// KeyCount returns the number of active API keys.
-	KeyCount() int
 }
 
 // UsageStore records inference usage events and settled payments and serves the
@@ -99,9 +90,6 @@ type UsageStore interface {
 	// RecordUsageFullWithPublicModel logs the concrete billing/statistics model
 	// plus the optional consumer-facing model name returned by usage history.
 	RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
-
-	// RecordPayment records a settled payment between consumer and provider.
-	RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error
 
 	// UsageRecords returns all usage records.
 	UsageRecords() []UsageRecord
@@ -202,14 +190,12 @@ type TelemetryStore interface {
 	// a no-op. Best-effort; failures must not block inference.
 	RecordRequestProfiles(records []*RequestProfileRecord) error
 
-	// RequestProfilesSince returns request profiles created at or after the
-	// given time, newest-first, capped at maxTelemetryReadRows. Zero since
-	// returns the newest rows across all time.
-	RequestProfilesSince(since time.Time) []RequestProfileRecord
-
-	// RequestProfilesSinceFiltered is RequestProfilesSince with the admin
-	// browse/export predicates applied BEFORE the read cap, so a matching row
-	// older than the newest maxTelemetryReadRows rows is still returned.
+	// RequestProfilesSinceFiltered returns request profiles created at or
+	// after the given time, newest-first, capped at maxTelemetryReadRows. Zero
+	// since returns the newest rows across all time. The admin browse/export
+	// predicates apply BEFORE the read cap, so a matching row older than the
+	// newest maxTelemetryReadRows rows is still returned; a zero filter
+	// matches every row.
 	RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord
 
 	// RecordFleetSnapshots bulk-writes one sampler tick (one row per provider
@@ -259,12 +245,6 @@ type LedgerStore interface {
 	// crash between the credit and the row persist) must never credit the
 	// same refund twice.
 	CreditWithdrawableOnce(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (applied bool, err error)
-
-	// DebitWithdrawable subtracts micro-USD from both the total balance and
-	// the withdrawable balance atomically. Returns error if withdrawable
-	// balance is insufficient. Use for Stripe Connect withdrawals so the
-	// debit is symmetric with CreditWithdrawable refunds.
-	DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
 
 	// LedgerHistory returns ledger entries for an account, newest first.
 	LedgerHistory(accountID string) []LedgerEntry
@@ -329,10 +309,6 @@ type BillingStore interface {
 	DeleteModelPrice(accountID, model string) error
 
 	// --- Stripe Withdrawals (bank/card payouts via Stripe Connect) ---
-
-	// CreateStripeWithdrawal stores a new withdrawal record. The caller is
-	// responsible for debiting the ledger atomically before calling this.
-	CreateStripeWithdrawal(withdrawal *StripeWithdrawal) error
 
 	// CreateStripeWithdrawalWithDebit atomically debits both the balance and
 	// withdrawable columns (recording a ledger entry with the given type and
@@ -409,7 +385,6 @@ type ModelRegistryStore interface {
 	SetModelVersion(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile) error
 	PromoteModelVersion(modelID, version string) error
 	SetModelStatus(modelID, status string) error
-	ListActiveModelRegistry() []ModelRegistryRecord
 	ListActiveModelRegistryWithError() ([]ModelRegistryRecord, error)
 	GetModelRegistryRecord(modelID string) (*ModelRegistryRecord, error)
 	GetModelManifest(modelID string) (*ModelManifest, error)
@@ -544,15 +519,8 @@ type ProviderEarningsStore interface {
 	// RecordProviderEarning stores an earning record for a specific provider node.
 	RecordProviderEarning(earning *ProviderEarning) error
 
-	// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
-	GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error)
-
 	// GetAccountEarnings returns all earnings across all nodes for an account, newest first.
 	GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error)
-
-	// GetProviderEarningsSummary returns lifetime aggregates for a provider node
-	// across ALL accounts that have ever owned the key.
-	GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error)
 
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
@@ -573,13 +541,6 @@ type ProviderEarningsStore interface {
 	// node in [since, until): amount>0, model != 'base_reward'. Self-route already
 	// produces no earning row, so it needs no extra filter.
 	SumProviderEarningsByKey(ctx context.Context, providerKey string, since, until time.Time) (int64, error)
-
-	// SettleProviderFloorDraw atomically (1) inserts the idempotent draw row
-	// (ON CONFLICT (provider_key, epoch_id) DO NOTHING) and (2) credits the
-	// account's balance + withdrawable with a LedgerFloorDraw entry — but ONLY
-	// when the row was newly inserted. Returns credited=false on a duplicate
-	// epoch. A zero-amount draw still inserts the audit row but credits nothing.
-	SettleProviderFloorDraw(ctx context.Context, draw *ProviderFloorDraw) (credited bool, err error)
 
 	// SumFloorDrawsForEpoch returns Σ amount_micro_usd already settled for an
 	// epoch (pool-cap accounting + admin status).
@@ -618,9 +579,6 @@ type ProviderStore interface {
 	// GetProviderRecord returns a provider record by ID.
 	GetProviderRecord(ctx context.Context, id string) (*ProviderRecord, error)
 
-	// GetProviderBySerial returns a provider record by serial number.
-	GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error)
-
 	// GetProviderForRestore returns the newest historical record for a verified
 	// serial, falling back to the verified SE key only when no serial record exists.
 	// excludeIDs removes all live/in-progress sessions from the candidate set. No match returns (nil, nil); failures return errors.
@@ -629,13 +587,10 @@ type ProviderStore interface {
 	// GetMDAChainBySerial returns the newest NON-EMPTY Apple MDA cert chain stored
 	// for a serial, or (nil, nil) if none. A reconnecting provider gets a new row
 	// (keyed by a fresh provider id) that may be persisted with an empty chain
-	// before the chain is reattached; GetProviderBySerial would return that newer
-	// empty row and shadow a still-valid chain from a prior connection. This query
+	// before the chain is reattached; a newest-row-by-serial lookup would return
+	// that newer empty row and shadow a still-valid chain from a prior connection. This query
 	// looks past empty rows so MDA reuse survives that race.
 	GetMDAChainBySerial(ctx context.Context, serial string) (json.RawMessage, error)
-
-	// ListProviderRecords returns all stored provider records.
-	ListProviderRecords(ctx context.Context) ([]ProviderRecord, error)
 
 	// ListProvidersByAccount returns stored provider records linked to an account.
 	ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error)

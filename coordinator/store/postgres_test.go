@@ -30,7 +30,7 @@ func TestPostgresSeedKey(t *testing.T) {
 		t.Fatalf("SeedKey: %v", err)
 	}
 
-	if !s.ValidateKey("my-admin-key") {
+	if !keyAuthenticates(s, "my-admin-key") {
 		t.Error("seeded key should be valid")
 	}
 
@@ -40,8 +40,8 @@ func TestPostgresSeedKey(t *testing.T) {
 		t.Fatalf("SeedKey (duplicate): %v", err)
 	}
 
-	if s.KeyCount() != 1 {
-		t.Errorf("key count = %d, want 1", s.KeyCount())
+	if n := activeKeyCount(t, s, ""); n != 1 {
+		t.Errorf("key count = %d, want 1", n)
 	}
 }
 
@@ -211,9 +211,7 @@ func TestPostgresStripeWithdrawalCRUD(t *testing.T) {
 		Method:          "standard",
 		Status:          "pending",
 	}
-	if err := s.CreateStripeWithdrawal(wd); err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	seedStripeWithdrawal(t, s, wd)
 
 	// Round-trip by id.
 	got, err := s.GetStripeWithdrawal("wd-pg-1")
@@ -304,9 +302,7 @@ func TestPostgresStripeWithdrawalRefundFlag(t *testing.T) {
 		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 		Method: "standard", Status: "transferred", PayoutID: "po_rf",
 	}
-	if err := s.CreateStripeWithdrawal(wd); err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	seedStripeWithdrawal(t, s, wd)
 
 	wd.Status = "failed"
 	wd.Refunded = true
@@ -334,11 +330,16 @@ func TestPostgresStripeWithdrawalDuplicateIDRejected(t *testing.T) {
 		ID: "wd-dup", AccountID: "acct-pg-dup", StripeAccountID: "acct_dup",
 		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000, Method: "standard", Status: "pending",
 	}
-	if err := s.CreateStripeWithdrawal(wd); err != nil {
-		t.Fatalf("create #1: %v", err)
+	// Fund a second debit so the duplicate can only fail on its ID.
+	if err := s.CreditWithdrawable("acct-pg-dup", wd.AmountMicroUSD, LedgerPayout, "seed-extra:wd-dup"); err != nil {
+		t.Fatalf("seed: %v", err)
 	}
-	if err := s.CreateStripeWithdrawal(wd); err == nil {
+	seedStripeWithdrawal(t, s, wd)
+	if err := s.CreateStripeWithdrawalWithDebit(wd, LedgerStripePayout, "stripe_withdraw:wd-dup#2"); err == nil {
 		t.Fatal("expected duplicate ID to be rejected")
+	}
+	if bal := s.GetBalance("acct-pg-dup"); bal != wd.AmountMicroUSD {
+		t.Errorf("duplicate attempt moved the balance: %d, want %d", bal, wd.AmountMicroUSD)
 	}
 }
 
@@ -630,22 +631,22 @@ func TestPostgresDeleteProvidersBySerial(t *testing.T) {
 		t.Fatalf("rows_removed = %d, want 1", n)
 	}
 
-	if rec, _ := s.GetProviderBySerial(ctx, "SER"); rec != nil {
+	if rec, _ := s.GetProviderForRestore(ctx, "SER", "", nil); rec != nil {
 		t.Fatal("provider row still present after delete")
 	}
 	if rep, _ := s.GetReputation(ctx, "a"); rep != nil {
 		t.Fatal("reputation row still present after delete")
 	}
 	// Earnings (money history) must survive.
-	earnings, err := s.GetProviderEarnings("key-a", 10)
+	earnings, err := s.GetAccountEarnings("acct-1", 10)
 	if err != nil {
-		t.Fatalf("GetProviderEarnings: %v", err)
+		t.Fatalf("GetAccountEarnings: %v", err)
 	}
-	if len(earnings) != 1 {
+	if len(earnings) != 1 || earnings[0].ProviderKey != "key-a" {
 		t.Fatalf("earnings count = %d, want 1 (money history must survive)", len(earnings))
 	}
 	// Cross-account guard row must survive.
-	if rec, _ := s.GetProviderBySerial(ctx, "SER-G"); rec == nil {
+	if rec, _ := s.GetProviderForRestore(ctx, "SER-G", "", nil); rec == nil {
 		t.Fatal("cross-account guard row was deleted")
 	}
 }
@@ -667,7 +668,7 @@ func TestPostgresDeleteProvidersBySerial_WrongOwner(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("rows_removed = %d, want 0 for non-owner", n)
 	}
-	if rec, _ := s.GetProviderBySerial(ctx, "SER"); rec == nil {
+	if rec, _ := s.GetProviderForRestore(ctx, "SER", "", nil); rec == nil {
 		t.Fatal("record deleted by non-owner")
 	}
 }

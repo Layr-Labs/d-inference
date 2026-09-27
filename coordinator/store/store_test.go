@@ -6,18 +6,18 @@ import (
 
 func TestNewWithAdminKey(t *testing.T) {
 	s := NewMemory(Config{AdminKey: "test-admin-key"})
-	if !s.ValidateKey("test-admin-key") {
+	if !keyAuthenticates(s, "test-admin-key") {
 		t.Error("admin key should be valid")
 	}
-	if s.KeyCount() != 1 {
-		t.Errorf("key count = %d, want 1", s.KeyCount())
+	if n := activeKeyCount(t, s, ""); n != 1 {
+		t.Errorf("key count = %d, want 1", n)
 	}
 }
 
 func TestNewWithoutAdminKey(t *testing.T) {
 	s := NewMemory(Config{})
-	if s.KeyCount() != 0 {
-		t.Errorf("key count = %d, want 0", s.KeyCount())
+	if n := activeKeyCount(t, s, ""); n != 0 {
+		t.Errorf("key count = %d, want 0", n)
 	}
 }
 

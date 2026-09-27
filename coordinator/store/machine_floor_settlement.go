@@ -80,25 +80,10 @@ func (s *MemoryStore) resolveMachineFloorDrawLocked(machine string, draw *Provid
 	return copy, false, nil
 }
 
-// Even a candidate built before inventory binding appeared must resolve that
-// binding at the money handoff. Raw-first and canonical-first settlement share
-// one merge barrier and therefore cannot create two floors for the same epoch.
-func (s *MemoryStore) SettleProviderFloorDrawForSession(ctx context.Context, sessionID string, draw *ProviderFloorDraw) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	if sessionID == "" || draw == nil || draw.AccountID == "" || draw.ProviderKey == "" || draw.EpochID == "" {
-		return false, errors.New("invalid_machine_floor_draw")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	resolved, already, err := s.resolveSessionFloorDrawLocked(sessionID, draw)
-	if err != nil || already {
-		return false, err
-	}
-	return s.settleProviderFloorDrawLocked(&resolved)
-}
-
+// resolveSessionFloorDrawLocked resolves a session's draw at the money
+// handoff: even a candidate built before inventory binding appeared must
+// resolve that binding, so raw-first and canonical-first settlement share one
+// merge barrier and cannot create two floors for the same epoch.
 func (s *MemoryStore) resolveSessionFloorDrawLocked(sessionID string, draw *ProviderFloorDraw) (ProviderFloorDraw, bool, error) {
 	if m := s.machineInventory; m != nil {
 		if o, exists := m.sessions[sessionID]; exists {

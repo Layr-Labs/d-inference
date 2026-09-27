@@ -299,7 +299,7 @@ trust_boundaries:
       verification key (PRIVY_VERIFICATION_KEY; no JWKS fetch) with pinned issuer
       "privy.io", audience = the Privy app ID, and a required exp claim
       (auth/privy.go NewPrivyAuth / VerifyToken); all others are looked up in the
-      store via ValidateKey(). On first
+      store via AuthenticateKey(). On first
       Privy login the coordinator auto-provisions a user account by calling the Privy
       REST API. API keys are hashed before storage; raw tokens are never persisted.
 

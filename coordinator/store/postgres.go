@@ -667,8 +667,11 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_provider_earnings_account ON provider_earnings(account_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_earnings_provider ON provider_earnings(provider_key, created_at DESC)`,
 
-		// Materialized earnings summaries — atomically maintained by CreditProviderAccount.
-		// Eliminates full-table SUM scans on /v1/provider/account-earnings.
+		// Materialized per-account earnings summaries (key_type 'account') —
+		// atomically maintained by CreditProviderAccount, RecordProviderEarning
+		// and floor-draw settlement. Eliminates full-table SUM scans on
+		// /v1/provider/account-earnings. Rows with key_type 'provider' are no
+		// longer written or read; they stay so an older binary still boots.
 		`CREATE TABLE IF NOT EXISTS earnings_summary (
 			key TEXT NOT NULL,
 			key_type TEXT NOT NULL,
@@ -1368,13 +1371,6 @@ func (s *PostgresStore) insertAPIKey(ctx context.Context, rec *APIKey, onConflic
 	return err
 }
 
-// CreateKey generates a cryptographically random API key, hashes it, stores
-// the hash, and returns the raw key (the only time it's available in plaintext).
-func (s *PostgresStore) CreateKey() (string, error) {
-	raw, _, err := s.CreateAPIKey("", APIKeyCreate{})
-	return raw, err
-}
-
 // CreateKeyForAccount generates a new API key linked to a specific account.
 func (s *PostgresStore) CreateKeyForAccount(accountID string) (string, error) {
 	raw, _, err := s.CreateAPIKey(accountID, APIKeyCreate{})
@@ -1455,30 +1451,6 @@ func (s *PostgresStore) GetKeyAccount(key string) string {
 		return ""
 	}
 	return accountID
-}
-
-// ValidateKey returns true if the given key exists, is active, and is not
-// expired. Expiry is enforced here (not just in AuthenticateKey) so callers
-// like telemetry attribution don't treat an expired key as a live account.
-func (s *PostgresStore) ValidateKey(key string) bool {
-	h := hashKey(key)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var active bool
-	var expiresAt *time.Time
-	err := s.pool.QueryRow(ctx,
-		`SELECT active, expires_at FROM api_keys WHERE key_hash = $1`,
-		h,
-	).Scan(&active, &expiresAt)
-	if err != nil {
-		return false
-	}
-	if expiresAt != nil && time.Now().After(*expiresAt) {
-		return false
-	}
-	return active
 }
 
 // AuthenticateKey resolves a raw key to its active record for request auth.
@@ -2028,22 +2000,6 @@ func nullSince(since time.Time) any {
 	return since
 }
 
-// RecordPayment inserts a payment record into PostgreSQL.
-func (s *PostgresStore) RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO payments (tx_hash, consumer_address, provider_address, amount_usd, model, prompt_tokens, completion_tokens, memo)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		txHash, consumerAddr, providerAddr, amountUSD, model, promptTokens, completionTokens, memo,
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert payment: %w", err)
-	}
-	return nil
-}
-
 // UsageCountSince returns the number of usage records created at or after the
 // given time. Uses idx_usage_created for an index-only count. A statement that
 // cannot complete is reported as an error, never as a zero count.
@@ -2516,48 +2472,6 @@ func (s *PostgresStore) MigrateAccountBalance(from, to string) (bool, error) {
 	return true, nil
 }
 
-// DebitWithdrawable subtracts micro-USD from both the total balance and the
-// withdrawable balance atomically. Returns error if the withdrawable balance
-// is insufficient. This ensures withdrawal debits are symmetric with
-// CreditWithdrawable refunds — both touch the same columns.
-func (s *PostgresStore) DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	var balanceAfter int64
-	err = tx.QueryRow(ctx,
-		`UPDATE balances
-		 SET balance_micro_usd = balance_micro_usd - $2,
-		     withdrawable_micro_usd = withdrawable_micro_usd - $2,
-		     updated_at = NOW()
-		 WHERE account_id = $1
-		   AND balance_micro_usd >= $2
-		   AND withdrawable_micro_usd >= $2
-		 RETURNING balance_micro_usd`,
-		accountID, amountMicroUSD,
-	).Scan(&balanceAfter)
-	if err != nil {
-		return errors.New("insufficient withdrawable balance or account not found")
-	}
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		accountID, string(entryType), -amountMicroUSD, balanceAfter, reference,
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert ledger entry: %w", err)
-	}
-
-	return tx.Commit(ctx)
-}
-
 // LedgerHistory returns ledger entries for an account, newest first.
 func (s *PostgresStore) LedgerHistory(accountID string) []LedgerEntry {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2590,21 +2504,6 @@ func (s *PostgresStore) LedgerHistory(accountID string) []LedgerEntry {
 		return []LedgerEntry{}
 	}
 	return entries
-}
-
-// KeyCount returns the number of active API keys.
-func (s *PostgresStore) KeyCount() int {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var count int
-	err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM api_keys WHERE active = TRUE`,
-	).Scan(&count)
-	if err != nil {
-		return 0
-	}
-	return count
 }
 
 // --- Referral System ---
@@ -3055,37 +2954,6 @@ func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
 
 // --- Stripe Withdrawals ---
 
-func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
-	if w == nil || w.ID == "" {
-		return errors.New("stripe withdrawal id is required")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	now := time.Now()
-	if w.CreatedAt.IsZero() {
-		w.CreatedAt = now
-	}
-	if w.UpdatedAt.IsZero() {
-		w.UpdatedAt = w.CreatedAt
-	}
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO stripe_withdrawals
-		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
-		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-		  failure_reason, refunded, fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
-		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
-		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt,
-	)
-	if err != nil {
-		return fmt.Errorf("store: create stripe withdrawal: %w", err)
-	}
-	return nil
-}
-
 // CreateStripeWithdrawalWithDebit atomically debits both balance columns
 // (recording the ledger entry) and inserts the withdrawal row in a single
 // transaction — a crash can no longer leave a debited balance with no
@@ -3115,8 +2983,9 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 	}
 	defer tx.Rollback(ctx)
 
-	// Same guarded dual-column debit as DebitWithdrawable: both the total
-	// and withdrawable balances must cover the amount.
+	// Guarded dual-column debit: both the total and withdrawable balances
+	// must cover the amount, so the debit is symmetric with CreditWithdrawable
+	// refunds.
 	var balanceAfter int64
 	err = tx.QueryRow(ctx,
 		`UPDATE balances
@@ -3782,16 +3651,12 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 		`WITH earning AS (INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
-		 RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
-		), summaries AS (
-		 SELECT account_id AS key, 'account' AS key_type, model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE account_id <> ''
-		 UNION ALL
-		 SELECT provider_key, 'provider', model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE provider_key <> ''
+		 RETURNING account_id, model, amount_micro_usd, prompt_tokens, completion_tokens
 		)
 		INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		SELECT key, key_type, CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+		SELECT account_id, 'account', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
 		 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
-		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM summaries
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM earning WHERE account_id <> ''
 		ON CONFLICT (key, key_type) DO UPDATE SET
 		 total_count = earnings_summary.total_count + EXCLUDED.total_count,
 		 total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
@@ -3806,39 +3671,6 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 		return fmt.Errorf("store: insert provider earning: %w", err)
 	}
 	return nil
-}
-
-// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
-func (s *PostgresStore) GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
-		 FROM provider_earnings
-		 WHERE provider_key = $1
-		 ORDER BY created_at DESC
-		 LIMIT $2`,
-		providerKey, limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: query provider earnings: %w", err)
-	}
-	defer rows.Close()
-
-	var results []ProviderEarning
-	for rows.Next() {
-		var e ProviderEarning
-		if err := rows.Scan(&e.ID, &e.AccountID, &e.ProviderID, &e.ProviderKey, &e.JobID,
-			&e.Model, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
-			continue
-		}
-		results = append(results, e)
-	}
-	if results == nil {
-		return []ProviderEarning{}, nil
-	}
-	return results, nil
 }
 
 // GetAccountEarnings returns all earnings across all nodes for an account, newest first.
@@ -3872,28 +3704,6 @@ func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]Provi
 		return []ProviderEarning{}, nil
 	}
 	return results, nil
-}
-
-// GetProviderEarningsSummary returns lifetime aggregates for a provider node.
-// Reads from the materialized earnings_summary table (PK lookup) instead of
-// scanning all provider_earnings rows.
-func (s *PostgresStore) GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var summary ProviderEarningsSummary
-	err := s.pool.QueryRow(ctx,
-		`SELECT total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens
-		 FROM earnings_summary
-		 WHERE key = $1 AND key_type = 'provider'`,
-		providerKey,
-	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
-	if err != nil {
-		// No rows = no earnings yet, return zeros (not an error).
-		return ProviderEarningsSummary{}, nil
-	}
-
-	return summary, nil
 }
 
 // GetAccountEarningsSummary returns lifetime aggregates for an account.
@@ -4049,58 +3859,6 @@ func (s *PostgresStore) GetMDAChainBySerial(ctx context.Context, serial string) 
 		return nil, fmt.Errorf("store: get mda chain by serial: %w", err)
 	}
 	return chain, nil
-}
-
-func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, hardware, models, backend, location, trust_level, attested,
-			attestation_result, se_public_key, serial_number,
-			mda_verified, mda_cert_chain,
-			version, runtime_verified,
-			last_challenge_verified, failed_challenges, account_id,
-			lifetime_requests_served, lifetime_tokens_generated,
-			last_session_requests_served, last_session_tokens_generated,
-			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
-		 FROM providers ORDER BY last_seen DESC`,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list providers: %w", err)
-	}
-	defer rows.Close()
-
-	var records []ProviderRecord
-	for rows.Next() {
-		var p ProviderRecord
-		var locationRaw []byte
-		if err := rows.Scan(
-			&p.ID, &p.Hardware, &p.Models, &p.Backend,
-			&locationRaw,
-			&p.TrustLevel, &p.Attested,
-			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
-			&p.MDAVerified, &p.MDACertChain,
-			&p.Version, &p.RuntimeVerified,
-			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
-			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
-			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-			&p.LifetimeStats, &p.LastSessionStats,
-			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
-		); err != nil {
-			return nil, fmt.Errorf("store: scan provider: %w", err)
-		}
-		p.Location = unmarshalProviderLocation(locationRaw)
-		records = append(records, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate providers: %w", err)
-	}
-	if records == nil {
-		return []ProviderRecord{}, nil
-	}
-	return records, nil
 }
 
 func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error) {

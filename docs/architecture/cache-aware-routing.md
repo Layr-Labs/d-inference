@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-26 · commit `c60610bb1`
+> Last updated: 2026-09-26 · commit `e81dee198`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -264,6 +264,8 @@ Evidence is removed or made unreachable on:
   `coordinator/registry/cache_receipts.go`; both are chosen by
   `disablePrefixCacheV2Model`, `coordinator/registry/cache_receipts_v2.go`);
 - verified miss or corruption for the attempted boundaries;
+- a valid hit at a shorter boundary than one recorded for that provider: its
+  deeper holders for that prompt, in that tier;
 - holder expiry or deterministic cap eviction;
 - routing transition to `off`.
 
@@ -273,12 +275,31 @@ The checkpoint routing milestone is covered by local Go protocol, registry,
 simulated multi-provider, and API wire tests; it is not a live two-machine
 measurement ([source and test evidence](../reports/evidence/2026-09-05-ssd-checkpoint-cache/coordinator-evidence-manifest.json)).
 
-Holder removals are counted under one of seven reasons
+Holder removals are counted under one of eight reasons
 (`coordinator/registry/cache_routing.go`): `ttl`, `disconnect`,
 `epoch_change`, `capability_change`, `proof_mismatch`, `miss_invalidation`,
-`capacity_eviction`. SSD capacity eviction rotates its durable epoch. Resident LRU eviction does not
-rotate the whole slot epoch: its remaining checkpoints stay useful, and stale
-advisory evidence expires or is removed by the next exact miss. Slot unload,
+`shorter_hit`, `capacity_eviction`. Neither tier rotates its epoch on eviction. SSD budget
+eviction, TTL expiry and corrupt-file removal are per-file: the provider keeps
+its epoch and capability, its remaining checkpoints stay routable, and a stale
+holder is removed by the next exact miss on that provider (`miss_invalidation`)
+or by TTL. The SSD epoch changes only when the provider rebuilds the whole
+model root at initialization (weight hash, prompt contract, block-hash version,
+block size, layout epoch or key fingerprint drift), so `epoch_change` means a
+whole-root rebuild, not capacity pressure. Providers older than this change
+still rotate on eviction.
+
+Because a provider that removes one file keeps its epoch, the coordinator
+learns of the removal from the next lookup: a miss at the attempted boundaries
+(`miss_invalidation`), or a valid hit below a boundary recorded for that
+provider (`shorter_hit`, `supersedeDeeperHoldersLocked`,
+`coordinator/registry/cache_receipts_v2_lookup.go`), which drops that
+provider's deeper holders for that prompt in the receipt's tier. Without the
+second rule a provider that evicted its deeper checkpoint would keep attracting
+the prefix and answer with a partial hit each time. The provider may still
+store the deeper file and have skipped it under a stage-size or stage-time cap;
+the receipt cannot distinguish the two, holders are advisory, and a later ready
+or hit re-teaches them. Neither path fences the provider or moves its sequence
+watermark. Slot unload,
 replacement, shutdown, and connection changes invalidate resident evidence.
 There is no targeted resident-eviction wire message in this extension.
 
@@ -322,7 +343,7 @@ lookup hashes `B` times and visits at most `2 × B × H` holder records; this wo
 does not grow with unrelated fleet members. The normal eligibility scan still
 visits its ordinary candidate pool once. Epoch, connection pointer, capability
 and proof quarantine remain required; capability revisions are rechecked at
-selection and reservation. A miss or epoch rotation removes only that
+selection and reservation. A miss, a shorter hit or an epoch rotation removes only that
 provider's evidence from the common bucket.
 
 All ordinary trust, model, trait, memory, token-budget, queue, cooldown, health,
@@ -719,7 +740,7 @@ back are operator procedures, kept in the runbook
 | Requests dispatch but no plan participates (`plan_failed`, `plan_empty` counters climb) | Sidecar timeout, crash, malformed output, unavailable artifacts or dynamic-time templates | Non-participating plan; cold routing; sidecar supervision in [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) |
 | Media requests never earn a discount | `HasMedia` requests are excluded by design | No participating plan is produced |
 | A capability stops participating after a hit | Prompt-proof mismatch fenced that exact capability for a bounded, escalating window (60 s, doubling per consecutive mismatch, capped at 10 min) | Request continues without preference; participation resumes when the window lifts or the capability changes (`coordinator/registry/cache_proof_fence.go`) |
-| One provider loses all holders for a model | Its SSD capacity eviction rotated the model's cache epoch | Invalidates that provider/model evidence; other machines holding the same prefix remain eligible |
+| One provider loses all holders for a model | The model root was rebuilt at load (binding drift) and its cache epoch changed, the model was unloaded (`capability_change`), or the provider predates the per-file eviction change and still rotates on eviction | Invalidates that provider/model evidence; other machines holding the same prefix remain eligible |
 | Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, TTL, cap eviction | Removal counted under one of the seven `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
 | `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `maxPrefixCacheStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `sanitizePrefixCacheStatuses` drops the optional snapshot; routing capability is never weakened (`coordinator/registry/cache_snapshot.go`) |
 | A cached provider loses to a cold one | Residual prefill, full staging, age, queue or hardware costs outweigh its benefit; or an explicit limit clips it | Minimum adjusted service cost wins; there is no hard affinity |

@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-26 · commit `c60610bb1`
+> Last updated: 2026-09-26 · commit `279224c5d`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -417,7 +417,9 @@ single-use imported handle carries ownership until its array aliases retire;
 paged adoption replaces the temporary stage with the full request promise,
 settles measured backing and retains auxiliary state separately. Cancellation,
 rejection and shutdown release staged state. Missing,
-corrupt, changed-epoch or incompatible state falls back cold. Complete hits
+corrupt, changed-epoch or incompatible state falls back cold. Eviction, TTL
+expiry and corrupt-file removal keep the model's cache epoch and its advertised
+capability; only a whole-root rebuild at initialization mints a new epoch. Complete hits
 save their actual checkpoint position with zero replay; an absent shorter
 recurrent checkpoint is never inferred from a longer one
 (`SSDHybridCheckpointStore+Read.swift`, `SSDCheckpointStageReservation.swift`,

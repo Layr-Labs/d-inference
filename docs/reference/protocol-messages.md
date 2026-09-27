@@ -18,7 +18,7 @@ Terminal `profile` objects can include optional schema-1
 [`deadline_decision`](prediction-decision-telemetry.md#provider-fields).
 This does not add a message type or change the public error code.
 
-The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
+The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` and `app_attest_shadow` frames; the coordinator serves protocol 3 only, and a registration announcing protocol 1 or 2 gets no frames. Protocol 3 binds the account, status, static hardware and the existing verification key. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 
 App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds both fields. `ready` replies may also carry optional `launch_session`, `boot_time` and `operation_stalled_seconds`; `coordinator/protocol/app_attest_runtime_diagnostic.go` (`SanitizeRuntimeDiagnostics`) strips invalid values without rejecting the frame. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).
 
@@ -830,9 +830,10 @@ set is pinned by `TestCapacityProbeShapeClosed` (`coordinator/protocol/capacity_
 `register.app_attest_protocol=3` negotiates the account/endpoint-bound shadow
 exchange plus signed static hardware claims. `AppAttestStatus` adds optional
 string fields `machine_model`, `memory_gb`, `cpu_total`, `cpu_performance`,
-`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; version 3 hashes them after the version 2 status
-fields under its own domain. Old transcripts remain unchanged. Original enrollment
-protocol is retained for cached-response recovery across upgrades. These fields
+`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; the version 3
+transcript hashes them after the status fields under its own domain. It is the
+only transcript: cached-response recovery resumes only a protocol-3 enrollment.
+These fields
 are app measurements, not Apple-certified hardware. See
 [the App Attest reference](app-attest-shadow.md) and
 `coordinator/protocol/app_attest_hardware.go` (`AppAttestShadowHashV3`).

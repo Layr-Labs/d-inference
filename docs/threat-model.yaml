@@ -38,6 +38,10 @@ created: "2026-05-14"
 # prospective mismatches against registration. The app also binds its existing
 # verification public key, preventing substitution of model/runtime signature
 # credentials during the later trust transition. Reward rules are unchanged.
+# 2026-09-27: the coordinator serves App Attest protocol 3 only. It replaces the
+# fixed 0.9.4 version gate (protocol 3 first shipped in 0.9.4; protocol 2 only in
+# 0.9.3). Protocol 1/2 registrations get no frames and are counted as
+# rollout/provider_upgrade_required; pre-v3 stored enrollments never resume.
 # MDM-optional authorization added 2026-09-15: explicit serving opt-in consumes
 # qualified protocol3 evidence; it never sets legacy MDA/APNs flags. Fresh
 # connection/endpoint/policy-bound permission is checked at every final dispatch.

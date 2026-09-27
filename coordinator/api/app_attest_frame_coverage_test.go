@@ -61,7 +61,7 @@ func TestAppAttestOversizedFramesReachInventoryThroughWebSocket(t *testing.T) {
 	oversized := `{"type":"app_attest_shadow","payload":{"action":"assertion","proof":"` + strings.Repeat("A", 50*1024) + `"}}`
 	// No negotiated session yet: must not panic or attribute this to a later one.
 	write(oversized)
-	registration, _ := json.Marshal(protocol.RegisterMessage{Type: protocol.TypeRegister, PublicKey: testPublicKeyB64(), Version: "0.9.3", AppAttestProtocol: 2})
+	registration, _ := json.Marshal(protocol.RegisterMessage{Type: protocol.TypeRegister, PublicKey: testPublicKeyB64(), Version: "0.9.4", AppAttestProtocol: 3})
 	write(string(registration))
 	var first store.MachineObservation
 	select {

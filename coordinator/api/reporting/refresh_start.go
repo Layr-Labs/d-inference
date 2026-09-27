@@ -12,13 +12,16 @@ import (
 // loops keep slow geography queries off the core stats path. Stops when ctx
 // is cancelled.
 func (s *Owner) StartCacheRefreshers(ctx context.Context) {
+	s.startAnalyticsSnapshots(ctx)
 	saferun.Go(s.logger, "api.statsGeographyRefresher", func() {
 		s.RunCacheRefreshLoop(ctx, refresher.StatsRefreshInterval, func() { s.RefreshStatsGeography() })
 	})
 	saferun.Go(s.logger, "api.statsRefresher", func() {
 		s.RunStatsRefresher(ctx, refresher.StatsRefreshInterval)
 	})
-	saferun.Go(s.logger, "api.networkTotalsRefresher", func() {
-		s.RunNetworkTotalsRefresher(ctx, refresher.CacheRefreshInterval)
-	})
+	if s.analyticsSnapshotPath == "" {
+		saferun.Go(s.logger, "api.networkTotalsRefresher", func() {
+			s.RunNetworkTotalsRefresher(ctx, refresher.CacheRefreshInterval)
+		})
+	}
 }

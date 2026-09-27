@@ -95,7 +95,7 @@ func TestStatsCachePreservesSourceTimeUntilSuccessfulRefresh(t *testing.T) {
 	}
 }
 
-func TestStatsRefreshCadenceLeavesNetworkTotalsAtOneMinute(t *testing.T) {
+func TestStatsRefreshCadenceKeepsNetworkTotalsAtFiveMinutes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		memory := memory.NewMemory(store.Config{})
 		st := &countingStatsStore{Store: memory}
@@ -126,8 +126,19 @@ func TestStatsRefreshCadenceLeavesNetworkTotalsAtOneMinute(t *testing.T) {
 		time.Sleep(30 * time.Second)
 		synctest.Wait()
 		_, refreshedAt, _ = readStatsSnapshot(t, srv)
-		if !refreshedAt.Equal(startedAt.Add(time.Minute)) || st.locationCalls.Load() != 3 || st.totalsCalls.Load() != 8 {
+		if !refreshedAt.Equal(startedAt.Add(time.Minute)) || st.locationCalls.Load() != 3 || st.totalsCalls.Load() != 4 {
 			t.Fatalf("60s cadence: captured_at=%v stats_queries=%d totals_queries=%d", refreshedAt, st.locationCalls.Load(), st.totalsCalls.Load())
+		}
+		time.Sleep(4*time.Minute - time.Nanosecond)
+		synctest.Wait()
+		if st.totalsCalls.Load() != 4 {
+			t.Fatal("network totals refreshed before five minutes")
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		_, refreshedAt, _ = readStatsSnapshot(t, srv)
+		if !refreshedAt.Equal(startedAt.Add(5*time.Minute)) || st.locationCalls.Load() != 11 || st.totalsCalls.Load() != 8 {
+			t.Fatalf("300s cadence: captured_at=%v stats_queries=%d totals_queries=%d", refreshedAt, st.locationCalls.Load(), st.totalsCalls.Load())
 		}
 		cancel()
 		synctest.Wait()
@@ -168,6 +179,31 @@ func TestStatsFailedRefreshPreservesTimestampAndSafetyExpiry(t *testing.T) {
 		_, recoveredAt, _ := readStatsSnapshot(t, srv)
 		if !recoveredAt.Equal(recoveryAt) {
 			t.Fatalf("recovery snapshot_at=%v, want %v", recoveredAt, recoveryAt)
+		}
+	})
+}
+
+func TestNetworkTotalsFailedRefreshDoesNotExtendFifteenMinuteExpiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		st := &countingStatsStore{Store: store.NewMemory(store.Config{})}
+		srv := newStatsSnapshotServer(st)
+		good, ok := srv.refreshNetworkTotals("all")
+		if !ok {
+			t.Fatal("initial totals failed")
+		}
+		st.totalsFail.Store(true)
+		for i := 0; i < 2; i++ {
+			time.Sleep(5 * time.Minute)
+			body, ok := srv.refreshNetworkTotals("all")
+			if !ok || !bytes.Equal(body, good) {
+				t.Fatal("failed refresh lost the unexpired success")
+			}
+		}
+		time.Sleep(5*time.Minute + time.Nanosecond)
+		rr := httptest.NewRecorder()
+		srv.handleNetworkTotals(rr, httptest.NewRequest(http.MethodGet, "/v1/network/totals", nil))
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("served expired totals after repeated failures: %d", rr.Code)
 		}
 	})
 }

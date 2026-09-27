@@ -192,7 +192,8 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 	})
 	s.access.SetRateObservation(s.observation.Incr, observation.StampRateLimit)
 	s.reporting = reporting.New(reporting.Dependencies{
-		Store: st, Registry: reg, Cache: s.readCache, Logger: logger,
+		AnalyticsSnapshotPath: cfg.AnalyticsSnapshotPath,
+		Store:                 st, Registry: reg, Cache: s.readCache, Logger: logger,
 		Incr: s.observation.Incr, RequireAdminKey: s.access.RequireAdminKey,
 	})
 	s.catalog = catalog.New(reg, st, s.access, s.readCache, logger, catalog.Hooks{ReconcilePromptArtifacts: s.inference.ReconcilePromptArtifacts, IsDraining: s.IsDraining})

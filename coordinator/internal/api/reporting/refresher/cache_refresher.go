@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	CacheRefreshInterval = time.Minute
+	CacheRefreshInterval = 5 * time.Minute
 	// Stats has a shorter freshness window than the network earnings totals.
 	StatsRefreshInterval = 30 * time.Second
 	// Failed refreshes retain the previous success only until this safety TTL.
@@ -17,6 +17,7 @@ const (
 // cacheRefresher coalesces computations of one read-cache entry. Only complete
 // successful results are cached; query errors never become partial JSON data.
 type Entry struct {
+	TTL      time.Duration // Fixed at construction; zero uses refreshedCacheTTL.
 	mu       sync.Mutex
 	inflight chan struct{}
 }
@@ -58,11 +59,17 @@ func (s *Service) computeCachedEntry(entry *Entry, key string, refresh bool, com
 
 	body, err := compute()
 	if err != nil {
-		s.logger.Warn("cache refresh failed; keeping previous value", "key", key, "error", err)
+		if s.logger != nil {
+			s.logger.Warn("cache refresh failed; keeping previous value", "key", key, "error", err)
+		}
 		s.ddIncr("cache.refresh_failed", []string{"key:" + key})
 		return s.readCache.Get(key)
 	}
-	s.readCache.Set(key, body, refreshedCacheTTL)
+	ttl := entry.TTL
+	if ttl <= 0 {
+		ttl = refreshedCacheTTL
+	}
+	s.readCache.Set(key, body, ttl)
 	return body, true
 }
 

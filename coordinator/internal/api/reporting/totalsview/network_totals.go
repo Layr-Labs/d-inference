@@ -26,7 +26,7 @@ func (s *Totals) networkTotalsEntry(window string) *refresher.Entry {
 	}
 	entry := r.entries[window]
 	if entry == nil {
-		entry = &refresher.Entry{}
+		entry = &refresher.Entry{TTL: 15 * time.Minute}
 		r.entries[window] = entry
 	}
 	return entry

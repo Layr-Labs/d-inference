@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	httpx "github.com/eigeninference/d-inference/coordinator/api/httpx"
 	pseudonym "github.com/eigeninference/d-inference/coordinator/internal/api/reporting/pseudonym"
@@ -49,15 +50,28 @@ func (s *Owner) HandleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		limit = l
 	}
 
-	result, err := s.CachedLeaderboard(r.Context(), metric, windowParam)
-	if err != nil {
-		if r.Context().Err() != nil {
+	var rows []store.LeaderboardRow
+	var updatedAt time.Time
+	if s.analyticsSnapshotPath != "" {
+		snapshot, ok := s.analyticsSnapshot.Get(time.Now())
+		if !ok {
+			analyticsUnavailable(w)
 			return
 		}
-		w.Header().Set("Retry-After", strconv.Itoa(ranking.LeaderboardRetryAfter(err)))
-		httpx.WriteJSON(w, http.StatusServiceUnavailable, httpx.ErrorResponse("service_unavailable",
-			"leaderboard is temporarily unavailable"))
-		return
+		rows = snapshot.Windows[windows.NetworkTotalsWindow(windowParam)].Leaderboards[metricParam]
+		updatedAt = snapshot.AsOf
+	} else {
+		result, err := s.CachedLeaderboard(r.Context(), metric, windowParam)
+		if err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(ranking.LeaderboardRetryAfter(err)))
+			httpx.WriteJSON(w, http.StatusServiceUnavailable, httpx.ErrorResponse("service_unavailable",
+				"leaderboard is temporarily unavailable"))
+			return
+		}
+		rows, updatedAt = result.Rows, result.UpdatedAt
 	}
 
 	type entry struct {
@@ -69,7 +83,6 @@ func (s *Owner) HandleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		Tokens                 int64  `json:"tokens"`
 		Jobs                   int64  `json:"jobs"`
 	}
-	rows := result.Rows
 	if len(rows) > limit {
 		rows = rows[:limit]
 	}
@@ -90,7 +103,7 @@ func (s *Owner) HandleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		"metric":     metricParam,
 		"window":     windows.WindowParamOrDefault(windowParam),
 		"entries":    entries,
-		"updated_at": result.UpdatedAt,
+		"updated_at": updatedAt,
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {

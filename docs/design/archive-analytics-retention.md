@@ -1,8 +1,8 @@
 # Archived analytics and verified source retention
 
-> Last updated: 2026-09-26 · commit `bcf5dcce9`
+> Last updated: 2026-09-26 · commit `002317b97`
 
-Status: In progress · 2026-09-26. Archive copying and SQL previews exist; continuous capture, native analytical rollups, product cutover and archive-aware source deletion are not implemented. This design prepares the stage after the [copy-only archive](../operations/accounting-history.md).
+Status: In progress · 2026-09-26. Archive copying, SQL previews, private snapshot sync and the opt-in coordinator snapshot reader exist. A qualified snapshot producer, continuous capture, native analytical rollups, product activation and archive-aware source deletion remain incomplete. This design prepares the stage after the [copy-only archive](../operations/accounting-history.md).
 
 ## Decision
 
@@ -55,7 +55,7 @@ The current archive maximum-ID cutoff is **not** a commit watermark. Select a CD
 | `KeySpendSince`, key history, `postgres.go` | `usage` and key attribution | Preserve budget/spend enforcement and old detail paging before dropping usage history |
 | Earnings/ledger history and recovery migrations | Detail plus `earnings_summary` and `usage_totals` | Archive-aware authenticated pagination; retain migration baselines; never silently truncate old history |
 
-Existing open PRs overlap: [#1140](https://github.com/Layr-Labs/d-inference/pull/1140) fixes leaderboard query-error semantics; [#1144](https://github.com/Layr-Labs/d-inference/pull/1144) adds an all-time summary fast path. Integrate/rebase their applicable work before coordinator cutover. Review #1144's writer/backfill boundary for the current settlement implementation; do not accept approximate financial splits as an exact reconciliation gate.
+Existing open PRs overlap: [#1140](https://github.com/Layr-Labs/d-inference/pull/1140) proposes leaderboard query-error semantics (now included in this PR); [#1144](https://github.com/Layr-Labs/d-inference/pull/1144) adds an all-time summary fast path. Integrate/rebase their applicable work before coordinator cutover. Review #1144's writer/backfill boundary for the current settlement implementation; do not accept approximate financial splits as an exact reconciliation gate.
 
 ## Snapshot serving contract
 

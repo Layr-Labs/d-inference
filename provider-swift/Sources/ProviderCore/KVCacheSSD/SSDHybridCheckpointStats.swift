@@ -26,8 +26,9 @@ public struct SSDHybridCheckpointStats: Sendable {
     public var evictions = 0
     /// Recurrent donors whose capture stopped because one of their prompt
     /// ranges ran in a packed prefill cohort (`CBv2RecurrentCheckpointGeometry
-    /// .DisarmReason.packed`), once per request. Sizes what packing costs the
-    /// durable cache; geometry (non-contiguous, overrun), preemption and
+    /// .DisarmReason.packed`), once per request. Counts requests, including
+    /// prompts below the store's effective-token floor that could never have
+    /// written a file; geometry (non-contiguous, overrun), preemption and
     /// media disarms are not counted.
     public var recurrentCaptureDisarmedPacked = 0
     public var entries = 0

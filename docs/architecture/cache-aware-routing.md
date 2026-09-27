@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-27 · commit `667d504c3`
+> Last updated: 2026-09-27 · commit `d5135d366`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -211,8 +211,9 @@ physical 16-token page hash is not a routing anchor. Hybrid recurrent state can
 be reused only at an actual captured checkpoint endpoint: any 256-token-aligned
 range end the donor's schedule produced, not every 256-token hash boundary.
 For example, a 4,353-token input has a 4,352-token proof floor, while its
-reusable checkpoint may be 4,096 (a stripe end) or 4,352 (a plain-chunk end
-under company), whichever the donor captured. A resident or checkpoint-mode
+reusable checkpoint is the deepest boundary the donor actually captured:
+4,096 under the solo stripe or under 512-token plain chunks, and 4,352 only
+when a budget-clamped range happened to end there. A resident or checkpoint-mode
 SSD receipt may publish that earlier boundary; it does not invent state the
 donor never captured (`ResidentPrefixCachePromptProof`,
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift`).

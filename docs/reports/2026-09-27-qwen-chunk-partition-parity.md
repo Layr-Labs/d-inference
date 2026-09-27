@@ -1,6 +1,6 @@
 # Qwen chunk-partition parity and chunk-agnostic recurrent capture (2026-09-27)
 
-> Last updated: 2026-09-27 · commit `f6321a391`
+> Last updated: 2026-09-27 · commit `d5135d366`
 
 **Question.** Does a hybrid recurrent Qwen (GatedDeltaNet + full attention)
 reach the same complete-checkpoint state at a prefill boundary whatever chunk
@@ -65,8 +65,11 @@ Live runs on real weights with the inline MTP head (provider
 | Qwen3.6-35B-A3B solo stripe | 9,171 | 5,120 | 2,048 / 4,096 / 8,192 | 114.7 / 165.1 / 265.7 MB | restores 8,192, same text; warm TTFT 1.0 s vs 6.5 s cold |
 | Qwen3.6-35B-A3B mixed chunks | 9,171 | 5,120 | 1,024 / 5,120 / 7,168 | 89.6 / 190.2 / 240.6 MB | no disarm |
 
-Before the change the second row published only what the uniform-chunk rule
-allowed below the first cap change, so the 7,168 restore did not exist.
+The fixture pins the solo stripe at 2,048 tokens; production dense Qwen
+stripes at 4,096, where the solo rows publish 4,096 / 8,192 with the first
+boundary doubling as the target. Before the change the company-leaves rows
+published only what the uniform-chunk rule allowed below the first cap
+change, so the 7,168 restore did not exist.
 
 ## Not changed
 

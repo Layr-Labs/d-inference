@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-27 · commit `f6321a391`
+> Last updated: 2026-09-27 · commit `d5135d366`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -415,8 +415,11 @@ ragged range end is not a boundary. The manifest records `chunkSize` as the
 chunk that ended at the boundary, provenance only: the adopter resumes at `p`
 under ordinary chunk sizing with `excludesPackedPrefill`, and
 `CBv2PrefixReusePlan.recurrentChunkSize` is set only by the resident bank.
-Measured on Qwen3.5-9B with the MTP head, a 9,171-token solo donor with a
-5,120 hint publishes 2,048 / 4,096 / 8,192 (135.4 / 219.3 / 387.1 MB); the
+Measured on Qwen3.5-9B with the MTP head and the live fixture's solo stripe
+pinned at 2,048 (production dense Qwen stripes at 4,096, where the same
+donor publishes 4,096 / 8,192 with the first boundary doubling as the
+target), a 9,171-token solo donor with a 5,120 hint publishes 2,048 / 4,096 /
+8,192 (135.4 / 219.3 / 387.1 MB); the
 same prompt prefilled as six 512-token chunks and then 2,048-token chunks
 publishes 1,024 / 5,120 / 7,168 (93.5 / 261.2 / 345.1 MB, `chunkSize` 512 /
 2,048 / 2,048) and the next turn restores 7,168. Historical-attention

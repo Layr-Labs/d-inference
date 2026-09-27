@@ -106,8 +106,6 @@ public enum ProviderProtocolCodec {
         try appendIfPresent(register.prefillTps, key: "prefill_tps", to: &fields)
         try appendIfPresent(register.decodeTps, key: "decode_tps", to: &fields)
         try appendIfPresent(register.authToken, key: "auth_token", to: &fields)
-        try appendIfPresent(register.pythonHash, key: "python_hash", to: &fields)
-        try appendIfPresent(register.runtimeHash, key: "runtime_hash", to: &fields)
         if !register.templateHashes.isEmpty {
             try fields.append(("template_hashes", encodeValue(register.templateHashes)))
         }

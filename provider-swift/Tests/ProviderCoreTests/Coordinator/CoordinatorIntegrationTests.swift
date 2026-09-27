@@ -615,8 +615,6 @@ private func makeClient(
         privacyCapabilities: PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
-            pythonRuntimeLocked: false,
-            dangerousModulesBlocked: false,
             sipEnabled: true,
             antiDebugEnabled: false,
             coreDumpsDisabled: false,

@@ -370,8 +370,9 @@ trust_boundaries:
       a release policy is enforced, CodeAttested once code-attestation enforcement is
       active, and five PrivacyCapabilities fields (text_backend_inprocess,
       text_proxy_disabled, anti_debug_enabled, core_dumps_disabled, env_scrubbed).
-      The python_runtime_locked and dangerous_modules_blocked fields are
-      wire-compatibility only and are not consulted. ChallengeVerifiedSIP is set by
+      The retired Python-runtime flags (python_runtime_locked,
+      dangerous_modules_blocked) are no longer sent by the Swift provider and are
+      never consulted. ChallengeVerifiedSIP is set by
       the coordinator after verifying a signed challenge response — not trusted from
       the provider. The gate is evaluated inside providerLivenessGateReasonLocked
       (routing_eligibility.go), which also requires a challenge verified within the
@@ -843,11 +844,9 @@ trust_boundaries:
       to verify the DER ECDSA signature over SHA-256(canonical_json_bytes). Three checks
       are mandatory and will fail the attestation: SecureEnclave not available, SIP
       disabled, SecureBoot disabled. ARV and RDMA are parsed and logged but not enforced.
-      For providers >= 0.8.15 (minProviderVersionForReconnectAttestation) the blob
-      timestamp must be within ±2 minutes of coordinator time
+      The blob timestamp must be within ±2 minutes of coordinator time
       (RegistrationAttestationMaxAge, CheckTimestamp()) or the provider is marked
-      untrusted; older providers' blobs are accepted with ChipFamily,
-      RuntimeCapabilities, and MetallibHash stripped.
+      untrusted; providers re-sign the blob on every reconnect.
 
       Challenge-response: every 5 minutes the coordinator generates a 32-byte random
       nonce (base64), stores it in a one-time-use map keyed by nonce string, and sends
@@ -1184,7 +1183,7 @@ threats:
       providerSupportsPrivateTextLocked now requires only the five backend-neutral
       PrivacyCapabilities (text_backend_inprocess, text_proxy_disabled,
       anti_debug_enabled, core_dumps_disabled, env_scrubbed) plus backend mlx-swift;
-      the two Python fields remain on the wire for compatibility and are not consulted.
+      the Swift provider no longer sends the two Python fields at all.
     adversaries: [ADV-001]
     affected_assets: [A-001]
     affected_files:
@@ -1193,7 +1192,7 @@ threats:
     mitigations:
       - description: Routing gate exists and enforces the five backend-neutral privacy flags.
         status: implemented
-      - description: Python-only flags are wire-compatibility fields, not gate inputs.
+      - description: Python-only flags are retired from the provider wire and are not gate inputs.
         status: implemented
     open_findings: []
     resolved_findings:
@@ -1862,10 +1861,9 @@ threats:
     affected_assets: [A-001]
     affected_files:
       # (BatchScheduler / PrefixCacheManager / EncryptedPrefixCachePersistence
-      # were deleted with the legacy engine in v0.7.5; EncryptedKVStore is
-      # PRESERVED as the chunked AES-GCM store the SSD-offload successor
-      # reuses.)
-      - provider-swift/Sources/ProviderCore/KVCache/EncryptedKVStore.swift
+      # were deleted with the legacy engine in v0.7.5; the v1 EncryptedKVStore
+      # followed once its chunked AES-GCM scheme lived on only in the DBK3
+      # SSDBlockStore.)
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLookupKeys.swift

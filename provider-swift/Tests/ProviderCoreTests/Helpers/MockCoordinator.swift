@@ -384,7 +384,6 @@ public final class MockCoordinator: @unchecked Sendable {
         )
         let msg = CoordinatorMessage.inferenceRequest(.init(
             requestId: requestId,
-            body: .null,
             encryptedBody: payload,
             firstContentBudgetMs: firstContentBudgetMs,
             cacheReceiptNonce: cacheReceiptNonce,

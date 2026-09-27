@@ -27,11 +27,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
         walletAddress: "0x1234567890abcdef1234567890abcdef12345678",
         attestation: RawJSON(rawBytes: Data(rawAttestation.utf8)),
         authToken: "device-token",
-        runtimeHashes: RuntimeHashes(
-            pythonHash: nil,
-            runtimeHash: "runtimehash",
-            templateHashes: ["chatml": "templatehash"]
-        )
+        runtimeHashes: RuntimeHashes(templateHashes: ["chatml": "templatehash"])
     )
 
     let data = try CoordinatorClientCodec.encodeRegistration(
@@ -52,12 +48,15 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
     #expect(object["app_attest_protocol"] as? Int == 3)
     #expect(json.contains(#""attestation":\#(rawAttestation)"#))
 
-    // The hypervisor concept was removed: the registration frame's
-    // privacy_capabilities must carry NO hypervisor key on the wire.
-    let caps = object["privacy_capabilities"] as? [String: Any]
-    #expect(caps != nil)
-    #expect(caps?["hypervisor_active"] == nil)
-    #expect(caps?["hypervisorActive"] == nil)
+    // privacy_capabilities carries exactly the Swift-runtime keys: no
+    // retired hypervisor or Python-runtime flags on the wire.
+    let caps = try #require(object["privacy_capabilities"] as? [String: Any])
+    #expect(Set(caps.keys) == [
+        "text_backend_inprocess", "text_proxy_disabled", "sip_enabled",
+        "anti_debug_enabled", "core_dumps_disabled", "env_scrubbed",
+    ])
+    #expect(object["python_hash"] == nil)
+    #expect(object["runtime_hash"] == nil)
 
     let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: data)
     guard case .register(let register) = decoded else {
@@ -65,7 +64,6 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
     }
     #expect(register.attestation?.rawBytes == Data(rawAttestation.utf8))
     #expect(register.appAttestProtocol == 3)
-    #expect(register.runtimeHash == "runtimehash")
     #expect(register.templateHashes["chatml"] == "templatehash")
     #expect(register.privacyCapabilities?.textBackendInprocess == true)
 }
@@ -634,8 +632,6 @@ private func clientPrivacyCapabilities() -> PrivacyCapabilities {
     PrivacyCapabilities(
         textBackendInprocess: true,
         textProxyDisabled: true,
-        pythonRuntimeLocked: true,
-        dangerousModulesBlocked: true,
         sipEnabled: true,
         antiDebugEnabled: true,
         coreDumpsDisabled: true,

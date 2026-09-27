@@ -353,10 +353,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_account ON billing_sessions(account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_external ON billing_sessions(external_id)`,
-		`DO $$ BEGIN
-			ALTER TABLE billing_sessions DROP COLUMN IF EXISTS chain;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
 
 		// Custom pricing — per-account model price overrides
 		`CREATE TABLE IF NOT EXISTS model_prices (
@@ -367,32 +363,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (account_id, model)
 		)`,
-
-		// Clean up wallet-keyed custom prices: with the removal of wallet-based
-		// payouts, model_prices rows keyed by Solana wallet addresses are
-		// unreachable. Providers must re-enter custom prices under their Stripe
-		// Connect account ID.
-		//
-		// This is a one-time, destructive cleanup, so it is gated on a
-		// schema_migrations marker and runs at most once instead of on every boot.
-		// Two further guards:
-		//   - Exclude the synthetic "platform" account. Platform-default per-model
-		//     pricing (set via PUT /v1/admin/pricing and at model registration) is
-		//     stored under account_id='platform', which is NEVER a row in users.
-		//     Without this guard the cleanup would wipe all platform pricing,
-		//     silently reverting billing to the fallback defaults.
-		//   - The marker is written only after a successful DELETE within the same
-		//     block, so a run that errors (e.g. users not yet created on a brand-new
-		//     DB) rolls back and is retried on the next boot.
-		`DO $$ BEGIN
-			IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE id = 'cleanup_wallet_model_prices_v1') THEN
-				DELETE FROM model_prices
-				WHERE account_id NOT IN (SELECT account_id FROM users)
-				  AND account_id <> 'platform';
-				INSERT INTO schema_migrations (id) VALUES ('cleanup_wallet_model_prices_v1');
-			END IF;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
 
 		// Users — Privy identity → internal account mapping
 		`CREATE TABLE IF NOT EXISTS users (
@@ -405,14 +375,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`DO $$ BEGIN
 			ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE users DROP COLUMN IF EXISTS solana_wallet_address;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE users DROP COLUMN IF EXISTS solana_wallet_id;
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy ON users(privy_user_id)`,
@@ -603,13 +565,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		END $$`,
 		`DO $$ BEGIN
 			ALTER TABLE releases ADD COLUMN IF NOT EXISTS grpc_binary_hash TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		// Drop deprecated image_bridge_hash column. Image generation is no longer
-		// a first-class capability; the hash is meaningless. The DROP is wrapped
-		// in a DO block so it's safe to re-run on databases that already lack it.
-		`DO $$ BEGIN
-			ALTER TABLE releases DROP COLUMN IF EXISTS image_bridge_hash;
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
 

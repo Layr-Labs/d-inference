@@ -135,7 +135,13 @@ schema slice now creates `balances` with `withdrawable_micro_usd` and seeds the
 single `usage_totals` row (`INSERT … ON CONFLICT (id) DO NOTHING`), which is all
 a fresh database needs; databases that ran the backfills keep their markers and
 their now-unused scratch tables (`earnings_summary_backfill_pending`,
-`usage_totals_backfill_state`).
+`usage_totals_backfill_state`). The Solana-era cleanups are retired the same
+way: the wallet-keyed price delete (marker `cleanup_wallet_model_prices_v1`,
+which on a fresh database ran before `users` existed and so fired on the second
+boot) and the one-time column drops `billing_sessions.chain`,
+`users.solana_wallet_address`, `users.solana_wallet_id` and
+`releases.image_bridge_hash`. A database migrated by the current binary still
+boots an older one, whose versions of these statements are no-ops or guarded.
 
 `RecordProviderEarning` and `CreditProviderAccount` maintain new summaries from
 inserted earning rows, so duplicate non-empty job IDs never increment twice.

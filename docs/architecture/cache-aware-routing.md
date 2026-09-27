@@ -304,11 +304,38 @@ measurement ([source and test evidence](../reports/evidence/2026-09-05-ssd-check
 Holder removals are counted under one of seven reasons
 (`coordinator/registry/cache_routing.go`): `ttl`, `disconnect`,
 `epoch_change`, `capability_change`, `proof_mismatch`, `miss_invalidation`,
-`capacity_eviction`. SSD capacity eviction rotates its durable epoch. Resident LRU eviction does not
+`capacity_eviction`. Routine known-entry eviction in an active SSD store preserves
+the durable identity/sequence of surviving checkpoints. Its hints are advisory:
+removed data fails native authenticated lookup, and the coordinator removes that
+provider's hints for the attempted boundaries on an accepted miss; holder TTL
+also bounds staleness. There is no new per-file eviction frame. Unexpected
+external loss, corruption, identity/key drift and inactive-root destructive
+maintenance retain generation-wide invalidation
+(`SSDOwnedEntryRetirement`, `SSDCacheEpochStore.performOwnedRetirement`,
+`coordinator/registry/cache_receipts_v2_lookup.go`). Resident LRU eviction does not
 rotate the whole slot epoch: its remaining checkpoints stay useful, and stale
 advisory evidence expires or is removed by the next exact miss. Slot unload,
 replacement, shutdown, and connection changes invalidate resident evidence.
 There is no targeted resident-eviction wire message in this extension.
+
+The file and its in-memory index commit are coordinated through
+`SSDCheckpointFileCoordinator` in
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointFileCoordinator.swift`.
+Complete-checkpoint `performWrite` and attention `SSDWriteBehind.consume` hold
+cancellable per-file access through durable rename (or duplicate authentication)
+and index insertion. They release it before whole-root/disk-budget maintenance,
+so a committed new file can still be evicted under pressure. Startup scans use
+the same file-access boundary for index insertion. Under its epoch barrier,
+`SSDOwnedEntryRetirement.remove` uses nonblocking `tryAcquire` and skips busy
+files rather than waiting for a writer that may need the epoch lock. Unrelated
+victims remain eligible. Complete-checkpoint donation and `publishReady` also
+require a regular no-follow file before announcing a new anchor
+(`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Maintenance.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDOwnedEntryRetirement.swift`).
+This prevents owned retirement from deleting a renamed-but-not-yet-indexed
+checkpoint without reintroducing generation-wide invalidation for routine LRU.
 
 Attempts remain briefly after inference terminal state because encrypted SSD
 write-behind can finish later. Attempt and holder maps are memory-only. Each
@@ -734,7 +761,7 @@ back are operator procedures, kept in the runbook
 | Requests dispatch but no plan participates (`plan_failed`, `plan_empty` counters climb) | Sidecar timeout, crash, malformed output, unavailable artifacts or dynamic-time templates | Non-participating plan; cold routing; sidecar supervision in [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) |
 | Media requests never earn a discount | `HasMedia` requests are excluded by design | No participating plan is produced |
 | A capability stops participating after a hit | Prompt-proof mismatch quarantined that exact capability | Request continues without preference; participation resumes only after a fresh valid proof |
-| One provider loses all holders for a model | Its SSD capacity eviction rotated the model's cache epoch | Invalidates that provider/model evidence; other machines holding the same prefix remain eligible |
+| One provider loses all holders for a model | Its cache identity/epoch changed, or unexpected external loss/corruption required generation-wide invalidation | Invalidates that provider/model evidence; routine owned active-store retirement preserves survivors |
 | Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, TTL, cap eviction | Removal counted under one of the seven `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
 | `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `maxPrefixCacheStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `sanitizePrefixCacheStatuses` drops the optional snapshot; routing capability is never weakened (`coordinator/registry/cache_snapshot.go`) |
 | A cached provider loses to a cold one | Residual prefill, full staging, age, queue or hardware costs outweigh its benefit; or an explicit limit clips it | Minimum adjusted service cost wins; there is no hard affinity |

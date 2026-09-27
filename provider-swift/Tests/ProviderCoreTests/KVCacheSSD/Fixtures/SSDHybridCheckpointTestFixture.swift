@@ -29,7 +29,7 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
             return .init(total: 64 << 30, active: UInt64(usage.activeMemory),
                          cache: UInt64(usage.cacheMemory), systemAvailable: 64 << 30)
         })
-        root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("complete-store-\(UUID().uuidString)")
+        root = try SSDTestDirectory.parent().appendingPathComponent("complete-store-\(UUID().uuidString)")
         modelRoot = root.appendingPathComponent("0123456789ab")
         try SSDBlockStore.prepareModelRoot(dedicatedRoot: root, modelRoot: modelRoot)
         let kinds = [CBv2LayerKind(attention: .full, headDim: usesPaged ? 64 : 2,

@@ -1,5 +1,6 @@
 import Foundation
-import MLXLMCommon
+import MLX
+@testable import MLXLMCommon
 import Testing
 @testable import ProviderCore
 
@@ -12,7 +13,8 @@ struct SSDHybridCheckpointRecencyTests {
         func advance(to value: Int64) { lock.withLock { seconds = value } }
     }
 
-    private func makeStore(_ fixture: SSDHybridCheckpointTestFixture, clock: Clock) throws -> SSDHybridCheckpointStore {
+    private func makeStore(_ fixture: SSDHybridCheckpointTestFixture, clock: Clock,
+                           ttlSeconds: Int64 = 60) throws -> SSDHybridCheckpointStore {
         let epoch = try SSDCacheEpochStore(root: fixture.modelRoot, binding: .init(
             modelId: "fixture-model", modelAggregateHash: fixture.identity.modelAggregateHash,
             promptContractId: fixture.identity.promptContractID, blockHashVersion: CBv2BlockHasher.version,
@@ -22,11 +24,60 @@ struct SSDHybridCheckpointRecencyTests {
             modelId: "fixture-model", identity: fixture.identity, backendLayout: fixture.backendLayout,
             root: fixture.modelRoot, dedicatedRoot: fixture.root, epochStore: epoch,
             maxReadBytes: 16 << 20, maxStageMillis: 1000, minEffectiveTokens: 256,
-            ttlSeconds: 60, strictFsync: false, nowSeconds: { clock.now },
+            ttlSeconds: ttlSeconds, strictFsync: false, nowSeconds: { clock.now },
             diskBudgetBytes: { 1 << 30 }, maintainWholeRoot: {}),
             kekKey: fixture.key, kvBudget: fixture.budget, diskBudget: SSDDiskBudget(), maxWriteBytesPerDay: 1 << 30)
         store.scanOnDisk()
         return store
+    }
+
+    @Test("complete TTL characterization: expired indexed files refuse reads without waiting for a sweep",
+          arguments: [899, 900, 901])
+    func ttlReadBoundaryWithoutSweep(age: Int) async throws {
+        try await Device.withDefaultDevice(.cpu) {
+            #expect(Device.defaultDevice().deviceType == .cpu)
+            let fixture = try SSDHybridCheckpointTestFixture()
+            defer {
+                do { try FileManager.default.removeItem(at: fixture.root) }
+                catch { Issue.record("complete expiry fixture cleanup failed: \(error)") }
+            }
+            let clock = Clock()
+            let store = try makeStore(fixture, clock: clock, ttlSeconds: 900)
+            do {
+                let donated = try await fixture.donate(store)
+                try #require(donated == [256], "donation setup must publish the fixture checkpoint")
+                await store.waitForWritesForTesting()
+                try #require(store.stats().entries == 1)
+                try #require(store.index.oldest()?.lastAccess == 1000)
+                try #require(store.stats().filesRead == 0)
+                let file = fixture.file(store)
+                let original = try Data(contentsOf: file)
+                clock.advance(to: 1000 + Int64(age))
+                let result = await store.stage(requestID: .init(510), request: fixture.request(),
+                    reserveReadScratch: fixture.reserveReadScratch, makeImportPlan: fixture.plan)
+                let expectedStage = age < 900
+                #expect(result.staged == expectedStage)
+                #expect(store.stats().filesRead == (expectedStage ? 2 : 0))
+                if expectedStage {
+                    #expect(result.stagedTokens == 256)
+                } else {
+                    #expect(result.disposition == .missAbsent)
+                    #expect(store.stats().stagedBytesInUse == 0)
+                }
+                // Eligibility refusal is separate from deletion: no sweep ran.
+                #expect(store.stats().entries == 1)
+                let retained = try Data(contentsOf: file)
+                #expect(retained == original)
+                await store.abandonStaging(requestID: .init(510))
+            } catch {
+                await store.closeAndWait()
+                throw error
+            }
+            await store.closeAndWait()
+            #expect(store.stats().stagedBytesInUse == 0)
+            #expect(await fixture.budget.outstandingReservedBytes() == 0)
+            #expect(fixture.codec.admission.bytesReserved == 0)
+        }
     }
 
     @Test("successful reads persist sliding TTL across restart without changing ciphertext or epoch")

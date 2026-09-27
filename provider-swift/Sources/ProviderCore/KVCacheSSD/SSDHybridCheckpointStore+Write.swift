@@ -191,17 +191,28 @@ extension SSDHybridCheckpointStore {
         var outcome: PrefixCacheDonationOutcome = .writeFailed
     }
 
-    func write(_ job: WriteJob) {
+    func write(_ job: WriteJob) async {
         let started = ContinuousClock.now
         var result = WriteResult()
-        performWrite(job, result: &result)
+        let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: Data(job.tag.prefix(16)).hexString)
+        let access = fileCoordinator.makeAccess(to: url)
+        do {
+            try await access.acquire()
+            // Early exits also release. performWrite releases before budget
+            // maintenance so self-eviction still works and lock order is safe.
+            defer { access.release() }
+            performWrite(job, access: access, result: &result)
+        } catch {
+            result.outcome = .cacheClosed
+        }
         statsBox.update { $0.writeMilliseconds += Self.milliseconds(since: started) }
         // The helper has dropped metadata, plaintext, ciphertext and returned
         // native Data. finish then drops the queued envelope before host refund.
         settle(job, positions: result.positions, outcome: result.outcome)
     }
 
-    private func performWrite(_ job: WriteJob, result: inout WriteResult) {
+    private func performWrite(_ job: WriteJob, access: SSDCheckpointFileCoordinator.Access,
+                              result: inout WriteResult) {
         guard let envelope = job.readEnvelope() else { result.outcome = .cacheClosed; return }
         let short = Data(job.tag.prefix(16))
         let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: short.hexString)
@@ -244,21 +255,28 @@ extension SSDHybridCheckpointStore {
                         return try job.source.readSegment(
                             tensorIndex: segment.tensor, byteOffset: segment.offset, maximumBytes: segment.bytes)
                     })
+                lock.withLock { beforeWriteIndexForTesting }?(url, false)
                 guard !isClosed else { result.outcome = .cacheClosed; return }
                 guard epochMatches(job.epoch) else { result.outcome = .cacheEpochChanged; return }
                 index.insert(tag16: short, fileBytes: written, lastAccess: config.nowSeconds())
                 statsBox.update { $0.filesWritten += 1; $0.bytesWritten += written }
             }
+            if alreadyDurable { lock.withLock { beforeWriteIndexForTesting }?(url, true) }
+            // The durable file and its index entry now form one committed
+            // entry. Retirement may remove both, including this new victim.
+            access.release()
             config.maintainWholeRoot()
             _ = diskBudget.enforce(budgetBytes: config.diskBudgetBytes())
-            if !isClosed, epochMatches(job.epoch), index.contains(tag16: short) {
+            let durable = index.contains(tag16: short)
+                && SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular
+            if !isClosed, epochMatches(job.epoch), durable {
                 result.positions = [job.source.manifest.position]
                 result.outcome = alreadyDurable ? .alreadyDurable : .donated
             } else if isClosed {
                 result.outcome = .cacheClosed
-            } else if !index.contains(tag16: short) {
-                // Removing this endpoint also rotates its epoch. Report the
-                // concrete removal before its resulting epoch invalidation.
+            } else if !durable {
+                // Routine retirement can remove this endpoint without changing
+                // the identity of other checkpoints. Never publish the victim.
                 result.outcome = .cacheEntryEvicted
             } else if !epochMatches(job.epoch) {
                 result.outcome = .cacheEpochChanged

@@ -32,7 +32,7 @@ final class NativeDiffusionCheckpointFixture: @unchecked Sendable {
     let engine: CBv2NativeBlockEngine
     let budget: GlobalKVCacheBudget
 
-    init() throws {
+    init(rootParent: URL? = nil) throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
         let config = try JSONDecoder().decode(DiffusionGemmaTextConfiguration.self, from: Data(#"""
         {"model_type":"diffusion_gemma_text","vocab_size":128,"hidden_size":32,"intermediate_size":48,
@@ -53,7 +53,7 @@ final class NativeDiffusionCheckpointFixture: @unchecked Sendable {
             let usage = Memory.snapshot()
             return .init(total: 64 << 30, active: UInt64(usage.activeMemory), cache: UInt64(usage.cacheMemory), systemAvailable: 64 << 30)
         })
-        root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        root = (rootParent ?? FileManager.default.temporaryDirectory.resolvingSymlinksInPath())
             .appendingPathComponent("native-complete-store-" + UUID().uuidString)
         modelRoot = root.appendingPathComponent("0123456789ab")
         try SSDBlockStore.prepareModelRoot(dedicatedRoot: root, modelRoot: modelRoot)
@@ -86,18 +86,20 @@ final class NativeDiffusionCheckpointFixture: @unchecked Sendable {
         try codec.importPlan(manifest, prefixIdentity: prefixIdentity(scope: request.cacheSalt!),
             promptTokens: request.promptTokens, chunkSize: 256, maximumNewTokens: request.maxTokens, engine: engine)
     }
-    func coldCache() throws -> DiffusionGemmaRequestCache {
+    func coldCache(prefixCount: Int? = nil) throws -> DiffusionGemmaRequestCache {
+        let count = prefixCount ?? tokens.count
+        try #require(count > 0 && count <= tokens.count && count % 256 == 0)
         let cache = try DiffusionGemmaRequestCache(configuration: model.configuration, expectedPromptLength: 520)
         try MLX.withError { errors in
-            for start in stride(from: 0, to: tokens.count, by: 256) {
+            for start in stride(from: 0, to: count, by: 256) {
                 _ = try model.encode(tokenIds: MLXArray(Array(tokens[start..<start + 256])).asType(.int32).reshaped(1, 256), cache: cache, encoderParameters: scalars)
                 try errors.check(); eval(cache.stateArrays()); try errors.check()
             }
         }
         return cache
     }
-    func donate(_ store: SSDHybridCheckpointStore) async throws -> [Int] {
-        let cache = try coldCache()
+    func donate(_ store: SSDHybridCheckpointStore, position: Int? = nil) async throws -> [Int] {
+        let cache = try coldCache(prefixCount: position)
         let bytes = try cache.stateArrays().reduce(20 << 20) { try $0 + Memory.allocationFootprintUpperBound(byteCount: $1.nbytes) + 4096 }
         let permit = try engine.reserveNativeCheckpoint(bytes: bytes)
         defer { permit.close() }

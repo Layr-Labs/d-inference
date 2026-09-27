@@ -147,12 +147,36 @@ final class SSDCacheEpochStore: @unchecked Sendable {
         }
     }
 
-    /// Rotate after any destructive capacity eviction. A persistence failure
+    /// Rotate after generation-wide invalidation. A persistence failure
     /// disables v2 advertisement instead of exposing an unpersisted generation.
     @discardableResult
     func rotate() -> String? {
         guard performOwnedDestructiveChange({}) != nil else { return nil }
         return current
+    }
+
+    /// Known-entry capacity/TTL retirement does not change the identity of
+    /// surviving authenticated state. Serialize with binding replacement and
+    /// destructive maintenance, but keep the epoch and sequence monotonic.
+    /// Holders are advisory: deleted entries fail authenticated lookup and their
+    /// hints are removed by miss invalidation or bounded coordinator TTL.
+    func performOwnedRetirement<T>(_ body: () -> T) -> T? {
+        lock.withLock {
+            guard let ownedEpoch = epoch,
+                Self.epochs.current(root: rootKey) == ownedEpoch else { return nil }
+            return Self.recordLock.withLock {
+                let url = root.appendingPathComponent(Self.fileName)
+                guard let existing = try? Self.readRecord(at: url),
+                    let record = existing.record,
+                    record.schema == Self.schema, record.epoch == ownedEpoch,
+                    record.binding == binding else {
+                    epoch = nil
+                    Self.epochs.publish(root: rootKey, epoch: nil)
+                    return nil
+                }
+                return body()
+            }
+        }
     }
 
     /// Serializes epoch replacement, destructive I/O, and publication for an

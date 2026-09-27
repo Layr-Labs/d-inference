@@ -19,7 +19,7 @@ private actor EpochOpenState {
 struct SSDCacheEpochStoreTests {
     @Test("epoch persists, rotates durably, and binding drift wipes blocks")
     func lifecycle() throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = try SSDTestDirectory.parent()
             .appendingPathComponent("cache-epoch-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -59,7 +59,7 @@ struct SSDCacheEpochStoreTests {
 
     @Test("frozen-full layout epoch purges snap-2 blocks before publication")
     func frozenReplayEpochRotation() throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = try SSDTestDirectory.parent()
             .appendingPathComponent("cache-epoch-frozen-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -100,7 +100,7 @@ struct SSDCacheEpochStoreTests {
 
     @Test("provider advertises v2 only after frozen cache scan readiness")
     func advertisementWaitsForScan() async throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = try SSDTestDirectory.parent()
             .appendingPathComponent("cache-ready-frozen-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -207,9 +207,9 @@ struct SSDCacheEpochStoreTests {
 
     @Test("epoch metadata symlink is rejected without following it")
     func rejectsSymlink() throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = try SSDTestDirectory.parent()
             .appendingPathComponent("cache-epoch-symlink-\(UUID().uuidString)", isDirectory: true)
-        let outside = FileManager.default.temporaryDirectory
+        let outside = try SSDTestDirectory.parent()
             .appendingPathComponent("cache-epoch-outside-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try Data("outside".utf8).write(to: outside)
@@ -247,9 +247,9 @@ struct SSDCacheEpochStoreTests {
 
     @Test("interrupted binding rebuild cannot publish its invalidating epoch")
     func interruptedBindingRebuildRetriesWipe() throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = try SSDTestDirectory.parent()
             .appendingPathComponent("cache-epoch-rebuild-\(UUID().uuidString)", isDirectory: true)
-        let outside = FileManager.default.temporaryDirectory
+        let outside = try SSDTestDirectory.parent()
             .appendingPathComponent("cache-epoch-rebuild-outside-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
@@ -278,7 +278,7 @@ struct SSDCacheEpochStoreTests {
 
     @Test("unloaded deletion blocks reopen and publishes only after mutation")
     func unloadedDeletionSerializesReopen() async throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = try SSDTestDirectory.parent()
             .appendingPathComponent("cache-epoch-unloaded-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -316,7 +316,7 @@ struct SSDCacheEpochStoreTests {
 
     @Test("epoch record accepts its size limit and rejects one extra byte")
     func boundedRecord() throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = try SSDTestDirectory.parent()
             .appendingPathComponent("cache-epoch-bounded-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }

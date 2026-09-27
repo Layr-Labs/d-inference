@@ -115,7 +115,7 @@ struct SSDCheckpointWriteRecoveryTests {
         }
     }
 
-    @Test("evicting the written endpoint reports eviction before its epoch change")
+    @Test("evicting the written endpoint reports eviction without changing survivor identity")
     func donationEvictedByBudget() async throws {
         let f = try SSDHybridCheckpointTestFixture()
         defer { f.remove() }
@@ -126,7 +126,7 @@ struct SSDCheckpointWriteRecoveryTests {
         #expect(store.stats().filesWritten == 1)
         #expect(store.stats().evictions == 1)
         #expect(store.index.count == 0)
-        #expect(store.config.epochStore?.current != epoch)
+        #expect(store.config.epochStore?.current == epoch)
         #expect(count(.cacheEntryEvicted, in: telemetry) == 1)
         #expect(count(.cacheEpochChanged, in: telemetry) == 0)
         #expect(telemetry.snapshot().reduce(0) { $0 + $1.count } == 1)

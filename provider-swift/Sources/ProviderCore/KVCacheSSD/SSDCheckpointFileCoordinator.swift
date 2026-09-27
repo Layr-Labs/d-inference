@@ -47,6 +47,19 @@ final class SSDCheckpointFileCoordinator: @unchecked Sendable {
         Access(coordinator: self, path: Self.coordinationPath(for: url))
     }
 
+    /// Maintenance must never wait for a writer while holding the epoch or
+    /// disk-budget lock: writers consult those owners before releasing a file.
+    /// A busy entry is skipped; unrelated entries remain eligible for eviction.
+    func tryAcquire(to url: URL) -> Access? {
+        let access = makeAccess(to: url)
+        return lock.withLock {
+            guard files[access.path] == nil else { return nil }
+            access.state = .active
+            files[access.path] = [access]
+            return access
+        }
+    }
+
     var trackedFileCount: Int { lock.withLock { files.count } }
 
     func pendingCount(for url: URL) -> Int {

@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-20 · commit `a26b1107b`
+> Last updated: 2026-09-26 · commit `3e9dcf6b`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -379,6 +379,21 @@ model family does not bypass that gate
 
 ### Streamed complete checkpoints
 
+Active-store capacity/TTL retirement removes only its selected owned files and
+index entries through `SSDOwnedEntryRetirement`. `performOwnedRetirement` validates
+the durable epoch/binding and serializes with generation replacement without
+changing survivor identity or sequence. A new write therefore keeps its READY
+eligibility when maintenance removes an older file. The same retirement helper
+serves attention-only stores and active-owner whole-root maintenance.
+
+Removed-file routing hints are best-effort and bounded by miss invalidation/TTL;
+they never authorize adoption without native file authentication and complete
+state validation. Unexpected missing/replaced indexed files, corruption and
+external destructive changes keep the original epoch barriers. Inactive roots
+also retain the conservative destructive-maintenance path.
+See [routing evidence lifecycle](cache-aware-routing.md) and
+[eviction rules](../reference/ssd-kv-cache.md#size-and-eviction-rules).
+
 A natural `stop`/`length` donor exports its actual complete prompt checkpoints,
 one per file. Qwen includes attention KV, recurrent state and normalized typed
 MTP history. Historical attention includes exact owning full rows and the
@@ -407,7 +422,14 @@ I/O charge. The contiguous compatibility path retains its existing provider and
 native reservations. After manifest authentication, the engine validates the
 import plan and reserves each native buffer's allocator bound before allocation.
 A second bounded read authenticates the whole file while filling the native
-destination. Only this matched checkpoint is staged. The
+destination. An authenticated pre-allocation capacity refusal may instead try
+one existing strictly shorter checkpoint, after the failed attempt's aliases
+and reservations have retired. Both attempts retain one logical request
+registration and elapsed-time record; the optional retry shares the original
+remaining raw-read/time allowance. Initial scratch refusal, generic allocation,
+corruption and lifecycle invalidation do not authorize that retry. See the
+[exact fallback bounds](../reference/ssd-kv-cache.md#bounded-shorter-complete-checkpoint-fallback).
+Only a fully authenticated matched checkpoint is staged. The
 single-use imported handle carries ownership until its array aliases retire;
 paged adoption replaces the temporary stage with the full request promise,
 settles measured backing and retains auxiliary state separately. Cancellation,
@@ -415,7 +437,7 @@ rejection and shutdown release staged state. Missing,
 corrupt, changed-epoch or incompatible state falls back cold. Complete hits
 save their actual checkpoint position with zero replay; an absent shorter
 recurrent checkpoint is never inferred from a longer one
-(`SSDHybridCheckpointStore+Read.swift`, `SSDCheckpointStageReservation.swift`,
+(`SSDHybridCheckpointStore+Read.swift`, `SSDHybridCheckpointStore+ReadAttempt.swift`, `SSDCheckpointStageReservation.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineV2+CompleteCheckpoint.swift`,
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift`). Format and exact bounds are in
 [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md).

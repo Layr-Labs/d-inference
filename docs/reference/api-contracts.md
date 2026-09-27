@@ -496,8 +496,9 @@ an in-flight model load or load-gate update before a slot exists. The provider
 emits a capacity heartbeat when this transition changes. My Macs and the
 coordinator attention count defer memory failures while it is active.
 My Macs shows `estimated_memory_gb + load_headroom_gb` against `load_usable_gb` for
-cold accepted models. Owner-only/off-catalog models remain in `models` but
-are not assigned a load verdict from a different canonical inventory.
+cold accepted models. A crashed slot retains weights and gets a separate
+backend warning, not a cold-load verdict. Owner-only/off-catalog models remain
+in `models` but are not assigned a load verdict from a different canonical inventory.
 Missing fields from older providers mean unknown, never zero or
 "fits"; a stale heartbeat, active request, in-flight load or reloading slot
 also withholds a definitive cold-load failure. The coordinator does not route

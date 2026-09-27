@@ -156,4 +156,16 @@ describe("owner model load readiness", () => {
     render(<LoadReadinessPanel provider={reloading} heartbeatTimeoutSeconds={90} />);
     expect(screen.getByText("Temporarily busy")).toBeInTheDocument();
   });
+
+  it("keeps a crashed resident model out of the cold-load warning", () => {
+    const crashed = makeProvider({ ...cold,
+      backend_capacity: { ...cap, slots: [{ model: cold.models[0].id,
+        state: "crashed", num_running: 0, num_waiting: 0,
+        active_tokens: 0, max_tokens_potential: 0 }] },
+    });
+    expect(coldModelReadiness(crashed)).toEqual([]);
+    const warnings = computeWarnings(crashed, ctx);
+    expect(warnings.some((warning) => warning.id === "model_load_memory")).toBe(false);
+    expect(warnings.some((warning) => warning.id === "backend_crashed")).toBe(true);
+  });
 });

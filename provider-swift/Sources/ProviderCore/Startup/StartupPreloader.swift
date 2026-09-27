@@ -169,8 +169,8 @@ public struct StartupPreloader: Sendable {
             } catch {
                 // The fast pre-check can pass and the authoritative load gate
                 // can still refuse after an interleaved load changes memory.
-                // That gate currently carries a stable "Insufficient memory ("
-                // prefix in its typed model-load error; keep public text closed.
+                // The gate and its pending-load rechecks use two bounded
+                // insufficient-memory message shapes. Keep public text closed.
                 if Self.isInsufficientMemoryLoad(error) { deps.onInsufficientMemory?() }
                 deps.log(
                     "WARN: startup preload failed for '\(modelId)': "
@@ -213,6 +213,7 @@ public struct StartupPreloader: Sendable {
         guard let loadError = error as? InferenceError,
               case .modelLoadFailed(let message) = loadError else { return false }
         return message.hasPrefix("Insufficient memory (")
+            || message.hasPrefix("Insufficient memory for '")
     }
 
     // MARK: - Formatting helpers

@@ -31,11 +31,14 @@ export function coldModelReadiness(
   }
 
   const accepted = new Set(capacityModelIDs);
-  // With backend capacity present, slots are authoritative. WarmModels and
-  // CurrentModel are legacy fallbacks and may lag an unload.
+  // With backend capacity present, slots are authoritative. A crashed slot
+  // still owns model weights, so it is not a cold-load candidate. WarmModels
+  // and CurrentModel are legacy fallbacks and may lag an unload.
   const resident = new Set<string>();
   for (const slot of cap.slots) {
-    if (slot.state === "idle" || slot.state === "running") resident.add(slot.model);
+    if (slot.state === "idle" || slot.state === "running" || slot.state === "crashed") {
+      resident.add(slot.model);
+    }
   }
   const busyServing = provider.pending_requests > 0 || cap.load_transition_active === true ||
     cap.slots.some((slot) => slot.state === "running" || slot.state === "reloading" || slot.num_running > 0);

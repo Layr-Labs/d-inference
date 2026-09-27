@@ -65,6 +65,10 @@ func TestColdModelLoadBlockedUsesLiveNoEvictionBudget(t *testing.T) {
 	if coldModelLoadBlocked(p) {
 		t.Fatal("resident capacity slot needs no cold load")
 	}
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: "qwen", State: "crashed"}}
+	if coldModelLoadBlocked(p) {
+		t.Fatal("crashed resident slot needs a backend warning, not a cold-load warning")
+	}
 	p.BackendCapacity.Slots = nil
 	p.WarmModels = nil
 	p.Models = []protocol.ModelInfo{{ID: "off-catalog", EstimatedMemoryGB: 18.2}}

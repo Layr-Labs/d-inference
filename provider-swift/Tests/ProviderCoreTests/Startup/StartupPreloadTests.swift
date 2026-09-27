@@ -208,15 +208,20 @@ struct StartupPreloaderTests {
 
     @Test("authoritative no-eviction refusal emits the public memory warning")
     func lateMemoryRefusalWarnsPublicly() async {
-        let recorder = PreloadRecorder()
-        var deps = makeDeps(
-            recorder: recorder,
-            loadError: { id in id == "raced" ? InferenceError.modelLoadFailed(
-                "Insufficient memory (8.0 GB free, need 24.7 GB) to load without evicting resident models") : nil })
-        deps.onInsufficientMemory = { recorder.recordLog("public memory warning") }
-        let summary = await StartupPreloader(deps: deps).run(candidates: [candidate("raced")])
-        #expect(summary.failed == ["raced"])
-        #expect(recorder.logs.filter { $0 == "public memory warning" }.count == 1)
+        for message in [
+            "Insufficient memory (8.0 GB free, need 24.7 GB) to load without evicting resident models",
+            "Insufficient memory for 'raced' at final load admission",
+            "Insufficient memory for 'raced' at allocation: load headroom changed",
+        ] {
+            let recorder = PreloadRecorder()
+            var deps = makeDeps(
+                recorder: recorder,
+                loadError: { id in id == "raced" ? InferenceError.modelLoadFailed(message) : nil })
+            deps.onInsufficientMemory = { recorder.recordLog("public memory warning") }
+            let summary = await StartupPreloader(deps: deps).run(candidates: [candidate("raced")])
+            #expect(summary.failed == ["raced"])
+            #expect(recorder.logs.filter { $0 == "public memory warning" }.count == 1)
+        }
     }
 
     @Test("self-test runs once per LOADED model, not for skipped/failed ones")

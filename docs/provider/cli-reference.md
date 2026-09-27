@@ -594,7 +594,8 @@ Output includes:
   models from a cold request that can evict idle slots; only the latter earns
   the `Cold load blocked` label when it still cannot fit.
   A memory skip also writes a fixed public category to `darkbloom logs`; model
-  names and exact load figures remain private there and appear in the owner's
+  loads refused at final admission or allocation recheck use the same warning.
+  Model names and exact load figures remain private there and appear in the owner's
   live `status` and `doctor` output instead.
 - Per-slot posture: the KV backend each loaded model actually resolved to
   (`paged` / `contiguous`), the selection the config asked for, and whether

@@ -39,7 +39,7 @@ func coldModelLoadBlocked(p *myProvider) bool {
 		if slot.State == "running" || slot.State == "reloading" || slot.NumRunning > 0 {
 			return false // today's shortage may clear when this request ends
 		}
-		if slot.State == "idle" {
+		if slot.State == "idle" || slot.State == "crashed" {
 			resident[slot.Model] = true
 		}
 	}

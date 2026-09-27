@@ -1,0 +1,26 @@
+{
+  "source_manifest": "source-manifest.json",
+  "source_manifest_sha256": "c254db0e564943025c7720f9f1482bbf2818e018429f93bcd1952cd14eb813ae",
+  "build_seconds": 90.3,
+  "suite": "CBv2CompleteCheckpointEngineTests",
+  "xctest_passed": 5,
+  "swift_testing_selected": 0,
+  "failures": 0,
+  "skipped": 0,
+  "seconds": 0.079,
+  "command": "cd libs/mlx-swift-lm && ../../scripts/run-nested-suite.sh CBv2CompleteCheckpointEngineTests --scratch-path ../../provider-swift/.build",
+  "logs": {
+    "radix-ssd-native-edit2.txt.gz": {
+      "sha256": "5d069f5f014d8fdc00e0dc55455f718d4960347ee7b4079bcb3d077a54de0dd8",
+      "uncompressed_sha256": "c08927768f01af57e523be7499cf5ba0d628b4d5be4fbf3af33c2df7d27b0bf7"
+    },
+    "radix-ssd-native-build2.txt.gz": {
+      "sha256": "7c044d97a2b0bb0474d3fcf04721074424ef669b006f244ee74c4564cf1de355",
+      "uncompressed_sha256": "efb052681163a16992de11c87f198e58b9d02f5a328297292daa536ecaddc9cb"
+    },
+    "radix-ssd-native-read-lease-tests.txt.gz": {
+      "sha256": "942105ad8c204f806dad419e03151017d0bc60b6d96ff7b38b43281cba019c60",
+      "uncompressed_sha256": "1a41cf6ec6ab69089e3bf37165a1eb9f44ff774b52cbdc373dcef588fafee569"
+    }
+  }
+}

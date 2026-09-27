@@ -1,0 +1,48 @@
+{
+  "observed_unix": 1788711895.5457048,
+  "observation": {
+    "hardware_model": "Mac17,6",
+    "memory_bytes": 137438953472,
+    "gpu_temperature_c": 25.6011905670166,
+    "load1": 0.46630859375,
+    "free_bytes": 289837846528,
+    "unexpected_processes": [],
+    "owned_processes": []
+  },
+  "known_pids": [
+    3924,
+    3958,
+    3960,
+    4006,
+    4022,
+    4028,
+    4255,
+    4271,
+    4277,
+    4528,
+    4545,
+    4551
+  ],
+  "known_pids_present": [],
+  "terminal": {
+    "accepted": false,
+    "auto_http_validated": false,
+    "external_caller_control": {
+      "alive": false,
+      "last_ping_monotonic": 407.63574825,
+      "last_ping_unix": 1788710998.237256,
+      "lease_seconds": 30,
+      "reason": "supervision finished",
+      "received_pings": 202,
+      "requires_external_pings": true
+    },
+    "failure": null,
+    "gpu_ready": false,
+    "matrix_expanded": false,
+    "missing_post_audits": [],
+    "no_automatic_rerun": true,
+    "production_default_validated": false,
+    "supervisor_exit_code": 1
+  },
+  "read_only": true
+}

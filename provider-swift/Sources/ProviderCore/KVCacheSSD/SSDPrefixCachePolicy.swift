@@ -10,7 +10,7 @@
 // gate lives in `PrefixCachePolicy`; this file owns SSD-specific knobs.
 //
 // Threat model: T-041 (the SSD tier reintroduces an at-rest artifact —
-// leak #2 is closed by HMAC-keyed names, `SSDLookupKeys`; the 15-minute
+// leak #2 is closed by HMAC-keyed names, `SSDLookupKeys`; the 30-minute
 // sliding TTL below bounds the at-rest window and the cross-restart
 // TTFT-oracle window). SEC-035 stays the accepted residual.
 
@@ -20,15 +20,20 @@ enum SSDPrefixCachePolicy {
 
     // MARK: - TTL
 
-    /// Sliding TTL override (seconds). Ship decision (Gaj, 2026-07-07):
-    /// **15 minutes MAXIMUM**, sliding on hit — pairs with the
-    /// coordinator's 10-minute cache-affinity routing window and bounds
-    /// both the at-rest window and the cross-restart TTFT-oracle window
-    /// (T-041). The env var can only SHORTEN the TTL; values ≤ 0, above
-    /// the maximum, or malformed fall back to the 15-minute default.
+    /// Sliding TTL override (seconds): **30 minutes MAXIMUM**, sliding on
+    /// hit. The original ship decision (Gaj, 2026-07-07) was 15 minutes,
+    /// set while every capacity eviction also rotated the cache epoch.
+    /// Eviction no longer rotates (2026-09-26, prefix-cache hit-rate
+    /// analysis), so the TTL is what bounds reuse; it is raised to 30
+    /// minutes, which still outlasts the coordinator's 10-minute holder TTL
+    /// and bounds both the at-rest window and the cross-restart TTFT-oracle
+    /// window (T-041). Default and maximum stay equal, so the env var can
+    /// only SHORTEN the TTL; values ≤ 0, above the maximum, or malformed
+    /// fall back to the 30-minute default. Any longer TTL needs a fresh
+    /// SEC-035 sign-off.
     static let ttlEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS"
-    static let maxTTLSeconds: Int64 = 900
-    static let defaultTTLSeconds: Int64 = 900
+    static let maxTTLSeconds: Int64 = 1_800
+    static let defaultTTLSeconds: Int64 = 1_800
 
     static func ttlSeconds(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -80,12 +85,10 @@ enum SSDPrefixCachePolicy {
 
     /// Persist and restore the sliding window alongside the full-attention
     /// blocks. **Default OFF.** WS-4.2 lands the format, the write/read paths
-    /// and the residency plumbing; turning it on moves gemma-4's donation
-    /// floor from 27,137 tokens to `blockSize + minEffectiveTokens`, which is
-    /// a separate, deliberate step that also needs WS-4.1's
-    /// `restoreWindow(_:at:)` on the paged row. Until that consumer exists
-    /// `PrefixCachePolicy.windowResidency` stays `.replayed`, so this knob
-    /// switches the sidecar FORMAT on without collapsing any replay bound.
+    /// and staging plumbing. Reducing the donation floor would additionally
+    /// require an engine row that can install the restored window. Until that
+    /// consumer exists this knob exercises the sidecar format without changing
+    /// the conservative replay bound or donation floor.
     ///
     /// Costs it turns on, measured against gemma-4's real geometry (25
     /// sliding layers × 8 KV heads × 256 head dim vs 5 full layers × 2 × 512,
@@ -154,14 +157,14 @@ enum SSDPrefixCachePolicy {
 
     // MARK: - Low-disk guard
 
-    /// Writes stop when volume free space drops under
-    /// `max(20 GiB, 5% of capacity)`. Reads are unaffected.
+    /// Writes stop below a fixed 20 GiB free-space reserve. The reserve does
+    /// not grow with the physical disk: large volumes with ample free bytes
+    /// must not lose caching solely because their free percentage is small.
+    /// Reads are unaffected.
     static let lowDiskAbsoluteFloorBytes = 20 * 1_073_741_824
-    static let lowDiskCapacityFraction = 0.05
 
-    static func lowDiskFloorBytes(volumeCapacityBytes: Int) -> Int {
-        let fromFraction = Int(Double(max(0, volumeCapacityBytes)) * lowDiskCapacityFraction)
-        return max(lowDiskAbsoluteFloorBytes, fromFraction)
+    static func lowDiskFloorBytes(volumeCapacityBytes _: Int) -> Int {
+        lowDiskAbsoluteFloorBytes
     }
 
     /// Cooldown after an ENOSPC mid-write before writes are retried.

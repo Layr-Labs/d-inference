@@ -1,0 +1,82 @@
+{
+  "cancel": {
+    "events": [
+      {
+        "elapsed_s": 0.0010922079999993173,
+        "data": "{\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"created\":1788590747,\"id\":\"chatcmpl_92D2A0A43C3443ED985D6E78\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.09572208299999829,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\"Water\"},\"index\":0}],\"created\":1788590747,\"id\":\"chatcmpl_92D2A0A43C3443ED985D6E78\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.12862745800000042,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\" infrastructure\"},\"index\":0}],\"created\":1788590747,\"id\":\"chatcmpl_92D2A0A43C3443ED985D6E78\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.1797853329999981,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\" is the\"},\"index\":0}],\"created\":1788590747,\"id\":\"chatcmpl_92D2A0A43C3443ED985D6E78\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      }
+    ],
+    "text": "Water infrastructure is the",
+    "reasoning": "",
+    "usage": null,
+    "finish_reasons": [],
+    "done": false,
+    "cancelled": true,
+    "ttft_s": 0.09572208299999829,
+    "last_content_s": 0.1797853329999981,
+    "elapsed_s": 0.17979583300000002,
+    "content_chunks": 3,
+    "client_decode_tps_estimate": null
+  },
+  "recovery": {
+    "events": [
+      {
+        "elapsed_s": 0.0014847499999994795,
+        "data": "{\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"created\":1788590747,\"id\":\"chatcmpl_ED743C973FD7438BA3ED5B44\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.2909927500000009,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\"Two\"},\"index\":0}],\"created\":1788590747,\"id\":\"chatcmpl_ED743C973FD7438BA3ED5B44\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.3236704169999989,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\" plus\"},\"index\":0}],\"created\":1788590747,\"id\":\"chatcmpl_ED743C973FD7438BA3ED5B44\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.374967250000001,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\" two equals\"},\"index\":0}],\"created\":1788590747,\"id\":\"chatcmpl_ED743C973FD7438BA3ED5B44\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.4207007919999981,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\" **4**.\"},\"index\":0}],\"created\":1788590747,\"id\":\"chatcmpl_ED743C973FD7438BA3ED5B44\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.4207194170000008,
+        "data": "{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"created\":1788590747,\"id\":\"chatcmpl_ED743C973FD7438BA3ED5B44\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":8,\"prompt_tokens\":18,\"total_tokens\":26}}"
+      },
+      {
+        "elapsed_s": 0.42072758300000146,
+        "data": "[DONE]"
+      }
+    ],
+    "text": "Two plus two equals **4**.",
+    "reasoning": "",
+    "usage": {
+      "completion_tokens": 8,
+      "prompt_tokens": 18,
+      "total_tokens": 26
+    },
+    "finish_reasons": [
+      "stop"
+    ],
+    "done": true,
+    "cancelled": false,
+    "ttft_s": 0.2909927500000009,
+    "last_content_s": 0.4207007919999981,
+    "elapsed_s": 0.4207280830000002,
+    "content_chunks": 4,
+    "client_decode_tps_estimate": 53.96735539343159
+  }
+}

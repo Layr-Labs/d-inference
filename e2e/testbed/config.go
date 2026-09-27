@@ -173,6 +173,12 @@ func DescribeKVPosture(cfg ProviderConfig) string {
 }
 
 type ProviderConfig struct {
+	// LocalEndpointPort opts into the native authenticated loopback endpoint
+	// alongside coordinator serving. Zero preserves the existing launch.
+	LocalEndpointPort int
+	// PrefixCacheMode is explicit only for owned targets; empty preserves inherited behavior.
+	PrefixCacheMode string
+
 	TrustLevel                 TrustLevel
 	ModelID                    string
 	ModelIDs                   []string
@@ -207,6 +213,8 @@ type ProviderConfig struct {
 	// preserves provider policy: exact-model automatic MTP may use catalog
 	// metadata and otherwise falls back to target-only decode.
 	MTPDrafterPath string
+	// MTPMode is explicit only for exact-artifact gates; empty preserves defaults.
+	MTPMode string
 }
 
 func DefaultProviderConfig() ProviderConfig {
@@ -272,6 +280,18 @@ type UserAccount struct {
 }
 
 type SuiteConfig struct {
+	// LocalEndpointPort is supported for one locally launched provider only.
+	// It exposes that same engine's metrics, never a second model process.
+	LocalEndpointPort int
+	// ProviderTargets opts into exact owned host processes; nil preserves local defaults.
+	ProviderTargets []ProviderTarget
+	PrefixCacheMode string
+
+	// ProviderRelay observes the normal authenticated encrypted WS transport in
+	// isolated tests. Nil connects directly; it never changes serving frames.
+	ProviderRelay *ProviderWireRelay
+	MTPMode       string
+
 	ModelSpecs                 []ModelSpec
 	NumUsers                   int
 	QueueCapacity              int

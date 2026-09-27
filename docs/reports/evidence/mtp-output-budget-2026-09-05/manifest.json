@@ -1,0 +1,559 @@
+{
+  "scope": "Useful speculative output-budget bound;126 native selected tests pass. Preserves original normal-Q35 parity failure and source audit. Real model validation with changed planner pending.",
+  "parent_source_commit": "089d9ade3398b7660b9c0745ea17a8f584d11f9f",
+  "native_commit": "a932d38cee0beca41ca1a0e71c1e867913a65353",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 1087412,
+    "sha256": "7161a56dc1357e7e659ccdceaac8bff99971812865779efc4659adfb4e5e770f"
+  },
+  "payload_count": 109,
+  "payload_bytes": 4252459,
+  "files": {
+    "candidate/REVIEW.md": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail/freeze1/REVIEW.md",
+      "bytes": 6684,
+      "sha256": "f04d6aa162759c29deb4142db486f795b7b0e24db6df19e2e1c032d049a536f3"
+    },
+    "candidate/after/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail/freeze1/after/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift",
+      "bytes": 12352,
+      "sha256": "4e7d332666bced1c9876415418a9c8175486e032aeb1a6e88071f69b1e0ef15d"
+    },
+    "candidate/after/Tests/MLXLMTests/CBv2MTPOutputBudgetTests.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail/freeze1/after/Tests/MLXLMTests/CBv2MTPOutputBudgetTests.swift",
+      "bytes": 2849,
+      "sha256": "c5cd803c4e58d681d4bd131ca9475784cbb5e677f349f7f74460ca014e687419"
+    },
+    "candidate/before/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail/freeze1/before/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift",
+      "bytes": 11665,
+      "sha256": "427db2c8c9d038b998365366e4cb75ef434b73a5318a90a64caee7fed7184872"
+    },
+    "candidate/changes.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail/freeze1/changes.json",
+      "bytes": 758,
+      "sha256": "4b426e7c4ef44d02f21efc741b730580b8de6fb3849d8062194cf13ba5315ec0"
+    },
+    "candidate/existing-evidence-references.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail/freeze1/existing-evidence-references.json",
+      "bytes": 832,
+      "sha256": "e287caefeae96342322ac96d5ba730d67ea43043a73a6f383719394cdc6beacb"
+    },
+    "candidate/manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail/freeze1/manifest.json",
+      "bytes": 2532,
+      "sha256": "744d36c0e1076fc4c2c1b91d613c326b6dce1440a47d397c8825232848e1c37f"
+    },
+    "candidate/source.patch": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail/freeze1/source.patch",
+      "bytes": 5459,
+      "sha256": "3cb4451fcaf48a09621223e902a750aee90096b1016cfb5f431c66c8ef67f143"
+    },
+    "candidate/validation.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail/freeze1/validation.json",
+      "bytes": 789,
+      "sha256": "46de2b176b7438a6d5346981bf22feedd9dd7aed6f53d1ab0571a763d75d0afc"
+    },
+    "original-q35-audit/AUDIT.md": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/AUDIT.md",
+      "bytes": 9347,
+      "sha256": "9a038154f55e80878d3ffa99122da90ca6edbd8fce755d3a572264b919dd3f75"
+    },
+    "original-q35-audit/counter-observations.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/counter-observations.json",
+      "bytes": 9972,
+      "sha256": "7e4c90586a1dc1299196cab9e15d45db7ef9cb6c137021e11b9f2342a5fd1ccf"
+    },
+    "original-q35-audit/manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/manifest.json",
+      "bytes": 7445,
+      "sha256": "f934eae28c7e012e2f0264efc69604fa7b561f921d043321fa08d7fb4b3003f5"
+    },
+    "original-q35-audit/provenance.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/provenance.json",
+      "bytes": 459,
+      "sha256": "a4b5943a05b9ac6e03e19011f07fa1197c03c92a4c0ba56de7ea0d8a81f53219"
+    },
+    "original-q35-audit/raw-manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw-manifest.json",
+      "bytes": 3929,
+      "sha256": "bdbc8987df34b28abebce8ba3b1a667cf58d3ad487e16f0bb1ed36e09368d29f"
+    },
+    "original-q35-audit/raw/off/command.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/off/command.json",
+      "bytes": 1579,
+      "sha256": "fed5f3478edad0f718c5db093379f9fbac3e1aff82e7515e520cbdc33c014d99"
+    },
+    "original-q35-audit/raw/off/engine.log": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/off/engine.log",
+      "bytes": 732,
+      "sha256": "8724e4bc4259fccb0dc73d6e5f79595fcb9c9c31578e1b837213d5b211c8d738"
+    },
+    "original-q35-audit/raw/off/execution.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/off/execution.json",
+      "bytes": 53,
+      "sha256": "5e13a4bb38d8c9edf970032f7fb5236b7acc7df099524aaae89c736ee6b45972"
+    },
+    "original-q35-audit/raw/off/input.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/off/input.json",
+      "bytes": 72647,
+      "sha256": "7c4aa3ad84257523175883e18bba4fa7be4cf805d0716b55df4a19ea05fb743c"
+    },
+    "original-q35-audit/raw/off/manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/off/manifest.json",
+      "bytes": 1717,
+      "sha256": "25b8a49f70fe862e0bb8b919084fd3e04d37516cd4eabf9347b2527e383db2df"
+    },
+    "original-q35-audit/raw/off/metadata.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/off/metadata.json",
+      "bytes": 2388,
+      "sha256": "abc5f8d14f071c08749b38d24a3dee8d59b10db8d6589462fbea0914e7365a05"
+    },
+    "original-q35-audit/raw/off/report.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/off/report.json",
+      "bytes": 696388,
+      "sha256": "1dee8f071cefbf58fc22edc0a92cd8268525fbd69eaadc878294adeaf6eaad58"
+    },
+    "original-q35-audit/raw/on/command.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/on/command.json",
+      "bytes": 1577,
+      "sha256": "bb08de951ab85d7e8b58158a77cd093d77adb6c526ab3f8ca227366d74f61d00"
+    },
+    "original-q35-audit/raw/on/engine.log": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/on/engine.log",
+      "bytes": 726,
+      "sha256": "ef1c9135a690b43b7571fd62e70bc3f9ceb262d32fcc4a0c9e81d65f249aa088"
+    },
+    "original-q35-audit/raw/on/execution.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/on/execution.json",
+      "bytes": 54,
+      "sha256": "16b8300e3fa9d379e53e1e6d0628fe660e82c289d7c968ab905dc9788948025c"
+    },
+    "original-q35-audit/raw/on/input.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/on/input.json",
+      "bytes": 72647,
+      "sha256": "7c4aa3ad84257523175883e18bba4fa7be4cf805d0716b55df4a19ea05fb743c"
+    },
+    "original-q35-audit/raw/on/manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/on/manifest.json",
+      "bytes": 1717,
+      "sha256": "778092cfb2317aede5cd47edeaae68dd817558ad95bf3b211f3e1a89ec897385"
+    },
+    "original-q35-audit/raw/on/metadata.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/on/metadata.json",
+      "bytes": 2381,
+      "sha256": "e9b0d9a6be8ba8121f9904a48a6f408cd3e993d4f9f47a3df31fede143f19fbb"
+    },
+    "original-q35-audit/raw/on/report.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/on/report.json",
+      "bytes": 713922,
+      "sha256": "a7ca4c8a1851a94bf0ad0e449e4eebb649fd80065d0d0af97bab493590421404"
+    },
+    "original-q35-audit/raw/qwen35-paged-cache-pair-failure-analysis.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/qwen35-paged-cache-pair-failure-analysis.json",
+      "bytes": 8949,
+      "sha256": "9ec1c2d7512fca91260877f446513aba520cfe7be8e303eed644be2f0a8c770d"
+    },
+    "original-q35-audit/raw/qwen35-paged-cache-pair-verdict.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/raw/qwen35-paged-cache-pair-verdict.json",
+      "bytes": 1011,
+      "sha256": "22c633c30dcb8f1a94ffb53a4e01393f767b7e2d9231a3f86d3a31daee32d9ee"
+    },
+    "original-q35-audit/serial-diagnostic-commands.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/serial-diagnostic-commands.json",
+      "bytes": 4738,
+      "sha256": "48cdda6c2af69f4013dd93e6bf1e427ebd5a9c0c7ad64267190357c3fb4a5e76"
+    },
+    "original-q35-audit/serial-diagnostic-commands.sh": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/serial-diagnostic-commands.sh",
+      "bytes": 2158,
+      "sha256": "2887fc319ca6bf73348bc80315671d1f338020bd25bafec6eee154d0977f6ea3"
+    },
+    "original-q35-audit/source-manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/source-manifest.json",
+      "bytes": 6553,
+      "sha256": "659ca1bbfb8d42aa249b64af4b24427d568a03eb2b306c143ef7e20d79a22bc9"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift",
+      "bytes": 95207,
+      "sha256": "c68b3fefabdedac3c536dd93ccb769c31dc25914aa0ea2f935e92a4b62bf3d37"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35A3BOptimization.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35A3BOptimization.swift",
+      "bytes": 28317,
+      "sha256": "0672789bb12449feae6c9c6ee08c19d6415ff20253215d67e63c7da6765451cd"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35A3BTargetVerify.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35A3BTargetVerify.swift",
+      "bytes": 20217,
+      "sha256": "311d41994a428670097828f25a3bbb9942bf38273e3bcd7718bd386a88c0b505"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP+PrefixCheckpoint.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP+PrefixCheckpoint.swift",
+      "bytes": 5730,
+      "sha256": "251d5e68fd0b2b476965ba37ceff08efa29563649614e0b1938b1103f28935d2"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP.swift",
+      "bytes": 50978,
+      "sha256": "a47baf3565bb36c2aa1a609ec6f4aa29cf51db392ab0ae2f93ae822f0befc3f6"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTPTopTwo.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTPTopTwo.swift",
+      "bytes": 7933,
+      "sha256": "382ee06a3467228912adde25ce402984e51f100da652d9b661f59009bce682dc"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPDepthController.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPDepthController.swift",
+      "bytes": 23815,
+      "sha256": "93ffb6422130f9dfd5cc19b666784be381c0663ce581c3036f765fbf0447f9c9"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift",
+      "bytes": 36215,
+      "sha256": "9aefeac44d98303a11b26c58b9b22ade2b43759c01625ac07f6ca085e16ebafd"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPExecution.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPExecution.swift",
+      "bytes": 28948,
+      "sha256": "9d3aca3a258979d82df455790028e7292c341a098213ebcc33112f6065abf2e6"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift",
+      "bytes": 17022,
+      "sha256": "90c47532c9d291ce7b35f177bd66ec5f52d348599ee08aadaf9b679bd3a8c19d"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift",
+      "bytes": 11665,
+      "sha256": "427db2c8c9d038b998365366e4cb75ef434b73a5318a90a64caee7fed7184872"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPTargetVerification.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPTargetVerification.swift",
+      "bytes": 15402,
+      "sha256": "495d62e7aa7f178713b5d6d15c63bbc46084dcbf0df5f49c6b765599394325f5"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift",
+      "bytes": 26529,
+      "sha256": "3538af1aae08ca5df1672a46f86703ba2098d5b60a6b4ae9d98665a0f897391b"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SamplerV2.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SamplerV2.swift",
+      "bytes": 7907,
+      "sha256": "115d1b23ee9a51eba7481cf0101b4a95469e07b2d022777bfb64d59814769339"
+    },
+    "original-q35-audit/sources/libs/mlx-swift-lm/Sources/BenchCBv2Core/BenchCBv2RealModel.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/libs/mlx-swift-lm/Sources/BenchCBv2Core/BenchCBv2RealModel.swift",
+      "bytes": 102280,
+      "sha256": "490b4dcffbfd377101d1cf8b4b6617e3f57a241188bfcc166f254dd82431cf05"
+    },
+    "original-q35-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift",
+      "bytes": 3222,
+      "sha256": "db323a201b846fa02079e5bf9262e1536ad110859beb2d8de71c216b78026c8c"
+    },
+    "original-q35-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift",
+      "bytes": 40252,
+      "sha256": "92527164f913daa8faf62546ac928b633f2a9de4ad18d99abb3af2a38979cc58"
+    },
+    "original-q35-audit/sources/provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+CheckpointIdentity.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+CheckpointIdentity.swift",
+      "bytes": 3861,
+      "sha256": "34a7baa9c613cc75fcede7ac4e715efb9c679fb282b05805d4d9bfb51880a95b"
+    },
+    "original-q35-audit/sources/scripts/benchmarks/run_radix_engine.py": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/sources/scripts/benchmarks/run_radix_engine.py",
+      "bytes": 11663,
+      "sha256": "b5166c413e72f871ff8ebe17493b4628a8f0479e9eba376b0090eb65e3db29a1"
+    },
+    "original-q35-audit/verification.json": {
+      "source": "/tmp/darkbloom-q35-mtp-tail-audit/verification.json",
+      "bytes": 350,
+      "sha256": "fdaf7dde7dbc4de343a15248225c5d8fd9e77ea48a362d59dc7a3d252b92a340"
+    },
+    "root-review.json": {
+      "source": "/tmp/darkbloom-useful-tail-root-review.json",
+      "bytes": 1701,
+      "sha256": "b823a66d34e3ce4c98c9ea1d6bac85ccb919d196a2e42c52e948a421b72dc2eb"
+    },
+    "validation/CBv2MTPCaptureVerifyTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/CBv2MTPCaptureVerifyTests.log",
+      "bytes": 3706,
+      "sha256": "9b3a6bd64633d628ec4b1986a856d06be27dfef779b7cc7dbe457aac12004c72"
+    },
+    "validation/CBv2MTPDepthControllerTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/CBv2MTPDepthControllerTests.log",
+      "bytes": 4945,
+      "sha256": "2527fbe1479805477c3209b7f0cf711642a7b06ddde947ddd5fe2b7e6490cd66"
+    },
+    "validation/CBv2MTPEngineParityTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/CBv2MTPEngineParityTests.log",
+      "bytes": 2634,
+      "sha256": "b55f8405aa2c6559063a821835c1843fb28ae839a313c5dfe998b7c856bef335"
+    },
+    "validation/CBv2MTPKVStaging.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/CBv2MTPKVStaging.log",
+      "bytes": 3665,
+      "sha256": "23ab5db0f4af69b207d194ed41483e7fb4684ed8caa3a07e3f8b08bd38c912f6"
+    },
+    "validation/CBv2MTPOutputBudgetTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/CBv2MTPOutputBudgetTests.log",
+      "bytes": 1782,
+      "sha256": "41ccc4973e9b7b79f54958d61c70f36c1c9a74b02fc28e4a93b0e319c2002d88"
+    },
+    "validation/CBv2MTPProbeCadenceTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/CBv2MTPProbeCadenceTests.log",
+      "bytes": 1637,
+      "sha256": "ac417b918d527f52a19fca50264eb357837d76567cfbcbd26b01ff31a5b5c0cb"
+    },
+    "validation/CBv2MTPRectangularDegradeTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/CBv2MTPRectangularDegradeTests.log",
+      "bytes": 1787,
+      "sha256": "2d963c11c3e3f26648ec7047ff525a214d41d64a5eed90460cbd6a40795b6ca5"
+    },
+    "validation/CBv2MTPRoundSmokeTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/CBv2MTPRoundSmokeTests.log",
+      "bytes": 2142,
+      "sha256": "4c88fc1ee78870ff81e56ce5e33cb10febd3d30976c7ab54683eb2d916ed9568"
+    },
+    "validation/CBv2QwenMTPIntegrationTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/CBv2QwenMTPIntegrationTests.log",
+      "bytes": 6684,
+      "sha256": "ded2853692d2169d986f0124abcf4affa0f5fc79a78ccd706baddd5627f7b359"
+    },
+    "validation/actual-build-graph-after.yaml.gz": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/actual-build-graph-after.yaml.gz",
+      "bytes": 321699,
+      "sha256": "739cf95a279aa7183235128e813c2f90a476b550b064d5b0500cfad0a0909daa"
+    },
+    "validation/actual-build-graph.yaml.gz": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/actual-build-graph.yaml.gz",
+      "bytes": 321885,
+      "sha256": "d3bd6f95f896b9e4df28be6d7b6961e72b36649907b267ff3d5b1ed4ac1711c7"
+    },
+    "validation/actual-compiler-source-proof.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/actual-compiler-source-proof.json",
+      "bytes": 1654,
+      "sha256": "de82674e9c4becd743e3eec3ddb6f69b880c1c33c7373bd0ec64bba5e6828acb"
+    },
+    "validation/actual-package-state-after.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/actual-package-state-after.json",
+      "bytes": 17086,
+      "sha256": "5c1473f931815bace731d54d50fe069fe4222954bf8eeb806ee37ff452cf5b71"
+    },
+    "validation/actual-package-state.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/actual-package-state.json",
+      "bytes": 17086,
+      "sha256": "5c1473f931815bace731d54d50fe069fe4222954bf8eeb806ee37ff452cf5b71"
+    },
+    "validation/all-owned-graph-source-proof.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/all-owned-graph-source-proof.json",
+      "bytes": 289747,
+      "sha256": "d7e8540bc5c7a2b106cbfaad846a91a68c8c774c731b16acade629241c80dc5e"
+    },
+    "validation/baseline-evidence.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline-evidence.json",
+      "bytes": 2245,
+      "sha256": "7b36ff9c539d236ab1257f7f10fab6b40899e18df8bf25ba621eea624cc76e01"
+    },
+    "validation/baseline-source-verified.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline-source-verified.json",
+      "bytes": 324,
+      "sha256": "a8af8b0da7656b97582365e49c945c5c9e8ad0e35c62870a10df4f9830fcbe23"
+    },
+    "validation/baseline/CBv2MTPCaptureVerifyTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/CBv2MTPCaptureVerifyTests.log",
+      "bytes": 3706,
+      "sha256": "9d1e595350a2ff6f0348a732ef3b2c08c18558bbaf1d2b4d276b49e5103dbd8c"
+    },
+    "validation/baseline/CBv2MTPDepthControllerTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/CBv2MTPDepthControllerTests.log",
+      "bytes": 4945,
+      "sha256": "a53bbba9f5bb104432b4ca2bf4423d366ab205ae9f55eff83fcd97f650c58fff"
+    },
+    "validation/baseline/CBv2MTPEngineParityTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/CBv2MTPEngineParityTests.log",
+      "bytes": 2634,
+      "sha256": "7c22fabd852bb447fd02f00265026461934dcbe4db1072598143bbbb0e83484b"
+    },
+    "validation/baseline/CBv2MTPKVStaging.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/CBv2MTPKVStaging.log",
+      "bytes": 3665,
+      "sha256": "dfa33839ee1b1f3b501b95f3ba4914eb3b74860d6894a4176f6d67c48598cd3c"
+    },
+    "validation/baseline/CBv2MTPProbeCadenceTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/CBv2MTPProbeCadenceTests.log",
+      "bytes": 1637,
+      "sha256": "6ef42505f8f75b344334395528c1fa2ad5b11f2b11422434a6a0f38f59c1ddf9"
+    },
+    "validation/baseline/CBv2MTPRectangularDegradeTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/CBv2MTPRectangularDegradeTests.log",
+      "bytes": 1787,
+      "sha256": "b1f64b729e2c1c6430901672986d5492a0ab80b4f9696522d4316f16202c7459"
+    },
+    "validation/baseline/CBv2MTPRoundSmokeTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/CBv2MTPRoundSmokeTests.log",
+      "bytes": 2142,
+      "sha256": "b6d263875b2c7261bfd7d5f1e2ea055e5568ce7f71c32a8666ee4e685a815b6d"
+    },
+    "validation/baseline/CBv2QwenMTPIntegrationTests.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/CBv2QwenMTPIntegrationTests.log",
+      "bytes": 6684,
+      "sha256": "300a4d1ff541755f9c607ba3f4c1935adc556691f3b25887e1d449df033803ee"
+    },
+    "validation/baseline/manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/manifest.json",
+      "bytes": 15416,
+      "sha256": "7613d008ef61f167e7a2d297ebaf193a3c976df935969bece4953298e9fa233d"
+    },
+    "validation/baseline/native-execution.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/native-execution.json",
+      "bytes": 25265,
+      "sha256": "d3d197db08629227b0c01c73f390612d4bf81b64c7d2da346ccc823f604a182a"
+    },
+    "validation/baseline/native-source-manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/native-source-manifest.json",
+      "bytes": 61867,
+      "sha256": "08f92f16ee46d3c800081f6826c89289be34cb11bcf02d779beaf21ed7c66a1b"
+    },
+    "validation/baseline/source-verified-after-native.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/source-verified-after-native.json",
+      "bytes": 134,
+      "sha256": "eb751ead403796bbb84576ef57e5901ebbec4b2aacb43f239842cca6366caebf"
+    },
+    "validation/baseline/test-binary.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/baseline/test-binary.json",
+      "bytes": 274,
+      "sha256": "7fa03a9bc10ee8f9ea7749115f8f7c12e79357cbdbe7852b754880bbda1725c0"
+    },
+    "validation/build.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/build.log",
+      "bytes": 489024,
+      "sha256": "2071fc08e58fab84d86c2adf5a9992434b70e7e139199291ec06ba0f31391051"
+    },
+    "validation/canonical-owned-manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/canonical-owned-manifest.json",
+      "bytes": 937,
+      "sha256": "a0bd15d8fb27650ccdfc7c2afb8aedc322dfe7fdba09801e6e5d91264d57a5f1"
+    },
+    "validation/dependency-source-manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/dependency-source-manifest.json",
+      "bytes": 161754,
+      "sha256": "f1e16b19ad215312c227f0b27f0370556eddfb7afde02fb2c6940fecdb0c1419"
+    },
+    "validation/execution.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/execution.json",
+      "bytes": 4273,
+      "sha256": "57d5f8bd17b048996d5e5c92adfb6b0252006e66a6fa7abae996e7b4fe016824"
+    },
+    "validation/filters.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/filters.json",
+      "bytes": 276,
+      "sha256": "e154ea891ea8bcc9fcff9622c447fe83b37294806e9968e4e97ebe5f764a428a"
+    },
+    "validation/freeze.py": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/freeze.py",
+      "bytes": 4637,
+      "sha256": "1d28ea5f34e885485c09fba6c7be1f0c4495225b0928ebabe4bef9d7b4d00404"
+    },
+    "validation/identifiers.log": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/identifiers.log",
+      "bytes": 134328,
+      "sha256": "029ae84bdc91ce170d3e6380ac35e1f31c41af0728f2ee2f1920da1190c781d1"
+    },
+    "validation/integration.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/integration.json",
+      "bytes": 984,
+      "sha256": "1d95b1261379f27dfac41919d617efd38fb940da6520cccaaa889f95b1883a39"
+    },
+    "validation/jinja-source-manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/jinja-source-manifest.json",
+      "bytes": 2907,
+      "sha256": "1a3c73a25aab033a5ce568f263db5ff9560d648206313843983afa3280760598"
+    },
+    "validation/manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/manifest.json",
+      "bytes": 8517,
+      "sha256": "073c7d90589ba2425b3b98d9960a0fc8daafd3915ee461ea2251e86473e389cd"
+    },
+    "validation/metallib-placement.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/metallib-placement.json",
+      "bytes": 471,
+      "sha256": "77a93b15493e25dc443489aef1a461b7b0cb70d8e518985cf64bb2692357c26e"
+    },
+    "validation/native-source-manifest.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/native-source-manifest.json",
+      "bytes": 62816,
+      "sha256": "8ce5e094829e1ba0f7aa91cf4a8985903384d38aacf16a2d7c17d46535105ed0"
+    },
+    "validation/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift",
+      "bytes": 12352,
+      "sha256": "4e7d332666bced1c9876415418a9c8175486e032aeb1a6e88071f69b1e0ef15d"
+    },
+    "validation/owned/Tests/MLXLMTests/CBv2MTPOutputBudgetTests.swift": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/owned/Tests/MLXLMTests/CBv2MTPOutputBudgetTests.swift",
+      "bytes": 2849,
+      "sha256": "c5cd803c4e58d681d4bd131ca9475784cbb5e677f349f7f74460ca014e687419"
+    },
+    "validation/run-nested-suite.sh": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/run-nested-suite.sh",
+      "bytes": 3578,
+      "sha256": "14ecf2a47a07c07b2bdc535ac1a6fdd64c674763963a2fa9b86cb07d8feeda48"
+    },
+    "validation/run-status.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/run-status.json",
+      "bytes": 54,
+      "sha256": "58c2a7163acf907a69322dbad5482856882815aba7480db647d17cc9023dd002"
+    },
+    "validation/run.py": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/run.py",
+      "bytes": 5251,
+      "sha256": "48fceed7379cf562c7139d01c905bb02c1907f4ee6d17a96130ecd8de1919720"
+    },
+    "validation/selected-identifiers.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/selected-identifiers.json",
+      "bytes": 13441,
+      "sha256": "4335bf5a2d39a276d6b46fdba8b706977c663a05b6763b83ee5b552dead4e935"
+    },
+    "validation/source-verified-after-build.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/source-verified-after-build.json",
+      "bytes": 137,
+      "sha256": "3c17cb8f68c03c48c22011605153ca44f83a7b9eab30eadef2fe05a18f7533b8"
+    },
+    "validation/source-verified-after.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/source-verified-after.json",
+      "bytes": 137,
+      "sha256": "3c17cb8f68c03c48c22011605153ca44f83a7b9eab30eadef2fe05a18f7533b8"
+    },
+    "validation/source-verified-before.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/source-verified-before.json",
+      "bytes": 137,
+      "sha256": "3c17cb8f68c03c48c22011605153ca44f83a7b9eab30eadef2fe05a18f7533b8"
+    },
+    "validation/test-binary.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/test-binary.json",
+      "bytes": 274,
+      "sha256": "54d62322f5b03456f5b5bd1c913ea924219aa922e358a8b63a0d32575f593cd7"
+    },
+    "validation/test-environment.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/test-environment.json",
+      "bytes": 3,
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    },
+    "validation/useful-tail.patch": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/useful-tail.patch",
+      "bytes": 5459,
+      "sha256": "3cb4451fcaf48a09621223e902a750aee90096b1016cfb5f431c66c8ef67f143"
+    },
+    "validation/verdict.json": {
+      "source": "/tmp/darkbloom-q35-mtp-useful-tail-validation1/verdict.json",
+      "bytes": 776,
+      "sha256": "f797a35e6f3783cb471d834d3c68f840bdb0d95e77215344340321ce75e4b7ab"
+    }
+  }
+}

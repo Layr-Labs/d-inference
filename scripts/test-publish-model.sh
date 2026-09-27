@@ -143,3 +143,19 @@ if [[ -e "$FAKE_SWIFT_MARKER" ]]; then
 fi
 
 printf 'publish model contract tests passed\n'
+
+# Optional artifact survives the real workflow payload builder and publisher output.
+export HUGGING_FACE_ARTIFACT_JSON='{"repo_id":"EigenLabs/test","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path_prefix":"mlx"}'
+build_payload '' "$TEST_ROOT/hf"
+jq -e '.hugging_face_artifact.repo_id == "EigenLabs/test" and .hugging_face_artifact.revision == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" and .hugging_face_artifact.path_prefix == "mlx"' "$TEST_ROOT/hf/payload.json" >/dev/null
+hf_output="$(run_publish 'test-model' '')"
+printf '%s\n' "$hf_output" | grep -Fq -- "-f hugging_face_artifact_json='$HUGGING_FACE_ARTIFACT_JSON'"
+export HUGGING_FACE_ARTIFACT_JSON='{"repo_id":"EigenLabs/test","revision":"main"}'
+if run_publish 'test-model' '' >/dev/null 2>&1; then
+  printf 'Publisher accepted mutable HF revision.\n' >&2
+  exit 1
+fi
+unset HUGGING_FACE_ARTIFACT_JSON
+build_payload '' "$TEST_ROOT/hf-legacy"
+jq -e '.hugging_face_artifact == null' "$TEST_ROOT/hf-legacy/payload.json" >/dev/null
+printf 'Hugging Face publish payload tests passed.\n'

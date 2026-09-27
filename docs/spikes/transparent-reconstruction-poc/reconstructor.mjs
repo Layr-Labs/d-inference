@@ -106,6 +106,7 @@ export function overlappingChunks(manifest, start, end) {
 }
 
 async function checkedChunkBody(fetchChunk, selection, signal) {
+  signal.throwIfAborted();
   const { chunk, localStart, localEnd } = selection;
   const wholeChunk = localStart === 0 && localEnd === chunk.size - 1;
   const response = await fetchChunk(chunk, {
@@ -114,22 +115,41 @@ async function checkedChunkBody(fetchChunk, selection, signal) {
     wholeChunk,
     signal,
   });
-  const expectedStatus = wholeChunk ? 200 : 206;
-  if (response.status !== expectedStatus || response.body == null) {
-    throw new Error(`chunk ${chunk.key} returned HTTP ${response.status}, expected ${expectedStatus}`);
-  }
-  if (!wholeChunk) {
-    const expectedRange = `bytes ${localStart}-${localEnd}/${chunk.size}`;
-    if (response.headers.get("Content-Range") !== expectedRange) {
-      throw new Error(`chunk ${chunk.key} returned an invalid Content-Range`);
+  try {
+    // A fetcher may settle after cancellation even when given an aborted signal.
+    signal.throwIfAborted();
+    const expectedStatus = wholeChunk ? 200 : 206;
+    if (response.status !== expectedStatus || response.body == null) {
+      throw new Error(`chunk ${chunk.key} returned HTTP ${response.status}, expected ${expectedStatus}`);
     }
+    if (!wholeChunk) {
+      const expectedRange = `bytes ${localStart}-${localEnd}/${chunk.size}`;
+      if (response.headers.get("Content-Range") !== expectedRange) {
+        throw new Error(`chunk ${chunk.key} returned an invalid Content-Range`);
+      }
+    }
+    const expectedLength = localEnd - localStart + 1;
+    const declaredLength = response.headers.get("Content-Length");
+    if (declaredLength != null && Number(declaredLength) !== expectedLength) {
+      throw new Error(`chunk ${chunk.key} returned an invalid Content-Length`);
+    }
+    return { reader: response.body.getReader(), expectedLength, chunk };
+  } catch (error) {
+    // Invalid responses never transfer ownership to the reconstruction reader.
+    // Preserve the validation error even if disposing of the body also fails.
+    await response.body?.cancel(error).catch(() => {});
+    throw error;
   }
-  const expectedLength = localEnd - localStart + 1;
-  const declaredLength = response.headers.get("Content-Length");
-  if (declaredLength != null && Number(declaredLength) !== expectedLength) {
-    throw new Error(`chunk ${chunk.key} returned an invalid Content-Length`);
+}
+
+async function cancelChunkBody(body, reason) {
+  try {
+    await body.reader.cancel(reason);
+  } catch {
+    // Cleanup must not replace the stream's original failure/cancellation.
+  } finally {
+    body.reader.releaseLock();
   }
-  return { reader: response.body.getReader(), expectedLength, chunk };
 }
 
 export function reconstructedBody(selections, fetchChunk, expectedBytes, signal) {
@@ -137,11 +157,24 @@ export function reconstructedBody(selections, fetchChunk, expectedBytes, signal)
   let current = null;
   let currentBytes = 0;
   let emittedBytes = 0;
+  let cancelled = false;
+  const cancellation = new AbortController();
+  const chunkSignal = signal == null
+    ? cancellation.signal
+    : AbortSignal.any([signal, cancellation.signal]);
+
+  async function cancelCurrent(reason) {
+    const body = current;
+    current = null;
+    if (body != null) await cancelChunkBody(body, reason);
+  }
 
   return new ReadableStream({
     async pull(controller) {
       try {
         while (true) {
+          if (cancelled) return;
+          chunkSignal.throwIfAborted();
           if (current == null) {
             if (selectionIndex >= selections.length) {
               if (emittedBytes !== expectedBytes) {
@@ -150,18 +183,26 @@ export function reconstructedBody(selections, fetchChunk, expectedBytes, signal)
               controller.close();
               return;
             }
-            current = await checkedChunkBody(fetchChunk, selections[selectionIndex], signal);
+            const body = await checkedChunkBody(fetchChunk, selections[selectionIndex], chunkSignal);
+            if (cancelled) {
+              await cancelChunkBody(body, cancellation.signal.reason);
+              return;
+            }
+            current = body;
             currentBytes = 0;
             selectionIndex += 1;
           }
 
           const item = await current.reader.read();
+          if (cancelled) return;
+          chunkSignal.throwIfAborted();
           if (item.done) {
             if (currentBytes !== current.expectedLength) {
               throw new Error(
                 `chunk ${current.chunk.key} emitted ${currentBytes} bytes, expected ${current.expectedLength}`,
               );
             }
+            current.reader.releaseLock();
             current = null;
             continue;
           }
@@ -175,11 +216,15 @@ export function reconstructedBody(selections, fetchChunk, expectedBytes, signal)
           return;
         }
       } catch (error) {
-        controller.error(error);
+        cancellation.abort(error);
+        await cancelCurrent(error);
+        if (!cancelled) controller.error(error);
       }
     },
     async cancel(reason) {
-      if (current != null) await current.reader.cancel(reason);
+      cancelled = true;
+      cancellation.abort(reason);
+      await cancelCurrent(reason);
     },
   });
 }

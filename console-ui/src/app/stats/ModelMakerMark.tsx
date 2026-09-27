@@ -12,7 +12,7 @@ export function ModelMakerMark({
   compact?: boolean;
 }) {
   const brand = modelBrand(modelId, family);
-  const tileSize = compact ? "h-9 w-9 rounded-lg" : "h-12 w-12 rounded-xl";
+  const tileSize = compact ? "h-8 w-8 rounded-lg" : "h-12 w-12 rounded-xl";
   if (!brand.logoSrc || !brand.logoAlt) {
     return (
       <div className={`flex shrink-0 items-center justify-center border border-accent-brand/20 bg-accent-brand/10 text-accent-brand ${tileSize}`}>
@@ -21,7 +21,7 @@ export function ModelMakerMark({
     );
   }
 
-  const imageClass = compact ? "h-7 w-7 object-contain" : "h-9 w-9 object-contain";
+  const imageClass = compact ? "h-6 w-6 object-contain" : "h-9 w-9 object-contain";
   return (
     <div className={`flex shrink-0 items-center justify-center overflow-hidden border border-border-dim bg-white ${tileSize}`} title={brand.logoAlt}>
       <Image

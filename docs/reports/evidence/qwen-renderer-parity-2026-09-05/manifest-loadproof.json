@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "scope": "Local Go-supervised release Rust sidecar;6 contracts/98vectors. Unchanged25QPS/15s/1024MiB gate in an exclusive CPU-quiet interval. No live coordinator/provider/GPU workload. Binaries retained outside repository and identified by SHA256.",
+  "files": {
+    "loadproof-result.json": {
+      "sha256": "2de1c573854a3d092e7a8cfe68ff72861375f4be59ce8f9842ca0ca7bcb93590",
+      "bytes": 1581,
+      "uncompressed_sha256": "2de1c573854a3d092e7a8cfe68ff72861375f4be59ce8f9842ca0ca7bcb93590",
+      "uncompressed_bytes": 1581,
+      "source_path": "/tmp/darkbloom-release-090/renderer-v3-loadproof/result.json"
+    },
+    "loadproof-stderr.log.gz": {
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "bytes": 20,
+      "uncompressed_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0,
+      "source_path": "/tmp/darkbloom-release-090/renderer-v3-loadproof/stderr.log"
+    },
+    "loadproof-go-source-manifest.json.gz": {
+      "sha256": "e14d5c57f0d2bfaad6f78b36ceb5194643c10592c01aa9d8a8ad11b8321c5074",
+      "bytes": 45869,
+      "uncompressed_sha256": "ae4fe1e314fd2f6a744e41872bb1e15cb3e87896ae492865b331c6644ea06bcf",
+      "uncompressed_bytes": 141437,
+      "source_path": "/tmp/darkbloom-release-090/renderer-v3-loadproof/go-source-manifest.json"
+    },
+    "loadproof-execution-manifest.json": {
+      "sha256": "7b0d44ae21fb2491ffc1ef11c373477c2b9a7112ac809ae9302aa178054a67d3",
+      "bytes": 2507,
+      "uncompressed_sha256": "7b0d44ae21fb2491ffc1ef11c373477c2b9a7112ac809ae9302aa178054a67d3",
+      "uncompressed_bytes": 2507,
+      "source_path": "/tmp/darkbloom-release-090/renderer-v3-loadproof/manifest.json"
+    }
+  },
+  "release_binary_sha256": "80ba1b36cdeb86a44ef67e5c3cd1017f9f79580df910bc9a9bf654e9690522c9",
+  "observations_mib": {
+    "cold_peak": 954.015625,
+    "cold_margin": 69.984375,
+    "warm_peak": 871.890625,
+    "warm_growth": 4.671875
+  }
+}

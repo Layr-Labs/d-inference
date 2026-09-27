@@ -20,12 +20,14 @@ printf 'EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true\n' >> "$ENV_FILE"
 printf 'EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/data/prompt-contracts\n' >> "$ENV_FILE"
 printf 'EIGENINFERENCE_PROMPT_SIDECAR_STARTUP_TIMEOUT_MS=5000\n' >> "$ENV_FILE"
 printf 'EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_INTERVAL_MS=100\n' >> "$ENV_FILE"
+printf 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT=fa_test\n' >> "$ENV_FILE"
+printf 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET=whsec_test_do_not_print\n' >> "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
 
 before_secret=$(awk -F= '$1=="UNLISTED_SECRET" { print substr($0, index($0, "=") + 1) }' "$ENV_FILE")
 check_output=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$ENV_FILE" \
     REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check)
-if printf '%s' "$check_output" | grep -Fq "$before_secret"; then
+if printf '%s' "$check_output" | grep -Eq "$before_secret|whsec_test_do_not_print"; then
     echo "refresh check leaked an existing secret value" >&2
     exit 1
 fi
@@ -36,6 +38,7 @@ SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$ENV_FILE" \
 [ "$(awk -F= '$1=="UNLISTED_SECRET" { print substr($0, index($0, "=") + 1) }' "$ENV_FILE")" = "$before_secret" ]
 [ "$(awk -F= '$1=="EIGENINFERENCE_PROMPT_SIDECAR_ENABLED" { print $2 }' "$ENV_FILE")" = "true" ]
 grep -Fxq 'EIGENINFERENCE_CACHE_ROUTING_MODE=off' "$ENV_FILE"
+grep -Fxq 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true' "$ENV_FILE"
 grep -Fxq 'EIGENINFERENCE_CACHE_ROUTING_PERCENT=1' "$ENV_FILE"
 grep -Fxq 'EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=1' "$ENV_FILE"
 grep -Fxq 'EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/mnt/disks/userdata/prompt-contracts' "$ENV_FILE"
@@ -64,6 +67,30 @@ expect_refresh_failure() {
         exit 1
     fi
 }
+
+# Missing payout prerequisites must reject activation before changing the file.
+for payout_key in EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET; do
+    payout_missing="$ENV_DIR/$payout_key.env"
+    awk -F= -v key="$payout_key" '$1 != key && $1 != "EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED"' "$ENV_FILE" > "$payout_missing"
+    cp "$payout_missing" "$payout_missing.before"
+    expect_refresh_failure "missing payout configuration" "$payout_missing" \
+        "Global Payouts is enabled but $payout_key is missing or empty"
+    if SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$payout_missing" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null 2>&1; then
+        echo "refresh applied incomplete payout configuration" >&2
+        exit 1
+    fi
+    cmp "$payout_missing.before" "$payout_missing"
+done
+
+# An explicit off switch must remain off, including on a host that has not yet
+# configured Global Payouts. The production default must not undo a pause.
+payout_paused="$ENV_DIR/payout-paused.env"
+awk '$0 !~ /^EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_/' "$ENV_FILE" > "$payout_paused"
+printf 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=false\n' >> "$payout_paused"
+SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$payout_paused" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+grep -Fxq 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=false' "$payout_paused"
 
 missing="$ENV_DIR/missing.env"
 awk '$0 !~ /^EIGENINFERENCE_HEALTH_EJECTION=/' "$ENV_FILE" > "$missing"
@@ -120,6 +147,73 @@ sed "s/^$seed_key=.*/$seed_key=/" "$ENV_FILE" > "$blanked"
 chmod 0600 "$blanked"
 expect_refresh_failure "a blanked release-default key" "$blanked" \
     "required existing variables are missing or empty: $seed_key"
+
+# v0.9 only retires the complete historical stock cache pair. Check is read-only,
+# migration keeps both keys, and a second run is idempotent. Any customization
+# (including explicit zero or only one old stock value) preserves both limits.
+cache_ms_key=EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS
+cache_fraction_key=EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION
+for pair in 1000:0.35 1000:0.5 2000:0.35 0:0.35 1000:0 1000.0:0.350; do
+    ms=${pair%%:*}
+    fraction=${pair#*:}
+    cache_env="$ENV_DIR/cache-$ms-$fraction.env"
+    awk -F= -v ms="$ms" -v fraction="$fraction" \
+        -v mk="$cache_ms_key" -v fk="$cache_fraction_key" \
+        '$1 == mk { print mk "=" ms; next } $1 == fk { print fk "=" fraction; next } { print }' \
+        "$ENV_FILE" > "$cache_env"
+    before=$(cksum < "$cache_env")
+    preview=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$cache_env" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check)
+    [ "$(cksum < "$cache_env")" = "$before" ]
+    SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$cache_env" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+    if [ "$pair" = 1000:0.35 ]; then
+        printf '%s' "$preview" | grep -Fq "MIGRATE $cache_ms_key"
+        printf '%s' "$preview" | grep -Fq "MIGRATE $cache_fraction_key"
+        grep -Fxq "$cache_ms_key=" "$cache_env"
+        grep -Fxq "$cache_fraction_key=" "$cache_env"
+    else
+        grep -Fxq "$cache_ms_key=$ms" "$cache_env"
+        grep -Fxq "$cache_fraction_key=$fraction" "$cache_env"
+    fi
+    grep -Fxq 'EIGENINFERENCE_CACHE_ROUTING_MODE=off' "$cache_env"
+    after=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$cache_env" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check)
+    printf '%s' "$after" | grep -Fq 'prod env refresh: no changes'
+done
+
+# v0.9's warm-pool headroom keys are REQUIRED and are new, so they must bootstrap
+# on an existing host whose /etc/d-inference/env predates them — same contract as
+# seed_key above. Without a release default the post-merge required-value check
+# hard-fails on every such host, and darkbloom-env-refresh.service is ordered
+# before Docker, so a failed refresh blocks the coordinator from starting on the
+# next refresh or reboot. deploy/environments/prod.env is a sanitized reference
+# that is never copied to the host, so it cannot bootstrap anything.
+headroom_keys="EIGENINFERENCE_WARM_POOL_HEADROOM
+EIGENINFERENCE_WARM_POOL_HEADROOM_MAX_PROVIDERS
+EIGENINFERENCE_WARM_POOL_HEADROOM_LOAD_WINDOWS"
+predating="$ENV_DIR/predating-host.env"
+awk -v keys="$headroom_keys" '
+    BEGIN { n = split(keys, a, "\n"); for (i = 1; i <= n; i++) drop[a[i]] = 1 }
+    { k = $0; sub(/=.*/, "", k); if (!(k in drop)) print }
+' "$ENV_FILE" > "$predating"
+chmod 0600 "$predating"
+printf '%s\n' "$headroom_keys" | while IFS= read -r key; do
+    grep -Fxq "$key" "$REQUIRED" || { echo "$key is not required; drop it from this check" >&2; exit 1; }
+    if grep -q "^$key=" "$predating"; then
+        echo "setup bug: $key should be absent from the predating host" >&2
+        exit 1
+    fi
+done
+SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$predating" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+printf '%s\n' "$headroom_keys" | while IFS= read -r key; do
+    awk -F= -v key="$key" '$1 == key && length(substr($0, index($0, "=") + 1)) > 0 { found=1 } END { exit !found }' \
+        "$predating" || {
+        echo "required key $key was not bootstrapped on a host that predates it" >&2
+        exit 1
+    }
+done
 
 marker="$TEST_ROOT/path-injection-ran"
 if SKIP_PERSISTENCE_CHECK=1 \

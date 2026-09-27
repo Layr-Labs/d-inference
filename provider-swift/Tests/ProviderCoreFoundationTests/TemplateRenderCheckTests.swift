@@ -311,23 +311,31 @@ final class TemplateRenderCheckTests: XCTestCase {
 
     // MARK: - Special tokens
 
+    private let requiresBosTemplate = """
+        {% if bos_token != '<bos>' %}{{ raise_exception('unexpected bos_token') }}{% endif %}ok
+        """
+
     func testBosTokenFromTokenizerConfigIsUsed() throws {
-        // A template interpolating bos_token renders with the config's
-        // value; with no tokenizer_config it falls back to "".
+        // Merely interpolating bos_token also succeeds when it is missing.
+        // Require the value so a broken context cannot report a healthy render.
         let dir = try makeSnapshotDir()
-        try write("{{ bos_token }}ok", to: dir, as: "chat_template.jinja")
+        try write(requiresBosTemplate, to: dir, as: "chat_template.jinja")
         try write(#"{"bos_token": "<bos>"}"#, to: dir, as: "tokenizer_config.json")
 
         XCTAssertEqual(TemplateRenderCheck.renderOK(at: dir), true)
 
         let bare = try makeSnapshotDir()
-        try write("{{ bos_token }}ok", to: bare, as: "chat_template.jinja")
+        try write(requiresBosTemplate, to: bare, as: "chat_template.jinja")
+        XCTAssertEqual(TemplateRenderCheck.renderOK(at: bare), false)
+        try write(
+            "{% if bos_token != '' %}{{ raise_exception('expected empty bos_token') }}{% endif %}ok",
+            to: bare, as: "chat_template.jinja")
         XCTAssertEqual(TemplateRenderCheck.renderOK(at: bare), true)
     }
 
     func testAddedTokenDictFormBosToken() throws {
         let dir = try makeSnapshotDir()
-        try write("{{ bos_token }}ok", to: dir, as: "chat_template.jinja")
+        try write(requiresBosTemplate, to: dir, as: "chat_template.jinja")
         try write(
             #"{"bos_token": {"content": "<bos>", "lstrip": false}}"#,
             to: dir, as: "tokenizer_config.json")

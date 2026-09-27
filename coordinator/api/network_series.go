@@ -55,7 +55,14 @@ func (s *Server) handleNetworkSeries(w http.ResponseWriter, r *http.Request) {
 
 	end := time.Now().UTC().Truncate(spec.bucketSize)
 	start := end.Add(-spec.duration)
-	buckets := s.store.UsageTimeSeries(start, end, spec.bucketSize)
+	buckets, err := s.store.UsageTimeSeries(start, end, spec.bucketSize)
+	if err != nil {
+		// Never cache or serve an empty series for a statement that did not
+		// complete; the next request retries.
+		s.logger.Warn("network series unavailable", "window", spec.label, "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable", "network series is temporarily unavailable"))
+		return
+	}
 	timeSeries := make([]map[string]any, 0, len(buckets))
 	for _, bucket := range buckets {
 		if !bucket.Minute.Before(end) {

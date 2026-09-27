@@ -1,0 +1,25 @@
+{
+  "files": [
+    {
+      "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineV2+HybridPrefix.swift",
+      "base_sha256": "e1c828488c25c5e888991a2743c816c58f61fd05554fe60e53e0e658ff66491e",
+      "candidate_sha256": "5cabbd0c2627cec4b9b6f6b23e2d75e27aff88084dba5ff529da25ee158d10db"
+    },
+    {
+      "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixReusePlan.swift",
+      "base_sha256": "c0a5c89d21647af5f1e059d819bc1009f2e9b20642e34e8a71135fd7997c782f",
+      "candidate_sha256": "a8cc80ebe376303c1d889cfe4f9708f34a77e5255a5120b65ae1be6f3401d3fa"
+    },
+    {
+      "path": "Tests/MLXLMTests/CBv2RecurrentStateTests.swift",
+      "base_sha256": "20916a144ed8c8edc9c53f98e346d9169b5096878a682f15b5fcc76db0fa1b41",
+      "candidate_sha256": "89856b760fa20749652d5aae1abd27d7957bc961eecdc8aae444a8596898b145"
+    },
+    {
+      "path": "Tests/MLXLMTests/CBv2SchedulerAdmissionTests.swift",
+      "base_sha256": "2bafc2b7e8c9056422ffb19af037ef07fa9c9b1f1fb39626dd25599d91bead19",
+      "candidate_sha256": "cac8f08229ce84ef1821e23f5ffcf83c20c43b9cc00616a553a31e98d2cfaa43"
+    }
+  ],
+  "patch_sha256": "58b254460dec272b9d5e45d6471a71a2cf2b8063499e27a1e3d88ec96a0fc299"
+}

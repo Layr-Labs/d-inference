@@ -1,0 +1,96 @@
+{
+  "status": "ARTIFACT_ACCEPTED_FOR_REVIEWED_GPT_B2_PILOT",
+  "runtime_source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "ff1aab108da0d575258ba9425d5b763c0045ba66",
+    "parent": "682e268ed3ab54f85371d079204f8091f911afd8",
+    "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+    "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+  },
+  "artifact_manifest_sha256": "77e029d8e05cf5a34ad7300b19b6a7db8e506a93ae1854162765a73f7781c351",
+  "source_manifest_sha256": "2582177982f91cc8f945b2453dd57e00c24314360436a984f08890dd66449395",
+  "source_graph_counts": {
+    "radix-engine-corrected-source-graph.json": 1045,
+    "darkbloom-source-graph.json": 1302,
+    "native-tests-fixture-v2-source-graph.json": 796
+  },
+  "source_aliases_verified": [
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/CBv2ModelTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift-lm/Tests/MLXLMTests/CBv2ModelTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    },
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/ConstantArrayCastCacheTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift/Tests/MLXTests/ConstantArrayCastCacheTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    },
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSCompiledExpertsTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift-lm/Tests/MLXLMTests/GPTOSSCompiledExpertsTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    },
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSGateUpFusionTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift-lm/Tests/MLXLMTests/GPTOSSGateUpFusionTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    },
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSMXFP4DecodeTailTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift/Tests/MLXTests/GPTOSSMXFP4DecodeTailTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    },
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSMXFP4KernelTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift/Tests/MLXTests/GPTOSSMXFP4KernelTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    },
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSPrefillOutputTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift-lm/Tests/MLXLMTests/GPTOSSPrefillOutputTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    },
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSRealCheckpointParityTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift-lm/Tests/MLXLMTests/GPTOSSRealCheckpointParityTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    },
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/IncrementalCheckpointMaterializationTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift-lm/Tests/MLXLMTests/IncrementalCheckpointMaterializationTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    },
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/QuantizedBiasAccumulatorTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift/Tests/MLXTests/QuantizedBiasAccumulatorTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    },
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/QuantizedConstantCastTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift/Tests/MLXTests/QuantizedConstantCastTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    },
+    {
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/provider-swift/Tests/GPTOSSOptimizationTests/QuantizedSwitchLinearConstantCastTests.swift",
+      "target": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/workspace/libs/mlx-swift-lm/Tests/MLXLMTests/QuantizedSwitchLinearConstantCastTests.swift",
+      "git_commit": "682e268ed3ab54f85371d079204f8091f911afd8"
+    }
+  ],
+  "test_functions": {
+    "CBv2ForwardShapeTests": 8,
+    "CBv2ForwardShapeEngineTests": 3,
+    "GPTOSSCompiledExpertsTests": 5,
+    "CBv2MTPRoundSmokeTests": 11
+  },
+  "engine_parameter_cases": 5,
+  "runtime_and_native_fixtures_scope": "Fixture-only f2d successor; runtime Library tree remains exact ff1 source",
+  "remote_artifact_files_verified": 8,
+  "signatures_verified": true,
+  "initial_review_parser_notes": [
+    "Swift Testing uses method summaries with two test cases, not individual case pass lines.",
+    "Tracked source aliases are verified through Git symlink blobs to bound target paths."
+  ],
+  "real_model_pilot_run": false,
+  "checked_at_utc": "2026-09-06T11:24:30.445567+00:00"
+}

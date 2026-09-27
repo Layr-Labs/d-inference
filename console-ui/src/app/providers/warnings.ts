@@ -10,6 +10,9 @@
 // rules and FindProviderWithTrust exclusion checks.
 
 import type { MyProvider, MyProvidersResponse } from "./types";
+import { formatIdleWindow } from "@/lib/format";
+import { hasCurrentAppAttestAuthorization } from "./authorization";
+import { needsMacOSUpgrade } from "./macos-upgrade";
 
 export type WarningSeverity = "blocking" | "degrading" | "info";
 
@@ -35,6 +38,14 @@ export function semverLess(a: string, b: string): boolean {
   return false;
 }
 
+/** "1 h 30 min without requests" from the machine's reported policy, or a
+ *  generic phrase for providers that do not report one. */
+function idleWindowPhrase(p: MyProvider): string {
+  return p.idle_unload_mins && p.idle_unload_mins > 0
+    ? `${formatIdleWindow(p.idle_unload_mins)} without requests`
+    : "the idle window";
+}
+
 export function computeWarnings(
   p: MyProvider,
   ctx: Pick<
@@ -46,9 +57,10 @@ export function computeWarnings(
   >
 ): Warning[] {
   const out: Warning[] = [];
+  const appAttest = hasCurrentAppAttestAuthorization(p);
 
   // Blocking: machine receives no requests.
-  if (p.status === "untrusted" || p.failed_challenges >= 3) {
+  if (p.status === "untrusted" || (!appAttest && p.failed_challenges >= 3)) {
     out.push({
       id: "untrusted",
       severity: "blocking",
@@ -106,6 +118,7 @@ export function computeWarnings(
   // Stale attestation challenge: the coordinator excludes providers whose
   // last challenge is older than `challenge_max_age_seconds` (typically 6 min).
   if (
+    !appAttest &&
     p.last_challenge_verified &&
     p.status !== "offline" &&
     p.status !== "untrusted" &&
@@ -122,11 +135,10 @@ export function computeWarnings(
     }
   }
 
-  // Trust below the routing threshold. In production the coordinator's
-  // MinTrustLevel is "hardware", so anything below that gets ZERO requests
-  // (not just a reduced multiplier). We surface it as blocking and tell the
-  // user how to upgrade.
+  // A current App Attest grant satisfies verification independently of the
+  // legacy hardware trust level; never ask an authorized Mac to enroll in MDM.
   if (
+    !appAttest &&
     p.trust_level !== "hardware" &&
     p.status !== "offline" &&
     p.status !== "untrusted" &&
@@ -136,9 +148,9 @@ export function computeWarnings(
       out.push({
         id: "trust_self_signed",
         severity: "blocking",
-        title: "Self-signed trust below routing threshold",
+        title: "Serving verification pending",
         detail:
-          "The network requires hardware-attested machines. Complete MDM enrollment + Apple Device Attestation to start receiving requests.",
+          "On macOS 27 or later, run darkbloom status to check App Attest approval. On older macOS, upgrade to macOS 27 to avoid MDM, or complete legacy enrollment during the transition. Darkbloom MDM will be deactivated soon.",
       });
     } else {
       out.push({
@@ -170,6 +182,7 @@ export function computeWarnings(
   }
 
   if (
+    !appAttest &&
     p.trust_level === "hardware" &&
     !p.mda_verified &&
     p.status !== "offline" &&
@@ -212,13 +225,15 @@ export function computeWarnings(
   const idleSlots =
     p.backend_capacity?.slots?.filter((s) => s.state === "idle_shutdown") ?? [];
   if (idleSlots.length > 0) {
+    // Under "Free when idle" a cold slot is the policy working as designed:
+    // say so, with the machine's own window, instead of a bare warning.
     out.push({
       id: "backend_idle_shutdown",
       severity: "degrading",
-      title: "Backend cold (0.1x weight on cold start)",
-      detail: `Backend(s) for ${idleSlots
+      title: "Model unloaded while idle (reloads on demand)",
+      detail: `${idleSlots
         .map((s) => s.model)
-        .join(", ")} were unloaded after 1h of idle. Next request will pay a ~10-30s cold-start penalty.`,
+        .join(", ")} unloaded after ${idleWindowPhrase(p)}. The next request reloads it (~10–30 s), and warm machines are preferred until then. Prefer instant responses? Run \`darkbloom idle keep-loaded\`.`,
     });
   }
 
@@ -228,9 +243,9 @@ export function computeWarnings(
     if (successRate < 0.8 && p.reputation.total_jobs >= 10) {
       out.push({
         id: "low_success_rate",
-        severity: "degrading",
+        severity: "info",
         title: `Job success rate low (${(successRate * 100).toFixed(0)}%)`,
-        detail: `Reputation score: ${p.reputation.score.toFixed(2)}. Investigate failed jobs in the logs to recover routing priority.`,
+        detail: `${p.reputation.successful_jobs} of ${p.reputation.total_jobs} jobs succeeded; ${p.reputation.failed_jobs} failed. Check provider logs for failure details.`,
       });
     }
   }
@@ -256,6 +271,14 @@ export function computeWarnings(
   }
 
   // Info: configuration to fix.
+  if (needsMacOSUpgrade(p)) {
+    out.push({
+      id: "macos_upgrade",
+      severity: "info",
+      title: "Upgrade to macOS 27",
+      detail: `Last reported macOS ${p.os_version}. Darkbloom MDM will be deactivated soon. Upgrade to macOS 27 or later for App Attest. Existing legacy verification continues during the transition; keep the profile until migration is approved.`,
+    });
+  }
   if (
     !p.account_id &&
     !p.wallet_address &&
@@ -296,6 +319,7 @@ export function computeWarnings(
     p.status !== "offline" &&
     p.status !== "untrusted" &&
     p.status !== "never_seen" &&
+    !appAttest &&
     p.trust_level === "hardware" &&
     !p.last_challenge_verified
   ) {

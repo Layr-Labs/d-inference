@@ -1,0 +1,188 @@
+{
+  "scope": "ROOT independently reverified37 frozen Rust/Go semantic source files and both generated corpus byte comparisons. Swift/native Boolean/runtime artifact evidence is separately owned by manifest-api.json. No binaries or model/tokenizer data archived here.",
+  "native_boolean_prerequisite": "c0c63e251a4d0fad9f1f8b04f4cbb45d4a0dd760",
+  "versions": {
+    "normalization": "darkbloom-request-normalization-v3",
+    "renderer": "swift-jinja-request-date-compatible-v3",
+    "swift_jinja": "2.3.6"
+  },
+  "rust_validation": {
+    "tests": 106,
+    "failed": 0,
+    "ignored": 0,
+    "strict_clippy": "pass",
+    "source_files": 37,
+    "toolchain": "1.88.0"
+  },
+  "go_validation": {
+    "toolchain": "1.25.0",
+    "command": "GOTOOLCHAIN=go1.25.0 go test ./coordinator/promptcontract ./coordinator/cmd/promptsidecarloadproof ./coordinator/cmd/promptfixtureinput -count=1",
+    "seconds": [
+      2.459,
+      0.511
+    ],
+    "result": "pass",
+    "capture_note": "Root fixture/inventory source manifest captured after unchanged successful run; does not claim a full isolated Go source snapshot."
+  },
+  "corpora": [
+    {
+      "name": "common98",
+      "candidate": "/tmp/darkbloom-release-090/qwen-parity-final/common-final-depth-v3-vectors.json",
+      "reference": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/fixtures/prompt-contract/v1/production_vectors.json",
+      "identical": true,
+      "candidate_sha256": "7bda5110dac22a0ab24d0b28a6502935de70d2571037a58dd77f3cad17cc0430",
+      "reference_sha256": "7bda5110dac22a0ab24d0b28a6502935de70d2571037a58dd77f3cad17cc0430",
+      "model_entries": 7,
+      "unique_contracts": 6,
+      "cases": 98
+    },
+    {
+      "name": "original56",
+      "candidate": "/tmp/darkbloom-release-090/qwen-parity-final/original-final-depth-v3-vectors.json",
+      "reference": "/tmp/darkbloom-release-090/qwen-parity-final/original-v3-vectors.json",
+      "identical": true,
+      "candidate_sha256": "6174b27c1fdf9a82f84b31d8d0e34394996884332c5a60d585aac26261349bbb",
+      "reference_sha256": "6174b27c1fdf9a82f84b31d8d0e34394996884332c5a60d585aac26261349bbb",
+      "model_entries": 4,
+      "unique_contracts": 3,
+      "cases": 56
+    }
+  ],
+  "original_token_parity": {
+    "baseline": "8b8935fb4",
+    "arrays": 56,
+    "changed": 0
+  },
+  "scope_limits": [
+    "Prompt-only exact artifact token/readiness parity; no new weight inference performance proof.",
+    "Go-supervised six-contract load/memory evidence is separately captured in manifest-loadproof.json; does not establish arbitrary extra-contract headroom.",
+    "Provider compiled alongside unbanked physical-floor source, captured separately."
+  ],
+  "files": [
+    {
+      "path": "rust-renderer-v3-final-depth-source-manifest.json",
+      "sha256": "5c0b71dc11f381e0a0f488dc7cf664b3bea02a52e36e6124d67a3117b558a870",
+      "bytes": 6355
+    },
+    {
+      "path": "rust-renderer-v3-final-verification.json",
+      "sha256": "7a913f6959ee313e80b93b1c963ff232e01bdcb5b6e302557cd0b24390cace76",
+      "bytes": 1842
+    },
+    {
+      "path": "rust-rust-v3-final-depth-all.log.gz",
+      "sha256": "d1dff6050e578b1f399882c3d622681abf24786fdc6f7de8decfd3877a987949",
+      "bytes": 2923,
+      "raw_sha256": "414fff5a457d82bfa9d300c7314cbb4eb1548954e7facdc826b402d1a870984b",
+      "raw_bytes": 9785
+    },
+    {
+      "path": "rust-rust-v3-final-depth-clippy.log.gz",
+      "sha256": "b56b9da2b5d55b4796484109b0418681e1e3c23649ef8f8b8e35c06342265a2f",
+      "bytes": 171,
+      "raw_sha256": "cbf17ea82e1f109332df5ec3900037af7097c87c17fd8144d9c50732676347d7",
+      "raw_bytes": 196
+    },
+    {
+      "path": "rust-rust-v3-final-depth-generator-build.log.gz",
+      "sha256": "df8923deb20b518e11c772b98286ce59f9cdb1e89ef3ad41a9e53494c2fbabd6",
+      "bytes": 171,
+      "raw_sha256": "44e79240a38ec73b463ea2852031162ebf6733625591fc6be16187680b05a717",
+      "raw_bytes": 196
+    },
+    {
+      "path": "rust-rust-v3-final-depth-common-generator.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "bytes": 20,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_bytes": 0
+    },
+    {
+      "path": "rust-rust-v3-final-depth-original-generator.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "bytes": 20,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_bytes": 0
+    },
+    {
+      "path": "rust-rust-v3-final-release-build.log.gz",
+      "sha256": "21b98070a844a52401d5517195f0d0ae3a430bd54f43d65291fc7d865fed8d0c",
+      "bytes": 1292,
+      "raw_sha256": "a35829fa93e3091f347262cc209ab177357e29ea36444a386e33abd1682c0c04",
+      "raw_bytes": 4057
+    },
+    {
+      "path": "rust-floatparse.log.gz",
+      "sha256": "dfea83a5d640c0aaf0a15ffa3377f4e8cc2baae29ddf52417e31888ed7584f7c",
+      "bytes": 303,
+      "raw_sha256": "b83c92aea79ab90280f9d9f25da7ef690ab4e191bba235ac4b70656df63fa0c2",
+      "raw_bytes": 575
+    },
+    {
+      "path": "rust-floatparse.rs",
+      "sha256": "55c393807a0e3c2dd52a759aa90dfa8c92999986742b716c1ee473d6f233337e",
+      "bytes": 629
+    },
+    {
+      "path": "root-fixture-source-manifest.json",
+      "sha256": "e1492d79789c12d542801aebd9edfbab4f54d9660892c36d9c3afd73061e7e01",
+      "bytes": 2056
+    },
+    {
+      "path": "original-corpus.json",
+      "sha256": "b025c4cb8c8fd4554354a309a34a274103ca490875a4567b944cf9cc19ebbecb",
+      "bytes": 11062
+    },
+    {
+      "path": "original-v3-vectors.json.gz",
+      "sha256": "4f1b99c8a39f10239d581fee7138b9e1d080273301b088f2be1b7b38c91a4b34",
+      "bytes": 17367,
+      "raw_sha256": "6174b27c1fdf9a82f84b31d8d0e34394996884332c5a60d585aac26261349bbb",
+      "raw_bytes": 475916
+    },
+    {
+      "path": "original-token-comparison.json",
+      "sha256": "60191adcf8b2c05712e0283c3100ad9af03eaf6a85f1784b55706f18ae8e04e5",
+      "bytes": 201
+    },
+    {
+      "path": "go-fixtures.log.gz",
+      "sha256": "463a0683b6439d8419423c2ad9355164794b3855a72b718bdc134102db9a4778",
+      "bytes": 141,
+      "raw_sha256": "f67a8c7aade75ec4716b93e80247fb79e5a7f47acda4092dc129d9517a1d5d76",
+      "raw_bytes": 260
+    },
+    {
+      "path": "provision.log.gz",
+      "sha256": "19a8dce9271f292c426b20d1ca54a1410104aebdeb823007ebda0440f091b1b0",
+      "bytes": 359,
+      "raw_sha256": "75e56f2a51f789330896aaf7276936d477610c646654ad181c73102238232710",
+      "raw_bytes": 607
+    },
+    {
+      "path": "original-manifests/0402fbf4954e2cff8dae9cf488e9cbb4253cd0fc69c554f94ab10a8701ac7fa3.json",
+      "sha256": "4e4e7df6aed1964ce70d9a3334e8114d2a18593a334c2fc3e5f2dce5ae65deed",
+      "bytes": 2294
+    },
+    {
+      "path": "original-manifests/69619d858022727322ded90934928323b4be52d74f514934e70a32df6ceab29c.json",
+      "sha256": "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd",
+      "bytes": 1822
+    },
+    {
+      "path": "original-manifests/9e201d98f8d49aee5bc4dcfc1810a68ef50b5581748cace11a8b3388e826ea95.json",
+      "sha256": "4d36eeed9afe33805bdccf9f59b4d455193ada96a56b4b4e346727a5879b0c9b",
+      "bytes": 2284
+    },
+    {
+      "path": "original-manifests/ca1fe4e9c1499d821397771bdaee427be3244b55371a3803b12152c46dc44a28.json",
+      "sha256": "a66dc823dd0cea6710be6bb7a84a8b9f78454a1893a76dcd7a9d4e5ba861a996",
+      "bytes": 1803
+    },
+    {
+      "path": "provision-prompts.go",
+      "sha256": "21ee9bd590ba9d2424f1023a17bb2119fc01aa777c453638ecc0374dad2202ee",
+      "bytes": 2600
+    }
+  ]
+}

@@ -11,10 +11,16 @@ struct PromptContractIdentityTests {
     private struct Vector: Decodable {
         let artifacts: [ManifestFile]
         let expectedPromptContractId: String
+        let legacyV3PromptContractId: String
+        let legacyV4PromptContractId: String
+        let legacyV5PromptContractId: String
 
         enum CodingKeys: String, CodingKey {
             case artifacts
             case expectedPromptContractId = "expected_prompt_contract_id"
+            case legacyV3PromptContractId = "legacy_v3_prompt_contract_id"
+            case legacyV4PromptContractId = "legacy_v4_prompt_contract_id"
+            case legacyV5PromptContractId = "legacy_v5_prompt_contract_id"
         }
     }
 
@@ -29,6 +35,10 @@ struct PromptContractIdentityTests {
             #expect(
                 try PromptContractIdentity.compute(files: vector.artifacts)
                     == vector.expectedPromptContractId)
+            #expect(vector.expectedPromptContractId != vector.legacyV3PromptContractId)
+            #expect(vector.expectedPromptContractId != vector.legacyV4PromptContractId)
+            #expect(vector.expectedPromptContractId != vector.legacyV5PromptContractId)
+            #expect(PromptContractIdentity.normalizationVersion == "darkbloom-request-normalization-v6")
         }
     }
 
@@ -87,7 +97,7 @@ struct PromptContractIdentityTests {
         }
     }
 
-    @Test("provider-local time keeps prompt caching cold")
+    @Test("only supported request-owned date calls produce a prompt contract")
     func dynamicTimeTemplateDirectory() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "prompt-contract-dynamic-\(UUID().uuidString)", isDirectory: true)
@@ -100,6 +110,9 @@ struct PromptContractIdentityTests {
         try Data(#"{{ strftime_now("%Y-%m-%d") }}"#.utf8).write(
             to: root.appendingPathComponent("chat_template.jinja"))
 
+        #expect(try PromptContractIdentity.compute(modelDirectory: root).count == 64)
+        try Data(#"{{ strftime_now("%H:%M:%S") }}"#.utf8).write(
+            to: root.appendingPathComponent("chat_template.jinja"))
         #expect(throws: PromptContractIdentity.Error.invalidArtifact) {
             try PromptContractIdentity.compute(modelDirectory: root)
         }

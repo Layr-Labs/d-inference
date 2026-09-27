@@ -5,7 +5,7 @@
 // Box-seal each request body to it, and POST as
 // Content-Type: application/eigeninference-sealed+json.
 //
-// Per-request: a fresh ephemeral X25519 keypair gives forward secrecy. The
+// Per-request: a fresh ephemeral X25519 keypair isolates request state. The
 // coordinator seals its response back using the sender's ephemeral pubkey
 // (the sender keeps the private key only for the lifetime of the request).
 //

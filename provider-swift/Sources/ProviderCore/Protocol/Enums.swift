@@ -3,6 +3,11 @@ import Foundation
 public enum ProviderStatus: String, Codable, Sendable {
     case idle
     case serving
+    /// Refusing new work (update drain / shutdown) while in-flight requests
+    /// finish. Mirrors `HeartbeatStatusDraining` in coordinator/protocol/messages.go;
+    /// the coordinator stops routing to a draining provider on its next
+    /// heartbeat instead of learning by dispatching into 503s.
+    case draining
 }
 
 public enum ChipFamily: String, Codable, Sendable {
@@ -11,6 +16,7 @@ public enum ChipFamily: String, Codable, Sendable {
     case m3 = "M3"
     case m4 = "M4"
     case m5 = "M5"
+    case m6 = "M6"
     case unknown = "Unknown"
 }
 

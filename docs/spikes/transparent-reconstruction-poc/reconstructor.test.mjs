@@ -67,12 +67,17 @@ function inMemoryChunkFetcher(objects, options = {}) {
     if (remaining > 0) {
       failuresRemaining.set(chunk.key, remaining - 1);
       const prefixLength = Math.min(options.failAfterBytes ?? 997, selected.length);
+      let prefixSent = false;
       const body = new ReadableStream({
-        start(controller) {
-          controller.enqueue(selected.slice(0, prefixLength));
-          controller.error(new Error(`synthetic transport failure for ${chunk.key}`));
+        pull(controller) {
+          if (!prefixSent) {
+            prefixSent = true;
+            controller.enqueue(selected.slice(0, prefixLength));
+          } else {
+            controller.error(new Error(`synthetic transport failure for ${chunk.key}`));
+          }
         },
-      });
+      }, { highWaterMark: 0 });
       return new Response(body, { status: request.wholeChunk ? 200 : 206, headers });
     }
 
@@ -163,6 +168,7 @@ test("a mid-chunk transport failure resumes from the exact received byte", async
   const received = [];
   let offset = 0;
   let attempts = 0;
+  const failedOffsets = [];
   while (offset < fixture.original.length && attempts < 4) {
     attempts += 1;
     const headers = offset === 0 ? {} : { Range: `bytes=${offset}-` };
@@ -179,13 +185,19 @@ test("a mid-chunk transport failure resumes from the exact received byte", async
         received.push(item.value);
         offset += item.value.byteLength;
       }
-    } catch {
+    } catch (error) {
+      assert.match(error.message, /synthetic transport failure/);
+      failedOffsets.push(offset);
       // Mirrors the Swift client: keep the durable prefix and retry with bytes=N-.
+    } finally {
+      reader.releaseLock();
     }
   }
 
   const reconstructed = Buffer.concat(received.map((part) => Buffer.from(part)));
   assert.equal(attempts, 2);
+  assert.deepEqual(failedOffsets, [fixture.manifest.chunks[3].offset + 1_337]);
+  assert.equal(source.requests.filter(({ key }) => key === failingKey)[1].start, 1_337);
   assert.equal(reconstructed.length, fixture.original.length);
   assert.deepEqual(reconstructed, Buffer.from(fixture.original));
   assert.equal(sha256(reconstructed), fixture.manifest.sha256);
@@ -226,4 +238,100 @@ test("range parser supports offsets larger than 32 bits", () => {
     end: total - 1,
     partial: true,
   });
+});
+
+test("cancelling while a chunk fetch is pending aborts and releases its late body", { timeout: 2_000 }, async () => {
+  const fixture = makeFixture();
+  const pending = Promise.withResolvers();
+  const started = Promise.withResolvers();
+  const cancelled = Promise.withResolvers();
+  const upstream = new ReadableStream({ cancel: cancelled.resolve }, { highWaterMark: 0 });
+  let fetchSignal;
+  let fetches = 0;
+  const handle = createTransparentReconstructor({
+    manifest: fixture.manifest,
+    fetchChunk(_chunk, { signal }) {
+      fetches += 1;
+      fetchSignal = signal;
+      started.resolve();
+      return pending.promise;
+    },
+  });
+  const response = await handle(new Request("https://models.example/original.safetensors"));
+  const reader = response.body.getReader();
+  const read = reader.read();
+  await started.promise;
+  await reader.cancel("client disconnected");
+  pending.resolve(new Response(upstream));
+  assert.equal(await cancelled.promise, "client disconnected");
+  assert.equal(fetchSignal.aborted, true);
+  assert.equal(upstream.locked, false);
+  assert.deepEqual(await read, { value: undefined, done: true });
+  assert.equal(fetches, 1);
+  reader.releaseLock();
+});
+
+test("cancelling during an upstream read releases its reader without fetching another chunk", async () => {
+  const fixture = makeFixture();
+  const reading = Promise.withResolvers();
+  let cancelReason;
+  let fetches = 0;
+  const upstream = new ReadableStream({
+    pull() { reading.resolve(); },
+    cancel(reason) { cancelReason = reason; },
+  }, { highWaterMark: 0 });
+  const handle = createTransparentReconstructor({
+    manifest: fixture.manifest,
+    fetchChunk() { fetches += 1; return new Response(upstream); },
+  });
+  const response = await handle(new Request("https://models.example/original.safetensors"));
+  const reader = response.body.getReader();
+  const read = reader.read();
+  await reading.promise;
+  await reader.cancel("stopped reading");
+  assert.deepEqual(await read, { value: undefined, done: true });
+  assert.equal(cancelReason, "stopped reading");
+  assert.equal(upstream.locked, false);
+  assert.equal(fetches, 1);
+  reader.releaseLock();
+});
+
+test("invalid upstream status and headers cancel the rejected response body", async (t) => {
+  const fixture = makeFixture();
+  for (const [name, status, headers, range, expected] of [
+    ["status", 503, {}, undefined, /HTTP 503/],
+    ["length", 200, { "Content-Length": "1" }, undefined, /Content-Length/],
+    ["range", 206, { "Content-Range": "bytes 1-1/999" }, "bytes=1-1", /Content-Range/],
+  ]) {
+    await t.test(name, async () => {
+      let cancelReason;
+      const upstream = new ReadableStream({
+        cancel(reason) { cancelReason = reason; throw new Error("cleanup failed"); },
+      }, { highWaterMark: 0 });
+      const handle = createTransparentReconstructor({
+        manifest: fixture.manifest,
+        fetchChunk: () => new Response(upstream, { status, headers }),
+      });
+      const response = await handle(new Request("https://models.example/original.safetensors", {
+        headers: range == null ? {} : { Range: range },
+      }));
+      await assert.rejects(response.arrayBuffer(), expected);
+      assert.match(cancelReason.message, expected);
+      assert.equal(upstream.locked, false);
+    });
+  }
+});
+
+test("a response exceeding its chunk boundary is cancelled and unlocked", async () => {
+  const fixture = makeFixture();
+  let cancelReason;
+  const upstream = new ReadableStream({
+    pull(controller) { controller.enqueue(new Uint8Array(fixture.manifest.chunks[0].size + 1)); },
+    cancel(reason) { cancelReason = reason; },
+  }, { highWaterMark: 0 });
+  const handle = createTransparentReconstructor({ manifest: fixture.manifest, fetchChunk: () => new Response(upstream) });
+  const response = await handle(new Request("https://models.example/original.safetensors"));
+  await assert.rejects(response.arrayBuffer(), /exceeded/);
+  assert.match(cancelReason.message, /exceeded/);
+  assert.equal(upstream.locked, false);
 });

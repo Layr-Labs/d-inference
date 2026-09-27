@@ -1,0 +1,2179 @@
+{
+  "schema": 1,
+  "scope": "Allocator-owned per-buffer bounds, non-evaluating backing metadata and native paged charge/coverage settlement; final native foundation6 with unchanged Swift/CPU/Metal carry-forward and complete failure lineage.",
+  "parent_base": "69a75de82813beaf753fbbb4891c3b3261b63600",
+  "native_base": "990475e3ae6f93615bebe0fc36e352aa601ea4a5",
+  "banked_commits": {
+    "commits": {
+      "mlx": "c31408ca889ee70ef433d708a24f71b33f3a06f6",
+      "mlx-c": "1cff8fd14a73cb1f80b9bbb0a1ff2301bbfd1891",
+      "swift": "2814c8ad5c2858b74bd364977bc1a59844621af8",
+      "native": "a486a55d032deae001190bf9795ece1cb3d9a609"
+    },
+    "validation_manifest_sha256": "1028f760d648cae2161f81b0a1be7c9250bca9e39ba7ce44f91dbaac00d5dc4e",
+    "exact_owned_source_files": 35,
+    "no_source_change_after_tests": true
+  },
+  "accepted_validation_manifest": "foundation6/manifest.json",
+  "accepted_validation_sha256": "1028f760d648cae2161f81b0a1be7c9250bca9e39ba7ce44f91dbaac00d5dc4e",
+  "native_filters": 29,
+  "native_functions": 322,
+  "native_cases": 404,
+  "native_failures": 0,
+  "native_skips": 0,
+  "swift_functions": 4,
+  "swift_cases": 4,
+  "swift_evidence": "foundation3",
+  "cpp_cases_per_backend": 3,
+  "cpp_backends": [
+    "CPU",
+    "Metal"
+  ],
+  "cpp_evidence": "foundation1",
+  "owned_source_files": 35,
+  "evidence_roots": [
+    {
+      "path": "foundation1/partial-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/partial-manifest.json",
+      "sha256": "6959d85d5690c2a13f8d0f1e24666174223fed309b63e16c1e470ac89e6afe78",
+      "role": "preserved failed/superseded attempt"
+    },
+    {
+      "path": "foundation2/partial-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/partial-manifest.json",
+      "sha256": "c82812281d424c2bfc9e6d9eaabaef93c1e5b1bcfdbd999da2858886077404b1",
+      "role": "preserved failed/superseded attempt"
+    },
+    {
+      "path": "foundation3/partial-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/partial-manifest.json",
+      "sha256": "405af0eb69021aa71fe704ab840685eef20d2acfd83ec2d2a19106713fd6a1f7",
+      "role": "preserved failed/superseded attempt"
+    },
+    {
+      "path": "foundation4/partial-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/partial-manifest.json",
+      "sha256": "bb5b30353eb5dfe9796aae324f9267bf4c042c403f47069fc0fa7afb47bdadc2",
+      "role": "preserved failed/superseded attempt"
+    },
+    {
+      "path": "foundation5/partial-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/partial-manifest.json",
+      "sha256": "306abb0b211044cb99713a108de0bbe2ac4a0b58d6dcc562ce876684b67e5846",
+      "role": "preserved failed/superseded attempt"
+    },
+    {
+      "path": "foundation6/manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/manifest.json",
+      "sha256": "1028f760d648cae2161f81b0a1be7c9250bca9e39ba7ce44f91dbaac00d5dc4e",
+      "role": "final accepted"
+    },
+    {
+      "path": "ownership-diagnostic/manifest.json",
+      "source": "/tmp/darkbloom-footprint-ownership-diagnostic1/manifest.json",
+      "sha256": "56496219d0b6938e8e9b6ae9522080b3d41116c4cc41f59500910609c3740939",
+      "role": "external diagnostic; timing not model evidence"
+    },
+    {
+      "path": "original-source/allocator-footprint/manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/manifest.json",
+      "sha256": "7acc7ee5ca21f8e98cf0bf560a73d1a53dd07ed2813dc4bff4a379eb1a71d047",
+      "role": "original reviewed source freeze; corrections preserved separately"
+    }
+  ],
+  "excluded_build_products": [
+    {
+      "source": "/tmp/darkbloom-footprint-ownership-diagnostic1/diagnostic",
+      "sha256": "fe636d170e6d51307143938f4de09911fa96389bf97f9a46644c0d6f0d668917",
+      "reason": "compiled diagnostic executable; build products excluded"
+    },
+    {
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/build-metal/mlx/libmlx.a",
+      "sha256": "52d5cf4d1b3fdac7841bb7171a908f60f0221955d6fc921c24576ed96e5c617c",
+      "reason": "linked static build product; identity retained in diagnostic manifest"
+    },
+    {
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/build-metal/mlx/mlx/io/libgguflib.a",
+      "sha256": "5b709001005512f3d3bdef30a894b0be7c5d66c6709bacac180012907212ce82",
+      "reason": "linked static build product; identity retained in diagnostic manifest"
+    }
+  ],
+  "limits": [
+    "CUDA source unexecuted.",
+    "Policy12 detached footprint API not applied or validated.",
+    "Real provider coherent allocator plus shared C/M integration, complete SSD codec union and fleet model performance remain pending.",
+    "Per-buffer bounds do not cover arbitrary graph inputs, scratch or whole-model allocations.",
+    "Diagnostic timing is not end-to-end overhead evidence."
+  ],
+  "archive": {
+    "path": "payloads.tar.gz",
+    "sha256": "440ea3e54f95cde39ce667b648d0bb8c4b8f022e2e6b48a7bc86d6526c7f7a9a",
+    "bytes": 4721912
+  },
+  "entries": [
+    {
+      "path": "bank/final-commits.json",
+      "source": "/tmp/darkbloom-allocator-footprint-final-commits.json",
+      "bytes": 423,
+      "sha256": "8bd4c4bc6b82361cfbd27698e1aa94bbee380e5fec9f0d1f5345ca58f7fbdfcb"
+    },
+    {
+      "path": "bank/package.py",
+      "source": "/tmp/darkbloom-allocator-footprint-bank/package.py",
+      "bytes": 5521,
+      "sha256": "549dcae7257609e0ef656e02003ee2d55e20365503383b08a50368513b95ee2d"
+    },
+    {
+      "path": "bank/root-bank-verification.json",
+      "source": "/tmp/darkbloom-allocator-footprint-root-bank-verification.json",
+      "bytes": 3201,
+      "sha256": "8bae44714e1bcc749de166bc6bcf1adb9a8d74d7db4ff86fc530a170b2606683"
+    },
+    {
+      "path": "foundation1/cpp-execution.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/cpp-execution.json",
+      "bytes": 4500,
+      "sha256": "61b4288b8a72d280bf3ac7ffbc382fa6049d5d52ca1f601424ccc6257c5dd4d4"
+    },
+    {
+      "path": "foundation1/cpu-bounds.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/cpu-bounds.log",
+      "bytes": 295,
+      "sha256": "242c165fecd4514ec93175f0dd3d4dadf5105a99ba3050e7efecdddfd2b3cc9b"
+    },
+    {
+      "path": "foundation1/cpu-build.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/cpu-build.log",
+      "bytes": 7148,
+      "sha256": "f0ab2e8dde65f264a4176b1029967c18aa9f1ae2fe7f2186293ab7049fef0561"
+    },
+    {
+      "path": "foundation1/cpu-cache-regression.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/cpu-cache-regression.log",
+      "bytes": 291,
+      "sha256": "74b8f14b575406f0c6f7f93ee62a3bf3bb6c62153e3b80652d793bda096bbbd1"
+    },
+    {
+      "path": "foundation1/cpu-configure.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/cpu-configure.log",
+      "bytes": 1750,
+      "sha256": "74b9959e06e95c9c658b5ba8ea6b0980ea7cc90f0ae26020193bf3f2a4846521"
+    },
+    {
+      "path": "foundation1/cpu-prediction.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/cpu-prediction.log",
+      "bytes": 291,
+      "sha256": "7122fa1245721acf2916f04b54ee691e2fdd9c93e5cedce96067f2181061dacb"
+    },
+    {
+      "path": "foundation1/dependency-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/dependency-source-manifest.json",
+      "bytes": 161733,
+      "sha256": "b6223789db25bbd5ed9296556b14fa6fe2ec95b6aec1f0e63f9b0f18c6e22315"
+    },
+    {
+      "path": "foundation1/design.md",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/design.md",
+      "bytes": 6842,
+      "sha256": "d18d61abea1f63df3b8520aa657b5db204d2a2d06722588e3609128ba320e764"
+    },
+    {
+      "path": "foundation1/failure.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/failure.json",
+      "bytes": 333,
+      "sha256": "52de8086c0b829177b0757b4124aa6f480a1a76580a6382b9ee7357b590d32a8"
+    },
+    {
+      "path": "foundation1/integration.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/integration.json",
+      "bytes": 3527,
+      "sha256": "d894028c817c4842398b914c0c4e4af184f70bd048e52dbb552eca52b9a3219b"
+    },
+    {
+      "path": "foundation1/metal-bounds.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/metal-bounds.log",
+      "bytes": 295,
+      "sha256": "242c165fecd4514ec93175f0dd3d4dadf5105a99ba3050e7efecdddfd2b3cc9b"
+    },
+    {
+      "path": "foundation1/metal-build.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/metal-build.log",
+      "bytes": 15394,
+      "sha256": "35bcace9606c2a4626c1af38d18d8fd7ad8774ec44ec50400e63bfb2dcf12860"
+    },
+    {
+      "path": "foundation1/metal-cache-regression.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/metal-cache-regression.log",
+      "bytes": 291,
+      "sha256": "74b8f14b575406f0c6f7f93ee62a3bf3bb6c62153e3b80652d793bda096bbbd1"
+    },
+    {
+      "path": "foundation1/metal-configure.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/metal-configure.log",
+      "bytes": 2239,
+      "sha256": "0c1f8db5789341b38c66a313753a6d01e1f629b0fb9fe16bdd2d2fd3726ea5b4"
+    },
+    {
+      "path": "foundation1/metal-prediction.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/metal-prediction.log",
+      "bytes": 291,
+      "sha256": "7122fa1245721acf2916f04b54ee691e2fdd9c93e5cedce96067f2181061dacb"
+    },
+    {
+      "path": "foundation1/mlx-c-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/mlx-c-requested.patch",
+      "bytes": 2429,
+      "sha256": "0538ce345ae55f6b49db9dd77ab42a0b6547b079dc066cf71abe2623593e7ea2"
+    },
+    {
+      "path": "foundation1/mlx-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/mlx-requested.patch",
+      "bytes": 6975,
+      "sha256": "f625f7de0403245e68e4f1849ab4f97057ae2773559aa693ff16d06ce2e7b84a"
+    },
+    {
+      "path": "foundation1/native-Package.resolved",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/native-Package.resolved",
+      "bytes": 8825,
+      "sha256": "4bf9d78d1ce65d7458d881a7f27854da04c728fff7f6fe429a9255e9245ebaef"
+    },
+    {
+      "path": "foundation1/native-Package.swift",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/native-Package.swift",
+      "bytes": 11426,
+      "sha256": "1944aef0814dc14ebb4ef135fc3bd5b4491aa96f3f9e1b2d0201f655635ab46e"
+    },
+    {
+      "path": "foundation1/native-filters.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/native-filters.json",
+      "bytes": 898,
+      "sha256": "bc4c26c5e4d9c9bc640e5793a6807bf365557b3a0971b0cb26d9b35f82033588"
+    },
+    {
+      "path": "foundation1/native-manifest-overlay.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/native-manifest-overlay.json",
+      "bytes": 302,
+      "sha256": "8d5f3274ac30060a905610810e45bf7b47c8d89b20aa114badf065ee8a29b3c4"
+    },
+    {
+      "path": "foundation1/native-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/native-requested.patch",
+      "bytes": 50054,
+      "sha256": "209064d8df8191bb1a0c6ff8f458fa153149de1d618ce94d3f82953c0f737176"
+    },
+    {
+      "path": "foundation1/native-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/native-source-manifest.json",
+      "bytes": 58195,
+      "sha256": "f9db595941c05b483cf837ed7c9c87cdd9c24d0d8f21109189e09d6b24d9cbb0"
+    },
+    {
+      "path": "foundation1/owned-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/owned-manifest.json",
+      "bytes": 4245,
+      "sha256": "4e05335e8b8e8480e73e9e155fbf27020abd12de907bf98b36e83e626aa2aac1"
+    },
+    {
+      "path": "foundation1/partial-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/partial-manifest.json",
+      "bytes": 4554,
+      "sha256": "6959d85d5690c2a13f8d0f1e24666174223fed309b63e16c1e470ac89e6afe78"
+    },
+    {
+      "path": "foundation1/primary-dependency-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/primary-dependency-baseline.json",
+      "bytes": 161404,
+      "sha256": "ba49bc1b2b1b13f5db84b8de6439fc48aeaed8736a882dc52f59b18a513fa6b7"
+    },
+    {
+      "path": "foundation1/primary-native-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/primary-native-baseline.json",
+      "bytes": 57980,
+      "sha256": "7f917f9430dab039b6ada4eec221124af473e5b9f9beae0858f2d6766b067188"
+    },
+    {
+      "path": "foundation1/requested-freeze-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/requested-freeze-manifest.json",
+      "bytes": 11392,
+      "sha256": "7acc7ee5ca21f8e98cf0bf560a73d1a53dd07ed2813dc4bff4a379eb1a71d047"
+    },
+    {
+      "path": "foundation1/root-review.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/root-review.json",
+      "bytes": 1294,
+      "sha256": "0682ba83b1f34dc1ce2dc7db915303a109c08648502884e83c61c244d069e463"
+    },
+    {
+      "path": "foundation1/run-cpp.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/run-cpp.py",
+      "bytes": 2112,
+      "sha256": "760ac467d708018cb3f1ebb4e27a6733cfa67c9dcdd92a5d52e26c44f14e6a4e"
+    },
+    {
+      "path": "foundation1/run-native.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/run-native.py",
+      "bytes": 3412,
+      "sha256": "f81e935697c31388dbe44a9e2f85e9a0536ffe54eef49eeaf0fd733c512258d3"
+    },
+    {
+      "path": "foundation1/run-swift.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/run-swift.py",
+      "bytes": 3137,
+      "sha256": "3e042156f150f107cae4bf98f0523a510c999db11d23838cc6b7d140607275ab"
+    },
+    {
+      "path": "foundation1/source-verified-after-cpp.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/source-verified-after-cpp.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation1/source-verified-after-swift-failure.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/source-verified-after-swift-failure.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation1/source-verified-before-cpp.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/source-verified-before-cpp.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation1/source-verified-before-swift.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/source-verified-before-swift.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation1/swift-Package.resolved",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/swift-Package.resolved",
+      "bytes": 579,
+      "sha256": "388bc1370968988ab69965cfe293ed3f162ce47664b05352adb0269198efcb8d"
+    },
+    {
+      "path": "foundation1/swift-build-attempt1-missing-resolved.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/swift-build-attempt1-missing-resolved.log",
+      "bytes": 507,
+      "sha256": "268dba4f40f0127fec9f5a1c0f50a97d5cf3d32c55e4f74986bb03160aac64da"
+    },
+    {
+      "path": "foundation1/swift-build.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/swift-build.log",
+      "bytes": 41920,
+      "sha256": "2556b5af5e26429f4594e8c736b7d3d83a78b826e8a9edbc579a4d79fa766040"
+    },
+    {
+      "path": "foundation1/swift-execution-attempt1-missing-resolved.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/swift-execution-attempt1-missing-resolved.json",
+      "bytes": 365,
+      "sha256": "a258dbbc8896e07ffacf387d377c2d1c13db483c1d0adce01cd8f407c74ee96c"
+    },
+    {
+      "path": "foundation1/swift-execution.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/swift-execution.json",
+      "bytes": 364,
+      "sha256": "c2c3aabb5068414ecd9b8387cd4f7e5f71967c6f0b6c93c02ec75b640ebcde95"
+    },
+    {
+      "path": "foundation1/swift-failed-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/swift-failed-build-graph.yaml.gz",
+      "bytes": 50313,
+      "sha256": "89aa7ec8fa5da28a5574667db4ab8a711a031c6358a25182319e1e96bbab2a0e"
+    },
+    {
+      "path": "foundation1/swift-failed-package-state.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/swift-failed-package-state.json",
+      "bytes": 1193,
+      "sha256": "1e4cbfaef3bde216e416dbe9cd243cdb068d02a1052a38a25e14de4edf811ad8"
+    },
+    {
+      "path": "foundation1/swift-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/swift-requested.patch",
+      "bytes": 8582,
+      "sha256": "27d2a6f8ed719ae8baaf43d6a1a08c114170fb7978597da6aa45041db968248d"
+    },
+    {
+      "path": "foundation1/swift-resolved-provenance.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/swift-resolved-provenance.json",
+      "bytes": 426,
+      "sha256": "4fa80be1e2ba63fe751ebbd3f4e7479e592b4abdc493f097787b9fffe7c2bb5d"
+    },
+    {
+      "path": "foundation1/verify.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/verify.py",
+      "bytes": 1877,
+      "sha256": "981bf16307973689eb06f63798fe41753815673683c0168f086c63826296d712"
+    },
+    {
+      "path": "foundation2/cpp-evidence-carry-forward.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/cpp-evidence-carry-forward.json",
+      "bytes": 610,
+      "sha256": "faefea7e75a9e91c2827cfe52b6a8fa45483338c403af28adc27d603f4b4b967"
+    },
+    {
+      "path": "foundation2/dependency-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/dependency-source-manifest.json",
+      "bytes": 161733,
+      "sha256": "53afb96f669040213e299ad3d9f74b85679ebbe5f055e03b359e2236010b981b"
+    },
+    {
+      "path": "foundation2/design.md",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/design.md",
+      "bytes": 6842,
+      "sha256": "d18d61abea1f63df3b8520aa657b5db204d2a2d06722588e3609128ba320e764"
+    },
+    {
+      "path": "foundation2/integration.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/integration.json",
+      "bytes": 3608,
+      "sha256": "2d4adbc642172440896c4ed4ed772f9ddc322a0f8ed59eeb64f1d0e3dfeae9b6"
+    },
+    {
+      "path": "foundation2/mlx-c-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/mlx-c-requested.patch",
+      "bytes": 2429,
+      "sha256": "0538ce345ae55f6b49db9dd77ab42a0b6547b079dc066cf71abe2623593e7ea2"
+    },
+    {
+      "path": "foundation2/mlx-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/mlx-requested.patch",
+      "bytes": 6975,
+      "sha256": "f625f7de0403245e68e4f1849ab4f97057ae2773559aa693ff16d06ce2e7b84a"
+    },
+    {
+      "path": "foundation2/native-Package.resolved",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/native-Package.resolved",
+      "bytes": 8825,
+      "sha256": "4bf9d78d1ce65d7458d881a7f27854da04c728fff7f6fe429a9255e9245ebaef"
+    },
+    {
+      "path": "foundation2/native-Package.swift",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/native-Package.swift",
+      "bytes": 11426,
+      "sha256": "89f7982ff21fd8df22d22186e4258bb90c1eae68f08a0340c7b0d64d5c594238"
+    },
+    {
+      "path": "foundation2/native-filters.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/native-filters.json",
+      "bytes": 898,
+      "sha256": "bc4c26c5e4d9c9bc640e5793a6807bf365557b3a0971b0cb26d9b35f82033588"
+    },
+    {
+      "path": "foundation2/native-manifest-overlay.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/native-manifest-overlay.json",
+      "bytes": 302,
+      "sha256": "7fd1f7395d75630c7171f014014d719989eaf9d85af4e376ab28718142b75ad2"
+    },
+    {
+      "path": "foundation2/native-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/native-requested.patch",
+      "bytes": 50054,
+      "sha256": "209064d8df8191bb1a0c6ff8f458fa153149de1d618ce94d3f82953c0f737176"
+    },
+    {
+      "path": "foundation2/native-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/native-source-manifest.json",
+      "bytes": 58195,
+      "sha256": "2a662fc8443ecb27b251650263552cbd7f24b1fa192da62710cb453fa8ede051"
+    },
+    {
+      "path": "foundation2/owned-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/owned-manifest.json",
+      "bytes": 4245,
+      "sha256": "d4b16a53c607e0ffe98e19e0c1a1125adc6009c6953e033ec85c812244303cd7"
+    },
+    {
+      "path": "foundation2/partial-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/partial-manifest.json",
+      "bytes": 3771,
+      "sha256": "c82812281d424c2bfc9e6d9eaabaef93c1e5b1bcfdbd999da2858886077404b1"
+    },
+    {
+      "path": "foundation2/primary-dependency-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/primary-dependency-baseline.json",
+      "bytes": 161404,
+      "sha256": "ba49bc1b2b1b13f5db84b8de6439fc48aeaed8736a882dc52f59b18a513fa6b7"
+    },
+    {
+      "path": "foundation2/primary-native-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/primary-native-baseline.json",
+      "bytes": 57980,
+      "sha256": "7f917f9430dab039b6ada4eec221124af473e5b9f9beae0858f2d6766b067188"
+    },
+    {
+      "path": "foundation2/requested-freeze-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/requested-freeze-manifest.json",
+      "bytes": 11392,
+      "sha256": "7acc7ee5ca21f8e98cf0bf560a73d1a53dd07ed2813dc4bff4a379eb1a71d047"
+    },
+    {
+      "path": "foundation2/root-review.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/root-review.json",
+      "bytes": 1294,
+      "sha256": "0682ba83b1f34dc1ce2dc7db915303a109c08648502884e83c61c244d069e463"
+    },
+    {
+      "path": "foundation2/run-native.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/run-native.py",
+      "bytes": 3461,
+      "sha256": "4ab779fd64404ff5ec2ef95de0e18917040614183af17369e5487379dd477c83"
+    },
+    {
+      "path": "foundation2/run-swift.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/run-swift.py",
+      "bytes": 3186,
+      "sha256": "fcf7bcb4b6ffb48f92b24f7afa1c8994bb51147c0803738690f79c9b972973a0"
+    },
+    {
+      "path": "foundation2/source-correction.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/source-correction.json",
+      "bytes": 349,
+      "sha256": "5a3b5fa0f0978a043d60b5f438a060f457e1bf1d2aff566ed4d9a3d28cba4295"
+    },
+    {
+      "path": "foundation2/source-verified-after-failed-swift.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/source-verified-after-failed-swift.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation2/source-verified-before-swift.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/source-verified-before-swift.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation2/swift-Package.resolved",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-Package.resolved",
+      "bytes": 579,
+      "sha256": "388bc1370968988ab69965cfe293ed3f162ce47664b05352adb0269198efcb8d"
+    },
+    {
+      "path": "foundation2/swift-actual-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-actual-build-graph.yaml.gz",
+      "bytes": 50335,
+      "sha256": "f87111c4ddb0b2938a9d325ad38b27a839a85fc7e9b15640f7d6d5f9a5ee53a3"
+    },
+    {
+      "path": "foundation2/swift-actual-package-state.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-actual-package-state.json",
+      "bytes": 1193,
+      "sha256": "1e4cbfaef3bde216e416dbe9cd243cdb068d02a1052a38a25e14de4edf811ad8"
+    },
+    {
+      "path": "foundation2/swift-build.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-build.log",
+      "bytes": 161348,
+      "sha256": "743eba7101857afe3cda7758423e70179633a37041e4a917c0c3fc4c7bd3203c"
+    },
+    {
+      "path": "foundation2/swift-compiler-source-proof.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-compiler-source-proof.json",
+      "bytes": 464921,
+      "sha256": "01112eefb355a047bcd37fb657ba671e9fc9fc931a5cea7c1672002eb9eedf2a"
+    },
+    {
+      "path": "foundation2/swift-execution.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-execution.json",
+      "bytes": 1106,
+      "sha256": "3758bb0654bb54689137c8fac1ef7861c4c6fd214e4d63cae9bd67e5c90da3c9"
+    },
+    {
+      "path": "foundation2/swift-failed-binary.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-failed-binary.json",
+      "bytes": 395,
+      "sha256": "9a164c88a8f8ac23ef6b7293d7512beebfc98d6173f428857975dc7c6e290d5d"
+    },
+    {
+      "path": "foundation2/swift-failed-final-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-failed-final-build-graph.yaml.gz",
+      "bytes": 50341,
+      "sha256": "2149ab16fb8de165a6f487621c2167e614e28833afa345c2b3c58801e36b7be4"
+    },
+    {
+      "path": "foundation2/swift-failed-final-package-state.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-failed-final-package-state.json",
+      "bytes": 1193,
+      "sha256": "1e4cbfaef3bde216e416dbe9cd243cdb068d02a1052a38a25e14de4edf811ad8"
+    },
+    {
+      "path": "foundation2/swift-footprint.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-footprint.log",
+      "bytes": 1973,
+      "sha256": "f98a49ac1a4abdfdb78789b43a63aae3bdb8097eadb37ce9b9981fa12155e21c"
+    },
+    {
+      "path": "foundation2/swift-identifiers.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-identifiers.log",
+      "bytes": 24510,
+      "sha256": "6c0a64dc946b438824f3dadc2595d2f6ef2a64770cc3aa73975e8f4a4fd9c6a7"
+    },
+    {
+      "path": "foundation2/swift-metallib-placement.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-metallib-placement.json",
+      "bytes": 555,
+      "sha256": "f917ebeb2fd81014805cf1d25056dad526483daf2e39dd7a270e68b09a6f1b34"
+    },
+    {
+      "path": "foundation2/swift-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/swift-requested.patch",
+      "bytes": 8582,
+      "sha256": "27d2a6f8ed719ae8baaf43d6a1a08c114170fb7978597da6aa45041db968248d"
+    },
+    {
+      "path": "foundation2/verify.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation2/verify.py",
+      "bytes": 1877,
+      "sha256": "9b0805188ba4bf5fb1d7c9bb92c6948a8aab0ebc073d3f1c36edd872256eefbe"
+    },
+    {
+      "path": "foundation3/cpp-evidence-carry-forward.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/cpp-evidence-carry-forward.json",
+      "bytes": 318,
+      "sha256": "f521de315355f254d6469131827470b2ac4212613098f92613f0266ad4921dc2"
+    },
+    {
+      "path": "foundation3/dependency-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/dependency-source-manifest.json",
+      "bytes": 161733,
+      "sha256": "b5ec6d939f44741d2c66ce2bf64af5bd6084b5cfd23ed67b8f2a760346cd1d28"
+    },
+    {
+      "path": "foundation3/design.md",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/design.md",
+      "bytes": 6842,
+      "sha256": "d18d61abea1f63df3b8520aa657b5db204d2a2d06722588e3609128ba320e764"
+    },
+    {
+      "path": "foundation3/integration.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/integration.json",
+      "bytes": 3617,
+      "sha256": "10f857b3cfd0ac4e1f41cc3826f306a4df6957fb555c80e08903bc204032fbe9"
+    },
+    {
+      "path": "foundation3/mlx-c-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/mlx-c-requested.patch",
+      "bytes": 2429,
+      "sha256": "0538ce345ae55f6b49db9dd77ab42a0b6547b079dc066cf71abe2623593e7ea2"
+    },
+    {
+      "path": "foundation3/mlx-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/mlx-requested.patch",
+      "bytes": 6975,
+      "sha256": "f625f7de0403245e68e4f1849ab4f97057ae2773559aa693ff16d06ce2e7b84a"
+    },
+    {
+      "path": "foundation3/native-Package.resolved",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/native-Package.resolved",
+      "bytes": 8825,
+      "sha256": "4bf9d78d1ce65d7458d881a7f27854da04c728fff7f6fe429a9255e9245ebaef"
+    },
+    {
+      "path": "foundation3/native-Package.swift",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/native-Package.swift",
+      "bytes": 11426,
+      "sha256": "eb2fbb7594ac45c4d01630f9021076911de4dc49aa205a4599391bf911fa47eb"
+    },
+    {
+      "path": "foundation3/native-build.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/native-build.log",
+      "bytes": 618592,
+      "sha256": "654c6d038617e9b58d48ffcffc8c6120dcd8d7ebcf79860480b6351ee3a8091e"
+    },
+    {
+      "path": "foundation3/native-execution.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/native-execution.json",
+      "bytes": 366,
+      "sha256": "df0c3fb2c4205478fbe357fdca26e65d317b468098aa87776a6c66c545e8db50"
+    },
+    {
+      "path": "foundation3/native-failed-final-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/native-failed-final-build-graph.yaml.gz",
+      "bytes": 319820,
+      "sha256": "08ad86b1c3dbc1059ee35460257e9d6f8ccc93e2f25702598f95af29c7ad7c62"
+    },
+    {
+      "path": "foundation3/native-failed-final-package-state.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/native-failed-final-package-state.json",
+      "bytes": 17072,
+      "sha256": "85917b5688670c2f5a3bf3e918710a5e135830bbf5e3261d61473a303e98851d"
+    },
+    {
+      "path": "foundation3/native-filters.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/native-filters.json",
+      "bytes": 36,
+      "sha256": "bde46160bf9de0b0b1a797c810a5961e8a7b5e9771509f478adeeff89b1d3e6b"
+    },
+    {
+      "path": "foundation3/native-manifest-overlay.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/native-manifest-overlay.json",
+      "bytes": 302,
+      "sha256": "ea4bbcf2ac1ab1d6b402a1b3a8e3e38d2777f05e05a9171129e6da6f2e2dbf31"
+    },
+    {
+      "path": "foundation3/native-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/native-requested.patch",
+      "bytes": 50054,
+      "sha256": "209064d8df8191bb1a0c6ff8f458fa153149de1d618ce94d3f82953c0f737176"
+    },
+    {
+      "path": "foundation3/native-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/native-source-manifest.json",
+      "bytes": 58195,
+      "sha256": "e001a22fbeec7808a290bfad542010b81c76ce6834ba3c86643fe1b9997f9199"
+    },
+    {
+      "path": "foundation3/owned-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/owned-manifest.json",
+      "bytes": 4245,
+      "sha256": "99ead8975896329b18945d4736bae3e4d02828e560887b9b2006c312a36d7a18"
+    },
+    {
+      "path": "foundation3/partial-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/partial-manifest.json",
+      "bytes": 4697,
+      "sha256": "405af0eb69021aa71fe704ab840685eef20d2acfd83ec2d2a19106713fd6a1f7"
+    },
+    {
+      "path": "foundation3/primary-dependency-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/primary-dependency-baseline.json",
+      "bytes": 161404,
+      "sha256": "ba49bc1b2b1b13f5db84b8de6439fc48aeaed8736a882dc52f59b18a513fa6b7"
+    },
+    {
+      "path": "foundation3/primary-native-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/primary-native-baseline.json",
+      "bytes": 57980,
+      "sha256": "7f917f9430dab039b6ada4eec221124af473e5b9f9beae0858f2d6766b067188"
+    },
+    {
+      "path": "foundation3/requested-freeze-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/requested-freeze-manifest.json",
+      "bytes": 11392,
+      "sha256": "7acc7ee5ca21f8e98cf0bf560a73d1a53dd07ed2813dc4bff4a379eb1a71d047"
+    },
+    {
+      "path": "foundation3/requested-native-filters.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/requested-native-filters.json",
+      "bytes": 898,
+      "sha256": "bc4c26c5e4d9c9bc640e5793a6807bf365557b3a0971b0cb26d9b35f82033588"
+    },
+    {
+      "path": "foundation3/root-review.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/root-review.json",
+      "bytes": 1294,
+      "sha256": "0682ba83b1f34dc1ce2dc7db915303a109c08648502884e83c61c244d069e463"
+    },
+    {
+      "path": "foundation3/run-native.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/run-native.py",
+      "bytes": 3461,
+      "sha256": "ae07706e6fc6b06551e7222777af4c08090c95c8ad03a2b6e1a86a44a00a5c17"
+    },
+    {
+      "path": "foundation3/run-swift.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/run-swift.py",
+      "bytes": 3186,
+      "sha256": "e10e3c58796c1d306f81d94e541eb27937decc89d469c03e1978d5f455bd4c07"
+    },
+    {
+      "path": "foundation3/source-corrections.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/source-corrections.json",
+      "bytes": 1051,
+      "sha256": "57d97f158f4f81ad704ada0d1f7653c7969c531a2a46fd462acfa13f26f720ad"
+    },
+    {
+      "path": "foundation3/source-verified-after-native-compile-failure.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/source-verified-after-native-compile-failure.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation3/source-verified-after-swift.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/source-verified-after-swift.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation3/source-verified-before-native.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/source-verified-before-native.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation3/source-verified-before-swift.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/source-verified-before-swift.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation3/superseded-validation-scope.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/superseded-validation-scope.json",
+      "bytes": 401,
+      "sha256": "3ae7c06bbcc92219ea82b776fa5e8fcb3c3315516a2558ab38fcb6b52857e895"
+    },
+    {
+      "path": "foundation3/swift-Package.resolved",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-Package.resolved",
+      "bytes": 579,
+      "sha256": "388bc1370968988ab69965cfe293ed3f162ce47664b05352adb0269198efcb8d"
+    },
+    {
+      "path": "foundation3/swift-actual-build-graph-after.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-actual-build-graph-after.yaml.gz",
+      "bytes": 50340,
+      "sha256": "737a20c800ea6929951e06427162c38fdb904b109bcb6c0e1f268ae15cab4d56"
+    },
+    {
+      "path": "foundation3/swift-actual-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-actual-build-graph.yaml.gz",
+      "bytes": 50334,
+      "sha256": "b1ce8091d44f66f3d3b2e0224d90073363d6c8fd643d4c9605471c6364c09d74"
+    },
+    {
+      "path": "foundation3/swift-actual-package-state-after.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-actual-package-state-after.json",
+      "bytes": 1193,
+      "sha256": "1e4cbfaef3bde216e416dbe9cd243cdb068d02a1052a38a25e14de4edf811ad8"
+    },
+    {
+      "path": "foundation3/swift-actual-package-state.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-actual-package-state.json",
+      "bytes": 1193,
+      "sha256": "1e4cbfaef3bde216e416dbe9cd243cdb068d02a1052a38a25e14de4edf811ad8"
+    },
+    {
+      "path": "foundation3/swift-build.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-build.log",
+      "bytes": 161348,
+      "sha256": "28051f11b8249d32e5809b86e6da5ad6a3bacb01621de96864b5e1329ebd88c9"
+    },
+    {
+      "path": "foundation3/swift-compiler-source-proof.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-compiler-source-proof.json",
+      "bytes": 464921,
+      "sha256": "d09dc302aa490eb4a713f85af395fc84ca1ab1ca288fdd6a7fc93badc4d635db"
+    },
+    {
+      "path": "foundation3/swift-execution.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-execution.json",
+      "bytes": 1107,
+      "sha256": "ad2742ee49618e308495dd5a309df55cb8274277a416189b4c81a361105fb32a"
+    },
+    {
+      "path": "foundation3/swift-footprint.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-footprint.log",
+      "bytes": 1745,
+      "sha256": "be09a23d9ee83810446785fb44ebcaa62bb39217956777840ac4c9e9db44dc02"
+    },
+    {
+      "path": "foundation3/swift-identifiers.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-identifiers.log",
+      "bytes": 24510,
+      "sha256": "58db85339859969fe5ed0e730d72015705387b10254ab83602e3859be6905dae"
+    },
+    {
+      "path": "foundation3/swift-metallib-placement.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-metallib-placement.json",
+      "bytes": 555,
+      "sha256": "f917ebeb2fd81014805cf1d25056dad526483daf2e39dd7a270e68b09a6f1b34"
+    },
+    {
+      "path": "foundation3/swift-passed-binary.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-passed-binary.json",
+      "bytes": 337,
+      "sha256": "9e47b6a64d58fb6fbfd1c6356ad4e1aa40805280b918550a8900c3864c1de15f"
+    },
+    {
+      "path": "foundation3/swift-requested.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/swift-requested.patch",
+      "bytes": 8582,
+      "sha256": "27d2a6f8ed719ae8baaf43d6a1a08c114170fb7978597da6aa45041db968248d"
+    },
+    {
+      "path": "foundation3/verify.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation3/verify.py",
+      "bytes": 1877,
+      "sha256": "14275ebf81d495325fafb4158b4fd4eff10831036f51e7de828a42e0af2fa4da"
+    },
+    {
+      "path": "foundation4/cpp-evidence-carry-forward.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/cpp-evidence-carry-forward.json",
+      "bytes": 318,
+      "sha256": "f521de315355f254d6469131827470b2ac4212613098f92613f0266ad4921dc2"
+    },
+    {
+      "path": "foundation4/dependency-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/dependency-source-manifest.json",
+      "bytes": 161733,
+      "sha256": "b5ec6d939f44741d2c66ce2bf64af5bd6084b5cfd23ed67b8f2a760346cd1d28"
+    },
+    {
+      "path": "foundation4/design.md",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/design.md",
+      "bytes": 6842,
+      "sha256": "d18d61abea1f63df3b8520aa657b5db204d2a2d06722588e3609128ba320e764"
+    },
+    {
+      "path": "foundation4/integration.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/integration.json",
+      "bytes": 3617,
+      "sha256": "5442e95463c035ef98948cf26dfec202e56684e04c5865bf2ad6d67f87d98a73"
+    },
+    {
+      "path": "foundation4/native-Package.resolved",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/native-Package.resolved",
+      "bytes": 8825,
+      "sha256": "4bf9d78d1ce65d7458d881a7f27854da04c728fff7f6fe429a9255e9245ebaef"
+    },
+    {
+      "path": "foundation4/native-Package.swift",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/native-Package.swift",
+      "bytes": 11426,
+      "sha256": "eb2fbb7594ac45c4d01630f9021076911de4dc49aa205a4599391bf911fa47eb"
+    },
+    {
+      "path": "foundation4/native-build.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/native-build.log",
+      "bytes": 496431,
+      "sha256": "4ae164f9426c216028221a4cf7221f678c89d4f3880ae546aa43a503a49a2006"
+    },
+    {
+      "path": "foundation4/native-execution.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/native-execution.json",
+      "bytes": 365,
+      "sha256": "46b5f754bc56adaa98d1c8e8e687c0fe1ca385761e437dbc12821376395cff6d"
+    },
+    {
+      "path": "foundation4/native-filters.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/native-filters.json",
+      "bytes": 898,
+      "sha256": "bc4c26c5e4d9c9bc640e5793a6807bf365557b3a0971b0cb26d9b35f82033588"
+    },
+    {
+      "path": "foundation4/native-final-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/native-final-build-graph.yaml.gz",
+      "bytes": 319834,
+      "sha256": "341b4160855ad0eec1cd28b19104ca8430dc25f2f868becfce036ee570cd5ad1"
+    },
+    {
+      "path": "foundation4/native-final-package-state.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/native-final-package-state.json",
+      "bytes": 17072,
+      "sha256": "85917b5688670c2f5a3bf3e918710a5e135830bbf5e3261d61473a303e98851d"
+    },
+    {
+      "path": "foundation4/native-manifest-overlay.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/native-manifest-overlay.json",
+      "bytes": 302,
+      "sha256": "ea4bbcf2ac1ab1d6b402a1b3a8e3e38d2777f05e05a9171129e6da6f2e2dbf31"
+    },
+    {
+      "path": "foundation4/native-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/native-source-manifest.json",
+      "bytes": 58195,
+      "sha256": "c0147b140aa82808638a54bd5d53b8df2f6541165a078c2b5c7018ce4de08e2b"
+    },
+    {
+      "path": "foundation4/owned-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/owned-manifest.json",
+      "bytes": 4245,
+      "sha256": "bb85576c1373e46b1cd386ea6c4d035a04873c8bbc0aab28bf9deca185e212ad"
+    },
+    {
+      "path": "foundation4/owned-source.tar.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/owned-source.tar.gz",
+      "bytes": 65519,
+      "sha256": "02a8121886c678400bf57b18e57d575b9bdf85aca76c55da50794defe3622f14"
+    },
+    {
+      "path": "foundation4/partial-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/partial-manifest.json",
+      "bytes": 2752,
+      "sha256": "bb5b30353eb5dfe9796aae324f9267bf4c042c403f47069fc0fa7afb47bdadc2"
+    },
+    {
+      "path": "foundation4/primary-dependency-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/primary-dependency-baseline.json",
+      "bytes": 161404,
+      "sha256": "ba49bc1b2b1b13f5db84b8de6439fc48aeaed8736a882dc52f59b18a513fa6b7"
+    },
+    {
+      "path": "foundation4/primary-native-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/primary-native-baseline.json",
+      "bytes": 57980,
+      "sha256": "7f917f9430dab039b6ada4eec221124af473e5b9f9beae0858f2d6766b067188"
+    },
+    {
+      "path": "foundation4/requested-freeze-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/requested-freeze-manifest.json",
+      "bytes": 11392,
+      "sha256": "7acc7ee5ca21f8e98cf0bf560a73d1a53dd07ed2813dc4bff4a379eb1a71d047"
+    },
+    {
+      "path": "foundation4/root-review.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/root-review.json",
+      "bytes": 1294,
+      "sha256": "0682ba83b1f34dc1ce2dc7db915303a109c08648502884e83c61c244d069e463"
+    },
+    {
+      "path": "foundation4/run-native.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/run-native.py",
+      "bytes": 3462,
+      "sha256": "db917e651e3f93382d5b7859e43c05ce5281dc25ebc8838f68f475b4f8367938"
+    },
+    {
+      "path": "foundation4/source-corrections.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/source-corrections.json",
+      "bytes": 622,
+      "sha256": "e8dc9588f86b168f60e9ff53d77ce7cc4ece2097ca5a98ac2a74228fef1217b2"
+    },
+    {
+      "path": "foundation4/source-verified-at-attempt-end.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/source-verified-at-attempt-end.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation4/source-verified-before-native.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/source-verified-before-native.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation4/swift-evidence-carry-forward.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/swift-evidence-carry-forward.json",
+      "bytes": 338,
+      "sha256": "3f8ed6fa4dae180e01e08bacb86bb14b30135bed59a008980d731ca32813315f"
+    },
+    {
+      "path": "foundation4/verify.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation4/verify.py",
+      "bytes": 2024,
+      "sha256": "4db1a79126b30567f188cb0bc52213ae2f835c8d56d057d065cdbded067694bd"
+    },
+    {
+      "path": "foundation5/CBv2AllocatorFootprintTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2AllocatorFootprintTests.log",
+      "bytes": 2222,
+      "sha256": "be17c20b4ce57f6b1af95c8fdf7657e1846475d1ba5f8a489811ea37be6fe488"
+    },
+    {
+      "path": "foundation5/CBv2CheckpointAdmissionTransferTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2CheckpointAdmissionTransferTests.log",
+      "bytes": 1412,
+      "sha256": "d432fdcdc0394d4a0ce93885b9f1822d93034c7dd738d48773093f07d6446c8f"
+    },
+    {
+      "path": "foundation5/CBv2CompleteCheckpointTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2CompleteCheckpointTests.log",
+      "bytes": 2126,
+      "sha256": "4328b4e16768e3d38879844dc987ef7792a2a34ce762f76eb60d7806a0a08c16"
+    },
+    {
+      "path": "foundation5/CBv2EndToEndTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2EndToEndTests.log",
+      "bytes": 4034,
+      "sha256": "2b4afd55615c2e6d227940680eb8044d93b6b9b8d7b7674b1ecdba9c11ca510d"
+    },
+    {
+      "path": "foundation5/CBv2InvarianceTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2InvarianceTests.log",
+      "bytes": 2638,
+      "sha256": "232b863bb2b79e995ffd825cba2bd1232bccafde872ce0c85d86fe893e3b2272"
+    },
+    {
+      "path": "foundation5/CBv2KVResizeTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2KVResizeTests.log",
+      "bytes": 1468,
+      "sha256": "b72751b9d543027be94ad03eb10111f89cc5f5ff2aa3ab7cfda39b6c755f9ca8"
+    },
+    {
+      "path": "foundation5/CBv2KVSharingParityTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2KVSharingParityTests.log",
+      "bytes": 1490,
+      "sha256": "5b779bbe63d6a077e6dd5cd23637bc3eaf7f1eb38f0d07193fe9b6075d412058"
+    },
+    {
+      "path": "foundation5/CBv2PackedPrefillTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PackedPrefillTests.log",
+      "bytes": 4454,
+      "sha256": "1195ec8e2f7d4a3c1b36346444e0e13165a77ee052b952bae9b1cf52c27ab398"
+    },
+    {
+      "path": "foundation5/CBv2PagedAdmissionTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedAdmissionTests.log",
+      "bytes": 3015,
+      "sha256": "76e40233e2d4ee33af5ab29f7b3ca91a59444f5a3f4b5f6504abce3a59ce6de3"
+    },
+    {
+      "path": "foundation5/CBv2PagedBackendTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedBackendTests.log",
+      "bytes": 7740,
+      "sha256": "d6ae4a7963f07026675df7e701eac526be96867c95387c941fbc8d33508161d8"
+    },
+    {
+      "path": "foundation5/CBv2PagedCheckpointAdoptionTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedCheckpointAdoptionTests.log",
+      "bytes": 2835,
+      "sha256": "03586f4b6e3080b6bf179b87f80dd0036b31cc2e2c5739cf0daa375f9ed9f41d"
+    },
+    {
+      "path": "foundation5/CBv2PagedCheckpointStorageTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedCheckpointStorageTests.log",
+      "bytes": 2553,
+      "sha256": "01c7332d9335b0395f4dbad4ed69c84e29f0d84eb846317e8bcbe7390721f676"
+    },
+    {
+      "path": "foundation5/CBv2PagedFrozenChunkGatherTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedFrozenChunkGatherTests.log",
+      "bytes": 1968,
+      "sha256": "ba3670eaf72e5778ee56b8cc4866627fc3e5bfaf72777537300a5fff88ebed5c"
+    },
+    {
+      "path": "foundation5/CBv2PagedGrantTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedGrantTests.log",
+      "bytes": 1825,
+      "sha256": "dd23130be795e46d8ebfdb68cce9ffbd3452a306fd683e5723cdce70c4802348"
+    },
+    {
+      "path": "foundation5/CBv2PagedKernelTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedKernelTests.log",
+      "bytes": 6211,
+      "sha256": "be384af560f550d71c48dcfb66ac95680442696afeb439952dd5fd820a8c0d04"
+    },
+    {
+      "path": "foundation5/CBv2PagedPoolGuardTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedPoolGuardTests.log",
+      "bytes": 4268,
+      "sha256": "3cfe6d297cb84b5206df0f6183b6d7ff5b71e0d060bedf939f2fe57032b9b540"
+    },
+    {
+      "path": "foundation5/CBv2PagedPrefixBlockCacheTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedPrefixBlockCacheTests.log",
+      "bytes": 1786,
+      "sha256": "6d19a572cdb4eae0ed29b5da4952a62d4238ce1877e159c618e9fd583135a1d5"
+    },
+    {
+      "path": "foundation5/CBv2PagedPrefixReuse.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedPrefixReuse.log",
+      "bytes": 3522,
+      "sha256": "37534bd6043cacfc1a8115aed4141431cd7d17fed043bf9c2458d4bfba264498"
+    },
+    {
+      "path": "foundation5/CBv2PagedRuntimeDType.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedRuntimeDType.log",
+      "bytes": 4494,
+      "sha256": "286cd6a49bc887516e250e48b02535bf6be51650b2718864c06c6257ba6f0173"
+    },
+    {
+      "path": "foundation5/CBv2PagedSegmentTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedSegmentTests.log",
+      "bytes": 4695,
+      "sha256": "35daf27903acfedea1097b6d3a530862151c75fc7671fb5877ed5f5a7d5c3221"
+    },
+    {
+      "path": "foundation5/CBv2PagedStorageTelemetryTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PagedStorageTelemetryTests.log",
+      "bytes": 1678,
+      "sha256": "f6612b56f620956815ce3fa3fce4189fbad5cbb5db02530cab3858321e8c79c0"
+    },
+    {
+      "path": "foundation5/CBv2PrefillOutputTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2PrefillOutputTests.log",
+      "bytes": 3124,
+      "sha256": "e889e2f1675b52039f0db34d4fb9d9120ba9af035e98ce6fe22bc7d3a7c91246"
+    },
+    {
+      "path": "foundation5/CBv2ProcessMemoryOwnershipTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2ProcessMemoryOwnershipTests.log",
+      "bytes": 1897,
+      "sha256": "8497122a93c52683c9e0e7d45f4703bef0e6d9fad803ab90e101c0cd3fa3b7e9"
+    },
+    {
+      "path": "foundation5/CBv2QwenMTPIntegrationTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2QwenMTPIntegrationTests.log",
+      "bytes": 6684,
+      "sha256": "1bef2f6c0a6712be38adc8155101455abc926b209b86fc08f00de6dbb91fbb48"
+    },
+    {
+      "path": "foundation5/CBv2RecurrentStateTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2RecurrentStateTests.log",
+      "bytes": 4645,
+      "sha256": "dfadc12374dbe20b213e5c7e33ca9683e3b14d97c6454e8c83dfe965f5ad515e"
+    },
+    {
+      "path": "foundation5/CBv2SchedulerAdmissionTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2SchedulerAdmissionTests.log",
+      "bytes": 6681,
+      "sha256": "d5e868295fa9b35ba051b1283d2d1f30d40c405c43e0742aea230196d5693198"
+    },
+    {
+      "path": "foundation5/CBv2TeacherForcedScoringTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/CBv2TeacherForcedScoringTests.log",
+      "bytes": 1872,
+      "sha256": "7b265953f2bbeb4d1692f95c54245c2dbe39cdf0751fd0510c07b54f0bf1c275"
+    },
+    {
+      "path": "foundation5/Qwen35InlineMTPLoaderTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/Qwen35InlineMTPLoaderTests.log",
+      "bytes": 4961,
+      "sha256": "936143ffe19f4a9c40c5d0dbb389620a719fa9535d3dfd5178de9e2e293141d6"
+    },
+    {
+      "path": "foundation5/Qwen35PagedExecutionTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/Qwen35PagedExecutionTests.log",
+      "bytes": 1618,
+      "sha256": "87046165a4982cb736555758d47c383f937e376a12f34fba6dfac160e284051f"
+    },
+    {
+      "path": "foundation5/attempt-result-summary.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/attempt-result-summary.json",
+      "bytes": 7459,
+      "sha256": "cc275254ef7012510aa8c3c84163aa40483db95823e6e4b3b1a8d4e2c97cc7ca"
+    },
+    {
+      "path": "foundation5/cpp-evidence-carry-forward.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/cpp-evidence-carry-forward.json",
+      "bytes": 318,
+      "sha256": "f521de315355f254d6469131827470b2ac4212613098f92613f0266ad4921dc2"
+    },
+    {
+      "path": "foundation5/dependency-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/dependency-source-manifest.json",
+      "bytes": 161733,
+      "sha256": "b5ec6d939f44741d2c66ce2bf64af5bd6084b5cfd23ed67b8f2a760346cd1d28"
+    },
+    {
+      "path": "foundation5/design.md",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/design.md",
+      "bytes": 6842,
+      "sha256": "d18d61abea1f63df3b8520aa657b5db204d2a2d06722588e3609128ba320e764"
+    },
+    {
+      "path": "foundation5/execution-scope.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/execution-scope.json",
+      "bytes": 292,
+      "sha256": "82dcd8bac2c9d39fd4c857ef4ede66370ab35df9a5496782578c8372821f0c32"
+    },
+    {
+      "path": "foundation5/integration.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/integration.json",
+      "bytes": 3617,
+      "sha256": "f404a4962ba14df167670077cc316fb43786aabaa1e73ccf0f50fb881e135a15"
+    },
+    {
+      "path": "foundation5/native-Package.resolved",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-Package.resolved",
+      "bytes": 8825,
+      "sha256": "4bf9d78d1ce65d7458d881a7f27854da04c728fff7f6fe429a9255e9245ebaef"
+    },
+    {
+      "path": "foundation5/native-Package.swift",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-Package.swift",
+      "bytes": 11426,
+      "sha256": "eb2fbb7594ac45c4d01630f9021076911de4dc49aa205a4599391bf911fa47eb"
+    },
+    {
+      "path": "foundation5/native-actual-build-graph-after.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-actual-build-graph-after.yaml.gz",
+      "bytes": 319642,
+      "sha256": "51d2649429d1521d175ddeb973c379331d0af57ee9c85519d03979a815948d8c"
+    },
+    {
+      "path": "foundation5/native-actual-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-actual-build-graph.yaml.gz",
+      "bytes": 319834,
+      "sha256": "506c32fa0d702fb63c38f107f5f750500f226f8e0cf1a0f409c92e44f191b478"
+    },
+    {
+      "path": "foundation5/native-actual-package-state-after.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-actual-package-state-after.json",
+      "bytes": 17072,
+      "sha256": "85917b5688670c2f5a3bf3e918710a5e135830bbf5e3261d61473a303e98851d"
+    },
+    {
+      "path": "foundation5/native-actual-package-state.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-actual-package-state.json",
+      "bytes": 17072,
+      "sha256": "85917b5688670c2f5a3bf3e918710a5e135830bbf5e3261d61473a303e98851d"
+    },
+    {
+      "path": "foundation5/native-build.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-build.log",
+      "bytes": 469781,
+      "sha256": "e80b1d04d8c30caff1f431b8f6872728d035bbf34b79f843a248dfca49cd472f"
+    },
+    {
+      "path": "foundation5/native-compiler-source-proof.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-compiler-source-proof.json",
+      "bytes": 1670502,
+      "sha256": "8e44b2af3c4d6b914888a7e12921824beef7f40da6d4dad256f30403b565fe03"
+    },
+    {
+      "path": "foundation5/native-execution.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-execution.json",
+      "bytes": 13166,
+      "sha256": "2823b012baa1293df76822cd7552303152c3ad2b56f02533c959bbe5817495ce"
+    },
+    {
+      "path": "foundation5/native-filters.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-filters.json",
+      "bytes": 898,
+      "sha256": "bc4c26c5e4d9c9bc640e5793a6807bf365557b3a0971b0cb26d9b35f82033588"
+    },
+    {
+      "path": "foundation5/native-final-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-final-build-graph.yaml.gz",
+      "bytes": 319642,
+      "sha256": "51d2649429d1521d175ddeb973c379331d0af57ee9c85519d03979a815948d8c"
+    },
+    {
+      "path": "foundation5/native-final-package-state.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-final-package-state.json",
+      "bytes": 17072,
+      "sha256": "85917b5688670c2f5a3bf3e918710a5e135830bbf5e3261d61473a303e98851d"
+    },
+    {
+      "path": "foundation5/native-identifiers.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-identifiers.log",
+      "bytes": 130655,
+      "sha256": "05c3ea021e22f09d64499a7a6ad5e64daf718264bf12aef55cb1a3ad0b23744f"
+    },
+    {
+      "path": "foundation5/native-manifest-overlay.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-manifest-overlay.json",
+      "bytes": 302,
+      "sha256": "ea4bbcf2ac1ab1d6b402a1b3a8e3e38d2777f05e05a9171129e6da6f2e2dbf31"
+    },
+    {
+      "path": "foundation5/native-metallib-placement.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-metallib-placement.json",
+      "bytes": 558,
+      "sha256": "9450edba0f21fba2230ed2a337686c0e25f49a231c5138c623ae060de0f0ea73"
+    },
+    {
+      "path": "foundation5/native-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/native-source-manifest.json",
+      "bytes": 58195,
+      "sha256": "4b7eaa08c82dcb6521e3002b9a9e7bf4bcd85ff81f7ab627b90e4fb54dc5b635"
+    },
+    {
+      "path": "foundation5/owned-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/owned-manifest.json",
+      "bytes": 4245,
+      "sha256": "b6eeaa7e422e67de211b8795e5a0f29c4d61e40f21a6656c9659cfcacc95042b"
+    },
+    {
+      "path": "foundation5/owned-source.tar.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/owned-source.tar.gz",
+      "bytes": 65569,
+      "sha256": "1f4ae59fd6bd9c2461a9a10467a5057f80d2cad292f74c1cf4fed59b7766542f"
+    },
+    {
+      "path": "foundation5/partial-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/partial-manifest.json",
+      "bytes": 7013,
+      "sha256": "306abb0b211044cb99713a108de0bbe2ac4a0b58d6dcc562ce876684b67e5846"
+    },
+    {
+      "path": "foundation5/primary-dependency-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/primary-dependency-baseline.json",
+      "bytes": 161404,
+      "sha256": "ba49bc1b2b1b13f5db84b8de6439fc48aeaed8736a882dc52f59b18a513fa6b7"
+    },
+    {
+      "path": "foundation5/primary-native-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/primary-native-baseline.json",
+      "bytes": 57980,
+      "sha256": "7f917f9430dab039b6ada4eec221124af473e5b9f9beae0858f2d6766b067188"
+    },
+    {
+      "path": "foundation5/requested-freeze-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/requested-freeze-manifest.json",
+      "bytes": 11392,
+      "sha256": "7acc7ee5ca21f8e98cf0bf560a73d1a53dd07ed2813dc4bff4a379eb1a71d047"
+    },
+    {
+      "path": "foundation5/root-review.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/root-review.json",
+      "bytes": 1294,
+      "sha256": "0682ba83b1f34dc1ce2dc7db915303a109c08648502884e83c61c244d069e463"
+    },
+    {
+      "path": "foundation5/run-native.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/run-native.py",
+      "bytes": 3603,
+      "sha256": "6ad5feac3cc5765f5c51197b2f8f13d3218a03f38589b9216e2f7bf44a15f51c"
+    },
+    {
+      "path": "foundation5/selected-identifiers.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/selected-identifiers.json",
+      "bytes": 30110,
+      "sha256": "8db519d66ce0aaf0181243604f036b03a899f40fea46657dc98fd74ca8ef7723"
+    },
+    {
+      "path": "foundation5/source-corrections.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/source-corrections.json",
+      "bytes": 358,
+      "sha256": "99d96954f6ba850a1fc0f7db4f477dd58b31170575c3f717cdd5f18ee0d676c4"
+    },
+    {
+      "path": "foundation5/source-verified-after-native.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/source-verified-after-native.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation5/source-verified-at-attempt-end.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/source-verified-at-attempt-end.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation5/source-verified-before-native.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/source-verified-before-native.json",
+      "bytes": 206,
+      "sha256": "99acbeb54c536ffc88dabcda661f92e6055b41818cf7b501a7c5cad1345a1416"
+    },
+    {
+      "path": "foundation5/swift-evidence-carry-forward.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/swift-evidence-carry-forward.json",
+      "bytes": 338,
+      "sha256": "3f8ed6fa4dae180e01e08bacb86bb14b30135bed59a008980d731ca32813315f"
+    },
+    {
+      "path": "foundation5/verify.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation5/verify.py",
+      "bytes": 2024,
+      "sha256": "e917873bd89da26689d4922f2e34d3ca09cd6c06d559e4e80369901fcde0bea0"
+    },
+    {
+      "path": "foundation6/CBv2AllocatorFootprintTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2AllocatorFootprintTests.log",
+      "bytes": 3180,
+      "sha256": "40e7558da602482c235c3a9149c55694a78fa8c144fdcd3bae85450b47d9b35a"
+    },
+    {
+      "path": "foundation6/CBv2CheckpointAdmissionTransferTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2CheckpointAdmissionTransferTests.log",
+      "bytes": 1412,
+      "sha256": "8d6b4f987ed0c61b4792fa466d4ea819c91c3c1d7e776919c2f43328974b2f6e"
+    },
+    {
+      "path": "foundation6/CBv2CompleteCheckpointTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2CompleteCheckpointTests.log",
+      "bytes": 2126,
+      "sha256": "5d9bfdb53f31e8ea60be60b384c78b39698ca7beedc0808b65a32f215901cd5c"
+    },
+    {
+      "path": "foundation6/CBv2EndToEndTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2EndToEndTests.log",
+      "bytes": 4034,
+      "sha256": "a6af13bcd1b58531d942a1924f1bf876894613216e6f0e778034774f35f89bd1"
+    },
+    {
+      "path": "foundation6/CBv2InvarianceTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2InvarianceTests.log",
+      "bytes": 2638,
+      "sha256": "97ea6d2fee17e52f982f55b4de451196f06ce7ea703aa60a8fdd64c8ae13ed17"
+    },
+    {
+      "path": "foundation6/CBv2KVResizeTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2KVResizeTests.log",
+      "bytes": 1468,
+      "sha256": "667df55083820ee31e52bbd0b08e6586906619dba261dbce9fd20e64596e0d92"
+    },
+    {
+      "path": "foundation6/CBv2KVSharingParityTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2KVSharingParityTests.log",
+      "bytes": 1490,
+      "sha256": "b15311783b6d3ec14d66f1b0eef06c3e150b2fbd94d09ad44a2bd2c75156c7c5"
+    },
+    {
+      "path": "foundation6/CBv2PackedPrefillTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PackedPrefillTests.log",
+      "bytes": 4454,
+      "sha256": "02ab0a400133d4c105216f7406cd151247b22b5a64eedaa64c006d818cf16aef"
+    },
+    {
+      "path": "foundation6/CBv2PagedAdmissionTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedAdmissionTests.log",
+      "bytes": 3015,
+      "sha256": "04e0fab70cc1310b3cd92f75fb84efaf2c3c4a41447894defff5381dace85bf7"
+    },
+    {
+      "path": "foundation6/CBv2PagedBackendTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedBackendTests.log",
+      "bytes": 7740,
+      "sha256": "b9cdc78bbb7b588671282cf0686e5201421970976d4327c6a43fa79979c8975c"
+    },
+    {
+      "path": "foundation6/CBv2PagedCheckpointAdoptionTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedCheckpointAdoptionTests.log",
+      "bytes": 2835,
+      "sha256": "e89c07bc5000fd8c6981ff50e1bc46823eafa70accd386acbcda65931bfe3a4d"
+    },
+    {
+      "path": "foundation6/CBv2PagedCheckpointStorageTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedCheckpointStorageTests.log",
+      "bytes": 2553,
+      "sha256": "e50271126ad043a9b0a6d4fe01d9862a7e72d9bb5e6586ec5ecc3444bd405ccb"
+    },
+    {
+      "path": "foundation6/CBv2PagedFrozenChunkGatherTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedFrozenChunkGatherTests.log",
+      "bytes": 1968,
+      "sha256": "f356bac92c56db2f908de421c2912e2351515ac8c26f773ba4cdecfc0dee2cb4"
+    },
+    {
+      "path": "foundation6/CBv2PagedGrantTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedGrantTests.log",
+      "bytes": 1396,
+      "sha256": "9615a8c91df01508457941344397666b892e4eff71346b615b37f6016e234d13"
+    },
+    {
+      "path": "foundation6/CBv2PagedKernelTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedKernelTests.log",
+      "bytes": 6211,
+      "sha256": "6ead8ddf375a069eeac0136e9ecefc5b3dbabb616e8c93ca7e466eedf7583606"
+    },
+    {
+      "path": "foundation6/CBv2PagedPoolGuardTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedPoolGuardTests.log",
+      "bytes": 4268,
+      "sha256": "22ba60c0aa4832af2a26eeed7696f362040c682cfb8a0187277098990953c82a"
+    },
+    {
+      "path": "foundation6/CBv2PagedPrefixBlockCacheTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedPrefixBlockCacheTests.log",
+      "bytes": 1786,
+      "sha256": "3f1a7dffa5e564bc403782beec233629c29298362ddf946e1baa87ae4238c5ed"
+    },
+    {
+      "path": "foundation6/CBv2PagedPrefixReuse.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedPrefixReuse.log",
+      "bytes": 3522,
+      "sha256": "a93be11e16826d7b72c6ee84d2ab4d3753e8594a91315bc9306f7bbd308409b9"
+    },
+    {
+      "path": "foundation6/CBv2PagedRuntimeDType.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedRuntimeDType.log",
+      "bytes": 4494,
+      "sha256": "9012b172cbf6a01ee51b6a759f80058466fe2471524edf2b7c13d44236e70c17"
+    },
+    {
+      "path": "foundation6/CBv2PagedSegmentTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedSegmentTests.log",
+      "bytes": 4428,
+      "sha256": "0f1159b203f490bb8d927c8b4604fe9608413ec707eb068c047d8701402eb02f"
+    },
+    {
+      "path": "foundation6/CBv2PagedStorageTelemetryTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PagedStorageTelemetryTests.log",
+      "bytes": 1678,
+      "sha256": "1b2d757e871d7ed51a8530944e991c7e0fc24e3e00cc2b17ac3451bdb4f7a541"
+    },
+    {
+      "path": "foundation6/CBv2PrefillOutputTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2PrefillOutputTests.log",
+      "bytes": 3124,
+      "sha256": "5e2f5bff5f2a63b6214c6524d807f5344da43e5fce2f5850e5bef660608c3397"
+    },
+    {
+      "path": "foundation6/CBv2ProcessMemoryOwnershipTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2ProcessMemoryOwnershipTests.log",
+      "bytes": 1897,
+      "sha256": "7a8ccb41d36ba171be9671d2ed98de0033b09065552f4bf3a11ea78cc60760c5"
+    },
+    {
+      "path": "foundation6/CBv2QwenMTPIntegrationTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2QwenMTPIntegrationTests.log",
+      "bytes": 6684,
+      "sha256": "0724a0443cbb395e6fbd794723f035c40bfb5ac75f12564b0ceef57f1f08b9ff"
+    },
+    {
+      "path": "foundation6/CBv2RecurrentStateTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2RecurrentStateTests.log",
+      "bytes": 4645,
+      "sha256": "24457d2cef4508183dd866f14807778c1125259816b03df6b7e2dd181c046dc9"
+    },
+    {
+      "path": "foundation6/CBv2SchedulerAdmissionTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2SchedulerAdmissionTests.log",
+      "bytes": 6681,
+      "sha256": "d7ee7da15d5b3536ea85141739b0a595b72dd04b70c83759222da801b05b3ccd"
+    },
+    {
+      "path": "foundation6/CBv2TeacherForcedScoringTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/CBv2TeacherForcedScoringTests.log",
+      "bytes": 1872,
+      "sha256": "8f49fe46b62e54bac529511e42dd72b3c78f0db9b1015b9c64721b7c65a1ff2f"
+    },
+    {
+      "path": "foundation6/Qwen35InlineMTPLoaderTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/Qwen35InlineMTPLoaderTests.log",
+      "bytes": 4961,
+      "sha256": "9cfdb77c008beb0c9b6f1c2d3ca60e6833fff7a78e9340ba15f8e1f9d5e96961"
+    },
+    {
+      "path": "foundation6/Qwen35PagedExecutionTests.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/Qwen35PagedExecutionTests.log",
+      "bytes": 1618,
+      "sha256": "197aa7ad6ac61fe42741d486dbac17df54616c977c4f3bbc40aeea4612a225f2"
+    },
+    {
+      "path": "foundation6/bankable-patches.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/bankable-patches.json",
+      "bytes": 2549,
+      "sha256": "9b55fc2bf1b8dc0cae56d8f0ac99f83dc8b7bb4a401b91792daca95138b90db9"
+    },
+    {
+      "path": "foundation6/cpp-evidence-carry-forward.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/cpp-evidence-carry-forward.json",
+      "bytes": 318,
+      "sha256": "f521de315355f254d6469131827470b2ac4212613098f92613f0266ad4921dc2"
+    },
+    {
+      "path": "foundation6/dependency-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/dependency-source-manifest.json",
+      "bytes": 161733,
+      "sha256": "b5ec6d939f44741d2c66ce2bf64af5bd6084b5cfd23ed67b8f2a760346cd1d28"
+    },
+    {
+      "path": "foundation6/design.md",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/design.md",
+      "bytes": 6842,
+      "sha256": "d18d61abea1f63df3b8520aa657b5db204d2a2d06722588e3609128ba320e764"
+    },
+    {
+      "path": "foundation6/environment.txt",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/environment.txt",
+      "bytes": 333,
+      "sha256": "476087c5f0b442dda0ef531db23ce16cbe816f9ae14b996ecb927f62f43a4b67"
+    },
+    {
+      "path": "foundation6/evidence-lineage.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/evidence-lineage.json",
+      "bytes": 1694,
+      "sha256": "fbc254118e59e10db42ceecd433e955fe7226817911672b9392d5a315161993a"
+    },
+    {
+      "path": "foundation6/final-fixture-correction.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/final-fixture-correction.patch",
+      "bytes": 11838,
+      "sha256": "b309c693f36fc37560e31060d11a56c1dd03f3eafbeca62d18f324aaa4475095"
+    },
+    {
+      "path": "foundation6/integration.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/integration.json",
+      "bytes": 3617,
+      "sha256": "fc86f1767da168c7c7c58389e499f7ab73dc33b72cd78754745afb790df4c4d5"
+    },
+    {
+      "path": "foundation6/manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/manifest.json",
+      "bytes": 11036,
+      "sha256": "1028f760d648cae2161f81b0a1be7c9250bca9e39ba7ce44f91dbaac00d5dc4e"
+    },
+    {
+      "path": "foundation6/mlx-against-banked.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/mlx-against-banked.patch",
+      "bytes": 6427,
+      "sha256": "88c75b38eab5fa0c64e6fdfc947085fc5a7355e75e72aa99bbccb22a08ace9ba"
+    },
+    {
+      "path": "foundation6/mlx-c-against-banked.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/mlx-c-against-banked.patch",
+      "bytes": 2245,
+      "sha256": "b15579a494f35c538ea6f2bea006b9d9fb23084533fb2de34e52ea54f7b86c8d"
+    },
+    {
+      "path": "foundation6/native-Package.resolved",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-Package.resolved",
+      "bytes": 8825,
+      "sha256": "4bf9d78d1ce65d7458d881a7f27854da04c728fff7f6fe429a9255e9245ebaef"
+    },
+    {
+      "path": "foundation6/native-Package.swift",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-Package.swift",
+      "bytes": 11426,
+      "sha256": "eb2fbb7594ac45c4d01630f9021076911de4dc49aa205a4599391bf911fa47eb"
+    },
+    {
+      "path": "foundation6/native-actual-build-graph-after.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-actual-build-graph-after.yaml.gz",
+      "bytes": 319642,
+      "sha256": "105ea1b876a7800a76736b31d37e04a7b51e7741e296ae00d4230672b63e6a09"
+    },
+    {
+      "path": "foundation6/native-actual-build-graph-final.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-actual-build-graph-final.yaml.gz",
+      "bytes": 319642,
+      "sha256": "105ea1b876a7800a76736b31d37e04a7b51e7741e296ae00d4230672b63e6a09"
+    },
+    {
+      "path": "foundation6/native-actual-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-actual-build-graph.yaml.gz",
+      "bytes": 319835,
+      "sha256": "098243d0f6b4396990846721dbe1763ba0cfb7bb22284e629df610ca0f3914b9"
+    },
+    {
+      "path": "foundation6/native-actual-package-state-after.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-actual-package-state-after.json",
+      "bytes": 17072,
+      "sha256": "85917b5688670c2f5a3bf3e918710a5e135830bbf5e3261d61473a303e98851d"
+    },
+    {
+      "path": "foundation6/native-actual-package-state-final.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-actual-package-state-final.json",
+      "bytes": 17072,
+      "sha256": "85917b5688670c2f5a3bf3e918710a5e135830bbf5e3261d61473a303e98851d"
+    },
+    {
+      "path": "foundation6/native-actual-package-state.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-actual-package-state.json",
+      "bytes": 17072,
+      "sha256": "85917b5688670c2f5a3bf3e918710a5e135830bbf5e3261d61473a303e98851d"
+    },
+    {
+      "path": "foundation6/native-against-banked.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-against-banked.patch",
+      "bytes": 61913,
+      "sha256": "ae9a73a60b20a3e46cb3f2b77e91a91e9f3d38a4096260c41f8a3fa0cc6573db"
+    },
+    {
+      "path": "foundation6/native-build.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-build.log",
+      "bytes": 468502,
+      "sha256": "2cb2e976253d2daadb2d521bbdd3667232b09526740781912ca1a36dcbea9f64"
+    },
+    {
+      "path": "foundation6/native-compiler-source-proof.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-compiler-source-proof.json",
+      "bytes": 1670502,
+      "sha256": "4bfdf7c50c2c4fc387721a2334dd61b9e0f975a06890f74da2cd1340319fa389"
+    },
+    {
+      "path": "foundation6/native-execution.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-execution.json",
+      "bytes": 13166,
+      "sha256": "327d44a298dce4c06382c214ea6f51e8f86085771c2f01c8c21faab8df0efb44"
+    },
+    {
+      "path": "foundation6/native-filters.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-filters.json",
+      "bytes": 898,
+      "sha256": "bc4c26c5e4d9c9bc640e5793a6807bf365557b3a0971b0cb26d9b35f82033588"
+    },
+    {
+      "path": "foundation6/native-identifiers.log",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-identifiers.log",
+      "bytes": 130655,
+      "sha256": "05c3ea021e22f09d64499a7a6ad5e64daf718264bf12aef55cb1a3ad0b23744f"
+    },
+    {
+      "path": "foundation6/native-manifest-overlay.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-manifest-overlay.json",
+      "bytes": 302,
+      "sha256": "ea4bbcf2ac1ab1d6b402a1b3a8e3e38d2777f05e05a9171129e6da6f2e2dbf31"
+    },
+    {
+      "path": "foundation6/native-metallib-placement.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-metallib-placement.json",
+      "bytes": 558,
+      "sha256": "9450edba0f21fba2230ed2a337686c0e25f49a231c5138c623ae060de0f0ea73"
+    },
+    {
+      "path": "foundation6/native-source-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/native-source-manifest.json",
+      "bytes": 58195,
+      "sha256": "54efb8d12c0a7f54f0e5947f76508bf824d32a990bf801d203595de267b0a247"
+    },
+    {
+      "path": "foundation6/owned-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/owned-manifest.json",
+      "bytes": 4497,
+      "sha256": "44e00141be332480455a4795c0a8da0b5e27f8721856f0c346e1c87945016b4e"
+    },
+    {
+      "path": "foundation6/owned-source.tar.gz",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/owned-source.tar.gz",
+      "bytes": 71180,
+      "sha256": "4bb833182b86479f03964394df1ee33816115b379cfb1de5e80d4540da6c53e4"
+    },
+    {
+      "path": "foundation6/package-evidence.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/package-evidence.py",
+      "bytes": 8201,
+      "sha256": "8aecb4ac3cd0eada137d75cb53ea14b7f424e0204184822ac8b6edac432b6aac"
+    },
+    {
+      "path": "foundation6/primary-dependency-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/primary-dependency-baseline.json",
+      "bytes": 161404,
+      "sha256": "ba49bc1b2b1b13f5db84b8de6439fc48aeaed8736a882dc52f59b18a513fa6b7"
+    },
+    {
+      "path": "foundation6/primary-native-baseline.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/primary-native-baseline.json",
+      "bytes": 57980,
+      "sha256": "7f917f9430dab039b6ada4eec221124af473e5b9f9beae0858f2d6766b067188"
+    },
+    {
+      "path": "foundation6/requested-freeze-manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/requested-freeze-manifest.json",
+      "bytes": 11392,
+      "sha256": "7acc7ee5ca21f8e98cf0bf560a73d1a53dd07ed2813dc4bff4a379eb1a71d047"
+    },
+    {
+      "path": "foundation6/root-review.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/root-review.json",
+      "bytes": 1294,
+      "sha256": "0682ba83b1f34dc1ce2dc7db915303a109c08648502884e83c61c244d069e463"
+    },
+    {
+      "path": "foundation6/run-native.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/run-native.py",
+      "bytes": 3603,
+      "sha256": "b8db426fa9e6432f823bfa2885130198c9b21be6347365b73750e4da203baf76"
+    },
+    {
+      "path": "foundation6/selected-identifiers.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/selected-identifiers.json",
+      "bytes": 59959,
+      "sha256": "dedd5f07dd7200edd8d574d78fd4e6a2b4511e40bbd9a9bcc7573c6df08e6fd0"
+    },
+    {
+      "path": "foundation6/source-corrections.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/source-corrections.json",
+      "bytes": 837,
+      "sha256": "04688c628aa34505a126b4bea858d20b8390dab28cae477740a2386b59bd2cd9"
+    },
+    {
+      "path": "foundation6/source-verified-after-native.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/source-verified-after-native.json",
+      "bytes": 206,
+      "sha256": "e1a44a2f49d843a7be0fc49b955127d40cd7905ea12cb5487acd9acbb45f0928"
+    },
+    {
+      "path": "foundation6/source-verified-before-native.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/source-verified-before-native.json",
+      "bytes": 206,
+      "sha256": "e1a44a2f49d843a7be0fc49b955127d40cd7905ea12cb5487acd9acbb45f0928"
+    },
+    {
+      "path": "foundation6/swift-against-banked.patch",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/swift-against-banked.patch",
+      "bytes": 8126,
+      "sha256": "dccbd68773cf4db1da03f456fbe0e6a24f588b9e4289941f9e413fbbbb94801f"
+    },
+    {
+      "path": "foundation6/swift-evidence-carry-forward.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/swift-evidence-carry-forward.json",
+      "bytes": 338,
+      "sha256": "3f8ed6fa4dae180e01e08bacb86bb14b30135bed59a008980d731ca32813315f"
+    },
+    {
+      "path": "foundation6/test-binary.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/test-binary.json",
+      "bytes": 274,
+      "sha256": "1c27b2821cb0ad925460736eb4047c49c14eea2f1959a627c77c43d6d63635aa"
+    },
+    {
+      "path": "foundation6/verdict.json",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/verdict.json",
+      "bytes": 6123,
+      "sha256": "1ecfe87d12e8e0934a69ba96114a095363d2110a6b23e386f5ac38043a10b786"
+    },
+    {
+      "path": "foundation6/verify.py",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation6/verify.py",
+      "bytes": 2024,
+      "sha256": "c19de167ac58edfddad55ed980f19576b613bf1ab545803b79e39d9afaf11ecc"
+    },
+    {
+      "path": "original-source/allocator-footprint/manifest.json",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/manifest.json",
+      "bytes": 11392,
+      "sha256": "7acc7ee5ca21f8e98cf0bf560a73d1a53dd07ed2813dc4bff4a379eb1a71d047"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx-c/files/mlx/c/array.cpp",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx-c/files/mlx/c/array.cpp",
+      "bytes": 17457,
+      "sha256": "cc0bf53a75fc07dfb4e4d6cfc458686b57d9a426af645df25ef9ebfafc1937ea"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx-c/files/mlx/c/array.h",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx-c/files/mlx/c/array.h",
+      "bytes": 10642,
+      "sha256": "0c04e62448dece35cdfe862f48e2c921fd4aa6fae44f7f6d38808dee1d51c63a"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx-c/files/mlx/c/memory.cpp",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx-c/files/mlx/c/memory.cpp",
+      "bytes": 3034,
+      "sha256": "2be242147ff29db4e7d4432a12a24c643d060cf9eec503517e09cd3b7c34eb40"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx-c/files/mlx/c/memory.h",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx-c/files/mlx/c/memory.h",
+      "bytes": 1290,
+      "sha256": "eeaa48f2527a1fa39ce03f7f61ff1bed965ac5cba95a290e894385b96afd1c17"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx-c/source.patch",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx-c/source.patch",
+      "bytes": 2429,
+      "sha256": "0538ce345ae55f6b49db9dd77ab42a0b6547b079dc066cf71abe2623593e7ea2"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx/files/mlx/backend/common/allocation_footprint.h",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx/files/mlx/backend/common/allocation_footprint.h",
+      "bytes": 1102,
+      "sha256": "bff38d5da7648632c6feeb4f7dc2304a145a60e676d4c24f14d64b906673f11c"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx/files/mlx/backend/common/buffer_cache.h",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx/files/mlx/backend/common/buffer_cache.h",
+      "bytes": 3846,
+      "sha256": "fd9386b1a85ea3fe2c29a2172447af1b5feef27714deb1d144a6b3ffb7a977c4"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx/files/mlx/backend/cuda/allocator.cpp",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx/files/mlx/backend/cuda/allocator.cpp",
+      "bytes": 12196,
+      "sha256": "a3918ec4e28c70375894888bb479f980f3a52ba2b4ccb8a2a1af6c48ac5aaa76"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx/files/mlx/backend/metal/allocator.cpp",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx/files/mlx/backend/metal/allocator.cpp",
+      "bytes": 11345,
+      "sha256": "6a8dfa10cea016e2fa4da28dbaea5bdd6bc4accc7d05decabbad26ba71f7260d"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx/files/mlx/backend/no_gpu/allocator.cpp",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx/files/mlx/backend/no_gpu/allocator.cpp",
+      "bytes": 5356,
+      "sha256": "7fa97782db03a3ce72b19a88be55b97feb572d191d539cfa47777b15167274e6"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx/files/mlx/memory.h",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx/files/mlx/memory.h",
+      "bytes": 3270,
+      "sha256": "bd1dec2e2a6eab18bd99d1cb9c538cd50e5fdbeb82e86accb2b3c8207cdaf113"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx/files/tests/allocator_tests.cpp",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx/files/tests/allocator_tests.cpp",
+      "bytes": 6579,
+      "sha256": "113aa057325f5946732dea9d2aae86a49f7ec68a9c42874c65335da867e7929e"
+    },
+    {
+      "path": "original-source/allocator-footprint/mlx/source.patch",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/mlx/source.patch",
+      "bytes": 6975,
+      "sha256": "f625f7de0403245e68e4f1849ab4f97057ae2773559aa693ff16d06ce2e7b84a"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionCheckpointTransfer.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionCheckpointTransfer.swift",
+      "bytes": 2881,
+      "sha256": "f59ac1b8698d762b651feaa45711164b2b23f984de477c971d6a5a849c1af96e"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift",
+      "bytes": 58631,
+      "sha256": "42baf5723df0c285d9205322676150f72b0cac244a50900710f88a5ac40ee784"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVGrant.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVGrant.swift",
+      "bytes": 4163,
+      "sha256": "50c8e9813e7f46a9b4fc9d2658a76ecbb17507604e3fb7d48ecd49dd54573df7"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVGroup.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVGroup.swift",
+      "bytes": 20295,
+      "sha256": "ad58c8cb373b0194ecce0946ab22762df21e3b390baf7d2eccc908127d3a1e9a"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool+CheckpointImport.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool+CheckpointImport.swift",
+      "bytes": 7003,
+      "sha256": "2c78a518756e2dc27b81cd6e6632955995bd5a608d1c91ecd0ad8e3c431acc4d"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool+Segments.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool+Segments.swift",
+      "bytes": 11573,
+      "sha256": "52e9bff58cefdd23b6441f23e661290d617ac561d10ebcd7719f86f437fdf8aa"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift",
+      "bytes": 11063,
+      "sha256": "f99cacc99a29e3ef25efaa975bfa823512550cb0372b0f835f388ae6bbf87d04"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/PagedCheckpointFrame.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/PagedCheckpointFrame.swift",
+      "bytes": 3330,
+      "sha256": "fc689dcb62136791875332dfe4f1704198608a30fa4ba28cd5d69d35dcf45809"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/PagedCheckpointStorage.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/PagedCheckpointStorage.swift",
+      "bytes": 8876,
+      "sha256": "6505da643e7659791dff51b57c574da8dd69a89cf41e29005f2ee6e7dd3daf25"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Tests/MLXLMTests/CBv2AllocatorFootprintTests.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Tests/MLXLMTests/CBv2AllocatorFootprintTests.swift",
+      "bytes": 10494,
+      "sha256": "95c20b4f411e49a3f51f0a8a01558f2cb84d548a9f16c658211887cba3d3758f"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Tests/MLXLMTests/CBv2PagedAdmissionTests.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Tests/MLXLMTests/CBv2PagedAdmissionTests.swift",
+      "bytes": 21064,
+      "sha256": "059025140c4b5ff46fd5d6196ecf2400ef215abea16777bcf99bf2a3a872c3e4"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Tests/MLXLMTests/CBv2PagedCheckpointAdoptionTests.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Tests/MLXLMTests/CBv2PagedCheckpointAdoptionTests.swift",
+      "bytes": 14323,
+      "sha256": "5d784be077bbee93752ec16bfe5f5f11dce0c6870b28022b1641b1a8bb03094e"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Tests/MLXLMTests/CBv2PagedCheckpointStorageTests.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Tests/MLXLMTests/CBv2PagedCheckpointStorageTests.swift",
+      "bytes": 8098,
+      "sha256": "e7362e774c776a0b7e2d2c5b1dbb104b83c9ac6395ae493ae95d0c445daf12e5"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Tests/MLXLMTests/CBv2PagedStorageTelemetryTests.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Tests/MLXLMTests/CBv2PagedStorageTelemetryTests.swift",
+      "bytes": 8053,
+      "sha256": "3215619fb59fc46069b434e05f3308de76545516fb8c19553ac7634440388e6b"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/files/Tests/MLXLMTests/CBv2ProcessMemoryOwnershipTests.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/files/Tests/MLXLMTests/CBv2ProcessMemoryOwnershipTests.swift",
+      "bytes": 10967,
+      "sha256": "1624900e1e7603778388d9a21bd4e8aad8d44c7ec5f212f606f94daa368b97fc"
+    },
+    {
+      "path": "original-source/allocator-footprint/native/source.patch",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/native/source.patch",
+      "bytes": 50054,
+      "sha256": "209064d8df8191bb1a0c6ff8f458fa153149de1d618ce94d3f82953c0f737176"
+    },
+    {
+      "path": "original-source/allocator-footprint/swift/files/Source/Cmlx/include-framework/mlx-c-array.h",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/swift/files/Source/Cmlx/include-framework/mlx-c-array.h",
+      "bytes": 10658,
+      "sha256": "d29b51bb4756cedeca32760aa3c4acd7c33127d92f5c2d29e7429ead8b624800"
+    },
+    {
+      "path": "original-source/allocator-footprint/swift/files/Source/Cmlx/include-framework/mlx-c-memory.h",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/swift/files/Source/Cmlx/include-framework/mlx-c-memory.h",
+      "bytes": 1330,
+      "sha256": "4dc94c94a391124432b9c666d9d7f001d68de291d3e966e59a428cb4cb439977"
+    },
+    {
+      "path": "original-source/allocator-footprint/swift/files/Source/Cmlx/include-framework/mlx-memory.h",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/swift/files/Source/Cmlx/include-framework/mlx-memory.h",
+      "bytes": 3149,
+      "sha256": "b0ff31f6b242b8e1714e57e61dfd6cdfda84073ccb63dec84c31dae1c6b4cc62"
+    },
+    {
+      "path": "original-source/allocator-footprint/swift/files/Source/Cmlx/include/mlx/c/array.h",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/swift/files/Source/Cmlx/include/mlx/c/array.h",
+      "bytes": 10642,
+      "sha256": "0c04e62448dece35cdfe862f48e2c921fd4aa6fae44f7f6d38808dee1d51c63a"
+    },
+    {
+      "path": "original-source/allocator-footprint/swift/files/Source/Cmlx/include/mlx/c/memory.h",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/swift/files/Source/Cmlx/include/mlx/c/memory.h",
+      "bytes": 1290,
+      "sha256": "eeaa48f2527a1fa39ce03f7f61ff1bed965ac5cba95a290e894385b96afd1c17"
+    },
+    {
+      "path": "original-source/allocator-footprint/swift/files/Source/MLX/AllocationFootprint.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/swift/files/Source/MLX/AllocationFootprint.swift",
+      "bytes": 1981,
+      "sha256": "1b9adcd6a5c2d2bb33b5367200eb7817da6b4342d1a31d623198b9a9cc767c75"
+    },
+    {
+      "path": "original-source/allocator-footprint/swift/files/Tests/MLXTests/AllocationFootprintTests.swift",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/swift/files/Tests/MLXTests/AllocationFootprintTests.swift",
+      "bytes": 3025,
+      "sha256": "850b8fa369392e79765ef2a5ea9aa0d16c5055abf7f206b381d045404493dc8d"
+    },
+    {
+      "path": "original-source/allocator-footprint/swift/source.patch",
+      "source": "/tmp/darkbloom-allocator-footprint/freeze1/swift/source.patch",
+      "bytes": 8582,
+      "sha256": "27d2a6f8ed719ae8baaf43d6a1a08c114170fb7978597da6aa45041db968248d"
+    },
+    {
+      "path": "original-source/native-process-memory/manifest.json",
+      "source": "/tmp/darkbloom-native-process-memory/freeze1/manifest.json",
+      "bytes": 2691,
+      "sha256": "1e2b3da2ba5eabb87bdd4264ff674be6aecd3880a8830f5764fba15b04d8dfd9"
+    },
+    {
+      "path": "ownership-diagnostic/build.log",
+      "source": "/tmp/darkbloom-footprint-ownership-diagnostic1/build.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "ownership-diagnostic/diagnostic.cpp",
+      "source": "/tmp/darkbloom-footprint-ownership-diagnostic1/diagnostic.cpp",
+      "bytes": 2079,
+      "sha256": "9a709f07572033922597012b0a860f3734a91ccb631346fbcb8302265a8d055d"
+    },
+    {
+      "path": "ownership-diagnostic/execution.json",
+      "source": "/tmp/darkbloom-footprint-ownership-diagnostic1/execution.json",
+      "bytes": 1052,
+      "sha256": "7c9490387571bdfd08c3eb884fae0ede354d14a6c9c651c95f18561df61d9a5b"
+    },
+    {
+      "path": "ownership-diagnostic/linked-inputs/array.h",
+      "source": "/tmp/darkbloom-allocator-footprint-foundation1/deps/mlx-swift/Source/Cmlx/mlx/mlx/array.h",
+      "bytes": 17893,
+      "sha256": "5c90807aa44226c557c5bda740bdc1732109810e8862697ad5d374092669db65"
+    },
+    {
+      "path": "ownership-diagnostic/manifest.json",
+      "source": "/tmp/darkbloom-footprint-ownership-diagnostic1/manifest.json",
+      "bytes": 1399,
+      "sha256": "56496219d0b6938e8e9b6ae9522080b3d41116c4cc41f59500910609c3740939"
+    },
+    {
+      "path": "ownership-diagnostic/overlay/mlx/array.h",
+      "source": "/tmp/darkbloom-footprint-ownership-diagnostic1/overlay/mlx/array.h",
+      "bytes": 17973,
+      "sha256": "3ce688db9aa7ce4ec88780cd1201a795dbc19ed3678706676d17fd0833d7cdb8"
+    },
+    {
+      "path": "ownership-diagnostic/run.log",
+      "source": "/tmp/darkbloom-footprint-ownership-diagnostic1/run.log",
+      "bytes": 46311,
+      "sha256": "3667ee8e7ddc7a1822972d68792c1eb8fadbbedabea6ecb57610a69144175561"
+    },
+    {
+      "path": "ownership-diagnostic/summary.json",
+      "source": "/tmp/darkbloom-footprint-ownership-diagnostic1/summary.json",
+      "bytes": 695,
+      "sha256": "68604b3c3624916d6fc3c1cb3b1ee809c5112bc525b1ccc9ed42714b62db7aa2"
+    }
+  ]
+}

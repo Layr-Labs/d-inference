@@ -1,0 +1,134 @@
+{
+  "xctest_tests": 162,
+  "swift_testing_tests": 70,
+  "suites": [
+    {
+      "suite": "CBv2TokenRadixIndexTests",
+      "xctest": 3,
+      "swift_testing": 0,
+      "log": "CBv2TokenRadixIndexTests.txt.gz",
+      "sha256": "c9af4c760b1ae4e45be1aa431b5e2c5622b24177fea7b2789ee5954e1767084a"
+    },
+    {
+      "suite": "CBv2HybridPrefixCacheTests",
+      "xctest": 8,
+      "swift_testing": 0,
+      "log": "CBv2HybridPrefixCacheTests.txt.gz",
+      "sha256": "3ac25bd88ea341b1fd6c52a573e2f7ee2b43e4c6527d9f2d07650de1d36f18f5"
+    },
+    {
+      "suite": "CBv2RecurrentStateTests",
+      "xctest": 14,
+      "swift_testing": 0,
+      "log": "CBv2RecurrentStateTests.txt.gz",
+      "sha256": "b61d2bc4e76bffd76075bc8b289fa5a91432e0ea5bf86f30783a1da8a881e2c4"
+    },
+    {
+      "suite": "Qwen35MTPDraftTrimTests",
+      "xctest": 0,
+      "swift_testing": 14,
+      "log": "Qwen35MTPDraftTrimTests.txt.gz",
+      "sha256": "af1149302439d7e77fa95782471c60179c476fd5f9fc608115d8cf11945cbf88"
+    },
+    {
+      "suite": "CBv2FrozenReplayPlanTests",
+      "xctest": 10,
+      "swift_testing": 0,
+      "log": "CBv2FrozenReplayPlanTests.txt.gz",
+      "sha256": "cbd315dd7e138652484c7fb1dab691aa17c3f9d5ad8a59c493f3bf2600af1b61"
+    },
+    {
+      "suite": "CBv2QwenMTPIntegrationTests",
+      "xctest": 0,
+      "swift_testing": 29,
+      "log": "CBv2QwenMTPIntegrationTests.txt.gz",
+      "sha256": "947437d2f021a24b8a3293b9cdbef780e0286067476e10496d6ffba8e0896a66"
+    },
+    {
+      "suite": "CBv2FirstTokenWorkProjectionTests",
+      "xctest": 12,
+      "swift_testing": 0,
+      "log": "CBv2FirstTokenWorkProjectionTests.txt.gz",
+      "sha256": "23ab8f4552898b8542d989151edede2cc079043d11728a1dabe67613817984e6"
+    },
+    {
+      "suite": "CBv2FirstTokenDeadlineEngineTests",
+      "xctest": 16,
+      "swift_testing": 0,
+      "log": "CBv2FirstTokenDeadlineEngineTests.txt.gz",
+      "sha256": "01719b6ee8ddb7c0869ab14b760bc0340af5f2a1f3787228a5ad85908060a051"
+    },
+    {
+      "suite": "CBv2SchedulerTests",
+      "xctest": 20,
+      "swift_testing": 0,
+      "log": "CBv2SchedulerTests.txt.gz",
+      "sha256": "76fadc4d10f6fca213e80324802cc8786f03de5816f33003cf2440984f90135a"
+    },
+    {
+      "suite": "CBv2SchedulerAdmissionTests",
+      "xctest": 23,
+      "swift_testing": 0,
+      "log": "CBv2SchedulerAdmissionTests.txt.gz",
+      "sha256": "bd1ceb9df9f838dae9460b1a0643f3d492aa162b27169f8542d1098227b544bc"
+    },
+    {
+      "suite": "CBv2SchedulerSpeculationTests",
+      "xctest": 12,
+      "swift_testing": 0,
+      "log": "CBv2SchedulerSpeculationTests.txt.gz",
+      "sha256": "f80c939334bc1598edf93661bc4cf60f8d7eea73724911e6979df36828e593bf"
+    },
+    {
+      "suite": "CBv2SchedulerLoopTests",
+      "xctest": 37,
+      "swift_testing": 0,
+      "log": "CBv2SchedulerLoopTests.txt.gz",
+      "sha256": "67e05c6108af3b191218e7ac011ef07a542e2161595d77db705c4748d75e7654"
+    },
+    {
+      "suite": "CBv2SchedulerStreamTests",
+      "xctest": 7,
+      "swift_testing": 0,
+      "log": "CBv2SchedulerStreamTests.txt.gz",
+      "sha256": "168cfcb8b282d2292405142dfeb44ab05b745cfae1b2af364e47e4cd4927a122"
+    },
+    {
+      "suite": "CBv2PagedPrefixBlockCacheTests",
+      "xctest": 0,
+      "swift_testing": 6,
+      "log": "CBv2PagedPrefixBlockCacheTests.txt.gz",
+      "sha256": "42b311fbb231f27a3e70ae4d1ae949b34045afec821f6168dd6d49192360681f"
+    },
+    {
+      "suite": "CBv2PagedPrefixLeakTests",
+      "xctest": 0,
+      "swift_testing": 4,
+      "log": "CBv2PagedPrefixLeakTests.txt.gz",
+      "sha256": "0c08e4540e8d3b414727064a44a97a3be7705bd63b48826dc91e5b0cb5dccc45"
+    },
+    {
+      "suite": "CBv2PagedPoolGuardTests",
+      "xctest": 0,
+      "swift_testing": 17,
+      "log": "CBv2PagedPoolGuardTests.txt.gz",
+      "sha256": "1ffc6ab9e48af96c1f0330552b97ff543d25993c0354f56016eb2311871b6407"
+    }
+  ],
+  "commands": "From libs/mlx-swift-lm: swift build --scratch-path ../../provider-swift/.build --build-tests --jobs 4 --disable-automatic-resolution; stage matching regular mlx.metallib in xctest/Contents/MacOS; ../../scripts/run-nested-suite.sh <type> --scratch-path ../../provider-swift/.build",
+  "corrections": [
+    "Fixed three new test compile diagnostics (async semaphore polling and task sendability).",
+    "CBv2PrefixReusePlanTests is a filename; the actual test class is CBv2FrozenReplayPlanTests. The zero-test gate rejected the former.",
+    "Cancellation race fixture initially omitted maxConcurrentPartialPrefills=1, causing deadline-unreachable before restoration; corrected precondition and donor checks passed the targeted rerun."
+  ],
+  "setup_failures_retained": [
+    {
+      "log": "qwen-fixture-before-correction.txt.gz",
+      "uncompressed_sha256": "f1ec14cbb28b09dd36948289ed892645ef98561ea7ad1a3f7046795f07037704"
+    },
+    {
+      "log": "provider-signing-fixture-rerun.txt.gz",
+      "uncompressed_sha256": "5a3799abc5ad5299ee770edddf670879280d8cdd3e3bf353743d3b76d64bd834"
+    }
+  ]
+}

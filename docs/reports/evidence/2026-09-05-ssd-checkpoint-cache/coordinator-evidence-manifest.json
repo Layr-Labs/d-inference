@@ -1,0 +1,116 @@
+{
+  "schema": 1,
+  "scope": "Go checkpoint-mode capability, negotiation echo, exact durable-boundary validation and local simulated routing only; no provider SSD/model or live two-machine result",
+  "recorded_utc": "2026-09-05T07:03:06.633239+00:00",
+  "base_commit": "fa4ffada63581fbfc14cb161b7cd9591b91eeed2",
+  "base_tree": "e328779ebe66ec8a18bd00f6b1a18c70849b8108",
+  "toolchain": "go1.25.0",
+  "source_files": [
+    {
+      "path": "coordinator/api/provider_wire.go",
+      "bytes": 3731,
+      "sha256": "c2bbf48e5850fca98c79cf79e966eb1c6cc3d47c4ca47dd75a2fe4746e1d3856"
+    },
+    {
+      "path": "coordinator/api/provider_wire_test.go",
+      "bytes": 4729,
+      "sha256": "ec5411bd8fc69d029244f1c026cfb3db82370cbf8b82101fd3f134472fc3c863"
+    },
+    {
+      "path": "coordinator/protocol/messages.go",
+      "bytes": 61496,
+      "sha256": "f70b677a2d33e5c1717e61d1a92e77acd2d081cfbdfa655008ab25f73bbf5b4a"
+    },
+    {
+      "path": "coordinator/protocol/prefix_cache_v2_test.go",
+      "bytes": 5722,
+      "sha256": "7b0f902a3f7f7e790ba727fcdd016b73ac72f36a1eeb4437c5d6b6f8684272f5"
+    },
+    {
+      "path": "coordinator/registry/cache_capabilities_v2.go",
+      "bytes": 6760,
+      "sha256": "55e9e404d6fa7f12850e3f2eb85f83cbeda8c87074c0f50173b05b077457a457"
+    },
+    {
+      "path": "coordinator/registry/cache_checkpoint_test.go",
+      "bytes": 11039,
+      "sha256": "d4c39b08390604fbc182015170163a0fc5dd26ab58d2489184c5bef86def079c"
+    },
+    {
+      "path": "coordinator/registry/cache_eligibility.go",
+      "bytes": 10029,
+      "sha256": "2c2a5cb693352e1c76833b6719885cdb48ca2718dcdd5ec5b355d9108bc95223"
+    },
+    {
+      "path": "coordinator/registry/cache_receipts.go",
+      "bytes": 8601,
+      "sha256": "997b58db9ffe6e2b6d9868571fdb9c4d2a26fc6991dbab0058a694dd81ea3bc2"
+    },
+    {
+      "path": "coordinator/registry/cache_receipts_v2.go",
+      "bytes": 14705,
+      "sha256": "ccf9a89ac05425d63c473171e983223d107b6569d5c6a314b6f2ee20a78e79eb"
+    },
+    {
+      "path": "coordinator/registry/cache_routing.go",
+      "bytes": 10937,
+      "sha256": "bcfe8117dc6d3bdb5b22eb05f795d0738314531288d99d8e2a23cf9b8d8761c5"
+    },
+    {
+      "path": "coordinator/registry/cache_snapshot.go",
+      "bytes": 4636,
+      "sha256": "955dd184d0c40c270e7c814e08ca1dabd02ddf4b130e0f5ec2ce0ee5887e62f0"
+    },
+    {
+      "path": "coordinator/registry/cache_tiers.go",
+      "bytes": 2512,
+      "sha256": "3b0892c2009289065e44320b7a86dc6e40d5543592293d566ab04bbf75f0d0a2"
+    },
+    {
+      "path": "coordinator/registry/registry.go",
+      "bytes": 255138,
+      "sha256": "8b2d465b46e466142b0d2847c156403c3fe8b5b4fcd63061605eaae56a34fbbe"
+    }
+  ],
+  "commands": [
+    "GOTOOLCHAIN=go1.25.0 go test ./coordinator/...",
+    "GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry ./coordinator/registry/routingsim ./coordinator/protocol",
+    "GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'ProviderInferenceWire|ProviderInferenceFrame' -count=1",
+    "GOTOOLCHAIN=go1.25.0 go test ./coordinator/registry ./coordinator/protocol ./coordinator/api -run 'Checkpoint|ProviderInferenceWire|ProviderInferenceFrame' -count=1"
+  ],
+  "logs": [
+    {
+      "path": "coordinator-full.txt.gz",
+      "sha256": "4f89b3a7f5c9627e2a47e30c8b2b815a4850bc403562e0cf5b127b3bfd7699dd",
+      "raw_sha256": "6af41875b43fd54bc3646c276b30a75882c6130f535979f56f105d8cd07f6ede",
+      "tested_packages": 25,
+      "passed": true
+    },
+    {
+      "path": "coordinator-race.txt.gz",
+      "sha256": "bc24c98a948126114ba39b86f497f747b111175ebc62eed2843237b364af1784",
+      "raw_sha256": "1c0378ab1e403eb4459f71bf9bc442b8393bd770eb9dc96687d77da8c81cd7a8",
+      "tested_packages": 3,
+      "passed": true
+    },
+    {
+      "path": "coordinator-wire-race.txt.gz",
+      "sha256": "28905b3d9cdaf6462c930b5106bfb63ecf6a545329f60cbabf9740204ba1aa65",
+      "raw_sha256": "c6aaf6a5735a835c609bb1c7f6e07276df84254ab83d6779790de6c789e324ea",
+      "tested_packages": 1,
+      "passed": true
+    },
+    {
+      "path": "coordinator-focused.txt.gz",
+      "sha256": "991d0a424d8f3ec2f43d2bb628e2fa87ce3dce135b61774d31372ad17ffff217",
+      "raw_sha256": "70096a7d495989c9470eb42a1fdd3b796465994b6b8fac2de0350f800b684dff",
+      "tested_packages": 3,
+      "passed": true
+    }
+  ],
+  "limitations": [
+    "Swift provider changes are not included in this Go milestone and have not been semantically validated here.",
+    "No production calls, GPU runs, or live multi-machine coordinator measurement.",
+    "The macOS linker emitted an existing LC_DYSYMTAB warning in the passing API race build."
+  ]
+}

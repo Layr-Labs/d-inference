@@ -15,9 +15,18 @@ extension CoordinatorClient {
         sendTextFrame(json, on: connection, identifier: identifier)
     }
 
+    private func rejectInvalidInferenceRequest(requestId: String, profile: RequestProfileBuilder) {
+        let response = encodeInferenceError(
+            requestId: requestId,
+            failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+            profile: profile.wireObject())
+        sendOnCurrentConnection(response, identifier: "inference_error")
+    }
+
     internal func handleIncomingFrame(
         _ data: Data,
-        receivedAt: ContinuousClock.Instant
+        receivedAt: ContinuousClock.Instant,
+        profileAnchor: SuspendingClock.Instant = .now
     ) async {
         let parsed: CoordinatorMessage
         do {
@@ -28,6 +37,12 @@ extension CoordinatorClient {
         }
 
         switch parsed {
+        case .modelsReplaceAck(let ack):
+            completeModelReplacement(ack)
+        case .modelsReplaceResumed(let ack):
+            completeModelReplacementReadiness(ack)
+        case .drainAck(let id):
+            if drainAcknowledgements[id] != nil { eventContinuation?.yield(.drainAck(id)) }
         case .inferenceRequest(let request):
             let requestId = request.requestId
             // The receive callback anchored this before executor scheduling,
@@ -38,15 +53,17 @@ extension CoordinatorClient {
                     relativeBudgetMilliseconds: $0,
                     receivedAt: receivedAt)
             }
+            // Profiler accumulator, created UNCONDITIONALLY (a request without
+            // a first-content budget still gets a profile) and anchored on the
+            // suspending instant taken in the receive callback.
+            let profile = RequestProfileBuilder(
+                suspendingAnchor: profileAnchor,
+                continuousAnchor: receivedAt)
             logger.info("Received inference request: \(requestId)")
 
             guard let encrypted = request.encryptedBody else {
                 logger.error("Rejecting plaintext inference request: \(requestId)")
-                let errorResponse = encodeInferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
-                )
-                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile)
                 return
             }
 
@@ -56,21 +73,13 @@ extension CoordinatorClient {
             // ephemeral pubkey (32 bytes).
             guard let cipherBytes = Data(base64Encoded: encrypted.ciphertext) else {
                 logger.error("Rejecting inference request \(requestId): ciphertext is not valid base64")
-                let errorResponse = encodeInferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
-                )
-                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile)
                 return
             }
             let senderKeyBytes = Data(base64Encoded: encrypted.ephemeralPublicKey)
             if senderKeyBytes == nil || senderKeyBytes?.count != 32 {
                 logger.error("Rejecting inference request \(requestId): invalid ephemeral public key")
-                let errorResponse = encodeInferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
-                )
-                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile)
                 return
             }
 
@@ -81,9 +90,12 @@ extension CoordinatorClient {
                 cacheReceiptNonce: request.cacheReceiptNonce,
                 cacheScope: request.cacheScope,
                 prefixCacheProtocol: request.prefixCacheProtocol,
+                cacheReceiptBoundaryMode: request.cacheReceiptBoundaryMode,
+                cacheRepeatedPrefixTokens: request.cacheRepeatedPrefixTokens,
                 toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol,
                 firstContentDeadline: firstContentDeadline,
-                receivedAt: receivedAt
+                receivedAt: receivedAt,
+                profile: profile
             ))
 
         case .cancel(let cancel):
@@ -113,7 +125,7 @@ extension CoordinatorClient {
                 model: advertisedModelStore.models.first { $0.id == probe.model },
                 ttft: ttft,
                 visionLimits: VisionTowerBudget.liveLimits,
-                refusingNewWork: state.refusingNewWork))
+                refusingNewWork: state.refusingNewWork(forModel: probe.model)))
             do {
                 let json = try ProviderProtocolCodec.encodeProviderMessageString(
                     .capacityQuote(quote))
@@ -130,6 +142,9 @@ extension CoordinatorClient {
                 nonce: challenge.nonce,
                 timestamp: challenge.timestamp
             ))
+
+        case .appAttestShadow(let payload):
+            eventContinuation?.yield(.appAttestShadow(payload))
 
         case .codeAttestationResumeChallenge(let challenge):
             eventContinuation?.yield(
@@ -165,11 +180,13 @@ extension CoordinatorClient {
             eventContinuation?.yield(.desiredModels(entries: dm.models))
 
         case .trustStatus(let ts):
-            logger.info("Trust status from coordinator: level=\(ts.trustLevel) status=\(ts.status) reason=\(ts.reason)")
+            // ProviderLoop logs decision changes; periodic lease renewals
+            // still reach the state file without duplicate log messages.
             eventContinuation?.yield(.trustStatus(
                 trustLevel: ts.trustLevel,
                 status: ts.status,
-                reason: ts.reason
+                reason: ts.reason,
+                authorization: ts.authorization
             ))
         }
     }

@@ -104,12 +104,14 @@ func reconnectWithStagedChain(t *testing.T, serial, sePubKey string) (*Server, *
 	// Simulate reconnect: the store has a durable chain; RestoreProviderState stages
 	// it (capping trust to self_signed). Hardware is then re-earned live.
 	chainJSON, _ := json.Marshal(chain)
-	reg.RestoreProviderState(p, &store.ProviderRecord{
+	if err := reg.RestoreProviderState(p, &store.ProviderRecord{
 		ID:           "prov-mda",
 		TrustLevel:   string(registry.TrustHardware),
 		MDAVerified:  true,
 		MDACertChain: chainJSON,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	p.SetAttested(true, registry.TrustHardware)
 	return srv, p, restore
 }
@@ -150,7 +152,7 @@ func TestVerifyAppleDeviceAttestation_CachedShortCircuit(t *testing.T) {
 
 	ar := p.GetAttestationResult()
 	// udid is non-empty: if the cache path did NOT short-circuit, execution would
-	// fall through to s.mdmClient.SendDeviceAttestationCommand and panic on nil.
+	// fall through to s.mdmClient.RequestDeviceAttestation and panic on nil.
 	srv.verifyAppleDeviceAttestation(context.Background(), "prov-mda", p, *ar, "some-udid")
 
 	if !mdaVerified(p) {

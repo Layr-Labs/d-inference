@@ -33,15 +33,15 @@ public struct LocalInferenceHTTPConfig: Sendable {
 }
 
 /// The concrete responder stack the local endpoint always uses:
-/// auth (outermost) → CORS → MTP-augmented /metrics → chat-upload
+/// disconnect ownership → auth → CORS → MTP-augmented /metrics → chat-upload
 /// interception (32 MiB body ceiling for the media-bearing chat routes, see
 /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
 public typealias LocalInferenceApplication =
     Application<
-        LocalAuthResponder<
+        LocalDisconnectResponder<LocalAuthResponder<
             CORSResponder<
                 LocalMetricsResponder<
-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>
+                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -70,6 +70,7 @@ func makeLocalInferenceApplication(
     tokenizerProvider: @escaping @Sendable (String?) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution,
     availableModels: @escaping @Sendable () async -> [String],
     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
+    responseTracker: LocalResponseTracker? = nil,
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
@@ -79,6 +80,9 @@ func makeLocalInferenceApplication(
     // shared model registry, response store, or metrics identity.
     let responseStore = InMemoryResponseStore()
     let metrics = ServerMetrics()
+    // One authenticated local application, not a request-controlled identity
+    // or a credential-derived value. Existing model cache scopes are unchanged.
+    let nativeCacheScope = "local-native-" + UUID().uuidString
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService = {
         controls in
         let engine = MultiModelBatchSchedulerEngine(
@@ -86,7 +90,8 @@ func makeLocalInferenceApplication(
             tokenizerProvider: tokenizerProvider,
             availableModels: availableModels,
             defaultMaxTokens: defaultMaxTokens,
-            templateControls: controls
+            templateControls: controls,
+            nativeLocalCacheScope: nativeCacheScope
         )
         return MLXOpenAIService(
             engine: engine, responseStore: responseStore, metrics: metrics)
@@ -107,12 +112,12 @@ func makeLocalInferenceApplication(
     let metricsResponder = LocalMetricsResponder(
         inner: uploadResponder, service: service, mtpSlots: mtpSlots)
     let corsResponder = CORSResponder(inner: metricsResponder)
-    // Auth is the outermost layer so an unauthenticated request is rejected
-    // before reaching the engine. Pass-through when no token is configured.
+    // Auth rejects unauthenticated requests before body/model handling. The
+    // outer disconnect layer only binds lifetime; it does not inspect content.
     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
 
     return Application(
-        responder: authedResponder,
+        responder: LocalDisconnectResponder(inner: authedResponder, responseTracker: responseTracker),
         configuration: .init(
             address: .hostname(config.host, port: Int(config.port)),
             serverName: "darkbloom-provider"

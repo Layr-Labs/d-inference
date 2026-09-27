@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "scope": "share-safe GPT/QAT default HTTP B1 projection",
+  "files": {
+    "report.md": {
+      "sha256": "efdb6659a0b8f696fc3946c526e06cdd22d993f3bd2566bf42c94c3d4bc6e9e0",
+      "bytes": 3268
+    },
+    "evidence.json": {
+      "sha256": "aaea690e8729176ff870d5decf10b178855c90e9c4a73fdd24365eb83730c0f8",
+      "bytes": 8872
+    }
+  },
+  "excluded": [
+    "full prompts",
+    "HTTP output text",
+    "provider config contents and fixture credentials",
+    "model weights",
+    "runtime binaries",
+    "private cache paths"
+  ]
+}

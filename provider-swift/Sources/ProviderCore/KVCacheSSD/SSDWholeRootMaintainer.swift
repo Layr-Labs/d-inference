@@ -12,6 +12,12 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
         var tempFilesRemoved = 0
     }
 
+    struct Stats: Sendable, Equatable {
+        var ttlExpired = 0
+        var budgetEvicted = 0
+        var tempFilesRemoved = 0
+    }
+
     static let shared = SSDWholeRootMaintainer()
 
     private struct OwnedFile {
@@ -34,6 +40,11 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
     }
 
     private let maintenanceLock = NSLock()
+    // Heartbeat snapshots must not wait for filesystem traversal or epoch I/O.
+    private let statsLock = NSLock()
+    private var totals = Stats()
+
+    func statsSnapshot() -> Stats { statsLock.withLock { totals } }
     private let tasksLock = NSLock()
     private var periodicTasks: [String: Task<Void, Never>] = [:]
 
@@ -45,8 +56,8 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
         budgetBytes: @escaping @Sendable () -> Int
     ) {
         let key = root.standardizedFileURL.path
-        let shouldStart = tasksLock.withLock { () -> Bool in
-            guard periodicTasks[key] == nil else { return false }
+        tasksLock.withLock {
+            guard periodicTasks[key] == nil else { return }
             periodicTasks[key] = Task.detached(priority: .utility) { [weak self] in
                 while !Task.isCancelled {
                     _ = self?.maintain(
@@ -58,9 +69,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                     try? await taskSleep(.seconds(max(1, intervalSeconds)))
                 }
             }
-            return true
         }
-        if !shouldStart { return }
     }
 
     @discardableResult
@@ -103,13 +112,17 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                             removed.insert(file.url.standardizedFileURL.path)
                         }
                     }
+                    // Neither path rotates the model's cache epoch: an active
+                    // store serializes the unlink with its own removals and
+                    // reconciles its index; an unloaded root only needs the
+                    // epoch record validated under the initialization lock.
                     let completed =
                         SSDDiskBudget.shared.performActiveDestructiveChange(
                             root: modelRoot, mutation)
                         ?? SSDCacheEpochStore.performUnloadedDestructiveChange(
                             root: modelRoot, mutation)
                     if !completed {
-                        // The body never runs unless its epoch barrier succeeds.
+                        // The body never runs unless its maintenance barrier succeeds.
                         continue
                     }
                 }
@@ -158,6 +171,11 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                 }
             }
             result.bytesAfter = total
+            statsLock.withLock {
+                totals.ttlExpired += result.ttlExpired
+                totals.budgetEvicted += result.budgetEvicted
+                totals.tempFilesRemoved += result.tempFilesRemoved
+            }
             return result
         }
     }
@@ -234,7 +252,9 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                         modelRoot: modelDir,
                         bytes: max(0, values.fileSize ?? 0),
                         modifiedAt: Int64(values.contentModificationDate?.timeIntervalSince1970 ?? 0),
-                        metadataReadable: (try? SSDBlockStore.readMetadataOnly(from: url)) != nil))
+                        metadataReadable: (try? SSDBlockStore.readMetadataOnly(
+                            from: url, maximumMetadataBytes: 1 << 20,
+                            maximumWrappedDEKBytes: 60)) != nil))
                 }
             }
         }

@@ -208,8 +208,8 @@ func TestVisionRoutingHelpers(t *testing.T) {
 		Status: StatusOnline,
 		Models: []protocol.ModelInfo{{ID: "gemma-4-26b"}}, // text-only build of the same model
 	}
-	r.providers["p-vis"] = visProv
-	r.providers["p-text"] = textProv
+	insertTestProvider(r, visProv)
+	insertTestProvider(r, textProv)
 
 	r.mu.RLock()
 	visOK := r.providerServesVisionModelLocked(visProv, "gemma-4-26b", false)

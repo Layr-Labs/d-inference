@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "scope": "Runtime B1/B2/B4 benchmark tools and guarded slot grants; no measured concurrent model result claimed",
+  "validation": {
+    "python_command": "python3 -m unittest discover -s scripts/benchmarks -p 'test_*.py'",
+    "python_tests": 28,
+    "harness_semantic_build_seconds": 8.75,
+    "provider_fixture_context": "../request-date-parity-2026-09-05/manifest.json; both SPI budget cases passed in complete72-testbuild4suite; source hashes match",
+    "harness_reproduction_command": "RADIX_SOURCE_ROOT=\"$PWD\" RADIX_CANDIDATE_BUILD=1 swift build --package-path scripts/benchmarks/radix-engine --scratch-path provider-swift/.build --product radix-engine --jobs 4 --disable-automatic-resolution"
+  },
+  "files": {
+    "python-tests.log.gz": {
+      "bytes": 55,
+      "sha256": "9e41c98bacb3f16639a8f75635cccbe5a3612bd406e82c1474c0385b0c0edf39",
+      "uncompressed_bytes": 127,
+      "uncompressed_sha256": "4347bdf0768b30407d78e92b55d056882afa00407e346c11cc075d49fedb9176"
+    },
+    "harness-build.log.gz": {
+      "bytes": 749,
+      "sha256": "5eaecbc98a656862e38711c489dce8cbe754b821889de7810b9edbd26c3840e4",
+      "uncompressed_bytes": 1853,
+      "uncompressed_sha256": "390edce9b7d817045d6afee2975cb9de19670e34aaa2a0b6256877499059b7a8"
+    },
+    "harness-build-source-manifest.json.gz": {
+      "bytes": 387,
+      "sha256": "d1ed83233c9c896a4d3529680cfb76ae9ac77ac9cb21c1eacbd5df8165fbb09c",
+      "uncompressed_bytes": 864,
+      "uncompressed_sha256": "2ca0cc3710f3ac6ee57e464c55bbfc7f73412da9c3b0f5ae32c519fc09a02069"
+    },
+    "source-manifest.json": {
+      "bytes": 1754,
+      "sha256": "f5b7f528e24d563aabe71af916f80df912d6976abeb4a5e3dd0f3ab5c6e32117",
+      "uncompressed_bytes": 1754,
+      "uncompressed_sha256": "f5b7f528e24d563aabe71af916f80df912d6976abeb4a5e3dd0f3ab5c6e32117"
+    }
+  }
+}

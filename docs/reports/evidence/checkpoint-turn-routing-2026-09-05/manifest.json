@@ -1,0 +1,99 @@
+{
+  "scope": "One real-path routing regression; existing cross-machine/receipt/index review. No production change or model measurement.",
+  "review_base": "92a2fc2354fc0856cc84d86253be51e9b4a54ba2",
+  "final_source": {
+    "path": "coordinator/registry/cache_checkpoint_turn_cost_test.go",
+    "bytes": 3691,
+    "sha256": "9530d246d8d4f3d3318e15e3ad4f580d26ee691ec553faa4e07968fe729a5a66"
+  },
+  "files": [
+    {
+      "path": "initial-manifest.json",
+      "source": "/tmp/darkbloom-release-090/checkpoint-turn-audit/manifest.json",
+      "bytes": 4056,
+      "sha256": "0cb62624f54337550dd643096b96a9714f09c95cf0b26d07acbda8a78fe1fab1",
+      "raw_bytes": 4056,
+      "raw_sha256": "0cb62624f54337550dd643096b96a9714f09c95cf0b26d07acbda8a78fe1fab1"
+    },
+    {
+      "path": "final-manifest.json",
+      "source": "/tmp/darkbloom-release-090/checkpoint-turn-audit/final-manifest.json",
+      "bytes": 1704,
+      "sha256": "9023ae9872e0072eb6bdf96e3d0be11a535197d9b15955b952a59f488db0459c",
+      "raw_bytes": 1704,
+      "raw_sha256": "9023ae9872e0072eb6bdf96e3d0be11a535197d9b15955b952a59f488db0459c"
+    },
+    {
+      "path": "review.txt.gz",
+      "source": "/tmp/darkbloom-release-090/checkpoint-turn-audit/review.txt",
+      "bytes": 1522,
+      "sha256": "6a8c9c0e3044f02b75c47c502daa3c03c31f2434c2ad5e878c281ea3a8e72316",
+      "raw_bytes": 2909,
+      "raw_sha256": "4d1718611bfed1ee90200390923bc8ca26de3a8595e318a4df5993b6fa237e56"
+    },
+    {
+      "path": "normal.jsonl.gz",
+      "source": "/tmp/darkbloom-release-090/checkpoint-turn-audit/normal.jsonl",
+      "bytes": 3458,
+      "sha256": "37c7278f302409d9673a45ded4640e47f1d876eab8405c18ebf922e6d9ccf07c",
+      "raw_bytes": 60832,
+      "raw_sha256": "9a79cdd92327ccf8c74cfeab84cd212c221e0772ddf5ecb089d462b5b38e56c6"
+    },
+    {
+      "path": "normal.stderr.gz",
+      "source": "/tmp/darkbloom-release-090/checkpoint-turn-audit/normal.stderr",
+      "bytes": 20,
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "race.jsonl.gz",
+      "source": "/tmp/darkbloom-release-090/checkpoint-turn-audit/race.jsonl",
+      "bytes": 3602,
+      "sha256": "d795f371a94da5681cf3cf32e09bfb5f6cecae358cfde329c0b93ba6d9a1be83",
+      "raw_bytes": 60827,
+      "raw_sha256": "417e181e1f1e338ad3dc56e62de4b440d7e6fa008eb3904e3285a238f6f73dd3"
+    },
+    {
+      "path": "race.stderr.gz",
+      "source": "/tmp/darkbloom-release-090/checkpoint-turn-audit/race.stderr",
+      "bytes": 20,
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "final-normal.jsonl.gz",
+      "source": "/tmp/darkbloom-release-090/checkpoint-turn-audit/final-normal.jsonl",
+      "bytes": 573,
+      "sha256": "d29fea99e189de2fe9cd786e6046fab59367075292b8373714853142ebff379d",
+      "raw_bytes": 6272,
+      "raw_sha256": "77398be6e90c55a00a8c9665015b14d7f741facb06ceadb4fb0f1ddb88dd0760"
+    },
+    {
+      "path": "final-normal.stderr.gz",
+      "source": "/tmp/darkbloom-release-090/checkpoint-turn-audit/final-normal.stderr",
+      "bytes": 20,
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "final-race.jsonl.gz",
+      "source": "/tmp/darkbloom-release-090/checkpoint-turn-audit/final-race.jsonl",
+      "bytes": 586,
+      "sha256": "07d238de118fd8cb653df7a3fad467f1a4d878a7da9cc5187d4013bd47938054",
+      "raw_bytes": 6273,
+      "raw_sha256": "4a01425276b2913c9520ab10b01351f8b632bbf31cb5538b4e8742df3df85bc3"
+    },
+    {
+      "path": "final-race.stderr.gz",
+      "source": "/tmp/darkbloom-release-090/checkpoint-turn-audit/final-race.stderr",
+      "bytes": 20,
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

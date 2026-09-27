@@ -5,6 +5,7 @@ const NAV: { href: string; label: string }[] = [
   { href: "/", label: "Overview" },
   { href: "/users", label: "Users" },
   { href: "/providers", label: "Machines" },
+  { href: "/app-attest", label: "App Attest" },
   { href: "/operators", label: "Operators" },
   { href: "/uptime", label: "Uptime" },
   { href: "/usage", label: "Usage" },

@@ -1,0 +1,356 @@
+{
+  "actual_product_closure_requirements": [
+    "SSDAuthenticatedFileIdentity.swift",
+    "SSDCheckpointFileCoordinator.swift",
+    "SSDHybridCheckpointStore+Read.swift",
+    "SSDHybridCheckpointStore.swift"
+  ],
+  "artifact_audit_executed": false,
+  "audit_script": {
+    "bytes": 58214,
+    "mode": 420,
+    "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/audit.py",
+    "sha256": "4c5b5101517c3c7a5c125cce8bc6990ba1e3b20a9b43a9001830ca8be999bdeb"
+  },
+  "changed_sources_and_unchanged_identity": {
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDAuthenticatedFileIdentity.swift": {
+      "bytes": 1359,
+      "mode": 420,
+      "sha256": "0dbe5273892371c865ae9ce28d8be7f292dd8409cfdd6963933afb53ec96d484"
+    },
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointFileCoordinator.swift": {
+      "bytes": 4358,
+      "mode": 420,
+      "sha256": "bf790f199d0b056ea1f42adac809fb2031e5cd452f76d77f7f252a00eb92791b"
+    },
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Read.swift": {
+      "bytes": 14609,
+      "mode": 420,
+      "sha256": "4a53c31daab783ad2fb9223ea3ae7b171e5ac8984916b70d5751ff9861245d30"
+    },
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore.swift": {
+      "bytes": 7908,
+      "mode": 420,
+      "sha256": "d03d2270f9cc6484cb3f85d60dbc5177c168161a8ec7c39d57b414db24960d1e"
+    },
+    "provider-swift/Tests/ProviderCoreTests/SSDCheckpointCoordinationTestSupport.swift": {
+      "bytes": 1236,
+      "mode": 420,
+      "sha256": "58254150450633f1bb3774eea7ec41d32b8a05a5b9977b3e1b62477318cbaa1f"
+    },
+    "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorPathTests.swift": {
+      "bytes": 5288,
+      "mode": 420,
+      "sha256": "7ae775f93fa270cf4469f0949a03d531d4ce0db8a0d61fe268b9541658d01119"
+    },
+    "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorTests.swift": {
+      "bytes": 4639,
+      "mode": 420,
+      "sha256": "68f04345dbc24f324b88d3c19275abe2c50d8addaba6ce7f1857a14c7acc1aaa"
+    },
+    "provider-swift/Tests/ProviderCoreTests/SSDCheckpointRecencyCoordinationTests.swift": {
+      "bytes": 7066,
+      "mode": 420,
+      "sha256": "135b3f51f3f374d9e5a254d73dce842c52b9469f7e861159cf24b6e84fe613c6"
+    },
+    "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointCoordinationTests.swift": {
+      "bytes": 10090,
+      "mode": 420,
+      "sha256": "9bdd6ec744b0fc6a04de4ae5ed27f1b736d608eae85adc23fdca08cfc0e75be7"
+    },
+    "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointRecencyTests.swift": {
+      "bytes": 3997,
+      "mode": 420,
+      "sha256": "3623fe3ae1a66e2a25fb420541b70bba1a7ca39253fdf7a7faf5624c2a63ebd0"
+    }
+  },
+  "collection_inputs_present": false,
+  "expected_command_groups": 41,
+  "expected_provider_cli": {
+    "expanded_cases": 324,
+    "suites": 30,
+    "test_functions": 270
+  },
+  "inherited_native_compiler": {
+    "expanded_cases": 29,
+    "not_provider_cases": true,
+    "test_functions": 27,
+    "to_be_reverified": true
+  },
+  "limitations": [
+    "Root summary cross-checked against fixed expected counts and actual source suite declarations; raw logs remain unverified until collection.",
+    "No product graph, executable/resource hash, signature, exit/cleanup record, or inherited evidence audit has run for this successor.",
+    "Same-file queue latency and real-model behavior remain unvalidated."
+  ],
+  "missing_input_count": 166,
+  "next_command": "python3 /private/tmp/darkbloom-qwen-coordination-artifact-review1/audit.py --audit-collected",
+  "no_artifacts_models_or_ssh_executed": true,
+  "provider_test_closure_requires_all_30_actual_source_files_and_new_support": true,
+  "raw_suite_logs_verified": false,
+  "reviewed_invariants": [
+    "Per-file process-shared FIFO access holds exclusion until active-read unwind; independent files remain independent.",
+    "Cancellation before enqueue, while queued, and after handoff leaves exactly one continuation owner.",
+    "Known tmp/var aliases are expanded lexically before parent traversal without depending on file existence.",
+    "Reading access object identity prevents stale request cleanup from removing a successor.",
+    "Activity begins while accepted under the store lock; release and scratch close precede activity end.",
+    "TTL and epoch/cancellation are checked after queue wait and before I/O; installation checks cancellation again.",
+    "AuthenticatedFileIdentity is byte-for-byte unchanged; tests retain rejection of external replacement/corruption."
+  ],
+  "runtime_review_emitted": false,
+  "source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+    "parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+    "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+    "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+  },
+  "source_manifest": {
+    "bytes": 1487568,
+    "mode": 420,
+    "path": "/private/tmp/darkbloom-qwen-first-runtime3/source-manifest.json",
+    "sha256": "519caa245117962dccc2b9816fedee6ba831b04f031ff86ab40028790993c35b"
+  },
+  "source_review": {
+    "bytes": 3133,
+    "mode": 420,
+    "path": "/private/tmp/darkbloom-qwen-first-runtime3/source-review.json",
+    "sha256": "469d7d0a97316f29fb6c4ae41a47754cdcb48fd33d8f0eb3817e05624b6233cd"
+  },
+  "source_review_findings": [],
+  "source_scope": {
+    "actual_builder_suite_count": 30,
+    "authentication_identity_git_blob_unchanged": "36767824b5f17bd3cee82926f2f59c1b440817fc",
+    "authentication_identity_sha256": "0dbe5273892371c865ae9ce28d8be7f292dd8409cfdd6963933afb53ec96d484",
+    "builder_script": {
+      "bytes": 7204,
+      "mode": 420,
+      "path": "/private/tmp/darkbloom-qwen-first-runtime3/remote_build.py",
+      "sha256": "a7bc22f2e5dcfd8069e9b6e3ca663c0d855dce513abdc1725d6660a84043fc33"
+    },
+    "changed_implementation_files": [
+      "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointFileCoordinator.swift",
+      "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Read.swift",
+      "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore.swift"
+    ],
+    "counts_are_requirements_not_summary_derived_acceptance": true,
+    "new_test_files": [
+      "provider-swift/Tests/ProviderCoreTests/SSDCheckpointCoordinationTestSupport.swift",
+      "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorPathTests.swift",
+      "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorTests.swift",
+      "provider-swift/Tests/ProviderCoreTests/SSDCheckpointRecencyCoordinationTests.swift",
+      "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointCoordinationTests.swift",
+      "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointRecencyTests.swift"
+    ],
+    "suite_sources": {
+      "BenchmarkSweepExitTests": {
+        "expected_expanded_cases": 10,
+        "expected_functions": 10,
+        "path": "provider-swift/Tests/DarkbloomCLITests/BenchmarkSweepExitTests.swift",
+        "sha256": "8dc5e81c3fa12c4954e688f7b3c4cf20ca26517918a4e72e9ed7f4ab76639180"
+      },
+      "DoctorClearBackendGuardTests": {
+        "expected_expanded_cases": 3,
+        "expected_functions": 3,
+        "path": "provider-swift/Tests/DarkbloomCLITests/DoctorClearBackendGuardTests.swift",
+        "sha256": "240b7a00468c6158aada3824f6c76155763bbc278364174f87c65838761dab5a"
+      },
+      "EngineV2FP32PagedRateTests": {
+        "expected_expanded_cases": 4,
+        "expected_functions": 4,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift",
+        "sha256": "c1d677d753f35a89dace7dce7d401b417bcf1b6066f4341c86b924a53962ce22"
+      },
+      "EngineV2KVBackendFallbackHeartbeatTests": {
+        "expected_expanded_cases": 4,
+        "expected_functions": 4,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+        "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+      },
+      "EngineV2KVBackendGateTests": {
+        "expected_expanded_cases": 62,
+        "expected_functions": 39,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2KVBackendGateTests.swift",
+        "sha256": "4c7e6ea44f308060adc478536a5091c2de4f805bf3aceb6cfe8d4a91fb638b6d"
+      },
+      "EngineV2KVBackendPolicyTests": {
+        "expected_expanded_cases": 28,
+        "expected_functions": 8,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2KVBackendPolicyTests.swift",
+        "sha256": "8f1e47877065f3b6e83284af8e8eb35fb91420d9ccc707948d60860e959adec4"
+      },
+      "EngineV2PagedPoolDTypeEnvTests": {
+        "expected_expanded_cases": 11,
+        "expected_functions": 11,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2PagedPoolDTypeEnvTests.swift",
+        "sha256": "a2a9d2b6ab878999b0bacf59bf9fdea7f2b4ba9e3a86de48fafac71b4eebdba7"
+      },
+      "EngineV2PrefixCacheUsageTests": {
+        "expected_expanded_cases": 6,
+        "expected_functions": 6,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift",
+        "sha256": "c1d677d753f35a89dace7dce7d401b417bcf1b6066f4341c86b924a53962ce22"
+      },
+      "EngineV2RequestRoutingTests": {
+        "expected_expanded_cases": 21,
+        "expected_functions": 21,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+        "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+      },
+      "EngineV2ResliceTests": {
+        "expected_expanded_cases": 8,
+        "expected_functions": 8,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ResliceTests.swift",
+        "sha256": "48aa78d03fb049aa3e8339a5826cf1da1aea00b96438b9742dede5f413584357"
+      },
+      "EngineV2ResliceUnwindTests": {
+        "expected_expanded_cases": 2,
+        "expected_functions": 2,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ResliceUnwindTests.swift",
+        "sha256": "f0a842497be8696e1893eccf7ba97ced5046803389091b90f0b22779d4594820"
+      },
+      "EngineV2ReslicingWiringTests": {
+        "expected_expanded_cases": 8,
+        "expected_functions": 8,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+        "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+      },
+      "EngineV2RuntimeGuardTests": {
+        "expected_expanded_cases": 7,
+        "expected_functions": 7,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+        "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+      },
+      "EngineV2SlotBuildTests": {
+        "expected_expanded_cases": 8,
+        "expected_functions": 8,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+        "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+      },
+      "KVBackendGuardDiagnosticsTests": {
+        "expected_expanded_cases": 9,
+        "expected_functions": 9,
+        "path": "provider-swift/Tests/DarkbloomCLITests/KVBackendGuardDiagnosticsTests.swift",
+        "sha256": "029a8b0341deb8978fecdb2a946c8bfde70427723089ffcccd46ecfa5b919fe6"
+      },
+      "KVBackendPostureTests": {
+        "expected_expanded_cases": 18,
+        "expected_functions": 16,
+        "path": "provider-swift/Tests/DarkbloomCLITests/KVBackendPostureTests.swift",
+        "sha256": "0848af68bf410c457acda953a2b45f21351ddc466a15f60d066e0a1c4ff57612"
+      },
+      "MTPBenchmarkTests": {
+        "expected_expanded_cases": 32,
+        "expected_functions": 32,
+        "path": "provider-swift/Tests/ProviderCoreTests/MTPBenchmarkTests.swift",
+        "sha256": "26f92384cddf3b0bc58382649f9eea6754959992d206405cc83ee1bc27593855"
+      },
+      "PrefillDeadlineProductionConfigTests": {
+        "expected_expanded_cases": 5,
+        "expected_functions": 5,
+        "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+        "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+      },
+      "PrefixCachePolicyTests": {
+        "expected_expanded_cases": 12,
+        "expected_functions": 12,
+        "path": "provider-swift/Tests/ProviderCoreTests/PrefixCachePolicyTests.swift",
+        "sha256": "51821c929b6bfe348c14573b245c8a55b5e8a33a6a7ca0c6d0d1d8d2ceb90fc0"
+      },
+      "SSDBlockStreamingTests": {
+        "expected_expanded_cases": 10,
+        "expected_functions": 10,
+        "path": "provider-swift/Tests/ProviderCoreTests/SSDBlockStreamingTests.swift",
+        "sha256": "5f47e7cb3fba2faf08135003a96d58f9b40f64a2c64b38aac98e4dc91d60fdf6"
+      },
+      "SSDCheckpointFileCoordinatorPathTests": {
+        "expected_expanded_cases": 6,
+        "expected_functions": 4,
+        "new_test_methods": [
+          "existenceChanges",
+          "systemAliases",
+          "lexicalNormalization",
+          "unrelatedPaths"
+        ],
+        "path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorPathTests.swift",
+        "sha256": "7ae775f93fa270cf4469f0949a03d531d4ce0db8a0d61fe268b9541658d01119"
+      },
+      "SSDCheckpointFileCoordinatorTests": {
+        "expected_expanded_cases": 4,
+        "expected_functions": 4,
+        "new_test_methods": [
+          "fifoAndIndependentFiles",
+          "cancelledWaiter",
+          "explicitCancellation",
+          "cancellationHandoff"
+        ],
+        "path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorTests.swift",
+        "sha256": "68f04345dbc24f324b88d3c19275abe2c50d8addaba6ce7f1857a14c7acc1aaa"
+      },
+      "SSDCheckpointLookupTests": {
+        "expected_expanded_cases": 2,
+        "expected_functions": 2,
+        "path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointLookupTests.swift",
+        "sha256": "93135b198691c56c80215fe7845c542d5d946ac9b06103624231cd67c29bbaf3"
+      },
+      "SSDCheckpointRecencyCoordinationTests": {
+        "expected_expanded_cases": 4,
+        "expected_functions": 3,
+        "new_test_methods": [
+          "uncoordinatedSameTimestampReproducer",
+          "coordinatedOverlappingReads",
+          "authenticationIsNotRelaxed"
+        ],
+        "path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointRecencyCoordinationTests.swift",
+        "sha256": "135b3f51f3f374d9e5a254d73dce842c52b9469f7e861159cf24b6e84fe613c6"
+      },
+      "SSDCheckpointStageReservationTests": {
+        "expected_expanded_cases": 3,
+        "expected_functions": 2,
+        "path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointStageReservationTests.swift",
+        "sha256": "d8e9c32c57ed1baefd3c1feb3ce042538a864f005e3dac0c0c59dad7f7acfed3"
+      },
+      "SSDHybridCheckpointCoordinationTests": {
+        "expected_expanded_cases": 10,
+        "expected_functions": 5,
+        "new_test_methods": [
+          "overlappingStages",
+          "activeCancellation",
+          "queuedLifecycle",
+          "queuedValidity",
+          "multipleStoresAndFiles"
+        ],
+        "path": "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointCoordinationTests.swift",
+        "sha256": "9bdd6ec744b0fc6a04de4ae5ed27f1b736d608eae85adc23fdca08cfc0e75be7"
+      },
+      "SSDHybridCheckpointRecencyTests": {
+        "expected_expanded_cases": 1,
+        "expected_functions": 1,
+        "new_test_methods": [
+          "slidingTTLAndRestart"
+        ],
+        "path": "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointRecencyTests.swift",
+        "sha256": "3623fe3ae1a66e2a25fb420541b70bba1a7ca39253fdf7a7faf5624c2a63ebd0"
+      },
+      "SSDHybridCheckpointStoreTests": {
+        "expected_expanded_cases": 12,
+        "expected_functions": 12,
+        "path": "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointStoreTests.swift",
+        "sha256": "02ab92d0c33c5de2ac7545f1bd2dadf9fc6f2c390c45c5fb5fbadc0f92f122f9"
+      },
+      "SSDSharedProcessCheckpointTests": {
+        "expected_expanded_cases": 6,
+        "expected_functions": 6,
+        "path": "provider-swift/Tests/ProviderCoreTests/SSDSharedProcessCheckpointTests.swift",
+        "sha256": "749f5ecda5db0ac36dbbbb49fa60d39785334560d76a5d8b8bbe2a0d992d6ebb"
+      },
+      "SegmentedProductionGrantTests": {
+        "expected_expanded_cases": 8,
+        "expected_functions": 8,
+        "path": "provider-swift/Tests/ProviderCoreTests/SegmentedProductionGrantTests.swift",
+        "sha256": "65b3e32847b393c903c53c17bc5485cb0425e7b005decf8698de156c81f9d482"
+      }
+    }
+  },
+  "state": "PREPARED_SOURCE_SCOPE_CHECKED_AWAITING_COLLECTION"
+}

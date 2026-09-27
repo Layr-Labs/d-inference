@@ -201,17 +201,15 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Pass ?include_builds=1 (ops/debug) to also list the raw quant builds.
-	data, err := s.listModelEntries(r.URL.Query().Get("include_builds") == "1")
+	// The public catalog is the same for every caller (no per-key filtering
+	// applies to it), so the whole response is served from the read cache.
+	body, err := s.cachedModelListBody(r.URL.Query().Get("include_builds") == "1")
 	if err != nil {
 		s.logger.Error("model registry: failed to list active models", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
 		return
 	}
-
-	writeJSON(w, http.StatusOK, types.ModelListResponse{
-		Object: "list",
-		Data:   data,
-	})
+	writeCachedJSON(w, body)
 }
 
 // selfRouteModelEntries assembles the /v1/models view for a self-route-only
@@ -338,7 +336,9 @@ func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("model %q not found", id), withParam("model")))
 		return
 	}
-	data, err := s.listModelEntries(true)
+	// Shares the memoized public catalog with GET /v1/models; the per-id scan
+	// and the alias fallback below stay uncached.
+	data, err := s.cachedModelEntries(true)
 	if err != nil {
 		s.logger.Error("model registry: failed to list active models", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))

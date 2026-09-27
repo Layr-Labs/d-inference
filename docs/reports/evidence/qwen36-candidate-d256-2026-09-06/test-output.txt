@@ -1,0 +1,120 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/autoresearch/radix-prefix-cache/104-release090-correctness1/workspace/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'native': dependency 'async-http-client' is not used by any target
+warning: 'native': dependency 'compress-nio' is not used by any target
+warning: 'native': dependency 'eventsource' is not used by any target
+warning: 'native': dependency 'hummingbird-websocket' is not used by any target
+warning: 'native': dependency 'swift-algorithms' is not used by any target
+warning: 'native': dependency 'swift-asn1' is not used by any target
+warning: 'native': dependency 'swift-async-algorithms' is not used by any target
+warning: 'native': dependency 'swift-atomics' is not used by any target
+warning: 'native': dependency 'swift-certificates' is not used by any target
+warning: 'native': dependency 'swift-crypto' is not used by any target
+warning: 'native': dependency 'swift-distributed-tracing' is not used by any target
+warning: 'native': dependency 'swift-http-structured-headers' is not used by any target
+warning: 'native': dependency 'swift-http-types' is not used by any target
+warning: 'native': dependency 'swift-jinja' is not used by any target
+warning: 'native': dependency 'swift-metrics' is not used by any target
+warning: 'native': dependency 'swift-nio' is not used by any target
+warning: 'native': dependency 'swift-nio-extras' is not used by any target
+warning: 'native': dependency 'swift-nio-http2' is not used by any target
+warning: 'native': dependency 'swift-nio-transport-services' is not used by any target
+warning: 'native': dependency 'swift-numerics' is not used by any target
+warning: 'native': dependency 'swift-service-context' is not used by any target
+warning: 'native': dependency 'swift-service-lifecycle' is not used by any target
+warning: 'native': dependency 'swift-sodium' is not used by any target
+warning: 'native': dependency 'swift-system' is not used by any target
+warning: 'native': dependency 'swift-websocket' is not used by any target
+warning: 'native': dependency 'tomlkit' is not used by any target
+warning: 'native': dependency 'yyjson' is not used by any target
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-09-06 14:26:10.892.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-09-06 14:26:10.893.
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-09-06 14:26:10.893.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-06 14:26:10.893.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "CBv2PagedKernel" started.
+◇ Test qwen36LongDecodeUsesIdenticalStoredValues(dtype:history:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, history → 4094 to qwen36LongDecodeUsesIdenticalStoredValues(dtype:history:) started.
+Q36 oracle bfloat16 fixed attended=4095 paged=0.0016432004 contiguous=0.0016432004 bar=0.01
+Q36 oracle bfloat16 segmented attended=4095 paged=0.0016432004 contiguous=0.0016432004 bar=0.01
+Q36 oracle bfloat16 fixed attended=4096 paged=0.0016669699 contiguous=0.0016669699 bar=0.01
+Q36 oracle bfloat16 segmented attended=4096 paged=0.0016669699 contiguous=0.0016669699 bar=0.01
+Q36 oracle bfloat16 fixed attended=4097 paged=0.0016594355 contiguous=0.0016594355 bar=0.01
+Q36 oracle bfloat16 segmented attended=4097 paged=0.0016594355 contiguous=0.0016594355 bar=0.01
+◇ Test case passing 2 arguments dtype → .bfloat16, history → 5523 to qwen36LongDecodeUsesIdenticalStoredValues(dtype:history:) started.
+Q36 oracle bfloat16 fixed attended=5524 paged=0.001682113 contiguous=0.001682113 bar=0.01
+Q36 oracle bfloat16 segmented attended=5524 paged=0.001682113 contiguous=0.001682113 bar=0.01
+Q36 oracle bfloat16 fixed attended=5525 paged=0.0016498948 contiguous=0.0016498948 bar=0.01
+Q36 oracle bfloat16 segmented attended=5525 paged=0.0016498948 contiguous=0.0016498948 bar=0.01
+Q36 oracle bfloat16 fixed attended=5526 paged=0.0016394855 contiguous=0.0016394855 bar=0.01
+Q36 oracle bfloat16 segmented attended=5526 paged=0.0016394855 contiguous=0.0016394855 bar=0.01
+◇ Test case passing 2 arguments dtype → .bfloat16, history → 5585 to qwen36LongDecodeUsesIdenticalStoredValues(dtype:history:) started.
+Q36 oracle bfloat16 fixed attended=5586 paged=0.0016174999 contiguous=0.0016174999 bar=0.01
+Q36 oracle bfloat16 segmented attended=5586 paged=0.0016174999 contiguous=0.0016174999 bar=0.01
+Q36 oracle bfloat16 fixed attended=5587 paged=0.0016958502 contiguous=0.0016958509 bar=0.01
+Q36 oracle bfloat16 segmented attended=5587 paged=0.0016958502 contiguous=0.0016958509 bar=0.01
+Q36 oracle bfloat16 fixed attended=5588 paged=0.0016716614 contiguous=0.0016716614 bar=0.01
+Q36 oracle bfloat16 segmented attended=5588 paged=0.0016716614 contiguous=0.0016716614 bar=0.01
+◇ Test case passing 2 arguments dtype → .float32, history → 4094 to qwen36LongDecodeUsesIdenticalStoredValues(dtype:history:) started.
+Q36 oracle float32 fixed attended=4095 paged=4.8263064e-07 contiguous=4.6182151e-07 bar=0.01
+Q36 oracle float32 segmented attended=4095 paged=4.8263064e-07 contiguous=4.6182151e-07 bar=0.01
+Q36 oracle float32 fixed attended=4096 paged=4.987056e-07 contiguous=4.78877e-07 bar=0.01
+Q36 oracle float32 segmented attended=4096 paged=4.987056e-07 contiguous=4.78877e-07 bar=0.01
+Q36 oracle float32 fixed attended=4097 paged=4.7619253e-07 contiguous=4.589184e-07 bar=0.01
+Q36 oracle float32 segmented attended=4097 paged=4.7619253e-07 contiguous=4.589184e-07 bar=0.01
+◇ Test case passing 2 arguments dtype → .float32, history → 5523 to qwen36LongDecodeUsesIdenticalStoredValues(dtype:history:) started.
+Q36 oracle float32 fixed attended=5524 paged=5.597762e-07 contiguous=5.514372e-07 bar=0.01
+Q36 oracle float32 segmented attended=5524 paged=5.597762e-07 contiguous=5.514372e-07 bar=0.01
+Q36 oracle float32 fixed attended=5525 paged=5.570177e-07 contiguous=5.3190894e-07 bar=0.01
+Q36 oracle float32 segmented attended=5525 paged=5.570177e-07 contiguous=5.3190894e-07 bar=0.01
+Q36 oracle float32 fixed attended=5526 paged=5.606107e-07 contiguous=5.4650866e-07 bar=0.01
+Q36 oracle float32 segmented attended=5526 paged=5.606107e-07 contiguous=5.4650866e-07 bar=0.01
+◇ Test case passing 2 arguments dtype → .float32, history → 5585 to qwen36LongDecodeUsesIdenticalStoredValues(dtype:history:) started.
+Q36 oracle float32 fixed attended=5586 paged=5.4432473e-07 contiguous=5.2707225e-07 bar=0.01
+Q36 oracle float32 segmented attended=5586 paged=5.4432473e-07 contiguous=5.2707225e-07 bar=0.01
+Q36 oracle float32 fixed attended=5587 paged=5.5546616e-07 contiguous=5.287115e-07 bar=0.01
+Q36 oracle float32 segmented attended=5587 paged=5.5546616e-07 contiguous=5.287115e-07 bar=0.01
+Q36 oracle float32 fixed attended=5588 paged=5.5679317e-07 contiguous=5.41707e-07 bar=0.01
+Q36 oracle float32 segmented attended=5588 paged=5.5679317e-07 contiguous=5.41707e-07 bar=0.01
+✔ Test qwen36LongDecodeUsesIdenticalStoredValues(dtype:history:) with 6 test cases passed after 3.270 seconds.
+◇ Test qwen36LongOracleRejectsBoundaryAndHeadFaults(dtype:salient:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, salient → 4095 to qwen36LongOracleRejectsBoundaryAndHeadFaults(dtype:salient:) started.
+Q36 calibration bfloat16 fixed salient=4095 dropped salient entry error=1.0001388 honest=0.0016899605 bar=0.01
+Q36 calibration bfloat16 fixed salient=4095 swapped GQA groups error=1.9998484 honest=0.0016899605 bar=0.01
+Q36 calibration bfloat16 segmented salient=4095 dropped salient entry error=1.0001388 honest=0.0016899605 bar=0.01
+Q36 calibration bfloat16 segmented salient=4095 swapped GQA groups error=1.9998484 honest=0.0016899605 bar=0.01
+◇ Test case passing 2 arguments dtype → .bfloat16, salient → 5522 to qwen36LongOracleRejectsBoundaryAndHeadFaults(dtype:salient:) started.
+Q36 calibration bfloat16 fixed salient=5522 dropped salient entry error=1.0001415 honest=0.0016899703 bar=0.01
+Q36 calibration bfloat16 fixed salient=5522 swapped GQA groups error=1.9998481 honest=0.0016899703 bar=0.01
+Q36 calibration bfloat16 segmented salient=5522 dropped salient entry error=1.0001415 honest=0.0016899703 bar=0.01
+Q36 calibration bfloat16 segmented salient=5522 swapped GQA groups error=1.9998481 honest=0.0016899703 bar=0.01
+◇ Test case passing 2 arguments dtype → .bfloat16, salient → 5523 to qwen36LongOracleRejectsBoundaryAndHeadFaults(dtype:salient:) started.
+Q36 calibration bfloat16 fixed salient=5523 dropped salient entry error=1.0001343 honest=0.0016870892 bar=0.01
+Q36 calibration bfloat16 fixed salient=5523 swapped GQA groups error=1.9998481 honest=0.0016870892 bar=0.01
+Q36 calibration bfloat16 segmented salient=5523 dropped salient entry error=1.0001343 honest=0.0016870892 bar=0.01
+Q36 calibration bfloat16 segmented salient=5523 swapped GQA groups error=1.9998481 honest=0.0016870892 bar=0.01
+◇ Test case passing 2 arguments dtype → .float32, salient → 4095 to qwen36LongOracleRejectsBoundaryAndHeadFaults(dtype:salient:) started.
+Q36 calibration float32 fixed salient=4095 dropped salient entry error=1.0001403 honest=3.6521587e-07 bar=0.01
+Q36 calibration float32 fixed salient=4095 swapped GQA groups error=1.9998487 honest=3.6521587e-07 bar=0.01
+Q36 calibration float32 segmented salient=4095 dropped salient entry error=1.0001403 honest=3.6521587e-07 bar=0.01
+Q36 calibration float32 segmented salient=4095 swapped GQA groups error=1.9998487 honest=3.6521587e-07 bar=0.01
+◇ Test case passing 2 arguments dtype → .float32, salient → 5522 to qwen36LongOracleRejectsBoundaryAndHeadFaults(dtype:salient:) started.
+Q36 calibration float32 fixed salient=5522 dropped salient entry error=1.0001432 honest=1.2827378e-07 bar=0.01
+Q36 calibration float32 fixed salient=5522 swapped GQA groups error=1.9998487 honest=1.2827378e-07 bar=0.01
+Q36 calibration float32 segmented salient=5522 dropped salient entry error=1.0001432 honest=1.2827378e-07 bar=0.01
+Q36 calibration float32 segmented salient=5522 swapped GQA groups error=1.9998487 honest=1.2827378e-07 bar=0.01
+◇ Test case passing 2 arguments dtype → .float32, salient → 5523 to qwen36LongOracleRejectsBoundaryAndHeadFaults(dtype:salient:) started.
+Q36 calibration float32 fixed salient=5523 dropped salient entry error=1.0001358 honest=1.0701295e-07 bar=0.01
+Q36 calibration float32 fixed salient=5523 swapped GQA groups error=1.9998484 honest=1.0701295e-07 bar=0.01
+Q36 calibration float32 segmented salient=5523 dropped salient entry error=1.0001358 honest=1.0701295e-07 bar=0.01
+Q36 calibration float32 segmented salient=5523 swapped GQA groups error=1.9998484 honest=1.0701295e-07 bar=0.01
+✔ Test qwen36LongOracleRejectsBoundaryAndHeadFaults(dtype:salient:) with 6 test cases passed after 2.109 seconds.
+◇ Test qwen36WiderQueryDiagnosticKeepsBothReferences() started.
+Q36 conditional FP32-Q/BF16-KV originalError=0.002369574 roundedError=0.0016781915 queryRoundingError=0.001616033 contiguousError=5.2632925e-07 bar=0.01
+✔ Test qwen36WiderQueryDiagnosticKeepsBothReferences() passed after 0.377 seconds.
+✔ Suite "CBv2PagedKernel" passed after 5.757 seconds.
+✔ Test run with 3 tests in 1 suite passed after 5.757 seconds.

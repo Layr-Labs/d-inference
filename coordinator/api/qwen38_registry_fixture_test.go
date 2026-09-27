@@ -251,6 +251,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 		SIPEnabled:             true,
 		SecureBootEnabled:      true,
 	})
+	provider.CompleteProviderStateRestore() // simulated post-registration fixture
 	provider.Mu().Lock()
 	if provider.Hardware.ChipFamily != "M5" ||
 		!reflect.DeepEqual(provider.ReportedRuntimeCapabilities, signedCapabilities) {

@@ -11,25 +11,61 @@ import (
 )
 
 const (
-	providerWriteQueueSize        = 128
-	providerControlQueueSize      = 64
-	providerWriteMinTimeout       = 5 * time.Second
-	providerWriteMaxTimeout       = 30 * time.Second
-	providerWriteBytesPerSecond   = 2 << 20 // 2 MiB/s (~16 Mbps) floor.
+	providerWriteQueueSize = 128
+	// providerControlQueueSize bounds the priority lane. Its frames are tiny
+	// (cancel / challenge / status, ~100 B) so the cost of depth is nil, while a
+	// full lane silently drops a cancel — the one loss path on the coordinator
+	// side of cancel delivery (inference.cancel_send_failed{reason:queue_full}).
+	providerControlQueueSize    = 256
+	providerWriteMinTimeout     = 5 * time.Second
+	providerWriteMaxTimeout     = 30 * time.Second
+	providerWriteBytesPerSecond = 2 << 20 // 2 MiB/s (~16 Mbps) floor.
+	// providerWriteFragmentBytes is the WebSocket fragment size for data-lane
+	// messages larger than one fragment. nhooyr answers peer pings on its READ
+	// goroutine, under a 5s budget, and that pong needs the per-frame write
+	// lock — so a message must never be one multi-second frame (see
+	// writeFrame). 256 KiB keeps ~100 frames per 20 MiB vision request while
+	// bounding the pong's wait to one fragment's wire time.
+	providerWriteFragmentBytes    = 256 << 10
 	providerControlWriteTimeout   = 5 * time.Second
 	providerWriteWatchdogInterval = 250 * time.Millisecond
 	providerWriteDrainErrorString = "provider websocket writer stopped"
+)
+
+// Writer ownership states are distinct from preparation metadata. Only
+// InFlight, Completed and CanceledInFlight represent an authorized socket handoff.
+const (
+	providerWriteQueued int32 = iota
+	providerWriteCanceledBeforeHandoff
+	providerWriteBuilding
+	providerWriteAwaitingOwner
+	providerWriteInFlight
+	providerWriteCompleted
+	providerWriteRejected
+	providerWriteAuthorizing
+	providerWriteCanceledInFlight
 )
 
 var errProviderWriterStopped = errors.New(providerWriteDrainErrorString)
 var errProviderWriterQueueFull = errors.New("provider websocket writer queue full")
 var errProviderWriteTimeout = errors.New("provider websocket write timeout")
 
+// Exported forms of the writer's sentinel errors so callers can classify a
+// best-effort control-frame failure (cancel delivery metrics) with errors.Is.
+var (
+	ErrProviderWriterQueueFull = errProviderWriterQueueFull
+	ErrProviderWriterStopped   = errProviderWriterStopped
+)
+
 // TextFrameWriteMetadata describes the writer-owned handoff of a deferred
 // frame. The caller receives it synchronously and remains the sole owner of any
 // request-state mutation derived from the handoff.
 type TextFrameWriteMetadata struct {
 	DequeuedAt time.Time
+	// Committed is returned only after the owner acknowledged preparation and
+	// any final authorization check succeeded. Preparation callbacks receive false.
+	// A committed write can still fail or be canceled after socket handoff.
+	Committed bool
 }
 
 // TextFrameBuilder constructs a data-lane frame only after it reaches the head
@@ -40,6 +76,8 @@ type TextFrameBuilder func(dequeuedAt time.Time) ([]byte, error)
 
 // TextFrameHandoff runs synchronously on the submitting goroutine after the
 // writer has built the frame and before it may expose bytes to the socket.
+// It acknowledges preparation, not authorization or delivery. Publish dispatch
+// accounting from the returned TextFrameWriteMetadata.Committed instead.
 type TextFrameHandoff func(TextFrameWriteMetadata)
 
 type providerWriteRequest struct {
@@ -49,8 +87,13 @@ type providerWriteRequest struct {
 	done       chan error
 	handoff    chan TextFrameWriteMetadata
 	handoffAck chan struct{}
-	// 0 queued, 1 canceled, 2 building, 3 awaiting owner ack, 4 writing,
-	// 5 write completed.
+	// beforeWrite is a fast authorization check after building and owner ack,
+	// at the final handoff to the socket. It never holds locks across I/O.
+	beforeWrite func() error
+	// Written before publishing rejected state 6 and then immutable. The
+	// result waiter reads it only after observing that atomic state.
+	rejection error
+	// Uses the providerWrite* ownership states above.
 	state atomic.Int32
 }
 
@@ -66,7 +109,7 @@ type providerWriteRequest struct {
 //   - queue: data frames — inference request bodies (up to ~21 MiB sealed
 //     vision payloads) AND the load_model / prefetch_model / desired_models
 //     commands (SendLoadModel, SendPrefetchModel, SendDesiredModels in
-//     registry.go go through WriteText). Rerouting those model commands to
+//     model_commands.go go through WriteText). Rerouting those model commands to
 //     the control lane is a candidate follow-up; today they share the data
 //     lane.
 //
@@ -87,9 +130,9 @@ type providerWriter struct {
 	acceptMu sync.Mutex
 	dead     atomic.Bool
 
-	// writeDeadline is the UnixNano deadline of the in-flight conn.Write
-	// (0 = no write in progress). Published by writeFrame, enforced by
-	// watchWrites.
+	// writeDeadline is the UnixNano deadline of the in-flight socket write of
+	// one whole message (0 = no write in progress). Published by writeFrame,
+	// enforced by watchWrites.
 	writeDeadline atomic.Int64
 	// writeTimedOut records that the watchdog closed the socket due to a
 	// write deadline, so writeFrame can surface a timeout error instead of
@@ -104,6 +147,7 @@ type providerWriter struct {
 	// afterWriteCompleteForTest pauses after the 4→5 ownership transition and
 	// before publishing done, for deterministic completion/cancellation races.
 	afterWriteCompleteForTest func()
+	afterWriteRejectedForTest func()
 }
 
 func newProviderWriter(conn *websocket.Conn) *providerWriter {
@@ -194,8 +238,16 @@ func (w *providerWriter) writeRequest(
 	req *providerWriteRequest,
 	control bool,
 	onHandoff TextFrameHandoff,
-) (TextFrameWriteMetadata, error) {
-	var metadata TextFrameWriteMetadata
+) (metadata TextFrameWriteMetadata, resultErr error) {
+	// State, rather than error==nil or prepared metadata, is authoritative.
+	// In-flight/completed/canceled-in-flight can only follow final authorization;
+	// canceled preparations and rejected frames never become dispatched attempts.
+	defer func() {
+		switch req.state.Load() {
+		case providerWriteInFlight, providerWriteCompleted, providerWriteCanceledInFlight:
+			metadata.Committed = true
+		}
+	}()
 	ctx, err := w.checkAccept(ctx)
 	if err != nil {
 		return metadata, err
@@ -254,33 +306,33 @@ func (w *providerWriter) writeRequest(
 			}
 			for {
 				switch req.state.Load() {
-				case 0:
-					if !req.state.CompareAndSwap(0, 1) {
+				case providerWriteQueued:
+					if !req.state.CompareAndSwap(providerWriteQueued, providerWriteCanceledBeforeHandoff) {
 						continue
 					}
 					return metadata, ctx.Err()
-				case 2:
+				case providerWriteBuilding:
 					// Cancel a builder without waiting for it. Its immutable
 					// snapshot may finish later, but the 2→3 handoff CAS will
 					// fail and no frame can reach the socket.
-					if !req.state.CompareAndSwap(2, 1) {
+					if !req.state.CompareAndSwap(providerWriteBuilding, providerWriteCanceledBeforeHandoff) {
 						continue
 					}
 					return metadata, ctx.Err()
-				case 3:
+				case providerWriteAwaitingOwner:
 					// The frame is waiting for the submitting owner to
 					// acknowledge its timing metadata. Cancellation wins the
-					// 3→4 transition, so no socket bytes can follow cleanup.
-					if !req.state.CompareAndSwap(3, 1) {
+					// 3→7 transition, so no socket bytes can follow cleanup.
+					if !req.state.CompareAndSwap(providerWriteAwaitingOwner, providerWriteCanceledBeforeHandoff) {
 						continue
 					}
 					return metadata, ctx.Err()
-				case 4:
+				case providerWriteInFlight:
 					// A frame is already in the non-preemptible WebSocket
 					// write. Closing the connection is the only way to return
 					// at the request deadline without letting that frame
 					// outlive dispatch cleanup.
-					if !req.state.CompareAndSwap(4, 1) {
+					if !req.state.CompareAndSwap(providerWriteInFlight, providerWriteCanceledInFlight) {
 						continue
 					}
 					w.closeNow()
@@ -295,12 +347,23 @@ func (w *providerWriter) writeRequest(
 						}
 					}
 					return metadata, ctx.Err()
-				case 5:
+				case providerWriteCompleted:
 					// The complete frame is already on the wire. Keep the
 					// healthy connection and report the authoritative write
 					// result. Request-context cancellation is handled by the
 					// dispatch owner after it takes ownership of the sent frame.
 					return metadata, nil
+				case providerWriteRejected:
+					// Rejection is terminal but does not mean bytes were written.
+					return metadata, req.rejection
+				case providerWriteAuthorizing:
+					// Final authorization may be waiting for registry locks. It
+					// has not exposed bytes; cancel without closing a healthy
+					// socket and prevent the later 7→4 commit.
+					if !req.state.CompareAndSwap(providerWriteAuthorizing, providerWriteCanceledBeforeHandoff) {
+						continue
+					}
+					return metadata, ctx.Err()
 				default:
 					return metadata, ctx.Err()
 				}
@@ -324,8 +387,10 @@ func writeResultAfterWriterStop(
 		return err
 	default:
 	}
-	if req.state.Load() == 5 {
+	if state := req.state.Load(); state == providerWriteCompleted {
 		return nil
+	} else if state == providerWriteRejected {
+		return req.rejection
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -399,12 +464,15 @@ func (w *providerWriter) run() {
 // serve writes one queued frame. It returns false when the writer must exit
 // (write failure): the socket is closed and both lanes are drained first.
 func (w *providerWriter) serve(req *providerWriteRequest) bool {
-	startedState := int32(4)
+	startedState := providerWriteInFlight
+	if req.beforeWrite != nil {
+		startedState = providerWriteAuthorizing
+	}
 	if req.builder != nil {
-		startedState = 2
+		startedState = providerWriteBuilding
 	}
 	if (req.ctx != nil && req.ctx.Err() != nil) ||
-		!req.state.CompareAndSwap(0, startedState) {
+		!req.state.CompareAndSwap(providerWriteQueued, startedState) {
 		if req.done != nil {
 			if req.ctx != nil && req.ctx.Err() != nil {
 				req.done <- req.ctx.Err()
@@ -430,7 +498,7 @@ func (w *providerWriter) serve(req *providerWriteRequest) bool {
 		// handoff. Context cancellation can claim state 2 first, in which case
 		// the builder is allowed to finish but its frame is discarded.
 		if (req.ctx != nil && req.ctx.Err() != nil) ||
-			!req.state.CompareAndSwap(2, 3) {
+			!req.state.CompareAndSwap(providerWriteBuilding, providerWriteAwaitingOwner) {
 			req.handoff <- TextFrameWriteMetadata{}
 			if req.done != nil {
 				if req.ctx != nil && req.ctx.Err() != nil {
@@ -445,7 +513,7 @@ func (w *providerWriter) serve(req *providerWriteRequest) bool {
 		select {
 		case <-req.handoffAck:
 		case <-req.ctx.Done():
-			req.state.CompareAndSwap(3, 1)
+			req.state.CompareAndSwap(providerWriteAwaitingOwner, providerWriteCanceledBeforeHandoff)
 			if req.done != nil {
 				req.done <- req.ctx.Err()
 			}
@@ -456,7 +524,41 @@ func (w *providerWriter) serve(req *providerWriteRequest) bool {
 			}
 			return false
 		}
-		if !req.state.CompareAndSwap(3, 4) {
+		if !req.state.CompareAndSwap(providerWriteAwaitingOwner, providerWriteAuthorizing) {
+			if req.done != nil {
+				if req.ctx != nil && req.ctx.Err() != nil {
+					req.done <- req.ctx.Err()
+				} else {
+					req.done <- context.Canceled
+				}
+			}
+			return true
+		}
+	}
+	if req.beforeWrite != nil {
+		if err := req.beforeWrite(); err != nil {
+			req.rejection = err
+			req.state.CompareAndSwap(providerWriteAuthorizing, providerWriteRejected)
+			if w.afterWriteRejectedForTest != nil {
+				w.afterWriteRejectedForTest()
+			}
+			if req.done != nil {
+				req.done <- err
+			}
+			return true
+		}
+	}
+	if req.builder != nil || req.beforeWrite != nil {
+		if w.dead.Load() {
+			req.state.CompareAndSwap(providerWriteAuthorizing, providerWriteCanceledBeforeHandoff)
+			if req.done != nil {
+				req.done <- errProviderWriterStopped
+			}
+			w.drainAll(errProviderWriterStopped)
+			return false
+		}
+		if (req.ctx != nil && req.ctx.Err() != nil) || !req.state.CompareAndSwap(providerWriteAuthorizing, providerWriteInFlight) {
+			req.state.CompareAndSwap(providerWriteAuthorizing, providerWriteCanceledBeforeHandoff)
 			if req.done != nil {
 				if req.ctx != nil && req.ctx.Err() != nil {
 					req.done <- req.ctx.Err()
@@ -479,7 +581,7 @@ func (w *providerWriter) serve(req *providerWriteRequest) bool {
 		w.drainAll(err)
 		return false
 	}
-	if !req.state.CompareAndSwap(4, 5) {
+	if !req.state.CompareAndSwap(providerWriteInFlight, providerWriteCompleted) {
 		// Cancellation won the write-completion race. Ensure the connection is
 		// unusable before dispatch cleanup can release the request reservation.
 		w.closeNow()
@@ -521,10 +623,10 @@ func (w *providerWriter) drainLane(lane chan *providerWriteRequest, err error) {
 
 // watchWrites enforces per-frame write deadlines with one goroutine per
 // connection instead of a goroutine+timer per frame. writeFrame publishes its
-// deadline before the blocking conn.Write and clears it after; when a deadline
-// is exceeded the watchdog closes the socket, which unblocks Write with an
-// error. Granularity is providerWriteWatchdogInterval, acceptable slack on a
-// >=5s timeout floor.
+// deadline before the blocking socket write of a whole message and clears it
+// after; when a deadline is exceeded the watchdog closes the socket, which
+// unblocks the write with an error. Granularity is
+// providerWriteWatchdogInterval, acceptable slack on a >=5s timeout floor.
 func (w *providerWriter) watchWrites(stop <-chan struct{}) {
 	ticker := time.NewTicker(providerWriteWatchdogInterval)
 	defer ticker.Stop()
@@ -547,22 +649,60 @@ func (w *providerWriter) watchWrites(stop <-chan struct{}) {
 	}
 }
 
+// writeFrame puts one whole text message on the wire and returns only once
+// its last frame has been handed to the socket.
+//
+// Messages larger than providerWriteFragmentBytes are sent as a fragmented
+// WebSocket message (RFC 6455 §5.4) rather than one frame. nhooyr's
+// Conn.Write holds the connection's per-frame write lock for the entire
+// message, and its read goroutine answers the peer's pings inline — with a
+// 5s budget to take that same lock. A single 20 MiB vision frame legitimately
+// takes 10–30s at the write-timeout floor, so a provider ping (every 10s)
+// landing mid-frame failed the pong, which nhooyr reports as a READ error
+// ("failed to handle control frame opPing: ... failed to acquire lock"),
+// tearing down the whole provider session and 502-ing every request on it.
+// With msgWriter.Write the lock is held per fragment, so the pong interleaves
+// between continuation frames; the receiver reassembles into one message.
 func (w *providerWriter) writeFrame(data []byte) error {
-	// Do not pass a cancelable/expiring context to nhooyr.Conn.Write: context
-	// expiration is treated as a connection-level failure by the library. The
-	// writer owns timeout/backpressure externally (watchWrites) and closes
-	// unhealthy sockets explicitly with CloseNow.
+	// Do not pass a cancelable/expiring context to nhooyr's Write/Writer:
+	// context expiration is treated as a connection-level failure by the
+	// library. The writer owns timeout/backpressure externally (watchWrites,
+	// one deadline for the whole message) and closes unhealthy sockets
+	// explicitly with CloseNow.
 	timeout := providerWriteTimeout(len(data))
 	if w.timeoutFor != nil {
 		timeout = w.timeoutFor(len(data))
 	}
 	w.writeDeadline.Store(time.Now().Add(timeout).UnixNano())
-	err := w.conn.Write(context.Background(), websocket.MessageText, data)
+	err := writeFragmented(w.conn, data)
 	w.writeDeadline.Store(0)
 	if err != nil && w.writeTimedOut.Load() {
 		return errProviderWriteTimeout
 	}
 	return err
+}
+
+// writeFragmented sends data as one text message: a single frame when it
+// fits in providerWriteFragmentBytes, otherwise ceil(n/fragment) non-FIN
+// frames of at most fragment bytes followed by nhooyr's zero-length FIN
+// continuation. A mid-message write error is returned as-is without
+// attempting the FIN frame; the caller closes the socket on any error, which
+// is also what makes nhooyr's unreleased message-writer lock irrelevant.
+func writeFragmented(conn *websocket.Conn, data []byte) error {
+	if len(data) <= providerWriteFragmentBytes {
+		return conn.Write(context.Background(), websocket.MessageText, data)
+	}
+	mw, err := conn.Writer(context.Background(), websocket.MessageText)
+	if err != nil {
+		return err
+	}
+	for off := 0; off < len(data); off += providerWriteFragmentBytes {
+		end := min(off+providerWriteFragmentBytes, len(data))
+		if _, err := mw.Write(data[off:end]); err != nil {
+			return err
+		}
+	}
+	return mw.Close()
 }
 
 func providerWriteTimeout(frameBytes int) time.Duration {

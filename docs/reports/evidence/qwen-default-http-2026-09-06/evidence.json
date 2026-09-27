@@ -1,0 +1,535 @@
+{
+  "schema": 1,
+  "status": "THREE_QWEN_DEFAULT_HTTP_B1_PASSED",
+  "date_utc": "2026-09-06",
+  "scope": {
+    "models": 3,
+    "http_requests": 6,
+    "max_concurrent": 1,
+    "max_completion_tokens": 64,
+    "single_provider_per_cell": true,
+    "backend_setting": "auto",
+    "mtp_setting": "auto",
+    "cache_setting": "unset production default",
+    "cache_key_policy": "explicit ephemeral fixture keys, per-provider test roots",
+    "persistent_key_or_restart_validated": false,
+    "semantic_quality_validated": false,
+    "sustained_or_concurrency_validated": false,
+    "routing_winner_validated": false,
+    "release_ready": false
+  },
+  "runtime": {
+    "candidate": "reviewed104 correctness runtime",
+    "native_reported_version": "0.8.16",
+    "final_0_9_0_version_only_rebuild_validated_here": false,
+    "provider_sha256": "a98b9a83a69ab90a59010437f2a567341d7f8a98853a83cab8deea1043540433",
+    "metallib_sha256": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb",
+    "sidecar_sha256": "6a0c4498c6a3d23f85001fe1d1e0b8a502e2397858a586808e792b66e85576ea",
+    "go_test_sha256": "cdbde019a9cf1db44ca82afd728727968517d2c36f84e3fd3081c7dbd70f0506",
+    "source_manifest_sha256": "e7b769e2713e48c53fb62fbe74e449bb409c8fc1b7e5f036b14e808a7c3da3f5",
+    "runtime_review_sha256": "5bf7b2b054a9ac1bd512d7b3901eec10cfe0c1bc5286f265948ddfb51dca956e"
+  },
+  "controller": {
+    "archive_sha256": "ffb3371bb27cc639024d45bd884baa705fce387f93b6419d05972bb51b1b7dce",
+    "bound_manifest_sha256": "c359b233836b9f8884dd142ce93b895729cc43ee61fbea1167a0eb72ee8e09ee",
+    "owner_manifest_sha256": "c3d808aa3db9092e1978603cc62076dfee1b91cab46b80398b9eb58c6b282e90",
+    "root_controller_review_sha256": "e37897660bcafc5ff23df36d957ce431191d918333ca50e5e0aee56d90f899b3",
+    "root_results_review_sha256": "8036d503c5683c672accb5ee5947640e1d56e12ccc0b6aecb9b8ea42f534afcd",
+    "external_caller_heartbeat": true,
+    "three_exact_cell_acks": true
+  },
+  "models": [
+    {
+      "name": "qwen36",
+      "artifact": {
+        "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+        "model_aggregate_sha256": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+        "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60"
+      },
+      "input_sha256": "05bce1343e612f19cb996b0a6866367439450209596a8cbfc2b5ce74402d5f9c",
+      "binding_sha256": "f139f858f71b9b24916e82505e7fb3a30751f9c3e387b3aa153e8b92ac89707d",
+      "configured_backend": {
+        "engine_v2_kv_backend": "auto",
+        "engine_v2_max_concurrent": 1,
+        "mtp_mode": "auto"
+      },
+      "cache_enablement_setting_present": false,
+      "policy_environment": {},
+      "raw_report_sha256": "4c0d66b381d172b9d6ececedca8c38b77c84dc2fbcd8f15945782fcb99eb19b9",
+      "provider_config_sha256": "1f0fa18401ae09d001a5412e51b1bafec5a098f24ae7054f5bd430affaa4926d",
+      "preflight_sha256": "5b4049f0f0bf33def642f72c2d0ebb1d2d1d5ca0fcba0f751df31be5a4401773",
+      "root_ack_sha256": "b1bc0a184cd942cbf3fb15cf711d52a5f0ca415367753cfc22c9d661f98402d7",
+      "original_evidence_manifest_sha256": "20c6dac4cc8acbf5d6c7c2a99e94f9860bd247d6e7ea8aae0e727c9a3ef8e658",
+      "full_archive_sha256": "d1bf3db63c5d77c2bd1506169eae81e7f53c75a5624c39cd5bc937cf318ce259",
+      "clean_postflight_sha256": "46d84a6705d37203addfbacc2615fd3af1d3bc26a12505333804cfda9b90336a",
+      "cases": [
+        {
+          "name": "cold",
+          "status": "passed",
+          "http_status": 200,
+          "usage": {
+            "completion_tokens": 64,
+            "completion_tokens_details": {
+              "reasoning_tokens": 64
+            },
+            "prompt_tokens": 5503,
+            "total_tokens": 5567
+          },
+          "finish_reason": "length",
+          "done": true,
+          "cancelled_by_client": false,
+          "output_projection": {
+            "content_empty": true,
+            "reasoning_utf8_bytes": 350,
+            "reasoning_sha256": "7f03bc912d6f6297133ef2924efc76be38582c46ab4f038da0274b8e47ee9585",
+            "tools_empty": true
+          },
+          "actual_backend": "paged",
+          "backend_fallback_reason": null,
+          "cache_capability": {
+            "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "model_aggregate_hash": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "enabled": true,
+            "ready": true,
+            "ready_boundary_mode": "checkpoint"
+          },
+          "cache_store_kind": "complete_checkpoint",
+          "resident_cache_capability_present": false,
+          "lookup": {
+            "expected_prefill_tokens_saved": 0,
+            "model_aggregate_hash": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+            "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "outcome": "miss_absent",
+            "prompt_anchor_tokens": 5376,
+            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "required_recompute_tokens": 0,
+            "stage_ms": 0.126083,
+            "tier": "ssd"
+          },
+          "completion_cache_usage": {
+            "cache_outcome": "miss_absent",
+            "cache_tier": "ssd",
+            "cache_stage_ms": 0.126083
+          },
+          "mtp": {
+            "active": true,
+            "rounds": 16,
+            "proposed": 52,
+            "accepted": 45
+          },
+          "max_actual_batch_rows": 1,
+          "encrypted_dispatch": true,
+          "first_delta_ms": 2552.318834,
+          "total_ms": 3846.689209
+        },
+        {
+          "name": "repeat",
+          "status": "passed",
+          "http_status": 200,
+          "usage": {
+            "completion_tokens": 64,
+            "completion_tokens_details": {
+              "reasoning_tokens": 64
+            },
+            "prompt_tokens": 5503,
+            "total_tokens": 5567
+          },
+          "finish_reason": "length",
+          "done": true,
+          "cancelled_by_client": false,
+          "output_projection": {
+            "content_empty": true,
+            "reasoning_utf8_bytes": 350,
+            "reasoning_sha256": "7f03bc912d6f6297133ef2924efc76be38582c46ab4f038da0274b8e47ee9585",
+            "tools_empty": true
+          },
+          "actual_backend": "paged",
+          "backend_fallback_reason": null,
+          "cache_capability": {
+            "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "model_aggregate_hash": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "enabled": true,
+            "ready": true,
+            "ready_boundary_mode": "checkpoint"
+          },
+          "cache_store_kind": "complete_checkpoint",
+          "resident_cache_capability_present": false,
+          "lookup": {
+            "expected_prefill_tokens_saved": 4096,
+            "matched_anchor_tokens": 4096,
+            "model_aggregate_hash": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+            "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "outcome": "hit",
+            "prompt_anchor_tokens": 5376,
+            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "required_recompute_tokens": 0,
+            "stage_ms": 53.579125,
+            "tier": "ssd"
+          },
+          "completion_cache_usage": {
+            "cache_outcome": "hit",
+            "cache_tier": "ssd",
+            "cached_tokens": 4096,
+            "prefill_tokens_saved": 4096,
+            "cache_stage_ms": 53.579125
+          },
+          "mtp": {
+            "active": true,
+            "rounds": 14,
+            "proposed": 56,
+            "accepted": 47
+          },
+          "max_actual_batch_rows": 1,
+          "encrypted_dispatch": true,
+          "first_delta_ms": 520.556041,
+          "total_ms": 883.99375
+        }
+      ],
+      "cold_repeat_content_reasoning_tools_finish_and_counts_equal": true,
+      "owner_accepted_and_retired": true,
+      "discovery_projection": {
+        "used": true,
+        "all_manifest_files_verified": 13,
+        "model_aggregate_sha256": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed"
+      }
+    },
+    {
+      "name": "qwen35",
+      "artifact": {
+        "model_id": "qwen3.5-35b-a3b",
+        "model_aggregate_sha256": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+        "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec"
+      },
+      "input_sha256": "3b2556088eebb660802abfe6aa006a78d5a51765d01ecc308bd3b98bf7a0eaa2",
+      "binding_sha256": "e92be73f20cdb2682b71d3419cd7ce5f61f968f4e45ef791c08a49bf88977036",
+      "configured_backend": {
+        "engine_v2_kv_backend": "auto",
+        "engine_v2_max_concurrent": 1,
+        "mtp_mode": "auto"
+      },
+      "cache_enablement_setting_present": false,
+      "policy_environment": {},
+      "raw_report_sha256": "ea2f15ed30fce66d6cbd3e2df5852f0ba37f9d4ab9a30c9eaa8c664ef5002434",
+      "provider_config_sha256": "1f0fa18401ae09d001a5412e51b1bafec5a098f24ae7054f5bd430affaa4926d",
+      "preflight_sha256": "f731867fc63b5702ce9880252f7249b578b388f5567a46b3cb85714f525a5d05",
+      "root_ack_sha256": "95e06b562366b931b0a774143f67698554760954674f69a65bb4e591581bfbea",
+      "original_evidence_manifest_sha256": "d27bbe9f1b8dd87f9643bc8f5b32fe818b9baae3e9fd740127ddef586353f596",
+      "full_archive_sha256": "06f4cd0aaf0a403aea01285fe2082f5c26a5eac266b0ac294b5d31128eea983a",
+      "clean_postflight_sha256": "fcefd5c48565ee35b968b98c0106295ebbf40ed7ecd0187b7fc08363f8747f16",
+      "cases": [
+        {
+          "name": "cold",
+          "status": "passed",
+          "http_status": 200,
+          "usage": {
+            "completion_tokens": 64,
+            "completion_tokens_details": {
+              "reasoning_tokens": 64
+            },
+            "prompt_tokens": 5503,
+            "total_tokens": 5567
+          },
+          "finish_reason": "length",
+          "done": true,
+          "cancelled_by_client": false,
+          "output_projection": {
+            "content_empty": true,
+            "reasoning_utf8_bytes": 268,
+            "reasoning_sha256": "302a8fa1b64d78cbc1c32e63fa5d6f49842811326b3fe0f4851c35ce32d4bbef",
+            "tools_empty": true
+          },
+          "actual_backend": "paged",
+          "backend_fallback_reason": null,
+          "cache_capability": {
+            "model_id": "qwen3.5-35b-a3b",
+            "model_aggregate_hash": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "enabled": true,
+            "ready": true,
+            "ready_boundary_mode": "checkpoint"
+          },
+          "cache_store_kind": "complete_checkpoint",
+          "resident_cache_capability_present": false,
+          "lookup": {
+            "expected_prefill_tokens_saved": 0,
+            "model_aggregate_hash": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+            "model_id": "qwen3.5-35b-a3b",
+            "outcome": "miss_absent",
+            "prompt_anchor_tokens": 5376,
+            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "required_recompute_tokens": 0,
+            "stage_ms": 0.139583,
+            "tier": "ssd"
+          },
+          "completion_cache_usage": {
+            "cache_outcome": "miss_absent",
+            "cache_tier": "ssd",
+            "cache_stage_ms": 0.139583
+          },
+          "mtp": {
+            "active": true,
+            "rounds": 18,
+            "proposed": 51,
+            "accepted": 44
+          },
+          "max_actual_batch_rows": 1,
+          "encrypted_dispatch": true,
+          "first_delta_ms": 1423.455375,
+          "total_ms": 1876.410792
+        },
+        {
+          "name": "repeat",
+          "status": "passed",
+          "http_status": 200,
+          "usage": {
+            "completion_tokens": 64,
+            "completion_tokens_details": {
+              "reasoning_tokens": 64
+            },
+            "prompt_tokens": 5503,
+            "total_tokens": 5567
+          },
+          "finish_reason": "length",
+          "done": true,
+          "cancelled_by_client": false,
+          "output_projection": {
+            "content_empty": true,
+            "reasoning_utf8_bytes": 268,
+            "reasoning_sha256": "302a8fa1b64d78cbc1c32e63fa5d6f49842811326b3fe0f4851c35ce32d4bbef",
+            "tools_empty": true
+          },
+          "actual_backend": "paged",
+          "backend_fallback_reason": null,
+          "cache_capability": {
+            "model_id": "qwen3.5-35b-a3b",
+            "model_aggregate_hash": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "enabled": true,
+            "ready": true,
+            "ready_boundary_mode": "checkpoint"
+          },
+          "cache_store_kind": "complete_checkpoint",
+          "resident_cache_capability_present": false,
+          "lookup": {
+            "expected_prefill_tokens_saved": 4096,
+            "matched_anchor_tokens": 4096,
+            "model_aggregate_hash": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+            "model_id": "qwen3.5-35b-a3b",
+            "outcome": "hit",
+            "prompt_anchor_tokens": 5376,
+            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "required_recompute_tokens": 0,
+            "stage_ms": 53.981458,
+            "tier": "ssd"
+          },
+          "completion_cache_usage": {
+            "cache_outcome": "hit",
+            "cache_tier": "ssd",
+            "cached_tokens": 4096,
+            "prefill_tokens_saved": 4096,
+            "cache_stage_ms": 53.981458
+          },
+          "mtp": {
+            "active": true,
+            "rounds": 16,
+            "proposed": 56,
+            "accepted": 46
+          },
+          "max_actual_batch_rows": 1,
+          "encrypted_dispatch": true,
+          "first_delta_ms": 503.521667,
+          "total_ms": 875.674334
+        }
+      ],
+      "cold_repeat_content_reasoning_tools_finish_and_counts_equal": true,
+      "owner_accepted_and_retired": true,
+      "discovery_projection": {
+        "used": true,
+        "all_manifest_files_verified": 14,
+        "model_aggregate_sha256": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c"
+      }
+    },
+    {
+      "name": "qwen38",
+      "artifact": {
+        "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+        "model_aggregate_sha256": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+        "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8"
+      },
+      "input_sha256": "b36ca05cb06ab50bcfe0f75225f2092db982566ecc0f5a5569c129e3d73b9654",
+      "binding_sha256": "d816a452f3e1e8cf547eb189a6259e1e841d260afa0c7c42cfc2e3044d7c9328",
+      "configured_backend": {
+        "engine_v2_kv_backend": "auto",
+        "engine_v2_max_concurrent": 1,
+        "mtp_mode": "auto"
+      },
+      "cache_enablement_setting_present": false,
+      "policy_environment": {},
+      "raw_report_sha256": "23d38a9c9184428cd043c08dd83e90d41d18940d8b3c3d40c8f1902a6cd0b6f2",
+      "provider_config_sha256": "1f0fa18401ae09d001a5412e51b1bafec5a098f24ae7054f5bd430affaa4926d",
+      "preflight_sha256": "be8746a40dbcf8248c02badd5dcb66d1a5d717513b783a4dd987a9abfab06789",
+      "root_ack_sha256": "38e0d9765d8c3b2cf8f1ef15dd0f91e1f330f8cfa6c2cbd049291456e71a65ff",
+      "original_evidence_manifest_sha256": "c7e6fefcd6ff498453294b5fd6bfd4965387cef406882670beb4fcb4eebfdfdb",
+      "full_archive_sha256": "a36cbbdb7b6e976e51ddb20fb56959600208657ca776ae9f8f7dbf2f613084b9",
+      "clean_postflight_sha256": "d5f2a164192c8f1ad6adb4aeb79271a9e55d1f68e497ccea950a9d72dba5baae",
+      "cases": [
+        {
+          "name": "cold",
+          "status": "passed",
+          "http_status": 200,
+          "usage": {
+            "completion_tokens": 64,
+            "completion_tokens_details": {
+              "reasoning_tokens": 64
+            },
+            "prompt_tokens": 5545,
+            "total_tokens": 5609
+          },
+          "finish_reason": "length",
+          "done": true,
+          "cancelled_by_client": false,
+          "output_projection": {
+            "content_empty": true,
+            "reasoning_utf8_bytes": 385,
+            "reasoning_sha256": "f3a5765a3ed4913c6ca861512e1d628504945e1caf9477f3472961f53904bad0",
+            "tools_empty": true
+          },
+          "actual_backend": "paged",
+          "backend_fallback_reason": null,
+          "cache_capability": {
+            "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "model_aggregate_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "enabled": true,
+            "ready": true,
+            "ready_boundary_mode": "checkpoint"
+          },
+          "cache_store_kind": "complete_checkpoint",
+          "resident_cache_capability_present": false,
+          "lookup": {
+            "expected_prefill_tokens_saved": 0,
+            "model_aggregate_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+            "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "outcome": "miss_absent",
+            "prompt_anchor_tokens": 5376,
+            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "required_recompute_tokens": 0,
+            "stage_ms": 0.134875,
+            "tier": "ssd"
+          },
+          "completion_cache_usage": {
+            "cache_outcome": "miss_absent",
+            "cache_tier": "ssd",
+            "cache_stage_ms": 0.134875
+          },
+          "mtp": {
+            "active": true,
+            "rounds": 17,
+            "proposed": 54,
+            "accepted": 45
+          },
+          "max_actual_batch_rows": 1,
+          "encrypted_dispatch": true,
+          "first_delta_ms": 6340.9005,
+          "total_ms": 7486.692708
+        },
+        {
+          "name": "repeat",
+          "status": "passed",
+          "http_status": 200,
+          "usage": {
+            "completion_tokens": 64,
+            "completion_tokens_details": {
+              "reasoning_tokens": 64
+            },
+            "prompt_tokens": 5545,
+            "total_tokens": 5609
+          },
+          "finish_reason": "length",
+          "done": true,
+          "cancelled_by_client": false,
+          "output_projection": {
+            "content_empty": true,
+            "reasoning_utf8_bytes": 385,
+            "reasoning_sha256": "f3a5765a3ed4913c6ca861512e1d628504945e1caf9477f3472961f53904bad0",
+            "tools_empty": true
+          },
+          "actual_backend": "paged",
+          "backend_fallback_reason": null,
+          "cache_capability": {
+            "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "model_aggregate_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "enabled": true,
+            "ready": true,
+            "ready_boundary_mode": "checkpoint"
+          },
+          "cache_store_kind": "complete_checkpoint",
+          "resident_cache_capability_present": false,
+          "lookup": {
+            "expected_prefill_tokens_saved": 4096,
+            "matched_anchor_tokens": 4096,
+            "model_aggregate_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+            "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "outcome": "hit",
+            "prompt_anchor_tokens": 5376,
+            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "required_recompute_tokens": 0,
+            "stage_ms": 132.812834,
+            "tier": "ssd"
+          },
+          "completion_cache_usage": {
+            "cache_outcome": "hit",
+            "cache_tier": "ssd",
+            "cached_tokens": 4096,
+            "prefill_tokens_saved": 4096,
+            "cache_stage_ms": 132.812834
+          },
+          "mtp": {
+            "active": true,
+            "rounds": 15,
+            "proposed": 58,
+            "accepted": 47
+          },
+          "max_actual_batch_rows": 1,
+          "encrypted_dispatch": true,
+          "first_delta_ms": 1865.7455,
+          "total_ms": 2759.0275
+        }
+      ],
+      "cold_repeat_content_reasoning_tools_finish_and_counts_equal": true,
+      "owner_accepted_and_retired": true,
+      "discovery_projection": {
+        "used": false,
+        "all_manifest_files_verified": 14,
+        "model_aggregate_sha256": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463"
+      }
+    }
+  ],
+  "lane_release": {
+    "sha256": "0434912dafafc8648655d9df56e50206efdbcbd53da39a17998947f44609aefc",
+    "observed_unix": 1788734718.794165,
+    "observation": {
+      "hardware_model": "Mac17,6",
+      "memory_bytes": 137438953472,
+      "gpu_temperature_c": 28.517112731933594,
+      "load1": 0.95068359375,
+      "free_bytes": 232164184064,
+      "unexpected_processes": [],
+      "owned_processes": []
+    },
+    "lane_released": true,
+    "both_owned_discovery_projections_retired": true
+  },
+  "preserved_prior_failure": {
+    "namespace": "107",
+    "model": "qwen36",
+    "http_requests_executed": 0,
+    "cause": "Fixture revision-directory symlink was skipped by actual Foundation discovery; provider exited with No models selected.",
+    "fix": "125 uses real revision directory, exact manifest-bound file links through its own blobs root; actual Foundation scanner and cleanup guards tested. No production scanner change.",
+    "failure_projection_sha256": "3e4b49ff1011a1acfeb9aac98fbd8607c6d68ce7d689f26fad04c937cba44a07"
+  },
+  "privacy": "Prompts, generated text, raw SSE, provider-config contents, credentials, binaries, weights and cache payloads omitted."
+}

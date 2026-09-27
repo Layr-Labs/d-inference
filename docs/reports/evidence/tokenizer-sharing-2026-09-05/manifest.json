@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "scope": "One ordered local macOS baseline/candidate pair in exclusive CPU-quiet window. Identical Go loadproof executable, artifacts,98vectors,25QPS/15s/1024MiBRSS/128MiBgrowth gates. Only candidate tokenizer ownership changed in production Rust. OS file cache uncontrolled; cold refers to per-process contract construction, not cold disk. No Swift/model/GPU/live coordinator run. Darwin RSS does not establish Linux musl RLIMIT_AS compatibility.",
+  "source_base_commit": "59e8a7bb2",
+  "source_files_reverified": 51,
+  "versions": {
+    "renderer": "swift-jinja-request-date-compatible-v3",
+    "normalization": "darkbloom-request-normalization-v3",
+    "rust": "1.88.0",
+    "go": "go1.25.0"
+  },
+  "tests": {
+    "rust_passed": 111,
+    "rust_failed": 0,
+    "strict_all_target_clippy": "pass",
+    "go_proof_package": "pass",
+    "initial_failure": "Initial lib compile needed the existing renderer test fixture constructor converted to Arc; fixed before final full suite and measurement."
+  },
+  "fixture_replay": {
+    "models": 7,
+    "unique_contracts": 6,
+    "cases": 98,
+    "byte_identical": true,
+    "sha256": "7bda5110dac22a0ab24d0b28a6502935de70d2571037a58dd77f3cad17cc0430"
+  },
+  "comparison": {
+    "cold_requests_each": 96,
+    "warm_requests_each": 375,
+    "mismatches_each": 0,
+    "cold_peak_mib": [
+      962.75,
+      653.40625
+    ],
+    "warm_peak_mib": [
+      903.59375,
+      560.75
+    ],
+    "seed_inclusive_cold_count_each": 7,
+    "seed_inclusive_cold_mean_ms": [
+      197.95314285714286,
+      104.53257142857143
+    ],
+    "preload_count_each": 6,
+    "preload_mean_ms": [
+      197.71966666666665,
+      112.1775
+    ],
+    "warm_plan_mean_ms": [
+      2.1581013333333336,
+      2.1645386666666666
+    ],
+    "timing_interpretation": "Means are cumulative microseconds/count. No improvement claim for warm plan latency. Histogram buckets are cumulative upper bounds; no exact quantiles are inferred."
+  },
+  "files": {
+    "source-manifest.json": {
+      "stored_sha256": "b37baab712a465d23865cc70aac9698a21dbbc130ddc6876e8a9c4e06aa9f472",
+      "stored_bytes": 8564,
+      "raw_sha256": "b37baab712a465d23865cc70aac9698a21dbbc130ddc6876e8a9c4e06aa9f472",
+      "raw_bytes": 8564,
+      "encoding": "identity",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing/source-manifest.json"
+    },
+    "execution.json": {
+      "stored_sha256": "e34b3493ab9a1522bcf5b6ad0ac93405f10a686d056c3a9a0f9caef0ed0603af",
+      "stored_bytes": 1799,
+      "raw_sha256": "e34b3493ab9a1522bcf5b6ad0ac93405f10a686d056c3a9a0f9caef0ed0603af",
+      "raw_bytes": 1799,
+      "encoding": "identity",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing/execution.json"
+    },
+    "baseline-result.json": {
+      "stored_sha256": "f67812588f06cdf69f074df3be1adf5f69f522b74ad7431c0fa4061cf4a228b1",
+      "stored_bytes": 4315,
+      "raw_sha256": "f67812588f06cdf69f074df3be1adf5f69f522b74ad7431c0fa4061cf4a228b1",
+      "raw_bytes": 4315,
+      "encoding": "identity",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing/baseline-result.json"
+    },
+    "candidate-result.json": {
+      "stored_sha256": "265aedf1933a849b74aaa65d3296b6a58866d2981f81abdc11a81a24e1b889e8",
+      "stored_bytes": 4311,
+      "raw_sha256": "265aedf1933a849b74aaa65d3296b6a58866d2981f81abdc11a81a24e1b889e8",
+      "raw_bytes": 4311,
+      "encoding": "identity",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing/candidate-result.json"
+    },
+    "baseline-stderr.log.gz": {
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "stored_bytes": 20,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_bytes": 0,
+      "encoding": "gzip mtime=0",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing/baseline-stderr.log"
+    },
+    "candidate-stderr.log.gz": {
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "stored_bytes": 20,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_bytes": 0,
+      "encoding": "gzip mtime=0",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing/candidate-stderr.log"
+    },
+    "tokenizer-sharing-lib.log.gz": {
+      "stored_sha256": "271cd23dd018a731525411c2bf299ed6b7d7434dfb880f78bdc291acfb6b689a",
+      "stored_bytes": 430,
+      "raw_sha256": "18212494ff13234dd1c448a05f0624c6194699eceb91cc5a24f9c468bc4fc4cd",
+      "raw_bytes": 990,
+      "encoding": "gzip mtime=0",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing-lib.log"
+    },
+    "tokenizer-sharing-lib-final.log.gz": {
+      "stored_sha256": "a1d6352b6523e6587437cb874ea648ba471acb96f1cf042277d05143f1890832",
+      "stored_bytes": 2449,
+      "raw_sha256": "641074b6a8e0e616e6f097e706ce8bc28775d983e73babb758fd9e50d3365fb5",
+      "raw_bytes": 7798,
+      "encoding": "gzip mtime=0",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing-lib-final.log"
+    },
+    "tokenizer-sharing-all.log.gz": {
+      "stored_sha256": "a0752fc14ee36bd98a956a356d030ab70c7ec04808a563b02fd5600e67250147",
+      "stored_bytes": 3065,
+      "raw_sha256": "0751fc4dd5ee6dff5f486576dfe718908d4fd8240290115f8d5fb464072a1593",
+      "raw_bytes": 10256,
+      "encoding": "gzip mtime=0",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing-all.log"
+    },
+    "tokenizer-sharing-clippy.log.gz": {
+      "stored_sha256": "37da068479c64676b0e79b6f31df5b954f04b2cb5e4fc3f14f117802bdb1056e",
+      "stored_bytes": 170,
+      "raw_sha256": "2c398b7560c10378ce3df5b90c34da0aae573b5522cd3bfe22dd2855ea8f99ad",
+      "raw_bytes": 196,
+      "encoding": "gzip mtime=0",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing-clippy.log"
+    },
+    "tokenizer-sharing-go-proof-tests.log.gz": {
+      "stored_sha256": "ccf85551526463835da64c46bf73a8c6c3de1c9a783cca46f10448ec55c95549",
+      "stored_bytes": 95,
+      "raw_sha256": "0a72b9b8c57a97d9b2530fecdf46dbbc6140222e68e71d241794dc5f3ff6e963",
+      "raw_bytes": 89,
+      "encoding": "gzip mtime=0",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing-go-proof-tests.log"
+    },
+    "tokenizer-sharing-release-build.log.gz": {
+      "stored_sha256": "458d852972777525bb44e012ded338f995254753c028e995b468cf09e569aa16",
+      "stored_bytes": 163,
+      "raw_sha256": "d715bc2c972b23f491fd0af98807bbdc067848fd6897478554c0144d811faff6",
+      "raw_bytes": 186,
+      "encoding": "gzip mtime=0",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing-release-build.log"
+    },
+    "generator.log.gz": {
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "stored_bytes": 20,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_bytes": 0,
+      "encoding": "gzip mtime=0",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing/generator.log"
+    }
+  }
+}

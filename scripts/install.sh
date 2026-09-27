@@ -11,7 +11,7 @@ set -euo pipefail
 #   2. Downloads the provider app (binaries, metallib, SwiftPM resources)
 #   3. Verifies bundle SHA-256 + Apple Developer ID code signature
 #   4. Sets up the Secure Enclave identity
-#   5. Optionally enrolls in MDM (device attestation)
+#   5. Uses App Attest setup on macOS 27+, legacy MDM on older macOS
 #   6. Optionally downloads a starter model
 #
 # Zero prerequisites — just macOS 14+ on Apple Silicon. The Swift CLI
@@ -161,15 +161,27 @@ verify_staged_app() {
             return 1
         }
 
-    DARKBLOOM_NO_UPDATE_CHECK=1 \
+    local smoke_output
+    smoke_output=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
         DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
         MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
         MLX_GATHER_QMM_EXPERT_SLICES=1 \
-        "$executable" runtime-smoke >/dev/null \
+        "$executable" runtime-smoke 2>&1) \
         || {
-            fail_install "Packaged paged-kernel runtime smoke failed."
+            if ! printf '%s\n' "$smoke_output" | grep -q '^app-attest-callback-runtime-smoke: ok$' \
+                && [ -f "$app/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1" ]; then
+                fail_install "Packaged App Attest callback runtime smoke failed."
+            else
+                fail_install "Packaged runtime smoke failed (App Attest, configuration, or Metal)."
+            fi
             return 1
         }
+    if [ -f "$app/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1" ]; then
+        printf '%s\n' "$smoke_output" | grep -q '^app-attest-callback-runtime-smoke: ok$' || {
+            fail_install "Packaged App Attest callback runtime smoke omitted its success marker."
+            return 1
+        }
+    fi
 }
 
 verify_staged_app_payload() {
@@ -313,6 +325,83 @@ install_bundle_atomically() {
         }
     fi
     rm -rf "$stage"
+}
+
+# Setup routing is independent of serving authorization. App Attest failures
+# must not silently send a macOS 27+ user into MDM enrollment.
+configure_device_verification() {
+    local macos_major=${MACOS%%.*}
+    case "$macos_major" in
+        ''|*[!0-9]*)
+            echo "  Could not determine the macOS version; no MDM profile was downloaded."
+            echo "  Run darkbloom enroll to select the verification setup for this Mac."
+            return
+            ;;
+    esac
+
+    echo "  Darkbloom MDM will be deactivated soon."
+    if [ "$macos_major" -ge 27 ]; then
+        echo "  macOS 27 or later: use App Attest without Darkbloom MDM enrollment."
+        echo "  Run darkbloom login, then darkbloom start, and check darkbloom status."
+        echo "  Serving starts only after the coordinator approves this connection."
+        echo "  If approval is pending or unavailable, run darkbloom doctor."
+        echo "  Existing management profiles are kept in place."
+        echo "  To remove an existing Darkbloom profile, run darkbloom unenroll"
+        echo "  and choose App Attest once removal is approved."
+        return
+    fi
+
+    echo "  Upgrade to macOS 27 or later to avoid Darkbloom MDM enrollment."
+    ALREADY_ENROLLED=false
+    if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
+        ALREADY_ENROLLED=true
+    fi
+
+    if [ "$ALREADY_ENROLLED" = true ]; then
+        echo "  An MDM profile is already installed; keep existing management in place."
+        echo "  Run darkbloom doctor to check Darkbloom verification."
+    else
+        echo "  Requesting enrollment profile from coordinator..."
+        PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX")"
+        PROFILE_PATH="$PROFILE_DIR/Darkbloom-Enroll.mobileconfig"
+        if curl -fsSL -X POST "$COORD_URL/v1/enroll" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            -o "$PROFILE_PATH" 2>/dev/null; then
+            echo ""
+            echo "  ┌──────────────────────────────────────────────────┐"
+            echo "  │ ACTION REQUIRED: Install the enrollment profile  │"
+            echo "  │                                                  │"
+            echo "  │ This profile lets the coordinator verify:        │"
+            echo "  │  • SIP, Secure Boot, system integrity            │"
+            echo "  │  • Your Secure Enclave is genuine Apple silicon  │"
+            echo "  │  • Device identity signed by Apple's Root CA     │"
+            echo "  │                                                  │"
+            echo "  │ Darkbloom CANNOT erase, lock, or control         │"
+            echo "  │ your Mac. Remove anytime in System Settings.     │"
+            echo "  └──────────────────────────────────────────────────┘"
+            echo ""
+            open "$PROFILE_PATH"
+            sleep 1
+            open "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
+
+            echo "  System Settings opened — click Install and enter your password."
+            if [ "$INTERACTIVE" = true ]; then
+                echo ""
+                read -p "  Press Enter once you have installed the profile..." || true
+            else
+                echo "  After installing, the provider will verify on first start."
+                sleep 3
+            fi
+            if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
+                echo "  Enrollment verified ✓"
+            else
+                echo "  Enrollment pending ⚠ (complete it in System Settings, or run: darkbloom enroll)"
+            fi
+        else
+            echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: darkbloom enroll)"
+        fi
+    fi
 }
 
 if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
@@ -476,55 +565,7 @@ fi
 echo ""
 echo "→ [4/5] Enrollment + device attestation..."
 
-ALREADY_ENROLLED=false
-if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
-    ALREADY_ENROLLED=true
-fi
-
-if [ "$ALREADY_ENROLLED" = true ]; then
-    echo "  Already enrolled ✓"
-else
-    echo "  Requesting enrollment profile from coordinator..."
-    PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX")"
-    PROFILE_PATH="$PROFILE_DIR/Darkbloom-Enroll.mobileconfig"
-    if curl -fsSL -X POST "$COORD_URL/v1/enroll" \
-        -H "Content-Type: application/json" \
-        -d '{}' \
-        -o "$PROFILE_PATH" 2>/dev/null; then
-        echo ""
-        echo "  ┌──────────────────────────────────────────────────┐"
-        echo "  │ ACTION REQUIRED: Install the enrollment profile  │"
-        echo "  │                                                  │"
-        echo "  │ This profile lets the coordinator verify:        │"
-        echo "  │  • SIP, Secure Boot, system integrity            │"
-        echo "  │  • Your Secure Enclave is genuine Apple silicon  │"
-        echo "  │  • Device identity signed by Apple's Root CA     │"
-        echo "  │                                                  │"
-        echo "  │ Darkbloom CANNOT erase, lock, or control         │"
-        echo "  │ your Mac. Remove anytime in System Settings.     │"
-        echo "  └──────────────────────────────────────────────────┘"
-        echo ""
-        open "$PROFILE_PATH"
-        sleep 1
-        open "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
-
-        echo "  System Settings opened — click Install and enter your password."
-        if [ "$INTERACTIVE" = true ]; then
-            echo ""
-            read -p "  Press Enter once you have installed the profile..." || true
-        else
-            echo "  After installing, the provider will verify on first start."
-            sleep 3
-        fi
-        if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
-            echo "  Enrollment verified ✓"
-        else
-            echo "  Enrollment pending ⚠ (complete it in System Settings, or run: darkbloom enroll)"
-        fi
-    else
-        echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: darkbloom enroll)"
-    fi
-fi
+configure_device_verification
 
 # ─── Step 5: Optional starter model ──────────────────────────
 echo ""

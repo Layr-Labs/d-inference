@@ -73,28 +73,7 @@ extension ProviderLoop {
     internal static func extractChatTemplateControls(
         from data: Data
     ) -> ChatTemplateControls {
-        struct EffortProbe: Decodable { let reasoning_effort: String? }
-        struct ThinkingProbe: Decodable { let enable_thinking: Bool? }
-        struct PreserveProbe: Decodable { let preserve_thinking: Bool? }
-        struct KwargsProbe: Decodable {
-            struct Kwargs: Decodable { let enable_thinking: Bool? }
-            let chat_template_kwargs: Kwargs?
-        }
-
-        let decoder = JSONDecoder()
-        let rawEffort = (try? decoder.decode(EffortProbe.self, from: data))?
-            .reasoning_effort
-        let effort = rawEffort?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let topLevel = (try? decoder.decode(ThinkingProbe.self, from: data))?
-            .enable_thinking
-        let kwargs = (try? decoder.decode(KwargsProbe.self, from: data))?
-            .chat_template_kwargs?.enable_thinking
-        return ChatTemplateControls(
-            reasoningEffort: effort?.isEmpty == false ? effort : nil,
-            enableThinking: topLevel ?? kwargs,
-            preserveThinking: (try? decoder.decode(PreserveProbe.self, from: data))?
-                .preserve_thinking)
+        (try? JSONDecoder().decode(ChatTemplateControls.self, from: data)) ?? .init()
     }
 
     /// OpenAI `logprobs` / `top_logprobs` for this request. Like
@@ -151,7 +130,7 @@ extension ProviderLoop {
         modelType: String?,
         templateControls: ChatTemplateControls
     ) -> Int {
-        guard let prepared = try? ToolChoicePromptPolicy.prepare(request) else { return 0 }
+        guard let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
@@ -191,6 +170,9 @@ extension ProviderLoop {
             modelType: modelType,
             templateControls: templateControls)
         guard promptFloor > 0 else { return nil }
-        return Int64(promptFloor + max(0, request.maxTokens ?? schedulerDefaultMaxTokens))
+        let (envelope, overflow) = promptFloor.addingReportingOverflow(
+            max(0, request.maxTokens ?? schedulerDefaultMaxTokens))
+        guard !overflow else { return nil }
+        return Int64(exactly: envelope)
     }
 }

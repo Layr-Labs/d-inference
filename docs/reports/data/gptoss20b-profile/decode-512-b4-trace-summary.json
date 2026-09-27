@@ -1,0 +1,1288 @@
+{
+  "bf16ToFP32CopyDispatches": 1467,
+  "bf16ToFP32CopyDispatchesByKernel": {
+    "v_copybfloat16float32": 1185,
+    "vn_copybfloat16float32": 282
+  },
+  "copiesPerSelectedStep": 489,
+  "detail_level": "selected_chunks",
+  "detail_selected_chunks": [],
+  "detail_selected_decode_steps": [
+    16,
+    32,
+    48
+  ],
+  "errors": [],
+  "event_count": 250400,
+  "expertDescriptors": [
+    {
+      "count": 3,
+      "layer": 0,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 0,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 0,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 1,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 1,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 1,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 2,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 2,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 2,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 3,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 3,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 3,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 4,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 4,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 4,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 5,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 5,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 5,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 6,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 6,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 6,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 7,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 7,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 7,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 8,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 8,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 8,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 9,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 9,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 9,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 10,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 10,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 10,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 11,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 11,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 11,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 12,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 12,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 12,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 13,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 13,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 13,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 14,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 14,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 14,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 15,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 15,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 15,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 16,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 16,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 16,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 17,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 17,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 17,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 18,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 18,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 18,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 19,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 19,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 19,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 20,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 20,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 20,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 21,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 21,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 21,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 22,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 22,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 22,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 23,
+      "name": "qmm_gather",
+      "operation": "routed_expert_down_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 23,
+      "name": "qmm_gather",
+      "operation": "routed_expert_gate_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    },
+    {
+      "count": 3,
+      "layer": 23,
+      "name": "qmm_gather",
+      "operation": "routed_expert_up_projection",
+      "phase": "decode",
+      "values": {
+        "K": 2880,
+        "M": 1,
+        "N": 2880,
+        "assignments": 16,
+        "bits": 4,
+        "experts": 32,
+        "group_size": 32,
+        "vector_limit": 15
+      }
+    }
+  ],
+  "expertQMVDispatches": 216,
+  "expertQMVDispatchesByKernel": {
+    "mxfp4_gather_qmv_bfloat16_t_gs_32_b_4": 6,
+    "mxfp4_gather_qmv_float_gs_32_b_4": 210
+  },
+  "expertQMVPerSelectedStep": 72,
+  "omitted_detail_by_kind": {
+    "array_metadata": 613735,
+    "barrier": 49477,
+    "buffer_binding": 506190,
+    "command_buffer_commit": 8084,
+    "command_buffer_complete": 8084,
+    "command_buffer_create": 8084,
+    "dispatch": 135900,
+    "encoder_begin": 26428,
+    "encoder_end": 27469,
+    "logical_descriptor": 613735,
+    "memory_snapshot": 190795,
+    "pipeline": 271800,
+    "primitive_begin": 238049,
+    "primitive_end": 238049,
+    "resource_allocate": 93308,
+    "resource_release": 97487
+  },
+  "records_omitted_detail": 3126674,
+  "schema_version": 1,
+  "scope": "Curated reduction excerpt; complete reduction and raw trace remain local. Structural validator status does not guarantee correct semantic attribution.",
+  "semanticAttributionCorrection": {
+    "actualDecodeStepsSpanned": 50,
+    "affectedLabels": [
+      16,
+      32,
+      48
+    ],
+    "caveat": "No reliable per-kernel GPU-time share or aggregate per-step dispatch count is inferred from those stale compiled labels.",
+    "compiledSwiGLUDispatches": 1200,
+    "layersPerActualStep": 24,
+    "reusedCompiledPrimitiveLabelsAreStale": true,
+    "sourceAnalysis": "improvement-estimate.json",
+    "withdrawnInterpretation": "Approximately2450 dispatches per selected step, or400 redundant SwiGLU computations per step."
+  },
+  "sourceReductionSHA256": "f48ac6ef8580c787a666e0a1757372264040e16c360aed89a9ab2e0bf3e4e93d",
+  "timing_note": "Diagnostic data only. Host graph scope times include tracing and nested scopes; they are not GPU times and must not be added across nested operations. Public command-buffer GPU intervals overlap and are not per-kernel timings. Dispatch counts and shapes describe captured work, not hardware utilization or DRAM traffic. Use separate untraced baselines for latency and throughput claims.",
+  "unknown_pipeline_dispatches": 0,
+  "valid": true
+}

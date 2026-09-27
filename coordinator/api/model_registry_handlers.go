@@ -23,23 +23,24 @@ import (
 const defaultModelRegistryCDNBaseURL = "https://models.darkbloom.ai"
 
 type registerModelRequest struct {
-	ModelID                      string         `json:"model_id"`
-	Version                      string         `json:"version"`
-	DisplayName                  string         `json:"display_name"`
-	Family                       string         `json:"family"`
-	Architecture                 string         `json:"architecture"`
-	Quantization                 string         `json:"quantization"`
-	MaxContextLength             int            `json:"max_context_length"`
-	MaxOutputLength              int            `json:"max_output_length"`
-	MinRAMGB                     int            `json:"min_ram_gb"`
-	Capabilities                 []string       `json:"capabilities"`
-	RequiredProviderCapabilities []string       `json:"required_provider_capabilities"`
-	Description                  string         `json:"description"`
-	RuntimeParameters            map[string]any `json:"runtime_parameters"`
-	Metadata                     map[string]any `json:"metadata"`
-	Promote                      bool           `json:"promote"`
-	InputPrice                   int64          `json:"input_price"`  // micro-USD per 1M tokens (required)
-	OutputPrice                  int64          `json:"output_price"` // micro-USD per 1M tokens (required)
+	HuggingFaceArtifact          *store.HuggingFaceArtifact `json:"hugging_face_artifact,omitempty"`
+	ModelID                      string                     `json:"model_id"`
+	Version                      string                     `json:"version"`
+	DisplayName                  string                     `json:"display_name"`
+	Family                       string                     `json:"family"`
+	Architecture                 string                     `json:"architecture"`
+	Quantization                 string                     `json:"quantization"`
+	MaxContextLength             int                        `json:"max_context_length"`
+	MaxOutputLength              int                        `json:"max_output_length"`
+	MinRAMGB                     int                        `json:"min_ram_gb"`
+	Capabilities                 []string                   `json:"capabilities"`
+	RequiredProviderCapabilities []string                   `json:"required_provider_capabilities"`
+	Description                  string                     `json:"description"`
+	RuntimeParameters            map[string]any             `json:"runtime_parameters"`
+	Metadata                     map[string]any             `json:"metadata"`
+	Promote                      bool                       `json:"promote"`
+	InputPrice                   int64                      `json:"input_price"`  // micro-USD per 1M tokens (required)
+	OutputPrice                  int64                      `json:"output_price"` // micro-USD per 1M tokens (required)
 }
 
 type publishingActor struct {
@@ -138,15 +139,16 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 		entry.DisplayName = req.ModelID
 	}
 	version := &store.ModelVersion{
-		ModelID:         req.ModelID,
-		Version:         req.Version,
-		R2Prefix:        r2Prefix,
-		AggregateSHA256: manifest.AggregateSHA256,
-		TotalSizeBytes:  manifest.TotalSizeBytes,
-		FileCount:       manifest.FileCount,
-		Status:          "ready",
-		UploadedBy:      actor.Name,
-		Metadata:        req.Metadata,
+		HuggingFaceArtifact: req.HuggingFaceArtifact,
+		ModelID:             req.ModelID,
+		Version:             req.Version,
+		R2Prefix:            r2Prefix,
+		AggregateSHA256:     manifest.AggregateSHA256,
+		TotalSizeBytes:      manifest.TotalSizeBytes,
+		FileCount:           manifest.FileCount,
+		Status:              "ready",
+		UploadedBy:          actor.Name,
+		Metadata:            req.Metadata,
 	}
 	files := make([]store.ModelVersionFile, len(manifest.Files))
 	for i, f := range manifest.Files {
@@ -573,6 +575,9 @@ func parseAdminModelActionPath(p string) (string, string, bool) {
 }
 
 func validateRegisterModelRequest(req registerModelRequest) error {
+	if err := req.HuggingFaceArtifact.Validate(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(req.ModelID) == "" {
 		return fmt.Errorf("model_id is required")
 	}
@@ -888,6 +893,9 @@ func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]a
 		model["created"] = rec.CreatedAt.Unix()
 	}
 	if version != nil {
+		if version.HuggingFaceArtifact != nil {
+			model["hugging_face_artifact"] = version.HuggingFaceArtifact
+		}
 		model["version"] = version.Version
 		model["r2_prefix"] = version.R2Prefix
 		model["aggregate_sha256"] = version.AggregateSHA256

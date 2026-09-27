@@ -277,7 +277,7 @@ export function KeyForm({
         <button
           onClick={handleSubmit}
           disabled={!canSubmit}
-          className="flex-1 py-2.5 rounded-lg bg-coral text-white text-sm font-semibold hover:opacity-90 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+          className="flex-1 py-2.5 rounded-lg bg-coral text-white dark:text-bg-primary text-sm font-semibold hover:opacity-90 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
         >
           {submitting && <Loader2 size={14} className="animate-spin" />}
           {mode === "create" ? "Create key" : "Save changes"}

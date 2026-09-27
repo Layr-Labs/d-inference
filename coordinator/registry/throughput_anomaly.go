@@ -20,7 +20,7 @@ import "strings"
 // 4B-active control, gpt-oss-20b, decodes ~69 tok/s on the same class, which is
 // consistent with a healthy sparse read.
 //
-// See docs/architecture/routing-v2.md (§5 W8) and
+// See docs/design/routing-v2.md (§5 W8) and
 // provider-swift/docs/gemma-decode-bandwidth-analysis.md for the derivation.
 //
 // This file is intentionally pure (no metrics, no IO, no registry locks) so the
@@ -94,7 +94,7 @@ var ModelDecodeClasses = map[string]ModelDecodeClass{
 // detector multiplies by the efficiency factor to get a sustained estimate. A
 // provider-reported memory_bandwidth_gbs, when present, takes precedence over
 // this table (resolved in the api sweep); this table is the fallback for
-// providers that omit it. M4 Ultra / the M5 line are approximate/extrapolated.
+// providers that omit it. Some older classes remain approximate/extrapolated.
 var ChipBandwidthGBps = map[string]float64{
 	"M1":       68,
 	"M1 Pro":   200,
@@ -116,6 +116,7 @@ var ChipBandwidthGBps = map[string]float64{
 	"M5 Pro":   300,
 	"M5 Max":   600,
 	"M5 Ultra": 1200,
+	"M6":       153,
 }
 
 // ExpectedDecodeTPS returns the bandwidth-bound single-stream decode throughput

@@ -170,3 +170,33 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "mtp_proposed_tokens",
   "mtp_accepted_tokens",
 ]);
+
+// Heartbeat capacity diagnostics mirror coordinator/protocol/profile.go and
+// process_memory_telemetry.go, and Swift Protocol/ProcessMemoryTelemetry.swift.
+export interface ProcessMemoryTelemetry {
+  generation: number;
+  sample_seq: number;
+  sample_age_ms: number;
+  policy_epoch: number;
+  cap_bytes: number;
+  activation_reserve_bytes: number;
+  active_bytes: number;
+  cache_bytes: number;
+  charged_bytes: number;
+  materialized_bytes: number;
+  unmaterialized_bytes: number;
+  remaining_bytes: number;
+  commitment_debt_bytes: number;
+  owner_count: number;
+  closing_owner_count: number;
+  system_available_bytes?: number;
+}
+
+export interface CapacityTelemetry {
+  low_power_mode?: boolean;
+  memory_pressure_level?: "normal" | "warning" | "critical" | "other";
+  mlx_num_resources?: number;
+  in_admission?: number;
+  inflight_tasks?: number;
+  process_memory?: ProcessMemoryTelemetry;
+}

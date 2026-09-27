@@ -25,16 +25,16 @@ struct WatchdogCommandTests {
 
     // MARK: - autoRestartEnabled (cheap config read, fail-open)
 
-    private func writeTempConfig(_ toml: String) -> URL {
+    private func writeTempConfig(_ toml: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("watchdog-cfg-\(UUID().uuidString).toml")
-        try? toml.write(to: url, atomically: true, encoding: .utf8)
+        try toml.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
 
     @Test("auto_restart = false disables recovery")
-    func honoursDisable() {
-        let url = writeTempConfig("""
+    func honoursDisable() throws {
+        let url = try writeTempConfig("""
         [provider]
         name = "x"
         auto_restart = false
@@ -44,8 +44,8 @@ struct WatchdogCommandTests {
     }
 
     @Test("absent auto_restart defaults to enabled")
-    func defaultsEnabled() {
-        let url = writeTempConfig("""
+    func defaultsEnabled() throws {
+        let url = try writeTempConfig("""
         [provider]
         name = "x"
         """)
@@ -58,25 +58,25 @@ struct WatchdogCommandTests {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("watchdog-missing-\(UUID().uuidString).toml")
         #expect(Watchdog.autoRestartEnabled(configPath: missing.path) == true)
-        #expect(Watchdog.settings(configPath: missing.path).autoUpdate == true)
+        #expect(Watchdog.settings(configPath: missing.path, environment: [:]).autoUpdate == true)
     }
 
     @Test("auto_update = false disables watchdog-owned update checks")
-    func honoursAutoUpdateDisable() {
-        let url = writeTempConfig("""
+    func honoursAutoUpdateDisable() throws {
+        let url = try writeTempConfig("""
         [provider]
         name = "x"
         auto_update = false
         """)
         defer { try? FileManager.default.removeItem(at: url) }
-        let settings = Watchdog.settings(configPath: url.path)
+        let settings = Watchdog.settings(configPath: url.path, environment: [:])
         #expect(settings.autoRestart)
         #expect(!settings.autoUpdate)
     }
 
     @Test("DARKBLOOM_NO_UPDATE_CHECK disables only watchdog updates")
-    func environmentUpdateOptOut() {
-        let url = writeTempConfig("""
+    func environmentUpdateOptOut() throws {
+        let url = try writeTempConfig("""
         [provider]
         name = "x"
         auto_update = true
@@ -92,8 +92,8 @@ struct WatchdogCommandTests {
     }
 
     @Test("raised startup_preload_timeout_secs raises the candidate timeout")
-    func derivesCandidateTimeoutFromPreloadConfig() {
-        let url = writeTempConfig("""
+    func derivesCandidateTimeoutFromPreloadConfig() throws {
+        let url = try writeTempConfig("""
         [provider]
         name = "x"
 
@@ -101,16 +101,16 @@ struct WatchdogCommandTests {
         startup_preload_timeout_secs = 420
         """)
         defer { try? FileManager.default.removeItem(at: url) }
-        let settings = Watchdog.settings(configPath: url.path)
+        let settings = Watchdog.settings(configPath: url.path, environment: [:])
         #expect(settings.candidateStartupTimeoutSeconds == 600)
 
-        let defaults = writeTempConfig("""
+        let defaults = try writeTempConfig("""
         [provider]
         name = "x"
         """)
         defer { try? FileManager.default.removeItem(at: defaults) }
         #expect(Watchdog.settings(
-            configPath: defaults.path
+            configPath: defaults.path, environment: [:]
         ).candidateStartupTimeoutSeconds == 300)
     }
 

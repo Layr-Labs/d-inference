@@ -27,7 +27,7 @@ export function PayoutDestinationRow({
           <Building2 size={14} className="text-teal" />
         )}
         <span className="font-mono">
-          {isCard ? "Debit card" : "Bank"} ••{status.destination_last4}
+          {isCard ? "Debit card" : "Bank"}{status.destination_last4 ? ` ••${status.destination_last4}` : " account"}
         </span>
         {status.instant_eligible && (
           <span className="text-[10px] font-mono uppercase text-gold bg-gold/10 border border-gold/30 rounded px-1.5 py-0.5">
@@ -39,7 +39,7 @@ export function PayoutDestinationRow({
         <button
           onClick={onOpenDashboard}
           disabled={dashboardLoading}
-          title={`Opens your Stripe Express Dashboard, where you can change the ${isCard ? "debit card" : "bank account"} your payouts land in.`}
+          title={`Opens Stripe, where you can change the ${isCard ? "debit card" : "bank account"} your payouts land in.`}
           className="flex items-center gap-1.5 shrink-0 text-xs text-text-tertiary underline underline-offset-2 hover:text-teal disabled:opacity-50 transition-colors"
         >
           {dashboardLoading ? (

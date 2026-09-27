@@ -1,33 +1,37 @@
 # Model download benchmark: small immutable R2 objects vs. large shards
 
-> **Status: experiment.** Synthetic data, one client, one evening. The next revision of
-> this PR runs the same harness against **production shards** (real model files split
-> into parts under the benchmark hostname) before any production change is proposed.
+> Last updated: 2026-09-27 · commit `93d556533`
 
-**Question.** Does storing model files as smaller immutable objects in Cloudflare R2
-improve download throughput and cacheability for providers, while the original shard
-bytes are reconstructed exactly?
-
-**Answer (2026-09-01, run `2026-09-01-r1`).** Yes on cacheability, and it removes a
-throughput cliff that large objects hit. The measured numbers are in
-[Results](#results). Reconstruction was byte-identical in every pass.
-
-Everything here ran against an isolated environment. No production bucket, domain,
-cache rule, client, or model was touched. See [Safety boundaries](#safety-boundaries).
+**Status: experiment; measurements from 2026-09-01.** This synthetic, single-client
+record compares 64 MiB objects with 1 GiB objects. All seven recorded passes passed
+external shard reconstruction; repeated large-object passes were slower. It does
+not establish a production speedup or validate native provider chunk reconstruction.
+Raw [results](results/) are preserved; the harness corrections below were verified
+locally on 2026-09-27 without rerunning the cloud benchmark.
 
 ## Why this matters for Darkbloom
 
-- `darkbloom.ai` is on Cloudflare's **Free plan** (zone plan read via the API: "Free
-  Website"). Per Cloudflare's documentation the cacheable file limit on Free, Pro and
-  Business is **512 MB**. Production shards such as
-  `model-00001-of-00003.safetensors` (5.3 GB) can never be edge-cached on this zone.
-  Every provider download goes to R2 origin.
-- Production objects on `models.darkbloom.ai` currently return
-  `cf-cache-status: DYNAMIC`: no `Cache-Control` header and `.safetensors` is not a
-  default-cached extension, so Cloudflare does not even attempt to cache them.
-- The shipped provider (`darkbloom models download`) already downloads four files
-  concurrently and resumes with HTTP `Range`. What it cannot do today is parallelise
-  inside one 5 GB file, or benefit from an edge cache that refuses files that size.
+The September 1 preflight recorded the zone's Free plan and production objects
+returning `cf-cache-status: DYNAMIC` (see
+[production samples](results/preflight-production-samples.txt)). These are historical
+observations, not a check of the current deployment. Cloudflare documents a
+[512 MB cacheable object limit for Free, Pro and Business](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/)
+and [R2 custom-domain caching requirements](https://developers.cloudflare.com/cache/interaction-cloudflare-products/r2/).
+Large shards exceeded that limit under the recorded plan.
+
+The tested binary was **v0.8.15**, whose source is pinned at
+`0e63aed56a2e0956650dbc91ae9c3edfe6e04b89`. Its download behavior is established by:
+
+| Behavior in the tested release | Canonical source |
+| --- | --- |
+| Four concurrent logical files by default | [`ModelDownloader.swift`, `init`](https://github.com/Layr-Labs/d-inference/blob/0e63aed56a2e0956650dbc91ae9c3edfe6e04b89/provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift) sets `concurrency: Int = 4`; [`ModelDownloader+Download.swift`, `downloadManifestModel`](https://github.com/Layr-Labs/d-inference/blob/0e63aed56a2e0956650dbc91ae9c3edfe6e04b89/provider-swift/Sources/ProviderCore/Models/ModelDownloader+Download.swift) bounds the per-file task group. |
+| Resume a retained `.part` file with `Range: bytes=N-` | [`ModelDownloader+HTTP.swift`, `downloadFile` and `streamDownload`](https://github.com/Layr-Labs/d-inference/blob/0e63aed56a2e0956650dbc91ae9c3edfe6e04b89/provider-swift/Sources/ProviderCore/Models/ModelDownloader+HTTP.swift) derives the starting offset from the local file size. |
+| Per-file SHA-256 and size checks, then aggregate validation before publication | [`ModelDownloader+Download.swift`, `downloadManifestFileWithResume` and `finalizeStagedManifest`](https://github.com/Layr-Labs/d-inference/blob/0e63aed56a2e0956650dbc91ae9c3edfe6e04b89/provider-swift/Sources/ProviderCore/Models/ModelDownloader+Download.swift), with the digest check in [`ModelDownloader+HTTP.swift`, `downloadFile`](https://github.com/Layr-Labs/d-inference/blob/0e63aed56a2e0956650dbc91ae9c3edfe6e04b89/provider-swift/Sources/ProviderCore/Models/ModelDownloader+HTTP.swift). |
+
+These citations describe the measured release, not the current provider. In the
+chunked arm, each part is a **separate logical manifest file**; the harness's
+[`verify.mjs`](harness/verify.mjs) concatenates them afterward. The published snapshot
+contains parts, not reconstructed safetensors files, and no inference was attempted.
 
 ## What was measured
 
@@ -42,8 +46,8 @@ Part *N* of a large object is byte-for-byte chunk *N* of the chunked arm, so bot
 share the same expected SHA-256 per shard.
 
 The client is the **shipped provider binary, unmodified** (v0.8.15; bundle and binary
-SHA-256 match the coordinator's published release, see `results/provider-binary.txt`),
-driven exactly as a provider would drive it:
+SHA-256 were recorded against the published release in
+[provider-binary.txt](results/provider-binary.txt)), invoked through its normal CLI:
 
 ```
 darkbloom models download bench-chunked-2026-09-01-r1 \
@@ -68,7 +72,9 @@ throughput, reconstruction result.
 All passes: 4 GiB per pass, four files in flight (the provider's default), from a Mac
 in Miami (colo MIA) whose uplink tops out around 80 MiB/s. Generated with
 `node harness/summarize.mjs results`; the per-second column ignores zero samples (the
-sampler ticks once a second and occasionally straddles a counter update).
+sampler ticks once a second and occasionally straddles a counter update). The
+updated summarizer also displays download and overall outcome columns; every
+recorded pass below reports success.
 
 | Pass | Objects | GiB | Wall s | Aggregate MiB/s | Per-second MiB/s median (min–max) | CF-Cache-Status after pass | Colo | Byte-identical |
 |---|---|---|---|---|---|---|---|---|
@@ -85,25 +91,27 @@ What the numbers say:
 1. **Cacheability.** Every 64 MiB part was in the edge cache after a single cold pass
    (64/64 `HIT`). No 1 GiB object was ever cached (`MISS` after four full downloads):
    they exceed the plan's 512 MB limit, exactly as production's 5 GB shards do.
-2. **Consistency.** The chunked arm was link-bound and stable across all three passes
+2. **Consistency.** The chunked arm was stable across all three passes
    (54–61 MiB/s aggregate, median per-second rate 64–71 MiB/s). The large arm's first
    pass matched it, then the three repeat passes ran at **14–19 MiB/s aggregate**,
    three to four times slower, with per-second rates sitting at 10–20 MiB/s for
    minutes at a time. That is the band the team has been seeing on production downloads
    (9–14 MB/s), and our own production probe the same night measured 11.9 MiB/s
    (`results/preflight-production-samples.txt`, `results/warm-probe/probe.log`). Large
-   objects through the proxy are not only uncacheable, they are unpredictable.
+   objects were slower on repeat passes in this sample; the cause was not isolated.
 3. **Warm speedup.** On this client the warm chunked pass was not faster than the cold
-   one, because the Mac's uplink was the bottleneck in both. The benefit of `HIT`
+   one. Client-link limits are one possible explanation, not an isolated cause.
+   The benefit of `HIT`
    shows up as origin offload (R2 egress and Class B operations avoided) and as
    headroom for faster providers; it needs a faster client to be measured as a
    throughput gain.
 4. **Correctness.** All seven passes reconstructed every shard byte-for-byte
    (`verify.json`), and the unmodified provider accepted the chunked manifest and
    published the model (`download.log` ends in `Done.` with the cache path). The
-   provider's own per-file SHA-256 and aggregate-hash checks run by construction on
-   that path (`ModelDownloader+Download.swift`: a mismatch throws and clears staging),
-   so a published model implies they passed.
+   provider's own per-file SHA-256 and aggregate-hash checks run on that path
+   (see the pinned `downloadManifestFileWithResume` and `finalizeStagedManifest`
+   citations above). This checks part publication; the harness verifies the original
+   shard hashes separately.
 
 ### Once the cache is warm
 
@@ -121,21 +129,16 @@ edge cache itself delivers. These direct probes (`results/warm-probe/`, taken wi
 Four parallel streams over 16 cached parts (1 GiB) at that moment
 (`results/warm-probe/par4-summary.txt`): 31.7 MiB/s aggregate,
 per-stream 2–52 MiB/s, first byte 44–293 ms. That is lower than the earlier warm passes
-(55–61 MiB/s) and the per-stream spread is wide, which tracks the client link's variance
-at that time rather than the cache: the same production shard measured 40 MiB/s earlier in
-the day and 12 MiB/s during this probe, on an unchanged path.
+(55–61 MiB/s), with wide per-stream variation. The same production shard measured
+40 MiB/s earlier in the day and 12 MiB/s during this probe. These observations do
+not distinguish client-link effects from origin or proxy effects.
 
-What the warm state buys, independent of client speed:
-
-- **First byte in ~90 ms instead of ~500 ms**, and no R2 read at all: a warm model
-  download is entirely edge-served. Every provider after the first one in a colo costs
-  zero R2 egress and zero Class B operations for the weights.
-- **Range requests hit the cache too**, so the provider's existing byte-resume path
-  (`Range: bytes=N-` on a `.part` file) resumes from the edge, not from R2.
-- **A ceiling far above today's**: even single cached streams reached 64 MiB/s here,
-  against 12 MiB/s from the production path at the same hour. On a provider with a
-  faster line than this Mac, four-way concurrency over cached parts should scale with
-  the link; measuring that is part of the production-shard follow-up.
+The probes observed a lower median first-byte time for cached parts and a cached
+`206` response for one Range request. A cache hit can avoid an R2 read, but future
+hits depend on cache residency, location, and policy; a first download does not
+make all later downloads origin-free. The pinned provider's `.part` resume path
+can use such a cached response. This small sample does not establish a latency
+or throughput guarantee for other clients.
 
 Caveats: single client, single colo, single evening; the large-arm slowdown has three
 consistent samples but no root cause (candidates: Cloudflare buffering of oversize
@@ -164,7 +167,8 @@ numbers as representative.
 
 ## Architecture: before and after
 
-**Today.** One request per shard, straight to R2 through Cloudflare, uncacheable.
+**Recorded baseline (2026-09-01).** One request per shard through Cloudflare,
+with production responses observed as `DYNAMIC`.
 
 ```mermaid
 flowchart LR
@@ -186,11 +190,17 @@ flowchart LR
 
 The reconstruction contract (full GET, HEAD, single/suffix/open ranges, 416, resume
 after mid-stream failure, manifest gap detection) is implemented and unit-tested in
-`../transparent-reconstruction-poc/`. This benchmark measured the storage/caching half
+the [local reconstruction spike](../transparent-reconstruction-poc/README.md).
+This benchmark measured the storage/caching half
 with the real provider; it did **not** measure the delivery Worker in the path. That
 is the next step before any production proposal.
 
 ## Reproducing
+
+For cloud-free regression checks, see [developer testing](../../developer/test.md#model-download-experiments).
+The steps below create cloud resources and download multiple GiB. They require
+a separately authorized isolated environment. The pass runner removes the selected
+benchmark model from the local provider cache before each download.
 
 Prerequisites: Docker, Node 22, the shipped provider bundle (`Darkbloom.app`), an
 account-owned Cloudflare API token if you need to (re)create the bucket, hostname,
@@ -203,15 +213,23 @@ cache rule or seed data.
 3. Seed the bucket via the setup Worker (`harness/setup-worker`, `wrangler deploy`,
    then `wrangler secret put SETUP_TOKEN`), then
    `docker run --rm -e SETUP_URL=… -e SETUP_TOKEN=… darkbloom-bench-harness sh seed-bucket.sh`.
-   The objects for run `2026-09-01-r1` already exist, so this step can be skipped.
+   Historical object availability has not been rechecked. Verify the intended
+   isolated environment before reusing data; fresh cold runs require a new prefix.
 4. Start the stub coordinator:
    `docker run -d --name bench-coordinator -p 127.0.0.1:8799:8799 -v "$PWD/out:/harness/out:ro" darkbloom-bench-harness`
 5. Run passes natively (the provider binary is a macOS app and cannot run in Docker):
    `DARKBLOOM_BIN=/path/to/Darkbloom.app/Contents/MacOS/darkbloom harness/run-bench.sh chunked cold`
    then `chunked warm`, `large cold`, `large warm`. Each pass writes
-   `out/<arm>-<pass>/{timing.log,cache-status.log,verify.json,throughput-MiBps.log,download.log,files.log}`.
+   `out/<arm>-<pass>/` diagnostics, including `status.log`, timing, provider logs,
+   cache probes and verification JSON. A failed download or verification exits
+   nonzero and stops the sampler. The summary marks failed/incomplete passes and
+   suppresses their throughput; historical successful result files remain readable.
 6. Copy the `out/<arm>-<pass>/` directories (plus `out/*.json`) into `results/` to
    commit them, then `node harness/summarize.mjs results` for the table.
+
+Pass labels are `cold`, `warm`, or `warmN`; `RUN_ID` starts with a letter or
+digit and contains only letters, digits, underscores and hyphens. `verify.log`
+retains verifier errors.
 
 Change `RUN_ID` in `harness/setup-worker/wrangler.jsonc` and in the environment for a
 new cold run; never reuse a prefix.

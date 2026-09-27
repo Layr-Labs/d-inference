@@ -1,5 +1,5 @@
 // Package baserewards implements the provider base-reward (base income) subsidy
-// (design: docs/base-rewards.md). The base reward is a per-machine, per-epoch
+// (design: docs/design/base-rewards.md). The base reward is a per-machine, per-epoch
 // payment ADDED ON TOP of what the provider earns from real inference — base
 // income, not a backstop:
 //

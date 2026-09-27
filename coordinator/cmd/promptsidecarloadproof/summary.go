@@ -33,16 +33,17 @@ type inventorySummary struct {
 }
 
 type preloadSummary struct {
-	Requested       int    `json:"requested"`
-	Warm            int    `json:"warm"`
-	Cold            int    `json:"cold"`
-	Failed          int    `json:"failed"`
-	RepeatWarm      int    `json:"repeat_warm"`
-	RepeatCold      int    `json:"repeat_cold"`
-	RepeatFailed    int    `json:"repeat_failed"`
-	MetricColdLoads uint64 `json:"metric_cold_loads"`
-	MetricWarmLoads uint64 `json:"metric_warm_loads"`
-	MetricLoadWaits uint64 `json:"metric_load_waits"`
+	Requested         int                                   `json:"requested"`
+	Warm              int                                   `json:"warm"`
+	Cold              int                                   `json:"cold"`
+	Failed            int                                   `json:"failed"`
+	RepeatWarm        int                                   `json:"repeat_warm"`
+	RepeatCold        int                                   `json:"repeat_cold"`
+	RepeatFailed      int                                   `json:"repeat_failed"`
+	MetricColdLoads   uint64                                `json:"metric_cold_loads"`
+	MetricWarmLoads   uint64                                `json:"metric_warm_loads"`
+	MetricLoadWaits   uint64                                `json:"metric_load_waits"`
+	ColdLoadLatencyUS promptcontract.SidecarLatencySnapshot `json:"cold_load_latency_us"`
 }
 
 type coldStartSummary struct {
@@ -65,6 +66,8 @@ type coldStartSummary struct {
 	RSSLimitBytes        uint64             `json:"rss_limit_bytes"`
 	Metrics              planMetricsSummary `json:"metrics"`
 	FailureSamples       []string           `json:"failure_samples,omitempty"`
+	// Includes the initial seed preload plus each subsequent contract burst.
+	ColdLoadLatencyUSIncludingSeed promptcontract.SidecarLatencySnapshot `json:"cold_load_latency_us_including_seed"`
 }
 
 type contractLoadSummary struct {
@@ -75,17 +78,18 @@ type contractLoadSummary struct {
 }
 
 type loadSummary struct {
-	TargetQPS          int                 `json:"target_qps"`
-	DurationMS         int64               `json:"duration_ms"`
-	Requests           int                 `json:"requests"`
-	Succeeded          int                 `json:"succeeded"`
-	Errors             int                 `json:"errors"`
-	Mismatches         int                 `json:"mismatches"`
-	CoveredVectors     int                 `json:"covered_vectors"`
-	AchievedStartQPS   float64             `json:"achieved_start_qps"`
-	MaximumScheduleLag int64               `json:"maximum_schedule_lag_ms"`
-	ContractLoads      contractLoadSummary `json:"contract_loads"`
-	FailureSamples     []string            `json:"failure_samples,omitempty"`
+	TargetQPS          int                                   `json:"target_qps"`
+	DurationMS         int64                                 `json:"duration_ms"`
+	Requests           int                                   `json:"requests"`
+	Succeeded          int                                   `json:"succeeded"`
+	Errors             int                                   `json:"errors"`
+	Mismatches         int                                   `json:"mismatches"`
+	CoveredVectors     int                                   `json:"covered_vectors"`
+	AchievedStartQPS   float64                               `json:"achieved_start_qps"`
+	MaximumScheduleLag int64                                 `json:"maximum_schedule_lag_ms"`
+	ContractLoads      contractLoadSummary                   `json:"contract_loads"`
+	FailureSamples     []string                              `json:"failure_samples,omitempty"`
+	PlanLatencyUS      promptcontract.SidecarLatencySnapshot `json:"plan_latency_us"`
 }
 
 type processSummary struct {

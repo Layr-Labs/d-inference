@@ -76,37 +76,34 @@ struct StartCommandTests {
     }
 
     @Test("the default projection path is the environment apply boundary")
-    func defaultApplyProjectsSettings() throws {
-        let settings = GemmaOptimizationSettings(
-            prefillLayer18: false,
-            weightedR1: true
-        )
-        let projection = GemmaOptimizationEnvironment.projection(for: settings)
-        let saved = projection.keys.reduce(into: [String: String?]()) { out, key in
-            out[key] = key.withCString { getenv($0).map { String(cString: $0) } }
-        }
-        defer {
-            for (key, value) in saved {
-                if let value {
-                    _ = setenv(key, value, 1)
-                } else {
-                    _ = unsetenv(key)
-                }
+    func defaultApplyProjectsSettings() async {
+        // The real apply path mutates process-wide settings that concurrent
+        // model tests read and MLX caches on first use. Restoring environment
+        // strings cannot restore those cached values; suite serialization
+        // does not isolate other suites. Keep the real startup assertion in
+        // its own process, as GPUEnforcementTests does for device defaults.
+        await #expect(processExitsWith: .success) {
+            let isChildProcess = ExitTest.current != nil
+            #expect(isChildProcess)
+            let settings = GemmaOptimizationSettings(
+                prefillLayer18: false,
+                weightedR1: true
+            )
+            let projection = GemmaOptimizationEnvironment.projection(for: settings)
+            var metalProbed = false
+
+            try ServeRuntimePreparer.prepareRuntime(
+                settings: settings,
+                bindMetallib: { "test-bound-hash" },
+                requireMetal: { metalProbed = true }
+            )
+
+            for (key, value) in projection {
+                let observed = key.withCString { getenv($0).map { String(cString: $0) } }
+                #expect(observed == value)
             }
+            #expect(metalProbed)
         }
-        var metalProbed = false
-
-        try ServeRuntimePreparer.prepareRuntime(
-            settings: settings,
-            bindMetallib: { "test-bound-hash" },
-            requireMetal: { metalProbed = true }
-        )
-
-        for (key, value) in projection {
-            let observed = key.withCString { getenv($0).map { String(cString: $0) } }
-            #expect(observed == value)
-        }
-        #expect(metalProbed)
     }
 
     @Test("the Start compatibility shim forwards the full startup order")

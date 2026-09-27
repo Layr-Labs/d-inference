@@ -12,4 +12,6 @@ export {
   clampPct,
   formatTps,
   humanizeUptime,
+  formatIdleWindow,
+  describeIdlePolicy,
 } from "@/lib/format";

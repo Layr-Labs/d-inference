@@ -231,11 +231,11 @@ func TestCatalogWeightHash(t *testing.T) {
 // desired_models — without which the legacy fleet could never migrate.
 func TestDesiredModelsForLegacyAdvertiserAfterTakeover(t *testing.T) {
 	r := New(testLogger())
-	r.providers["p1"] = &Provider{
+	insertTestProvider(r, &Provider{
 		ID:     "p1",
 		Status: StatusOnline,
 		Models: []protocol.ModelInfo{{ID: "gemma-4-26b"}}, // advertises the public name
-	}
+	})
 	r.SetModelAliases(map[string]AliasTarget{
 		"gemma-4-26b": {Desired: "gemma-4-26b-qat-4bit", Previous: "gemma-4-26b"},
 	})

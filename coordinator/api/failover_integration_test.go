@@ -71,7 +71,7 @@ func setupFailoverServer(t *testing.T) (*registry.Registry, *store.MemoryStore, 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := NewServer(reg, st, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}}, logger)
 	srv.challengeInterval = 500 * time.Millisecond
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -98,25 +98,28 @@ type inferenceScript func(ctx context.Context, fp *failoverProvider, req protoco
 
 // failoverProvider is a scripted fake provider speaking the full WS protocol.
 type failoverProvider struct {
-	t          *testing.T
-	name       string
-	conn       *websocket.Conn
-	pubKey     string
-	privKey    [32]byte
-	registryID string
-	script     inferenceScript
-	dispatches atomic.Int32
-	bodies     chan []byte
-	done       chan struct{}
-	closeOnce  sync.Once
+	t               *testing.T
+	name            string
+	conn            *websocket.Conn
+	pubKey          string
+	privKey         [32]byte
+	registryID      string
+	script          inferenceScript
+	dispatches      atomic.Int32
+	bodies          chan []byte
+	done            chan struct{}
+	closeOnce       sync.Once
+	appAttestFrames chan protocol.AppAttestShadowPayload
 }
 
 type failoverProviderConfig struct {
-	Name      string
-	Version   string
-	DecodeTPS float64
-	Models    []failoverModelSpec
-	Script    inferenceScript
+	AuthToken       string
+	Name            string
+	Version         string
+	DecodeTPS       float64
+	Models          []failoverModelSpec
+	Script          inferenceScript
+	AppAttestFrames chan protocol.AppAttestShadowPayload
 }
 
 // startFailoverProvider dials the provider WebSocket, registers (raw-JSON
@@ -147,7 +150,8 @@ func startFailoverProvider(t *testing.T, ctx context.Context, ts *httptest.Serve
 	// models entries in as raw maps so per-model fields still landing in
 	// sibling workstreams (template_render_ok) can be set by tests.
 	regStruct := protocol.RegisterMessage{
-		Type: protocol.TypeRegister,
+		Type:      protocol.TypeRegister,
+		AuthToken: cfg.AuthToken,
 		Hardware: protocol.Hardware{
 			MachineModel: "Mac15,8",
 			ChipName:     "Apple M3 Max",
@@ -206,15 +210,16 @@ func startFailoverProvider(t *testing.T, ctx context.Context, ts *httptest.Serve
 	reg.RecordChallengeSuccess(registryID)
 
 	fp := &failoverProvider{
-		t:          t,
-		name:       cfg.Name,
-		conn:       conn,
-		pubKey:     pubKey,
-		privKey:    keypair.private,
-		registryID: registryID,
-		script:     cfg.Script,
-		bodies:     make(chan []byte, 8),
-		done:       make(chan struct{}),
+		t:               t,
+		name:            cfg.Name,
+		conn:            conn,
+		pubKey:          pubKey,
+		privKey:         keypair.private,
+		registryID:      registryID,
+		script:          cfg.Script,
+		bodies:          make(chan []byte, 8),
+		done:            make(chan struct{}),
+		appAttestFrames: cfg.AppAttestFrames,
 	}
 	go fp.run(ctx)
 	t.Cleanup(fp.close)
@@ -237,6 +242,17 @@ func (fp *failoverProvider) run(ctx context.Context) {
 			continue
 		}
 		switch env.Type {
+		case protocol.TypeAppAttestShadow:
+			if fp.appAttestFrames != nil {
+				var message protocol.AppAttestShadowMessage
+				if json.Unmarshal(data, &message) == nil {
+					select {
+					case fp.appAttestFrames <- message.Payload:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
 		case protocol.TypeAttestationChallenge:
 			resp := makeValidChallengeResponse(data, fp.pubKey)
 			if err := fp.conn.Write(ctx, websocket.MessageText, resp); err != nil {

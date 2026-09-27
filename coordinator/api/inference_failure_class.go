@@ -175,6 +175,11 @@ func classifyRejection(reason, errStr string, providerBudget int64, modelContext
 		return rejectionDeterministicUnservable
 	case "request_exceeds_node", "request_exceeds_node_budget", "capacity_busy":
 		return rejectionTransientCapacity
+	case errorReasonDraining:
+		// Typed drain refusal (R2): this node is restarting; another serves.
+		// Transient for failover, but shouldStopFailover does not charge it
+		// against maxCapacityClassRetries (isDrainingErrorReason).
+		return rejectionTransientCapacity
 	case errorReasonDeadlineUnreachable:
 		return rejectionDeadlineUnreachable
 	case "request_exceeds_batch_token_budget":

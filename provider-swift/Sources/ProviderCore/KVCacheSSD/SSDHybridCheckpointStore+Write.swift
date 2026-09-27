@@ -1,0 +1,337 @@
+import Foundation
+import MLXLMCommon
+
+extension SSDHybridCheckpointStore {
+    final class WriteJob: @unchecked Sendable {
+        let source: CBv2CompleteCheckpointExport
+        private var envelope: SSDHybridCheckpointEnvelope?
+        private let hostReservation: ProcessHostBufferReservation?
+        private let stats: SSDHybridCheckpointStatsBox
+        let tag: Data
+        let epoch: String?
+        let repeated: Bool
+        let authenticatedFile: SSDAuthenticatedFileIdentity?
+        private let settlement: PrefixCacheDonationSettlement
+        private let lock = NSLock()
+        private var completion: (@Sendable ([Int]) -> Void)?
+
+        init(source: CBv2CompleteCheckpointExport, envelope: SSDHybridCheckpointEnvelope,
+             tag: Data, epoch: String?, repeated: Bool, authenticatedFile: SSDAuthenticatedFileIdentity?,
+             settlement: PrefixCacheDonationSettlement,
+             hostReservation: ProcessHostBufferReservation?, stats: SSDHybridCheckpointStatsBox,
+             completion: @escaping @Sendable ([Int]) -> Void) {
+            self.source = source
+            self.envelope = envelope
+            self.hostReservation = hostReservation
+            self.stats = stats
+            self.tag = tag
+            self.epoch = epoch
+            self.repeated = repeated
+            self.authenticatedFile = authenticatedFile
+            self.completion = completion
+            self.settlement = settlement
+        }
+
+        func readEnvelope() -> SSDHybridCheckpointEnvelope? { lock.withLock { envelope } }
+
+        func finish(_ positions: [Int], outcome: PrefixCacheDonationOutcome = .cacheClosed) {
+            let callback = lock.withLock {
+                defer { completion = nil; envelope = nil }
+                return completion
+            }
+            guard let callback else { return }
+            source.close()
+            if let hostReservation {
+                hostReservation.closeAfterDroppingBuffers()
+                stats.update { $0.writeHostBytesInUse -= Int(hostReservation.bytes) }
+            }
+            settlement.settle(outcome)
+            callback(positions)
+        }
+    }
+
+    public func donate(
+        _ source: CBv2CompleteCheckpointExport, requestID: CBv2RequestID?,
+        tokens: [Int], cacheSalt: String?, completion: @escaping @Sendable ([Int]) -> Void
+    ) {
+        let settlement = PrefixCacheDonationSettlement(recorder: donationRecorder)
+        guard !isClosed else {
+            source.close()
+            settlement.settle(.cacheClosed)
+            completion([])
+            return
+        }
+        let hostReservation: ProcessHostBufferReservation?
+        if source.usesProcessMemoryOwner || source.manifest.backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout {
+            guard let kvBudget,
+                let reservation = kvBudget.reserveHostBuffers(bytes: UInt64(Self.ioScratchBytes))
+            else {
+                statsBox.update { $0.writeHostCapacityRefusals += 1 }
+                source.close()
+                settlement.settle(.hostMemoryUnavailable)
+                completion([])
+                return
+            }
+            hostReservation = reservation
+            statsBox.update {
+                $0.writeHostBytesInUse += Self.ioScratchBytes
+                $0.peakWriteHostBytes = max($0.peakWriteHostBytes, $0.writeHostBytesInUse)
+            }
+        } else {
+            hostReservation = nil
+        }
+        let preparation = prepareWriteJob(
+            source, requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
+            hostReservation: hostReservation, settlement: settlement, completion: completion)
+        // The preparation helper has dropped temporary encoded/hash buffers.
+        // Only an accepted job's envelope may now retain provider-owned Data.
+        switch preparation {
+        case .refused(let outcome):
+            source.close()
+            if let hostReservation {
+                hostReservation.closeAfterDroppingBuffers()
+                statsBox.update { $0.writeHostBytesInUse -= Int(hostReservation.bytes) }
+            }
+            settlement.settle(outcome)
+            completion([])
+        case .ready(let job):
+            if !pipeline.submit(job) {
+                settle(job, positions: [], outcome: isClosed ? .cacheClosed : .writeQueueFull)
+            }
+        }
+    }
+
+    private enum WritePreparation {
+        case ready(WriteJob)
+        case refused(PrefixCacheDonationOutcome)
+    }
+
+    private func prepareWriteJob(
+        _ source: CBv2CompleteCheckpointExport, requestID: CBv2RequestID?,
+        tokens: [Int], cacheSalt: String?, hostReservation: ProcessHostBufferReservation?,
+        settlement: PrefixCacheDonationSettlement,
+        completion: @escaping @Sendable ([Int]) -> Void
+    ) -> WritePreparation {
+        guard !isClosed else { return .refused(.cacheClosed) }
+        guard hasSafeRoot else { return .refused(.unsafeCacheRoot) }
+        let manifest = source.manifest
+        let nativeMedia = config.backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
+            && manifest.mediaIdentity != nil
+        guard manifest.position >= config.minEffectiveTokens else { return .refused(.belowEffectiveTokenFloor) }
+        guard manifest.position > 0, nativeMedia || manifest.position % PrefixCachePolicy.blockSize == 0 else {
+            return .refused(.noCompleteBlock)
+        }
+        guard manifest.identity == identity, manifest.backendLayout == config.backendLayout,
+            manifest.cacheSalt == cacheSalt,
+            (manifest.backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
+                ? manifest.position <= tokens.count : manifest.position < tokens.count),
+            tokens.starts(with: manifest.prefixTokens)
+        else { return .refused(.incompleteLayerState) }
+        let envelope: SSDHybridCheckpointEnvelope
+        do {
+            envelope = try SSDHybridCheckpointEnvelope(manifest: manifest, maximumPlaintextBytes: config.maxReadBytes)
+        } catch SSDHybridCheckpointEnvelope.EncodingError.sizeExceeded {
+            return .refused(.stageSizeExceeded)
+        } catch {
+            return .refused(.incompleteLayerState)
+        }
+        let digest: Data
+        if nativeMedia {
+            guard manifest.chunkSize == config.nativePrefillChunkSize,
+                let values = try? NativeDiffusionCheckpointKeys.hashes(tokens: manifest.prefixTokens,
+                    positions: [manifest.position], promptContractID: identity.promptContractID, scope: cacheSalt ?? ""),
+                let value = values[manifest.position] else { return .refused(.incompleteLayerState) }
+            digest = value
+        } else {
+            let chain = hashes(tokens: tokens, scope: cacheSalt ?? "")
+            let offset = manifest.position / PrefixCachePolicy.blockSize - 1
+            guard chain.indices.contains(offset) else { return .refused(.noCompleteBlock) }
+            digest = chain[offset]
+        }
+        let tag = lookupKeys.checkpointTag(chainHash: digest, cacheSalt: cacheSalt ?? "")
+        let short = Data(tag.prefix(16))
+        let repeated = writeDemand.observe(short, now: config.nowSeconds())
+        if !index.contains(tag16: short) {
+            // Demand gate first: a fleet-novel checkpoint is skipped before any
+            // budget is charged (`SSDHybridCheckpointStore+DemandAdmission`).
+            // The tag was recorded above, so a local second sighting qualifies.
+            if let refusal = demandRefusal(requestID: requestID, localRepeat: repeated) {
+                return .refused(refusal)
+            }
+            // Novel writes use a 90% sub-budget, leaving capacity for known
+            // repeat demand. Durable duplicates consume no write budget. The
+            // writer rechecks after queueing, since this admission is advisory.
+            if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: repeated)) {
+                return .refused(refusal)
+            }
+        }
+        let refusal: PrefixCacheDonationOutcome? = lock.withLock {
+            guard !closed else { return .cacheClosed }
+            guard !writing.contains(short) else { return .alreadyQueued }
+            guard writing.count < 2 else { return .writeQueueFull }
+            writing.insert(short)
+            return nil
+        }
+        if let refusal { return .refused(refusal) }
+        let epoch = config.epochStore?.current
+        let alreadyAuthenticated = lock.withLock { () -> SSDAuthenticatedFileIdentity? in
+            guard let requestID, let proof = authenticatedReceipts[requestID], proof.epoch == epoch else { return nil }
+            return proof.files[short]
+        }
+        return .ready(WriteJob(
+            source: source, envelope: envelope, tag: tag, epoch: epoch, repeated: repeated,
+            authenticatedFile: alreadyAuthenticated, settlement: settlement,
+            hostReservation: hostReservation, stats: statsBox, completion: completion))
+    }
+
+    private static func writeRefusal(_ decision: SSDWriteRateLimiter.Decision) -> PrefixCacheDonationOutcome? {
+        switch decision {
+        case .accepted: nil
+        case .rateLimited: .writeRateLimited
+        case .priorityLimited: .writePriorityLimited
+        }
+    }
+
+    private struct WriteResult {
+        var positions: [Int] = []
+        var outcome: PrefixCacheDonationOutcome = .writeFailed
+    }
+
+    func write(_ job: WriteJob) {
+        let started = ContinuousClock.now
+        var result = WriteResult()
+        performWrite(job, result: &result)
+        statsBox.update { $0.writeMilliseconds += Self.milliseconds(since: started) }
+        // The helper has dropped metadata, plaintext, ciphertext and returned
+        // native Data. finish then drops the queued envelope before host refund.
+        settle(job, positions: result.positions, outcome: result.outcome)
+    }
+
+    private func performWrite(_ job: WriteJob, result: inout WriteResult) {
+        guard let envelope = job.readEnvelope() else { result.outcome = .cacheClosed; return }
+        let short = Data(job.tag.prefix(16))
+        let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: short.hexString)
+        guard !isClosed, !Task.isCancelled else { result.outcome = .cacheClosed; return }
+        guard hasSafeRoot else { result.outcome = .unsafeCacheRoot; return }
+        guard epochMatches(job.epoch) else { result.outcome = .cacheEpochChanged; return }
+        let metadata = envelope.metadata(
+            tag: job.tag, identity: identity, createdAt: config.nowSeconds(), backendLayout: config.backendLayout)
+        var authenticatingExistingFile = false
+        do {
+            let alreadyDurable = index.contains(tag16: short)
+            if alreadyDurable, job.authenticatedFile?.matches(url: url) == true {
+                // This submission already authenticated all bytes during its
+                // stage. Identity and epoch remain unchanged; no second read.
+            } else if alreadyDurable {
+                authenticatingExistingFile = true
+                // A ready receipt must never rely on an advisory index entry.
+                // Reauthenticate changed timestamps too: another legitimate
+                // hit may have updated sliding recency since this stage.
+                try validateDurableCheckpoint(job, at: url)
+            } else {
+                if let space = SSDPrefixCache.volumeSpace(at: config.root) {
+                    let floor = SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: space.capacity)
+                    guard space.free >= floor, space.free - floor >= envelope.plaintextBytes else {
+                        result.outcome = .diskSpaceInsufficient; return
+                    }
+                }
+                if let refusal = Self.writeRefusal(rateLimiter.consume(bytes: envelope.plaintextBytes, repeated: job.repeated)) {
+                    result.outcome = refusal; return
+                }
+                let written = try SSDBlockStore.writeStreaming(
+                    to: url, metadata: metadata, kekKey: kekKey,
+                    maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
+                    strictFsync: config.strictFsync,
+                    chunk: { index in
+                        try self.checkWrite(job)
+                        if index == 0 { return envelope.manifestBytes }
+                        let segment = envelope.segments[index - 1]
+                        self.statsBox.update { $0.maximumSegmentBytes = max($0.maximumSegmentBytes, segment.bytes) }
+                        return try job.source.readSegment(
+                            tensorIndex: segment.tensor, byteOffset: segment.offset, maximumBytes: segment.bytes)
+                    })
+                guard !isClosed else { result.outcome = .cacheClosed; return }
+                guard epochMatches(job.epoch) else { result.outcome = .cacheEpochChanged; return }
+                #if DEBUG
+                afterPublishBeforeIndexForTesting?()
+                #endif
+                // Publish-to-index is atomic with respect to removals: every
+                // unlink (budget eviction, TTL sweep, corrupt drop, whole-root
+                // maintenance) holds `removalLock`, so the file is either still
+                // present here and indexed before any later removal can
+                // reconcile it, or already gone and never advertised.
+                let indexed = removalLock.withLock {
+                    guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular else {
+                        return false
+                    }
+                    index.insert(tag16: short, fileBytes: written, lastAccess: config.nowSeconds())
+                    return true
+                }
+                guard indexed else { result.outcome = .cacheEntryEvicted; return }
+                statsBox.update { $0.filesWritten += 1; $0.bytesWritten += written }
+            }
+            config.maintainWholeRoot()
+            _ = diskBudget.enforce(budgetBytes: config.diskBudgetBytes())
+            if !isClosed, epochMatches(job.epoch), index.contains(tag16: short) {
+                result.positions = [job.source.manifest.position]
+                result.outcome = alreadyDurable ? .alreadyDurable : .donated
+            } else if isClosed {
+                result.outcome = .cacheClosed
+            } else if !index.contains(tag16: short) {
+                // Maintenance removed this endpoint after it was written. The
+                // epoch is unchanged, so report the removal itself; the failed
+                // gate above already withheld its ready endpoint.
+                result.outcome = .cacheEntryEvicted
+            } else if !epochMatches(job.epoch) {
+                result.outcome = .cacheEpochChanged
+            } else {
+                // A concurrent state transition may have settled between the
+                // reads above. Never manufacture READY from the failed gate.
+                result.outcome = .writeFailed
+            }
+        } catch {
+            if isClosed {
+                result.outcome = .cacheClosed
+            } else if !epochMatches(job.epoch) {
+                result.outcome = .cacheEpochChanged
+            } else if authenticatingExistingFile && !(error is CancellationError) {
+                // An advertised file failed reauthentication. Revoke its
+                // evidence before removal, exactly as the lookup path does.
+                result.outcome = .existingCacheUnreadable
+                removeCorrupt(short)
+            } else if Task.isCancelled || error is CancellationError {
+                result.outcome = .cacheClosed
+            } else {
+                result.outcome = Self.freshWriteFailureOutcome(error)
+                // Atomic creation did not publish an index entry or receipt.
+                // Do not call removeCorrupt: there is no advertised file to
+                // revoke or index entry to drop, and a transient write
+                // failure is not corruption. A later donation may retry
+                // after the condition clears.
+            }
+        }
+    }
+
+    func settle(_ job: WriteJob, positions: [Int], outcome: PrefixCacheDonationOutcome = .cacheClosed) {
+        lock.withLock { _ = writing.remove(Data(job.tag.prefix(16))) }
+        if positions.isEmpty { statsBox.update { $0.writesDropped += 1 } }
+        // The engine owns the later post-release ready notification. It must
+        // first release the donor's backend and checkpoint aliases.
+        job.finish(positions, outcome: outcome)
+    }
+
+    func checkWrite(_ job: WriteJob) throws {
+        guard !isClosed, !Task.isCancelled, epochMatches(job.epoch) else { throw CancellationError() }
+    }
+
+    func epochMatches(_ epoch: String?) -> Bool {
+        guard let store = config.epochStore else { return true }
+        guard let epoch else { return false }
+        return store.current == epoch
+    }
+
+    static func milliseconds(since start: ContinuousClock.Instant) -> Double {
+        let duration = start.duration(to: .now).components
+        return Double(duration.seconds) * 1000 + Double(duration.attoseconds) / 1e15
+    }
+}

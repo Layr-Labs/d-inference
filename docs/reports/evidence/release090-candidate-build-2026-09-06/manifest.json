@@ -1,0 +1,30 @@
+{
+  "scope": "Candidate build and focused tests; model acceptance pending. No binaries, weights, caches, credentials or source archives.",
+  "files": {
+    "candidate-validation-summary.json": {
+      "sha256": "ea413f6624c03349bbb97241c5d737f5de4145b13192f78719a9a114f7d88a17",
+      "bytes": 2347
+    },
+    "sdpa-shader-inventory-projection.json": {
+      "sha256": "12821f6607cf3be1416bbfdff3f7a8be882911957f6ca424f98ba34ee6d14564",
+      "bytes": 5953
+    },
+    "provider-test-results.json": {
+      "sha256": "c658f780b3f52860d8f0627497c676b7cdf0e80318873ebb72b1dc186da6e936",
+      "bytes": 2151
+    },
+    "artifact-manifest.json": {
+      "sha256": "4816dd430cead8b26aaafa6a31d87c49697e3f43f025224bd96a3f7896d7685c",
+      "bytes": 7128
+    },
+    "root-runtime-review-v2.json": {
+      "sha256": "5bf7b2b054a9ac1bd512d7b3901eec10cfe0c1bc5286f265948ddfb51dca956e",
+      "bytes": 3859
+    },
+    "root-source-review-v2.json": {
+      "sha256": "1633064ead528857219b26cdf3eba5e708352c2b3ed81f0c8605ffb6a2f83488",
+      "bytes": 3262
+    }
+  },
+  "archive_sha256": "88fc476e9a8894ee33c5af608b431e55e12759cba697bff52860366c3dc8099c"
+}

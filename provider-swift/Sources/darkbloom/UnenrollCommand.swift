@@ -4,21 +4,42 @@ import ProviderCore
 
 struct Unenroll: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Remove the Darkbloom MDM profile and clean up local state.",
+        abstract: "Choose whether to leave Darkbloom or remove MDM and keep serving.",
         discussion: """
         macOS only allows the user (not an unprivileged binary) to remove
         an MDM profile, so this command opens System Settings → Device
         Management for you and prompts before deleting any local data.
+
+        Running unenroll interactively offers two choices: fully exit
+        Darkbloom, or remove MDM and keep serving with App Attest.
+        App Attest requires macOS 27 or later and fresh coordinator approval.
+        That mode retains your account, keys, and data. --keep-serving
+        selects it directly; --force selects full exit and confirms cleanup.
         """
     )
 
-    @Flag(help: "Skip the local-data cleanup confirmation and purge anyway.")
+    @Flag(help: "Fully exit Darkbloom and confirm local-data cleanup without prompting.")
     var force = false
 
     @Flag(help: "Don't open System Settings.")
     var noOpen = false
 
+    @OptionGroup var configOptions: ConfigOptions
+
+    @Flag(help: "Select App Attest migration directly (macOS 27+); retain account, keys, and local data.")
+    var keepServing = false
+
     mutating func run() async throws {
+        let mode = try chooseUnenrollmentMode()
+        try await Self.performUnenrollment(
+            mode: mode,
+            stopProvider: { try await Self.stopProviderBeforeUnenrollment() },
+            leave: { performFullUnenrollment() },
+            migrate: { try prepareMDMRemovalWhileServing() }
+        )
+    }
+
+    private func performFullUnenrollment() {
         print("Darkbloom Unenrollment")
         print()
 
@@ -52,6 +73,7 @@ struct Unenroll: AsyncParsableCommand {
         print("  • Config dir:    ~/.config/darkbloom/  (and legacy ~/.config/eigeninference/)")
         print("  • Auth token:    ~/.darkbloom/auth_token")
         print("  • Legacy keys:   ~/.darkbloom/{wallet_key,enclave_key.data,…}")
+        print("  • Signing keys:  Current and legacy Secure Enclave attestation keys")
         print()
 
         let proceed: Bool

@@ -1,0 +1,28 @@
+{
+  "events": [
+    {
+      "detail": "Initial baseline Swift/Metal steps succeeded; packaging incorrectly expected swift-crypto_Crypto.bundle/PrivacyInfo.xcprivacy. Original failure and attempt1 receipts retained. Corrected packaging uses only actual SwiftPM resources.",
+      "event": "initial_resource_packaging_failure",
+      "evidence": "controls/build-ssh.stderr"
+    },
+    {
+      "detail": "Staging refused stale manifest approval; final handoff plus dependency-proof compatibility delta received exact-hash re-review. No rejected stdout or extra operator run is fabricated.",
+      "event": "manifest_staging_refusals",
+      "final_reviewed_hash": "12cd0ce5eec6cf252a5d8cdc58c6a30e5756fa17b5c30cde7dbfc93c222367d8",
+      "guard_source": {
+        "bytes": 3763,
+        "mode": 420,
+        "sha256": "10517e50548f62f1d73870fa023755d8303658adb9738bd23f92f0210e646dd2"
+      },
+      "intermediate_hash": "eee934dfd5a5363aed098c598b82ddb4df698cf8dc256cfde0814f67c1fc32a3",
+      "provenance": "User/Main reports in the independent-review conversation; rejected-call stdout/stderr was not separately retained in the supplied local collection.",
+      "reviewed_hash": "0d48757a3c9a87dce65bac7c7e41f18f15f97435e6ae16e9c57e8c92e9329154"
+    },
+    {
+      "detail": "ModuleNotFoundError for common before successful final adapter staging; successful retry receipts are retained.",
+      "event": "premature_binding_preparation_failure",
+      "evidence": "controls/binding-preparation.stderr"
+    }
+  ],
+  "schema": "darkbloom.q36-partials-preserved-events.v1"
+}

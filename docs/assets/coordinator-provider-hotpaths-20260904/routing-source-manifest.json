@@ -1,0 +1,16 @@
+{
+  "base_commit": "4d9811f7c240b37f2915a6475f8476d7db01340e",
+  "toolchain": "go1.25.0 darwin/arm64",
+  "files": {
+    "candidate_selection.go": "5433e1fa1eacae8f3288a85beb860a2b02ee1c2698411647e687442bfe7992b8",
+    "candidate_selection_test.go": "905cce64ae075b0175038b8e093366280e00173f54ab0b8a5e9a8addfcbdc499",
+    "scheduler.go": "0c9302d967a0e5a8eb10e70bbc9f681dcce334828e67b58350cdbee2619d4ac6",
+    "reserve_bench_test.go": "ec1e030902c11ba3463e2e6d92109bb1920c974844826ff3196653d2a29cdf26",
+    "routing_context_test.go": "a921b7991cfcc47f04641b9dc945257414c5220ed10382022ef45b65208c5faa",
+    "cold_dispatch.go": "a49835a70e7db842faaf37af4241b7665295cc67764abc89e743a4f3e7f612d9",
+    "registry.go": "fc10f29889a6901d6624243d51bab5ca31351bc1a613ce74f920076a08649797",
+    "warm_pool_controller.go": "c498de9a026754387eef0ff2afafc33d8df93e30ccec3d0db4370e342ae8a1fc",
+    "servability_test.go": "bd458d7b2e7304dc9b4cab3c3a9197a1d4f7308c6b24fa23ee3aa62a76f5c418",
+    "servability_provider_fit_test.go": "6e573b18b65b54c2dc3c734e47928686b101a2f85b45b8fae8e9ebd2917a7616"
+  }
+}

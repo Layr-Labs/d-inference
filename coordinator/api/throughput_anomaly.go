@@ -2,7 +2,7 @@ package api
 
 // Throughput anomaly detector — periodic fleet sweep + metric/log emission.
 //
-// This is the IO half of workstream W8 (docs/architecture/routing-v2.md §5). It
+// This is the IO half of workstream W8 (docs/design/routing-v2.md §5). It
 // periodically snapshots every provider's per-model observed decode TPS, groups
 // the observations by (model, chip-class), and asks the pure evaluator in
 // coordinator/registry/throughput_anomaly.go whether each bucket is decoding far

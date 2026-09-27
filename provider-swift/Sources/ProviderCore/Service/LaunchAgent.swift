@@ -54,20 +54,7 @@ public enum LaunchAgent: Sendable {
     }
 
     private static func isLoaded(label: String) -> Bool {
-        let target = "gui/\(getuid())/\(label)"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["print", target]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
-        } catch {
-            return false
-        }
+        LaunchctlControl.printSucceeds(label: label)
     }
 
     // MARK: - Install & Start
@@ -86,7 +73,11 @@ public enum LaunchAgent: Sendable {
     /// - Parameters:
     ///   - coordinatorURL: WebSocket URL for the coordinator (ws:// or wss://).
     ///   - models: Model IDs to serve (passed as --model flags to `serve`).
-    ///   - idleTimeout: Optional idle timeout in minutes (passed as --idle-timeout).
+    ///
+    /// The idle-unload policy is deliberately NOT an argv flag: it lives in
+    /// `[backend] idle_timeout_mins` so `darkbloom idle` + `darkbloom restart`
+    /// can change it without rewriting this plist. (Pre-v0.8.14 plists carried
+    /// `--idle-timeout`; `start --foreground` still parses it as a fallback.)
     /// Options for the unified local OpenAI endpoint (serve the public fleet AND
     /// a local endpoint off the same loaded models). `enabled == false` keeps the
     /// daemon coordinator-only.
@@ -106,7 +97,6 @@ public enum LaunchAgent: Sendable {
     public static func installAndStart(
         coordinatorURL: String,
         models: [String] = [],
-        idleTimeout: UInt64? = nil,
         configPath: URL? = nil,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
@@ -126,7 +116,6 @@ public enum LaunchAgent: Sendable {
             binaryPath: binaryPath,
             coordinatorURL: coordinatorURL,
             models: models,
-            idleTimeout: idleTimeout,
             configPath: configPath,
             localEndpoint: localEndpoint
         )
@@ -148,12 +137,17 @@ public enum LaunchAgent: Sendable {
     /// If the service is not loaded, the unload is a no-op but the disable
     /// still applies (covers a stop issued after a crash or partial install).
     public static func stop() throws {
+        try disableAutomaticStartup()
         if isLoaded() {
             try unloadService()
         }
         for legacyLabel in legacyLabels where isLoaded(label: legacyLabel) {
             try unloadService(label: legacyLabel)
         }
+    }
+
+    /// Fence login/reboot resurrection while the current process drains.
+    public static func disableAutomaticStartup() throws {
         // Disable every supported label: a not-yet-migrated legacy plist on
         // disk would otherwise RunAtLoad under its old label at next login.
         for serviceLabel in supportedLabels {
@@ -197,6 +191,27 @@ public enum LaunchAgent: Sendable {
         throw LaunchAgentError.notInstalled
     }
 
+    /// Called by the separate CLI only AFTER a successful drain (or explicit
+    /// force). Reload the original plist so installed jobs pick up the longer
+    /// termination allowance without changing model/config arguments.
+    public static func restartAfterDrain() throws {
+        let serviceLabel = supportedLabels.first(where: { isLoaded(label: $0) }) ?? label
+        let path = plistPath().deletingLastPathComponent().appendingPathComponent("\(serviceLabel).plist")
+        guard FileManager.default.fileExists(atPath: path.path) else { throw LaunchAgentError.notInstalled }
+        try refreshTerminationAllowance(at: path)
+        if isLoaded(label: serviceLabel) { try unloadService(label: serviceLabel) }
+        try loadService(label: serviceLabel, path: path)
+    }
+
+    static func refreshTerminationAllowance(at path: URL) throws {
+        let data = try Data(contentsOf: path)
+        guard var plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+            throw LaunchAgentError.bootstrapFailed("invalid provider plist")
+        }
+        plist["ExitTimeOut"] = 3660
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: path, options: .atomic)
+    }
+
     /// Restart in place ONLY if currently loaded (`reloadIfMissing: false`), so
     /// the watchdog recovers a crashed (loaded-but-dead) provider but never
     /// revives one the user stopped (`bootout` unloads it). Returns false if not
@@ -218,23 +233,14 @@ public enum LaunchAgent: Sendable {
     /// `reloadIfMissing`: `restart()` wants it (bring up an unloaded-but-installed
     /// job); the watchdog passes false so it never loads a job the user stopped.
     private static func kickstartInPlace(label serviceLabel: String, reloadIfMissing: Bool = true) throws {
-        let target = "gui/\(getuid())/\(serviceLabel)"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["kickstart", "-k", target]
-
-        let errPipe = Pipe()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus != 0 {
-            let stderr = String(
-                data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
+        if reloadIfMissing {
+            let enabled = LaunchctlControl.setEnabled(true, label: serviceLabel)
+            guard enabled.succeeded else { throw LaunchAgentError.kickstartFailed(enabled.stderr) }
+        }
+        let result = try LaunchctlControl.runThrowing(
+            ["kickstart", "-k", LaunchctlControl.target(label: serviceLabel)], captureStderr: true)
+        if !result.succeeded {
+            let stderr = result.stderr
             // Error 3 = "could not find service": the service vanished between
             // the isLoaded() check and here.
             if stderr.contains("3:") || stderr.contains("could not find service") {
@@ -297,7 +303,9 @@ public enum LaunchAgent: Sendable {
     ]
 
     static let passthroughEnvKeys = [
+        "DARKBLOOM_DRAIN_TIMEOUT_SECONDS",
         "DARKBLOOM_PREFIX_CACHE",
+        "DARKBLOOM_PREFIX_CACHE_MEMORY",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",
@@ -331,7 +339,6 @@ public enum LaunchAgent: Sendable {
         binaryPath: String,
         coordinatorURL: String,
         models: [String],
-        idleTimeout: UInt64?,
         configPath: URL?,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
@@ -348,7 +355,6 @@ public enum LaunchAgent: Sendable {
             binaryPath: binaryPath,
             coordinatorURL: coordinatorURL,
             models: models,
-            idleTimeout: idleTimeout,
             configPath: configPath,
             localEndpoint: localEndpoint
         )
@@ -375,7 +381,6 @@ public enum LaunchAgent: Sendable {
         binaryPath: String,
         coordinatorURL: String,
         models: [String],
-        idleTimeout: UInt64?,
         configPath: URL?,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) -> [String] {
@@ -391,9 +396,6 @@ public enum LaunchAgent: Sendable {
         }
         for model in models {
             arguments.append(contentsOf: ["--model", model])
-        }
-        if let idleTimeout {
-            arguments.append(contentsOf: ["--idle-timeout", "\(idleTimeout)"])
         }
         if localEndpoint.enabled {
             arguments.append("--local-endpoint")
@@ -435,6 +437,7 @@ public enum LaunchAgent: Sendable {
             "StandardErrorPath": logPath,
             "ProcessType": "Interactive",
             "Nice": -5,
+            "ExitTimeOut": 3660,
         ]
 
         // launchd does NOT inherit the installing shell's environment, so any
@@ -450,33 +453,18 @@ public enum LaunchAgent: Sendable {
         return plistDict
     }
 
-    private static func loadService() throws {
-        let path = plistPath()
-        let domain = "gui/\(getuid())"
-
+    private static func loadService(label serviceLabel: String = LaunchAgent.label, path: URL = LaunchAgent.plistPath()) throws {
         // Clear any persistent disable left by `stop()` (launchctl disable
         // survives reboots). Without this, bootstrap fails and RunAtLoad stays
         // suppressed. Best-effort: if it fails while the service is actually
         // disabled, the bootstrap below surfaces the error.
-        LaunchctlControl.setEnabled(true, label: label)
+        LaunchctlControl.setEnabled(true, label: serviceLabel)
 
         // Bootstrap registers the service with launchd.
-        let bootstrap = Process()
-        bootstrap.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        bootstrap.arguments = ["bootstrap", domain, path.path]
-
-        let errPipe = Pipe()
-        bootstrap.standardOutput = FileHandle.nullDevice
-        bootstrap.standardError = errPipe
-
-        try bootstrap.run()
-        bootstrap.waitUntilExit()
-
-        if bootstrap.terminationStatus != 0 {
-            let stderr = String(
-                data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
+        let bootstrap = try LaunchctlControl.runThrowing(
+            ["bootstrap", LaunchctlControl.guiDomain(), path.path], captureStderr: true)
+        if !bootstrap.succeeded {
+            let stderr = bootstrap.stderr
             // Error 37 = "already loaded" -- not a real failure.
             if !stderr.contains("37:") && !stderr.contains("already loaded") {
                 throw LaunchAgentError.bootstrapFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -488,48 +476,23 @@ public enum LaunchAgent: Sendable {
         // successful bootstrap the service exists, so kickstart should return 0 —
         // surface a non-zero exit (or a spawn failure) rather than silently
         // reporting success when launchd never launched the process.
-        let target = "gui/\(getuid())/\(label)"
-        let kickstart = Process()
-        kickstart.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        kickstart.arguments = ["kickstart", target]
-        let kickstartErr = Pipe()
-        kickstart.standardOutput = FileHandle.nullDevice
-        kickstart.standardError = kickstartErr
-
+        let kickstart: LaunchctlControl.Output
         do {
-            try kickstart.run()
+            kickstart = try LaunchctlControl.runThrowing(
+                ["kickstart", LaunchctlControl.target(label: serviceLabel)], captureStderr: true)
         } catch {
             throw LaunchAgentError.kickstartFailed("could not run launchctl kickstart: \(error.localizedDescription)")
         }
-        kickstart.waitUntilExit()
-
-        if kickstart.terminationStatus != 0 {
-            let stderr = String(
-                data: kickstartErr.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
-            throw LaunchAgentError.kickstartFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        if !kickstart.succeeded {
+            throw LaunchAgentError.kickstartFailed(kickstart.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
     private static func unloadService(label serviceLabel: String = LaunchAgent.label) throws {
-        let target = "gui/\(getuid())/\(serviceLabel)"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["bootout", target]
-
-        let errPipe = Pipe()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus != 0 {
-            let stderr = String(
-                data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
+        let result = try LaunchctlControl.runThrowing(
+            ["bootout", LaunchctlControl.target(label: serviceLabel)], captureStderr: true)
+        if !result.succeeded {
+            let stderr = result.stderr
             // Error 3 = "could not find service" -- already unloaded, not an error.
             if !stderr.contains("3:") && !stderr.contains("could not find service") {
                 throw LaunchAgentError.bootoutFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))

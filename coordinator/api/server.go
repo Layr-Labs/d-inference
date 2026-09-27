@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -36,6 +37,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/apns"
+	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
@@ -52,7 +54,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
+	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
+	"golang.org/x/sync/singleflight"
 )
 
 // apiKeyCacheEntry stores the authenticated key record for a single raw API
@@ -155,7 +159,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.8.15"
+var LatestProviderVersion = "0.9.11"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -195,6 +199,11 @@ type releaseTrustPolicySnapshot struct {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
+	appAttestRuntimeRefreshPending atomic.Bool
+
+	appAttestShadow               AppAttestShadowConfig
+	appAttest                     *attestservice.Service
+	appAttestOnce                 sync.Once
 	registry                      *registry.Registry
 	store                         store.Store
 	ledger                        *payments.Ledger
@@ -302,6 +311,8 @@ type Server struct {
 	// servers can exercise production and unit-test postures without racing on
 	// process-global state.
 	firstContentDeadlineBase time.Duration
+	firstContentSLAAccounts  map[string]struct{}
+	firstContentSLAEmails    map[string]struct{}
 
 	// rejectModels are requested aliases or resolved model IDs the coordinator
 	// takes out of public/prefer-owner routing: every matching request is answered
@@ -386,12 +397,6 @@ type Server struct {
 	// Set from CORS_ORIGIN env var. Empty defaults to the production console domain.
 	corsOrigin string
 
-	// storedProviders is a lookup table of persisted provider records, indexed
-	// by serial number and SE public key. When a provider reconnects after a
-	// coordinator restart, this table is checked to restore trust/reputation.
-	// Populated once at startup from the store.
-	storedProviders map[string]*store.ProviderRecord
-
 	// geoResolver resolves provider and consumer request locations from IP
 	// addresses or trusted reverse-proxy headers. Nil when GeoIP is not configured.
 	geoResolver providerGeoResolver
@@ -411,13 +416,23 @@ type Server struct {
 	// and used by internal counters/histograms. Never nil.
 	metrics *Metrics
 
-	// telemetryLimiter throttles telemetry ingestion per submitter.
-	telemetryLimiter *telemetryLimiter
-
 	// readCache memoizes pre-serialized JSON for read-heavy aggregation
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
 	// per-key. Never nil.
 	readCache *ttlCache
+	// statsRefresh owns stats:v1 (stats.go), statsGeographyRefresh owns
+	// stats:geography:v1 (stats_geography.go);
+	// networkTotalsRefresh owns one network_totals:<window> entry per window
+	// (network_totals.go). All are driven by the refresher machinery in
+	// cache_refresher.go.
+	summaryWindowsFlights singleflight.Group
+	statsRefresh          cacheRefresher
+	statsGeographyRefresh cacheRefresher
+	networkTotalsRefresh  struct {
+		queryMu sync.Mutex
+		mu      sync.Mutex
+		entries map[string]*cacheRefresher
+	}
 
 	// emitter writes coordinator-side telemetry events (panics, handler
 	// failures, attestation failures, etc.). Set via SetEmitter; nil before
@@ -426,7 +441,8 @@ type Server struct {
 
 	// dd is the Datadog integration client for DogStatsD metrics and
 	// Logs API event forwarding. Nil when DD is not configured.
-	dd *datadog.Client
+	dd          *datadog.Client
+	queueGauges queueGaugeState
 
 	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after
@@ -458,7 +474,10 @@ type Server struct {
 
 	// serviceReservations avoids hot-row pre-router ledger debits for trusted
 	// service accounts when enabled. Normal consumers still use ledger debits.
-	serviceReservations *serviceReservationManager
+	serviceReservations   *serviceReservationManager
+	modelTokenActive      sync.Map
+	modelTokenRefunds     sync.Map
+	modelTokenSettlements sync.Map
 
 	// consumerTokenLimiter / serviceTokenLimiter enforce per-account input
 	// (ITPM) and output (OTPM) token-per-minute limits on inference endpoints,
@@ -484,6 +503,15 @@ type Server struct {
 	// submitTelemetry falls back to a per-write saferun.Go in that case.
 	routeTelemetry *telemetrySink
 
+	// profiler owns the per-request profile records and their dedicated sink
+	// (system profiler). Nil on a Server built without NewServer.
+	profiler           *profiler
+	requestOutcomes    *requestOutcomeSink
+	modelDemandRefresh [3]cacheRefresher
+	// unknownRequestFrames counts provider frames for requests the coordinator
+	// no longer tracks (zombie streams); exported on the fleet coordinator row.
+	unknownRequestFrames atomic.Int64
+
 	// mediaResolver fetches remote http(s) image_url/video_url links into
 	// inline base64 data: URIs before the request body is E2E-encrypted to a
 	// provider, so consumers can pass links instead of pre-encoding media
@@ -492,6 +520,31 @@ type Server struct {
 	// NewServer from env; nil (e.g. a &Server{} built directly in tests)
 	// behaves as disabled and falls back to the legacy pre-dispatch rejection.
 	mediaResolver *mediafetch.Resolver
+	// routingScanSem bounds how many provider-selection scans (the
+	// ReserveProviderEx/ReserveProviderWithPlan family — a read-lock walk of
+	// ~1,260 providers per attempt) may run concurrently. During the
+	// 2026-09-01 congestion collapse, retry-amplified inbound (~100 req/s of
+	// retryable 429 traffic) times a fresh full scan per dispatch attempt
+	// saturated every coordinator CPU (attempt-0 route p50 40ms → 4.6s,
+	// success ~40%, 429s delivered after 11s) — a stable death loop. With the
+	// semaphore, excess requests park cheaply on the channel instead of
+	// piling onto the scheduler; one that cannot acquire within its remaining
+	// first-content budget sheds as a capacity-shaped 429
+	// (errRoutingScanSaturated). Capacity defaults to runtime.NumCPU()
+	// (min 2); override via EIGENINFERENCE_ROUTING_CONCURRENCY
+	// (SetRoutingConcurrency, called before serving starts).
+	routingScanSem chan struct{}
+
+	// routeLatencyEWMAMs is an EWMA of attempt-0 route latency (ReceivedAt →
+	// RoutedAt, milliseconds), updated where RoutedAt is stamped in
+	// dispatchWithReserver. estimateRetryAfter consults it: when routing
+	// itself is degraded (EWMA > 1s) the returned Retry-After scales up so
+	// upstream backoff actually relieves pressure — during the 2026-09-01
+	// collapse the queue-depth heuristic returned 2s on an empty queue and
+	// invited 2s retry storms. Guarded by routeLatencyMu (one tiny critical
+	// section per request; no allocation).
+	routeLatencyMu     sync.Mutex
+	routeLatencyEWMAMs float64
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -767,6 +820,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mediaFetchCfg = *cfg.MediaFetch
 	}
 	firstContentDeadlineBase := cfg.FirstContentDeadlineBase
+	firstContentSLAAccounts, firstContentSLAEmails := firstContentAccountSelectors(cfg.FirstContentSLAAccounts)
 	if firstContentDeadlineBase <= 0 {
 		firstContentDeadlineBase = defaultFirstContentDeadlineBase
 	}
@@ -779,11 +833,11 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mux:                      http.NewServeMux(),
 		knownRuntimeManifest:     &RuntimeManifest{},
 		metrics:                  NewMetrics(),
-		telemetryLimiter:         newTelemetryLimiter(),
 		readCache:                newTTLCache(),
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
 		codeAttestThrottle:       newCodeAttestThrottle(),
+		appAttestShadow:          cfg.AppAttestShadow,
 		trustReuseCache:          newTrustReuseCache(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
@@ -793,6 +847,9 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
+		firstContentSLAAccounts:  firstContentSLAAccounts,
+		firstContentSLAEmails:    firstContentSLAEmails,
+		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
 		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
@@ -801,9 +858,16 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 			"reason", "a contiguous offline gap must stay below the RecoveryOS round-trip floor (Threat-Model T-036)",
 		)
 	}
+	// Registry write-lock wait, by call site. This is the acceptance metric
+	// for taking the recorders off the request path: today the wait is only
+	// inferable from goroutine dumps.
+	reg.SetLockWaitObserver(func(site string, wait time.Duration) {
+		s.ddHistogram("registry.mu.write_wait_ms", float64(wait.Microseconds())/1000, []string{"site:" + site})
+	})
 	s.trustCoverage = make(map[string]string)
 	s.trustCoverageCtx, s.trustCoverageCancel = context.WithCancel(context.Background())
 	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)
+	s.appAttestFeature().Start()
 	if cfg.DurableTrustReuse {
 		journalPath := cfg.TrustReuseJournalPath
 		if strings.TrimSpace(journalPath) == "" {
@@ -817,12 +881,17 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		s.trustReplayInFlight = make(map[string]struct{})
 	}
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
+	// The per-identity gate locks that replaced the request-path registry
+	// write lock (registry/gate_state.go) report any acquisition wait above
+	// 1 ms here, tagged by recorder site, so the new locks stay observable.
+	reg.SetGateWaitObserver(func(site string, wait time.Duration) {
+		s.ddHistogram("registry.gate.wait_ms", float64(wait.Microseconds())/1000, []string{"site:" + site})
+	})
+	s.profiler = newProfilerFromEnv(s)
+	s.requestOutcomes = newRequestOutcomeSink(s, defaultTelemetrySinkCapacity)
 	s.registerDefaultGauges()
 	s.routes()
 
-	// Load stored provider records into a lookup table for matching
-	// reconnecting providers to their persisted state.
-	s.storedProviders = reg.LoadStoredProviders()
 	// Apply server configuration from ServerConfig.
 	// TODO(auth): storing admin emails in the server struct is an antipattern.
 	// Move admin verification to an external auth service (Privy or IDP) so that
@@ -891,6 +960,7 @@ func (s *Server) Close() {
 		s.trustCoverageCancel()
 	}
 	s.finalTrustCoverageSweep()
+	s.sweepCodeAttestCoverage()
 	if s.trustReplayCancel != nil {
 		s.trustReplayCancel()
 	}
@@ -904,7 +974,16 @@ func (s *Server) Close() {
 		s.promptArtifacts.Close()
 	}
 	if s.routeTelemetry != nil {
-		s.routeTelemetry.close()
+		// Bounded flush: buffered route rows are written before main's deferred
+		// store Close (registered earlier, so it runs after this) tears down the
+		// pool. A stuck store cannot hold shutdown past the deadline; whatever
+		// is still unwritten then is counted as dropped by the sink.
+		if !s.routeTelemetry.closeAndWait(telemetrySinkShutdownFlush) && s.logger != nil {
+			s.logger.Warn("routing telemetry sink did not finish flushing before the shutdown deadline",
+				"deadline", telemetrySinkShutdownFlush,
+				"dropped_total", s.routeTelemetry.dropped.Load(),
+			)
+		}
 	}
 	s.trustAuthorityMu.Lock()
 	if s.trustAuthority != nil {
@@ -912,6 +991,12 @@ func (s *Server) Close() {
 		s.trustAuthority = nil
 	}
 	s.trustAuthorityMu.Unlock()
+	if s.requestOutcomes != nil {
+		s.requestOutcomes.close()
+	}
+	if s.profiler != nil {
+		s.profiler.close()
+	}
 }
 
 // SetAdminKey configures the admin API key for admin-only endpoints.
@@ -1233,7 +1318,18 @@ func (s *Server) invalidateCatalogCache() {
 			s.readCache.Invalidate(modelCatalogCacheKey(typeFilter, includeAliases))
 		}
 	}
-	s.readCache.Invalidate("stats:v1")
+	// /v1/models entry memo + list bodies (both include_builds values) and the
+	// OpenRouter feed are derived from the same catalog; drop them too so an
+	// admin alias/registry change is visible on the next request instead of
+	// after their 2s/5s TTLs (which remain the bound for out-of-band DB edits).
+	for _, includeBuilds := range []bool{false, true} {
+		s.readCache.Invalidate(modelEntriesCacheKey(includeBuilds))
+		s.readCache.Invalidate(modelListBodyCacheKey(includeBuilds))
+	}
+	s.readCache.Invalidate(openRouterFeedCacheKey)
+	// stats:v1 is deliberately NOT evicted here: the stats refresher recomputes
+	// it every minute, and evicting it made every concurrent /v1/stats request
+	// rerun the multi-second usage analytics statements.
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.
@@ -1292,6 +1388,95 @@ func (s *Server) SetMinDecodeTPS(tps float64) {
 		tps = 0
 	}
 	s.minDecodeTPS = tps
+}
+
+// DefaultRoutingConcurrency is the built-in routing-scan semaphore capacity:
+// one scan per CPU (a scan is pure CPU under the registry read lock), floored
+// at 2 so a tiny container never serializes routing entirely. Exported so
+// main.go can log the effective default alongside the env override.
+func DefaultRoutingConcurrency() int {
+	n := runtime.NumCPU()
+	if n < 2 {
+		n = 2
+	}
+	return n
+}
+
+// SetRoutingConcurrency replaces the routing-scan semaphore with one of the
+// given capacity (EIGENINFERENCE_ROUTING_CONCURRENCY). Values < 2 clamp to 2.
+// Call before serving starts — replacing the channel while scans are in
+// flight would strand slots.
+func (s *Server) SetRoutingConcurrency(n int) {
+	if n < 2 {
+		n = 2
+	}
+	s.routingScanSem = make(chan struct{}, n)
+}
+
+// scanSlotResult is the outcome of acquireRoutingScanSlot. Client
+// disconnection is distinguished from acquisition timeout so callers route a
+// vanished caller onto the existing client-gone terminal (cancelled outcome,
+// refund, no response body) and NEVER onto the routing_saturated 429 /
+// rejection-ledger path.
+type scanSlotResult int
+
+const (
+	scanSlotAcquired scanSlotResult = iota
+	scanSlotTimeout
+	scanSlotClientGone
+)
+
+// acquireRoutingScanSlot blocks until a provider-selection scan slot is free,
+// the wait budget elapses, or done fires (client gone). On scanSlotTimeout the
+// caller sheds the attempt as capacity-shaped (errRoutingScanSaturated)
+// instead of piling another scan onto saturated CPUs; on scanSlotClientGone it
+// takes its ordinary client-gone path. A nil semaphore (a &Server{} built
+// directly in tests) admits immediately, preserving legacy behavior for bare
+// fixtures; a nil done channel never fires.
+func (s *Server) acquireRoutingScanSlot(wait time.Duration, done <-chan struct{}) scanSlotResult {
+	if s.routingScanSem == nil {
+		return scanSlotAcquired
+	}
+	select {
+	case s.routingScanSem <- struct{}{}:
+		return scanSlotAcquired
+	default:
+	}
+	clientGone := func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+	if wait <= 0 {
+		if clientGone() {
+			return scanSlotClientGone
+		}
+		return scanSlotTimeout
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case s.routingScanSem <- struct{}{}:
+		return scanSlotAcquired
+	case <-timer.C:
+		if clientGone() {
+			return scanSlotClientGone
+		}
+		return scanSlotTimeout
+	case <-done:
+		return scanSlotClientGone
+	}
+}
+
+// releaseRoutingScanSlot returns a slot taken by acquireRoutingScanSlot.
+func (s *Server) releaseRoutingScanSlot() {
+	if s.routingScanSem == nil {
+		return
+	}
+	<-s.routingScanSem
 }
 
 // SetServabilityGate toggles the smart early-429 admission gate. See the
@@ -1465,47 +1650,11 @@ func (s *Server) SyncBinaryHashes() error {
 			continue
 		}
 		hashes[normalized] = true
-		templates := make(map[string]string)
-		for _, pair := range strings.Split(r.TemplateHashes, ",") {
-			parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-				templates[parts[0]] = parts[1]
-			}
-		}
-		trustSnapshot.ByBinaryHash[normalized] = append(
-			trustSnapshot.ByBinaryHash[normalized],
-			approvedReleasePolicy{
-				Version: r.Version, Platform: r.Platform, Backend: r.Backend,
-				BinaryHash: normalized, MetallibHash: r.MetallibHash,
-				PythonHash: r.PythonHash, RuntimeHash: r.RuntimeHash,
-				TemplateHashes: templates,
-			})
+		trustSnapshot.addRelease(&r, normalized)
 	}
-	s.releaseTrustPolicy.Store(trustSnapshot)
-	if s.registry != nil {
-		// Evidence still approved under the NEW snapshot is carried forward at
-		// the new generation. For a REQUIRED policy the registry returns every
-		// provider NOT carried forward — including providers that held no
-		// evidence at all (first required activation over a cold fleet) — and
-		// each one is re-challenged immediately instead of waiting for the
-		// periodic ticker (whose interval outlives the request queue).
-		needChallenge := s.registry.SetReleasePolicyGeneration(
-			trustSnapshot.Generation, trustSnapshot.Required,
-			func(evidence registry.ApplicationEvidence) bool {
-				return releaseEvidenceStillApproved(trustSnapshot, evidence)
-			})
-		for _, providerID := range needChallenge {
-			if provider := s.registry.GetProvider(providerID); provider != nil {
-				provider.RequestImmediateChallenge()
-			}
-		}
-		if len(needChallenge) > 0 {
-			s.logger.Info("release policy refresh left providers without current evidence; re-challenging immediately",
-				"generation", trustSnapshot.Generation,
-				"providers", len(needChallenge),
-			)
-			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
-		}
+	if n := s.publishReleaseTrustPolicy(trustSnapshot); n > 0 {
+		s.logger.Info("release policy refresh left providers without current evidence; re-challenging immediately",
+			"generation", trustSnapshot.Generation, "providers", n)
 	}
 
 	s.binaryHashPolicyMu.Lock()
@@ -1547,52 +1696,10 @@ func (s *Server) convergeReleasePolicyWithCommittedRelease(release *store.Releas
 
 	generation := s.releaseTrustPolicyGeneration.Add(1)
 	s.releaseInventoryEverConfigured.Store(true)
-	trustSnapshot := &releaseTrustPolicySnapshot{
-		Generation:   generation,
-		Required:     true,
-		ByBinaryHash: make(map[string][]approvedReleasePolicy),
-	}
-	if last := s.releaseTrustPolicy.Load(); last != nil {
-		for hash, policies := range last.ByBinaryHash {
-			for _, policy := range policies {
-				if policy.Version == release.Version && policy.Platform == release.Platform {
-					continue // replaced by this registration
-				}
-				trustSnapshot.ByBinaryHash[hash] = append(trustSnapshot.ByBinaryHash[hash], policy)
-			}
-		}
-	}
-	templates := make(map[string]string)
-	for _, pair := range strings.Split(release.TemplateHashes, ",") {
-		parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-			templates[parts[0]] = parts[1]
-		}
-	}
-	trustSnapshot.ByBinaryHash[normalized] = append(
-		trustSnapshot.ByBinaryHash[normalized],
-		approvedReleasePolicy{
-			Version: release.Version, Platform: release.Platform, Backend: release.Backend,
-			BinaryHash: normalized, MetallibHash: release.MetallibHash,
-			PythonHash: release.PythonHash, RuntimeHash: release.RuntimeHash,
-			TemplateHashes: templates,
-		})
-	s.releaseTrustPolicy.Store(trustSnapshot)
-	if s.registry != nil {
-		needChallenge := s.registry.SetReleasePolicyGeneration(
-			trustSnapshot.Generation, trustSnapshot.Required,
-			func(evidence registry.ApplicationEvidence) bool {
-				return releaseEvidenceStillApproved(trustSnapshot, evidence)
-			})
-		for _, providerID := range needChallenge {
-			if provider := s.registry.GetProvider(providerID); provider != nil {
-				provider.RequestImmediateChallenge()
-			}
-		}
-		if len(needChallenge) > 0 {
-			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
-		}
-	}
+	trustSnapshot := retainedReleaseTrustPolicy(s.releaseTrustPolicy.Load(), generation, true, release.Version, release.Platform)
+	trustSnapshot.addRelease(release, normalized)
+	s.publishReleaseTrustPolicy(trustSnapshot)
+
 	hashes := make(map[string]bool, len(trustSnapshot.ByBinaryHash))
 	for hash := range trustSnapshot.ByBinaryHash {
 		hashes[hash] = true
@@ -1638,37 +1745,9 @@ func (s *Server) convergeReleasePolicyWithCommittedDeactivation(version, platfor
 	if last != nil && last.Required {
 		required = true
 	}
-	trustSnapshot := &releaseTrustPolicySnapshot{
-		Generation:   generation,
-		Required:     required,
-		ByBinaryHash: make(map[string][]approvedReleasePolicy),
-	}
-	if last != nil {
-		for hash, policies := range last.ByBinaryHash {
-			for _, policy := range policies {
-				if policy.Version == version && policy.Platform == platform {
-					continue // removed by this deactivation
-				}
-				trustSnapshot.ByBinaryHash[hash] = append(trustSnapshot.ByBinaryHash[hash], policy)
-			}
-		}
-	}
-	s.releaseTrustPolicy.Store(trustSnapshot)
-	if s.registry != nil {
-		needChallenge := s.registry.SetReleasePolicyGeneration(
-			trustSnapshot.Generation, trustSnapshot.Required,
-			func(evidence registry.ApplicationEvidence) bool {
-				return releaseEvidenceStillApproved(trustSnapshot, evidence)
-			})
-		for _, providerID := range needChallenge {
-			if provider := s.registry.GetProvider(providerID); provider != nil {
-				provider.RequestImmediateChallenge()
-			}
-		}
-		if len(needChallenge) > 0 {
-			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
-		}
-	}
+	trustSnapshot := retainedReleaseTrustPolicy(last, generation, required, version, platform)
+	s.publishReleaseTrustPolicy(trustSnapshot)
+
 	hashes := make(map[string]bool, len(trustSnapshot.ByBinaryHash))
 	for hash := range trustSnapshot.ByBinaryHash {
 		hashes[hash] = true
@@ -1937,22 +2016,19 @@ func (s *Server) SyncRuntimeManifest() error {
 	// env var. It is NOT auto-derived from the latest release — pushing a new release
 	// should not instantly knock all existing providers offline.
 
-	manifest := &RuntimeManifest{
-		PythonHashes:   make(map[string]bool),
-		RuntimeHashes:  make(map[string]bool),
-		TemplateHashes: make(map[string]string),
-	}
-
-	// Sort releases ascending by version so newer releases' template hashes
-	// overwrite older ones (templates are keyed by name; binary/runtime hashes
-	// accumulate as a set).
-	sortedReleases := append([]store.Release(nil), releases...)
-	sort.SliceStable(sortedReleases, func(i, j int) bool {
-		return semverGreater(sortedReleases[j].Version, sortedReleases[i].Version)
-	})
-
+	// Every hash — python, runtime, AND each template name including
+	// mlx_metallib — is unioned into a SET across ALL active releases.
+	// Releases overlap in production for the whole self-update window
+	// (providers poll for updates every 30 minutes), so the manifest must
+	// accept the runtime facts of every release a connected provider may
+	// legitimately be running. Template hashes used to be single-valued per
+	// name (newest release wins): registering v0.8.16 replaced the v0.8.15
+	// metallib hash and derouted ~1,180 still-current providers at their next
+	// challenge (2026-09-03 fleet brownout). Deactivating a release is the
+	// mechanism that removes its hashes; iteration order is irrelevant.
+	manifest := NewRuntimeManifest()
 	hasAny := false
-	for _, r := range sortedReleases {
+	for _, r := range releases {
 		if !r.Active {
 			continue
 		}
@@ -1964,15 +2040,8 @@ func (s *Server) SyncRuntimeManifest() error {
 			manifest.RuntimeHashes[r.RuntimeHash] = true
 			hasAny = true
 		}
-		if r.TemplateHashes != "" {
-			// Parse "name=hash,name=hash" format
-			for _, pair := range strings.Split(r.TemplateHashes, ",") {
-				parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-				if len(parts) == 2 {
-					manifest.TemplateHashes[parts[0]] = parts[1]
-					hasAny = true
-				}
-			}
+		if manifest.addTemplateHashPairs(r.TemplateHashes) {
+			hasAny = true
 		}
 		if r.MetallibHash != "" {
 			normalized, err := normalizeSHA256Hex(r.MetallibHash, "release.metallib_hash")
@@ -1982,8 +2051,7 @@ func (s *Server) SyncRuntimeManifest() error {
 					"platform", r.Platform,
 					"error", err,
 				)
-			} else {
-				manifest.TemplateHashes["mlx_metallib"] = normalized
+			} else if manifest.AddTemplateHash("mlx_metallib", normalized) {
 				hasAny = true
 			}
 		}
@@ -1995,6 +2063,7 @@ func (s *Server) SyncRuntimeManifest() error {
 			"python_hashes", len(manifest.PythonHashes),
 			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),
+			"template_hash_sets", manifest.templateHashSetSizes(),
 		)
 	} else if len(releases) > 0 {
 		// Explicit empty: releases exist but none have hashes. Clear manifest.
@@ -2019,28 +2088,13 @@ func (s *Server) SyncRuntimeManifest() error {
 // release registration into the runtime manifest when the post-mutation
 // inventory read failed, so a transient store hiccup cannot leave the manifest
 // rejecting the runtime facts of the release that /v1/releases/latest is
-// already distributing. Hash sets are additive, exactly like a full rebuild
-// (which unions every active release); template hashes are overwritten by the
-// new release, matching the rebuild's newest-release-wins ordering for a
-// freshly registered latest release. The next successful sync rebuilds from
-// the exact inventory.
+// already distributing. Every hash set — including each per-template-name
+// set — is additive, exactly like a full rebuild (which unions every active
+// release): the previous release's fleet keeps passing while the newly saved
+// release is accepted too. The next successful sync rebuilds from the exact
+// inventory.
 func (s *Server) convergeRuntimeManifestWithCommittedRelease(release *store.Release, cause error) {
-	merged := &RuntimeManifest{
-		PythonHashes:   make(map[string]bool),
-		RuntimeHashes:  make(map[string]bool),
-		TemplateHashes: make(map[string]string),
-	}
-	if existing := s.knownRuntimeManifest; existing != nil {
-		for hash := range existing.PythonHashes {
-			merged.PythonHashes[hash] = true
-		}
-		for hash := range existing.RuntimeHashes {
-			merged.RuntimeHashes[hash] = true
-		}
-		for name, hash := range existing.TemplateHashes {
-			merged.TemplateHashes[name] = hash
-		}
-	}
+	merged := s.knownRuntimeManifest.clone()
 	contributed := false
 	if release.PythonHash != "" {
 		merged.PythonHashes[release.PythonHash] = true
@@ -2050,18 +2104,12 @@ func (s *Server) convergeRuntimeManifestWithCommittedRelease(release *store.Rele
 		merged.RuntimeHashes[release.RuntimeHash] = true
 		contributed = true
 	}
-	if release.TemplateHashes != "" {
-		for _, pair := range strings.Split(release.TemplateHashes, ",") {
-			parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-			if len(parts) == 2 {
-				merged.TemplateHashes[parts[0]] = parts[1]
-				contributed = true
-			}
-		}
+	if merged.addTemplateHashPairs(release.TemplateHashes) {
+		contributed = true
 	}
 	if release.MetallibHash != "" {
-		if normalized, err := normalizeSHA256Hex(release.MetallibHash, "release.metallib_hash"); err == nil {
-			merged.TemplateHashes["mlx_metallib"] = normalized
+		if normalized, err := normalizeSHA256Hex(release.MetallibHash, "release.metallib_hash"); err == nil &&
+			merged.AddTemplateHash("mlx_metallib", normalized) {
 			contributed = true
 		}
 	}
@@ -2086,43 +2134,36 @@ func (s *Server) convergeRuntimeManifestWithCommittedRelease(release *store.Rele
 // release's hashes — another active release may share them — so the manifest
 // is rebuilt from the live release trust snapshot, which at this point already
 // excludes the deactivated version/platform (SyncBinaryHashes either succeeded
-// or was converged from the same committed deactivation first). Hash sets are
-// unioned and template hashes applied newest-release-wins, mirroring the full
-// rebuild's ordering. Active releases whose binary hash failed normalization
-// are absent from the snapshot and thus from this approximation; the next
-// successful sync rebuilds from the exact inventory.
+// or was converged from the same committed deactivation first). Every hash
+// set — including each per-template-name set — is the union of the remaining
+// authorized releases, exactly like the full rebuild. Active releases whose
+// binary hash failed normalization are absent from the snapshot and thus from
+// this approximation; the next successful sync rebuilds from the exact
+// inventory.
 func (s *Server) convergeRuntimeManifestWithCommittedDeactivation(version, platform string, cause error) {
-	merged := &RuntimeManifest{
-		PythonHashes:   make(map[string]bool),
-		RuntimeHashes:  make(map[string]bool),
-		TemplateHashes: make(map[string]string),
-	}
+	merged := NewRuntimeManifest()
 	hasAny := false
 	if snapshot := s.releaseTrustPolicy.Load(); snapshot != nil {
-		policies := make([]approvedReleasePolicy, 0, len(snapshot.ByBinaryHash))
-		for _, entries := range snapshot.ByBinaryHash {
-			policies = append(policies, entries...)
-		}
-		sort.SliceStable(policies, func(i, j int) bool {
-			return semverGreater(policies[j].Version, policies[i].Version)
-		})
-		for _, policy := range policies {
-			if policy.PythonHash != "" {
-				merged.PythonHashes[policy.PythonHash] = true
-				hasAny = true
-			}
-			if policy.RuntimeHash != "" {
-				merged.RuntimeHashes[policy.RuntimeHash] = true
-				hasAny = true
-			}
-			for name, hash := range policy.TemplateHashes {
-				merged.TemplateHashes[name] = hash
-				hasAny = true
-			}
-			if policy.MetallibHash != "" {
-				if normalized, err := normalizeSHA256Hex(policy.MetallibHash, "release.metallib_hash"); err == nil {
-					merged.TemplateHashes["mlx_metallib"] = normalized
+		for _, policies := range snapshot.ByBinaryHash {
+			for _, policy := range policies {
+				if policy.PythonHash != "" {
+					merged.PythonHashes[policy.PythonHash] = true
 					hasAny = true
+				}
+				if policy.RuntimeHash != "" {
+					merged.RuntimeHashes[policy.RuntimeHash] = true
+					hasAny = true
+				}
+				for name, hash := range policy.TemplateHashes {
+					if merged.AddTemplateHash(name, hash) {
+						hasAny = true
+					}
+				}
+				if policy.MetallibHash != "" {
+					if normalized, err := normalizeSHA256Hex(policy.MetallibHash, "release.metallib_hash"); err == nil &&
+						merged.AddTemplateHash("mlx_metallib", normalized) {
+						hasAny = true
+					}
 				}
 			}
 		}
@@ -2212,18 +2253,123 @@ func runtimeManifestApprovesMetallib(
 	if manifest == nil {
 		return false
 	}
-	expected := strings.TrimSpace(manifest.TemplateHashes["mlx_metallib"])
-	got := strings.TrimSpace(reported["mlx_metallib"])
-	return expected != "" && got != "" && strings.EqualFold(expected, got)
+	return templateHashAccepted(manifest.TemplateHashes["mlx_metallib"], reported["mlx_metallib"])
 }
 
 // RuntimeManifest holds the set of accepted hashes for provider runtime components.
 // When configured, the coordinator verifies provider-reported hashes against
 // this manifest at registration and during periodic attestation challenges.
+//
+// Every field is a SET: the manifest is the UNION of every ACTIVE release's
+// runtime facts, and a provider passes when its reported value is one of the
+// accepted values for that component. TemplateHashes is a set PER template
+// name (mlx_metallib included). It must never collapse to a single value per
+// name: releases overlap in production for the whole self-update window, and a
+// single-valued mlx_metallib entry derouted ~1,180 providers still running the
+// previous release the moment the next one was registered (2026-09-03).
+// Deactivating a release is the mechanism that removes its values.
 type RuntimeManifest struct {
-	PythonHashes   map[string]bool   `json:"python_hashes"`   // set of accepted Python runtime hashes
-	RuntimeHashes  map[string]bool   `json:"runtime_hashes"`  // set of accepted inference runtime hashes
-	TemplateHashes map[string]string `json:"template_hashes"` // template_name -> expected hash
+	PythonHashes   map[string]bool            `json:"python_hashes"`   // set of accepted Python runtime hashes
+	RuntimeHashes  map[string]bool            `json:"runtime_hashes"`  // set of accepted inference runtime hashes
+	TemplateHashes map[string]map[string]bool `json:"template_hashes"` // template_name -> set of accepted hashes
+}
+
+// NewRuntimeManifest returns an empty manifest with every set allocated.
+func NewRuntimeManifest() *RuntimeManifest {
+	return &RuntimeManifest{
+		PythonHashes:   make(map[string]bool),
+		RuntimeHashes:  make(map[string]bool),
+		TemplateHashes: make(map[string]map[string]bool),
+	}
+}
+
+// AddTemplateHash records value as an accepted hash for template name and
+// reports whether anything was recorded. Values are trimmed and lower-cased so
+// membership is case-insensitive (SHA-256 hex) and identical on the
+// registration, challenge, and revalidation paths; empty names/values are
+// ignored.
+func (m *RuntimeManifest) AddTemplateHash(name, value string) bool {
+	name = strings.TrimSpace(name)
+	value = strings.ToLower(strings.TrimSpace(value))
+	if name == "" || value == "" {
+		return false
+	}
+	if m.TemplateHashes == nil {
+		m.TemplateHashes = make(map[string]map[string]bool)
+	}
+	accepted := m.TemplateHashes[name]
+	if accepted == nil {
+		accepted = make(map[string]bool)
+		m.TemplateHashes[name] = accepted
+	}
+	accepted[value] = true
+	return true
+}
+
+// addTemplateHashPairs unions a release row's "name=hash,name=hash" list into
+// the manifest and reports whether any entry was recorded.
+func (m *RuntimeManifest) addTemplateHashPairs(raw string) bool {
+	added := false
+	for _, pair := range strings.Split(raw, ",") {
+		parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(parts) == 2 && m.AddTemplateHash(parts[0], parts[1]) {
+			added = true
+		}
+	}
+	return added
+}
+
+// clone deep-copies the manifest; a nil receiver yields an empty manifest.
+func (m *RuntimeManifest) clone() *RuntimeManifest {
+	out := NewRuntimeManifest()
+	if m == nil {
+		return out
+	}
+	for hash := range m.PythonHashes {
+		out.PythonHashes[hash] = true
+	}
+	for hash := range m.RuntimeHashes {
+		out.RuntimeHashes[hash] = true
+	}
+	for name, accepted := range m.TemplateHashes {
+		for hash := range accepted {
+			out.AddTemplateHash(name, hash)
+		}
+	}
+	return out
+}
+
+// templateHashSetSizes renders "name=count" pairs (sorted by name) for logs,
+// so a sync line shows how many releases' values each template accepts.
+func (m *RuntimeManifest) templateHashSetSizes() string {
+	names := make([]string, 0, len(m.TemplateHashes))
+	for name := range m.TemplateHashes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s=%d", name, len(m.TemplateHashes[name])))
+	}
+	return strings.Join(parts, ",")
+}
+
+// templateHashAccepted reports whether got is one of the accepted hashes for
+// a template (case-insensitive; empty values never match).
+func templateHashAccepted(accepted map[string]bool, got string) bool {
+	got = strings.ToLower(strings.TrimSpace(got))
+	return got != "" && accepted[got]
+}
+
+// sortedTemplateHashes lists a template's accepted hashes deterministically
+// for diagnostics and the public manifest endpoint.
+func sortedTemplateHashes(accepted map[string]bool) []string {
+	out := make([]string, 0, len(accepted))
+	for hash := range accepted {
+		out = append(out, hash)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // semverGreater returns true when a has higher SemVer precedence than b,
@@ -2283,15 +2429,11 @@ func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash 
 	}
 
 	manifest := s.knownRuntimeManifest
-	scoped := &RuntimeManifest{
-		PythonHashes:   map[string]bool{},
-		RuntimeHashes:  map[string]bool{},
-		TemplateHashes: map[string]string{},
-	}
+	scoped := NewRuntimeManifest()
 	scopedReportedTemplates := make(map[string]string)
 
-	if expected := manifest.TemplateHashes["mlx_metallib"]; expected != "" {
-		scoped.TemplateHashes["mlx_metallib"] = expected
+	if accepted := manifest.TemplateHashes["mlx_metallib"]; len(accepted) > 0 {
+		scoped.TemplateHashes["mlx_metallib"] = accepted
 	}
 	if got := templateHashes["mlx_metallib"]; got != "" {
 		scopedReportedTemplates["mlx_metallib"] = got
@@ -2332,9 +2474,15 @@ func (s *Server) verifyRuntimeHashesAgainstManifest(manifest *RuntimeManifest, p
 	requireOneOf("runtime", runtimeHash, manifest.RuntimeHashes)
 
 	if len(manifest.TemplateHashes) > 0 {
-		for name, expected := range manifest.TemplateHashes {
+		// Each template name maps to the SET of hashes accepted across every
+		// active release; the reported value must be one of them.
+		for name, accepted := range manifest.TemplateHashes {
+			if len(accepted) == 0 {
+				continue
+			}
+			expected := "one of " + strings.Join(sortedTemplateHashes(accepted), ",")
 			got, ok := templateHashes[name]
-			if !ok || got == "" {
+			if !ok || strings.TrimSpace(got) == "" {
 				mismatches = append(mismatches, protocol.RuntimeMismatch{
 					Component: "template:" + name,
 					Expected:  expected,
@@ -2342,7 +2490,7 @@ func (s *Server) verifyRuntimeHashesAgainstManifest(manifest *RuntimeManifest, p
 				})
 				continue
 			}
-			if got != expected {
+			if !templateHashAccepted(accepted, got) {
 				mismatches = append(mismatches, protocol.RuntimeMismatch{
 					Component: "template:" + name,
 					Expected:  expected,
@@ -2351,7 +2499,7 @@ func (s *Server) verifyRuntimeHashesAgainstManifest(manifest *RuntimeManifest, p
 			}
 		}
 		for name, got := range templateHashes {
-			if _, ok := manifest.TemplateHashes[name]; !ok {
+			if len(manifest.TemplateHashes[name]) == 0 {
 				mismatches = append(mismatches, protocol.RuntimeMismatch{
 					Component: "template:" + name,
 					Expected:  "template listed in runtime manifest",
@@ -2375,11 +2523,18 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 	if s.knownRuntimeManifest == nil {
 		resp = map[string]any{"configured": false}
 	} else {
+		// template_hashes is rendered as name -> sorted list of every hash
+		// accepted across the active releases: the manifest is a union, not a
+		// single expected value per template.
+		templates := make(map[string][]string, len(s.knownRuntimeManifest.TemplateHashes))
+		for name, accepted := range s.knownRuntimeManifest.TemplateHashes {
+			templates[name] = sortedTemplateHashes(accepted)
+		}
 		resp = map[string]any{
 			"configured":      true,
 			"python_hashes":   s.knownRuntimeManifest.PythonHashes,
 			"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
-			"template_hashes": s.knownRuntimeManifest.TemplateHashes,
+			"template_hashes": templates,
 		}
 	}
 	body, err := json.Marshal(resp)
@@ -2570,6 +2725,10 @@ func (s *Server) routes() {
 
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
+	s.mux.HandleFunc("GET /v1/me/token-promotions", s.requirePrivyAuth(s.handleMyModelTokenPromotions))
+	s.mux.HandleFunc("POST /v1/me/token-promotions/claim", s.requirePrivyAuth(s.rateLimitFinancial(s.handleMyModelTokenPromotions)))
+	s.mux.HandleFunc("GET /v1/admin/token-promotions", s.handleAdminModelTokenPromotions)
+	s.mux.HandleFunc("PUT /v1/admin/token-promotions", s.handleAdminModelTokenPromotions)
 	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
 	// Alias-aware owned live-model ids for the console's self-route key picker.
 	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
@@ -2596,6 +2755,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/leaderboard", s.handleLeaderboard)
 	s.mux.HandleFunc("GET /v1/network/totals", s.handleNetworkTotals)
 	s.mux.HandleFunc("GET /v1/network/series", s.handleNetworkSeries)
+	s.mux.HandleFunc("GET /v1/network/model-demand", s.handleModelDemand)
 
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
@@ -2623,10 +2783,13 @@ func (s *Server) routes() {
 	// Wallet balance
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
 
+	// A single bank withdrawal experience, with separate payout lifecycles.
+	s.mux.HandleFunc("POST /v1/billing/stripe/quote", s.requirePrivyAuth(s.rateLimitFinancial(s.handleGlobalPayoutQuote)))
+	s.mux.HandleFunc("POST /v1/billing/stripe/global/webhook", s.handleGlobalPayoutWebhook)
 	// Stripe Payouts (Connect Express) — bank/card withdrawals.
-	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requireAuth(s.handleStripeOnboard))
+	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeOnboard)))
 	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(s.handleStripeStatus))
-	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requireAuth(s.handleStripeWithdraw))
+	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeWithdraw)))
 	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(s.handleStripeWithdrawals))
 	// requirePrivyAuth (not requireAuth): both of these are account-management
 	// operations — a leaked inference API key must not be able to detach the
@@ -2667,7 +2830,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/models/aliases", s.handleModelAliasUpsert)
 	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", s.handleModelAliasDelete)
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
-	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
+	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases) // admin key or Privy admin
+	s.mux.HandleFunc("POST /v1/admin/app-attest/revoke", s.handleAdminAppAttestRevoke)
+	s.mux.HandleFunc("GET /v1/admin/app-attest/builds", s.requireAuth(s.handleAdminAppAttestBuilds))
+	s.mux.HandleFunc("POST /v1/admin/app-attest/builds", s.requireAuth(s.handleAdminAppAttestBuilds))
+	s.mux.HandleFunc("POST /v1/admin/app-attest/builds/revoke", s.requireAuth(s.handleAdminAppAttestBuildRevoke))
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
 
 	// Historical admin state export (DAR-70) — streams the TEE-sealed /data
@@ -2745,10 +2912,15 @@ func (s *Server) routes() {
 
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.
-	// See docs/architecture/routing-telemetry-and-calibration.md §6. Handlers
+	// See docs/design/routing-telemetry-and-calibration.md §6. Handlers
 	// enforce admin auth internally via requireAdminKey.
 	s.mux.HandleFunc("GET /v1/admin/routes", s.handleAdminRoutes)
 	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)
+	s.mux.HandleFunc("GET /v1/admin/profiles", s.handleAdminProfiles)
+	s.mux.HandleFunc("GET /v1/admin/request-outcomes", s.handleAdminRequestOutcomes)
+	s.mux.HandleFunc("GET /v1/admin/profiles/export", s.handleAdminProfilesExport)
+	s.mux.HandleFunc("GET /v1/admin/snapshots", s.handleAdminSnapshots)
+	s.mux.HandleFunc("GET /v1/admin/snapshots/export", s.handleAdminSnapshotsExport)
 	s.mux.HandleFunc("GET /v1/admin/rejections", s.handleAdminRejections)
 	s.mux.HandleFunc("GET /v1/admin/rejections/export", s.handleAdminRejectionsExport)
 
@@ -2798,9 +2970,12 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 				enforced = 1.0
 			}
 			s.ddGauge("attestation.code_enforced", enforced, nil)
-			for model, count := range s.registry.ModelProviderSnapshot() {
+			perModel := s.registry.ModelProviderSnapshot()
+			for model, count := range perModel {
 				s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
 			}
+			// Per-model queue depth/age (fleet_gauges.go).
+			s.emitPerModelQueueGauges(perModel)
 			for ver, count := range s.registry.ProviderCountByVersion() {
 				s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
 			}
@@ -2822,6 +2997,7 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
 			}
 			s.emitExactCacheDDGauges()
+			s.emitStoreCacheGauges()
 			// Network utilization — demand/capacity across the warm-serving and
 			// token-budget axes, plus a per-model breakdown.
 			util := s.registry.NetworkUtilizationSnapshot()
@@ -2849,6 +3025,7 @@ const readCacheJanitorInterval = time.Minute
 // StartReadCacheJanitor periodically purges expired entries from the read cache
 // so it can't grow unbounded. Call as a goroutine; stops when ctx is cancelled.
 func (s *Server) StartReadCacheJanitor(ctx context.Context) {
+	saferun.Go(s.logger, "model_token_promotion_maintenance", func() { s.runModelTokenMaintenance(ctx) })
 	s.runReadCacheJanitor(ctx, readCacheJanitorInterval)
 }
 
@@ -2898,11 +3075,11 @@ func (s *Server) handleUnimplementedEndpoint(w http.ResponseWriter, r *http.Requ
 // Handler returns the root http.Handler with global middleware applied.
 // Middleware order (outside-in):
 //
-//	cors → recover → logging → mux
+//	cors → request outcome (inference POSTs only) → recover → logging → mux
 //
 // Recover must sit outside logging so a panic during logging doesn't leak.
 func (s *Server) Handler() http.Handler {
-	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(s.bodyLimitMiddleware(s.mux))))
+	return s.corsMiddleware(s.observeRequestOutcome(s.recoverMiddleware(s.loggingMiddleware(s.bodyLimitMiddleware(s.mux))).ServeHTTP))
 }
 
 // bodyLimitMiddleware caps every request body at maxRequestBodyBytes so an
@@ -2949,6 +3126,7 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 				if recErr, ok := rec.(error); ok && errors.Is(recErr, http.ErrAbortHandler) {
 					panic(rec)
 				}
+				markOutcomePanic(r)
 				stack := string(debug.Stack())
 				s.logger.Error("panic in HTTP handler",
 					"error", fmt.Sprintf("%v", rec),
@@ -3037,6 +3215,7 @@ func (s *Server) invalidateAllAPIKeyCache() {
 // identity is stored in the request context for downstream use.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		setOutcomeStage(r, "auth")
 		token := extractBearerToken(r)
 		if token == "" {
 			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials — use Authorization: Bearer <token>"))
@@ -3058,6 +3237,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			stampAuth(r, "privy", true)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -3065,6 +3245,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Accept admin key (admin endpoints handle further authorization in-handler).
 		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, "admin")
+			stampAuth(r, "admin", false)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -3072,9 +3253,11 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Fall back to API key auth.
 		// Check cache first to skip DB on repeat requests with the same key.
 		var keyRec *store.APIKey
+		authKind := "apikey_cache"
 		if cached, ok := s.lookupAPIKeyCache(token); ok {
 			keyRec = cached.key
 		} else {
+			authKind = "apikey_db"
 			// Cache miss — resolve the key (with its per-key limits) in one
 			// query. A disabled/expired/unknown key returns an error and falls
 			// through to the provider-token path below.
@@ -3135,7 +3318,9 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// references, or logs.
 		accountID := keyRec.OwnerAccountID
 		ctx := r.Context()
+		authDBRead := authKind == "apikey_db"
 		if accountID != "" {
+			authDBRead = true
 			if user, err := s.store.GetUserByAccountID(accountID); err == nil {
 				ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
 			}
@@ -3145,6 +3330,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
 		ctx = context.WithValue(ctx, ctxKeyAPIKey, keyRec)
+		stampAuth(r, authKind, authDBRead)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -3224,6 +3410,7 @@ func (s *Server) rateLimitWith(getLimiter func() *ratelimit.Limiter, next http.H
 // rejections in dashboards.
 func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		setOutcomeStage(r, "rate_limit")
 		// Per-key RPM override applies to inference (consumer) traffic and is
 		// enforced regardless of whether the account-level limiter is set.
 		if tier == "consumer" {
@@ -3233,6 +3420,7 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 		}
 		rl := getLimiter()
 		if rl == nil {
+			stampRateLimit(r)
 			next(w, r)
 			return
 		}
@@ -3269,6 +3457,7 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 			return
 		}
 		setRequestRateLimitHeaders(w, rl.Stat(accountID))
+		stampRateLimit(r)
 		next(w, r)
 	}
 }
@@ -3280,10 +3469,11 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 // the wildcard applies only to GET; non-GET methods fall through to the
 // credentialed, single-origin CORS below.
 var publicCORSPaths = map[string]bool{
-	"/v1/models/catalog": true,
-	"/v1/pricing":        true,
-	"/v1/stats":          true,
-	"/v1/network/series": true,
+	"/v1/models/catalog":       true,
+	"/v1/pricing":              true,
+	"/v1/stats":                true,
+	"/v1/network/series":       true,
+	"/v1/network/model-demand": true,
 }
 
 // corsMiddleware sets CORS headers. Authenticated/credentialed requests are
@@ -3321,6 +3511,8 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 
+		w.Header().Set("Access-Control-Expose-Headers", "X-Provider-Verification, X-Provider-Authorization-Method, X-Provider-Encrypted, X-Provider-Trust-Level, X-Provider-Attested")
+
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -3344,6 +3536,15 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-ID", reqID)
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
+		// Profiler correlation id is ALWAYS coordinator-minted (the client-supplied
+		// X-Request-ID above is echoed and logged but never persisted).
+		if requestMetaFromContext(ctx) == nil && (s.profilerEnabled() || inferenceOutcomeEndpoint(r)) {
+			meta := &requestMeta{coordID: reqID, start: start}
+			if inferenceOutcomeEndpoint(r) || r.Header.Get("X-Request-ID") != "" {
+				meta.coordID = uuid.NewString()
+			}
+			ctx = context.WithValue(ctx, requestMetaKey{}, meta)
+		}
 		r = r.WithContext(ctx)
 
 		next.ServeHTTP(sw, r)

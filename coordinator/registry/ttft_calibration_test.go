@@ -215,17 +215,17 @@ func TestCalibratedTTFTMsLeavesColdPenaltyUnscaled(t *testing.T) {
 	feedObservations(t, model, "M3", ttftCalibrationWarmupObs, 0.5)
 
 	warm := routingSnapshot{model: model, chipFamily: "M3", slotState: "running"}
-	if got := calibratedTTFTMs(warm, 3000); math.Abs(got-1500) > 0.001 {
+	if got := calibratedTTFTMs(snapPtr(warm), 3000); math.Abs(got-1500) > 0.001 {
 		t.Fatalf("warm calibrated = %f, want 1500", got)
 	}
 
 	cold := routingSnapshot{model: model, chipFamily: "M3", slotState: "unknown"}
 	want := slotStatePenaltyUnknown + 3000*0.5
-	if got := calibratedTTFTMs(cold, slotStatePenaltyUnknown+3000); math.Abs(got-want) > 0.001 {
+	if got := calibratedTTFTMs(snapPtr(cold), slotStatePenaltyUnknown+3000); math.Abs(got-want) > 0.001 {
 		t.Fatalf("cold calibrated = %f, want %f (penalty unscaled)", got, want)
 	}
 
-	if got := calibratedTTFTMs(warm, 0); got != 0 {
+	if got := calibratedTTFTMs(snapPtr(warm), 0); got != 0 {
 		t.Fatalf("zero estimate calibrated = %f, want 0", got)
 	}
 }
@@ -252,7 +252,7 @@ func TestTTFTCalibratorConcurrentAccess(t *testing.T) {
 			for i := 0; i < 400; i++ {
 				_ = ttftCalibration.appliedRatio(model, "M3")
 				_ = TTFTCalibrationRatio(model, "")
-				_ = calibratedTTFTMs(routingSnapshot{model: model, chipFamily: "M3", slotState: "running"}, 2000)
+				_ = calibratedTTFTMs(snapPtr(routingSnapshot{model: model, chipFamily: "M3", slotState: "running"}), 2000)
 			}
 		}()
 	}

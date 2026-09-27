@@ -20,13 +20,14 @@ import { AttentionFeed } from "./AttentionFeed";
 import { MachineGrid } from "./MachineGrid";
 import { TrustFooter } from "./TrustFooter";
 import { OnboardingState } from "./OnboardingState";
-import { SignInGate, LoadingState, ErrorState } from "./states";
+import { LoadingState, ErrorState } from "./states";
+import { useCurrentAuthorizations } from "./useCurrentAuthorizations";
+import { MacOSUpgradeNotice } from "@/components/provider-onboarding/MacOSUpgradeNotice";
 
 export function ProviderDashboard() {
   const {
     ready,
     authenticated,
-    login,
     providersResp,
     summary,
     ctx,
@@ -38,15 +39,12 @@ export function ProviderDashboard() {
     refetch,
   } = useFleetData();
 
-  const providers = useMemo(() => providersResp?.providers ?? [], [providersResp]);
+  const reportedProviders = useMemo(() => providersResp?.providers ?? [], [providersResp]);
+  const providers = useCurrentAuthorizations(reportedProviders);
 
   const verdict = useMemo(() => deriveFleetVerdict(providers, ctx), [providers, ctx]);
   const groups = useMemo(() => buildAttentionGroups(providers, ctx), [providers, ctx]);
   const maxDecode = useMemo(() => fleetMaxDecodeTps(providers), [providers]);
-  const hardwareCount = useMemo(
-    () => providers.filter((p) => p.trust_level === "hardware").length,
-    [providers]
-  );
   // "Update available" nudges machines running below the latest release (the
   // below-minimum case is already surfaced as a blocking attention row).
   const updateAvailable = useMemo(
@@ -58,7 +56,7 @@ export function ProviderDashboard() {
   );
 
   if (!ready) return <Shell><LoadingState /></Shell>;
-  if (!authenticated) return <Shell><SignInGate onLogin={login} /></Shell>;
+  if (!authenticated) return <Shell><OnboardingState /></Shell>;
   if (loading && !providersResp) return <Shell><LoadingState /></Shell>;
   if (error && !providersResp) return <Shell><ErrorState message={error} onRetry={refetch} /></Shell>;
 
@@ -83,10 +81,11 @@ export function ProviderDashboard() {
         pollFailed={pollFailed}
         updateAvailable={updateAvailable}
       />
+      <MacOSUpgradeNotice providers={providers} />
       <FleetHealthStrip verdict={verdict} summary={summary} />
       <AttentionFeed groups={groups} />
       <MachineGrid providers={providers} ctx={ctx} fleetMaxDecodeTps={maxDecode} onRemoved={refetch} />
-      <TrustFooter hardwareCount={hardwareCount} total={providers.length} />
+      <TrustFooter providers={providers} />
     </Shell>
   );
 }

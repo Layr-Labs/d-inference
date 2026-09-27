@@ -298,7 +298,7 @@ func (s *mdmVerificationScheduler) loadDueRows() {
 		rows []store.VerificationJob
 		err  error
 	)
-	if paged, ok := s.store.(verificationDuePageStore); ok {
+	if paged, ok := store.As[verificationDuePageStore](s.store); ok {
 		rows, err = paged.ListDueVerificationJobsPage(
 			s.ctx, now, limit, offset,
 		)

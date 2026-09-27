@@ -27,14 +27,13 @@ import (
 
 // myReputation is the wire shape for a provider's reputation snapshot.
 type myReputation struct {
-	Score              float64 `json:"score"`
-	TotalJobs          int     `json:"total_jobs"`
-	SuccessfulJobs     int     `json:"successful_jobs"`
-	FailedJobs         int     `json:"failed_jobs"`
-	TotalUptimeSeconds int64   `json:"total_uptime_seconds"`
-	AvgResponseTimeMs  int64   `json:"avg_response_time_ms"`
-	ChallengesPassed   int     `json:"challenges_passed"`
-	ChallengesFailed   int     `json:"challenges_failed"`
+	TotalJobs          int   `json:"total_jobs"`
+	SuccessfulJobs     int   `json:"successful_jobs"`
+	FailedJobs         int   `json:"failed_jobs"`
+	TotalUptimeSeconds int64 `json:"total_uptime_seconds"`
+	AvgResponseTimeMs  int64 `json:"avg_response_time_ms"`
+	ChallengesPassed   int   `json:"challenges_passed"`
+	ChallengesFailed   int   `json:"challenges_failed"`
 }
 
 // myProvider is the per-machine payload for /v1/me/providers.
@@ -55,12 +54,18 @@ type myProvider struct {
 	Models       []protocol.ModelInfo `json:"models"`
 	Backend      string               `json:"backend,omitempty"`
 	Version      string               `json:"version,omitempty"`
+	OSVersion    string               `json:"os_version,omitempty"` // Current or last app-reported macOS version.
 	serialNumber string
 
 	// Trust & attestation
 	TrustLevel  string `json:"trust_level"`
 	Attested    bool   `json:"attested"`
 	MDAVerified bool   `json:"mda_verified"`
+	// Live App Attest guidance is independent of legacy proof fields and is
+	// never restored from a stored record. The client honors the lease deadline.
+	Verification           registry.Verification `json:"verification"`
+	AppAttestAuthorized    bool                  `json:"app_attest_authorized"`
+	AuthorizationExpiresAt int64                 `json:"authorization_expires_at,omitempty"`
 	// Deprecated: the ACME device-attest-01 leg was removed. Key kept (always
 	// false) because shipped provider builds decode it as a required field.
 	ACMEVerified bool   `json:"acme_verified"`
@@ -91,12 +96,18 @@ type myProvider struct {
 	// Live snapshot (only set when the machine is currently connected)
 	SystemMetrics   *protocol.SystemMetrics   `json:"system_metrics,omitempty"`
 	BackendCapacity *protocol.BackendCapacity `json:"backend_capacity,omitempty"`
-	WarmModels      []string                  `json:"warm_models,omitempty"`
-	CurrentModel    string                    `json:"current_model,omitempty"`
-	PendingRequests int                       `json:"pending_requests"`
-	MaxConcurrency  int                       `json:"max_concurrency"`
-	PrefillTPS      float64                   `json:"prefill_tps,omitempty"`
-	DecodeTPS       float64                   `json:"decode_tps,omitempty"`
+	// IdleUnloadMins is the machine's idle-memory policy as reported in its
+	// heartbeats: 0 = always ready (models stay loaded), N = unloaded after N
+	// idle minutes and reloaded on demand. Omitted for offline machines and
+	// for providers too old to report it. Lets the dashboard render a missing
+	// slot as "sleeping, wakes on demand" instead of a warning.
+	IdleUnloadMins  *int     `json:"idle_unload_mins,omitempty"`
+	WarmModels      []string `json:"warm_models,omitempty"`
+	CurrentModel    string   `json:"current_model,omitempty"`
+	PendingRequests int      `json:"pending_requests"`
+	MaxConcurrency  int      `json:"max_concurrency"`
+	PrefillTPS      float64  `json:"prefill_tps,omitempty"`
+	DecodeTPS       float64  `json:"decode_tps,omitempty"`
 
 	// Reputation
 	Reputation myReputation `json:"reputation"`
@@ -162,26 +173,11 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recent, err := s.store.GetAccountEarnings(accountID, 5000)
+	windows, err := s.accountEarningsWindows(accountID)
 	if err != nil {
-		s.logger.Error("get account earnings failed", "error", err)
+		s.logger.Error("get account earnings windows failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings"))
 		return
-	}
-	now := time.Now()
-	cutoff24h := now.Add(-24 * time.Hour)
-	cutoff7d := now.Add(-7 * 24 * time.Hour)
-	var last24Money, last7dMoney int64
-	var last24Jobs, last7dJobs int64
-	for _, e := range recent {
-		if e.CreatedAt.After(cutoff7d) {
-			last7dMoney += e.AmountMicroUSD
-			last7dJobs++
-			if e.CreatedAt.After(cutoff24h) {
-				last24Money += e.AmountMicroUSD
-				last24Jobs++
-			}
-		}
 	}
 
 	fleet, err := s.mergeFleet(r.Context(), accountID)
@@ -203,10 +199,10 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 		PayoutReady:                 user.StripeAccountStatus == "ready",
 		LifetimeMicroUSD:            summary.TotalMicroUSD,
 		LifetimeJobs:                summary.Count,
-		Last24hMicroUSD:             last24Money,
-		Last24hJobs:                 last24Jobs,
-		Last7dMicroUSD:              last7dMoney,
-		Last7dJobs:                  last7dJobs,
+		Last24hMicroUSD:             windows.Last24hMicroUSD,
+		Last24hJobs:                 windows.Last24hJobs,
+		Last7dMicroUSD:              windows.Last7dMicroUSD,
+		Last7dJobs:                  windows.Last7dJobs,
 		Counts:                      counts,
 		LatestProviderVersion:       s.latestReleasedVersion(),
 		MinProviderVersion:          s.minProviderVersion,
@@ -248,10 +244,11 @@ func needsAttention(mp *myProvider, minVersion string) bool {
 	if !mp.RuntimeVerified {
 		return true
 	}
-	if mp.TrustLevel != string(registry.TrustHardware) {
+	appAttest := myProviderHasAppAttestAuthorization(mp, time.Now())
+	if !appAttest && mp.TrustLevel != string(registry.TrustHardware) {
 		return true
 	}
-	if mp.FailedChallenges > 0 {
+	if !appAttest && mp.FailedChallenges > 0 {
 		return true
 	}
 	if minVersion != "" && mp.Version != "" && semverLess(mp.Version, minVersion) {
@@ -302,6 +299,7 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 			live = liveByIdentity[recordIdentity(&deduped[i])]
 		}
 		mp := buildMyProvider(&deduped[i], live)
+		s.attachMyProviderAuthorization(&mp, live, accountID)
 		out = append(out, mp)
 		seenIDs[deduped[i].ID] = true
 		if live != nil {
@@ -315,7 +313,9 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 		if liveMatchesEmittedIdentity(p, out) {
 			continue
 		}
-		out = append(out, buildMyProvider(nil, p))
+		mp := buildMyProvider(nil, p)
+		s.attachMyProviderAuthorization(&mp, p, accountID)
+		out = append(out, mp)
 	}
 	return out, nil
 }
@@ -333,9 +333,7 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for i := range fleet {
-		s.attachStoredReputation(r.Context(), &fleet[i])
-	}
+	s.attachStoredReputations(r.Context(), fleet)
 
 	resp := myProvidersResponse{
 		Providers:             fleet,
@@ -423,31 +421,48 @@ func emittedIdentity(mp *myProvider) string {
 	return "id:" + mp.ID
 }
 
-func (s *Server) attachStoredReputation(ctx context.Context, mp *myProvider) {
-	if mp.ID == "" || mp.Reputation.TotalJobs > 0 || mp.Reputation.ChallengesPassed > 0 || mp.Reputation.ChallengesFailed > 0 {
+// attachStoredReputations fills in persisted reputation for every machine in
+// the fleet that has none from the live registry, with ONE store lookup for
+// the whole fleet instead of one per machine (the dashboard polls this every
+// 15 s per tab, and the per-machine form was ~78 reputation reads/s in
+// production).
+func (s *Server) attachStoredReputations(ctx context.Context, fleet []myProvider) {
+	ids := make([]string, 0, len(fleet))
+	for i := range fleet {
+		if needsStoredReputation(&fleet[i]) {
+			ids = append(ids, fleet[i].ID)
+		}
+	}
+	if len(ids) == 0 {
 		return
 	}
-	rep, err := s.store.GetReputation(ctx, mp.ID)
-	if err != nil || rep == nil {
+	reps, err := s.store.GetReputations(ctx, ids)
+	if err != nil {
 		return
 	}
-	r := registry.NewReputation()
-	r.TotalJobs = rep.TotalJobs
-	r.SuccessfulJobs = rep.SuccessfulJobs
-	r.FailedJobs = rep.FailedJobs
-	r.TotalUptime = time.Duration(rep.TotalUptimeSeconds) * time.Second
-	r.AvgResponseTime = time.Duration(rep.AvgResponseTimeMs) * time.Millisecond
-	r.ChallengesPassed = rep.ChallengesPassed
-	r.ChallengesFailed = rep.ChallengesFailed
+	for i := range fleet {
+		if !needsStoredReputation(&fleet[i]) {
+			continue
+		}
+		if rep := reps[fleet[i].ID]; rep != nil {
+			applyStoredReputation(&fleet[i], rep)
+		}
+	}
+}
+
+func needsStoredReputation(mp *myProvider) bool {
+	return mp.ID != "" && mp.Reputation.TotalJobs == 0 && mp.Reputation.ChallengesPassed == 0 && mp.Reputation.ChallengesFailed == 0
+}
+
+func applyStoredReputation(mp *myProvider, rep *store.ReputationRecord) {
 	mp.Reputation = myReputation{
-		Score:              r.Score(),
-		TotalJobs:          r.TotalJobs,
-		SuccessfulJobs:     r.SuccessfulJobs,
-		FailedJobs:         r.FailedJobs,
-		TotalUptimeSeconds: int64(r.TotalUptime / time.Second),
-		AvgResponseTimeMs:  int64(r.AvgResponseTime / time.Millisecond),
-		ChallengesPassed:   r.ChallengesPassed,
-		ChallengesFailed:   r.ChallengesFailed,
+		TotalJobs:          rep.TotalJobs,
+		SuccessfulJobs:     rep.SuccessfulJobs,
+		FailedJobs:         rep.FailedJobs,
+		TotalUptimeSeconds: rep.TotalUptimeSeconds,
+		AvgResponseTimeMs:  rep.AvgResponseTimeMs,
+		ChallengesPassed:   rep.ChallengesPassed,
+		ChallengesFailed:   rep.ChallengesFailed,
 	}
 }
 
@@ -499,6 +514,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		if len(rec.AttestationResult) > 0 {
 			var ar attestation.VerificationResult
 			if err := json.Unmarshal(rec.AttestationResult, &ar); err == nil {
+				mp.OSVersion = ar.OSVersion
 				if ar.SerialNumber != "" {
 					mp.serialNumber = ar.SerialNumber
 				}
@@ -535,6 +551,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.Models = append([]protocol.ModelInfo{}, live.Models...)
 		mp.Backend = live.Backend
 		mp.Version = live.Version
+		mp.OSVersion = "" // A live connection must not inherit a previous OS report.
 		mp.TrustLevel = string(live.TrustLevel)
 		mp.Attested = live.Attested
 		mp.MDAVerified = live.MDAVerified
@@ -560,6 +577,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 
 		if live.AttestationResult != nil {
 			ar := live.AttestationResult
+			mp.OSVersion = ar.OSVersion
 			if ar.SerialNumber != "" {
 				mp.serialNumber = ar.SerialNumber
 			}
@@ -583,11 +601,14 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 			cap := *live.BackendCapacity
 			mp.BackendCapacity = &cap
 		}
+		if live.IdleUnloadMins != nil {
+			v := *live.IdleUnloadMins
+			mp.IdleUnloadMins = &v
+		}
 		mp.WarmModels = append([]string{}, live.WarmModels...)
 		mp.CurrentModel = live.CurrentModel
 		// Reputation snapshot.
 		mp.Reputation = myReputation{
-			Score:              live.Reputation.Score(),
 			TotalJobs:          live.Reputation.TotalJobs,
 			SuccessfulJobs:     live.Reputation.SuccessfulJobs,
 			FailedJobs:         live.Reputation.FailedJobs,

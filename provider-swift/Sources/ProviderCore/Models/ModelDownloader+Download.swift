@@ -17,37 +17,6 @@ extension ModelDownloader {
         return hex == sha256.lowercased()
     }
 
-    /// Download a single manifest file into its staging destination, resuming
-    /// from a `.part` file when present, verifying size + SHA-256 before
-    /// promoting to the final staged path. Reuses the resume-capable
-    /// `downloadFile` helper (Range requests, Content-Range validation, retries).
-    ///
-    /// `onChunk(bytesOnDisk)` reports cumulative bytes-on-disk for this file as
-    /// it streams, so the foreground path can render a live per-shard bar; the
-    /// background prefetch passes nil and accounts progress per whole file.
-    internal func downloadManifestFileWithResume(
-        _ job: (file: ManifestFile, destination: URL, url: String),
-        onChunk: (@Sendable (Int64) -> Void)? = nil
-    ) async throws {
-        let ok = try await downloadFile(
-            from: job.url,
-            to: job.destination,
-            label: job.file.path,
-            onProgress: nil,
-            required: true,
-            expectedSHA256: job.file.sha256.lowercased(),
-            maximumBytes: job.file.sizeBytes,
-            onChunk: onChunk
-        )
-        guard ok else {
-            throw ModelCatalogError.downloadFailed("\(job.file.path): required file could not be fetched")
-        }
-        let size = fileSize(job.destination)
-        guard size == job.file.sizeBytes else {
-            throw ModelCatalogError.downloadFailed("\(job.file.path): size \(size) != manifest size \(job.file.sizeBytes)")
-        }
-    }
-
     internal func fetchManifestFromCDN(model: CatalogModel) async throws -> ModelManifest {
         guard let r2Prefix = model.r2Prefix else {
             throw ModelCatalogError.downloadFailed("model missing r2_prefix")
@@ -149,21 +118,7 @@ extension ModelDownloader {
         manifest: ModelManifest,
         onProgress: (@Sendable (ProgressEvent) -> Void)?
     ) async throws {
-        guard manifest.modelID == model.id else {
-            throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
-        }
-        guard manifest.files.count == manifest.fileCount else {
-            throw ModelCatalogError.downloadFailed("manifest file_count \(manifest.fileCount) does not match files array")
-        }
-        guard !manifest.files.isEmpty else {
-            throw ModelCatalogError.downloadFailed("manifest contains no files")
-        }
-        if let aggregate = model.aggregateSHA256, aggregate != manifest.aggregateSHA256 {
-            throw ModelCatalogError.downloadFailed("catalog aggregate hash does not match manifest")
-        }
-        if let prefix = model.r2Prefix, prefix != manifest.r2Prefix {
-            throw ModelCatalogError.downloadFailed("catalog r2_prefix does not match manifest")
-        }
+        try Self.validate(manifest: manifest, for: model)
 
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
@@ -179,14 +134,7 @@ extension ModelDownloader {
             Self.localStagingDirName(r2Prefix: manifest.r2Prefix), isDirectory: true)
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
-        let jobs = try manifest.files.map { file -> (file: ManifestFile, destination: URL, url: String) in
-            let relativePath = try Self.validatedManifestRelativePath(file.path)
-            return (
-                file: file,
-                destination: stagingDir.appendingPathComponent(relativePath, isDirectory: false),
-                url: "\(r2CDNURL)/\(Self.escapeR2Path(manifest.r2Prefix))/\(Self.escapeR2Path(relativePath))"
-            )
-        }
+        let jobs = try manifestJobs(manifest, stagingDir: stagingDir)
 
         // Resume: skip files already staged + valid; only the not-yet-valid files
         // are enqueued below.
@@ -244,7 +192,7 @@ extension ModelDownloader {
                     let job = pending[next]
                     next += 1
                     group.addTask {
-                        try await self.downloadManifestFileWithResume(job, onChunk: { bytes in
+                        try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
                             progress.update(label: job.file.path, downloadedBytes: bytes)
                         })
                         progress.complete(label: job.file.path)
@@ -256,7 +204,7 @@ extension ModelDownloader {
                         let job = pending[next]
                         next += 1
                         group.addTask {
-                            try await self.downloadManifestFileWithResume(job, onChunk: { bytes in
+                            try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
                                 progress.update(label: job.file.path, downloadedBytes: bytes)
                             })
                             progress.complete(label: job.file.path)
@@ -289,32 +237,4 @@ extension ModelDownloader {
         try finalizeStagedManifest(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
         onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
     }
-
-    /// Verify the aggregate hash over the staged files, then publish the snapshot
-    /// (`snapshots/local` + `refs/main`) so `ModelScanner` discovers it. Shared by
-    /// the normal completion path and the finish-on-restart short-circuit.
-    ///
-    /// On an aggregate mismatch over internally-valid files (a poisoned manifest:
-    /// every per-file SHA passed but the claimed aggregate is wrong) staging is
-    /// cleared so a corrected manifest re-downloads cleanly — otherwise skip-valid
-    /// would re-fail the aggregate forever. Transient per-file/network failures
-    /// throw earlier and deliberately KEEP staging so the next attempt resumes.
-    private func finalizeStagedManifest(
-        model: CatalogModel,
-        manifest: ModelManifest,
-        jobs: [(file: ManifestFile, destination: URL, url: String)],
-        stagingDir: URL,
-        cacheDir: URL
-    ) throws {
-        let aggregate = WeightHasher.hashFilesWithRelativeKey(jobs.map { (file: $0.destination, sortKey: $0.file.path) })
-        guard aggregate == manifest.aggregateSHA256 else {
-            try? FileManager.default.removeItem(at: stagingDir)
-            throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
-        }
-        try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
-        try writeMainRef(for: model.id)
-        // Staging was consumed by publishStagedSnapshot; best-effort husk cleanup.
-        try? FileManager.default.removeItem(at: stagingDir)
-    }
-
 }

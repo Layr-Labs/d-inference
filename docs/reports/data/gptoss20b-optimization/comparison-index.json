@@ -1,0 +1,200 @@
+[
+  {
+    "experiment": "combined-decode-b1",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      1.1281615242733862,
+      1.1274030683379554
+    ]
+  },
+  {
+    "experiment": "combined-decode-b2",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      1.0950347482672698,
+      1.0991979591158951
+    ]
+  },
+  {
+    "experiment": "combined-decode-b4",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      1.0599189773533184,
+      1.0700132194541654
+    ]
+  },
+  {
+    "experiment": "compiled-decode-b1",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      1.0124127390771505,
+      1.0330595569381753
+    ]
+  },
+  {
+    "experiment": "compiled-decode-b2",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      1.0304028270828691,
+      0.9268905682050276
+    ]
+  },
+  {
+    "experiment": "compiled-decode-b4",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      1.0750796628207833,
+      1.019495448659067
+    ]
+  },
+  {
+    "experiment": "fast-tail-decode-b1",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      1.029544303921251,
+      1.0347209816181724
+    ]
+  },
+  {
+    "experiment": "fast-tail-decode-b2",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      1.0237205514765142,
+      1.0192994361124181
+    ]
+  },
+  {
+    "experiment": "fast-tail-decode-b4",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      1.0332807776529194,
+      1.0128598501428656
+    ]
+  },
+  {
+    "experiment": "fusion-8192",
+    "phase": "prefill",
+    "parity": null,
+    "ratios": [
+      0.9915956235094865,
+      1.030844537903879
+    ]
+  },
+  {
+    "experiment": "fusion-decode-b1",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      1.023158472862952,
+      1.0213174128455795
+    ]
+  },
+  {
+    "experiment": "fusion-decode-b2",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      1.0160637609662848,
+      1.0189205761991034
+    ]
+  },
+  {
+    "experiment": "fusion-decode-b4",
+    "phase": "decode",
+    "parity": true,
+    "ratios": [
+      0.9955177899980083,
+      0.9979321679167452
+    ]
+  },
+  {
+    "experiment": "head-512",
+    "phase": "prefill",
+    "parity": null,
+    "ratios": [
+      0.8853247847669741,
+      0.8827045808712976
+    ]
+  },
+  {
+    "experiment": "head-8192",
+    "phase": "prefill",
+    "parity": null,
+    "ratios": [
+      0.8760468857677145,
+      0.8755147695997648
+    ]
+  },
+  {
+    "experiment": "last-layer-512",
+    "phase": "prefill",
+    "parity": null,
+    "ratios": [
+      0.9488434806890823,
+      0.9572906722684469
+    ]
+  },
+  {
+    "experiment": "last-layer-8192",
+    "phase": "prefill",
+    "parity": null,
+    "ratios": [
+      1.0430925150182209,
+      0.9873210511834872
+    ]
+  },
+  {
+    "experiment": "m16n32k64-8192",
+    "phase": "prefill",
+    "parity": null,
+    "ratios": [
+      1.0742390042813001,
+      1.0802420887296798
+    ]
+  },
+  {
+    "experiment": "m32n32k32-8192",
+    "phase": "prefill",
+    "parity": null,
+    "ratios": [
+      0.9695549504852709,
+      0.9889323036261733
+    ]
+  },
+  {
+    "experiment": "query-256-8192",
+    "phase": "prefill",
+    "parity": null,
+    "ratios": [
+      1.013338815944312,
+      1.0101323852177588
+    ]
+  },
+  {
+    "experiment": "query-64-8192",
+    "phase": "prefill",
+    "parity": null,
+    "ratios": [
+      1.0372133133988515,
+      0.934781025441215
+    ]
+  },
+  {
+    "experiment": "stripe-4096-8192",
+    "phase": "prefill",
+    "parity": null,
+    "ratios": [
+      0.974752709664783,
+      1.0026678192913439
+    ]
+  }
+]

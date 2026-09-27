@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "scope": "Reservation audit and lifecycle regression: 99 functions,100 actual cases; no real-model or process-ledger integration proof.",
+  "parent_base": "966eac55cf88057564730d64f3d17802486d54d3",
+  "owned_swift_sources": 3,
+  "selected_source_inputs": 1118,
+  "files": [
+    {
+      "path": "validation/budget.log.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/budget.log",
+      "bytes": 1433,
+      "sha256": "9601373f403f1a12a2897aa9f480d7ce629eeaee091d5fffb9385277d27ae5de",
+      "uncompressed_bytes": 6574,
+      "uncompressed_sha256": "1af52b14977475131d5e887caca0426e64005f5f15f2a3e40277e1a0dbd3e896"
+    },
+    {
+      "path": "validation/build.log.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/build.log",
+      "bytes": 5782,
+      "sha256": "e088792630020ecf6a5d3f7e7952976474a3703f70a281d2ddbbbc4ee2588658",
+      "uncompressed_bytes": 181831,
+      "uncompressed_sha256": "1944f55526bf49886ac8ea861e2ecfcf4d23c021bd0a033b0342de6876acfe27"
+    },
+    {
+      "path": "validation/dependency-pins.json.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/dependency-pins.json",
+      "bytes": 196,
+      "sha256": "1671e70db24eb49bbb0eea60d79a0d28f80392b477a14ca8239209062a0b4831",
+      "uncompressed_bytes": 296,
+      "uncompressed_sha256": "f37d9ccc503e3cb9bdb39b28f8456d389a8c3faf1943aceae9390c99ff4afb58"
+    },
+    {
+      "path": "validation/execution.json.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/execution.json",
+      "bytes": 1272,
+      "sha256": "aa44d0ba541e490c361e87fdb8d4dd8c3e7d0895817cad554a20192788b7bf98",
+      "uncompressed_bytes": 3557,
+      "uncompressed_sha256": "f6dbe296ee099eac0464725e9138dd931470ea3d247706723156649d1dbc06ac"
+    },
+    {
+      "path": "validation/filters.json.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/filters.json",
+      "bytes": 903,
+      "sha256": "a79d9948b74a08bd94a97f581c5b08a4ab5e6be5904ff2724261274b401b2a78",
+      "uncompressed_bytes": 2251,
+      "uncompressed_sha256": "01e2b52259f7552b398e3bce085dedfdabdd04044e1ce8e3a06f7e61f010e04b"
+    },
+    {
+      "path": "validation/identifiers.log.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/identifiers.log",
+      "bytes": 38345,
+      "sha256": "adcfcf6bc5bb13c8c0467ed99768f3cc7ff5aeea1608ca7833fedb98a2827461",
+      "uncompressed_bytes": 189358,
+      "uncompressed_sha256": "910cccb384f9c73256230cd390c5776a5253e3df79632fae396ad6421ff90e7a"
+    },
+    {
+      "path": "validation/load-lifecycle.log.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/load-lifecycle.log",
+      "bytes": 2879,
+      "sha256": "42607a1fe39b384482885c3c0c3c55fb0fe7655747f5e700bc5c7c086f805514",
+      "uncompressed_bytes": 13419,
+      "uncompressed_sha256": "b6a3a36dd4457dce6f61dc6845d4aeb342cfa1cfb6431fad39114b98526fb5db"
+    },
+    {
+      "path": "validation/owned-manifest.json.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/owned-manifest.json",
+      "bytes": 353,
+      "sha256": "e623492e4739cf3e191e7993f03822fd4b5e19b033e14f5dcaa0b760a94baf0b",
+      "uncompressed_bytes": 692,
+      "uncompressed_sha256": "4c2aa8d1e9baa2d79e7a698bb00c922e608a5b7fd548c8d2ed6c998d03eb84b7"
+    },
+    {
+      "path": "validation/run.py.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/run.py",
+      "bytes": 890,
+      "sha256": "227540879fa3220750ceed977d1044517a2792fceaf0fa7f02e4f13d1ab0df2d",
+      "uncompressed_bytes": 1778,
+      "uncompressed_sha256": "f8808e6d5f1687ce7280214585babe5a6d0b8e3f04b3618ae2fc34de1fa624b8"
+    },
+    {
+      "path": "validation/selected-identifiers.json.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/selected-identifiers.json",
+      "bytes": 1874,
+      "sha256": "29c30361653fd0ab14d6941324029e169f1aee8849562d25d4eb470b464e736f",
+      "uncompressed_bytes": 7815,
+      "uncompressed_sha256": "5c2045242dee57f7516e52097345de2ddcebe8a320c5454947e251967f36c824"
+    },
+    {
+      "path": "validation/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/source-manifest.json",
+      "bytes": 56758,
+      "sha256": "cfd99edef55733c07878094332c3f25640488f8cc082f4f87ec8d0662ed884fe",
+      "uncompressed_bytes": 162257,
+      "uncompressed_sha256": "46b94c1f2752fcb09725cfdfe220f25f30f4eda7d8d4ae19a366f9e109411537"
+    },
+    {
+      "path": "validation/verdict.json.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/verdict.json",
+      "bytes": 510,
+      "sha256": "fcfcd588119b194e6c40d280460e387242df70d86c4716090d3e9dd4e00914fe",
+      "uncompressed_bytes": 963,
+      "uncompressed_sha256": "a96cc290a264ce53296671a3fee4be5426890b9215417155f09b666acf1f19b7"
+    },
+    {
+      "path": "validation/manifest.json.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement-validation1/manifest.json",
+      "bytes": 794,
+      "sha256": "56ae2b1eb346beaf6aeeaa7d2abf4dcc8d4d0c3b75b462976be325a590950c0d",
+      "uncompressed_bytes": 2391,
+      "uncompressed_sha256": "a150f35d3b38f9dd410da824774ce7b12fbbaf32e6982c8d0eededff0ea3eeb7"
+    },
+    {
+      "path": "source/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement/source-manifest.json",
+      "bytes": 645,
+      "sha256": "a34c272d33dfa671e8951460e4a762dc6641097e87ffb300d1d49eb90771fa76",
+      "uncompressed_bytes": 1320,
+      "uncompressed_sha256": "a558d61bb772c175b60f54fa24700b38c5ddda33a11a37b25a39103fdc96996e"
+    },
+    {
+      "path": "source/integrated-manifest.json.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement/integrated-manifest.json",
+      "bytes": 601,
+      "sha256": "e35061165ecfb50a58dec6e014d90ada82630485e30d147c201431f7a1f7fd7b",
+      "uncompressed_bytes": 1270,
+      "uncompressed_sha256": "1b8d30e17d5dda266c750d6a3671f775fc112aa9c999839fc2502ea536cc4b21"
+    },
+    {
+      "path": "source/source.tar.gz.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement/source.tar.gz",
+      "bytes": 42579,
+      "sha256": "d24442255a361f9294e9b27e577173adff9f2521ac178afe318dac539dcda813",
+      "uncompressed_bytes": 42546,
+      "uncompressed_sha256": "40077dcf3a2fea4e29a710ff0e7c64bd91d929afdc17fae7d1c1e4520aeaac81"
+    },
+    {
+      "path": "source/tracked.patch.gz",
+      "source": "/tmp/darkbloom-kv-owner-retirement/tracked.patch",
+      "bytes": 8565,
+      "sha256": "fbf91935eca3e3773ab32c9cd147d918723e5efadb7126dbee77954ba0c967e8",
+      "uncompressed_bytes": 28262,
+      "uncompressed_sha256": "3a860a77720ed73e657085af695544d38ede7df1201e1a24761bc875de17d9d3"
+    }
+  ]
+}

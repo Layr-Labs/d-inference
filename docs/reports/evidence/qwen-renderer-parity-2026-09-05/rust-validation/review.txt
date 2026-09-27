@@ -1,0 +1,56 @@
+# Final renderer v3 review handoff
+
+Final source manifest: renderer-v3-final-depth-source-manifest.json (37 files).
+Final binary/vector hashes: renderer-v3-final-verification.json.
+All paths here are relative to /tmp/darkbloom-090-qwen-jinja-probe unless noted.
+
+Owned staged-candidate paths (nothing staged by this agent):
+- coordinator/promptcontract/contract.go
+- coordinator/promptsidecar/{Cargo.toml,Cargo.lock}
+- coordinator/promptsidecar/src/{contract.rs,planner.rs,render.rs}
+- coordinator/promptsidecar/src/render/input.rs
+- coordinator/promptsidecar/src/render/input/{tests.rs,swift_236_raw_bridge.json}
+- coordinator/promptsidecar/src/render/json.rs
+- coordinator/promptsidecar/src/render/json/{tests.rs,swift_236_goldens.json,swift_236_edges.json}
+- coordinator/promptsidecar/tests/planner_fixture.rs
+
+The exact upstream Swift 2.3.6 JSON byte oracles cover 104 formatting cases,
+530 edge cases (including 512 finite Double bit patterns), and 66 raw bridge
+rows after the separately tested provider CFBoolean fix. Input eligibility does
+not rewrite normalization-v3. It refuses known canonical key collisions, numbers
+outside the proved common bridge domain, valid nonobject encoded tool arguments,
+and object/array-shaped arguments that the bounded JSON parser refuses. Ordinary
+opaque text and proper boolean arguments remain eligible. Structured argument
+inspection occurs before null sanitation at recognized chat/legacy/Responses
+paths only; user chat strings are not parsed as JSON.
+
+The JSON writer overrides only tojson, not global object iteration. It uses
+Foundation-compatible recursive ordering, escaping, options, whitespace and
+shortest-number spelling. Output and recursive sorting scratch share the 16 MiB
+bound; indentation magnitude cannot allocate unbounded space. Native MiniJinja
+loop neighbors remain intact. Swift-Jinja 2.3.6 supplies the provider loop fix.
+
+Float parser finding retained: floatparse.rs / floatparse.log reproduce 136/512
+one-ULP differences using the old serde_json fast parser. The existing dependency's
+float_roundtrip feature fixes all 512; tests compare both decoded bits and emitted
+bytes. No serde_json version change. New direct unicode-normalization 0.1.25 is
+pinned because tokenizers' old Unicode 9 alignment helper cannot validate modern
+Swift canonical-equivalent keys; tinyvec dependencies are the only lock additions.
+
+Validation:
+- rust-v3-final-depth-all.log: 106 tests, all pass (88 library, 2 main, 1 fixture
+  generator, 11 planner, 1 server, 3 shared-vector tests); no skips.
+- rust-v3-final-depth-clippy.log: strict all-target clippy, no warnings.
+- final generator output byte-identical to parent-provisioned common 98 cases
+  across seven entries/six contracts and original 56 across four entries/three
+  contracts. Comparison hashes and commands are in verification JSON and logs.
+- API independently reports actual Swift provider rendering parity for both
+  corpora; API owns that evidence and source manifest.
+- Release sidecar build and real supervisor RSS/QPS proof passed. The separate
+  manifest-loadproof.json records unchanged 25 QPS / 15 s / 1024 MiB gates,
+  96 exact cold requests and 375 exact sustained requests; no relaxed limits.
+
+The initial pre-depth full-suite and replay evidence remains retained. Final
+final-depth logs/manifest are authoritative. No frozen reports, normalization
+source, model artifacts, production deployment or Swift compilation changed by
+this agent.

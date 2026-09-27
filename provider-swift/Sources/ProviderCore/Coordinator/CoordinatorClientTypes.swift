@@ -2,6 +2,7 @@
 // runtime hashes, outbound message enum + attestation payload, and errors.
 
 import Foundation
+import ProviderAppAttest
 import Network
 #if canImport(os)
 import os
@@ -86,6 +87,8 @@ public enum PreContentDeadlineFailure: String, Error, LocalizedError, Sendable, 
 // MARK: - Event Types
 
 public enum CoordinatorEvent: Sendable {
+    /// Ordered behind earlier inference events so late arrivals are refused before the barrier completes.
+    case drainAck(String)
     case connected
     case disconnected
     /// `ciphertext` is the **decoded** NaCl-box ciphertext (nonce ‖ tag ‖ body),
@@ -103,13 +106,21 @@ public enum CoordinatorEvent: Sendable {
         cacheReceiptNonce: String?,
         cacheScope: String?,
         prefixCacheProtocol: Int?,
+        cacheReceiptBoundaryMode: String? = nil,
+        /// Coordinator-observed fleet-wide repeat demand (token count); nil
+        /// from an older coordinator. See `InferenceRequest.cacheRepeatedPrefixTokens`.
+        cacheRepeatedPrefixTokens: Int? = nil,
         toolSchemaMetadataProtocol: Int?,
         firstContentDeadline: FirstContentDeadline?,
-        receivedAt: ContinuousClock.Instant
+        receivedAt: ContinuousClock.Instant,
+        /// Profiler accumulator anchored at frame receipt (created
+        /// unconditionally, unlike the budget-derived deadline).
+        profile: RequestProfileBuilder
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
     case codeAttestationResumeChallenge(EncryptedPayload)
+    case appAttestShadow(AppAttestShadowPayload)
     case runtimeOutdated(mismatches: [RuntimeMismatch])
     /// Coordinator-driven preload. Provider should eagerly load the model
     /// (off-thread) and reply with a `loadModelStatus` outbound message
@@ -126,7 +137,8 @@ public enum CoordinatorEvent: Sendable {
     /// every change. Replaces the old push-driven migration ramp.
     case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry])
     /// Coordinator informs the provider of its current trust level and status.
-    case trustStatus(trustLevel: String, status: String, reason: String)
+    case trustStatus(trustLevel: String, status: String, reason: String,
+                     authorization: ProviderAuthorizationStatus? = nil)
 }
 
 
@@ -158,6 +170,10 @@ public struct CoordinatorClientConfig: Sendable {
     /// nil on headless/no-GUI boxes (no token) — those register un-attested.
     public let apnsDeviceToken: String?
     public let apnsEnvironment: String?
+    /// Idle-memory policy reported in every heartbeat (`idle_unload_mins`):
+    /// `[backend] idle_timeout_mins` — 0 keeps models resident, N unloads
+    /// after N idle minutes. nil omits the field (test/legacy clients).
+    public let idleUnloadMins: UInt64?
 
     public init(
         url: String,
@@ -176,7 +192,8 @@ public struct CoordinatorClientConfig: Sendable {
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         privateOnly: Bool = false,
         apnsDeviceToken: String? = nil,
-        apnsEnvironment: String? = nil
+        apnsEnvironment: String? = nil,
+        idleUnloadMins: UInt64? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -195,6 +212,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.privateOnly = privateOnly
         self.apnsDeviceToken = apnsDeviceToken
         self.apnsEnvironment = apnsEnvironment
+        self.idleUnloadMins = idleUnloadMins
     }
 }
 
@@ -218,21 +236,30 @@ public struct RuntimeHashes: Sendable {
 // MARK: - Outbound message type (provider -> coordinator)
 
 public enum OutboundMessage: Sendable {
+    case drainBarrier(String)
     case inferenceAccepted(requestId: String)
     case inferenceChunk(requestId: String, data: String, encryptedData: EncryptedPayload?)
+    /// `profile` rides the terminal as the live BUILDER, not the wire
+    /// struct: `SendHandle.send` stamps the flush barrier and the send
+    /// instant on it, and `CoordinatorClientCodec.providerMessage(for:)`
+    /// materializes `wireObject()` at encode time so those stamps (and the
+    /// outbound-queue latency in `total_us`) land in the object.
     case inferenceComplete(
         requestId: String,
         usage: UsageInfo,
         stopSequence: String?,
         seSignature: String?,
-        responseHash: String?
+        responseHash: String?,
+        profile: RequestProfileBuilder? = nil
     )
     case inferenceError(
         requestId: String,
-        failure: InferenceFailure
+        failure: InferenceFailure,
+        profile: RequestProfileBuilder? = nil
     )
     case attestationResponse(AttestationResponsePayload)
-    case codeAttestationResponse(nonce: String, signature: String)
+    case codeAttestationResponse(nonce: String, signature: String, onWritten: (@Sendable () -> Void)? = nil)
+    case appAttestShadow(AppAttestShadowPayload)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
     case prefetchModelStatus(
         modelId: String,
@@ -245,6 +272,8 @@ public enum OutboundMessage: Sendable {
     /// (e.g. a verified prefetch), carrying full `ModelInfo` including the
     /// computed weight hash so the coordinator can cross-check before routing.
     case modelsUpdate(models: [ModelInfo])
+    case modelsReplace(requestId: String, drainID: String, models: [ModelInfo], validateOnly: Bool)
+    case modelsReplaceReady(requestId: String, drainID: String, capacitySeq: UInt64)
     case prefixCacheLookup(
         requestId: String,
         cacheReceiptNonce: String,

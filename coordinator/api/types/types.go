@@ -9,6 +9,8 @@ package types
 import (
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/registry"
+
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -86,6 +88,20 @@ type RequestTimingDetails struct {
 	EncryptUs    int64 `json:"encrypt_us"`
 	DispatchUs   int64 `json:"dispatch_us"`
 	ProviderUs   int64 `json:"provider_us"`
+
+	// Additive system-profiler segments, omitted when the profiler is off or
+	// the stamp is unavailable; they decompose the same wall time without
+	// overlapping the legacy keys above.
+	PreHandlerUs   int64 `json:"pre_handler_us,omitempty"`   // middleware entry → handler entry (auth, rate limit, sealed decrypt)
+	PreflightUs    int64 `json:"preflight_us,omitempty"`     // admission preflight (capacity/TTFT checks)
+	RouteReserveUs int64 `json:"route_reserve_us,omitempty"` // attempt start → provider reserved (the scheduler only)
+	QueuePureUs    int64 `json:"queue_pure_us,omitempty"`    // enqueue → dequeue, nothing else
+	WriterUs       int64 `json:"writer_us,omitempty"`        // frame submitted → dequeued by the provider writer
+	SocketUs       int64 `json:"socket_us,omitempty"`        // dequeued → frame on the wire
+	ProviderAckUs  int64 `json:"provider_ack_us,omitempty"`  // frame on the wire → inference_accepted
+	// TimingAnomaly is set when a legacy segment computed negative (retried
+	// attempts sharing one RequestTiming); the segment is clamped to 0.
+	TimingAnomaly bool `json:"timing_anomaly,omitempty"`
 }
 
 // ChatCompletionMetadata is the opt-in consumer-safe provider, attestation,
@@ -95,6 +111,7 @@ type RequestTimingDetails struct {
 // Location is region/country GeoIP only — city, coordinates, lookup source,
 // and raw IPs are omitted. Device serials are never included.
 type ChatCompletionMetadata struct {
+	Verification           *registry.Verification  `json:"verification,omitempty"`
 	ProviderID             string                  `json:"provider_id,omitempty"`
 	ProviderAttested       bool                    `json:"provider_attested"`
 	ProviderTrustLevel     string                  `json:"provider_trust_level,omitempty"`
@@ -133,6 +150,7 @@ type ResponsesUsage struct {
 	InputTokensDetail  ResponsesUsageDetail `json:"input_tokens_details"`
 	OutputTokens       int                  `json:"output_tokens"`
 	OutputTokensDetail ResponsesUsageDetail `json:"output_tokens_details"`
+	TotalTokens        int                  `json:"total_tokens"`
 }
 
 // ResponsesIncompleteDetail is the incomplete_details block.

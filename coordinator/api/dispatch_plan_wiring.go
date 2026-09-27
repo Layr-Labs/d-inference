@@ -42,12 +42,10 @@ const capacityProbeWindow = 250 * time.Millisecond
 const dispatchPlanProbeFanout = 8
 
 // noteProviderDispatched counts one inference frame actually handed to a
-// provider. It is invoked from the write handoff callback — the same instant
-// Timing.DispatchedAt is stamped — for the primary, queued, plan-retry, and
-// speculative-backup sends alike. The deferred writer blocks the dispatching
-// goroutine until the frame is handed off, so the increment happens-before
-// every later read on the dispatch goroutine (the same publication discipline
-// Timing.DispatchedAt relies on).
+// provider. It is invoked only after the writer confirms final authorization
+// and socket handoff, for primary, queued, plan-retry and speculative-backup
+// sends alike. The request owner publishes it before any subsequent outcome or
+// exhaustion accounting; merely preparing a frame does not count as dispatch.
 func (d *dispatchState) noteProviderDispatched() {
 	d.providerDispatches++
 }
@@ -56,8 +54,10 @@ func (d *dispatchState) noteProviderDispatched() {
 // messages and terminal logs report: actual provider dispatches when any
 // frame reached a provider (plan Phase 3: "providerDispatches counts actual
 // inference sends"), else the legacy loop count for requests that never
-// dispatched (selection-only failures keep their historical "after 1
-// attempt(s)" framing). Route rows keep the raw loop index unchanged.
+// dispatched (selection/preparation-only failures, including authorization
+// rejection, retain their historical "after N attempt(s)" framing). This
+// fallback is an attempted-loop count, not a claim of provider delivery. Route
+// rows keep the raw loop index unchanged.
 func (d *dispatchState) exhaustionAttemptCount() int {
 	if d.providerDispatches > 0 {
 		return d.providerDispatches
@@ -68,11 +68,16 @@ func (d *dispatchState) exhaustionAttemptCount() int {
 // dispatchProviderWith runs the single prepare/encrypt/write funnel with a
 // caller-chosen reserver, forwarding the request-shape inputs retained on
 // dispatchState. timing is caller-supplied because the speculative backup
-// deliberately shares only ReceivedAt with the primary's clock.
+// deliberately shares only ReceivedAt with the primary's clock. fullScan
+// declares whether the reserver performs an O(fleet) walk (full scan / plan
+// refresh) and must therefore take a routing-scan semaphore slot; a
+// retained-plan step passes false and bypasses the gate.
 func (d *dispatchState) dispatchProviderWith(
 	reserve dispatchReserver,
+	fullScan bool,
 	timing *registry.RequestTiming,
 	exclude map[string]struct{},
+	backupOf string,
 	recordRoute routeDecisionRecorder,
 ) (*registry.Provider, *registry.PendingRequest, registry.RoutingDecision, *registry.DispatchPlan, string, int) {
 	return d.s.dispatchWithReserver(
@@ -80,7 +85,7 @@ func (d *dispatchState) dispatchProviderWith(
 		d.reservedMicroUSD, d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens,
 		d.tokenAdmission, d.requiresVision, d.traits(), d.allowedProviderSerials,
 		d.isResponsesAPI, d.policy, timing, d.serviceReservation, d.cachePlan,
-		exclude, d.attempt, recordRoute, d.noteProviderDispatched, reserve,
+		exclude, d.attempt, d.profile, backupOf, recordRoute, d.noteProviderDispatched, fullScan, reserve,
 	)
 }
 
@@ -98,6 +103,7 @@ func (d *dispatchState) dispatchProviderWith(
 func (d *dispatchState) dispatchFromPlanMachinery(
 	timing *registry.RequestTiming,
 	exclude map[string]struct{},
+	backupOf string,
 	recordRoute routeDecisionRecorder,
 ) (provider *registry.Provider, pr *registry.PendingRequest, decision registry.RoutingDecision, lastErr string, lastErrCode int, tried bool) {
 	plan := d.plan
@@ -113,7 +119,8 @@ func (d *dispatchState) dispatchFromPlanMachinery(
 			reserved = p != nil
 			return p, dec, nil
 		},
-		timing, exclude, recordRoute,
+		false, // retained-plan step: bounded revalidation, no fleet scan
+		timing, exclude, backupOf, recordRoute,
 	)
 	if reserved {
 		return provider, pr, decision, lastErr, lastErrCode, true
@@ -135,7 +142,8 @@ func (d *dispatchState) dispatchFromPlanMachinery(
 			reserved = p != nil
 			return p, dec, freshPlan
 		},
-		timing, exclude, recordRoute,
+		true, // the single plan refresh is itself a full fleet re-scan
+		timing, exclude, backupOf, recordRoute,
 	)
 	if fresh != nil {
 		// The refreshed plan (born with its refresh consumed) replaces the
@@ -164,6 +172,12 @@ func (d *dispatchState) maybeProbePlanCandidates() {
 	}
 	receivedAt := timingReceivedAt(d.timing)
 	remaining, ok := d.firstTokenRemaining()
+	if d.deadline <= 0 {
+		// Exemption removes the SLA, not capacity confirmation. Quotes use
+		// a finite advisory planning horizon only; it never arms a request
+		// timeout, and the collector skips SLA hedge advances.
+		remaining, ok = inferenceTimeout, true
+	}
 	if receivedAt.IsZero() || !ok || remaining <= 0 {
 		// No request-absolute clock (legacy timing, unit fixtures): a refined
 		// hedge instant could not be applied anyway — waitFirstChunk's re-arm
@@ -215,6 +229,9 @@ func collectCapacityQuotes(
 			confidences[outcome.ProviderID] = quoteHedgeConfidence(outcome.Quote.Confidence)
 		}
 	}
+	if deadline <= 0 {
+		return
+	} // no SLA expiry against which to advance a hedge
 	providerID, ttftP90, ok := plan.BestConfirmedBackup()
 	if !ok {
 		return

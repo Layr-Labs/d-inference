@@ -1,0 +1,162 @@
+{
+  "arrivalDefinition": "Mixed arrivals have unequal prompt lengths. Their aggregate is separate from the common-window steady decode headline.",
+  "cells": [
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": 0.0054890814103829445,
+        "maximum": 63.4723005286245,
+        "median": 63.22689376937707,
+        "medianAbsoluteDeviation": 0.24540675924743027,
+        "minimum": 62.98148701012964
+      },
+      "aggregateDecodeTPS": 63.22689376937707,
+      "batch": 1,
+      "batchScalingEfficiency": 1.0,
+      "commonWindowInterTokenP50Ms": 15.723958500002482,
+      "commonWindowInterTokenP95Ms": 16.506968500003495,
+      "commonWindowMinimumRowTokens": 128,
+      "context": 32768,
+      "endToEndTPS": 2.598009171707888,
+      "fairShareDecodeTPS": 63.22689376937707,
+      "interTokenP50Ms": 15.723958500002482,
+      "interTokenP95Ms": 16.506968500003495,
+      "iterations": 2,
+      "legacyWholeRowAggregateTPS": 63.11071859409289,
+      "name": "decode-32768-b1",
+      "peakMemoryBytes": 16750241701,
+      "perRequestDecodeTPS": 63.22689376937707,
+      "perRowCommonWindowTPS": [
+        63.22689376937707
+      ],
+      "perRowWholeDecodeTPS": [
+        63.22689376937707
+      ],
+      "phase": "decode",
+      "rawSHA256": "15b29551b3903b8a23d78000d08ac6335578d7071ab087aafa1b3e8aeeb927de",
+      "scalingVsB1": 1.0,
+      "ttftMedianMs": 47626.17089549999
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": 0.08691761533059002,
+        "maximum": 90.76192508879427,
+        "median": 85.50668143740376,
+        "medianAbsoluteDeviation": 5.255243651390508,
+        "minimum": 80.25143778601326
+      },
+      "aggregateDecodeTPS": 85.50668143740376,
+      "batch": 1,
+      "batchScalingEfficiency": 1.0,
+      "commonWindowInterTokenP50Ms": 11.149604000000181,
+      "commonWindowInterTokenP95Ms": 13.82298949999904,
+      "commonWindowMinimumRowTokens": 128,
+      "context": 8192,
+      "endToEndTPS": 13.159338785374079,
+      "fairShareDecodeTPS": 85.50668143740376,
+      "interTokenP50Ms": 11.149604000000181,
+      "interTokenP95Ms": 13.82298949999904,
+      "iterations": 2,
+      "legacyWholeRowAggregateTPS": 85.3412167211471,
+      "name": "decode-8192-b1",
+      "peakMemoryBytes": 15613489253,
+      "perRequestDecodeTPS": 85.50668143740376,
+      "perRowCommonWindowTPS": [
+        85.50668143740376
+      ],
+      "perRowWholeDecodeTPS": [
+        85.50668143740376
+      ],
+      "phase": "decode",
+      "rawSHA256": "4439e06096b53cd9b8a8d44328a8059f40c9b6ce07c1a11a454664a733db9430",
+      "scalingVsB1": 1.0,
+      "ttftMedianMs": 8321.896853999999
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": 0.1357140800558628,
+        "maximum": 111.64113996673905,
+        "median": 101.86566774970728,
+        "medianAbsoluteDeviation": 9.775472217031755,
+        "minimum": 92.09019553267554
+      },
+      "aggregateDecodeTPS": 101.86566774970728,
+      "batch": 2,
+      "batchScalingEfficiency": 0.5956591112957608,
+      "commonWindowInterTokenP50Ms": 18.66400000000067,
+      "commonWindowInterTokenP95Ms": 28.04020820000223,
+      "commonWindowMinimumRowTokens": 111,
+      "context": 8192,
+      "endToEndTPS": 10.373646801298838,
+      "fairShareDecodeTPS": 50.93283387485364,
+      "interTokenP50Ms": 18.774583500002336,
+      "interTokenP95Ms": 663.0997312499992,
+      "iterations": 2,
+      "legacyWholeRowAggregateTPS": 18.61678365212815,
+      "name": "decode-8192-b2",
+      "peakMemoryBytes": 15613489157,
+      "perRequestDecodeTPS": 50.93283387485364,
+      "perRowCommonWindowTPS": [
+        51.16123223303685,
+        50.70443551667045
+      ],
+      "perRowWholeDecodeTPS": [
+        9.312110510352696,
+        52.3578075287526
+      ],
+      "phase": "decode",
+      "rawSHA256": "ab21533e17ff64cc4da7c1dda156306bd80d673795df5aace07eb423ff3c3159",
+      "scalingVsB1": 1.1913182225915215,
+      "ttftMedianMs": 16341.653771000001
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": 0.11366246253582173,
+        "maximum": 129.94807924493745,
+        "median": 120.28092140753358,
+        "medianAbsoluteDeviation": 9.667157837403863,
+        "minimum": 110.61376357012972
+      },
+      "aggregateDecodeTPS": 120.28092140753358,
+      "batch": 4,
+      "batchScalingEfficiency": 0.3516711191030924,
+      "commonWindowInterTokenP50Ms": 32.75881250000384,
+      "commonWindowInterTokenP95Ms": 39.97978294999994,
+      "commonWindowMinimumRowTokens": 81,
+      "context": 8192,
+      "endToEndTPS": 10.897968533843503,
+      "fairShareDecodeTPS": 30.070230351883396,
+      "interTokenP50Ms": 33.216458499999135,
+      "interTokenP95Ms": 723.8159142999997,
+      "iterations": 2,
+      "legacyWholeRowAggregateTPS": 14.424989846013215,
+      "name": "decode-8192-b4",
+      "peakMemoryBytes": 15613489221,
+      "perRequestDecodeTPS": 30.070230351883396,
+      "perRowCommonWindowTPS": [
+        30.347801708977705,
+        29.97770656618529,
+        29.97770656618529,
+        29.97770656618529
+      ],
+      "perRowWholeDecodeTPS": [
+        3.607213552308311,
+        5.250334330925508,
+        9.236815274634907,
+        34.5992347621633
+      ],
+      "phase": "decode",
+      "rawSHA256": "92d4f9b3cb20d6a49b46b06704b3b0ab0686ced6bdd1c4bae7263855081e3f4d",
+      "scalingVsB1": 1.4066844764123696,
+      "ttftMedianMs": 27596.3770625
+    }
+  ],
+  "failures": [],
+  "mode": "measurement",
+  "perRequestDefinition": "fairShareDecodeTPS and the compatibility alias perRequestDecodeTPS equal aggregate/B. Actual row rates are in perRowCommonWindowTPS and perRowWholeDecodeTPS. interTokenP* includes all post-first-token intervals, potentially prefill interference; commonWindowInterTokenP* includes only intervals fully inside the shared window.",
+  "prefillDefinition": "Prompt tokens divided by production request TTFT, including first token and scheduler overhead; not an isolated GPU prefill timer.",
+  "provenanceID": "0fdca19e89a3fdf87c42de35b9dc310c4a0d3718a1f51291b1627cb33117c5fd",
+  "schemaVersion": 1,
+  "tailCaveat": "Inter-token percentiles pool correlated token intervals; five repetitions do not establish request-tail latency.",
+  "timingDefinition": "Decode headline counts events in the host-observed common window from the latest first token to the earliest last token. It establishes simultaneous row progress, not scheduler batch occupancy. TTFT includes generated reasoning tokens; it is not time to visible answer content.",
+  "warmupDefinition": "Full-context prefill and per-batch decode warmups run inside each fresh cell process before measured repetitions. Exact shape and start/completion markers are retained in cells/*/stderr.raw; warmup timings do not enter summaries."
+}

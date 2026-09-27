@@ -2,7 +2,7 @@
 ///
 /// v0.7.5 ONE-ENGINE: every model slot serves through a v2 bridge — there
 /// is no selection gate and no legacy fallback. At model-load time
-/// `ensureModelLoaded` calls `resliceAndBuildEngineV2Slot`, which:
+/// `ensureModelLoaded` calls `resliceAndBuildEngineV2Bundle`, which:
 ///
 ///   1. snapshots every existing slot's CURRENT engine KV grant,
 ///   2. computes fair-share grants for existing + newcomer against the
@@ -39,22 +39,31 @@ import os
 /// production access is ProviderLoop-actor confined.
 final class EngineV2NewcomerBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var _container: MLXLMCommon.ModelContainer?
+    private var _container: ProviderModelContainer?
 
     init(_ container: MLXLMCommon.ModelContainer) {
-        self._container = container
+        self._container = .autoregressive(container)
+    }
+
+    init(_ container: ProviderModelContainer) { self._container = container }
+
+    var modelContainer: ProviderModelContainer? { lock.withLock { _container } }
+
+    func borrowModel() throws -> ProviderModelContainer {
+        guard let value = modelContainer else { throw InferenceError.noModelLoaded }
+        return value
     }
 
     /// The container, or nil after `release()`.
     var container: MLXLMCommon.ModelContainer? {
-        lock.withLock { _container }
+        lock.withLock { _container?.autoregressive }
     }
 
     /// Transient access for a single call. NEVER bind the result to a
     /// long-lived local — that would keep the weights alive past
     /// `release()` and defeat the unwind ordering.
     func borrow() throws -> MLXLMCommon.ModelContainer {
-        guard let container = (lock.withLock { _container }) else {
+        guard let container = (lock.withLock { _container?.autoregressive }) else {
             // Only reachable through a wiring bug (use-after-release);
             // maps to 500 via the existing InferenceError handling.
             throw InferenceError.noModelLoaded
@@ -67,6 +76,13 @@ final class EngineV2NewcomerBox: @unchecked Sendable {
     /// returns their buffers before anything re-reads live residency.
     func release() {
         lock.withLock { _container = nil }
+    }
+
+    /// Failed-load/unwind only. A live installed engine must drain before
+    /// calling this; successful ownership transfer uses ordinary deinit.
+    func releaseAfterExternalResources() async {
+        await modelContainer?.releaseExternalResources()
+        release()
     }
 }
 
@@ -103,6 +119,11 @@ extension ProviderLoop {
         /// Machine-memory override for the re-slice fleet budget (nil ⇒
         /// real physical memory).
         let physicalMemoryBytes: UInt64?
+        /// Deterministic load-admission sample for eviction integration tests.
+        let availableMemoryGb: Double?
+        /// Explicit post-build memory sample for scripted recovery tests.
+        /// Nil preserves the production probe of current MLX/OS memory.
+        let measuredKVHeadroomBytes: UInt64?
         /// Backend kind the hook-built bridge reports per model (default
         /// `.contiguous`). A `.paged` entry makes the bridge apply the
         /// production paged semantics — resize clamps to the scripted
@@ -124,6 +145,8 @@ extension ProviderLoop {
             extraEOSTokens: [String] = [],
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             physicalMemoryBytes: UInt64? = nil,
+            availableMemoryGb: Double? = nil,
+            measuredKVHeadroomBytes: UInt64? = nil,
             kvBackendKindByModel: [String: EngineV2KVBackendKind] = [:],
             assistantLoader: (any ProviderMTPAssistantLoading)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
@@ -133,6 +156,8 @@ extension ProviderLoop {
             self.extraEOSTokens = extraEOSTokens
             self.emitTelemetry = emitTelemetry
             self.physicalMemoryBytes = physicalMemoryBytes
+            self.availableMemoryGb = availableMemoryGb
+            self.measuredKVHeadroomBytes = measuredKVHeadroomBytes
             self.kvBackendKindByModel = kvBackendKindByModel
             self.assistantLoader = assistantLoader
             self.makeEngine = makeEngine
@@ -154,9 +179,15 @@ extension ProviderLoop {
     /// cap minus Σ resident weights (ALL slots, including any mid-unload —
     /// their weights are still resident — plus the newcomer's), minus the
     /// activation reserve, honoring the operator `memory_reserve_gb`.
-    private func fleetKVBudgetBytes(extraWeightBytes: Int) -> UInt64 {
-        var totalWeights = UInt64(max(0, extraWeightBytes))
-        for (_, slot) in modelSlots {
+    /// `activationReserveBytes` overrides the live serving-set reserve for a
+    /// PROSPECTIVE set (an advertise-only raise preflight); nil reads live.
+    private func fleetKVBudgetBytes(
+        extraWeightBytes: Int,
+        activationReserveBytes: UInt64? = nil,
+        excludingModelIDs: Set<String> = []
+    ) -> UInt64 {
+        var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
+        for (id, slot) in modelSlots where !excludingModelIDs.contains(id) {
             let (sum, overflow) = totalWeights
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
@@ -166,8 +197,36 @@ extension ProviderLoop {
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
             residentWeightBytes: totalWeights,
+            // The serving set's resolved reserve, so engine grants carve the
+            // same activation floor the load gate and runtime KV gate hold.
+            activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
             configReserveBytes: Self.memoryReserveBytes(
                 forGiB: loopConfig.config.provider.memoryReserveGB))
+    }
+
+    /// Preflight for an advertise-only reserve raise (no newcomer slot —
+    /// a verified prefetch of an unmeasured model joining a measured set):
+    /// true iff every resident slot's re-sliced grant under `reserveBytes`
+    /// still clears the serviceability floor. The load path refuses a
+    /// newcomer that would strand a co-resident below the floor; a raise
+    /// without a newcomer has the same effect on survivors and must be
+    /// refused the same way rather than published as a serving set that
+    /// disables its own resident models. CALLER HOLDS the re-slice gate
+    /// (as the load path does across its own preflight-through-install),
+    /// so the slot set cannot move between this check and the re-slice
+    /// that follows a passed preflight.
+    internal func reserveRaiseKeepsSurvivorsServiceable(
+        reserveBytes: UInt64, excludingModelIDs: Set<String> = []
+    ) async -> Bool {
+        let survivors = await existingSlotGrants(excludingModelId: "", excludingModelIDs: excludingModelIDs)
+        guard !survivors.isEmpty else { return true }
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: survivors.map(\.slot),
+            newcomer: nil,
+            fleetKVBudgetBytes: fleetKVBudgetBytes(
+                extraWeightBytes: 0, activationReserveBytes: reserveBytes,
+                excludingModelIDs: excludingModelIDs))
+        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, fixedCarveBytes: [:])
     }
 
     /// Existing v2 slots eligible for re-slicing: live (not mid-unload)
@@ -178,10 +237,13 @@ extension ProviderLoop {
     /// load. Paged physical claims are tracked separately by
     /// `slotKVBytesClaim()` for fleet accounting and never shrink when this
     /// logical target is re-sliced.
-    private func existingSlotGrants(excludingModelId: String) async -> [ExistingSlotGrant] {
+    private func existingSlotGrants(
+        excludingModelId: String, excludingModelIDs: Set<String> = []
+    ) async -> [ExistingSlotGrant] {
         var existing: [ExistingSlotGrant] = []
         for (slotModelId, slot) in modelSlots
-        where slotModelId != excludingModelId && !modelsUnloading.contains(slotModelId) {
+        where slotModelId != excludingModelId && !modelsUnloading.contains(slotModelId)
+            && !excludingModelIDs.contains(slotModelId) {
             let currentGrant = await slot.engineV2.resliceAdmissionBytesClaim()
             existing.append(
                 ExistingSlotGrant(
@@ -273,14 +335,14 @@ extension ProviderLoop {
         specDecPreparation: SpecDecPreparation,
         cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2SlotBuild {
-        var prepared: EngineV2PreparedModel
+        var prepared: EngineV2ServingPreparation
         do {
             let slotLogger = logger
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory,
-                container: newcomerBox.borrow(),
+                container: newcomerBox.borrowModel(),
                 specDecPreparation: specDecPreparation,
                 assistantLoader: engineV2SlotHooks?.assistantLoader
                     ?? ProductionProviderMTPAssistantLoader(),
@@ -288,7 +350,7 @@ extension ProviderLoop {
                 logInfo: { slotLogger.info($0) },
                 logWarning: { slotLogger.warning($0) })
         } catch {
-            newcomerBox.release()
+            await newcomerBox.releaseAfterExternalResources()
             MLX.Memory.clearCache()
             throw error
         }
@@ -299,8 +361,9 @@ extension ProviderLoop {
         // and engine build. The re-slice floor fallback below already does
         // exactly this for its own fail-open.
         if prepared.assistant == nil, specDecPreparation.artifact != nil {
-            await kvBudget.replacePendingLoadReservation(
-                requestID: "pending-load:\(modelId)", bytes: 0)
+            if let pendingLoad = pendingLoadLeases[modelId] {
+                await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
+            }
         }
         var sizing = targetSizing.replacingAuxiliaryWeightBytes(
             prepared.assistantBytes)
@@ -329,8 +392,9 @@ extension ProviderLoop {
             prepared.assistant?.release()
             prepared = prepared.fallingBack(.assistantResliceFloor)
             sizing = targetSizing.replacingAuxiliaryWeightBytes(0)
-            await kvBudget.replacePendingLoadReservation(
-                requestID: "pending-load:\(modelId)", bytes: 0)
+            if let pendingLoad = pendingLoadLeases[modelId] {
+                await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
+            }
             MLX.Memory.clearCache()
             fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
             targets = EngineV2KVSizing.resliceGrants(
@@ -356,7 +420,7 @@ extension ProviderLoop {
             // newcomer's weights promptly so live residency reflects the
             // refusal before the caller's error handling runs.
             prepared.assistant?.release()
-            newcomerBox.release()
+            await newcomerBox.releaseAfterExternalResources()
             MLX.Memory.clearCache()
             throw InferenceError.modelLoadFailed(message)
         }
@@ -386,7 +450,7 @@ extension ProviderLoop {
                 modelType: modelType,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory,
-                container: newcomerBox.borrow(),
+                container: newcomerBox.borrowModel(),
                 tokenizer: tokenizer,
                 sizing: sizing,
                 kvBytesCapacity: targets[modelId] ?? 0,
@@ -395,7 +459,7 @@ extension ProviderLoop {
                 cacheEligibleWeightHash: cacheEligibleWeightHash)
         } catch {
             prepared.assistant?.release()
-            newcomerBox.release()
+            await newcomerBox.releaseAfterExternalResources()
             MLX.Memory.clearCache()
             for entry in existing {
                 await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
@@ -427,7 +491,7 @@ extension ProviderLoop {
         await engineV2Runtime.unregister(modelId: modelId)
         await bundle.bridge.shutdown()
         bundle.releaseAssistant()
-        newcomer.release()
+        await newcomer.releaseAfterExternalResources()
         MLX.Memory.clearCache()
         await resliceGrowSurvivorsLocked()
     }
@@ -494,33 +558,6 @@ extension ProviderLoop {
     /// On success the bridge is registered with `engineV2Runtime` BEFORE the
     /// caller installs the slot, so a request routed the instant the slot
     /// appears already has working capacity/cancel fan-out.
-    internal func makeEngineV2BridgeForSlot(
-        modelId: String,
-        modelType: String?,
-        isVLM: Bool = false,
-        modelDirectory: URL? = nil,
-        container: ModelContainer,
-        tokenizer: TokenizerHandle,
-        sizing: SlotSizingSnapshot,
-        kvBytesCapacity: Int,
-        cacheEligibleWeightHash: String? = nil
-    ) async throws -> EngineV2Bridge {
-        try await makeEngineV2BundleForSlot(
-            modelId: modelId,
-            modelType: modelType,
-            isVLM: isVLM,
-            modelDirectory: modelDirectory,
-            container: container,
-            tokenizer: tokenizer,
-            sizing: sizing,
-            kvBytesCapacity: kvBytesCapacity,
-            specDecPreparation: SpecDecPreparation(
-                artifact: nil,
-                status: .disabled(.configDisabled, configured: false)),
-            preparedModel: nil
-        ).bridge
-    }
-
     internal func makeEngineV2BundleForSlot(
         modelId: String,
         modelType: String?,
@@ -532,7 +569,30 @@ extension ProviderLoop {
         kvBytesCapacity: Int,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel?,
-        cacheEligibleWeightHash: String? = nil
+        cacheEligibleWeightHash: String? = nil,
+        registerInRuntime: Bool = true
+    ) async throws -> ProviderEngineBundle {
+        try await makeEngineV2BundleForSlot(
+            modelId: modelId, modelType: modelType, isVLM: isVLM, modelDirectory: modelDirectory,
+            container: .autoregressive(container), tokenizer: tokenizer, sizing: sizing,
+            kvBytesCapacity: kvBytesCapacity, specDecPreparation: specDecPreparation,
+            preparedModel: preparedModel.map(EngineV2ServingPreparation.autoregressive),
+            cacheEligibleWeightHash: cacheEligibleWeightHash, registerInRuntime: registerInRuntime)
+    }
+
+    internal func makeEngineV2BundleForSlot(
+        modelId: String,
+        modelType: String?,
+        isVLM: Bool = false,
+        modelDirectory: URL? = nil,
+        container: ProviderModelContainer,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot,
+        kvBytesCapacity: Int,
+        specDecPreparation: SpecDecPreparation,
+        preparedModel: EngineV2ServingPreparation?,
+        cacheEligibleWeightHash: String? = nil,
+        registerInRuntime: Bool = true
     ) async throws -> ProviderEngineBundle {
         let maxConcurrent = engineV2MaxConcurrent(forModel: modelId)
 
@@ -572,7 +632,7 @@ extension ProviderLoop {
                         kvBackendFallbackReason: nil)
                 })
             let status = preparedModel?.mtpStatus ?? specDecPreparation.status
-            await bridge.configureMTPStatus(status)
+            await bridge.configureMTPStatus(status, metricsInterval: registerInRuntime ? .seconds(60) : .zero)
             bundle = ProviderEngineBundle(
                 bridge: bridge,
                 assistant: preparedModel?.assistant,
@@ -592,6 +652,10 @@ extension ProviderLoop {
                 kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: maxConcurrent,
                 kvBudget: kvBudget,
+                // The serving-set resolved reserve, so the paged capacity
+                // decision inside the factory measures headroom against the
+                // same reserve every other gate on this load path carves.
+                activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 prefillDeadlineMode:
@@ -601,6 +665,7 @@ extension ProviderLoop {
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: preparedModel,
+                startServingTelemetry: registerInRuntime,
                 logInfo: { slotLogger.info($0) },
                 logWarning: { slotLogger.warning($0) })
         }
@@ -611,7 +676,9 @@ extension ProviderLoop {
         // (Prefix-cache construction — RAM carve AND the SSD offload tier —
         // budget bookkeeping, stats loggers, and the cache-state log line
         // all live inside the shared slot factory.)
-        await engineV2Runtime.register(modelId: modelId, bridge: bridge)
+        if registerInRuntime {
+            await engineV2Runtime.register(modelId: modelId, bridge: bridge)
+        }
         if isVLM {
             logger.info(
                 "engine_v2: serving \(modelId) via ContinuousBatchingV2 "

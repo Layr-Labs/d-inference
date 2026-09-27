@@ -1,0 +1,90 @@
+{
+  "expanded_argument_rows": [
+    [
+      "bfloat16",
+      "history",
+      "4094",
+      "qwen36LongDecodeUsesIdenticalStoredValues"
+    ],
+    [
+      "bfloat16",
+      "history",
+      "5523",
+      "qwen36LongDecodeUsesIdenticalStoredValues"
+    ],
+    [
+      "bfloat16",
+      "history",
+      "5585",
+      "qwen36LongDecodeUsesIdenticalStoredValues"
+    ],
+    [
+      "float32",
+      "history",
+      "4094",
+      "qwen36LongDecodeUsesIdenticalStoredValues"
+    ],
+    [
+      "float32",
+      "history",
+      "5523",
+      "qwen36LongDecodeUsesIdenticalStoredValues"
+    ],
+    [
+      "float32",
+      "history",
+      "5585",
+      "qwen36LongDecodeUsesIdenticalStoredValues"
+    ],
+    [
+      "bfloat16",
+      "salient",
+      "4095",
+      "qwen36LongOracleRejectsBoundaryAndHeadFaults"
+    ],
+    [
+      "bfloat16",
+      "salient",
+      "5522",
+      "qwen36LongOracleRejectsBoundaryAndHeadFaults"
+    ],
+    [
+      "bfloat16",
+      "salient",
+      "5523",
+      "qwen36LongOracleRejectsBoundaryAndHeadFaults"
+    ],
+    [
+      "float32",
+      "salient",
+      "4095",
+      "qwen36LongOracleRejectsBoundaryAndHeadFaults"
+    ],
+    [
+      "float32",
+      "salient",
+      "5522",
+      "qwen36LongOracleRejectsBoundaryAndHeadFaults"
+    ],
+    [
+      "float32",
+      "salient",
+      "5523",
+      "qwen36LongOracleRejectsBoundaryAndHeadFaults"
+    ]
+  ],
+  "expanded_cases": 13,
+  "functions": {
+    "qwen36LongDecodeUsesIdenticalStoredValues": 6,
+    "qwen36LongOracleRejectsBoundaryAndHeadFaults": 6,
+    "qwen36WiderQueryDiagnosticKeepsBothReferences": 1
+  },
+  "log": {
+    "bytes": 11392,
+    "mode": 420,
+    "sha256": "a20184c47404990366db53c4549dbbc2cb00d6270a29fad71a44cc43aa1edd86"
+  },
+  "real_model_run": false,
+  "state": "EXISTING_13_D256_CASES_PASSED",
+  "tolerances_unchanged": true
+}

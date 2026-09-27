@@ -1,0 +1,101 @@
+{
+  "backend_passed": true,
+  "cache_arm_rows": [
+    {
+      "cache_outcome": "miss",
+      "completion_tokens": 74,
+      "id": "long-first-b0",
+      "matched_tokens": 0,
+      "prefill_chunk_tokens_max": 4096,
+      "prefill_chunks": 2,
+      "same_id_output_tokens_equal": true,
+      "saved_tokens": 0,
+      "ssd_stage_disposition": "miss_absent",
+      "ssd_stage_ms": 0.136333,
+      "ttft_s": 6.798754208
+    },
+    {
+      "cache_outcome": "miss",
+      "completion_tokens": 74,
+      "id": "long-first-b1",
+      "matched_tokens": 0,
+      "prefill_chunk_tokens_max": 512,
+      "prefill_chunks": 11,
+      "same_id_output_tokens_equal": true,
+      "saved_tokens": 0,
+      "ssd_stage_disposition": "miss_absent",
+      "ssd_stage_ms": 0.127,
+      "ttft_s": 13.470540583
+    },
+    {
+      "cache_outcome": "miss",
+      "completion_tokens": 74,
+      "id": "long-repeat-b0",
+      "matched_tokens": 0,
+      "prefill_chunk_tokens_max": 4096,
+      "prefill_chunks": 2,
+      "same_id_output_tokens_equal": true,
+      "saved_tokens": 0,
+      "ssd_stage_disposition": "skipped_policy",
+      "ssd_stage_ms": 170.644792,
+      "ttft_s": 7.350386834
+    },
+    {
+      "cache_outcome": "hit",
+      "completion_tokens": 74,
+      "id": "long-repeat-b1",
+      "matched_tokens": 5120,
+      "prefill_chunk_tokens_max": 403,
+      "prefill_chunks": 1,
+      "same_id_output_tokens_equal": true,
+      "saved_tokens": 5120,
+      "ssd_stage_disposition": "staged",
+      "ssd_stage_ms": 173.702292,
+      "ttft_s": 7.350376792
+    }
+  ],
+  "cache_errors": [
+    {
+      "id": "long-repeat-b0",
+      "missing_expected_long_prefix_hit": true
+    }
+  ],
+  "cache_passed": false,
+  "excluded_cache_payloads": 7,
+  "forward_shape_errors": {
+    "contiguous-cache-off": [],
+    "paged-cache-off": [],
+    "paged-cache-on": []
+  },
+  "full_archive_sha256": "e927b49bc1397dc2939a596796f271d66b60fedc0db4d213fe9f87d01115ef30",
+  "included_files": 140,
+  "interpretation": "The unchanged cache gate fails for missing authenticated restore on repeat b0. Same-ID measured outputs match; timestamp/read interaction is a source hypothesis, not established by these reports alone.",
+  "model_aggregate": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+  "report_errors": {
+    "contiguous-cache-off": [],
+    "paged-cache-off": [],
+    "paged-cache-on": []
+  },
+  "safe_capsule_sha256": "0d8c44483aed18558d724689a5922dd23f26adabac5ef65d50bd3cc007302774",
+  "source_parent": "56fa3950160bb9e58d6702e9b751f2b0747ae3de",
+  "terminal": {
+    "accepted": false,
+    "auto_http_validated": false,
+    "external_caller_control": {
+      "alive": false,
+      "last_ping_monotonic": 407.63574825,
+      "last_ping_unix": 1788710998.237256,
+      "lease_seconds": 30,
+      "reason": "supervision finished",
+      "received_pings": 202,
+      "requires_external_pings": true
+    },
+    "failure": null,
+    "gpu_ready": false,
+    "matrix_expanded": false,
+    "missing_post_audits": [],
+    "no_automatic_rerun": true,
+    "production_default_validated": false,
+    "supervisor_exit_code": 1
+  }
+}

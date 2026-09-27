@@ -1,0 +1,3755 @@
+{
+  "schemaVersion": 1,
+  "description": "Lossless structured content transcribed from the published Darkbloom legal pages. Concatenating each inline array reproduces its exact visible text.",
+  "documents": {
+    "terms": {
+      "source": {
+        "url": "https://www.darkbloom.dev/terms.html"
+      },
+      "slug": "terms",
+      "title": "Terms of Service",
+      "anchor": "terms-of-service",
+      "updatedLabel": "Updated: August 28, 2026",
+      "leads": [
+        {
+          "type": "paragraph",
+          "anchor": "terms-lead-1",
+          "text": "These Terms of Service (\"Terms\") are a legal agreement between you and Eigen Labs, Inc., operating the Darkbloom platform (\"Eigen Labs,\" \"Darkbloom,\" \"we,\" \"us,\" or \"our\") governing your access to and use of Darkbloom's websites, console, APIs, software, provider applications, downloads, hosted services, and related products and features (collectively, the \"Services\").",
+          "inline": [
+            {
+              "type": "text",
+              "text": "These Terms of Service (\"Terms\") are a legal agreement between you and Eigen Labs, Inc., operating the Darkbloom platform (\"Eigen Labs,\" \"Darkbloom,\" \"we,\" \"us,\" or \"our\") governing your access to and use of Darkbloom's websites, console, APIs, software, provider applications, downloads, hosted services, and related products and features (collectively, the \"Services\")."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "anchor": "terms-lead-2",
+          "text": "Standalone Agreement. These Terms are a standalone agreement between you and Eigen Labs, Inc., operating the Darkbloom platform. They are separate from and do not incorporate the Eigen Labs Terms of Service governing EigenLayer, EigenCloud, EigenDA, EigenCompute, or other Eigen Labs products. Your use of those products is governed solely by their respective terms of service. By accessing or using the Services, clicking to accept these Terms, creating an account, generating an API key, installing provider software, or otherwise using the Services, you agree to these Terms. If you are using the Services on behalf of a company or other entity, you represent that you have authority to bind that entity, and \"you\" includes that entity. If you do not agree to these Terms, do not use the Services.",
+          "inline": [
+            {
+              "type": "strong",
+              "text": "Standalone Agreement."
+            },
+            {
+              "type": "text",
+              "text": " These Terms are a standalone agreement between you and Eigen Labs, Inc., operating the Darkbloom platform. They are separate from and do not incorporate the Eigen Labs Terms of Service governing EigenLayer, EigenCloud, EigenDA, EigenCompute, or other Eigen Labs products. Your use of those products is governed solely by their respective terms of service. By accessing or using the Services, clicking to accept these Terms, creating an account, generating an API key, installing provider software, or otherwise using the Services, you agree to these Terms. If you are using the Services on behalf of a company or other entity, you represent that you have authority to bind that entity, and \"you\" includes that entity. If you do not agree to these Terms, do not use the Services."
+            }
+          ]
+        }
+      ],
+      "sections": [
+        {
+          "number": "1",
+          "title": "Eligibility",
+          "heading": "1. Eligibility",
+          "anchor": "terms-section-01-eligibility",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-01-eligibility-paragraph-1",
+              "text": "You may use the Services only if:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "You may use the Services only if:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-01-eligibility-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-01-eligibility-list-1-item-1",
+                  "text": "you are at least 18 years old;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you are at least 18 years old;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-01-eligibility-list-1-item-2",
+                  "text": "you are legally able to enter into a binding contract;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you are legally able to enter into a binding contract;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-01-eligibility-list-1-item-3",
+                  "text": "you are not located in, ordinarily resident in, or using the Services for the benefit of any person or entity in a jurisdiction subject to applicable trade restrictions or sanctions;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you are not located in, ordinarily resident in, or using the Services for the benefit of any person or entity in a jurisdiction subject to applicable trade restrictions or sanctions;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-01-eligibility-list-1-item-4",
+                  "text": "your use of the Services complies with applicable law.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "your use of the Services complies with applicable law."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-01-eligibility-paragraph-2",
+              "text": "If we provide a service under a separate written agreement, that agreement controls to the extent it conflicts with these Terms.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "If we provide a service under a separate written agreement, that agreement controls to the extent it conflicts with these Terms."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "2",
+          "title": "The Services",
+          "heading": "2. The Services",
+          "anchor": "terms-section-02-the-services",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-02-the-services-paragraph-1",
+              "text": "Darkbloom is a privacy-focused decentralized inference platform that enables consumers to submit AI inference requests processed on independently operated Apple hardware. The privacy properties of the Services depend on the security architecture described in our Privacy Policy and are subject to the limitations described therein, including the current absence of end-to-end encryption between consumer and provider. You can find the Privacy Policy at https://www.darkbloom.dev/privacy.html. You should review the Privacy Policy carefully before submitting sensitive content to the Services.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Darkbloom is a privacy-focused decentralized inference platform that enables consumers to submit AI inference requests processed on independently operated Apple hardware. The privacy properties of the Services depend on the security architecture described in our Privacy Policy and are subject to the limitations described therein, including the current absence of end-to-end encryption between consumer and provider. You can find the Privacy Policy at "
+                },
+                {
+                  "type": "link",
+                  "text": "https://www.darkbloom.dev/privacy.html",
+                  "href": "https://www.darkbloom.dev/privacy.html"
+                },
+                {
+                  "type": "text",
+                  "text": ". You should review the Privacy Policy carefully before submitting sensitive content to the Services."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-02-the-services-paragraph-2",
+              "text": "The Services may include:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "The Services may include:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-02-the-services-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-02-the-services-list-1-item-1",
+                  "text": "OpenAI-compatible and related API endpoints for text, image, audio, and other inference workloads;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "OpenAI-compatible and related API endpoints for text, image, audio, and other inference workloads;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-02-the-services-list-1-item-2",
+                  "text": "a web console and developer tooling;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "a web console and developer tooling;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-02-the-services-list-1-item-3",
+                  "text": "provider software, installers, and a macOS app used to contribute compute capacity;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "provider software, installers, and a macOS app used to contribute compute capacity;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-02-the-services-list-1-item-4",
+                  "text": "account, billing, referral, enrollment, attestation, and device-linking features.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "account, billing, referral, enrollment, attestation, and device-linking features."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-02-the-services-paragraph-3",
+              "text": "Public Alpha Status. The Services are currently offered as a public alpha and may be labeled alpha, beta, preview, experimental, or research. This means:",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "Public Alpha Status."
+                },
+                {
+                  "type": "text",
+                  "text": " The Services are currently offered as a public alpha and may be labeled alpha, beta, preview, experimental, or research. This means:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-02-the-services-list-2",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-02-the-services-list-2-item-1",
+                  "text": "Features may change without notice, may be incomplete, and may break.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "Features may change without notice, may be incomplete, and may break."
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-02-the-services-list-2-item-2",
+                  "text": "We do not provide service-level agreements, uptime commitments, support commitments, service credits, or production warranties unless we expressly agree otherwise in a separate written contract.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "We do not provide service-level agreements, uptime commitments, support commitments, service credits, or production warranties unless we expressly agree otherwise in a separate written contract."
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-02-the-services-list-2-item-3",
+                  "text": "Provider earnings are dependent on consumer demand, platform availability, and routing decisions, all of which may vary significantly during the public alpha period. Providers should not rely on the Services as a primary or stable source of income during this phase.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "Provider earnings are dependent on consumer demand, platform availability, and routing decisions, all of which may vary significantly during the public alpha period. Providers should not rely on the Services as a primary or stable source of income during this phase."
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-02-the-services-list-2-item-4",
+                  "text": "Consumers should not rely on the Services for production workloads, time-sensitive applications, or use cases where interruptions would cause significant harm.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "Consumers should not rely on the Services for production workloads, time-sensitive applications, or use cases where interruptions would cause significant harm."
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-02-the-services-list-2-item-5",
+                  "text": "We may modify, suspend, or discontinue the Services or any feature at any time during the public alpha period, including features that affect provider earnings or consumer access.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "We may modify, suspend, or discontinue the Services or any feature at any time during the public alpha period, including features that affect provider earnings or consumer access."
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-02-the-services-list-2-item-6",
+                  "text": "OpenAI compatibility describes interface compatibility only. The Services are not endorsed by or affiliated with OpenAI unless we expressly say so.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "OpenAI compatibility describes interface compatibility only. The Services are not endorsed by or affiliated with OpenAI unless we expressly say so."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "3",
+          "title": "Accounts, Authentication, and API Keys",
+          "heading": "3. Accounts, Authentication, and API Keys",
+          "anchor": "terms-section-03-accounts-authentication-and-api-keys",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-03-accounts-authentication-and-api-keys-paragraph-1",
+              "text": "You may need an account, API key, wallet, device token, or third-party authentication credential to use parts of the Services.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "You may need an account, API key, wallet, device token, or third-party authentication credential to use parts of the Services."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-03-accounts-authentication-and-api-keys-paragraph-2",
+              "text": "You agree to:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "You agree to:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-03-accounts-authentication-and-api-keys-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-03-accounts-authentication-and-api-keys-list-1-item-1",
+                  "text": "provide accurate, current information;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "provide accurate, current information;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-03-accounts-authentication-and-api-keys-list-1-item-2",
+                  "text": "keep credentials confidential;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "keep credentials confidential;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-03-accounts-authentication-and-api-keys-list-1-item-3",
+                  "text": "use reasonable security measures to prevent unauthorized access;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "use reasonable security measures to prevent unauthorized access;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-03-accounts-authentication-and-api-keys-list-1-item-4",
+                  "text": "promptly notify us of suspected compromise or misuse.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "promptly notify us of suspected compromise or misuse."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-03-accounts-authentication-and-api-keys-paragraph-3",
+              "text": "You are responsible for all activity under your credentials, whether or not authorized by you, unless caused by our breach of these Terms or applicable law.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "You are responsible for all activity under your credentials, whether or not authorized by you, unless caused by our breach of these Terms or applicable law."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-03-accounts-authentication-and-api-keys-paragraph-4",
+              "text": "We may require identity, business, or compliance verification before enabling some features, including billing, withdrawals, or provider payouts.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We may require identity, business, or compliance verification before enabling some features, including billing, withdrawals, or provider payouts."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-03-accounts-authentication-and-api-keys-paragraph-5",
+              "text": "If you believe your account, API key, or other credentials have been compromised, you must notify us promptly at darkbloomnotices@eigenlabs.org.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "If you believe your account, API key, or other credentials have been compromised, you must notify us promptly at "
+                },
+                {
+                  "type": "link",
+                  "text": "darkbloomnotices@eigenlabs.org",
+                  "href": "mailto:darkbloomnotices@eigenlabs.org"
+                },
+                {
+                  "type": "text",
+                  "text": "."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "4",
+          "title": "Consumer Use of the Services",
+          "heading": "4. Consumer Use of the Services",
+          "anchor": "terms-section-04-consumer-use-of-the-services",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-04-consumer-use-of-the-services-paragraph-1",
+              "text": "If you use the Services as a customer, developer, or end user submitting requests (collectively, a \"consumer\"):",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "If you use the Services as a customer, developer, or end user submitting requests (collectively, a \"consumer\"):"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-04-consumer-use-of-the-services-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-04-consumer-use-of-the-services-list-1-item-1",
+                  "text": "you are responsible for your prompts, uploaded files, model selections, tool calls, output use, and downstream applications;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you are responsible for your prompts, uploaded files, model selections, tool calls, output use, and downstream applications;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-04-consumer-use-of-the-services-list-1-item-2",
+                  "text": "you must ensure you have all rights and permissions needed to submit Inputs and use Outputs;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you must ensure you have all rights and permissions needed to submit Inputs and use Outputs;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-04-consumer-use-of-the-services-list-1-item-3",
+                  "text": "you may not use the Services in any way that violates law, infringes rights, or materially risks harm to people, property, systems, or the Services.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you may not use the Services in any way that violates law, infringes rights, or materially risks harm to people, property, systems, or the Services."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-04-consumer-use-of-the-services-paragraph-2",
+              "text": "\"Inputs\" means prompts, messages, audio, images, files, metadata, and other material you submit to the Services. \"Outputs\" means model generations and other results returned by the Services.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "\"Inputs\" means prompts, messages, audio, images, files, metadata, and other material you submit to the Services. \"Outputs\" means model generations and other results returned by the Services."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "5",
+          "title": "Provider Participation",
+          "heading": "5. Provider Participation",
+          "anchor": "terms-section-05-provider-participation",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-05-provider-participation-paragraph-1",
+              "text": "If you install or operate Darkbloom provider software (a \"provider\"), you also agree that:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "If you install or operate Darkbloom provider software (a \"provider\"), you also agree that:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-05-provider-participation-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-05-provider-participation-list-1-item-1",
+                  "text": "you will operate only hardware, networks, and accounts you are authorized to use;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you will operate only hardware, networks, and accounts you are authorized to use;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-05-provider-participation-list-1-item-2",
+                  "text": "you will not bypass, disable, spoof, tamper with, or interfere with attestation, security, integrity, enrollment, metering, payout, or routing controls;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you will not bypass, disable, spoof, tamper with, or interfere with attestation, security, integrity, enrollment, metering, payout, or routing controls;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-05-provider-participation-list-1-item-3",
+                  "text": "you will maintain your machine, operating system, software, model files, and security settings in a safe and compliant state, including maintaining System Integrity Protection (SIP) and Secure Boot enabled at all times;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you will maintain your machine, operating system, software, model files, and security settings in a safe and compliant state, including maintaining System Integrity Protection (SIP) and Secure Boot enabled at all times;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-05-provider-participation-list-1-item-4",
+                  "text": "you will not attempt to inspect, exfiltrate, intercept, or misuse customer content processed through the Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you will not attempt to inspect, exfiltrate, intercept, or misuse customer content processed through the Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-05-provider-participation-list-1-item-5",
+                  "text": "you remain responsible for local taxes, reporting, labor, employment, power, internet, hardware, and other operating costs;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you remain responsible for local taxes, reporting, labor, employment, power, internet, hardware, and other operating costs;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-05-provider-participation-list-1-item-6",
+                  "text": "any earnings or payouts may be delayed, reversed, withheld, or adjusted for fraud, abuse, disputes, sanctions screening, chargebacks, compliance review, accounting corrections, or system errors.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "any earnings or payouts may be delayed, reversed, withheld, or adjusted for fraud, abuse, disputes, sanctions screening, chargebacks, compliance review, accounting corrections, or system errors."
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-05-provider-participation-list-1-item-7",
+                  "text": "you are enrolling a personally owned device and accept the risks associated with granting administrative control.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you are enrolling a personally owned device and accept the risks associated with granting administrative control."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-05-provider-participation-base-rewards",
+              "text": "Base rewards are offered at Eigen Labs' sole discretion as part of the current program and may be modified, reduced, or discontinued at any time with reasonable notice. Base rewards are not a guaranteed feature of the platform and providers should not make hardware purchasing decisions in reliance on the continuation of any base reward program.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Base rewards are offered at Eigen Labs' sole discretion as part of the current program and may be modified, reduced, or discontinued at any time with reasonable notice. Base rewards are not a guaranteed feature of the platform and providers should not make hardware purchasing decisions in reliance on the continuation of any base reward program."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-05-provider-participation-paragraph-2",
+              "text": "Provider participation does not create an employment, agency, partnership, franchise, fiduciary, or joint venture relationship between you and Eigen Labs.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Provider participation does not create an employment, agency, partnership, franchise, fiduciary, or joint venture relationship between you and Eigen Labs."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-05-provider-participation-paragraph-3",
+              "text": "Third-Party Software Licenses. Your device and operating system may be subject to third-party software license agreements, including but not limited to ones from Apple and other applicable software licensors, that may restrict certain uses. You are solely responsible for ensuring your participation as a provider complies with all applicable third-party licenses. Eigen Labs makes no representation that provider participation is permitted under any such third-party licenses and is not responsible for third-party enforcement actions against you.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "Third-Party Software Licenses."
+                },
+                {
+                  "type": "text",
+                  "text": " Your device and operating system may be subject to third-party software license agreements, including but not limited to ones from Apple and other applicable software licensors, that may restrict certain uses. You are solely responsible for ensuring your participation as a provider complies with all applicable third-party licenses. Eigen Labs makes no representation that provider participation is permitted under any such third-party licenses and is not responsible for third-party enforcement actions against you."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "6",
+          "title": "Fees, Credits, Deposits, and Payouts",
+          "heading": "6. Fees, Credits, Deposits, and Payouts",
+          "anchor": "terms-section-06-fees-credits-deposits-and-payouts",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-06-fees-credits-deposits-and-payouts-paragraph-1",
+              "text": "Some Services require payment. You authorize us and our payment service providers to charge the payment method, wallet, or blockchain account you choose for applicable fees, taxes, network fees, and other disclosed charges.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Some Services require payment. You authorize us and our payment service providers to charge the payment method, wallet, or blockchain account you choose for applicable fees, taxes, network fees, and other disclosed charges."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-06-fees-credits-deposits-and-payouts-paragraph-2",
+              "text": "6.1 Prepaid credits. If the Services use prepaid balances, deposits, or credits:",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "6.1 Prepaid credits."
+                },
+                {
+                  "type": "text",
+                  "text": " If the Services use prepaid balances, deposits, or credits:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-06-fees-credits-deposits-and-payouts-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-06-fees-credits-deposits-and-payouts-list-1-item-1",
+                  "text": "credits are non-interest-bearing and are not bank accounts, checking accounts, savings accounts, or stored-value accounts unless we expressly state otherwise;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "credits are non-interest-bearing and are not bank accounts, checking accounts, savings accounts, or stored-value accounts unless we expressly state otherwise;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-06-fees-credits-deposits-and-payouts-list-1-item-2",
+                  "text": "credits are usable only for eligible Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "credits are usable only for eligible Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-06-fees-credits-deposits-and-payouts-list-1-item-3",
+                  "text": "except as required by law or expressly stated in writing, prepaid purchases are final and non-refundable;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "except as required by law or expressly stated in writing, prepaid purchases are final and non-refundable;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-06-fees-credits-deposits-and-payouts-list-1-item-4",
+                  "text": "credits may be adjusted to correct errors, fraud, abuse, duplicate transactions, or chargebacks.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "credits may be adjusted to correct errors, fraud, abuse, duplicate transactions, or chargebacks."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-06-fees-credits-deposits-and-payouts-paragraph-3",
+              "text": "6.2 Third-party payment rails. Payments and transfers may involve third-party providers such as Stripe, Privy, wallet providers, banks, card networks, or blockchain networks. Their terms and privacy policies apply to your use of those services. We are not responsible for third-party payment delays, reversals, outages, fees, or errors.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "6.2 Third-party payment rails."
+                },
+                {
+                  "type": "text",
+                  "text": " Payments and transfers may involve third-party providers such as Stripe, Privy, wallet providers, banks, card networks, or blockchain networks. Their terms and privacy policies apply to your use of those services. We are not responsible for third-party payment delays, reversals, outages, fees, or errors."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-06-fees-credits-deposits-and-payouts-paragraph-4",
+              "text": "6.3 Taxes. You are responsible for all taxes, duties, levies, and similar charges arising from your use of the Services, other than taxes based on our net income.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "6.3 Taxes."
+                },
+                {
+                  "type": "text",
+                  "text": " You are responsible for all taxes, duties, levies, and similar charges arising from your use of the Services, other than taxes based on our net income."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "7",
+          "title": "Acceptable Use",
+          "heading": "7. Acceptable Use",
+          "anchor": "terms-section-07-acceptable-use",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-07-acceptable-use-paragraph-1",
+              "text": "You may not, and may not permit others to:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "You may not, and may not permit others to:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-07-acceptable-use-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-07-acceptable-use-list-1-item-1",
+                  "text": "use the Services for illegal, fraudulent, harmful, infringing, or deceptive activity;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "use the Services for illegal, fraudulent, harmful, infringing, or deceptive activity;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-07-acceptable-use-list-1-item-2",
+                  "text": "exploit, harm, or attempt to exploit or harm minors;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "exploit, harm, or attempt to exploit or harm minors;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-07-acceptable-use-list-1-item-3",
+                  "text": "submit or generate material that violates law or third-party rights;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "submit or generate material that violates law or third-party rights;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-07-acceptable-use-list-1-item-4",
+                  "text": "use the Services to develop malware, phishing infrastructure, credential theft, unauthorized surveillance, or other malicious code or conduct;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "use the Services to develop malware, phishing infrastructure, credential theft, unauthorized surveillance, or other malicious code or conduct;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-07-acceptable-use-list-1-item-5",
+                  "text": "probe, scan, reverse engineer, benchmark without permission, or attempt to discover source code or model weights except as allowed by applicable law and not waivable by contract;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "probe, scan, reverse engineer, benchmark without permission, or attempt to discover source code or model weights except as allowed by applicable law and not waivable by contract;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-07-acceptable-use-list-1-item-6",
+                  "text": "interfere with or disrupt the Services, providers, networks, or security controls;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "interfere with or disrupt the Services, providers, networks, or security controls;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-07-acceptable-use-list-1-item-7",
+                  "text": "circumvent rate limits, usage restrictions, access controls, or safety mechanisms;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "circumvent rate limits, usage restrictions, access controls, or safety mechanisms;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-07-acceptable-use-list-1-item-8",
+                  "text": "use automated means to scrape the Services except through authorized APIs;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "use automated means to scrape the Services except through authorized APIs;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-07-acceptable-use-list-1-item-9",
+                  "text": "use the Services in a manner that could create a competing service based on unauthorized extraction of outputs, metadata, or system behavior;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "use the Services in a manner that could create a competing service based on unauthorized extraction of outputs, metadata, or system behavior;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-07-acceptable-use-list-1-item-10",
+                  "text": "misrepresent Outputs as solely human-generated where doing so would be deceptive or unlawful;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "misrepresent Outputs as solely human-generated where doing so would be deceptive or unlawful;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-07-acceptable-use-list-1-item-11",
+                  "text": "use the Services for medical diagnosis or treatment, legal advice, financial advice, emergency response, critical infrastructure control, or other high-risk use cases where a failure could reasonably cause death, personal injury, or significant property or environmental harm, unless we expressly authorize that use in writing.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "use the Services for medical diagnosis or treatment, legal advice, financial advice, emergency response, critical infrastructure control, or other high-risk use cases where a failure could reasonably cause death, personal injury, or significant property or environmental harm, unless we expressly authorize that use in writing."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-07-acceptable-use-paragraph-2",
+              "text": "The Services enable inference using open-source AI models that are subject to their own license terms. Providers who run models through the platform, and consumers who use model outputs, are each responsible for compliance with all applicable model licenses. Without limiting the foregoing: (a) providers must not run any model on the platform that they are not licensed to use for the intended purpose; (b) consumers must not use model outputs in ways that violate applicable model licenses, including without limitation commercial use restrictions, attribution requirements, or derivative work limitations; and (c) Eigen Labs makes no representation that any model available through the platform is licensed for any particular use case. Current models available through the platform may include models subject to the Meta Llama Community License, Alibaba Qwen License, and other open-source or source-available licenses, each of which contains use restrictions that may apply to your use.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "The Services enable inference using open-source AI models that are subject to their own license terms. Providers who run models through the platform, and consumers who use model outputs, are each responsible for compliance with all applicable model licenses. Without limiting the foregoing: (a) providers must not run any model on the platform that they are not licensed to use for the intended purpose; (b) consumers must not use model outputs in ways that violate applicable model licenses, including without limitation commercial use restrictions, attribution requirements, or derivative work limitations; and (c) Eigen Labs makes no representation that any model available through the platform is licensed for any particular use case. Current models available through the platform may include models subject to the Meta Llama Community License, Alibaba Qwen License, and other open-source or source-available licenses, each of which contains use restrictions that may apply to your use."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-07-acceptable-use-paragraph-3",
+              "text": "We may investigate suspected violations and cooperate with law enforcement or regulators where permitted or required by law.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We may investigate suspected violations and cooperate with law enforcement or regulators where permitted or required by law."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "8",
+          "title": "Customer Content and Outputs",
+          "heading": "8. Customer Content and Outputs",
+          "anchor": "terms-section-08-customer-content-and-outputs",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-08-customer-content-and-outputs-paragraph-1",
+              "text": "As between you and Eigen Labs, and subject to applicable law:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "As between you and Eigen Labs, and subject to applicable law:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-08-customer-content-and-outputs-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-08-customer-content-and-outputs-list-1-item-1",
+                  "text": "you retain your rights in Inputs;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you retain your rights in Inputs;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-08-customer-content-and-outputs-list-1-item-2",
+                  "text": "you own your Outputs to the extent any ownership rights arise in them and are transferable, excluding our underlying Services, software, models, documentation, trademarks, and other intellectual property;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you own your Outputs to the extent any ownership rights arise in them and are transferable, excluding our underlying Services, software, models, documentation, trademarks, and other intellectual property;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-08-customer-content-and-outputs-list-1-item-3",
+                  "text": "you grant us and our subprocessors, providers, and infrastructure partners a non-exclusive, worldwide, limited license to host, copy, transmit, process, display, and use Inputs and Outputs solely as necessary to provide, secure, maintain, bill for, enforce, and improve the Services, comply with law, and prevent fraud, abuse, or misuse.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you grant us and our subprocessors, providers, and infrastructure partners a non-exclusive, worldwide, limited license to host, copy, transmit, process, display, and use Inputs and Outputs solely as necessary to provide, secure, maintain, bill for, enforce, and improve the Services, comply with law, and prevent fraud, abuse, or misuse."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-08-customer-content-and-outputs-paragraph-2",
+              "text": "You represent and warrant that you have all rights needed for Inputs and for your use of Outputs.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "You represent and warrant that you have all rights needed for Inputs and for your use of Outputs."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-08-customer-content-and-outputs-paragraph-3",
+              "text": "Because machine learning systems can produce similar or identical outputs for multiple users, Outputs may not be unique. We do not guarantee that Outputs will be accurate, complete, available, non-infringing, or fit for your use case.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Because machine learning systems can produce similar or identical outputs for multiple users, Outputs may not be unique. We do not guarantee that Outputs will be accurate, complete, available, non-infringing, or fit for your use case."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "9",
+          "title": "Privacy and Security",
+          "heading": "9. Privacy and Security",
+          "anchor": "terms-section-09-privacy-and-security",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-09-privacy-and-security-paragraph-1",
+              "text": "Our Privacy Policy explains how we collect, use, disclose, and protect personal information. The Privacy Policy is incorporated into these Terms by reference.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Our Privacy Policy explains how we collect, use, disclose, and protect personal information. The Privacy Policy is incorporated into these Terms by reference."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-09-privacy-and-security-paragraph-2",
+              "text": "You understand and agree that:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "You understand and agree that:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-09-privacy-and-security-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-09-privacy-and-security-list-1-item-1",
+                  "text": "the Services involve transmission, processing, and storage of Inputs, Outputs, and service metadata;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "the Services involve transmission, processing, and storage of Inputs, Outputs, and service metadata;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-09-privacy-and-security-list-1-item-2",
+                  "text": "we use reasonable technical and organizational safeguards, but no method of transmission, storage, or processing is completely secure;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "we use reasonable technical and organizational safeguards, but no method of transmission, storage, or processing is completely secure;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-09-privacy-and-security-list-1-item-3",
+                  "text": "certain service paths may use additional encryption, attestation, or trusted-execution features, but those controls do not eliminate all risk;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "certain service paths may use additional encryption, attestation, or trusted-execution features, but those controls do not eliminate all risk;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-09-privacy-and-security-list-1-item-4",
+                  "text": "you are responsible for using the Services in a manner appropriate for the sensitivity of your data.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you are responsible for using the Services in a manner appropriate for the sensitivity of your data."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-09-privacy-and-security-paragraph-3",
+              "text": "MDM enrollment is configured for security verification only. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "MDM enrollment is configured for security verification only. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "10",
+          "title": "Beta, Research, and Experimental Features",
+          "heading": "10. Beta, Research, and Experimental Features",
+          "anchor": "terms-section-10-beta-research-and-experimental-features",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-10-beta-research-and-experimental-features-paragraph-1",
+              "text": "The Services are being offered as a public alpha. The Services are offered \"AS IS,\" may be incomplete, may contain bugs or security issues, and may change or be withdrawn at any time. We may impose limits on usage, supported models, regions, features, access methods, or uptime at any time.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "The Services are being offered as a public alpha. The Services are offered \"AS IS,\" may be incomplete, may contain bugs or security issues, and may change or be withdrawn at any time. We may impose limits on usage, supported models, regions, features, access methods, or uptime at any time."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-10-beta-research-and-experimental-features-paragraph-2",
+              "text": "Unless we expressly agree otherwise in a separate written agreement:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Unless we expressly agree otherwise in a separate written agreement:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-10-beta-research-and-experimental-features-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-10-beta-research-and-experimental-features-list-1-item-1",
+                  "text": "the Services are not a production service;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "the Services are not a production service;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-10-beta-research-and-experimental-features-list-1-item-2",
+                  "text": "we do not commit to any minimum availability, support response time, incident response time, or disaster recovery objective;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "we do not commit to any minimum availability, support response time, incident response time, or disaster recovery objective;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-10-beta-research-and-experimental-features-list-1-item-3",
+                  "text": "you are solely responsible for determining whether the Services are appropriate for any testing, staging, or production use;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you are solely responsible for determining whether the Services are appropriate for any testing, staging, or production use;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-10-beta-research-and-experimental-features-list-1-item-4",
+                  "text": "provider earnings during the public alpha period may be interrupted, reduced, or suspended without notice if we modify, suspend, or discontinue features or capacity.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "provider earnings during the public alpha period may be interrupted, reduced, or suspended without notice if we modify, suspend, or discontinue features or capacity."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "11",
+          "title": "Third-Party Services and Open Source",
+          "heading": "11. Third-Party Services and Open Source",
+          "anchor": "terms-section-11-third-party-services-and-open-source",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-11-third-party-services-and-open-source-paragraph-1",
+              "text": "The Services may incorporate or interoperate with third-party software, open-source software, and third-party services. Your use of those components may be subject to separate terms. Nothing in these Terms limits your rights under any applicable open-source or third-party license for software or models distributed to you under that license.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "The Services may incorporate or interoperate with third-party software, open-source software, and third-party services. Your use of those components may be subject to separate terms. Nothing in these Terms limits your rights under any applicable open-source or third-party license for software or models distributed to you under that license."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-11-third-party-services-and-open-source-paragraph-2",
+              "text": "Without limiting the foregoing:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Without limiting the foregoing:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-11-third-party-services-and-open-source-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-11-third-party-services-and-open-source-list-1-item-1",
+                  "text": "third-party wallets, payment processors, authentication providers, and blockchain networks are not controlled by us;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "third-party wallets, payment processors, authentication providers, and blockchain networks are not controlled by us;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-11-third-party-services-and-open-source-list-1-item-2",
+                  "text": "provider machines participating in the network may be independently operated by third parties, even where subject to our technical requirements;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "provider machines participating in the network may be independently operated by third parties, even where subject to our technical requirements;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-11-third-party-services-and-open-source-list-1-item-3",
+                  "text": "the security verification features of the Services depend on Apple infrastructure including MDM, APNs, Secure Enclave, and System Integrity Protection, which are operated and controlled by Apple and subject to Apple's policies;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "the security verification features of the Services depend on Apple infrastructure including MDM, APNs, Secure Enclave, and System Integrity Protection, which are operated and controlled by Apple and subject to Apple's policies;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-11-third-party-services-and-open-source-list-1-item-4",
+                  "text": "we are not responsible for third-party outages, hacks, policy changes, fees, transaction failures, delays, or data practices.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "we are not responsible for third-party outages, hacks, policy changes, fees, transaction failures, delays, or data practices."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "12",
+          "title": "Intellectual Property",
+          "heading": "12. Intellectual Property",
+          "anchor": "terms-section-12-intellectual-property",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-12-intellectual-property-paragraph-1",
+              "text": "We and our licensors and/or third party service providers own all rights, title, and interest in and to the Services, including software, APIs, interfaces, workflows, documentation, branding, logos, designs, compilations, and all related intellectual property, except for your Inputs and Outputs as described above.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We and our licensors and/or third party service providers own all rights, title, and interest in and to the Services, including software, APIs, interfaces, workflows, documentation, branding, logos, designs, compilations, and all related intellectual property, except for your Inputs and Outputs as described above."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-12-intellectual-property-paragraph-2",
+              "text": "Subject to these Terms, we grant you a limited, non-exclusive, non-transferable, non-sublicensable, revocable right to access and use the Services for your internal business or personal use.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Subject to these Terms, we grant you a limited, non-exclusive, non-transferable, non-sublicensable, revocable right to access and use the Services for your internal business or personal use."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-12-intellectual-property-paragraph-3",
+              "text": "You may not use our trademarks, logos, or brand features without prior written permission.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "You may not use our trademarks, logos, or brand features without prior written permission."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-12-intellectual-property-paragraph-4",
+              "text": "If you send us suggestions, ideas, feature requests, or other feedback about the Services, you grant us a non-exclusive, worldwide, perpetual, irrevocable, royalty-free right to use that feedback for any lawful purpose without notice, attribution, or compensation to you.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "If you send us suggestions, ideas, feature requests, or other feedback about the Services, you grant us a non-exclusive, worldwide, perpetual, irrevocable, royalty-free right to use that feedback for any lawful purpose without notice, attribution, or compensation to you."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "13",
+          "title": "Suspension and Termination",
+          "heading": "13. Suspension and Termination",
+          "anchor": "terms-section-13-suspension-and-termination",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-13-suspension-and-termination-paragraph-1",
+              "text": "We may suspend, restrict, or terminate your access to some or all of the Services immediately, with or without notice, if:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We may suspend, restrict, or terminate your access to some or all of the Services immediately, with or without notice, if:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-13-suspension-and-termination-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-13-suspension-and-termination-list-1-item-1",
+                  "text": "you breach these Terms or applicable law;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "you breach these Terms or applicable law;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-13-suspension-and-termination-list-1-item-2",
+                  "text": "your use creates security, legal, reputational, or operational risk;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "your use creates security, legal, reputational, or operational risk;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-13-suspension-and-termination-list-1-item-3",
+                  "text": "payment is overdue or reversed;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "payment is overdue or reversed;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-13-suspension-and-termination-list-1-item-4",
+                  "text": "we suspect fraud, abuse, sanctions issues, or unauthorized access;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "we suspect fraud, abuse, sanctions issues, or unauthorized access;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-13-suspension-and-termination-list-1-item-5",
+                  "text": "required third-party services are unavailable or terminate their relationship with us, including Apple infrastructure on which security verification features depend;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "required third-party services are unavailable or terminate their relationship with us, including Apple infrastructure on which security verification features depend;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-13-suspension-and-termination-list-1-item-6",
+                  "text": "we discontinue the Services.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "we discontinue the Services."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-13-suspension-and-termination-paragraph-2",
+              "text": "You may stop using the Services at any time. Sections that by their nature should survive termination will survive, including sections on fees owed, intellectual property, disclaimers, limitations of liability, indemnity, dispute resolution, and content rights needed to wind down or comply with law.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "You may stop using the Services at any time. Sections that by their nature should survive termination will survive, including sections on fees owed, intellectual property, disclaimers, limitations of liability, indemnity, dispute resolution, and content rights needed to wind down or comply with law."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-13-suspension-and-termination-paragraph-3",
+              "text": "Further, the security verification features of the Services, including the hardware attestation and trust-level verification on which privacy assurances are based, depend on depend on third party infrastructure, including Apple's Mobile Device Management (MDM) framework, Apple Push Notification service (APNs), Secure Enclave, System Integrity Protection, and related Apple infrastructure. Such third parties may modify, restrict, suspend, or discontinue any of these capabilities at any time with or without notice. In such an event, we may be required to modify, suspend, or discontinue affected features of the Services, including security verification features, with reasonable notice where practicable. Your sole remedy in such circumstances is termination of your participation in accordance with Section 13.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Further, the security verification features of the Services, including the hardware attestation and trust-level verification on which privacy assurances are based, depend on depend on third party infrastructure, including Apple's Mobile Device Management (MDM) framework, Apple Push Notification service (APNs), Secure Enclave, System Integrity Protection, and related Apple infrastructure. Such third parties may modify, restrict, suspend, or discontinue any of these capabilities at any time with or without notice. In such an event, we may be required to modify, suspend, or discontinue affected features of the Services, including security verification features, with reasonable notice where practicable. Your sole remedy in such circumstances is termination of your participation in accordance with Section 13."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "14",
+          "title": "Disclaimers",
+          "heading": "14. Disclaimers",
+          "anchor": "terms-section-14-disclaimers",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-14-disclaimers-paragraph-1",
+              "text": "THE SERVICES ARE PROVIDED \"AS IS\" AND \"AS AVAILABLE.\" TO THE MAXIMUM EXTENT PERMITTED BY LAW, EIGEN LABS AND ITS AFFILIATES, LICENSORS, PROVIDERS, AND SERVICE PROVIDERS DISCLAIM ALL WARRANTIES, WHETHER EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE, INCLUDING ANY IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, QUIET ENJOYMENT, ACCURACY, OR THAT THE SERVICES WILL BE UNINTERRUPTED, ERROR-FREE, SECURE, OR FREE OF HARMFUL COMPONENTS. You are solely responsible for maintaining backups of your data and for any risks associated with enrolling your device.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "THE SERVICES ARE PROVIDED \"AS IS\" AND \"AS AVAILABLE.\" TO THE MAXIMUM EXTENT PERMITTED BY LAW, EIGEN LABS AND ITS AFFILIATES, LICENSORS, PROVIDERS, AND SERVICE PROVIDERS DISCLAIM ALL WARRANTIES, WHETHER EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE, INCLUDING ANY IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, QUIET ENJOYMENT, ACCURACY, OR THAT THE SERVICES WILL BE UNINTERRUPTED, ERROR-FREE, SECURE, OR FREE OF HARMFUL COMPONENTS. You are solely responsible for maintaining backups of your data and for any risks associated with enrolling your device."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-14-disclaimers-paragraph-2",
+              "text": "We do not warrant:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We do not warrant:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-14-disclaimers-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-14-disclaimers-list-1-item-1",
+                  "text": "any minimum uptime, availability, response time, throughput, or provider availability;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "any minimum uptime, availability, response time, throughput, or provider availability;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-14-disclaimers-list-1-item-2",
+                  "text": "any compatibility, continuity, or stability of alpha features, experimental features, or APIs;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "any compatibility, continuity, or stability of alpha features, experimental features, or APIs;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-14-disclaimers-list-1-item-3",
+                  "text": "any support availability, response time, remediation timeline, or service credits;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "any support availability, response time, remediation timeline, or service credits;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-14-disclaimers-list-1-item-4",
+                  "text": "that outputs are accurate, lawful, safe, or suitable for your intended use;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "that outputs are accurate, lawful, safe, or suitable for your intended use;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-14-disclaimers-list-1-item-5",
+                  "text": "that security features, attestation features, or integrity checks will detect every threat or prevent every incident.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "that security features, attestation features, or integrity checks will detect every threat or prevent every incident."
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-14-disclaimers-list-1-item-6",
+                  "text": "that the privacy-preserving architecture will be effective against kernel zero-day exploits, undisclosed Apple hardware vulnerabilities, or other attacks outside the scope of the current threat model.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "that the privacy-preserving architecture will be effective against kernel zero-day exploits, undisclosed Apple hardware vulnerabilities, or other attacks outside the scope of the current threat model."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "15",
+          "title": "Limitation of Liability",
+          "heading": "15. Limitation of Liability",
+          "anchor": "terms-section-15-limitation-of-liability",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-15-limitation-of-liability-paragraph-1",
+              "text": "TO THE MAXIMUM EXTENT PERMITTED BY LAW:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "TO THE MAXIMUM EXTENT PERMITTED BY LAW:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-15-limitation-of-liability-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-15-limitation-of-liability-list-1-item-1",
+                  "text": "EIGEN LABS AND ITS AFFILIATES, LICENSORS, PROVIDERS, AND SERVICE PROVIDERS WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS, REVENUE, GOODWILL, DATA, BUSINESS INTERRUPTION, DAMAGE TO DEVICES, OR OTHER INTANGIBLE LOSSES, EVEN IF ADVISED OF THE POSSIBILITY OF THOSE DAMAGES;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "EIGEN LABS AND ITS AFFILIATES, LICENSORS, PROVIDERS, AND SERVICE PROVIDERS WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS, REVENUE, GOODWILL, DATA, BUSINESS INTERRUPTION, DAMAGE TO DEVICES, OR OTHER INTANGIBLE LOSSES, EVEN IF ADVISED OF THE POSSIBILITY OF THOSE DAMAGES;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-15-limitation-of-liability-list-1-item-2",
+                  "text": "OUR AGGREGATE LIABILITY ARISING OUT OF OR RELATING TO THE SERVICES OR THESE TERMS WILL NOT EXCEED USD $100.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "OUR AGGREGATE LIABILITY ARISING OUT OF OR RELATING TO THE SERVICES OR THESE TERMS WILL NOT EXCEED USD $100."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-15-limitation-of-liability-paragraph-2",
+              "text": "These limitations do not apply to liability that cannot be excluded or limited under applicable law.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "These limitations do not apply to liability that cannot be excluded or limited under applicable law."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "16",
+          "title": "Indemnity",
+          "heading": "16. Indemnity",
+          "anchor": "terms-section-16-indemnity",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-16-indemnity-paragraph-1",
+              "text": "You will defend, indemnify, and hold harmless Eigen Labs, its affiliates, and their respective directors, officers, employees, contractors, licensors, providers, and agents from and against any third-party claims, liabilities, damages, losses, and expenses, including reasonable attorneys' fees, arising out of or relating to:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "You will defend, indemnify, and hold harmless Eigen Labs, its affiliates, and their respective directors, officers, employees, contractors, licensors, providers, and agents from and against any third-party claims, liabilities, damages, losses, and expenses, including reasonable attorneys' fees, arising out of or relating to:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-16-indemnity-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-16-indemnity-list-1-item-1",
+                  "text": "your use of the Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "your use of the Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-16-indemnity-list-1-item-2",
+                  "text": "your Inputs, Outputs, applications, or products built with the Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "your Inputs, Outputs, applications, or products built with the Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-16-indemnity-list-1-item-3",
+                  "text": "your breach of these Terms;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "your breach of these Terms;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-16-indemnity-list-1-item-4",
+                  "text": "your violation of law or third-party rights.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "your violation of law or third-party rights."
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-16-indemnity-list-1-item-5",
+                  "text": "your violation of any applicable open-source model license terms.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "your violation of any applicable open-source model license terms."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "17",
+          "title": "Dispute Resolution, Arbitration, and Governing Law",
+          "heading": "17. Dispute Resolution, Arbitration, and Governing Law",
+          "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-paragraph-1",
+              "text": "Please read this section carefully. Except for the limited carve-outs below, it requires most disputes to be resolved through binding individual arbitration and not in court.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Please read this section carefully. Except for the limited carve-outs below, it requires most disputes to be resolved through binding individual arbitration and not in court."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-paragraph-2",
+              "text": "17.1 Informal dispute process first. Before either party starts arbitration or court proceedings, that party must send the other a written notice describing the dispute and the requested relief. The parties will then try in good faith to resolve the dispute informally for 30 days.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "17.1 Informal dispute process first."
+                },
+                {
+                  "type": "text",
+                  "text": " Before either party starts arbitration or court proceedings, that party must send the other a written notice describing the dispute and the requested relief. The parties will then try in good faith to resolve the dispute informally for 30 days."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-paragraph-3",
+              "text": "17.2 Agreement to arbitrate. Except for the claims described in Section 17.4, any dispute, claim, or controversy arising out of or relating to these Terms or the Services will be resolved by final and binding arbitration on an individual basis.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "17.2 Agreement to arbitrate."
+                },
+                {
+                  "type": "text",
+                  "text": " Except for the claims described in Section 17.4, any dispute, claim, or controversy arising out of or relating to these Terms or the Services will be resolved by final and binding arbitration on an individual basis."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-paragraph-4",
+              "text": "The arbitration will:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "The arbitration will:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-1-item-1",
+                  "text": "be administered by JAMS under its then-current comprehensive arbitration rules;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "be administered by JAMS under its then-current comprehensive arbitration rules;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-1-item-2",
+                  "text": "be conducted in English before a single arbitrator;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "be conducted in English before a single arbitrator;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-1-item-3",
+                  "text": "be governed by the Federal Arbitration Act to the extent applicable.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "be governed by the Federal Arbitration Act to the extent applicable."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-paragraph-5",
+              "text": "The arbitrator may award any relief available in an individual action under applicable law, but may do so only in favor of the individual party seeking relief and only to the extent necessary to resolve that party's claim.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "The arbitrator may award any relief available in an individual action under applicable law, but may do so only in favor of the individual party seeking relief and only to the extent necessary to resolve that party's claim."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-paragraph-6",
+              "text": "17.3 No class or representative proceedings. To the maximum extent permitted by law, you and Eigen Labs agree that:",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "17.3 No class or representative proceedings."
+                },
+                {
+                  "type": "text",
+                  "text": " To the maximum extent permitted by law, you and Eigen Labs agree that:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-2",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-2-item-1",
+                  "text": "claims must be brought only in an individual capacity and not as a plaintiff or class member in any purported class, collective, consolidated, mass, or representative proceeding;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "claims must be brought only in an individual capacity and not as a plaintiff or class member in any purported class, collective, consolidated, mass, or representative proceeding;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-2-item-2",
+                  "text": "the arbitrator may not consolidate more than one person's claims and may not preside over any class, collective, or representative proceeding;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "the arbitrator may not consolidate more than one person's claims and may not preside over any class, collective, or representative proceeding;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-2-item-3",
+                  "text": "if this class-action waiver is found unenforceable as to a particular claim, then that claim must proceed in a court of competent jurisdiction and not in arbitration.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "if this class-action waiver is found unenforceable as to a particular claim, then that claim must proceed in a court of competent jurisdiction and not in arbitration."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-paragraph-7",
+              "text": "17.4 Exceptions. The following claims may be brought in a court of competent jurisdiction:",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "17.4 Exceptions."
+                },
+                {
+                  "type": "text",
+                  "text": " The following claims may be brought in a court of competent jurisdiction:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-3",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-3-item-1",
+                  "text": "qualifying individual claims in small claims court;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "qualifying individual claims in small claims court;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-3-item-2",
+                  "text": "claims seeking only temporary, preliminary, or permanent injunctive relief;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "claims seeking only temporary, preliminary, or permanent injunctive relief;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-list-3-item-3",
+                  "text": "claims relating to intellectual property, misuse of intellectual property, or unauthorized access to the Services.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "claims relating to intellectual property, misuse of intellectual property, or unauthorized access to the Services."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-paragraph-8",
+              "text": "17.5 Arbitration fees. Payment of arbitration filing, administration, and arbitrator fees will be governed by the applicable JAMS rules, except that if the arbitrator determines those costs would be prohibitively more expensive than court for you, Eigen Labs will pay the portion necessary to avoid that result, subject to any reallocation permitted by law or the rules.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "17.5 Arbitration fees."
+                },
+                {
+                  "type": "text",
+                  "text": " Payment of arbitration filing, administration, and arbitrator fees will be governed by the applicable JAMS rules, except that if the arbitrator determines those costs would be prohibitively more expensive than court for you, Eigen Labs will pay the portion necessary to avoid that result, subject to any reallocation permitted by law or the rules."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-paragraph-9",
+              "text": "17.6 Opt-out. You may opt out of the arbitration agreement in this Section 17 by sending a written opt-out notice to darkbloomnotices@eigenlabs.org within 30 days after the earlier of your first use of the Services or your first agreement to these Terms. Your notice must include your name, the identifying information associated with your account, and a clear statement that you want to opt out of arbitration. If you opt out of arbitration, the class-action waiver in Section 17.3 will still apply to the maximum extent permitted by law.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "17.6 Opt-out."
+                },
+                {
+                  "type": "text",
+                  "text": " You may opt out of the arbitration agreement in this Section 17 by sending a written opt-out notice to "
+                },
+                {
+                  "type": "link",
+                  "text": "darkbloomnotices@eigenlabs.org",
+                  "href": "mailto:darkbloomnotices@eigenlabs.org"
+                },
+                {
+                  "type": "text",
+                  "text": " within 30 days after the earlier of your first use of the Services or your first agreement to these Terms. Your notice must include your name, the identifying information associated with your account, and a clear statement that you want to opt out of arbitration. If you opt out of arbitration, the class-action waiver in Section 17.3 will still apply to the maximum extent permitted by law."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-paragraph-10",
+              "text": "17.7 Governing law and venue. These Terms are governed by the laws of the State of California, without regard to conflict-of-laws principles.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "17.7 Governing law and venue."
+                },
+                {
+                  "type": "text",
+                  "text": " These Terms are governed by the laws of the State of California, without regard to conflict-of-laws principles."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-17-dispute-resolution-arbitration-and-governing-law-paragraph-11",
+              "text": "If a claim is not subject to arbitration, then you and Eigen Labs agree that the state or federal courts located in San Francisco, California will have exclusive jurisdiction, and each party consents to personal jurisdiction and venue there.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "If a claim is not subject to arbitration, then you and Eigen Labs agree that the state or federal courts located in San Francisco, California will have exclusive jurisdiction, and each party consents to personal jurisdiction and venue there."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "18",
+          "title": "Changes to the Terms",
+          "heading": "18. Changes to the Terms",
+          "anchor": "terms-section-18-changes-to-the-terms",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-18-changes-to-the-terms-paragraph-1",
+              "text": "We may modify these Terms from time to time. If we make material changes, we will post the updated Terms, update the effective date, and take any additional steps required by law. Your continued use of the Services after the effective date of the updated Terms constitutes acceptance of the updated Terms.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We may modify these Terms from time to time. If we make material changes, we will post the updated Terms, update the effective date, and take any additional steps required by law. Your continued use of the Services after the effective date of the updated Terms constitutes acceptance of the updated Terms."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "19",
+          "title": "Miscellaneous",
+          "heading": "19. Miscellaneous",
+          "anchor": "terms-section-19-miscellaneous",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-19-miscellaneous-paragraph-1",
+              "text": "These Terms constitute the entire agreement between you and Eigen Labs regarding the Services, except for any separate written agreement between you and us.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "These Terms constitute the entire agreement between you and Eigen Labs regarding the Services, except for any separate written agreement between you and us."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-19-miscellaneous-paragraph-2",
+              "text": "If any provision of these Terms is held unenforceable, the remaining provisions will remain in full force and effect. Our failure to enforce any provision is not a waiver. You may not assign these Terms without our prior written consent. We may assign these Terms in connection with a merger, acquisition, corporate reorganization, sale of assets, or restructuring of Eigen Labs or its affiliates, including any future reorganization in which the Darkbloom platform is operated by a separate legal entity.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "If any provision of these Terms is held unenforceable, the remaining provisions will remain in full force and effect. Our failure to enforce any provision is not a waiver. You may not assign these Terms without our prior written consent. We may assign these Terms in connection with a merger, acquisition, corporate reorganization, sale of assets, or restructuring of Eigen Labs or its affiliates, including any future reorganization in which the Darkbloom platform is operated by a separate legal entity."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "20",
+          "title": "Contact",
+          "heading": "20. Contact",
+          "anchor": "terms-section-20-contact",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-20-contact-paragraph-1",
+              "text": "For notices, questions, or complaints about these Terms, contact:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "For notices, questions, or complaints about these Terms, contact:"
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "terms-section-20-contact-paragraph-2",
+              "text": "darkbloomnotices@eigenlabs.org",
+              "inline": [
+                {
+                  "type": "link",
+                  "text": "darkbloomnotices@eigenlabs.org",
+                  "href": "mailto:darkbloomnotices@eigenlabs.org"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "privacy": {
+      "source": {
+        "url": "https://www.darkbloom.dev/privacy.html",
+        "fetchedAt": "2026-08-05T15:14:40Z",
+        "etag": "W/\"18baa09b5ba6fb1a50fc45424edf9b81\"",
+        "lastModified": "Wed, 05 Aug 2026 14:54:34 GMT",
+        "htmlSha256": "2b82a179e5762645a3c7a9c65b35b2a46184d8c3ae6097a4a16da9941a03135a"
+      },
+      "verification": {
+        "structuredContentSha256": "7024ed9b1330407998519a80e2e5d791bc32fda1a78c5533d66ec0e9715022f4",
+        "plainTextSha256": "3830b0a5de3ee8809026126619d48d90b308fb4b06ccb5a2e02c129077164897",
+        "counts": {
+          "leadParagraphs": 2,
+          "sections": 16,
+          "sectionParagraphs": 48,
+          "lists": 17,
+          "listItems": 90,
+          "strongSpans": 15,
+          "links": 3
+        }
+      },
+      "slug": "privacy",
+      "title": "Privacy Policy",
+      "anchor": "privacy-policy",
+      "updatedLabel": "Updated: August 28, 2026",
+      "leads": [
+        {
+          "type": "paragraph",
+          "anchor": "privacy-lead-1",
+          "text": "This Privacy Policy explains how Eigen Labs, Inc., operating the Darkbloom platform (\"Eigen Labs,\" \"Darkbloom,\" \"we,\" \"us,\" or \"our\") collects, uses, discloses, and otherwise processes personal information in connection with Darkbloom's websites, console, APIs, software, provider applications, hosted services, and related products and features (collectively, the \"Services\").",
+          "inline": [
+            {
+              "type": "text",
+              "text": "This Privacy Policy explains how Eigen Labs, Inc., operating the Darkbloom platform (\"Eigen Labs,\" \"Darkbloom,\" \"we,\" \"us,\" or \"our\") collects, uses, discloses, and otherwise processes personal information in connection with Darkbloom's websites, console, APIs, software, provider applications, hosted services, and related products and features (collectively, the \"Services\")."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "anchor": "privacy-lead-2",
+          "text": "Standalone Document. This Privacy Policy is a standalone document governing the Darkbloom Services only. It is separate from and does not incorporate the Eigen Labs Privacy Policy or other privacy notices governing EigenLayer, EigenCloud, EigenDA, EigenCompute, or other Eigen Labs products. Your use of those products is governed solely by their respective privacy notices. This Privacy Policy is designed for the Darkbloom product, including consumer-facing API and console features and provider-facing node software. It does not apply to third-party services we do not control, even if they interoperate with the Services.",
+          "inline": [
+            {
+              "type": "strong",
+              "text": "Standalone Document."
+            },
+            {
+              "type": "text",
+              "text": " This Privacy Policy is a standalone document governing the Darkbloom Services only. It is separate from and does not incorporate the Eigen Labs Privacy Policy or other privacy notices governing EigenLayer, EigenCloud, EigenDA, EigenCompute, or other Eigen Labs products. Your use of those products is governed solely by their respective privacy notices. This Privacy Policy is designed for the Darkbloom product, including consumer-facing API and console features and provider-facing node software. It does not apply to third-party services we do not control, even if they interoperate with the Services."
+            }
+          ]
+        }
+      ],
+      "sections": [
+        {
+          "number": "1",
+          "title": "Scope",
+          "heading": "1. Scope",
+          "anchor": "privacy-section-01-scope",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-01-scope-paragraph-1",
+              "text": "This Privacy Policy applies when you:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "This Privacy Policy applies when you:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-01-scope-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-01-scope-list-1-item-1",
+                  "text": "visit our websites or console;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "visit our websites or console;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-01-scope-list-1-item-2",
+                  "text": "create or use an account, API key, wallet-linked session, or device-link flow;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "create or use an account, API key, wallet-linked session, or device-link flow;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-01-scope-list-1-item-3",
+                  "text": "submit prompts, files, images, or audio to the Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "submit prompts, files, images, or audio to the Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-01-scope-list-1-item-4",
+                  "text": "install or operate provider software or the macOS app;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "install or operate provider software or the macOS app;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-01-scope-list-1-item-5",
+                  "text": "communicate with us about the Services.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "communicate with us about the Services."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-01-scope-paragraph-2",
+              "text": "Additional notices may apply to specific products, integrations, or enterprise relationships.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Additional notices may apply to specific products, integrations, or enterprise relationships."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "2",
+          "title": "Personal Information We Collect",
+          "heading": "2. Personal Information We Collect",
+          "anchor": "privacy-section-02-personal-information-we-collect",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-1",
+              "text": "The categories of personal information we collect depend on how you use the Services.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "The categories of personal information we collect depend on how you use the Services."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-2",
+              "text": "2.1 Account and identity information. We may collect:",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "2.1 Account and identity information."
+                },
+                {
+                  "type": "text",
+                  "text": " We may collect:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-02-personal-information-we-collect-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-1-item-1",
+                  "text": "name and business details you provide to us;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "name and business details you provide to us;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-1-item-2",
+                  "text": "email address;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "email address;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-1-item-3",
+                  "text": "authentication identifiers from our identity providers, including Privy user identifiers;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "authentication identifiers from our identity providers, including Privy user identifiers;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-1-item-4",
+                  "text": "wallet addresses and related wallet identifiers used for authentication or payment-related features;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "wallet addresses and related wallet identifiers used for authentication or payment-related features;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-1-item-5",
+                  "text": "API keys and account identifiers associated with the Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "API keys and account identifiers associated with the Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-1-item-6",
+                  "text": "tax identification information (such as W-9 or W-8BEN data) collected from providers for tax reporting purposes.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "tax identification information (such as W-9 or W-8BEN data) collected from providers for tax reporting purposes."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-3",
+              "text": "2.2 Payment, transaction, and billing information. We may collect:",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "2.2 Payment, transaction, and billing information."
+                },
+                {
+                  "type": "text",
+                  "text": " We may collect:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-02-personal-information-we-collect-list-2",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-2-item-1",
+                  "text": "billing session identifiers;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "billing session identifiers;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-2-item-2",
+                  "text": "payment method type;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "payment method type;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-2-item-3",
+                  "text": "deposit and withdrawal information;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "deposit and withdrawal information;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-2-item-4",
+                  "text": "Stripe checkout or other processor transaction identifiers;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "Stripe checkout or other processor transaction identifiers;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-2-item-5",
+                  "text": "blockchain transaction signatures, wallet addresses, transfer details, and related public-ledger information;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "blockchain transaction signatures, wallet addresses, transfer details, and related public-ledger information;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-2-item-6",
+                  "text": "account balances, credit history, payout history, referral codes, and ledger entries.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "account balances, credit history, payout history, referral codes, and ledger entries."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-4",
+              "text": "We generally do not receive full payment card numbers from Stripe or similar payment processors.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We generally do not receive full payment card numbers from Stripe or similar payment processors."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-5",
+              "text": "2.3 Usage and service metadata. We collect service usage information such as:",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "2.3 Usage and service metadata."
+                },
+                {
+                  "type": "text",
+                  "text": " We collect service usage information such as:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-02-personal-information-we-collect-list-3",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-3-item-1",
+                  "text": "request identifiers;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "request identifiers;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-3-item-2",
+                  "text": "account and provider identifiers;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "account and provider identifiers;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-3-item-3",
+                  "text": "selected model or feature;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "selected model or feature;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-3-item-4",
+                  "text": "token counts, audio duration, image count, or similar usage measures;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "token counts, audio duration, image count, or similar usage measures;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-3-item-5",
+                  "text": "timestamps;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "timestamps;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-3-item-6",
+                  "text": "per-request cost or billing metadata;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "per-request cost or billing metadata;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-3-item-7",
+                  "text": "API route, status code, and related operational metrics.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "API route, status code, and related operational metrics."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-6",
+              "text": "2.4 Content you submit and receive. Depending on the feature you use, we may process:",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "2.4 Content you submit and receive."
+                },
+                {
+                  "type": "text",
+                  "text": " Depending on the feature you use, we may process:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-02-personal-information-we-collect-list-4",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-4-item-1",
+                  "text": "prompts, messages, and instructions;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "prompts, messages, and instructions;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-4-item-2",
+                  "text": "files and attachments;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "files and attachments;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-4-item-3",
+                  "text": "model outputs and responses.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "model outputs and responses."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-7",
+              "text": "We refer to this material as \"Content.\"",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We refer to this material as \"Content.\""
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-8",
+              "text": "2.5 Provider and device information. If you run provider software or use provider-related features, we may collect:",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "2.5 Provider and device information."
+                },
+                {
+                  "type": "text",
+                  "text": " If you run provider software or use provider-related features, we may collect:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-02-personal-information-we-collect-list-5",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-5-item-1",
+                  "text": "hardware and device characteristics, such as machine model, chip family, memory, CPU/GPU information, and available capacity;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "hardware and device characteristics, such as machine model, chip family, memory, CPU/GPU information, and available capacity;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-5-item-2",
+                  "text": "provider wallet addresses;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "provider wallet addresses;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-5-item-3",
+                  "text": "attestation materials and related security data, including: Secure Enclave-generated P-256 public keys and ECDSA attestation signatures; SHA-256 hashes of the provider binary; hardware serial numbers used to cross-reference device identity in our MDM server; SIP status, Secure Boot level, and Authenticated Root Volume integrity status as reported by the device;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "attestation materials and related security data, including: Secure Enclave-generated P-256 public keys and ECDSA attestation signatures; SHA-256 hashes of the provider binary; hardware serial numbers used to cross-reference device identity in our MDM server; SIP status, Secure Boot level, and Authenticated Root Volume integrity status as reported by the device;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-5-item-4",
+                  "text": "challenge-response verification data: approximately every five minutes, our coordinator sends a 32-byte cryptographic nonce to the provider's device. The device signs the nonce using its Secure Enclave key and returns a response including fresh SIP and Secure Boot status. We collect and process the nonce, the signed response, and the accompanying security posture data for each challenge cycle;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "challenge-response verification data: approximately every five minutes, our coordinator sends a 32-byte cryptographic nonce to the provider's device. The device signs the nonce using its Secure Enclave key and returns a response including fresh SIP and Secure Boot status. We collect and process the nonce, the signed response, and the accompanying security posture data for each challenge cycle;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-5-item-5",
+                  "text": "heartbeats, health checks, thermal state, memory pressure, security posture, and version information;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "heartbeats, health checks, thermal state, memory pressure, security posture, and version information;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-5-item-6",
+                  "text": "device-linking tokens and account-link status.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "device-linking tokens and account-link status."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-9",
+              "text": "Further, provider Macs enrolled in the platform are subject to periodic automated SecurityInfo queries sent via Apple's MDM protocol through Apple's Push Notification service (APNs). These queries request SIP status, Secure Boot level, and Authenticated Root Volume integrity from the device's OS MDM client and not from Darkbloom software. This querying occurs on an ongoing basis throughout the provider's participation in the platform.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Further, provider Macs enrolled in the platform are subject to periodic automated SecurityInfo queries sent via Apple's MDM protocol through Apple's Push Notification service (APNs). These queries request SIP status, Secure Boot level, and Authenticated Root Volume integrity from the device's OS MDM client and not from Darkbloom software. This querying occurs on an ongoing basis throughout the provider's participation in the platform."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-10",
+              "text": "MDM enrollment is configured for security verification. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "MDM enrollment is configured for security verification. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-11",
+              "text": "2.6 Technical and log information. When you use the Services, we may automatically collect:",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "2.6 Technical and log information."
+                },
+                {
+                  "type": "text",
+                  "text": " When you use the Services, we may automatically collect:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-02-personal-information-we-collect-list-6",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-6-item-1",
+                  "text": "IP address and network information;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "IP address and network information;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-6-item-2",
+                  "text": "request logs, including route, response status, duration, and remote address;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "request logs, including route, response status, duration, and remote address;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-6-item-3",
+                  "text": "device, browser, and operating system information exposed to us;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "device, browser, and operating system information exposed to us;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-6-item-4",
+                  "text": "local storage or similar client-side state used to support the Services, such as stored API keys, preferred coordinator URL, theme preference, verification mode preference, and dismissed UI state;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "local storage or similar client-side state used to support the Services, such as stored API keys, preferred coordinator URL, theme preference, verification mode preference, and dismissed UI state;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-02-personal-information-we-collect-list-6-item-5",
+                  "text": "cookies, SDK storage, or similar session technologies used by our authentication or wallet partners.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "cookies, SDK storage, or similar session technologies used by our authentication or wallet partners."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-02-personal-information-we-collect-paragraph-12",
+              "text": "2.7 Communications and support information. If you contact us, we collect the contents of your message, attachments, and related contact details.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "2.7 Communications and support information."
+                },
+                {
+                  "type": "text",
+                  "text": " If you contact us, we collect the contents of your message, attachments, and related contact details."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "3",
+          "title": "How We Collect Personal Information",
+          "heading": "3. How We Collect Personal Information",
+          "anchor": "privacy-section-03-how-we-collect-personal-information",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-03-how-we-collect-personal-information-paragraph-1",
+              "text": "We collect personal information:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We collect personal information:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-03-how-we-collect-personal-information-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-03-how-we-collect-personal-information-list-1-item-1",
+                  "text": "directly from you when you create an account, authenticate, submit Content, operate provider software, make payments, or contact us;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "directly from you when you create an account, authenticate, submit Content, operate provider software, make payments, or contact us;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-03-how-we-collect-personal-information-list-1-item-2",
+                  "text": "automatically when you use the Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "automatically when you use the Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-03-how-we-collect-personal-information-list-1-item-3",
+                  "text": "from service providers and partners that help us authenticate users, process payments, provide wallet functionality, operate infrastructure, or verify transactions;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "from service providers and partners that help us authenticate users, process payments, provide wallet functionality, operate infrastructure, or verify transactions;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-03-how-we-collect-personal-information-list-1-item-4",
+                  "text": "from public sources, including public blockchain records, when relevant to payment and fraud-prevention workflows.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "from public sources, including public blockchain records, when relevant to payment and fraud-prevention workflows."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "4",
+          "title": "How We Use Personal Information",
+          "heading": "4. How We Use Personal Information",
+          "anchor": "privacy-section-04-how-we-use-personal-information",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-04-how-we-use-personal-information-paragraph-1",
+              "text": "We use personal information to:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We use personal information to:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-04-how-we-use-personal-information-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-04-how-we-use-personal-information-list-1-item-1",
+                  "text": "provide, operate, maintain, secure, and improve the Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "provide, operate, maintain, secure, and improve the Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-04-how-we-use-personal-information-list-1-item-2",
+                  "text": "authenticate users and devices, generate API keys, and manage access control;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "authenticate users and devices, generate API keys, and manage access control;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-04-how-we-use-personal-information-list-1-item-3",
+                  "text": "route requests, return outputs, meter usage, and support billing, accounting, payouts, and fraud prevention;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "route requests, return outputs, meter usage, and support billing, accounting, payouts, and fraud prevention;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-04-how-we-use-personal-information-list-1-item-4",
+                  "text": "operate provider onboarding, MDM enrollment, attestation, integrity verification, challenge-response verification, and account-linking features;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "operate provider onboarding, MDM enrollment, attestation, integrity verification, challenge-response verification, and account-linking features;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-04-how-we-use-personal-information-list-1-item-5",
+                  "text": "if applicable, collect tax identification information and fulfill tax reporting obligations, including IRS Form 1099-NEC reporting for qualifying US providers;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "if applicable, collect tax identification information and fulfill tax reporting obligations, including IRS Form 1099-NEC reporting for qualifying US providers;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-04-how-we-use-personal-information-list-1-item-6",
+                  "text": "communicate with you about the Services, updates, support issues, and legal or security notices;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "communicate with you about the Services, updates, support issues, and legal or security notices;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-04-how-we-use-personal-information-list-1-item-7",
+                  "text": "monitor performance, reliability, and abuse;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "monitor performance, reliability, and abuse;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-04-how-we-use-personal-information-list-1-item-8",
+                  "text": "investigate and enforce compliance with our Terms of Service and other legal requirements;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "investigate and enforce compliance with our Terms of Service and other legal requirements;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-04-how-we-use-personal-information-list-1-item-9",
+                  "text": "comply with law, regulation, court order, or lawful government request;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "comply with law, regulation, court order, or lawful government request;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-04-how-we-use-personal-information-list-1-item-10",
+                  "text": "create aggregated or de-identified information for analytics, reporting, security, and service improvement, where permitted by law.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "create aggregated or de-identified information for analytics, reporting, security, and service improvement, where permitted by law."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "5",
+          "title": "Important Content-Handling Disclosures",
+          "heading": "5. Important Content-Handling Disclosures",
+          "anchor": "privacy-section-05-important-content-handling-disclosures",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-05-important-content-handling-disclosures-paragraph-1",
+              "text": "Because Darkbloom is an inference platform, Content handling is central to how the Services work. The following disclosures are intended to be precise and conservative.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Because Darkbloom is an inference platform, Content handling is central to how the Services work. The following disclosures are intended to be precise and conservative."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-05-important-content-handling-disclosures-paragraph-2",
+              "text": "5.1 Transit and relay. Content sent to the Services is transmitted to our coordinator over TLS. Depending on the service path and provider capabilities, we may also encrypt request bodies before relaying them to a selected provider.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "5.1 Transit and relay."
+                },
+                {
+                  "type": "text",
+                  "text": " Content sent to the Services is transmitted to our coordinator over TLS. Depending on the service path and provider capabilities, we may also encrypt request bodies before relaying them to a selected provider."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-05-important-content-handling-disclosures-paragraph-3",
+              "text": "5.2 Coordinator access. The current service architecture requires our coordinator to process request payloads in plaintext on a transient basis for routing, compatibility, metering, and operation of the Services. You should not treat the current architecture as guaranteeing that the coordinator is technically incapable of accessing request payloads in every service path.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "5.2 Coordinator access."
+                },
+                {
+                  "type": "text",
+                  "text": " The current service architecture requires our coordinator to process request payloads in plaintext on a transient basis for routing, compatibility, metering, and operation of the Services. You should not treat the current architecture as guaranteeing that the coordinator is technically incapable of accessing request payloads in every service path."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-05-important-content-handling-disclosures-paragraph-4",
+              "text": "5.3 Logging. Our coordinator code is designed not to log prompt content in ordinary request logs. However, we do log operational metadata such as request path, status, duration, and remote address. Content may also be disclosed to us if you intentionally provide it in support requests, bug reports, or other communications.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "5.3 Logging."
+                },
+                {
+                  "type": "text",
+                  "text": " Our coordinator code is designed not to log prompt content in ordinary request logs. However, we do log operational metadata such as request path, status, duration, and remote address. Content may also be disclosed to us if you intentionally provide it in support requests, bug reports, or other communications."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-05-important-content-handling-disclosures-paragraph-5",
+              "text": "5.4 Selected providers. To fulfill inference requests, we disclose relevant Content to the provider selected to process the request. If you operate provider software, that means customer requests may be routed to your device subject to the Services' security and attestation controls.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "5.4 Selected providers."
+                },
+                {
+                  "type": "text",
+                  "text": " To fulfill inference requests, we disclose relevant Content to the provider selected to process the request. If you operate provider software, that means customer requests may be routed to your device subject to the Services' security and attestation controls."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-05-important-content-handling-disclosures-paragraph-6",
+              "text": "5.5 Images and uploads. Generated images may be temporarily stored in service memory pending retrieval and delivery to the requesting user. These in-memory image uploads are removed after retrieval, but no system can guarantee perfect deletion or eliminate all risk.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "5.5 Images and uploads."
+                },
+                {
+                  "type": "text",
+                  "text": " Generated images may be temporarily stored in service memory pending retrieval and delivery to the requesting user. These in-memory image uploads are removed after retrieval, but no system can guarantee perfect deletion or eliminate all risk."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-05-important-content-handling-disclosures-paragraph-7",
+              "text": "5.6 Training. This Privacy Policy does not grant us a right to use your Content for general-purpose model training. If we decide to do so in the future, we will update this Privacy Policy and any related contractual terms before doing so, to the extent required by law.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "5.6 Training."
+                },
+                {
+                  "type": "text",
+                  "text": " This Privacy Policy does not grant us a right to use your Content for general-purpose model training. If we decide to do so in the future, we will update this Privacy Policy and any related contractual terms before doing so, to the extent required by law."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-05-important-content-handling-disclosures-paragraph-8",
+              "text": "5.7 Third-party routing. If you access the Services through a third-party API aggregator or routing service such as OpenRouter, your requests may be processed by that third party before reaching our infrastructure. Third-party routing services operate as TLS-terminating proxies and may have technical access to your prompts and outputs in transit. Their handling of your data is governed by their own privacy policies, not ours. Darkbloom's privacy architecture applies only to the portion of the request path within our infrastructure.",
+              "inline": [
+                {
+                  "type": "strong",
+                  "text": "5.7 Third-party routing."
+                },
+                {
+                  "type": "text",
+                  "text": " If you access the Services through a third-party API aggregator or routing service such as OpenRouter, your requests may be processed by that third party before reaching our infrastructure. Third-party routing services operate as TLS-terminating proxies and may have technical access to your prompts and outputs in transit. Their handling of your data is governed by their own privacy policies, not ours. Darkbloom's privacy architecture applies only to the portion of the request path within our infrastructure."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "6",
+          "title": "How We Disclose Personal Information",
+          "heading": "6. How We Disclose Personal Information",
+          "anchor": "privacy-section-06-how-we-disclose-personal-information",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-06-how-we-disclose-personal-information-paragraph-1",
+              "text": "We may disclose personal information:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We may disclose personal information:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-06-how-we-disclose-personal-information-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-06-how-we-disclose-personal-information-list-1-item-1",
+                  "text": "to service providers and subprocessors that host infrastructure, provide observability, process payments, verify transactions, support authentication, or otherwise help us operate the Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "to service providers and subprocessors that host infrastructure, provide observability, process payments, verify transactions, support authentication, or otherwise help us operate the Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-06-how-we-disclose-personal-information-list-1-item-2",
+                  "text": "to identity, wallet, or payment partners such as Privy, Stripe, card networks, banks, blockchain RPC providers, or wallet providers when needed to authenticate you or complete a transaction;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "to identity, wallet, or payment partners such as Privy, Stripe, card networks, banks, blockchain RPC providers, or wallet providers when needed to authenticate you or complete a transaction;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-06-how-we-disclose-personal-information-list-1-item-3",
+                  "text": "to providers participating in the network, to the extent needed to process your requests;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "to providers participating in the network, to the extent needed to process your requests;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-06-how-we-disclose-personal-information-list-1-item-4",
+                  "text": "to your organization, if you use the Services through a company or enterprise account;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "to your organization, if you use the Services through a company or enterprise account;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-06-how-we-disclose-personal-information-list-1-item-5",
+                  "text": "to law enforcement, regulators, courts, or other third parties when required by law or when we believe disclosure is necessary to protect rights, safety, property, or the Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "to law enforcement, regulators, courts, or other third parties when required by law or when we believe disclosure is necessary to protect rights, safety, property, or the Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-06-how-we-disclose-personal-information-list-1-item-6",
+                  "text": "in connection with an actual or proposed merger, acquisition, financing, reorganization, bankruptcy, receivership, or sale of assets;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "in connection with an actual or proposed merger, acquisition, financing, reorganization, bankruptcy, receivership, or sale of assets;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-06-how-we-disclose-personal-information-list-1-item-7",
+                  "text": "with your direction or consent.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "with your direction or consent."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-06-how-we-disclose-personal-information-paragraph-2",
+              "text": "Some information may also be public by design:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Some information may also be public by design:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-06-how-we-disclose-personal-information-list-2",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-06-how-we-disclose-personal-information-list-2-item-1",
+                  "text": "blockchain transaction data may be visible on public ledgers;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "blockchain transaction data may be visible on public ledgers;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-06-how-we-disclose-personal-information-list-2-item-2",
+                  "text": "privacy-redacted attestation or verification status may be made available through public or customer-facing verification endpoints. Hardware serial numbers, UDIDs, and raw identity-bearing device certificates are excluded from those endpoints.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "privacy-redacted attestation or verification status may be made available through public or customer-facing verification endpoints. Hardware serial numbers, UDIDs, and raw identity-bearing device certificates are excluded from those endpoints."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-06-how-we-disclose-personal-information-paragraph-3",
+              "text": "We do not sell personal information for money. We also do not share personal information for cross-context behavioral advertising as those terms are used in certain U.S. privacy laws.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We do not sell personal information for money. We also do not share personal information for cross-context behavioral advertising as those terms are used in certain U.S. privacy laws."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "7",
+          "title": "Legal Bases",
+          "heading": "7. Legal Bases",
+          "anchor": "privacy-section-07-legal-bases",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-07-legal-bases-paragraph-1",
+              "text": "If and to the extent a legal basis is required for our processing, we rely on:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "If and to the extent a legal basis is required for our processing, we rely on:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-07-legal-bases-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-07-legal-bases-list-1-item-1",
+                  "text": "performance of our contract with you;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "performance of our contract with you;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-07-legal-bases-list-1-item-2",
+                  "text": "our legitimate interests in operating, securing, improving, and enforcing the Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "our legitimate interests in operating, securing, improving, and enforcing the Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-07-legal-bases-list-1-item-3",
+                  "text": "compliance with legal obligations;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "compliance with legal obligations;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-07-legal-bases-list-1-item-4",
+                  "text": "your consent, where required by law.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "your consent, where required by law."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "8",
+          "title": "Retention",
+          "heading": "8. Retention",
+          "anchor": "privacy-section-08-retention",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-08-retention-paragraph-1",
+              "text": "We retain personal information for as long as reasonably necessary for the purposes described in this Privacy Policy, including to:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We retain personal information for as long as reasonably necessary for the purposes described in this Privacy Policy, including to:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-08-retention-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-08-retention-list-1-item-1",
+                  "text": "provide the Services;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "provide the Services;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-08-retention-list-1-item-2",
+                  "text": "maintain account, billing, ledger, tax, and compliance records;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "maintain account, billing, ledger, tax, and compliance records;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-08-retention-list-1-item-3",
+                  "text": "investigate incidents, fraud, or abuse;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "investigate incidents, fraud, or abuse;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-08-retention-list-1-item-4",
+                  "text": "enforce our agreements;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "enforce our agreements;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-08-retention-list-1-item-5",
+                  "text": "satisfy legal, regulatory, audit, accounting, or reporting requirements.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "satisfy legal, regulatory, audit, accounting, or reporting requirements."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-08-retention-paragraph-2",
+              "text": "Retention periods may vary by data type. For example:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Retention periods may vary by data type. For example:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-08-retention-list-2",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-08-retention-list-2-item-1",
+                  "text": "account and billing records may be retained for legal and accounting periods;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "account and billing records may be retained for legal and accounting periods;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-08-retention-list-2-item-2",
+                  "text": "usage and security logs may be retained for operational, fraud-prevention, and support purposes;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "usage and security logs may be retained for operational, fraud-prevention, and support purposes;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-08-retention-list-2-item-3",
+                  "text": "tax identification information (W-9/W-8BEN data) is retained for as long as required by IRS regulations;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "tax identification information (W-9/W-8BEN data) is retained for as long as required by IRS regulations;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-08-retention-list-2-item-4",
+                  "text": "provider attestation and device-link data, including hardware serial numbers, binary hashes, Secure Enclave public keys, MDM SecurityInfo responses, and challenge-response records, may be retained for trust, audit, and network-integrity purposes;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "provider attestation and device-link data, including hardware serial numbers, binary hashes, Secure Enclave public keys, MDM SecurityInfo responses, and challenge-response records, may be retained for trust, audit, and network-integrity purposes;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-08-retention-list-2-item-5",
+                  "text": "Content may be retained for shorter operational periods unless preserved longer for support, abuse review, legal compliance, or dispute resolution.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "Content may be retained for shorter operational periods unless preserved longer for support, abuse review, legal compliance, or dispute resolution."
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "9",
+          "title": "Your Privacy Choices and Rights",
+          "heading": "9. Your Privacy Choices and Rights",
+          "anchor": "privacy-section-09-your-privacy-choices-and-rights",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-09-your-privacy-choices-and-rights-paragraph-1",
+              "text": "Depending on where you live, you may have rights to:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Depending on where you live, you may have rights to:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-09-your-privacy-choices-and-rights-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-09-your-privacy-choices-and-rights-list-1-item-1",
+                  "text": "know or access the personal information we hold about you;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "know or access the personal information we hold about you;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-09-your-privacy-choices-and-rights-list-1-item-2",
+                  "text": "correct inaccurate personal information;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "correct inaccurate personal information;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-09-your-privacy-choices-and-rights-list-1-item-3",
+                  "text": "delete personal information;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "delete personal information;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-09-your-privacy-choices-and-rights-list-1-item-4",
+                  "text": "receive a portable copy of certain information;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "receive a portable copy of certain information;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-09-your-privacy-choices-and-rights-list-1-item-5",
+                  "text": "opt out of sale, sharing, targeted advertising, or certain profiling, if applicable;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "opt out of sale, sharing, targeted advertising, or certain profiling, if applicable;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-09-your-privacy-choices-and-rights-list-1-item-6",
+                  "text": "limit the use or disclosure of sensitive personal information, where applicable under state law;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "limit the use or disclosure of sensitive personal information, where applicable under state law;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-09-your-privacy-choices-and-rights-list-1-item-7",
+                  "text": "not receive discriminatory treatment for exercising privacy rights.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "not receive discriminatory treatment for exercising privacy rights."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-09-your-privacy-choices-and-rights-paragraph-2",
+              "text": "We may need to verify your identity before fulfilling a request. We may deny or limit requests where permitted by law, including where we cannot verify identity, where the request is legally exempt, or where retention is necessary for security, billing, compliance, or dispute purposes.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We may need to verify your identity before fulfilling a request. We may deny or limit requests where permitted by law, including where we cannot verify identity, where the request is legally exempt, or where retention is necessary for security, billing, compliance, or dispute purposes."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-09-your-privacy-choices-and-rights-paragraph-3",
+              "text": "To submit a privacy request, contact us at darkbloomnotices@eigenlabs.org.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "To submit a privacy request, contact us at "
+                },
+                {
+                  "type": "link",
+                  "text": "darkbloomnotices@eigenlabs.org",
+                  "href": "mailto:darkbloomnotices@eigenlabs.org"
+                },
+                {
+                  "type": "text",
+                  "text": "."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-09-your-privacy-choices-and-rights-paragraph-4",
+              "text": "Authorized agents may submit requests on your behalf where permitted by law, subject to verification.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Authorized agents may submit requests on your behalf where permitted by law, subject to verification."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-09-your-privacy-choices-and-rights-paragraph-5",
+              "text": "California residents may have rights described in the California Consumer Privacy Act, including rights to know, delete, correct, and opt out, subject to applicable exceptions.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "California residents may have rights described in the California Consumer Privacy Act, including rights to know, delete, correct, and opt out, subject to applicable exceptions."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "10",
+          "title": "Cookies, Local Storage, and Similar Technologies",
+          "heading": "10. Cookies, Local Storage, and Similar Technologies",
+          "anchor": "privacy-section-10-cookies-local-storage-and-similar-technologies",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-10-cookies-local-storage-and-similar-technologies-paragraph-1",
+              "text": "We and our partners may use cookies, local storage, SDK storage, or similar technologies to:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We and our partners may use cookies, local storage, SDK storage, or similar technologies to:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-10-cookies-local-storage-and-similar-technologies-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-10-cookies-local-storage-and-similar-technologies-list-1-item-1",
+                  "text": "keep you signed in or authenticated;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "keep you signed in or authenticated;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-10-cookies-local-storage-and-similar-technologies-list-1-item-2",
+                  "text": "store API keys or configuration choices you elect to save in the browser;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "store API keys or configuration choices you elect to save in the browser;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-10-cookies-local-storage-and-similar-technologies-list-1-item-3",
+                  "text": "remember preferences such as theme, coordinator URL, or verification mode;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "remember preferences such as theme, coordinator URL, or verification mode;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-10-cookies-local-storage-and-similar-technologies-list-1-item-4",
+                  "text": "support wallet or authentication SDK functionality;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "support wallet or authentication SDK functionality;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-10-cookies-local-storage-and-similar-technologies-list-1-item-5",
+                  "text": "secure sessions and detect abuse.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "secure sessions and detect abuse."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-10-cookies-local-storage-and-similar-technologies-paragraph-2",
+              "text": "You can control some browser storage through your browser settings, but disabling these features may impair the Services.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "You can control some browser storage through your browser settings, but disabling these features may impair the Services."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-10-cookies-local-storage-and-similar-technologies-paragraph-3",
+              "text": "Our websites and apps are not currently designed to respond to browser \"Do Not Track\" signals.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "Our websites and apps are not currently designed to respond to browser \"Do Not Track\" signals."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "11",
+          "title": "Third-Party Sites, Wallets, and Social Features",
+          "heading": "11. Third-Party Sites, Wallets, and Social Features",
+          "anchor": "privacy-section-11-third-party-sites-wallets-and-social-features",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-11-third-party-sites-wallets-and-social-features-paragraph-1",
+              "text": "The Services may link to third-party websites, repositories, social channels, wallet providers, identity providers, and payment services. If you follow those links or use those services, your information will be governed by the applicable third party's terms and privacy practices, not ours.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "The Services may link to third-party websites, repositories, social channels, wallet providers, identity providers, and payment services. If you follow those links or use those services, your information will be governed by the applicable third party's terms and privacy practices, not ours."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-11-third-party-sites-wallets-and-social-features-paragraph-2",
+              "text": "This includes services used for authentication and embedded wallet flows:",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "This includes services used for authentication and embedded wallet flows:"
+                }
+              ]
+            },
+            {
+              "type": "list",
+              "anchor": "privacy-section-11-third-party-sites-wallets-and-social-features-list-1",
+              "style": "unordered",
+              "items": [
+                {
+                  "anchor": "privacy-section-11-third-party-sites-wallets-and-social-features-list-1-item-1",
+                  "text": "payment processing and billing;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "payment processing and billing;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-11-third-party-sites-wallets-and-social-features-list-1-item-2",
+                  "text": "blockchain transaction broadcasting, indexing, or verification;",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "blockchain transaction broadcasting, indexing, or verification;"
+                    }
+                  ]
+                },
+                {
+                  "anchor": "privacy-section-11-third-party-sites-wallets-and-social-features-list-1-item-3",
+                  "text": "social, support, or community interactions outside our Services.",
+                  "inline": [
+                    {
+                      "type": "text",
+                      "text": "social, support, or community interactions outside our Services."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-11-third-party-sites-wallets-and-social-features-paragraph-3",
+              "text": "We are not responsible for the privacy, security, availability, or accuracy of third-party services we do not control.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We are not responsible for the privacy, security, availability, or accuracy of third-party services we do not control."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "12",
+          "title": "Security",
+          "heading": "12. Security",
+          "anchor": "privacy-section-12-security",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-12-security-paragraph-1",
+              "text": "We use administrative, technical, and organizational safeguards designed to protect personal information appropriate to the nature of the data and the Services. These may include authentication controls, TLS, integrity checks, attestation workflows, access restrictions, and logging.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We use administrative, technical, and organizational safeguards designed to protect personal information appropriate to the nature of the data and the Services. These may include authentication controls, TLS, integrity checks, attestation workflows, access restrictions, and logging."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-12-security-paragraph-2",
+              "text": "No security program is perfect, and we cannot guarantee absolute security.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "No security program is perfect, and we cannot guarantee absolute security."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "13",
+          "title": "International Transfers",
+          "heading": "13. International Transfers",
+          "anchor": "privacy-section-13-international-transfers",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-13-international-transfers-paragraph-1",
+              "text": "We may process personal information in the United States and other jurisdictions where we or our service providers operate. Those jurisdictions may not provide the same level of data protection as your home jurisdiction. Where required by applicable law, we rely on appropriate legal mechanisms for international transfers of personal information, which may include Standard Contractual Clauses approved by the European Commission or other lawful transfer mechanisms. For more information about the transfer mechanisms we use, contact us at darkbloomnotices@eigenlabs.org.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We may process personal information in the United States and other jurisdictions where we or our service providers operate. Those jurisdictions may not provide the same level of data protection as your home jurisdiction. Where required by applicable law, we rely on appropriate legal mechanisms for international transfers of personal information, which may include Standard Contractual Clauses approved by the European Commission or other lawful transfer mechanisms. For more information about the transfer mechanisms we use, contact us at "
+                },
+                {
+                  "type": "link",
+                  "text": "darkbloomnotices@eigenlabs.org",
+                  "href": "mailto:darkbloomnotices@eigenlabs.org"
+                },
+                {
+                  "type": "text",
+                  "text": "."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "14",
+          "title": "Children's Privacy",
+          "heading": "14. Children's Privacy",
+          "anchor": "privacy-section-14-children-s-privacy",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-14-children-s-privacy-paragraph-1",
+              "text": "The Services are not directed to children under 13, and we do not knowingly collect personal information from children under 13. We also do not permit users under 18 to use the Services under our Terms of Service.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "The Services are not directed to children under 13, and we do not knowingly collect personal information from children under 13. We also do not permit users under 18 to use the Services under our Terms of Service."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-14-children-s-privacy-paragraph-2",
+              "text": "If you believe a child has provided personal information to us in violation of this Privacy Policy, contact us so we can take appropriate steps.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "If you believe a child has provided personal information to us in violation of this Privacy Policy, contact us so we can take appropriate steps."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "15",
+          "title": "Changes to This Privacy Policy",
+          "heading": "15. Changes to This Privacy Policy",
+          "anchor": "privacy-section-15-changes-to-this-privacy-policy",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-15-changes-to-this-privacy-policy-paragraph-1",
+              "text": "We may update this Privacy Policy from time to time. If we make material changes, we will post the updated version, update the effective date, and take any additional steps required by law.",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "We may update this Privacy Policy from time to time. If we make material changes, we will post the updated version, update the effective date, and take any additional steps required by law."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "number": "16",
+          "title": "Contact Us",
+          "heading": "16. Contact Us",
+          "anchor": "privacy-section-16-contact-us",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "anchor": "privacy-section-16-contact-us-paragraph-1",
+              "text": "For questions or requests about this Privacy Policy, contact: darkbloomnotices@eigenlabs.org",
+              "inline": [
+                {
+                  "type": "text",
+                  "text": "For questions or requests about this Privacy Policy, contact: "
+                },
+                {
+                  "type": "link",
+                  "text": "darkbloomnotices@eigenlabs.org",
+                  "href": "mailto:darkbloomnotices@eigenlabs.org"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

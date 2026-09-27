@@ -13,6 +13,7 @@ public enum CoordinatorClientCodec {
         modelWeightHashOverrides: [String: String]? = nil,
         prefixCacheProtocol: Int = 1,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+        prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
     ) -> ProviderMessage {
@@ -61,10 +62,12 @@ public enum CoordinatorClientCodec {
             apnsEnvironment: effectiveEnv,
             prefixCacheProtocol: prefixCacheProtocol,
             prefixCacheV2Models: prefixCacheV2Models,
+            prefixCacheMemoryModels: prefixCacheMemoryModels,
             prefixCacheStatuses: prefixCacheStatuses,
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
-            toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels
+            toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels,
+            appAttestProtocol: 3
         ))
     }
 
@@ -77,6 +80,7 @@ public enum CoordinatorClientCodec {
         modelWeightHashOverrides: [String: String]? = nil,
         prefixCacheProtocol: Int = 1,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+        prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
     ) throws -> Data {
@@ -90,6 +94,7 @@ public enum CoordinatorClientCodec {
                 modelWeightHashOverrides: modelWeightHashOverrides,
                 prefixCacheProtocol: prefixCacheProtocol,
                 prefixCacheV2Models: prefixCacheV2Models,
+                prefixCacheMemoryModels: prefixCacheMemoryModels,
                 prefixCacheStatuses: prefixCacheStatuses,
                 prefixCacheDonationOutcomes: prefixCacheDonationOutcomes
             )
@@ -107,8 +112,10 @@ public enum CoordinatorClientCodec {
         apnsEnvironment: String? = nil,
         prefixCacheProtocol: Int? = nil,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+        prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+        idleUnloadMins: UInt64? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -121,13 +128,16 @@ public enum CoordinatorClientCodec {
             apnsEnvironment: apnsEnvironment,
             prefixCacheProtocol: prefixCacheProtocol,
             prefixCacheV2Models: prefixCacheV2Models,
+            prefixCacheMemoryModels: prefixCacheMemoryModels,
             prefixCacheStatuses: prefixCacheStatuses,
-            prefixCacheDonationOutcomes: prefixCacheDonationOutcomes
+            prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
+            idleUnloadMins: idleUnloadMins
         ))
     }
 
     public static func providerMessage(for outbound: OutboundMessage) -> ProviderMessage {
         switch outbound {
+        case .drainBarrier(let id): return .drainBarrier(id)
         case .inferenceAccepted(let requestId):
             return .inferenceAccepted(ProviderMessage.InferenceAccepted(requestId: requestId))
 
@@ -143,20 +153,26 @@ public enum CoordinatorClientCodec {
             let usage,
             let stopSequence,
             let seSignature,
-            let responseHash
+            let responseHash,
+            let profile
         ):
             return .inferenceComplete(ProviderMessage.InferenceComplete(
                 requestId: requestId,
                 usage: usage,
                 stopSequence: stopSequence,
                 seSignature: seSignature,
-                responseHash: responseHash
+                responseHash: responseHash,
+                // Materialized HERE (encode time) so `terminal_sent_us` /
+                // `flush_us` stamped by SendHandle.send are included and
+                // `total_us` covers the outbound-queue wait.
+                profile: profile?.wireObject()
             ))
 
-        case .inferenceError(let requestId, let failure):
+        case .inferenceError(let requestId, let failure, let profile):
             return .inferenceError(ProviderMessage.InferenceError(
                 requestId: requestId,
-                failure: failure
+                failure: failure,
+                profile: profile?.wireObject()
             ))
 
         case .attestationResponse(let payload):
@@ -176,7 +192,10 @@ public enum CoordinatorClientCodec {
                 modelHashes: payload.modelHashes
             ))
 
-        case .codeAttestationResponse(let nonce, let signature):
+        case .appAttestShadow(let payload):
+            return .appAttestShadow(payload)
+
+        case .codeAttestationResponse(let nonce, let signature, _):
             return .codeAttestationResponse(ProviderMessage.CodeAttestationResponse(
                 nonce: nonce,
                 signature: signature
@@ -203,6 +222,16 @@ public enum CoordinatorClientCodec {
                 models: models,
                 toolConstraintProtocol: 1,
                 toolConstraintModels: toolConstraintModelIDs(models)))
+
+        case .modelsReplace(let requestId, let drainID, let models, let validateOnly):
+            return .modelsReplace(ProviderMessage.ModelsReplace(
+                requestId: requestId, drainRequestId: drainID, models: models,
+                validateOnly: validateOnly,
+                toolConstraintProtocol: 1,
+                toolConstraintModels: toolConstraintModelIDs(models)))
+
+        case .modelsReplaceReady(let requestId, let drainID, let capacitySeq):
+            return .modelsReplaceReady(.init(requestId: requestId, drainRequestId: drainID, capacitySeq: capacitySeq))
 
         case .prefixCacheLookup(
             let requestId, let nonce, let outcome, let tier,

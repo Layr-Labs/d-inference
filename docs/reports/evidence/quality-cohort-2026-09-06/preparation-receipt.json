@@ -1,0 +1,43 @@
+{
+  "package": "/private/tmp/darkbloom-representative-quality-cohort1/package",
+  "manifest_sha256": "684a951abc14840418e22b47d2c699a5632d9fcb5a71ca917b7a5ea047047f4f",
+  "archive": "/tmp/darkbloom-representative-quality-cohort1.tar.gz",
+  "archive_sha256": "dd98653f0a0dc80141beb252d232a5d312c4060a6a0672c8b7c7c4370e766e93",
+  "archive_bytes": 4117480,
+  "payload_files": 307,
+  "logical_cases": 12,
+  "model_case_payloads": 72,
+  "model_runs": 0,
+  "quality_pass": null,
+  "at_utc": "2026-09-06T11:47:55.449018+00:00",
+  "validation": [
+    {
+      "name": "manifest",
+      "returncode": 0
+    },
+    {
+      "name": "loader",
+      "returncode": 0
+    },
+    {
+      "name": "relocated-tests",
+      "returncode": 0
+    },
+    {
+      "name": "wrong-manifest-sha-refused",
+      "returncode": 1,
+      "expected_refusal": true
+    }
+  ],
+  "unique_cpu_tests": 68,
+  "normal_and_optimized_pass": true,
+  "relocated_archive_tests_pass": true,
+  "source_worktree_clean": true,
+  "canonical_plan_matches": 144,
+  "owned_sidecar_children_reaped": 6,
+  "gpu_runs": 0,
+  "swift_builds": 0,
+  "weight_downloads": 0,
+  "remote_host_access": false,
+  "dev_or_production_activity": false
+}

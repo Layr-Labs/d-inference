@@ -62,6 +62,16 @@ struct DoctorClearBackendGuardTests {
         #expect(lines.contains {
             $0.contains("reset the watchdog's crash-loop restart chain (was 3)")
         })
+        let cleared = try #require(lines.first { $0.hasPrefix("Cleared.") })
+        #expect(cleared.contains("On the next model load, `auto` retries paged only"))
+        #expect(cleared.contains("candidate Qwen allowlist; all other models stay contiguous"))
+        #expect(cleared.contains("Automatic paged failures still fall back to contiguous"))
+        #expect(cleared.contains("Explicit backend settings, capability/span-mask vetoes"))
+        #expect(cleared.contains("`DARKBLOOM_CBV2_PAGED_KV=0` still apply"))
+        #expect(cleared.contains("Candidate rollout is not yet validated"))
+        #expect(cleared.contains("docs/design/qwen-first-paged-ssd-rollout.md"))
+        #expect(cleared.contains("guard re-trips after \(WatchdogPolicy.crashLoopTripThreshold) crash-loop restarts"))
+        #expect(!cleared.contains("does not move this box onto paged"))
 
         // One crash two minutes into the retry: the chain computes 1 — a
         // fresh trial window, NOT old-chain 4 — so the guard does not

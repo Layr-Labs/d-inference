@@ -146,6 +146,7 @@ enum SchedulerPrefillDecisionLiveHarness {
                     : nil
                 let parts = try await SchedulerPrefillDecisionLiveRunner.makeEngine(
                     container: container,
+                    modelID: modelID,
                     isVLM: isVLM,
                     modelDirectory: modelDirectory,
                     weightBytes: facts.weightBytes,

@@ -1,0 +1,703 @@
+{
+  "adapter_manifest_sha256": "12cd0ce5eec6cf252a5d8cdc58c6a30e5756fa17b5c30cde7dbfc93c222367d8",
+  "archive": {
+    "bytes": 2199850,
+    "mode": 420,
+    "sha256": "1faedb025b7bcd0903a538533da8591fe7b2b8a01695d62d1c0bdcd5c56031a2"
+  },
+  "excluded": [
+    "runtime executables/metallibs/AIR",
+    "full source copies",
+    "private keys/certificates",
+    "weights",
+    "11 MiB common Q/K/V already banked",
+    "redundant 77 MiB metallib strings dumps",
+    "full remote build tree"
+  ],
+  "external_input_bank": {
+    "archive": "docs/reports/evidence/qwen36-owner0-packets-2026-09-06/payloads.tar.gz",
+    "archive_identity": {
+      "bytes": 18633161,
+      "mode": 420,
+      "sha256": "0ad883a7d23b3de60643197446064e15fd91ac71ee759012f5ef4ebd25f30f81"
+    },
+    "manifest_identity": {
+      "bytes": 42418,
+      "mode": 420,
+      "sha256": "f22191f08fa53f83f8b01bfd9e6bdb2284fc2fa7e65def86633c9bc859efa01e"
+    },
+    "members": {
+      "queries": "raw/qwen36-contiguous-owner0-packet/report.attention-packet/queries.bin",
+      "storedKeys": "raw/qwen36-contiguous-owner0-packet/report.attention-packet/stored-keys.bin",
+      "storedValues": "raw/qwen36-contiguous-owner0-packet/report.attention-packet/stored-values.bin"
+    }
+  },
+  "files": {
+    "analysis/analysis.json": {
+      "bytes": 4305,
+      "mode": 420,
+      "sha256": "29a4349791ed242c90514d74e26519ed3b9b3b43f89ae310f0783231e361cb7e"
+    },
+    "analysis/analyze.py": {
+      "bytes": 3135,
+      "mode": 420,
+      "sha256": "fafc397b953595401086204a52e2387eb42317b64f4bd8eb0f28d7a9766a4fc2"
+    },
+    "analysis/bank-review.py": {
+      "bytes": 19587,
+      "mode": 420,
+      "sha256": "cd72cd5cb5e91565d19c07170060aaaf30abfcd1869de1d72f93585b22b74231"
+    },
+    "analysis/collection-receipt.json": {
+      "bytes": 7293,
+      "mode": 420,
+      "sha256": "f9814decd13ad541539f132773ace831d40319da1f1b7bea062b9158b9d9d945"
+    },
+    "analysis/external-input-bank.json": {
+      "bytes": 695,
+      "mode": 420,
+      "sha256": "0f07597f4babfd93db7a30e42410bff633e732528212570b977f6e48fcf2f4e6"
+    },
+    "analysis/independent-review.json": {
+      "bytes": 10376,
+      "mode": 420,
+      "sha256": "f38951b6b280fcb77e231c43b63ae8eec4647a124b1caa32b643c1448be25c97"
+    },
+    "build/attempt1-build-status.json": {
+      "bytes": 8614,
+      "mode": 420,
+      "sha256": "3bd83737d0ce445fac6d6e445117e4fc093af6e9187a5d117962e8369e9b7a27"
+    },
+    "build/attempt1-executions.json": {
+      "bytes": 7909,
+      "mode": 420,
+      "sha256": "716235f7512404e690d4c048e3f8dc3c3d596a0f1986c464147e8dee540a49ff"
+    },
+    "build/baseline/artifact-manifest.json": {
+      "bytes": 1631,
+      "mode": 420,
+      "sha256": "54d0e87c902b8762ba50dadba1e261a6bf99a0a4cfa0dac215ce718ef69519aa"
+    },
+    "build/baseline/compiler-source-graph.json": {
+      "bytes": 172844,
+      "mode": 420,
+      "sha256": "f35e4bacb6f6e69428f0f92fc96bd30e44fe92c417534226d1816c41d5ce61d6"
+    },
+    "build/baseline/dependency-proof.json": {
+      "bytes": 14730,
+      "mode": 420,
+      "sha256": "42df7204b4fe5d04f21e615fdd1fc81356eb7690eecc083b220a215d989e4005"
+    },
+    "build/baseline/function-inventory.json": {
+      "bytes": 813922,
+      "mode": 420,
+      "sha256": "c81ab3df6a6e36e2b81e8a77d21a8f316136fd8cfb9b3f3fddbb427c26f984bd"
+    },
+    "build/baseline/metal-build-proof.json": {
+      "bytes": 18928,
+      "mode": 420,
+      "sha256": "a5fdcbe301aed3999007894a4b35cdf419c5f3e0a86a0536e7c22331f08ecc16"
+    },
+    "build/baseline/release.yaml.gz": {
+      "bytes": 268161,
+      "mode": 420,
+      "sha256": "e312e8aeae204b823bb2b9d3ed9cbf68ad8817242fa4a66788098e551cf45279"
+    },
+    "build/baseline/source-after.json": {
+      "bytes": 2399540,
+      "mode": 420,
+      "sha256": "9198ac6e3def64bcf7cb403ec6f6fa9af240cdf45f44da3723df6e9702b2b86c"
+    },
+    "build/build-entry.json": {
+      "bytes": 217,
+      "mode": 420,
+      "sha256": "03d0a3894d9d359fc5c89fd1369577011ba58acf1cb3d6f314ca267daa8f8c6f"
+    },
+    "build/build-status.json": {
+      "bytes": 488,
+      "mode": 420,
+      "sha256": "d86127a96d05cbd7c6c0eee13e7354d2dade42e90e2dbed69789fcf34ab5ff95"
+    },
+    "build/executions.json": {
+      "bytes": 28718,
+      "mode": 420,
+      "sha256": "0285ece5a20d414a4de82ba7a43c802495dfbdad4e6b8d62a65351025b17bdfc"
+    },
+    "build/logs/baseline-codesign.log": {
+      "bytes": 257,
+      "mode": 420,
+      "sha256": "876ac69da3ae784d8ec867f95e9ba11cd34516ae8354ef01ff33095774664da2"
+    },
+    "build/logs/baseline-function-inventory.log": {
+      "bytes": 726782,
+      "mode": 420,
+      "sha256": "316155243893f4b071244e1c4c37492c3f4ba010c923854cde88364c749138d2"
+    },
+    "build/logs/baseline-metal-build.log": {
+      "bytes": 29488,
+      "mode": 420,
+      "sha256": "44965b342d33a676d004eb00c14e826813ffbecd734964bbf0511edfd7cb89fd"
+    },
+    "build/logs/baseline-metal-configure.log": {
+      "bytes": 1473,
+      "mode": 420,
+      "sha256": "df899f28c2441761544e0e27d82c2bde4fb8c8ee76e463d47d76bd631e4414f1"
+    },
+    "build/logs/baseline-swift-release.log": {
+      "bytes": 25813,
+      "mode": 420,
+      "sha256": "336f6bb4dc52b4bca156c62f5d61e548910cfcbceb764d82cb689a07ee504903"
+    },
+    "build/logs/baseline-toolchain.log": {
+      "bytes": 259,
+      "mode": 420,
+      "sha256": "3bd87852d6f2bb0ecbae06ad6a239bf8f6493facd7e352314a2a97aaf8f14adf"
+    },
+    "build/logs/metadata-inventory-compile.log": {
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "build/logs/variant-codesign.log": {
+      "bytes": 255,
+      "mode": 420,
+      "sha256": "00c138fdae9e1de6150c99713a016020edf2db43d1ebd6578b9d2ca358281a42"
+    },
+    "build/logs/variant-function-inventory.log": {
+      "bytes": 727289,
+      "mode": 420,
+      "sha256": "980d5e223a72c6817dc4332c6ca243ef6c89f0356caa66cf67c91674ef7e7045"
+    },
+    "build/logs/variant-metal-build.log": {
+      "bytes": 29347,
+      "mode": 420,
+      "sha256": "6bef20522371fda704ecfd8dcd97fef341886d3e00c9b86431d27c799a887602"
+    },
+    "build/logs/variant-metal-configure.log": {
+      "bytes": 1471,
+      "mode": 420,
+      "sha256": "f17bcff6dc4e8c040e50e9e6d5a142b473d0237dea5a57b4b94077486ced3e60"
+    },
+    "build/logs/variant-swift-release.log": {
+      "bytes": 25821,
+      "mode": 420,
+      "sha256": "42bf8c0cc9b16e8644612300d1a21f71a15cb36eaa65e5449bf458a64fdc79ed"
+    },
+    "build/logs/variant-toolchain.log": {
+      "bytes": 259,
+      "mode": 420,
+      "sha256": "3bd87852d6f2bb0ecbae06ad6a239bf8f6493facd7e352314a2a97aaf8f14adf"
+    },
+    "build/preparation.json": {
+      "bytes": 3786,
+      "mode": 420,
+      "sha256": "7564fc4cf782c8b5cf11f78ab276a72e1d7204687e6c78e77e1bbb9d500299a5"
+    },
+    "build/source-selection.json": {
+      "bytes": 500,
+      "mode": 420,
+      "sha256": "e5166b73b3fcbb6497182e7f2871bdb3c4db8c07dd67d085214eec8299dcc70e"
+    },
+    "build/stage-receipt.json": {
+      "bytes": 1049,
+      "mode": 420,
+      "sha256": "4ad8e01db51a1d47cec51fc9f10e898db06df661bce5e88ca5b06e06b3088f93"
+    },
+    "build/steps/baseline-codesign/terminal.json": {
+      "bytes": 311,
+      "mode": 420,
+      "sha256": "6fec1d15db99b77f03d145dae995ce66b11ada80ae3332cebda1fa999e75f9d9"
+    },
+    "build/steps/baseline-function-inventory/terminal.json": {
+      "bytes": 311,
+      "mode": 420,
+      "sha256": "d1717837bce90bb6303b3b7bd8e9c2c9deb513560ec7e73b64439629d8b2e12d"
+    },
+    "build/steps/baseline-metal-build/terminal.json": {
+      "bytes": 311,
+      "mode": 420,
+      "sha256": "c2d742fc294c6d9f92249aaa3d3acfe11945a02679aefd35d7706d9cee042109"
+    },
+    "build/steps/baseline-metal-configure/terminal.json": {
+      "bytes": 309,
+      "mode": 420,
+      "sha256": "242432c4396016aa5d9124b144112769eb43dd539ced5e85cab3d7527067da9f"
+    },
+    "build/steps/baseline-metallib-symbols/terminal.json": {
+      "bytes": 304,
+      "mode": 420,
+      "sha256": "f8b9ffbd7f327ca28adc37bd8d95b588265d780cec39911138abb282687192dc"
+    },
+    "build/steps/baseline-swift-release/terminal.json": {
+      "bytes": 306,
+      "mode": 420,
+      "sha256": "6f8f732542f7e48e09376218315ebf34e2f549087f76255d9733e7fae9394440"
+    },
+    "build/steps/baseline-toolchain/terminal.json": {
+      "bytes": 311,
+      "mode": 420,
+      "sha256": "7b68b4739ea0c7cc0930641f2e354a7ebb9840924497e9c04888cad937e10643"
+    },
+    "build/steps/metadata-inventory-compile/terminal.json": {
+      "bytes": 311,
+      "mode": 420,
+      "sha256": "ec217ed8b1ad59a9dde52b7714b520b19bf37c8dee5b74901ab072a29d20f3d1"
+    },
+    "build/steps/variant-codesign/terminal.json": {
+      "bytes": 311,
+      "mode": 420,
+      "sha256": "d79c5ba9228ea00c141f09f171f60b7000a07511da4cd4583d9ced0d94249c5f"
+    },
+    "build/steps/variant-function-inventory/terminal.json": {
+      "bytes": 311,
+      "mode": 420,
+      "sha256": "c3021020d4a8ddd53df6a5ec9df727bbb608e54e7e772a2b782a95938b6cffc9"
+    },
+    "build/steps/variant-metal-build/terminal.json": {
+      "bytes": 310,
+      "mode": 420,
+      "sha256": "5d8772074fb695aa61036ea6e724ee503b5b8883bd65263450cb0bd8836ab4bf"
+    },
+    "build/steps/variant-metal-configure/terminal.json": {
+      "bytes": 310,
+      "mode": 420,
+      "sha256": "edb72d204a6fa659994fd6400330601e267e9c7f953ebe4291674898ba72fdf7"
+    },
+    "build/steps/variant-metallib-symbols/terminal.json": {
+      "bytes": 311,
+      "mode": 420,
+      "sha256": "b3b207390670a5d4f591ed51e61220dc7cf484d79b14dfecf9a26273e2b87923"
+    },
+    "build/steps/variant-swift-release/terminal.json": {
+      "bytes": 306,
+      "mode": 420,
+      "sha256": "a9f2df7bd96ab06244724ab9011c659dbd6ce808c60dbf9d9f7022e83fcd364b"
+    },
+    "build/steps/variant-toolchain/terminal.json": {
+      "bytes": 311,
+      "mode": 420,
+      "sha256": "530150cb71d27a0f8170bd19b558d4466d932184c2d470a5595c51bb0db50b9f"
+    },
+    "build/variant/artifact-manifest.json": {
+      "bytes": 1630,
+      "mode": 420,
+      "sha256": "2e6d0e6e4cb11c504a7695e461475f4aeee5f3a1dccc22e03a1b190fbc0970f2"
+    },
+    "build/variant/compiler-source-graph.json": {
+      "bytes": 172245,
+      "mode": 420,
+      "sha256": "2ce3c019ffa8dd3ffb8d448f1793d569c3b97fe7725f8065330dba8582d771ee"
+    },
+    "build/variant/dependency-proof.json": {
+      "bytes": 14730,
+      "mode": 420,
+      "sha256": "42df7204b4fe5d04f21e615fdd1fc81356eb7690eecc083b220a215d989e4005"
+    },
+    "build/variant/function-inventory.json": {
+      "bytes": 814429,
+      "mode": 420,
+      "sha256": "4df33897764a9ab325b039f1eb2ccd19fe2c210d31b09c0af2a864f057fe4014"
+    },
+    "build/variant/metal-build-proof.json": {
+      "bytes": 18927,
+      "mode": 420,
+      "sha256": "665926e5c7aa0fc2d0add183bb0da95e079ad0fa1c9c499d4f686420724ef063"
+    },
+    "build/variant/release.yaml.gz": {
+      "bytes": 268032,
+      "mode": 420,
+      "sha256": "5aa6d1c0c05407c90f25646b5c16abc1b0dbe751bda73c1183886f62de1b29aa"
+    },
+    "build/variant/source-after.json": {
+      "bytes": 2399537,
+      "mode": 420,
+      "sha256": "39c1512a4b74b9f9e16baf6aef583a0a3721bb218ab0d72c409faa20ad806b07"
+    },
+    "controls/adapter-review.json": {
+      "bytes": 831,
+      "mode": 420,
+      "sha256": "f41b478015b122f80c9e95beb763a60b69d860b49ab7b8b62ad7900e1c8f9da2"
+    },
+    "controls/adapter/P1-REVIEW-HANDOFF.md": {
+      "bytes": 5772,
+      "mode": 420,
+      "sha256": "0575727316ec24eb635e50674e7491f3d7b3a4d46321cc6591d460931addf9b8"
+    },
+    "controls/adapter/RAW-EVIDENCE-CONTRACT.json": {
+      "bytes": 2192,
+      "mode": 420,
+      "sha256": "887422794fcf9637970700293021d318737bb7581c65e7212d9017b159a688b7"
+    },
+    "controls/adapter/binding.schema.json": {
+      "bytes": 4261,
+      "mode": 420,
+      "sha256": "1062f6bbba202816d640870da40e6ee5919f73f5bcf0336eb8c8cc117914be3b"
+    },
+    "controls/adapter/cpu-tests-p1-compat-final.log": {
+      "bytes": 3772,
+      "mode": 420,
+      "sha256": "a8ea52abe8fc1948a8b144722d1d6f04080b657708e4f5e390c835445b2fb5d8"
+    },
+    "controls/adapter/cpu-tests-p1-compat-optimized.log": {
+      "bytes": 3772,
+      "mode": 420,
+      "sha256": "7d7735f3cc9ef67d4b9cd30b54fc971a818801d07cd24381cffee3b24bec0352"
+    },
+    "controls/adapter/manifest.json": {
+      "bytes": 3117,
+      "mode": 420,
+      "sha256": "12cd0ce5eec6cf252a5d8cdc58c6a30e5756fa17b5c30cde7dbfc93c222367d8"
+    },
+    "controls/artifact-comparison-review.json": {
+      "bytes": 1465,
+      "mode": 420,
+      "sha256": "f15262cb9d20601adcf83e0f3eb1b1655928d91da7d8f213120a65ebaf1a834b"
+    },
+    "controls/binding-preparation.stderr": {
+      "bytes": 119,
+      "mode": 420,
+      "sha256": "51b54bc2df220d4f658e2e560413cfc531c7b342c85490e36090025f81448ae9"
+    },
+    "controls/binding-preparation2.stdout": {
+      "bytes": 309,
+      "mode": 420,
+      "sha256": "5f41df5bf213e30fc1ca06d6dd9eaa3ade3a04244243755e937d1cf9539d5ef5"
+    },
+    "controls/build-ssh.stderr": {
+      "bytes": 904,
+      "mode": 420,
+      "sha256": "aa5a9b331a25a3f385375ca8938e0b74c944290a7bf4d0e19a1e1ea49c557f3a"
+    },
+    "controls/evidence-freeze-receipt.json": {
+      "bytes": 219,
+      "mode": 420,
+      "sha256": "b0b7310ffe54799f1ef97884ac3e06f44cad174a0abb5ad30b007e28d6179327"
+    },
+    "controls/execution-stage.stdout": {
+      "bytes": 187,
+      "mode": 420,
+      "sha256": "c3b45530482f1d9449ccb7e0e1553454ff9f7ce24999d64ec5e1f07e1dea7caa"
+    },
+    "controls/local-build-terminal.json": {
+      "bytes": 1129,
+      "mode": 420,
+      "sha256": "27606bf41be04a9f6fc7745f7f7e0d9262ac8f71b02a49cb3c7eb8d024bd4483"
+    },
+    "controls/local-build2-terminal.json": {
+      "bytes": 1130,
+      "mode": 420,
+      "sha256": "5fea44f9072938edcf8aac92a6bfb8e01fd5e97f56a74a4beceab7cbe599524b"
+    },
+    "controls/preserved-failures.json": {
+      "bytes": 1573,
+      "mode": 420,
+      "sha256": "a447e6312ca2d1c9202f6d64552d4c825ca94605497c30bf15a45c4596ebb192"
+    },
+    "controls/replay-transport/remote.stdout": {
+      "bytes": 712,
+      "mode": 420,
+      "sha256": "6e9a128933a78890471458cce87d29c595a85f93a0950181d6fe13e820837208"
+    },
+    "controls/replay-transport/ssh.stderr": {
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "controls/replay-transport/terminal.json": {
+      "bytes": 246,
+      "mode": 420,
+      "sha256": "2eaadfcf0360bec67f16a069bc19ffc947fb7d319f9c8b39fcc994851fc1fdee"
+    },
+    "input/captures/contiguous.bin": {
+      "bytes": 8192,
+      "mode": 420,
+      "sha256": "390fe57dded021665191e7fffa0278a39ca44909f399b34128403fb6aa69b78d"
+    },
+    "input/captures/paged.bin": {
+      "bytes": 8192,
+      "mode": 420,
+      "sha256": "accec5723d4f912aeadaece3119276b49643eed5f7b9f94526f107958abdfa3b"
+    },
+    "input/input.json": {
+      "bytes": 3365,
+      "mode": 420,
+      "sha256": "17114f5243a9657bfcc3d4c7d1f3d9362bffeb744b1ceb5f815c321f0479d487"
+    },
+    "patches/common-dispatch-trace.patch": {
+      "bytes": 1678,
+      "mode": 420,
+      "sha256": "fc379817af14caa1b4a4fb3751fa3b06ae8abaa066538b4a016e81e231c412c3"
+    },
+    "patches/fp32-partials.patch": {
+      "bytes": 4488,
+      "mode": 420,
+      "sha256": "1643c7d4bf9f021013e9d1b6f7f8b49c5997ccde975fff65d30c192fd1774647"
+    },
+    "patches/variant-from-fab0.patch": {
+      "bytes": 6052,
+      "mode": 420,
+      "sha256": "1129f7622134da1c2b40e0df603479348d1f909baa77315bedf86682f58237a2"
+    },
+    "raw/replay-evidence-manifest.json": {
+      "bytes": 468692,
+      "mode": 420,
+      "sha256": "900f7cc8a895bd3fcf6372a7f21a89258de9bc14b316bd1f8cad278534e3dfed"
+    },
+    "raw/reviews/baseline-runtime-review.json": {
+      "bytes": 904,
+      "mode": 420,
+      "sha256": "43d0a9571e8a411edb5aecbfb6f6c825c036dc694fbcaa56deb789bdb21ee608"
+    },
+    "raw/reviews/binding.json": {
+      "bytes": 7122,
+      "mode": 420,
+      "sha256": "28b19df79e1c844a83480efc031307aad19dff2f8e1f88a0dd2ffb1ad758e9b8"
+    },
+    "raw/reviews/handoff.json": {
+      "bytes": 383,
+      "mode": 420,
+      "sha256": "4510c46926b7acb7c0eb240af28c722dbbdf2d53b637831382ede1d587a65753"
+    },
+    "raw/reviews/main-review.json": {
+      "bytes": 319,
+      "mode": 420,
+      "sha256": "3b8f7b6c0e142ce6589ac2d1b9d7dabbb1444cf55cbdf68e2b4b30aa004a07bb"
+    },
+    "raw/reviews/variant-runtime-review.json": {
+      "bytes": 903,
+      "mode": 420,
+      "sha256": "55233ab4c9af1aa7b670a294f192957afe0e8ce2e3282fa8c12f48cf3c035708"
+    },
+    "raw/runs/arm-manifests.json": {
+      "bytes": 6576,
+      "mode": 420,
+      "sha256": "454c4281fca4ed8e7d380b8904d348ff1400ee416d219016878c6701e2e6bf6f"
+    },
+    "raw/runs/baseline/entry.json": {
+      "bytes": 220,
+      "mode": 420,
+      "sha256": "3eaa7ceedf910dfd50c2eefcaa258858ac1aa45bf320497c1179b3df11c63c6d"
+    },
+    "raw/runs/baseline/fallback-retirement.json": {
+      "bytes": 961,
+      "mode": 420,
+      "sha256": "4cc3a7a208737aed1e04a11c5eab0cf7815b609adb65e0fa669342a8004252db"
+    },
+    "raw/runs/baseline/foreground-owner.json": {
+      "bytes": 475,
+      "mode": 420,
+      "sha256": "53e1ba0370b5b5e5c316b2b5832d6921bc6986b7bfc4788c270cf87d5bc94c68"
+    },
+    "raw/runs/baseline/foreground-terminal.json": {
+      "bytes": 472,
+      "mode": 420,
+      "sha256": "b7e7c348987ddf2c213dd8db6cffe8b15a9ecc54cb78a67e2cdc8110adfc5695"
+    },
+    "raw/runs/baseline/interpretation.json": {
+      "bytes": 133,
+      "mode": 420,
+      "sha256": "acb3a92b3a525425dd8b6903b6239069548a92f1097424cda04064836271d56c"
+    },
+    "raw/runs/baseline/job.json": {
+      "bytes": 781,
+      "mode": 420,
+      "sha256": "0cdc55564f7daa1f23586541229cce4038105a87235af28b0ab8ce58d399151e"
+    },
+    "raw/runs/baseline/native-command.json": {
+      "bytes": 983,
+      "mode": 420,
+      "sha256": "d37d839eb6a745e1e0c612398a34bd04e9769cf5a2c44fd34439a7f37bb455fd"
+    },
+    "raw/runs/baseline/native-ownership.json": {
+      "bytes": 743,
+      "mode": 420,
+      "sha256": "2e4476f034793778252e5377a04f31270d16f698345e0183e996fd952fce187f"
+    },
+    "raw/runs/baseline/native-permit.json": {
+      "bytes": 263,
+      "mode": 420,
+      "sha256": "670b5ec8652d3853dc8041641d307b1d252d268fd3792bb10baf06042cb38e62"
+    },
+    "raw/runs/baseline/native-registration.json": {
+      "bytes": 621,
+      "mode": 420,
+      "sha256": "82952dac0f083a96eb5dcd7509718988e61422ee061b19c787d84a52bd734c1c"
+    },
+    "raw/runs/baseline/output/output.bin": {
+      "bytes": 8192,
+      "mode": 420,
+      "sha256": "390fe57dded021665191e7fffa0278a39ca44909f399b34128403fb6aa69b78d"
+    },
+    "raw/runs/baseline/output/result.json": {
+      "bytes": 1081,
+      "mode": 420,
+      "sha256": "6074c0c860af444018ff5163ab5427bc0faff6b7d26cb3353e8c50d9ecda9374"
+    },
+    "raw/runs/baseline/owner-identity.json": {
+      "bytes": 58,
+      "mode": 420,
+      "sha256": "8b33026e8b43f39be707770d9ae010444a393ae4bcbce5db308de2c0ef5104ad"
+    },
+    "raw/runs/baseline/owner-native.json": {
+      "bytes": 121,
+      "mode": 420,
+      "sha256": "9fc1399e1c404162e4880b145cac949a57144632bbc2f6d83a26bd958f75f858"
+    },
+    "raw/runs/baseline/owner.events.jsonl": {
+      "bytes": 918,
+      "mode": 420,
+      "sha256": "0e33bf636cdbe3cacc1069589fd789f4b797fa0743b082e849d511c88aab2672"
+    },
+    "raw/runs/baseline/owner.stderr": {
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/runs/baseline/owner/provider.log": {
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/runs/baseline/owner/terminal.json": {
+      "bytes": 586,
+      "mode": 420,
+      "sha256": "e74d0056ebc8b040276221b03767717ff466029146a43421abd5897b21e3ec44"
+    },
+    "raw/runs/baseline/postflight.json": {
+      "bytes": 219,
+      "mode": 420,
+      "sha256": "d404213312447582ec2cd48d14f4cc6c1104a68d007276f48b1859b4fa8e279d"
+    },
+    "raw/runs/baseline/stderr": {
+      "bytes": 506,
+      "mode": 420,
+      "sha256": "e17edf2bcae4e93a712e71a8058a2e72e6e5c7b1f77d8d78be98bebd0cbaeec0"
+    },
+    "raw/runs/baseline/stdout": {
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/runs/observation.json": {
+      "bytes": 712,
+      "mode": 420,
+      "sha256": "a20ec750fbc1c51f758e9da3b81e018d1af2fe7a302afbb5ba416d30c50f99be"
+    },
+    "raw/runs/terminal.json": {
+      "bytes": 356,
+      "mode": 420,
+      "sha256": "12f44c650f3d2d7d71961b50fa2e3e869315e2330bd4daae436b1e06fdbb9286"
+    },
+    "raw/runs/variant/entry.json": {
+      "bytes": 218,
+      "mode": 420,
+      "sha256": "a228791d8134e2c3f54067f6188f26b8fbd79c1a626da6ee9c59b0da30a66b64"
+    },
+    "raw/runs/variant/fallback-retirement.json": {
+      "bytes": 959,
+      "mode": 420,
+      "sha256": "9537311972ea5b60d46216caeb3b11e87217f6de50fc8a23b204b165a010234e"
+    },
+    "raw/runs/variant/foreground-owner.json": {
+      "bytes": 474,
+      "mode": 420,
+      "sha256": "6e993dc392f123b3c94118c9e71ae4d5928347cf28fb1ef7626560ae85f4bee1"
+    },
+    "raw/runs/variant/foreground-terminal.json": {
+      "bytes": 471,
+      "mode": 420,
+      "sha256": "ad34288aabc9dc9f836090c910bb666a6cee20977fb291f1e52b12447f46de41"
+    },
+    "raw/runs/variant/interpretation.json": {
+      "bytes": 150,
+      "mode": 420,
+      "sha256": "6caded1012284c06eb2a16799c6772a933da3a5e5d2d3b2d90cbde6850d93ffa"
+    },
+    "raw/runs/variant/job.json": {
+      "bytes": 778,
+      "mode": 420,
+      "sha256": "c8fb18df874295c259c49562405df8cb0626565ff3e091a38704a08714c068be"
+    },
+    "raw/runs/variant/native-command.json": {
+      "bytes": 979,
+      "mode": 420,
+      "sha256": "7924985d750be4b8bfab5510dfcf263beb42ca715663887794783715e9cde4a7"
+    },
+    "raw/runs/variant/native-ownership.json": {
+      "bytes": 741,
+      "mode": 420,
+      "sha256": "b9ed9a63e2a601393c00ee48d8192691c1ea47691264d127198a741af7ced233"
+    },
+    "raw/runs/variant/native-permit.json": {
+      "bytes": 263,
+      "mode": 420,
+      "sha256": "6d1bd71947f1d5fc6684300ea6c7e96b29870bba5d28c8c182806a94a851af0f"
+    },
+    "raw/runs/variant/native-registration.json": {
+      "bytes": 619,
+      "mode": 420,
+      "sha256": "b7975913de0477fc1399e9efe03c1159200c0eff99bf4628b3d2030ae8eceb5d"
+    },
+    "raw/runs/variant/output/output.bin": {
+      "bytes": 8192,
+      "mode": 420,
+      "sha256": "1b5a4d9488fb48f5099c9e58d5f1eee601263e8f635259aca6dff85969cc2cec"
+    },
+    "raw/runs/variant/output/result.json": {
+      "bytes": 1081,
+      "mode": 420,
+      "sha256": "4cc1459c820825c0681847e906bbba830aa0d7bc92151e85d4c62ea41f7591a0"
+    },
+    "raw/runs/variant/owner-identity.json": {
+      "bytes": 58,
+      "mode": 420,
+      "sha256": "393b79350596ac500b9a456818ce53a3d46f92f2b9cd6d0671d95e31165db5c5"
+    },
+    "raw/runs/variant/owner-native.json": {
+      "bytes": 121,
+      "mode": 420,
+      "sha256": "14aa5844c5a7a0c95d8bd74ab90b06da3f0eefcece166c095a6f0a9b24a17213"
+    },
+    "raw/runs/variant/owner.events.jsonl": {
+      "bytes": 923,
+      "mode": 420,
+      "sha256": "130ef24dd081d291b84375d21e309fac7fa47ebe0d12e1c08306bbae657f2089"
+    },
+    "raw/runs/variant/owner.stderr": {
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/runs/variant/owner/provider.log": {
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/runs/variant/owner/terminal.json": {
+      "bytes": 593,
+      "mode": 420,
+      "sha256": "35edc05af8afa11a3d8d12d85652ceff0b2c90dffaf7d42efdd1c4819ac86d0e"
+    },
+    "raw/runs/variant/postflight.json": {
+      "bytes": 219,
+      "mode": 420,
+      "sha256": "37f46640f90b22f3cf3e0d48f57290da8f0654a2e6a3daa8fd7d02ee08976d06"
+    },
+    "raw/runs/variant/stderr": {
+      "bytes": 527,
+      "mode": 420,
+      "sha256": "81bcdf0a0004697425765ecc56b45d9e4aa086651775334b74637faa35db8696"
+    },
+    "raw/runs/variant/stdout": {
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "m5_raw_proof_manifest_sha256": "900f7cc8a895bd3fcf6372a7f21a89258de9bc14b316bd1f8cad278534e3dfed",
+  "payload_count": 132,
+  "raw_proof_subset_files_verified": 47,
+  "schema": "darkbloom.q36-partials-bank.v1",
+  "scope": "One ephemeral sealed Q36 B1/D256 partial-storage discriminator, not model/production acceptance.",
+  "uncompressed_bytes": 9633459
+}

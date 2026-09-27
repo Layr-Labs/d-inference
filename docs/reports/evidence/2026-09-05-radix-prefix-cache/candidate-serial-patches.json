@@ -1,0 +1,48 @@
+{
+  "provider": {
+    "base": "788ce9f067f90128af1b71424023574b9d5d21c5",
+    "patch": "candidate-serial-provider-source.patch.gz",
+    "sha256": "a0c41bced7bed0c510f6ae0fd4857731fadca0c3fe1a8d88364bbaafc0c7b46b",
+    "changed_source_files": [
+      "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift",
+      "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift",
+      "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientState.swift",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift",
+      "provider-swift/Sources/ProviderCore/Inference/PrefixCacheEvidenceSequencer.swift",
+      "provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Hybrid.swift",
+      "provider-swift/Sources/ProviderCore/Inference/PrefixCacheReceipts.swift",
+      "provider-swift/Sources/ProviderCore/Inference/ResidentPrefixCacheEvidence.swift",
+      "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift",
+      "provider-swift/Sources/ProviderCore/Protocol/Messages.swift",
+      "provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift",
+      "provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift",
+      "provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift"
+    ],
+    "git_apply_check": true
+  },
+  "mlx": {
+    "base": "713d2cf4bfb244ac1c8eef7e6a5e8c6fc99091f0",
+    "patch": "candidate-serial-mlx-source.patch.gz",
+    "sha256": "b47a0b4abb78016e50eae2e6f626f27ac0315a05ba99f899d33331bb840a973a",
+    "changed_source_files": [
+      "Libraries/MLXLLM/Models/Qwen35.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/FirstTokenDeadlineAdmissionV2.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineLoopV2+HybridPrefix.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineV2+HybridPrefix.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HybridPrefixCache.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HybridPrefixCacheContract.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/TokenRadixIndex.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixReusePlan.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/RecurrentStateV2.swift",
+      "Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift"
+    ],
+    "git_apply_check": true
+  }
+}

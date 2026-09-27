@@ -1,0 +1,91 @@
+{
+  "scope": "Provider-aligned cache service-cost scoring; exact31Go/test/config/docs blobs. No live coordinator/model or production environment mutation. Provider prerequisite8ada7e548 has its own frozen evidence.",
+  "prerequisite": "8ada7e548",
+  "isolated_validation": {
+    "baseline": "b1e1581fc",
+    "overlay": "31 exact final source blobs",
+    "source_manifest_files": 869,
+    "go_version": "1.25.0",
+    "command": "GOTOOLCHAIN=go1.25.0 go test -p 2 ./coordinator/... -count=1",
+    "result": "pass",
+    "packages": 25
+  },
+  "affected_validation": {
+    "normal_registry_seconds": 15.982,
+    "normal_routingsim_seconds": 0.549,
+    "race_registry_seconds": 23.496,
+    "race_routingsim_seconds": 3.754,
+    "last_tier_focused_race_seconds": 1.513,
+    "release_env_refresh": "pass"
+  },
+  "prior_failure": "service-coordinator-full.log precedes scalar tier alignment and failed only the concurrently outdated promptsidecarloadproof production inventory expectation. The final isolated run uses the already banked fixture correction and passes all25 packages.",
+  "benchmark_limit": "Selection samples were not isolated; retained only as allocation evidence, not a speedup claim.",
+  "files": [
+    {
+      "path": "service-final-blobs.json",
+      "sha256": "9e3f6c669b22982c8dd67a3077cb75c19f2e1ff5cd92b2cba8537bdf3f282e8f",
+      "bytes": 6906
+    },
+    {
+      "path": "service-final-source-manifest.json",
+      "sha256": "b4209e03a0adc0606e41bfaf19d260a4ec9ae6c3f38be11daed5a0f1e03fa35c",
+      "bytes": 5622
+    },
+    {
+      "path": "service-isolated-source-manifest.json.gz",
+      "sha256": "884e2a1ebfe9923122cb2b12bcab0f6ede9f4d3366abb70a88a8a752c4b48695",
+      "bytes": 43846,
+      "raw_sha256": "1cd6928562069559b82fd7fd06fd81a85e326cd38d894050fff8864e02ba9c10",
+      "raw_bytes": 108842
+    },
+    {
+      "path": "service-isolated-full-go.log.gz",
+      "sha256": "1e2a61118a37380b17b7a0c2dbe14bba930408a86d48500d83bbd1b900fd329e",
+      "bytes": 396,
+      "raw_sha256": "fec91fe2d70b44f57c849fabd54ab188e1d18ed8499833b22dc892f8d64c1d59",
+      "raw_bytes": 2076
+    },
+    {
+      "path": "service-aligned-registry.log.gz",
+      "sha256": "85d37006b81f42ef0c42d21505b7bd0dd6c10e6a4193026cf0e62d824147c341",
+      "bytes": 103,
+      "raw_sha256": "28b8b5691a54effc3863854f9642174bbf5ac79683f95d09447f745539e9b487",
+      "raw_bytes": 154
+    },
+    {
+      "path": "service-aligned-races.log.gz",
+      "sha256": "72599c3ff7ba9a48832867b4b8392d1b6802814b4f308c52c882076024f643ea",
+      "bytes": 103,
+      "raw_sha256": "e908e7c7f300435c8281d54afb38f6aca1b823cc4b0d2c764cd4166b0e16da50",
+      "raw_bytes": 154
+    },
+    {
+      "path": "service-aligned-final-focused.log.gz",
+      "sha256": "d4c412e1dbd564190c7faf6566afa5e2d3071262b61f5ac9377af7ad1e82ee46",
+      "bytes": 82,
+      "raw_sha256": "c9f9334697d72dad4a3d9ab919a3bc241100dc616b7923635acc934d915b4164",
+      "raw_bytes": 71
+    },
+    {
+      "path": "service-aligned-env-refresh.log.gz",
+      "sha256": "bc71e3b3b64d12c6a55fd4e0affcf1fce89a767192bd8a5187f2cbae8e7e6e75",
+      "bytes": 56,
+      "raw_sha256": "aa54fef28bd449d85ef521f2017fb85592a7c55ba6a02030cb2fd01f320e2b9e",
+      "raw_bytes": 36
+    },
+    {
+      "path": "service-coordinator-full.log.gz",
+      "sha256": "fe77cd1c67e0c7fada1065efbb7007356e486f5408b740effe5f6a57287a959e",
+      "bytes": 9447,
+      "raw_sha256": "7c99341a23d8b4f9622a3d0c0bbde20316a8d6445be1162d2edd097a863dbd94",
+      "raw_bytes": 304726
+    },
+    {
+      "path": "service-selection-benchmark.log.gz",
+      "sha256": "54905051285c8d81097e9ecaf4a18425bff75a5c3b4d171516bde0ff4f864dce",
+      "bytes": 303,
+      "raw_sha256": "e9de6bf34d7aedeccb92d544b67eb40bf4b798e0d76b27d0ef7655ff173cd654",
+      "raw_bytes": 962
+    }
+  ]
+}

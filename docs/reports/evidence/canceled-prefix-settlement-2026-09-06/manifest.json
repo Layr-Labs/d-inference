@@ -1,0 +1,2055 @@
+{
+  "archive": {
+    "bytes": 6767014,
+    "path": "payloads.tar.gz",
+    "sha256": "6559546cfb74697eaa9196bbe904db027d41785b7ce0d242ed2bc40fc00400dd"
+  },
+  "excluded": "No executables, metallibs, weights, keys or full workspace/dependency trees. Compressed YAML contains source graph text only.",
+  "files": [
+    {
+      "bytes": 17818,
+      "path": "review/exact-test-results.json",
+      "sha256": "26a610efaf55d11f29708d00ddc551f24cc8613e2b5e2ea35ba39fb137817187"
+    },
+    {
+      "bytes": 8613,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-bank1.py",
+      "path": "review/freeze.py",
+      "sha256": "a3da87fa282b971355c07bfc31693347b7298c7229295a6bafad2cfe7a3d3be6"
+    },
+    {
+      "bytes": 2931,
+      "path": "review/integration-correspondence.json",
+      "sha256": "a6a7c3035203f757a58acc62b8f5a5308aeba2f9760f82f953710a85b9b51f99"
+    },
+    {
+      "bytes": 886,
+      "path": "review/native-5cb-to-e972-paths.txt",
+      "sha256": "52120ecf1fe7ee4b72cd4f032a995fc2be5bef33e6b7b1a9c757ab4a89359ab7"
+    },
+    {
+      "bytes": 56928,
+      "path": "review/native-5cb-to-e972.patch",
+      "sha256": "14592fa2049d05a629ec874647e7d2f97b8aeeb3143ba06e38800fdae51ccc8b"
+    },
+    {
+      "bytes": 85,
+      "path": "review/provider-5b-to-integration-parent-paths.txt",
+      "sha256": "3cc454fe03a39182c5c906c9e37889ba640e4023dc4be7534a6ae7ca141326c3"
+    },
+    {
+      "bytes": 642,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-root-preparation-review.json",
+      "path": "reviews/darkbloom-provider-cancel-settlement-root-preparation-review.json",
+      "sha256": "cc672bf3039482406fb37a21f600c1fc5fe29e3f5ffacb7b556c7de4d14b8696"
+    },
+    {
+      "bytes": 1640,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-root-source-review2.json",
+      "path": "reviews/darkbloom-provider-cancel-settlement-root-source-review2.json",
+      "sha256": "50eb77b82d06a7096d8bb30ff0b5ba78a68929bc0ba1b6c641e65f45388d9395"
+    },
+    {
+      "bytes": 5009,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5-baseline-freeze1/manifest.json",
+      "path": "reviews/darkbloom-provider-cancel-settlement-source5-baseline-freeze1-manifest.json",
+      "sha256": "953bb9383ec80231bfd9a9563ebd81c6664183249b4a1eba87f149cccb5c6911"
+    },
+    {
+      "bytes": 1844,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/REVIEW.md",
+      "path": "source1/REVIEW.md",
+      "sha256": "7d979b864aefafbd4b3929d66f125a1d4084b6023f73eadea3caf0f8995089d2"
+    },
+    {
+      "bytes": 15845,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source1/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "1c3aa4cce4d2147a8ca4192c03674ac42b2c71eec5f4ac654e510664c8ecd56c"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source1/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 6830,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source1/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "640c2a881eb576796f4cd88bc3d5dea4de6cf6e2c9aa469b7f6d931e36aad5ee"
+    },
+    {
+      "bytes": 8054,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source1/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "890a3ed3fb792c33388c62b0196af3d0ab6afa3a376f98842f5be5d27a7ef6e2"
+    },
+    {
+      "bytes": 17841,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/baseline-instrumented.patch",
+      "path": "source1/baseline-instrumented.patch",
+      "sha256": "5a305f6ef47ef3cb879a5b5e5888823743e340f225d53a98d71abd4ed1cad20b"
+    },
+    {
+      "bytes": 15630,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source1/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "593a807a85feaa33ff59c5ad720f99e673614a88a35c5cb1b5ba493a5a7fee19"
+    },
+    {
+      "bytes": 7101,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source1/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "e7b3672be3ba7a51654bcd60aba1d09e8a047baabbb05aecb511be94634c5be3"
+    },
+    {
+      "bytes": 16270,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source1/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "edd573f27b50353f038f42499d81d030ea801ee42d9e93efc9eca7ffcdae1251"
+    },
+    {
+      "bytes": 24423,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source1/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "054c69af6b053fcd638c09de51c9be3a58c6e5563071ad942605d04332ec325a"
+    },
+    {
+      "bytes": 71706,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source1/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "f0cff88cf4983a08a03ed8b3354cfa48309c0b9089348c16d70b9058bea6ff07"
+    },
+    {
+      "bytes": 16111,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source1/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "5071658726b85f8fc65e9b298017f952f26963732825f436701fa6d402a2facc"
+    },
+    {
+      "bytes": 7972,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source1/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "d54484c03bba0fb9b9ecfb8c4c9b5d71913acd341440aff5644cb114fa87eefa"
+    },
+    {
+      "bytes": 18027,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source1/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "191d60ca4e4de982f41e88bcbfad25159b248b8fea873708e9584bf4380976cf"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source1/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 72063,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source1/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "deb4caf2f21ece99e132e311ab76b078b3d5e24b7d99116e04b2aed70d040a5c"
+    },
+    {
+      "bytes": 6830,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source1/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "640c2a881eb576796f4cd88bc3d5dea4de6cf6e2c9aa469b7f6d931e36aad5ee"
+    },
+    {
+      "bytes": 4726,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "path": "source1/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "sha256": "0d1abcdf802e8697a6b6c334739cc13818347d853fb7ab15ec0e43fcbdab839a"
+    },
+    {
+      "bytes": 8054,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source1/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "890a3ed3fb792c33388c62b0196af3d0ab6afa3a376f98842f5be5d27a7ef6e2"
+    },
+    {
+      "bytes": 29044,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/candidate.patch",
+      "path": "source1/candidate.patch",
+      "sha256": "321313aaa9ae879ba628040d4eb2d601a0f1f6286d84a0b612af0668f79a09c3"
+    },
+    {
+      "bytes": 4397,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/manifest.json",
+      "path": "source1/manifest.json",
+      "sha256": "eb7b054bdbcc1459e2e2032655bb4cf4008d424d2385b1842b42e8eef4df775f"
+    },
+    {
+      "bytes": 2774,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source1/summary.json",
+      "path": "source1/summary.json",
+      "sha256": "4415dcdfa2946ed860f9ea20465fbf30c84c7db4be15c00be40931aedf768aed"
+    },
+    {
+      "bytes": 2091,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/REVIEW.md",
+      "path": "source2/REVIEW.md",
+      "sha256": "6c1b1d0d57678b27d83f43bccecd9494dde250a90684cc8ab64c3b45a244d9e0"
+    },
+    {
+      "bytes": 15845,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source2/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "1c3aa4cce4d2147a8ca4192c03674ac42b2c71eec5f4ac654e510664c8ecd56c"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source2/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 6830,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source2/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "640c2a881eb576796f4cd88bc3d5dea4de6cf6e2c9aa469b7f6d931e36aad5ee"
+    },
+    {
+      "bytes": 8567,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source2/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "9eda1d86603265a8c8d1b939d5d49c931aee45c6e36355159be5654f84860e2e"
+    },
+    {
+      "bytes": 18362,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/baseline-instrumented.patch",
+      "path": "source2/baseline-instrumented.patch",
+      "sha256": "e7189200aa0fb87d3c76e0295eb18db0c48f0c684d91c64a4d8551a212956cad"
+    },
+    {
+      "bytes": 15630,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source2/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "593a807a85feaa33ff59c5ad720f99e673614a88a35c5cb1b5ba493a5a7fee19"
+    },
+    {
+      "bytes": 7101,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source2/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "e7b3672be3ba7a51654bcd60aba1d09e8a047baabbb05aecb511be94634c5be3"
+    },
+    {
+      "bytes": 16270,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source2/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "edd573f27b50353f038f42499d81d030ea801ee42d9e93efc9eca7ffcdae1251"
+    },
+    {
+      "bytes": 24423,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source2/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "054c69af6b053fcd638c09de51c9be3a58c6e5563071ad942605d04332ec325a"
+    },
+    {
+      "bytes": 71706,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source2/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "f0cff88cf4983a08a03ed8b3354cfa48309c0b9089348c16d70b9058bea6ff07"
+    },
+    {
+      "bytes": 16111,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source2/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "5071658726b85f8fc65e9b298017f952f26963732825f436701fa6d402a2facc"
+    },
+    {
+      "bytes": 7972,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source2/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "d54484c03bba0fb9b9ecfb8c4c9b5d71913acd341440aff5644cb114fa87eefa"
+    },
+    {
+      "bytes": 18027,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source2/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "191d60ca4e4de982f41e88bcbfad25159b248b8fea873708e9584bf4380976cf"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source2/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 71990,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source2/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "03b26f85f58dfca85a785bbca383c0e6a215569e8b94bde0b4b4ceda4dd2c0c5"
+    },
+    {
+      "bytes": 6830,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source2/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "640c2a881eb576796f4cd88bc3d5dea4de6cf6e2c9aa469b7f6d931e36aad5ee"
+    },
+    {
+      "bytes": 4983,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "path": "source2/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "sha256": "2708503e668ae0a634747416f6b21441e0bb8d446f716ba0496cbfbc7b40076d"
+    },
+    {
+      "bytes": 8567,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source2/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "9eda1d86603265a8c8d1b939d5d49c931aee45c6e36355159be5654f84860e2e"
+    },
+    {
+      "bytes": 30606,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/candidate.patch",
+      "path": "source2/candidate.patch",
+      "sha256": "a6529f99d74f32a0d71d22a5a0ce43baffe246f7cd7c497a5b5fa1cbe46d1ed1"
+    },
+    {
+      "bytes": 4708,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/manifest.json",
+      "path": "source2/manifest.json",
+      "sha256": "0b4fc846d1db7a975daf045391d1171a2971a7f53ce38979a07f68f6619fea2a"
+    },
+    {
+      "bytes": 18047,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/revision1-to2.patch",
+      "path": "source2/revision1-to2.patch",
+      "sha256": "796c2da215cbb55ab780870a16b9d6844470ff42f22b2642449f4a26d96cd512"
+    },
+    {
+      "bytes": 4397,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/source1-manifest.json",
+      "path": "source2/source1-manifest.json",
+      "sha256": "eb7b054bdbcc1459e2e2032655bb4cf4008d424d2385b1842b42e8eef4df775f"
+    },
+    {
+      "bytes": 3303,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source2/summary.json",
+      "path": "source2/summary.json",
+      "sha256": "fb6577036138244f629e64e4f534eff97c73e277b84c862f2568aa9fc4fa36be"
+    },
+    {
+      "bytes": 2340,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/REVIEW.md",
+      "path": "source3/REVIEW.md",
+      "sha256": "11cc288544007a4be302e30371a27959fdc1e322152e9eee65f70b9bb16920cb"
+    },
+    {
+      "bytes": 15845,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source3/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "1c3aa4cce4d2147a8ca4192c03674ac42b2c71eec5f4ac654e510664c8ecd56c"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source3/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 6985,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source3/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "2bf344fe375b04dcd062825977c1310df227c5e486a52ab25872f91981e07275"
+    },
+    {
+      "bytes": 8567,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source3/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "9eda1d86603265a8c8d1b939d5d49c931aee45c6e36355159be5654f84860e2e"
+    },
+    {
+      "bytes": 18520,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/baseline-instrumented.patch",
+      "path": "source3/baseline-instrumented.patch",
+      "sha256": "8883cba1beaff095100f2d8a9ae6a3c99ea1de73bfde865079027239ec989493"
+    },
+    {
+      "bytes": 15630,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source3/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "593a807a85feaa33ff59c5ad720f99e673614a88a35c5cb1b5ba493a5a7fee19"
+    },
+    {
+      "bytes": 7101,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source3/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "e7b3672be3ba7a51654bcd60aba1d09e8a047baabbb05aecb511be94634c5be3"
+    },
+    {
+      "bytes": 16270,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source3/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "edd573f27b50353f038f42499d81d030ea801ee42d9e93efc9eca7ffcdae1251"
+    },
+    {
+      "bytes": 24423,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source3/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "054c69af6b053fcd638c09de51c9be3a58c6e5563071ad942605d04332ec325a"
+    },
+    {
+      "bytes": 71706,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source3/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "f0cff88cf4983a08a03ed8b3354cfa48309c0b9089348c16d70b9058bea6ff07"
+    },
+    {
+      "bytes": 16111,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source3/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "5071658726b85f8fc65e9b298017f952f26963732825f436701fa6d402a2facc"
+    },
+    {
+      "bytes": 7972,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source3/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "d54484c03bba0fb9b9ecfb8c4c9b5d71913acd341440aff5644cb114fa87eefa"
+    },
+    {
+      "bytes": 18027,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source3/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "191d60ca4e4de982f41e88bcbfad25159b248b8fea873708e9584bf4380976cf"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source3/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 71990,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source3/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "03b26f85f58dfca85a785bbca383c0e6a215569e8b94bde0b4b4ceda4dd2c0c5"
+    },
+    {
+      "bytes": 6985,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source3/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "2bf344fe375b04dcd062825977c1310df227c5e486a52ab25872f91981e07275"
+    },
+    {
+      "bytes": 4983,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "path": "source3/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "sha256": "2708503e668ae0a634747416f6b21441e0bb8d446f716ba0496cbfbc7b40076d"
+    },
+    {
+      "bytes": 8567,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source3/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "9eda1d86603265a8c8d1b939d5d49c931aee45c6e36355159be5654f84860e2e"
+    },
+    {
+      "bytes": 30764,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/candidate.patch",
+      "path": "source3/candidate.patch",
+      "sha256": "483e3dd0f6af323444e1d93f9d845687c04db1318c262ef12dc6d94199993299"
+    },
+    {
+      "bytes": 5017,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/manifest.json",
+      "path": "source3/manifest.json",
+      "sha256": "aa68f5b705743e84626f7581903bf920b6b7c9a0b4c1f5c35d1498d04d6392dd"
+    },
+    {
+      "bytes": 18047,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/revision1-to2.patch",
+      "path": "source3/revision1-to2.patch",
+      "sha256": "796c2da215cbb55ab780870a16b9d6844470ff42f22b2642449f4a26d96cd512"
+    },
+    {
+      "bytes": 707,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/revision2-to3.patch",
+      "path": "source3/revision2-to3.patch",
+      "sha256": "1a8364f02d981be684317b6748f9f8973067d807c73264a1fb1c87abbd7b3020"
+    },
+    {
+      "bytes": 4397,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/source1-manifest.json",
+      "path": "source3/source1-manifest.json",
+      "sha256": "eb7b054bdbcc1459e2e2032655bb4cf4008d424d2385b1842b42e8eef4df775f"
+    },
+    {
+      "bytes": 4708,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/source2-manifest.json",
+      "path": "source3/source2-manifest.json",
+      "sha256": "0b4fc846d1db7a975daf045391d1171a2971a7f53ce38979a07f68f6619fea2a"
+    },
+    {
+      "bytes": 3641,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source3/summary.json",
+      "path": "source3/summary.json",
+      "sha256": "7461eff50225aee0108bf659dbf170b6cdada5f0b9820b8d222604c2ae108229"
+    },
+    {
+      "bytes": 2700,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/REVIEW.md",
+      "path": "source4/REVIEW.md",
+      "sha256": "8a993a9022a7a6a1ab8caa7dbd4d026d5b9770ca5c1010ed5a8e8373431aab5c"
+    },
+    {
+      "bytes": 15845,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source4/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "1c3aa4cce4d2147a8ca4192c03674ac42b2c71eec5f4ac654e510664c8ecd56c"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source4/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 8513,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source4/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "0ae4c4b71d9f3b523c812367f2334ede6e09197a00b707b86805eb9bcea59512"
+    },
+    {
+      "bytes": 8659,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source4/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "88f20fa1fd51e04ca6e02fe9a1c17a460b06281008c153695e70a6e5f1e231dd"
+    },
+    {
+      "bytes": 19484,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/baseline-instrumented.patch",
+      "path": "source4/baseline-instrumented.patch",
+      "sha256": "e7610a867c1e0ed1d26f0b1ccb7a3a3cac3ad69412e68eca2358fa0fce7fb96a"
+    },
+    {
+      "bytes": 15630,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source4/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "593a807a85feaa33ff59c5ad720f99e673614a88a35c5cb1b5ba493a5a7fee19"
+    },
+    {
+      "bytes": 7101,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source4/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "e7b3672be3ba7a51654bcd60aba1d09e8a047baabbb05aecb511be94634c5be3"
+    },
+    {
+      "bytes": 16270,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source4/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "edd573f27b50353f038f42499d81d030ea801ee42d9e93efc9eca7ffcdae1251"
+    },
+    {
+      "bytes": 24423,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source4/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "054c69af6b053fcd638c09de51c9be3a58c6e5563071ad942605d04332ec325a"
+    },
+    {
+      "bytes": 71706,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source4/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "f0cff88cf4983a08a03ed8b3354cfa48309c0b9089348c16d70b9058bea6ff07"
+    },
+    {
+      "bytes": 16111,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source4/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "5071658726b85f8fc65e9b298017f952f26963732825f436701fa6d402a2facc"
+    },
+    {
+      "bytes": 7972,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source4/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "d54484c03bba0fb9b9ecfb8c4c9b5d71913acd341440aff5644cb114fa87eefa"
+    },
+    {
+      "bytes": 18027,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source4/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "191d60ca4e4de982f41e88bcbfad25159b248b8fea873708e9584bf4380976cf"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source4/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 71990,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source4/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "03b26f85f58dfca85a785bbca383c0e6a215569e8b94bde0b4b4ceda4dd2c0c5"
+    },
+    {
+      "bytes": 8513,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source4/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "0ae4c4b71d9f3b523c812367f2334ede6e09197a00b707b86805eb9bcea59512"
+    },
+    {
+      "bytes": 4983,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "path": "source4/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "sha256": "2708503e668ae0a634747416f6b21441e0bb8d446f716ba0496cbfbc7b40076d"
+    },
+    {
+      "bytes": 8659,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source4/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "88f20fa1fd51e04ca6e02fe9a1c17a460b06281008c153695e70a6e5f1e231dd"
+    },
+    {
+      "bytes": 31033,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/candidate.patch",
+      "path": "source4/candidate.patch",
+      "sha256": "4b536a5a833ef5feda34868ad6ac1bf99bbfb677d7ac0d8efc97e1082bc42d03"
+    },
+    {
+      "bytes": 5254,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/manifest.json",
+      "path": "source4/manifest.json",
+      "sha256": "3a3f7e3a8e9ebf5d041c019ad31fcbdeb825eb06859b2bacf94cc261bc3a600d"
+    },
+    {
+      "bytes": 18047,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/revision1-to2.patch",
+      "path": "source4/revision1-to2.patch",
+      "sha256": "796c2da215cbb55ab780870a16b9d6844470ff42f22b2642449f4a26d96cd512"
+    },
+    {
+      "bytes": 707,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/revision2-to3.patch",
+      "path": "source4/revision2-to3.patch",
+      "sha256": "1a8364f02d981be684317b6748f9f8973067d807c73264a1fb1c87abbd7b3020"
+    },
+    {
+      "bytes": 4279,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/revision3-to4.patch",
+      "path": "source4/revision3-to4.patch",
+      "sha256": "76dbcf0b2b951f01c41a1a410dc7195fd3b62b7b20935793b77f812bb534aae0"
+    },
+    {
+      "bytes": 4397,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/source1-manifest.json",
+      "path": "source4/source1-manifest.json",
+      "sha256": "eb7b054bdbcc1459e2e2032655bb4cf4008d424d2385b1842b42e8eef4df775f"
+    },
+    {
+      "bytes": 4708,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/source2-manifest.json",
+      "path": "source4/source2-manifest.json",
+      "sha256": "0b4fc846d1db7a975daf045391d1171a2971a7f53ce38979a07f68f6619fea2a"
+    },
+    {
+      "bytes": 5017,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/source3-manifest.json",
+      "path": "source4/source3-manifest.json",
+      "sha256": "aa68f5b705743e84626f7581903bf920b6b7c9a0b4c1f5c35d1498d04d6392dd"
+    },
+    {
+      "bytes": 4232,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source4/summary.json",
+      "path": "source4/summary.json",
+      "sha256": "b5dce56affdde303e62878a753778e46fd62cfcd29edf1f75db9ba330c701485"
+    },
+    {
+      "bytes": 3054,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/REVIEW.md",
+      "path": "source5/REVIEW.md",
+      "sha256": "6904366c309aa093ebd1cd2c84c05b7b2d0d97dec2fe9ceab48c57ccc54180e5"
+    },
+    {
+      "bytes": 15845,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source5/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "1c3aa4cce4d2147a8ca4192c03674ac42b2c71eec5f4ac654e510664c8ecd56c"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source5/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 8513,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source5/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "0ae4c4b71d9f3b523c812367f2334ede6e09197a00b707b86805eb9bcea59512"
+    },
+    {
+      "bytes": 10021,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source5/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "05babc38ffdaa397913a75680f99b0c2a3cb43fae3994ccdf8f25e6d18059d91"
+    },
+    {
+      "bytes": 20866,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/baseline-instrumented.patch",
+      "path": "source5/baseline-instrumented.patch",
+      "sha256": "c5964f5d73b2bdeae21b437eb8dd2483b837bb4b23163eb95da9dff5696c0423"
+    },
+    {
+      "bytes": 15630,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source5/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "593a807a85feaa33ff59c5ad720f99e673614a88a35c5cb1b5ba493a5a7fee19"
+    },
+    {
+      "bytes": 7101,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source5/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "e7b3672be3ba7a51654bcd60aba1d09e8a047baabbb05aecb511be94634c5be3"
+    },
+    {
+      "bytes": 16270,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source5/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "edd573f27b50353f038f42499d81d030ea801ee42d9e93efc9eca7ffcdae1251"
+    },
+    {
+      "bytes": 24423,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source5/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "054c69af6b053fcd638c09de51c9be3a58c6e5563071ad942605d04332ec325a"
+    },
+    {
+      "bytes": 71706,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source5/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "f0cff88cf4983a08a03ed8b3354cfa48309c0b9089348c16d70b9058bea6ff07"
+    },
+    {
+      "bytes": 16111,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source5/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "5071658726b85f8fc65e9b298017f952f26963732825f436701fa6d402a2facc"
+    },
+    {
+      "bytes": 7972,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source5/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "d54484c03bba0fb9b9ecfb8c4c9b5d71913acd341440aff5644cb114fa87eefa"
+    },
+    {
+      "bytes": 18027,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source5/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "191d60ca4e4de982f41e88bcbfad25159b248b8fea873708e9584bf4380976cf"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source5/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 71990,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source5/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "03b26f85f58dfca85a785bbca383c0e6a215569e8b94bde0b4b4ceda4dd2c0c5"
+    },
+    {
+      "bytes": 8513,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source5/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "0ae4c4b71d9f3b523c812367f2334ede6e09197a00b707b86805eb9bcea59512"
+    },
+    {
+      "bytes": 4983,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "path": "source5/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "sha256": "2708503e668ae0a634747416f6b21441e0bb8d446f716ba0496cbfbc7b40076d"
+    },
+    {
+      "bytes": 10021,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source5/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "05babc38ffdaa397913a75680f99b0c2a3cb43fae3994ccdf8f25e6d18059d91"
+    },
+    {
+      "bytes": 32415,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/candidate.patch",
+      "path": "source5/candidate.patch",
+      "sha256": "dd3605281199ff0d59235743dc9f5430e140da6b8135f17a7c6049cdbe8b3269"
+    },
+    {
+      "bytes": 5566,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/manifest.json",
+      "path": "source5/manifest.json",
+      "sha256": "aa66668188fc18f12312aa8a8423bd4ab4241ba01632ca71d7c18649a302440f"
+    },
+    {
+      "bytes": 18047,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/revision1-to2.patch",
+      "path": "source5/revision1-to2.patch",
+      "sha256": "796c2da215cbb55ab780870a16b9d6844470ff42f22b2642449f4a26d96cd512"
+    },
+    {
+      "bytes": 707,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/revision2-to3.patch",
+      "path": "source5/revision2-to3.patch",
+      "sha256": "1a8364f02d981be684317b6748f9f8973067d807c73264a1fb1c87abbd7b3020"
+    },
+    {
+      "bytes": 4279,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/revision3-to4.patch",
+      "path": "source5/revision3-to4.patch",
+      "sha256": "76dbcf0b2b951f01c41a1a410dc7195fd3b62b7b20935793b77f812bb534aae0"
+    },
+    {
+      "bytes": 2901,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/revision4-to5.patch",
+      "path": "source5/revision4-to5.patch",
+      "sha256": "84ffbf4549605df24822f9bf6612a0d9946360ea0bb09f2213987299b70a9745"
+    },
+    {
+      "bytes": 4397,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/source1-manifest.json",
+      "path": "source5/source1-manifest.json",
+      "sha256": "eb7b054bdbcc1459e2e2032655bb4cf4008d424d2385b1842b42e8eef4df775f"
+    },
+    {
+      "bytes": 4708,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/source2-manifest.json",
+      "path": "source5/source2-manifest.json",
+      "sha256": "0b4fc846d1db7a975daf045391d1171a2971a7f53ce38979a07f68f6619fea2a"
+    },
+    {
+      "bytes": 5017,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/source3-manifest.json",
+      "path": "source5/source3-manifest.json",
+      "sha256": "aa68f5b705743e84626f7581903bf920b6b7c9a0b4c1f5c35d1498d04d6392dd"
+    },
+    {
+      "bytes": 5254,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/source4-manifest.json",
+      "path": "source5/source4-manifest.json",
+      "sha256": "3a3f7e3a8e9ebf5d041c019ad31fcbdeb825eb06859b2bacf94cc261bc3a600d"
+    },
+    {
+      "bytes": 4639,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source5/summary.json",
+      "path": "source5/summary.json",
+      "sha256": "bc231501fde1da69179e9c704f8ddfb6f7c0e5af71cef5896fced24aac53a958"
+    },
+    {
+      "bytes": 3479,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/REVIEW.md",
+      "path": "source6/REVIEW.md",
+      "sha256": "ac5ac273a56a6d6ed4cfe860fefc4246ab1eb61083e41787a2dd0e8300746765"
+    },
+    {
+      "bytes": 15845,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source6/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "1c3aa4cce4d2147a8ca4192c03674ac42b2c71eec5f4ac654e510664c8ecd56c"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source6/baseline/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 8513,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source6/baseline/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "0ae4c4b71d9f3b523c812367f2334ede6e09197a00b707b86805eb9bcea59512"
+    },
+    {
+      "bytes": 10146,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source6/baseline/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "55ef1a6817544d2631179fba31e5f5eefeab5785719a0b2f2710b75b3134c4a2"
+    },
+    {
+      "bytes": 20993,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/baseline-instrumented.patch",
+      "path": "source6/baseline-instrumented.patch",
+      "sha256": "3da6035130609067ac92a98a5b8efa1b14f47a3a10e8f1632172ef878225d9e1"
+    },
+    {
+      "bytes": 15630,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source6/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "593a807a85feaa33ff59c5ad720f99e673614a88a35c5cb1b5ba493a5a7fee19"
+    },
+    {
+      "bytes": 7101,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source6/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "e7b3672be3ba7a51654bcd60aba1d09e8a047baabbb05aecb511be94634c5be3"
+    },
+    {
+      "bytes": 16270,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source6/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "edd573f27b50353f038f42499d81d030ea801ee42d9e93efc9eca7ffcdae1251"
+    },
+    {
+      "bytes": 24423,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source6/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "054c69af6b053fcd638c09de51c9be3a58c6e5563071ad942605d04332ec325a"
+    },
+    {
+      "bytes": 71706,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source6/before/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "f0cff88cf4983a08a03ed8b3354cfa48309c0b9089348c16d70b9058bea6ff07"
+    },
+    {
+      "bytes": 16111,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "path": "source6/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "5071658726b85f8fc65e9b298017f952f26963732825f436701fa6d402a2facc"
+    },
+    {
+      "bytes": 7972,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "path": "source6/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift",
+      "sha256": "d54484c03bba0fb9b9ecfb8c4c9b5d71913acd341440aff5644cb114fa87eefa"
+    },
+    {
+      "bytes": 18027,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "path": "source6/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "191d60ca4e4de982f41e88bcbfad25159b248b8fea873708e9584bf4380976cf"
+    },
+    {
+      "bytes": 24873,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "path": "source6/candidate/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "de2d3158b259d422f9989a8a419bb087ff379ff5e3c7a3ab250f2b92b7837185"
+    },
+    {
+      "bytes": 71990,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "path": "source6/candidate/provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "03b26f85f58dfca85a785bbca383c0e6a215569e8b94bde0b4b4ceda4dd2c0c5"
+    },
+    {
+      "bytes": 8513,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "path": "source6/candidate/provider-swift/Tests/ProviderCoreTests/CancelledPrefixTestSupport.swift",
+      "sha256": "0ae4c4b71d9f3b523c812367f2334ede6e09197a00b707b86805eb9bcea59512"
+    },
+    {
+      "bytes": 4983,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "path": "source6/candidate/provider-swift/Tests/ProviderCoreTests/CancelledSettlementLifecycleTests.swift",
+      "sha256": "2708503e668ae0a634747416f6b21441e0bb8d446f716ba0496cbfbc7b40076d"
+    },
+    {
+      "bytes": 10146,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "path": "source6/candidate/provider-swift/Tests/ProviderCoreTests/ProviderCancelledPrefixCacheTests.swift",
+      "sha256": "55ef1a6817544d2631179fba31e5f5eefeab5785719a0b2f2710b75b3134c4a2"
+    },
+    {
+      "bytes": 32542,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/candidate.patch",
+      "path": "source6/candidate.patch",
+      "sha256": "f0e4c8cbee6caa7c96c3c8018b08a26514143bceb97138ceb46e149459b623a3"
+    },
+    {
+      "bytes": 5875,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/manifest.json",
+      "path": "source6/manifest.json",
+      "sha256": "793a46d46adf075e1d6c2e1abc6898c7c6b945b7e5b69eba9024739fd91c9498"
+    },
+    {
+      "bytes": 18047,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/revision1-to2.patch",
+      "path": "source6/revision1-to2.patch",
+      "sha256": "796c2da215cbb55ab780870a16b9d6844470ff42f22b2642449f4a26d96cd512"
+    },
+    {
+      "bytes": 707,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/revision2-to3.patch",
+      "path": "source6/revision2-to3.patch",
+      "sha256": "1a8364f02d981be684317b6748f9f8973067d807c73264a1fb1c87abbd7b3020"
+    },
+    {
+      "bytes": 4279,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/revision3-to4.patch",
+      "path": "source6/revision3-to4.patch",
+      "sha256": "76dbcf0b2b951f01c41a1a410dc7195fd3b62b7b20935793b77f812bb534aae0"
+    },
+    {
+      "bytes": 2901,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/revision4-to5.patch",
+      "path": "source6/revision4-to5.patch",
+      "sha256": "84ffbf4549605df24822f9bf6612a0d9946360ea0bb09f2213987299b70a9745"
+    },
+    {
+      "bytes": 739,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/revision5-to6.patch",
+      "path": "source6/revision5-to6.patch",
+      "sha256": "0f2c841ade74d2ee692282c016be640a32589f7f4b89cc847387c8df1986fd7c"
+    },
+    {
+      "bytes": 4397,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/source1-manifest.json",
+      "path": "source6/source1-manifest.json",
+      "sha256": "eb7b054bdbcc1459e2e2032655bb4cf4008d424d2385b1842b42e8eef4df775f"
+    },
+    {
+      "bytes": 4708,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/source2-manifest.json",
+      "path": "source6/source2-manifest.json",
+      "sha256": "0b4fc846d1db7a975daf045391d1171a2971a7f53ce38979a07f68f6619fea2a"
+    },
+    {
+      "bytes": 5017,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/source3-manifest.json",
+      "path": "source6/source3-manifest.json",
+      "sha256": "aa68f5b705743e84626f7581903bf920b6b7c9a0b4c1f5c35d1498d04d6392dd"
+    },
+    {
+      "bytes": 5254,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/source4-manifest.json",
+      "path": "source6/source4-manifest.json",
+      "sha256": "3a3f7e3a8e9ebf5d041c019ad31fcbdeb825eb06859b2bacf94cc261bc3a600d"
+    },
+    {
+      "bytes": 5566,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/source5-manifest.json",
+      "path": "source6/source5-manifest.json",
+      "sha256": "aa66668188fc18f12312aa8a8423bd4ab4241ba01632ca71d7c18649a302440f"
+    },
+    {
+      "bytes": 4994,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-source6/summary.json",
+      "path": "source6/summary.json",
+      "sha256": "d4cb596a1dcf39b4afdc293ad6f5d5cdab76f56f9736220301d3fc2767aeda30"
+    },
+    {
+      "bytes": 4708,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/approved-source-manifest.json",
+      "path": "validation1/approved-source-manifest.json",
+      "sha256": "0b4fc846d1db7a975daf045391d1171a2971a7f53ce38979a07f68f6619fea2a"
+    },
+    {
+      "bytes": 399714,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/baseline/actual-build-debug.yaml.gz",
+      "path": "validation1/baseline/actual-build-debug.yaml.gz",
+      "sha256": "7bcaf8360b61244c815f80a93c06805ce702b4e9b24715e4d642ae7b63a8974d"
+    },
+    {
+      "bytes": 20787,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/baseline/actual-build-workspace-state.json",
+      "path": "validation1/baseline/actual-build-workspace-state.json",
+      "sha256": "f16098dd9214a83e1ea863a91a24bbfbeccf257775658316c19f0bee86d4ab97"
+    },
+    {
+      "bytes": 1187800,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/baseline/build.log",
+      "path": "validation1/baseline/build.log",
+      "sha256": "89797b679835891ac6bf82e25313caf37b32cda43bd46c0e23d0b6c6b56ebc30"
+    },
+    {
+      "bytes": 3,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/baseline/execution-environment.json",
+      "path": "validation1/baseline/execution-environment.json",
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    },
+    {
+      "bytes": 542,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/baseline/executions.json",
+      "path": "validation1/baseline/executions.json",
+      "sha256": "2a3f591e439f9426d6674df778cbc2fd8097e9ed03e2ec17b35aa9cc4d5dffea"
+    },
+    {
+      "bytes": 181822,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/baseline/provider-source-manifest.json",
+      "path": "validation1/baseline/provider-source-manifest.json",
+      "sha256": "350e5e55abc531c05d4c741c9db387c0838fdda6526a609bbccbed502d2edc1f"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/baseline/source-verified-before.json",
+      "path": "validation1/baseline/source-verified-before.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/baseline/source-verified-postcompile.json",
+      "path": "validation1/baseline/source-verified-postcompile.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 49,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/baseline/verdict.json",
+      "path": "validation1/baseline/verdict.json",
+      "sha256": "66e036c6f9b162ea218964d94d329747d53eab828131f22d85ebfc6b75133519"
+    },
+    {
+      "bytes": 181976,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/candidate/provider-source-manifest.json",
+      "path": "validation1/candidate/provider-source-manifest.json",
+      "sha256": "a3bf3ad02eea94a4ae2d11add9b5d7a3643eda36b98bd7b1a5c2596999f73aa4"
+    },
+    {
+      "bytes": 161754,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/dependency-source-manifest.json",
+      "path": "validation1/dependency-source-manifest.json",
+      "sha256": "f1e16b19ad215312c227f0b27f0370556eddfb7afde02fb2c6940fecdb0c1419"
+    },
+    {
+      "bytes": 1269,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/integration.json",
+      "path": "validation1/integration.json",
+      "sha256": "5859a1d81cc1bf5a709adf503977776d25f9c32cd6b8b986a083baeb9d52b5a7"
+    },
+    {
+      "bytes": 2907,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/jinja-source-manifest.json",
+      "path": "validation1/jinja-source-manifest.json",
+      "sha256": "1a3c73a25aab033a5ce568f263db5ff9560d648206313843983afa3280760598"
+    },
+    {
+      "bytes": 217318,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/native-source-manifest.json",
+      "path": "validation1/native-source-manifest.json",
+      "sha256": "c18cfeeee1c83c94e38550b42b37d01f594ccb36ec35eea829fa27d518ad4703"
+    },
+    {
+      "bytes": 1831,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/preparation-manifest.json",
+      "path": "validation1/preparation-manifest.json",
+      "sha256": "3d3d151aeaac043d45478a86f8a826f73ef6acad86a834eb0efb628399883120"
+    },
+    {
+      "bytes": 8129,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/prepare.py",
+      "path": "validation1/prepare.py",
+      "sha256": "6d035b7ebf51f06a2a28b91a6ab4616bf25e9e0fd6b3b630eb5a2f8d344b7136"
+    },
+    {
+      "bytes": 1640,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/root-source-review.json",
+      "path": "validation1/root-source-review.json",
+      "sha256": "50eb77b82d06a7096d8bb30ff0b5ba78a68929bc0ba1b6c641e65f45388d9395"
+    },
+    {
+      "bytes": 8490,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/run.py",
+      "path": "validation1/run.py",
+      "sha256": "3bbd5b61420cebb3a78d4cd21f205fccb030fbe54b7450e60d5d678da67acf67"
+    },
+    {
+      "bytes": 20845,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/scratch-workspace-before.json",
+      "path": "validation1/scratch-workspace-before.json",
+      "sha256": "9770c484b1c2d6dc86665e141ce83450a3460544829573d3275ed3db33c3cf38"
+    },
+    {
+      "bytes": 6661,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation1/source-correspondence.json",
+      "path": "validation1/source-correspondence.json",
+      "sha256": "4d31f9b815679b8335eb8eeefdd7f998082c2a2c90eaaa240f0c50b633fecd9d"
+    },
+    {
+      "bytes": 3849,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/alias-proof-driver.patch",
+      "path": "validation2/alias-proof-driver.patch",
+      "sha256": "8ce8e216f5652111940b2d41b4efc0a1d250986cddd7963da5e9331581738827"
+    },
+    {
+      "bytes": 657,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/alias-proof-manifest.json",
+      "path": "validation2/alias-proof-manifest.json",
+      "sha256": "033ecc6197daeae876dd35281c37ec674242873c8e919137ec126060996eb19a"
+    },
+    {
+      "bytes": 5017,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/approved-source-manifest.json",
+      "path": "validation2/approved-source-manifest.json",
+      "sha256": "aa68f5b705743e84626f7581903bf920b6b7c9a0b4c1f5c35d1498d04d6392dd"
+    },
+    {
+      "bytes": 5151,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/ProviderCancelledPrefixCacheTests.log",
+      "path": "validation2/baseline/ProviderCancelledPrefixCacheTests.log",
+      "sha256": "fb35bf6c054de7ae19cdbe49ec880e5e9bbf55668a475f69c0692a300da28fe3"
+    },
+    {
+      "bytes": 399809,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/actual-after-debug.yaml.gz",
+      "path": "validation2/baseline/actual-after-debug.yaml.gz",
+      "sha256": "d9b81a6595764798b3ed7e81020a0ea382146b826de6776da3cd2c28aadc4ecd"
+    },
+    {
+      "bytes": 20787,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/actual-after-workspace-state.json",
+      "path": "validation2/baseline/actual-after-workspace-state.json",
+      "sha256": "654dfe393731f854956d0aa509c406088b7e0a89564ee33310e8e38d3dee65a0"
+    },
+    {
+      "bytes": 399791,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/actual-build-debug.yaml.gz",
+      "path": "validation2/baseline/actual-build-debug.yaml.gz",
+      "sha256": "86bd5b6e44db0693d632c91e019ece893763832017024033a76d69195cdcd9c4"
+    },
+    {
+      "bytes": 20787,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/actual-build-workspace-state.json",
+      "path": "validation2/baseline/actual-build-workspace-state.json",
+      "sha256": "654dfe393731f854956d0aa509c406088b7e0a89564ee33310e8e38d3dee65a0"
+    },
+    {
+      "bytes": 2744,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/actual-compiler-source-proof.json",
+      "path": "validation2/baseline/actual-compiler-source-proof.json",
+      "sha256": "2897968fabc4666cfaad8b3ef787a58d467b35ab90a5eb6340d18187f3c29524"
+    },
+    {
+      "bytes": 1150026,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/build.log",
+      "path": "validation2/baseline/build.log",
+      "sha256": "9ba856e9faae16471eca93e29dcca361e20cb4ebc89a9dcab31541196416f526"
+    },
+    {
+      "bytes": 3,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/execution-environment.json",
+      "path": "validation2/baseline/execution-environment.json",
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    },
+    {
+      "bytes": 1669,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/executions.json",
+      "path": "validation2/baseline/executions.json",
+      "sha256": "32c0f175ed966f836e29c224dde00ca69beea9fdd56f73d9b922b7504bfb2a30"
+    },
+    {
+      "bytes": 42,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/filters.json",
+      "path": "validation2/baseline/filters.json",
+      "sha256": "bb2a61565fe9e23193d37556a9a97538afc0a1c9b47fdadc29fd65c83c193cb0"
+    },
+    {
+      "bytes": 193353,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/identifiers.log",
+      "path": "validation2/baseline/identifiers.log",
+      "sha256": "192c101c7947437ef006499b37636b26b3ac1d1b5488060826361d1e431c62f7"
+    },
+    {
+      "bytes": 181822,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/provider-source-manifest.json",
+      "path": "validation2/baseline/provider-source-manifest.json",
+      "sha256": "785aee3a8ea1bb0c0faf8c8c657a27ede7796a065c4ba35a1fb2c49e1894d9cb"
+    },
+    {
+      "bytes": 627,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/reviewed-verdict.json",
+      "path": "validation2/baseline/reviewed-verdict.json",
+      "sha256": "ecc25ab7ef9d047b0c0facd4b94793f15f0e93ad6ac0022c83fbdee0a7ed7474"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/source-verified-after.json",
+      "path": "validation2/baseline/source-verified-after.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/source-verified-before.json",
+      "path": "validation2/baseline/source-verified-before.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/source-verified-postcompile.json",
+      "path": "validation2/baseline/source-verified-postcompile.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/source-verified-resume.json",
+      "path": "validation2/baseline/source-verified-resume.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 608,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/stopped-graph-proof.json",
+      "path": "validation2/baseline/stopped-graph-proof.json",
+      "sha256": "718e31a1cc79740adce5532ac08a2aca0999bad1e04f5a6ff566bbcc948966c5"
+    },
+    {
+      "bytes": 378,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/test-binary.json",
+      "path": "validation2/baseline/test-binary.json",
+      "sha256": "ce27fbc3ff938e56f2d5483157e49fcd3a223c4244ecd46707ce442656e3e050"
+    },
+    {
+      "bytes": 279,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/baseline/verdict.json",
+      "path": "validation2/baseline/verdict.json",
+      "sha256": "da913a8661cc5fafabf0f76c53e77af3d1350dd331ebd4ef6e2bf2c36e685873"
+    },
+    {
+      "bytes": 181976,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/candidate/provider-source-manifest.json",
+      "path": "validation2/candidate/provider-source-manifest.json",
+      "sha256": "fe602c60b735c507b3786a1ae75d75e2d1caf4aabce5dfa8ea2337e4f3c5ffdd"
+    },
+    {
+      "bytes": 161754,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/dependency-source-manifest.json",
+      "path": "validation2/dependency-source-manifest.json",
+      "sha256": "f1e16b19ad215312c227f0b27f0370556eddfb7afde02fb2c6940fecdb0c1419"
+    },
+    {
+      "bytes": 1507,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/integration.json",
+      "path": "validation2/integration.json",
+      "sha256": "8947b8113fb6529292536d5313fc3fdca77f185abd674e3f25d7233df0c70653"
+    },
+    {
+      "bytes": 2907,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/jinja-source-manifest.json",
+      "path": "validation2/jinja-source-manifest.json",
+      "sha256": "1a3c73a25aab033a5ce568f263db5ff9560d648206313843983afa3280760598"
+    },
+    {
+      "bytes": 217318,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/native-source-manifest.json",
+      "path": "validation2/native-source-manifest.json",
+      "sha256": "c18cfeeee1c83c94e38550b42b37d01f594ccb36ec35eea829fa27d518ad4703"
+    },
+    {
+      "bytes": 1411,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/preparation-manifest.json",
+      "path": "validation2/preparation-manifest.json",
+      "sha256": "8b9cbd2da51b933775e0ddd2e12eb6a13b577f50e508b37d9154d95fbfeb034c"
+    },
+    {
+      "bytes": 9481,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/run-with-alias-proof.py",
+      "path": "validation2/run-with-alias-proof.py",
+      "sha256": "4236bfb46ad241c80400a71b5edae27c26f37883b53dc0241c4888bf1023c230"
+    },
+    {
+      "bytes": 8490,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/run.py",
+      "path": "validation2/run.py",
+      "sha256": "b6322768857d554a937eba26cd56145f4e3018d50c645f04ba59209e7f9b65ec"
+    },
+    {
+      "bytes": 6661,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation2/source-correspondence.json",
+      "path": "validation2/source-correspondence.json",
+      "sha256": "858f610c71510d92cc1184c55f6261dd6cee5dfc5b982c615afc32a70eb74d74"
+    },
+    {
+      "bytes": 5254,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/approved-source-manifest.json",
+      "path": "validation3/approved-source-manifest.json",
+      "sha256": "3a3f7e3a8e9ebf5d041c019ad31fcbdeb825eb06859b2bacf94cc261bc3a600d"
+    },
+    {
+      "bytes": 2213,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/ProviderCancelledPrefixCacheTests.log",
+      "path": "validation3/baseline/ProviderCancelledPrefixCacheTests.log",
+      "sha256": "9d4ca1d0ccb2e894f1625b53ddbee9795901263412b63dd340b61059924363e4"
+    },
+    {
+      "bytes": 399812,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/actual-after-debug.yaml.gz",
+      "path": "validation3/baseline/actual-after-debug.yaml.gz",
+      "sha256": "07895706edab5c406f4985887b61d0cb5f6d4eff610c218aae6cd87a5c964c6e"
+    },
+    {
+      "bytes": 20787,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/actual-after-workspace-state.json",
+      "path": "validation3/baseline/actual-after-workspace-state.json",
+      "sha256": "af0399075c81d5bf55b50815fec6253c7cac0d5d239c2e85ad18360ab3446eea"
+    },
+    {
+      "bytes": 399793,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/actual-build-debug.yaml.gz",
+      "path": "validation3/baseline/actual-build-debug.yaml.gz",
+      "sha256": "73a0cf19378972b4b2afe05041d21c4f378bac0c75ea5cff08b2a7899c727c30"
+    },
+    {
+      "bytes": 20787,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/actual-build-workspace-state.json",
+      "path": "validation3/baseline/actual-build-workspace-state.json",
+      "sha256": "af0399075c81d5bf55b50815fec6253c7cac0d5d239c2e85ad18360ab3446eea"
+    },
+    {
+      "bytes": 2744,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/actual-compiler-source-proof.json",
+      "path": "validation3/baseline/actual-compiler-source-proof.json",
+      "sha256": "7181416d1d24d7f62cbe35fd368c3bdd5665c9e8bcaf0311192122854b701094"
+    },
+    {
+      "bytes": 1150285,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/build.log",
+      "path": "validation3/baseline/build.log",
+      "sha256": "d4a312b08485914793bd681715e0fecdd324d5b7be6fe9215c38cded5e8de08e"
+    },
+    {
+      "bytes": 3,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/execution-environment.json",
+      "path": "validation3/baseline/execution-environment.json",
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    },
+    {
+      "bytes": 1669,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/executions.json",
+      "path": "validation3/baseline/executions.json",
+      "sha256": "4d5a87e83bab3cea9530191038f8664df4ae73eef345ff641976f8c9af4b7511"
+    },
+    {
+      "bytes": 42,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/filters.json",
+      "path": "validation3/baseline/filters.json",
+      "sha256": "bb2a61565fe9e23193d37556a9a97538afc0a1c9b47fdadc29fd65c83c193cb0"
+    },
+    {
+      "bytes": 193353,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/identifiers.log",
+      "path": "validation3/baseline/identifiers.log",
+      "sha256": "192c101c7947437ef006499b37636b26b3ac1d1b5488060826361d1e431c62f7"
+    },
+    {
+      "bytes": 181822,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/provider-source-manifest.json",
+      "path": "validation3/baseline/provider-source-manifest.json",
+      "sha256": "c1a668ea0cf548868bd72da5a8dd50148b738832289aab0c8feb1e8c26b73bad"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/source-verified-after.json",
+      "path": "validation3/baseline/source-verified-after.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/source-verified-before.json",
+      "path": "validation3/baseline/source-verified-before.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/source-verified-postcompile.json",
+      "path": "validation3/baseline/source-verified-postcompile.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 378,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/test-binary.json",
+      "path": "validation3/baseline/test-binary.json",
+      "sha256": "25eb630c4ef7cec80908ad7ee9e226398931218af805aa0291f3142ab63e888b"
+    },
+    {
+      "bytes": 261,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/baseline/verdict.json",
+      "path": "validation3/baseline/verdict.json",
+      "sha256": "6c65c114ca54214946a20aaefc63c3da62ef6c44a83ade4b34095d3de39aaabf"
+    },
+    {
+      "bytes": 181976,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/candidate/provider-source-manifest.json",
+      "path": "validation3/candidate/provider-source-manifest.json",
+      "sha256": "bc155328dc5187c47dbb5c902cd805df5ca98eab5c9c3736fc18d87f96c83393"
+    },
+    {
+      "bytes": 161754,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/dependency-source-manifest.json",
+      "path": "validation3/dependency-source-manifest.json",
+      "sha256": "f1e16b19ad215312c227f0b27f0370556eddfb7afde02fb2c6940fecdb0c1419"
+    },
+    {
+      "bytes": 1407,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/integration.json",
+      "path": "validation3/integration.json",
+      "sha256": "09851c26cda3995e6ce941650bbc5b9be2e2c177108e518d887f0f2e59baf5b4"
+    },
+    {
+      "bytes": 2907,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/jinja-source-manifest.json",
+      "path": "validation3/jinja-source-manifest.json",
+      "sha256": "1a3c73a25aab033a5ce568f263db5ff9560d648206313843983afa3280760598"
+    },
+    {
+      "bytes": 217318,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/native-source-manifest.json",
+      "path": "validation3/native-source-manifest.json",
+      "sha256": "c18cfeeee1c83c94e38550b42b37d01f594ccb36ec35eea829fa27d518ad4703"
+    },
+    {
+      "bytes": 1781,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/preparation-manifest.json",
+      "path": "validation3/preparation-manifest.json",
+      "sha256": "370cb178d43dd796d05eb5a3dd7ab888539742d2a536911b024117bd8c868d9f"
+    },
+    {
+      "bytes": 8258,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/prepare.py",
+      "path": "validation3/prepare.py",
+      "sha256": "39006824fd981d4baabc4fe7d9939df2f536994064cec80ca925cb460966713d"
+    },
+    {
+      "bytes": 1640,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/root-source-review.json",
+      "path": "validation3/root-source-review.json",
+      "sha256": "50eb77b82d06a7096d8bb30ff0b5ba78a68929bc0ba1b6c641e65f45388d9395"
+    },
+    {
+      "bytes": 9681,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/run.py",
+      "path": "validation3/run.py",
+      "sha256": "68fd3d8fd6c97bf4d9a777dd18d33787d10543c368fa8c55488a51ed5860e902"
+    },
+    {
+      "bytes": 20302,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/scratch-workspace-before.json",
+      "path": "validation3/scratch-workspace-before.json",
+      "sha256": "ec8f0a0601908d3dc1f898b41457e9794bd11970ecec1f1d53b445db03904d1e"
+    },
+    {
+      "bytes": 6661,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation3/source-correspondence.json",
+      "path": "validation3/source-correspondence.json",
+      "sha256": "7ff21ac80d06e6f7af9c76f076ac8646bfbb38e4cebb4a5d1a2f0902c19e87b4"
+    },
+    {
+      "bytes": 5566,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/approved-source-manifest.json",
+      "path": "validation4/approved-source-manifest.json",
+      "sha256": "aa66668188fc18f12312aa8a8423bd4ab4241ba01632ca71d7c18649a302440f"
+    },
+    {
+      "bytes": 2501,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/ProviderCancelledPrefixCacheTests.log",
+      "path": "validation4/baseline/ProviderCancelledPrefixCacheTests.log",
+      "sha256": "bf6c2905292012eb71a8a26167eaa0cbfe28d41e9b7b98c714c04a2c2d1a79fe"
+    },
+    {
+      "bytes": 399813,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/actual-after-debug.yaml.gz",
+      "path": "validation4/baseline/actual-after-debug.yaml.gz",
+      "sha256": "b1a071fa8dfeb617d26512d7d11750daa80411a22a198309b14c1e71c783168a"
+    },
+    {
+      "bytes": 20787,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/actual-after-workspace-state.json",
+      "path": "validation4/baseline/actual-after-workspace-state.json",
+      "sha256": "5e1f180c69ed61027362d35aa50364e97e81c384bfd365a4f2d36f9f8fbd7501"
+    },
+    {
+      "bytes": 399794,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/actual-build-debug.yaml.gz",
+      "path": "validation4/baseline/actual-build-debug.yaml.gz",
+      "sha256": "98f8ecb920ce1908233ee138193adf5827d929e06ab8de7412d4ae1c76e511e8"
+    },
+    {
+      "bytes": 20787,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/actual-build-workspace-state.json",
+      "path": "validation4/baseline/actual-build-workspace-state.json",
+      "sha256": "5e1f180c69ed61027362d35aa50364e97e81c384bfd365a4f2d36f9f8fbd7501"
+    },
+    {
+      "bytes": 2744,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/actual-compiler-source-proof.json",
+      "path": "validation4/baseline/actual-compiler-source-proof.json",
+      "sha256": "f756c13f16ff034982db9c89080f08e04949d4af8f736fdd5d832d5a9f4914de"
+    },
+    {
+      "bytes": 1150135,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/build.log",
+      "path": "validation4/baseline/build.log",
+      "sha256": "d19bef8a2be0c0804a68161a1cbeae71ea129be8130e5694e48077b87af0cce3"
+    },
+    {
+      "bytes": 3,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/execution-environment.json",
+      "path": "validation4/baseline/execution-environment.json",
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    },
+    {
+      "bytes": 1669,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/executions.json",
+      "path": "validation4/baseline/executions.json",
+      "sha256": "8d6643f4a29cce9cc9a0d302d58ab03856ac622149e664011f94e912cd1901cd"
+    },
+    {
+      "bytes": 42,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/filters.json",
+      "path": "validation4/baseline/filters.json",
+      "sha256": "bb2a61565fe9e23193d37556a9a97538afc0a1c9b47fdadc29fd65c83c193cb0"
+    },
+    {
+      "bytes": 193353,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/identifiers.log",
+      "path": "validation4/baseline/identifiers.log",
+      "sha256": "192c101c7947437ef006499b37636b26b3ac1d1b5488060826361d1e431c62f7"
+    },
+    {
+      "bytes": 181822,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/provider-source-manifest.json",
+      "path": "validation4/baseline/provider-source-manifest.json",
+      "sha256": "e096b670cd48a53d114e15994bf5da86c2acd81c27868c5e3e7618da7981177b"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/source-verified-after.json",
+      "path": "validation4/baseline/source-verified-after.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/source-verified-before.json",
+      "path": "validation4/baseline/source-verified-before.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/source-verified-postcompile.json",
+      "path": "validation4/baseline/source-verified-postcompile.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 378,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/test-binary.json",
+      "path": "validation4/baseline/test-binary.json",
+      "sha256": "0a6c0790ed902585bc1e5685c30b8a0b2b5f3e03573d03bc40ebefbb67cc16a8"
+    },
+    {
+      "bytes": 261,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/baseline/verdict.json",
+      "path": "validation4/baseline/verdict.json",
+      "sha256": "6c65c114ca54214946a20aaefc63c3da62ef6c44a83ade4b34095d3de39aaabf"
+    },
+    {
+      "bytes": 181976,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/candidate/provider-source-manifest.json",
+      "path": "validation4/candidate/provider-source-manifest.json",
+      "sha256": "79c80e17d8602623c19b83f3726046a4e015d95e1ec3c362d25c7a46434b9d1f"
+    },
+    {
+      "bytes": 161754,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/dependency-source-manifest.json",
+      "path": "validation4/dependency-source-manifest.json",
+      "sha256": "f1e16b19ad215312c227f0b27f0370556eddfb7afde02fb2c6940fecdb0c1419"
+    },
+    {
+      "bytes": 1529,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/integration.json",
+      "path": "validation4/integration.json",
+      "sha256": "6ef29cb97fd1e2da52f848000babb9f0ab615f7955fdf8cad33353c6eee6e862"
+    },
+    {
+      "bytes": 2907,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/jinja-source-manifest.json",
+      "path": "validation4/jinja-source-manifest.json",
+      "sha256": "1a3c73a25aab033a5ce568f263db5ff9560d648206313843983afa3280760598"
+    },
+    {
+      "bytes": 217318,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/native-source-manifest.json",
+      "path": "validation4/native-source-manifest.json",
+      "sha256": "c18cfeeee1c83c94e38550b42b37d01f594ccb36ec35eea829fa27d518ad4703"
+    },
+    {
+      "bytes": 1781,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/preparation-manifest.json",
+      "path": "validation4/preparation-manifest.json",
+      "sha256": "dda2f4b488ab9241904c9fe4b10c078e4986cb279007bcae5a5d3b308e4854cf"
+    },
+    {
+      "bytes": 8386,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/prepare.py",
+      "path": "validation4/prepare.py",
+      "sha256": "3f185e198a4d849f884360c6f3a4dfa867aea7824810a847afbbc018fc313765"
+    },
+    {
+      "bytes": 1640,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/root-source-review.json",
+      "path": "validation4/root-source-review.json",
+      "sha256": "50eb77b82d06a7096d8bb30ff0b5ba78a68929bc0ba1b6c641e65f45388d9395"
+    },
+    {
+      "bytes": 9681,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/run.py",
+      "path": "validation4/run.py",
+      "sha256": "e5dfae46eca808e186c804999bf300d2657f40c7eacb9c3eeb443bc31f248aa6"
+    },
+    {
+      "bytes": 20306,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/scratch-workspace-before.json",
+      "path": "validation4/scratch-workspace-before.json",
+      "sha256": "3d3732999db81d1df85b822e9f872def3f39a938c3fdf373941df7b68cb38ed1"
+    },
+    {
+      "bytes": 6661,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation4/source-correspondence.json",
+      "path": "validation4/source-correspondence.json",
+      "sha256": "7478d0aead81f271daf2cc4c12a6f0d47c75abe99950d0903073ef9d1e21376b"
+    },
+    {
+      "bytes": 5875,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/approved-source-manifest.json",
+      "path": "validation5/approved-source-manifest.json",
+      "sha256": "793a46d46adf075e1d6c2e1abc6898c7c6b945b7e5b69eba9024739fd91c9498"
+    },
+    {
+      "bytes": 5430,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/ProviderCancelledPrefixCacheTests.log",
+      "path": "validation5/baseline/ProviderCancelledPrefixCacheTests.log",
+      "sha256": "1aae7bdac68989861f004b24997c0c629d256d10b7cfbe79f57612ef3b4e9e30"
+    },
+    {
+      "bytes": 399811,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/actual-after-debug.yaml.gz",
+      "path": "validation5/baseline/actual-after-debug.yaml.gz",
+      "sha256": "aa86c3431ea16c459e0ac7f7847f644848ac1276dc00ffebea44f2ea976d0244"
+    },
+    {
+      "bytes": 20787,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/actual-after-workspace-state.json",
+      "path": "validation5/baseline/actual-after-workspace-state.json",
+      "sha256": "79f4c133a00659856d6e2b6d298fe75c7c4593eb13b086e1e34b3a8e6d6ed143"
+    },
+    {
+      "bytes": 399793,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/actual-build-debug.yaml.gz",
+      "path": "validation5/baseline/actual-build-debug.yaml.gz",
+      "sha256": "c397e383e2cd5b3b4dd9dd16ef331a64ef41217fa20ac2a4f4c649a921595c83"
+    },
+    {
+      "bytes": 20787,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/actual-build-workspace-state.json",
+      "path": "validation5/baseline/actual-build-workspace-state.json",
+      "sha256": "79f4c133a00659856d6e2b6d298fe75c7c4593eb13b086e1e34b3a8e6d6ed143"
+    },
+    {
+      "bytes": 2744,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/actual-compiler-source-proof.json",
+      "path": "validation5/baseline/actual-compiler-source-proof.json",
+      "sha256": "1e2aa1889e24f69b8089365bdae984284657e04daa555ced7244cf350e1c15f3"
+    },
+    {
+      "bytes": 1150124,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/build.log",
+      "path": "validation5/baseline/build.log",
+      "sha256": "4443140a72785620fcd445659770520bcbaefaac7452e784ebf7770f5de7a150"
+    },
+    {
+      "bytes": 3,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/execution-environment.json",
+      "path": "validation5/baseline/execution-environment.json",
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    },
+    {
+      "bytes": 1669,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/executions.json",
+      "path": "validation5/baseline/executions.json",
+      "sha256": "9e9000ffe616ddd825c9ca16810dfe6bf2f6e20a6675c608d0498efcf72d9559"
+    },
+    {
+      "bytes": 42,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/filters.json",
+      "path": "validation5/baseline/filters.json",
+      "sha256": "bb2a61565fe9e23193d37556a9a97538afc0a1c9b47fdadc29fd65c83c193cb0"
+    },
+    {
+      "bytes": 193353,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/identifiers.log",
+      "path": "validation5/baseline/identifiers.log",
+      "sha256": "192c101c7947437ef006499b37636b26b3ac1d1b5488060826361d1e431c62f7"
+    },
+    {
+      "bytes": 181822,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/provider-source-manifest.json",
+      "path": "validation5/baseline/provider-source-manifest.json",
+      "sha256": "183075fb8472b8b9590ad9a529b4533d0d7b716b0b4a63740016c41106e06ef4"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/source-verified-after.json",
+      "path": "validation5/baseline/source-verified-after.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/source-verified-before.json",
+      "path": "validation5/baseline/source-verified-before.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/source-verified-postcompile.json",
+      "path": "validation5/baseline/source-verified-postcompile.json",
+      "sha256": "2bb37a29ddba68a48775b90f6bf37c758aa2d9a869e1dd2c8eb8b0a1348dfc8e"
+    },
+    {
+      "bytes": 378,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/test-binary.json",
+      "path": "validation5/baseline/test-binary.json",
+      "sha256": "4a0d6d1fe5454ccfd0e2b485156c808ffbbaa331b5ceea55297e8bd629288db3"
+    },
+    {
+      "bytes": 279,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/baseline/verdict.json",
+      "path": "validation5/baseline/verdict.json",
+      "sha256": "da913a8661cc5fafabf0f76c53e77af3d1350dd331ebd4ef6e2bf2c36e685873"
+    },
+    {
+      "bytes": 1604,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/CancelledSettlementLifecycleTests.log",
+      "path": "validation5/candidate/CancelledSettlementLifecycleTests.log",
+      "sha256": "86c3a33b0e652ceff650c899b9f8982ff9d72b4e45a08fe528cdf2e150818199"
+    },
+    {
+      "bytes": 2988,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/EngineProfileCancelTests.log",
+      "path": "validation5/candidate/EngineProfileCancelTests.log",
+      "sha256": "70124c2165182689ed341c8298fac9413d7567e18288eac2381c40f5b44c9c81"
+    },
+    {
+      "bytes": 1188,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/EngineV2BridgePumpReceiptTests.log",
+      "path": "validation5/candidate/EngineV2BridgePumpReceiptTests.log",
+      "sha256": "92700fee63e3ed995a9a114e3dc1fa391d07e6f1f01d7c6485446300185b1ba6"
+    },
+    {
+      "bytes": 1245,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/EngineV2CancellationTests.log",
+      "path": "validation5/candidate/EngineV2CancellationTests.log",
+      "sha256": "e8f244fef0e26686fc106025ccc10b66d9f6ca814c083bf1a5fe4671d779ca08"
+    },
+    {
+      "bytes": 1966,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/EngineV2ErrorMappingTests.log",
+      "path": "validation5/candidate/EngineV2ErrorMappingTests.log",
+      "sha256": "753a74fa36e4a1a10c4fb70f1b782b67d686c99e4dc4c52d15516e5c1d3f69c3"
+    },
+    {
+      "bytes": 3004,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/EngineV2EventFramingTests.log",
+      "path": "validation5/candidate/EngineV2EventFramingTests.log",
+      "sha256": "c2ceb3c29c0bd105429e6e772049d9f8cb61614a95be0dbde106e6f6e48e8d0a"
+    },
+    {
+      "bytes": 3246,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/EngineV2LivenessRecoveryTests.log",
+      "path": "validation5/candidate/EngineV2LivenessRecoveryTests.log",
+      "sha256": "98d8ab98f34cce679e53d98b891bd49b0b4e6b91d7056e932860adfc1340b802"
+    },
+    {
+      "bytes": 1421,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/EngineV2LivenessVerdictTests.log",
+      "path": "validation5/candidate/EngineV2LivenessVerdictTests.log",
+      "sha256": "fa7d9196c5dc530292eb8b7c245b8fc776b4d75fc1290f261f1eea04954a20c0"
+    },
+    {
+      "bytes": 1719,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/EngineV2LookupReceiptCoverageTests.log",
+      "path": "validation5/candidate/EngineV2LookupReceiptCoverageTests.log",
+      "sha256": "596e8702253b1c2139ae4c1ce3f0986e8fd95889c34deb5ccda78a62a4ea5e09"
+    },
+    {
+      "bytes": 3422,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/EngineV2SharedBudgetTests.log",
+      "path": "validation5/candidate/EngineV2SharedBudgetTests.log",
+      "sha256": "831f3647c89942e4138dad5b17d1325cb993f501f3bd84024c9cc772b3686d6d"
+    },
+    {
+      "bytes": 854,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/EngineV2ShutdownTests.log",
+      "path": "validation5/candidate/EngineV2ShutdownTests.log",
+      "sha256": "ba04b6df1d3ec84bd843858b1800900d88ec9d2f2f6a88cbb4906e78ac790bb4"
+    },
+    {
+      "bytes": 1544,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/OuterPrefixCacheReceiptTests.log",
+      "path": "validation5/candidate/OuterPrefixCacheReceiptTests.log",
+      "sha256": "19fef6ec16429c90604e399abf9d52d63514ec90063b40e757424a747e279ec2"
+    },
+    {
+      "bytes": 1315,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/ProviderCancelledPrefixCacheTests.log",
+      "path": "validation5/candidate/ProviderCancelledPrefixCacheTests.log",
+      "sha256": "1990a01a01f21f0f401e00bcbf846b6059933471030af615911fb6d23cb7d49f"
+    },
+    {
+      "bytes": 864,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/RetirementGateTests.log",
+      "path": "validation5/candidate/RetirementGateTests.log",
+      "sha256": "1f6d12db43c8b47ec40b284a86a28b4db701043c520b252a224032c137b59d75"
+    },
+    {
+      "bytes": 400106,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/actual-after-debug.yaml.gz",
+      "path": "validation5/candidate/actual-after-debug.yaml.gz",
+      "sha256": "57976ac5ec1dbdbbd78e0e2bc68b758955409e1d718bbe87eaee9898f1df0f0a"
+    },
+    {
+      "bytes": 20789,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/actual-after-workspace-state.json",
+      "path": "validation5/candidate/actual-after-workspace-state.json",
+      "sha256": "608d218936ab349e2c1f3034dc4cec18f3148c2cdee140c93146b86ee00d6445"
+    },
+    {
+      "bytes": 400086,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/actual-build-debug.yaml.gz",
+      "path": "validation5/candidate/actual-build-debug.yaml.gz",
+      "sha256": "8e0284560e09ba5715d7b9bf68dfe75f1b42b0b8d5447d76a52edf3ba3342f25"
+    },
+    {
+      "bytes": 20789,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/actual-build-workspace-state.json",
+      "path": "validation5/candidate/actual-build-workspace-state.json",
+      "sha256": "608d218936ab349e2c1f3034dc4cec18f3148c2cdee140c93146b86ee00d6445"
+    },
+    {
+      "bytes": 4548,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/actual-compiler-source-proof.json",
+      "path": "validation5/candidate/actual-compiler-source-proof.json",
+      "sha256": "55c0d7c5473d8aa9bb710a1af18440756a85897ccc1a3ec421fd1a7c28e9fa5c"
+    },
+    {
+      "bytes": 1155420,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/build.log",
+      "path": "validation5/candidate/build.log",
+      "sha256": "aa91fdf7f72f531045f4c757a11d672bca863db70a7a435761d18c9822fee6fc"
+    },
+    {
+      "bytes": 1533,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/cancelledUsage.log",
+      "path": "validation5/candidate/cancelledUsage.log",
+      "sha256": "15b0da7cdb6d73d7068dbbd4da2f50170648812d7d865ddbd187234ea6c74dd0"
+    },
+    {
+      "bytes": 3,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/execution-environment.json",
+      "path": "validation5/candidate/execution-environment.json",
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    },
+    {
+      "bytes": 9865,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/executions.json",
+      "path": "validation5/candidate/executions.json",
+      "sha256": "973849b4c48bd1882383aaec27588ccdc9a27e5b311992b378aabe995cd638ca"
+    },
+    {
+      "bytes": 486,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/filters.json",
+      "path": "validation5/candidate/filters.json",
+      "sha256": "b0172f7a46bd3308f9a9784b30bbd1313e50e26c0891b2899bdfa26cd4c5d814"
+    },
+    {
+      "bytes": 193525,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/identifiers.log",
+      "path": "validation5/candidate/identifiers.log",
+      "sha256": "6b384dc240ba4487034ba3f1080fc3a3fd35ada57f2bb2f846dd461aaf542fae"
+    },
+    {
+      "bytes": 181976,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/provider-source-manifest.json",
+      "path": "validation5/candidate/provider-source-manifest.json",
+      "sha256": "a8a9c24df4a8614683b2a5c00f6084de5026aaf7658815c47bf4ba6b75a8b3e5"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/source-verified-after.json",
+      "path": "validation5/candidate/source-verified-after.json",
+      "sha256": "aca9b7b1af0aa50aa9566e61d4d7d5d228f69ac1030e3c6439a2b3226496bb72"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/source-verified-before.json",
+      "path": "validation5/candidate/source-verified-before.json",
+      "sha256": "aca9b7b1af0aa50aa9566e61d4d7d5d228f69ac1030e3c6439a2b3226496bb72"
+    },
+    {
+      "bytes": 112,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/source-verified-postcompile.json",
+      "path": "validation5/candidate/source-verified-postcompile.json",
+      "sha256": "aca9b7b1af0aa50aa9566e61d4d7d5d228f69ac1030e3c6439a2b3226496bb72"
+    },
+    {
+      "bytes": 378,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/test-binary.json",
+      "path": "validation5/candidate/test-binary.json",
+      "sha256": "2075eabc083402ba2ad18a9a01d91c98450e974332a26a811c3c923991547f66"
+    },
+    {
+      "bytes": 91,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/candidate/verdict.json",
+      "path": "validation5/candidate/verdict.json",
+      "sha256": "22632ec5cc878398d40fbe1d3d198d3af80fdcbad74085a31591184b793101e5"
+    },
+    {
+      "bytes": 161754,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/dependency-source-manifest.json",
+      "path": "validation5/dependency-source-manifest.json",
+      "sha256": "f1e16b19ad215312c227f0b27f0370556eddfb7afde02fb2c6940fecdb0c1419"
+    },
+    {
+      "bytes": 1529,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/integration.json",
+      "path": "validation5/integration.json",
+      "sha256": "140cd79495cabc496a9b27cddd85291e56835afb6a09d7fa19d99cb30b50edcd"
+    },
+    {
+      "bytes": 2907,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/jinja-source-manifest.json",
+      "path": "validation5/jinja-source-manifest.json",
+      "sha256": "1a3c73a25aab033a5ce568f263db5ff9560d648206313843983afa3280760598"
+    },
+    {
+      "bytes": 217318,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/native-source-manifest.json",
+      "path": "validation5/native-source-manifest.json",
+      "sha256": "c18cfeeee1c83c94e38550b42b37d01f594ccb36ec35eea829fa27d518ad4703"
+    },
+    {
+      "bytes": 1781,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/preparation-manifest.json",
+      "path": "validation5/preparation-manifest.json",
+      "sha256": "9b1d31e45c8bdd8d3ecc49daa3e0813e2385efbd9a44174445e4546f655a3c36"
+    },
+    {
+      "bytes": 8386,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/prepare.py",
+      "path": "validation5/prepare.py",
+      "sha256": "5f7cd0600c206e579bab21873ecc7107ecc942dfbb65b673db2ad55dc519212f"
+    },
+    {
+      "bytes": 1640,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/root-source-review.json",
+      "path": "validation5/root-source-review.json",
+      "sha256": "50eb77b82d06a7096d8bb30ff0b5ba78a68929bc0ba1b6c641e65f45388d9395"
+    },
+    {
+      "bytes": 9681,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/run.py",
+      "path": "validation5/run.py",
+      "sha256": "3378f05404bb6bd6cb56d6a2695334eda7c3b5b4ca2ae38f0d42cfbc60b1cfcd"
+    },
+    {
+      "bytes": 20302,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/scratch-workspace-before.json",
+      "path": "validation5/scratch-workspace-before.json",
+      "sha256": "5c5aaf33bb9ac3bdbc0a50254e6f3db85c60a35b3a4e351823c034068a03bd52"
+    },
+    {
+      "bytes": 6661,
+      "original_path": "/tmp/darkbloom-provider-cancel-settlement-validation5/source-correspondence.json",
+      "path": "validation5/source-correspondence.json",
+      "sha256": "c68fe331369ac0793318a3733e243ed92f1c0a5dc06092c81a0ef157f012866c"
+    }
+  ],
+  "payload_bytes": 19376827,
+  "payload_count": 341,
+  "schema_version": 1,
+  "status": "FINAL_BASELINE_REPRODUCED_CANDIDATE_PASS"
+}

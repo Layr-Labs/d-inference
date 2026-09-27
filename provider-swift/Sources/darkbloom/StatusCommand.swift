@@ -24,7 +24,7 @@ struct Status: AsyncParsableCommand {
         print("Coordinator: \(config.coordinator.url)")
         print("Backend port: \(config.backend.port)")
         print("Configured model: \(config.backend.model ?? "auto-select")")
-        print("Idle timeout: \(config.backend.idleTimeoutMins == 0 ? "disabled" : "\(config.backend.idleTimeoutMins)m")")
+        print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: config.backend.idleTimeoutMins)) (manage with `darkbloom idle`)")
         print("Beta features: \(betaFeaturesStatus(config)) (manage with `darkbloom beta`)")
         print("Auto-restart: \(autoRestartStatus(config: config))")
 
@@ -105,8 +105,20 @@ struct Status: AsyncParsableCommand {
             state: state,
             now: now,
             heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
+        if let status = state.modelSwitch {
+            let stale = state.isStale(now: now) ? " (stale)" : ""
+            print("Model switch: \(status.outcome.rawValue)\(stale); \(status.remaining) unfinished request(s)")
+            if let requestID = status.requestID { print("  Request: \(requestID)") }
+            if let message = status.message { print("  \(message)") }
+            print("  Selection: \(status.models.joined(separator: ", "))")
+        }
 
-        if let trust = state.trust {
+        let authorization = state.currentProviderAuthorization(
+            coordinatorURL: config.coordinator.url, now: now)
+        if let authorization {
+            print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, now: now))")
+            if !authorization.machineID.isEmpty { print("Machine ID: \(authorization.machineID)") }
+        } else if let trust = state.trust {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
             print("Trust: \(trust.trustLevel) / \(trust.status)")
             print("  → \(advice.message)")
@@ -116,6 +128,14 @@ struct Status: AsyncParsableCommand {
         }
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
+        for line in Self.notLoadedLines(
+            advertised: state.advertisedModels,
+            warmModels: state.warmModels,
+            currentModel: state.currentModel,
+            startupPreloadPendingModels: state.startupPreloadPendingModels)
+        {
+            print(line)
+        }
         print("\(WarmModelsFormat.mostRecentlyUsedLabel): \(WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel))")
         print("Requests served: \(state.stats.requestsServed)  |  tokens: \(state.stats.tokensGenerated)")
         if let err = state.lastModelLoadError {
@@ -181,6 +201,32 @@ struct Status: AsyncParsableCommand {
         return "Daemon: running (pid \(state.pid), up \(uptime)) but last update \(ageText) ago "
             + "(expected every ~\(Int(period))s) — snapshot stale, the fields below may be "
             + "out of date"
+    }
+
+    /// Separate models still queued for startup preload from those that will
+    /// load on a request. The latter include idle-unloaded, skipped and failed
+    /// preloads; `Last model-load error` below supplies a known failure cause.
+    static func notLoadedLines(
+        advertised: [String]?,
+        warmModels: [String],
+        currentModel: String?,
+        startupPreloadPendingModels: [String]?
+    ) -> [String] {
+        guard let advertised else { return [] }
+        var resident = Set(warmModels)
+        if let currentModel, !currentModel.isEmpty { resident.insert(currentModel) }
+        let notLoaded = advertised.filter { !resident.contains($0) }
+        let pending = Set(startupPreloadPendingModels ?? [])
+        let preloading = notLoaded.filter { pending.contains($0) }
+        let onRequest = notLoaded.filter { !pending.contains($0) }
+        var lines: [String] = []
+        if !preloading.isEmpty {
+            lines.append("Startup preload pending: \(preloading.joined(separator: ", "))")
+        }
+        if !onRequest.isEmpty {
+            lines.append("Not loaded (loads on request): \(onRequest.joined(separator: ", "))")
+        }
+        return lines
     }
 
     private func formatUptime(_ seconds: Double) -> String {

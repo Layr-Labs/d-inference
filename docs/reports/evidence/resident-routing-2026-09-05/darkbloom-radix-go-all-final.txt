@@ -1,0 +1,28 @@
+ok  	github.com/eigeninference/d-inference/coordinator/api	154.777s
+?   	github.com/eigeninference/d-inference/coordinator/api/types	[no test files]
+ok  	github.com/eigeninference/d-inference/coordinator/apns	0.278s
+ok  	github.com/eigeninference/d-inference/coordinator/attestation	0.491s
+ok  	github.com/eigeninference/d-inference/coordinator/auth	1.461s
+ok  	github.com/eigeninference/d-inference/coordinator/billing	1.175s
+ok  	github.com/eigeninference/d-inference/coordinator/cmd/coordinator	0.945s
+?   	github.com/eigeninference/d-inference/coordinator/cmd/promptfixtureinput	[no test files]
+ok  	github.com/eigeninference/d-inference/coordinator/cmd/promptsidecarloadproof	1.142s
+?   	github.com/eigeninference/d-inference/coordinator/config	[no test files]
+ok  	github.com/eigeninference/d-inference/coordinator/datadog	2.969s
+ok  	github.com/eigeninference/d-inference/coordinator/env	1.771s
+ok  	github.com/eigeninference/d-inference/coordinator/internal/e2e	6.262s
+ok  	github.com/eigeninference/d-inference/coordinator/mdm	1.658s
+ok  	github.com/eigeninference/d-inference/coordinator/mediafetch	3.019s
+ok  	github.com/eigeninference/d-inference/coordinator/modelpolicy	1.974s
+ok  	github.com/eigeninference/d-inference/coordinator/payments	2.191s
+ok  	github.com/eigeninference/d-inference/coordinator/payments/baserewards	2.957s
+ok  	github.com/eigeninference/d-inference/coordinator/profilesign	3.396s
+ok  	github.com/eigeninference/d-inference/coordinator/promptcontract	6.449s
+ok  	github.com/eigeninference/d-inference/coordinator/protocol	2.784s
+ok  	github.com/eigeninference/d-inference/coordinator/ratelimit	2.897s
+ok  	github.com/eigeninference/d-inference/coordinator/registry	17.542s
+ok  	github.com/eigeninference/d-inference/coordinator/registry/routingsim	1.971s
+ok  	github.com/eigeninference/d-inference/coordinator/saferun	2.054s
+ok  	github.com/eigeninference/d-inference/coordinator/stateexport	2.648s
+ok  	github.com/eigeninference/d-inference/coordinator/store	2.692s
+ok  	github.com/eigeninference/d-inference/coordinator/telemetry	2.296s

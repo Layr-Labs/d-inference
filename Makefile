@@ -4,7 +4,9 @@
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
         ui-install ui-build ui-lint ui-test ui \
+        landing-install landing-build landing-lint landing-test landing \
         e2e-integration e2e-benchmark e2e \
+        docs-check docs-impact-check docs-stamp \
         test build all clean
 
 help:
@@ -51,27 +53,12 @@ provider-build: ## Build the Swift provider CLI with its source-matched metallib
 	    ./scripts/fetch-metallib.sh "$$bin_path"
 
 provider-test: ## Build and run Swift provider tests with source-matched metallibs
+	python3 scripts/test-stage-test-metallib.py
 	cd provider-swift && swift build --build-tests
 	@set -eu; \
 	    bin_path="$$(cd provider-swift && swift build --show-bin-path)"; \
-	    ./scripts/fetch-metallib.sh "$$bin_path"; \
-	    runner_tmp=""; \
-	    trap 'test -z "$$runner_tmp" || rm -f "$$runner_tmp"' EXIT; \
-	    trap 'exit 143' HUP INT TERM; \
-	    found=0; \
-	    for bundle in "$$bin_path"/*PackageTests.xctest; do \
-	        [ -d "$$bundle" ] || continue; \
-	        runner_dir="$$bundle/Contents/MacOS"; \
-	        mkdir -p "$$runner_dir"; \
-	        runner_tmp="$$runner_dir/.mlx.metallib.$$$$"; \
-	        cp "$$bin_path/mlx.metallib" "$$runner_tmp"; \
-	        mv -f "$$runner_tmp" "$$runner_dir/mlx.metallib"; \
-	        runner_tmp=""; \
-	        found=1; \
-	    done; \
-	    [ "$$found" -eq 1 ] || { echo "provider test runner bundle not found in $$bin_path" >&2; exit 1; }; \
-	    trap - EXIT HUP INT TERM
-	cd provider-swift && swift test --skip-build
+	    ./scripts/stage-test-metallib.sh "$$bin_path"
+	cd provider-swift && ../scripts/run-provider-tests.sh
 
 provider: provider-build provider-test ## Build + test provider
 
@@ -97,6 +84,22 @@ ui-test: ## vitest for console-ui
 
 ui: ui-install ui-lint ui-test ui-build ## Install, lint, test, build console-ui
 
+# ---- Marketing site (Next.js 16) ------------------------------------------
+
+landing-install: ## npm ci for landing
+	cd landing && npm ci
+
+landing-build: ## next build for landing
+	cd landing && npm run build
+
+landing-lint: ## eslint check for landing sources
+	cd landing && npm run lint
+
+landing-test: landing-build ## Test landing routes against its production server
+	cd landing && npm test
+
+landing: landing-install landing-lint landing-test ## Install, lint, build and test landing
+
 # ---- E2E integration tests -------------------------------------------------
 # Requires Postgres + Swift provider binary + MLX model downloaded.
 
@@ -108,14 +111,26 @@ e2e-benchmark: ## go test ./e2e/... -run TestBenchmark (load benchmarks)
 
 e2e: e2e-integration ## Run the integration suite
 
+# ---- Docs -------------------------------------------------------------------
+
+docs-check: ## Lint docs/: freshness stamps, relative links, cited code paths, orphans
+	./scripts/docs-check.sh
+
+docs-impact-check: ## Check source changes have their mapped canonical docs (BASE=origin/master)
+	python3 scripts/docs-impact-check.py --base "$(if $(BASE),$(BASE),origin/master)"
+
+docs-stamp: ## Refresh the freshness stamp on changed docs (FILES=... to target specific files)
+	./scripts/docs-stamp.sh $(FILES)
+
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test ## Run all unit tests
+test: coordinator-test prompt-sidecar-test provider-test ui-test landing-test benchmark-wrapper-test docs-check ## Run all tests + docs lint
 
-build: coordinator-build prompt-sidecar-build provider-build ui-build ## Build all components
+build: coordinator-build prompt-sidecar-build provider-build ui-build landing-build ## Build all components
 
 all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
 	rm -f coordinator/coordinator coordinator/coordinator-linux
 	rm -rf coordinator/promptsidecar/target provider-swift/.build console-ui/.next console-ui/node_modules
+	rm -rf landing/.next landing/node_modules

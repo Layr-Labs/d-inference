@@ -42,6 +42,10 @@ func setupTTFTFailoverServerWithConfig(
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
+	// These fixtures exercise the opted-in SLA path. Explicit empty selects exemption.
+	if cfg.FirstContentSLAAccounts == nil {
+		cfg.FirstContentSLAAccounts = []string{testConsumerID}
+	}
 	srv := NewServer(reg, st, cfg, logger)
 	srv.challengeInterval = 500 * time.Millisecond
 	ts := httptest.NewServer(srv.Handler())
@@ -241,6 +245,10 @@ func TestDispatch_TTFTRejectAttempt0_SingleReservationAnd429(t *testing.T) {
 	}
 	if w.Header().Get("Retry-After") == "" {
 		t.Error("Retry-After header missing")
+	}
+	if got := srv.metrics.Snapshot().Counters[counterKey(metricRequestOutcomeORViewCounter,
+		MetricLabel{"model", model}, MetricLabel{"class", orClassRateLimited})]; got != 1 {
+		t.Errorf("attempt-zero OR-view rate_limited count = %d, want exactly 1", got)
 	}
 	if d.attempt != 0 {
 		t.Errorf("dispatch attempts = %d, want the loop to stop at attempt 0", d.attempt+1)

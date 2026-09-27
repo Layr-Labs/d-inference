@@ -223,7 +223,10 @@ func TestLeaderboardLimitClamp(t *testing.T) {
 
 func TestNetworkTotalsWorkRewardDifferentiation(t *testing.T) {
 	s := seedLeaderboardFixture(t)
-	totals := s.NetworkTotals(time.Time{})
+	totals, err := s.NetworkTotals(time.Time{})
+	if err != nil {
+		t.Fatalf("network totals: %v", err)
+	}
 
 	const (
 		wantWork     = int64(1800) // alice 1000 + carol 500 + frank 300
@@ -291,7 +294,10 @@ func TestLeaderboardExcludesNonProviderRewards(t *testing.T) {
 		t.Errorf("prov = work %d reward %d total %d, want 100/50/150", prov.WorkEarningsMicroUSD, prov.RewardEarningsMicroUSD, prov.EarningsMicroUSD)
 	}
 
-	tot := s.NetworkTotals(time.Time{})
+	tot, err := s.NetworkTotals(time.Time{})
+	if err != nil {
+		t.Fatalf("network totals: %v", err)
+	}
 	if tot.RewardEarningsMicroUSD != 50 {
 		t.Errorf("network reward = %d, want 50 (consumer's 998 excluded)", tot.RewardEarningsMicroUSD)
 	}
@@ -315,7 +321,10 @@ func TestNetworkTotalsExcludesNonRewardLedgerTypes(t *testing.T) {
 		t.Fatalf("credit invite_credit: %v", err)
 	}
 
-	totals := s.NetworkTotals(time.Time{})
+	totals, err := s.NetworkTotals(time.Time{})
+	if err != nil {
+		t.Fatalf("network totals: %v", err)
+	}
 	if totals.RewardEarningsMicroUSD != 0 {
 		t.Errorf("RewardEarningsMicroUSD = %d, want 0", totals.RewardEarningsMicroUSD)
 	}

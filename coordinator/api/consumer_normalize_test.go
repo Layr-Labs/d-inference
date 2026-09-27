@@ -732,3 +732,27 @@ func BenchmarkNormalizeSSEChunk_Usage(b *testing.B) {
 		_ = normalizeSSEChunk(chunk)
 	}
 }
+
+func BenchmarkNormalizeSSEChunk_ReasoningDelta(b *testing.B) {
+	b.ReportAllocs()
+	// Slow path: a reasoning delta must be mirrored across both aliases and
+	// gain reasoning_details (the gate is not what makes this case expensive).
+	chunk := `data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1700000000,"model":"qwen3.5-27b","choices":[{"index":0,"delta":{"reasoning_content":"Let me think about this"},"finish_reason":null}]}`
+
+	b.ResetTimer()
+	for range b.N {
+		_ = normalizeSSEChunk(chunk)
+	}
+}
+
+func BenchmarkNormalizeSSEChunk_ReasoningDetailsPassthrough(b *testing.B) {
+	b.ReportAllocs()
+	// Fast path: reasoning_details without either reasoning alias (and the
+	// usual finish_reason:null) must be forwarded without a round-trip.
+	chunk := `data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1700000000,"model":"qwen3.5-27b","choices":[{"index":0,"delta":{"content":"Hello","reasoning_details":[{"type":"reasoning.text","text":"t","index":0}]},"finish_reason":null}]}`
+
+	b.ResetTimer()
+	for range b.N {
+		_ = normalizeSSEChunk(chunk)
+	}
+}

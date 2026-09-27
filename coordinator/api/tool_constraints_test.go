@@ -55,8 +55,15 @@ func TestInferencePreludeNormalizesSingleStopForSwiftProtocol(t *testing.T) {
 	if !ok {
 		t.Fatalf("prelude failed: %s", response.Body.String())
 	}
+	if !prelude.body.dirty {
+		t.Fatal("stop normalization did not mark the forward body dirty")
+	}
+	rawBody, err := prelude.body.current()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var forwarded map[string]any
-	if err := json.Unmarshal(prelude.rawBody, &forwarded); err != nil {
+	if err := json.Unmarshal(rawBody, &forwarded); err != nil {
 		t.Fatal(err)
 	}
 	stops, ok := forwarded["stop"].([]any)
@@ -64,8 +71,8 @@ func TestInferencePreludeNormalizesSingleStopForSwiftProtocol(t *testing.T) {
 		t.Fatalf("forwarded stop = %#v", forwarded["stop"])
 	}
 	for _, literal := range []string{"9007199254740993", "0.10000000000000001"} {
-		if !bytes.Contains(prelude.rawBody, []byte(literal)) {
-			t.Fatalf("forwarded body lost exact numeric literal %s: %s", literal, prelude.rawBody)
+		if !bytes.Contains(rawBody, []byte(literal)) {
+			t.Fatalf("forwarded body lost exact numeric literal %s: %s", literal, rawBody)
 		}
 	}
 }

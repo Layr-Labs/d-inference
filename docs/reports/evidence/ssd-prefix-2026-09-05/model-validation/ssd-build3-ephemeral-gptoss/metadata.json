@@ -1,0 +1,19 @@
+{
+  "started_unix": 1788595576.2344372,
+  "arguments": {
+    "binary": "/Users/gaj/autoresearch/radix-prefix-cache/artifacts/candidate-ssd-build3/radix-engine",
+    "model_directory": "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/local",
+    "input": "/Users/gaj/autoresearch/radix-prefix-cache/inputs/paged-attention-long-input.json",
+    "output": "/Users/gaj/autoresearch/radix-prefix-cache/runs/ssd-build3-ephemeral-gptoss",
+    "cache": "on",
+    "mtp": "off",
+    "kv_backend": "paged",
+    "cache_mode": "ssd",
+    "key_mode": "ephemeral",
+    "startup_timeout": 180.0
+  },
+  "entry_gpu_temp_c": 39.4992561340332,
+  "exit_code": -5,
+  "ended_unix": 1788595594.683135,
+  "ranked_job_at_end": false
+}

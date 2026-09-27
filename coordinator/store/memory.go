@@ -11,6 +11,7 @@ package store
 // the PostgresStore, so lookup semantics match across backends.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,7 +39,14 @@ const keySpendRetentionDays = 40
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
+	modelTokenProviderCarries map[string]int64
+	modelTokenPromotions      map[string]ModelTokenPromotion
+	modelTokenGrants          map[string]map[string]ModelTokenGrant
+	modelTokenReservations    map[string]ModelTokenReservation
+
 	mu            sync.RWMutex
+	floorEpochMu  sync.Mutex // separate from store state; settlement callbacks read the store
+	floorEpochs   map[string]*memoryFloorEpochLock
 	keyRecords    map[string]*APIKey // raw key → record (metadata + limits)
 	keysByID      map[string]string  // public key ID → raw key
 	keySpend      map[string]*keySpend
@@ -48,6 +56,15 @@ type MemoryStore struct {
 	withdrawable  map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
 	ledgerEntries []LedgerEntry
 	ledgerSeq     int64 // auto-increment ID
+
+	// Observation-only keys; independent from provider/rewards identity.
+	appAttestShadowKeys  map[string]AppAttestShadowKey
+	appAttestRevocations map[string]bool
+	machineInventory     *memoryMachineInventory
+	appAttestEvidence    map[string]memoryAppAttestEvidence
+	appAttestEnrollments map[string]AppAttestEnrollment
+	appAttestBuilds      map[string]AppAttestBuildQualification
+	appAttestRotations   map[string]AppAttestKeyRotation
 
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer
@@ -75,6 +92,10 @@ type MemoryStore struct {
 	usersByPrivyID         map[string]*User // privyUserID → user
 	usersByAccountID       map[string]*User // accountID → user
 	usersByStripeAccountID map[string]*User // stripeAccountID → user (subset of usersByAccountID)
+
+	// Global Payouts use the same balance lock as Connect withdrawals.
+	globalRecipients map[string]GlobalRecipient
+	globalPayouts    map[string]GlobalPayout
 
 	// Stripe Connect withdrawals
 	stripeWithdrawalsByID         map[string]*StripeWithdrawal
@@ -142,6 +163,16 @@ type MemoryStore struct {
 	// Rejected inbound inference requests (4xx/5xx) with servability snapshot.
 	inferenceRejections []RejectionRecord
 
+	// System profiler: per-attempt request profiles (write-once per
+	// request_id/attempt, mirroring the Postgres UNIQUE + DO NOTHING) and
+	// per-tick fleet snapshots. Both are append-only and capped by Prune.
+	requestOutcomes      map[string]RequestOutcomeRecord
+	modelDemand          map[string]modelDemandObservation
+	modelDemandStartedAt time.Time
+	requestProfiles      []RequestProfileRecord
+	requestProfileKeys   map[string]struct{} // request_id/attempt -> present
+	fleetSnapshots       []FleetSnapshotRow
+
 	// Base rewards — per-epoch floor draws (idempotent on provider_key|epoch_id).
 	providerFloorDraws []ProviderFloorDraw
 	floorDrawSeq       int64
@@ -153,6 +184,7 @@ type MemoryStore struct {
 // pre-seeded as a valid API key for bootstrapping.
 func NewMemory(scfg Config) *MemoryStore {
 	s := &MemoryStore{
+		modelDemandStartedAt:          time.Now().UTC(),
 		keyRecords:                    make(map[string]*APIKey),
 		keysByID:                      make(map[string]string),
 		keySpend:                      make(map[string]*keySpend),
@@ -201,6 +233,9 @@ func NewMemory(scfg Config) *MemoryStore {
 		inferenceRouteIndex:           make(map[string]int),
 		inferenceRouteOutcomes:        make(map[string]InferenceRouteOutcome),
 		inferenceRejections:           make([]RejectionRecord, 0),
+		requestProfiles:               make([]RequestProfileRecord, 0),
+		requestProfileKeys:            make(map[string]struct{}),
+		fleetSnapshots:                make([]FleetSnapshotRow, 0),
 		providerFloorDraws:            make([]ProviderFloorDraw, 0),
 		floorDrawKeys:                 make(map[string]struct{}),
 	}
@@ -263,6 +298,16 @@ func (s *MemoryStore) Prune(maxEntries int) {
 	// it could let a re-settle double-credit.
 	if n := len(s.providerFloorDraws); n > maxEntries {
 		s.providerFloorDraws = append([]ProviderFloorDraw(nil), s.providerFloorDraws[n-maxEntries:]...)
+	}
+	// System profiler slices. The write-once key set is rebuilt from the kept
+	// rows so a pruned (request_id, attempt) can be written again later, as it
+	// can in Postgres after the retention DELETE.
+	if n := len(s.requestProfiles); n > maxEntries {
+		s.requestProfiles = append([]RequestProfileRecord(nil), s.requestProfiles[n-maxEntries:]...)
+		s.rebuildRequestProfileKeysLocked()
+	}
+	if n := len(s.fleetSnapshots); n > maxEntries {
+		s.fleetSnapshots = append([]FleetSnapshotRow(nil), s.fleetSnapshots[n-maxEntries:]...)
 	}
 	// Expired device codes can be dropped outright.
 	now := time.Now()
@@ -640,11 +685,11 @@ func (s *MemoryStore) UsageRecordsSince(since time.Time) []UsageRecord {
 }
 
 // UsageCountSince returns the number of usage records created at or after the given time.
-func (s *MemoryStore) UsageCountSince(since time.Time) int64 {
+func (s *MemoryStore) UsageCountSince(since time.Time) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if since.IsZero() {
-		return int64(len(s.usage))
+		return int64(len(s.usage)), nil
 	}
 	var count int64
 	for _, r := range s.usage {
@@ -656,11 +701,11 @@ func (s *MemoryStore) UsageCountSince(since time.Time) int64 {
 			count++
 		}
 	}
-	return count
+	return count, nil
 }
 
 // UsageTotals returns aggregated lifetime totals.
-func (s *MemoryStore) UsageTotals() UsageTotals {
+func (s *MemoryStore) UsageTotals() (UsageTotals, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t UsageTotals
@@ -669,11 +714,11 @@ func (s *MemoryStore) UsageTotals() UsageTotals {
 		t.PromptTokens += int64(r.PromptTokens)
 		t.CompletionTokens += int64(r.CompletionTokens)
 	}
-	return t
+	return t, nil
 }
 
 // UsageTotalsSince returns aggregate usage at or after `since`.
-func (s *MemoryStore) UsageTotalsSince(since time.Time) UsageTotals {
+func (s *MemoryStore) UsageTotalsSince(since time.Time) (UsageTotals, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t UsageTotals
@@ -689,11 +734,11 @@ func (s *MemoryStore) UsageTotalsSince(since time.Time) UsageTotals {
 		t.PromptTokens += int64(r.PromptTokens)
 		t.CompletionTokens += int64(r.CompletionTokens)
 	}
-	return t
+	return t, nil
 }
 
 // UsageTimeSeries buckets usage records by the requested duration since `since`.
-func (s *MemoryStore) UsageTimeSeries(since, until time.Time, bucketSize time.Duration) []UsageBucket {
+func (s *MemoryStore) UsageTimeSeries(since, until time.Time, bucketSize time.Duration) ([]UsageBucket, error) {
 	since, until, bucketSize = normalizeUsageTimeSeriesRequest(since, until, bucketSize, time.Now())
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -722,7 +767,7 @@ func (s *MemoryStore) UsageTimeSeries(since, until time.Time, bucketSize time.Du
 		out = append(out, *b)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Minute.Before(out[j].Minute) })
-	return limitUsageTimeSeriesBuckets(out)
+	return limitUsageTimeSeriesBuckets(out), nil
 }
 
 // Leaderboard ranks accounts by the chosen metric, splitting inference work from
@@ -808,7 +853,7 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 // rewards. Base-reward rows count as reward earnings, not work/jobs/tokens.
 // Ledger rewards are only counted for accounts that also have provider earnings
 // rows in the window, so consumer-only reward recipients do not inflate totals.
-func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
+func (s *MemoryStore) NetworkTotals(since time.Time) (NetworkTotalsRow, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t NetworkTotalsRow
@@ -841,7 +886,7 @@ func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	}
 	t.EarningsMicroUSD = t.WorkEarningsMicroUSD + t.RewardEarningsMicroUSD
 	t.ActiveAccounts = int64(len(providers))
-	return t
+	return t, nil
 }
 
 // UsageByConsumer returns usage records for a specific consumer key.
@@ -902,89 +947,6 @@ func (s *MemoryStore) RecordUsageFullWithPublicModel(providerID, consumerKey, ke
 	}
 }
 
-// RecordInferenceRoute writes the routing decision snapshot for a request
-// attempt. Best-effort; failures are discarded.
-func (s *MemoryStore) RecordInferenceRoute(record *InferenceRouteRecord) error {
-	if record == nil {
-		return nil
-	}
-
-	now := time.Now()
-	rec := *record
-	if rec.CreatedAt.IsZero() {
-		rec.CreatedAt = now
-	}
-	if rec.UpdatedAt.IsZero() {
-		rec.UpdatedAt = now
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := record.RequestID + "/" + strconv.Itoa(record.Attempt)
-	if idx, ok := s.inferenceRouteIndex[key]; ok {
-		rec.CreatedAt = s.inferenceRoutes[idx].CreatedAt
-		if rec.UpdatedAt.IsZero() {
-			rec.UpdatedAt = now
-		}
-		s.inferenceRoutes[idx] = rec
-		return nil
-	}
-	s.inferenceRoutes = append(s.inferenceRoutes, rec)
-	s.inferenceRouteIndex[key] = len(s.inferenceRoutes) - 1
-	return nil
-}
-
-// UpdateInferenceRouteOutcome updates the attempt with final outcome data.
-// Best-effort; failures are discarded.
-func (s *MemoryStore) UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error {
-	if outcome == nil {
-		return nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := requestID + "/" + strconv.Itoa(attempt)
-	idx, ok := s.inferenceRouteIndex[key]
-	if !ok {
-		return nil
-	}
-
-	merged := s.inferenceRouteOutcomes[key]
-	mergeInferenceRouteOutcome(&merged, outcome)
-	s.inferenceRouteOutcomes[key] = merged
-	s.inferenceRoutes[idx].UpdatedAt = time.Now()
-	return nil
-}
-
-// InferenceRouteRecordsSince returns routing records created at or after the
-// given time. Zero since returns all records.
-func (s *MemoryStore) InferenceRouteRecordsSince(since time.Time) []InferenceRouteRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	out := make([]InferenceRouteRecord, 0, len(s.inferenceRoutes))
-	for i := len(s.inferenceRoutes) - 1; i >= 0; i-- {
-		r := s.inferenceRoutes[i]
-		if !since.IsZero() && r.CreatedAt.Before(since) {
-			continue
-		}
-		key := r.RequestID + "/" + strconv.Itoa(r.Attempt)
-		if outcome, ok := s.inferenceRouteOutcomes[key]; ok {
-			applyInferenceRouteOutcomeToRecord(&r, outcome)
-		}
-		out = append(out, r)
-		if len(out) >= maxTelemetryReadRows {
-			break
-		}
-	}
-	if out == nil {
-		return []InferenceRouteRecord{}
-	}
-	return out
-}
-
 // RecordRejection writes a rejected-request record with its counterfactual
 // servability snapshot. Best-effort; failures are discarded.
 func (s *MemoryStore) RecordRejection(record *RejectionRecord) error {
@@ -1027,6 +989,173 @@ func (s *MemoryStore) RejectionRecordsSince(since time.Time) []RejectionRecord {
 	return out
 }
 
+// requestProfileKey is the write-once identity of a profile row, matching the
+// Postgres UNIQUE (request_id, attempt).
+func requestProfileKey(requestID string, attempt int) string {
+	return requestID + "/" + strconv.Itoa(attempt)
+}
+
+// rebuildRequestProfileKeysLocked recomputes the write-once key set from the
+// retained rows. Caller holds s.mu.
+func (s *MemoryStore) rebuildRequestProfileKeysLocked() {
+	s.requestProfileKeys = make(map[string]struct{}, len(s.requestProfiles))
+	for i := range s.requestProfiles {
+		r := &s.requestProfiles[i]
+		s.requestProfileKeys[requestProfileKey(r.RequestID, r.Attempt)] = struct{}{}
+	}
+}
+
+// RecordRequestProfiles appends one row per record, skipping any
+// (request_id, attempt) already present (ON CONFLICT DO NOTHING semantics).
+// RawMessage fields are cloned so the caller may reuse its buffers.
+func (s *MemoryStore) RecordRequestProfiles(records []*RequestProfileRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		key := requestProfileKey(record.RequestID, record.Attempt)
+		if _, dup := s.requestProfileKeys[key]; dup {
+			continue
+		}
+		rec := *record
+		if rec.CreatedAt.IsZero() {
+			rec.CreatedAt = now
+		}
+		rec.GateRejections = bytes.Clone(jsonbParam(rec.GateRejections))
+		rec.Candidates = bytes.Clone(jsonbParam(rec.Candidates))
+		rec.ProviderProfile = bytes.Clone(jsonbParam(rec.ProviderProfile))
+		s.requestProfiles = append(s.requestProfiles, rec)
+		s.requestProfileKeys[key] = struct{}{}
+	}
+	return nil
+}
+
+// RequestProfilesSince returns profiles created at or after since, newest
+// first (reverse insertion order), capped at maxTelemetryReadRows.
+func (s *MemoryStore) RequestProfilesSince(since time.Time) []RequestProfileRecord {
+	return s.RequestProfilesSinceFiltered(since, RequestProfileFilter{})
+}
+
+// RequestProfilesSinceFiltered applies the filter before the read cap.
+func (s *MemoryStore) RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]RequestProfileRecord, 0, len(s.requestProfiles))
+	for i := len(s.requestProfiles) - 1; i >= 0; i-- {
+		r := s.requestProfiles[i]
+		if !since.IsZero() && r.CreatedAt.Before(since) {
+			continue
+		}
+		if !filter.Matches(&r) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
+	}
+	return out
+}
+
+// RecordFleetSnapshots appends one sampler tick. RawMessage fields are cloned.
+func (s *MemoryStore) RecordFleetSnapshots(rows []FleetSnapshotRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range rows {
+		row := rows[i]
+		if row.SampledAt.IsZero() {
+			row.SampledAt = now
+		}
+		row.QueueDepthByModel = bytes.Clone(jsonbParam(row.QueueDepthByModel))
+		s.fleetSnapshots = append(s.fleetSnapshots, row)
+	}
+	return nil
+}
+
+// FleetSnapshotsSince returns snapshot rows sampled at or after since, newest
+// first (reverse insertion order), capped at maxTelemetryReadRows.
+func (s *MemoryStore) FleetSnapshotsSince(since time.Time) []FleetSnapshotRow {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]FleetSnapshotRow, 0, len(s.fleetSnapshots))
+	for i := len(s.fleetSnapshots) - 1; i >= 0; i-- {
+		r := s.fleetSnapshots[i]
+		if !since.IsZero() && r.SampledAt.Before(since) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
+	}
+	return out
+}
+
+// PruneTelemetry drops profiles created before profilesBefore and snapshots
+// sampled before snapshotsBefore. There is no per-batch transaction in the
+// memory store, so batch is accepted for interface parity and ignored; ctx is
+// checked before each table. A zero cutoff prunes nothing for that table.
+func (s *MemoryStore) PruneTelemetry(ctx context.Context, profilesBefore, snapshotsBefore time.Time, _ int) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	deleted := 0
+	if err := ctx.Err(); err != nil {
+		return deleted, err
+	}
+	if !profilesBefore.IsZero() {
+		for id, r := range s.requestOutcomes {
+			if r.ReceivedAt.Before(profilesBefore) {
+				delete(s.requestOutcomes, id)
+				deleted++
+			}
+		}
+		kept := s.requestProfiles[:0:0]
+		for i := range s.requestProfiles {
+			if s.requestProfiles[i].CreatedAt.Before(profilesBefore) {
+				deleted++
+				continue
+			}
+			kept = append(kept, s.requestProfiles[i])
+		}
+		if len(kept) != len(s.requestProfiles) {
+			s.requestProfiles = kept
+			s.rebuildRequestProfileKeysLocked()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return deleted, err
+	}
+	if !snapshotsBefore.IsZero() {
+		kept := s.fleetSnapshots[:0:0]
+		for i := range s.fleetSnapshots {
+			if s.fleetSnapshots[i].SampledAt.Before(snapshotsBefore) {
+				deleted++
+				continue
+			}
+			kept = append(kept, s.fleetSnapshots[i])
+		}
+		s.fleetSnapshots = kept
+	}
+	return deleted, nil
+}
+
 // addKeySpendLocked increments the per-key spend accumulator. Caller holds s.mu.
 func (s *MemoryStore) addKeySpendLocked(keyID string, amount int64, at time.Time) {
 	ks, ok := s.keySpend[keyID]
@@ -1049,7 +1178,7 @@ func (s *MemoryStore) addKeySpendLocked(keyID string, amount int64, at time.Time
 }
 
 // UsageLocationBuckets returns approximate request-origin aggregates (in-memory).
-func (s *MemoryStore) UsageLocationBuckets(since time.Time) []UsageLocationBucket {
+func (s *MemoryStore) UsageLocationBuckets(since time.Time) ([]UsageLocationBucket, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1125,13 +1254,13 @@ func (s *MemoryStore) UsageLocationBuckets(since time.Time) []UsageLocationBucke
 			Providers:        len(b.providers),
 		})
 	}
-	return out
+	return out, nil
 }
 
 // UsageFlowBuckets aggregates directional consumer→provider flows in memory.
 // providerLocs supplies live provider locations from the registry; the store's
 // own providerRecords are used as a fallback for disconnected providers.
-func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) []UsageFlowBucket {
+func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) ([]UsageFlowBucket, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1221,7 +1350,7 @@ func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]
 		}
 		out = append(out, b)
 	}
-	return out
+	return out, nil
 }
 
 // KeyCount returns the number of active API keys.
@@ -1327,6 +1456,11 @@ func (s *MemoryStore) DebitWithdrawable(accountID string, amountMicroUSD int64, 
 func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	return s.debitLocked(accountID, amountMicroUSD, entryType, reference)
+}
+
+func (s *MemoryStore) debitLocked(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 
 	if s.balances[accountID] < amountMicroUSD {
 		return ErrInsufficientBalance
@@ -1765,7 +1899,7 @@ func (s *MemoryStore) GetModelRegistryRecord(modelID string) (*ModelRegistryReco
 
 	rec := s.modelRegistryRecordLocked(modelID)
 	if rec == nil {
-		return nil, fmt.Errorf("model %q not found", modelID)
+		return nil, fmt.Errorf("model %q %w", modelID, ErrNotFound)
 	}
 	return rec, nil
 }
@@ -1926,6 +2060,7 @@ func cloneModelVersion(version *ModelVersion) ModelVersion {
 	}
 	cp := *version
 	cp.PromotedAt = cloneTimePtr(version.PromotedAt)
+	cp.HuggingFaceArtifact = cloneHuggingFaceArtifact(version.HuggingFaceArtifact)
 	cp.Metadata = cloneMetadata(version.Metadata)
 	return cp
 }
@@ -2027,7 +2162,7 @@ func (s *MemoryStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 
 	u, ok := s.usersByPrivyID[privyUserID]
 	if !ok {
-		return nil, fmt.Errorf("user with Privy ID %q not found", privyUserID)
+		return nil, fmt.Errorf("user with Privy ID %q %w", privyUserID, ErrNotFound)
 	}
 	copy := *u
 	return &copy, nil
@@ -2040,7 +2175,7 @@ func (s *MemoryStore) GetUserByAccountID(accountID string) (*User, error) {
 
 	u, ok := s.usersByAccountID[accountID]
 	if !ok {
-		return nil, fmt.Errorf("user with account ID %q not found", accountID)
+		return nil, fmt.Errorf("user with account ID %q %w", accountID, ErrNotFound)
 	}
 	copy := *u
 	return &copy, nil
@@ -2794,6 +2929,11 @@ func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.creditProviderAccountLocked(earning)
+}
+
+func (s *MemoryStore) creditProviderAccountLocked(earning *ProviderEarning) error {
+
 	// Idempotency guard mirroring the postgres ON CONFLICT (job_id) DO NOTHING:
 	// a retried settlement with the same non-empty job_id must not double-credit
 	// the balance, the withdrawable subset, the ledger, or the earnings summary.
@@ -2921,6 +3061,11 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.upsertProviderRecordLocked(p)
+	return nil
+}
+
+func (s *MemoryStore) upsertProviderRecordLocked(p ProviderRecord) {
 	// Update serial index
 	if p.SerialNumber != "" {
 		// Remove old serial mapping if exists
@@ -2936,7 +3081,6 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 		cp.Location = &loc
 	}
 	s.providerRecords[p.ID] = &cp
-	return nil
 }
 
 func (s *MemoryStore) GetProviderRecord(_ context.Context, id string) (*ProviderRecord, error) {
@@ -3148,7 +3292,7 @@ func (s *MemoryStore) GetReputation(_ context.Context, providerID string) (*Repu
 
 	rep, ok := s.reputationRecords[providerID]
 	if !ok {
-		return nil, fmt.Errorf("reputation for provider %q not found", providerID)
+		return nil, fmt.Errorf("reputation for provider %q: %w", providerID, ErrNotFound)
 	}
 	cp := *rep
 	return &cp, nil
@@ -3162,7 +3306,7 @@ func (s *MemoryStore) ListCodeAttestations(_ context.Context) ([]CodeAttestation
 
 	out := make([]CodeAttestation, 0, len(s.codeAttestations))
 	for _, rec := range s.codeAttestations {
-		out = append(out, rec)
+		out = append(out, cloneCodeAttestation(rec))
 	}
 	return out, nil
 }
@@ -3174,7 +3318,12 @@ func (s *MemoryStore) UpsertCodeAttestation(_ context.Context, rec CodeAttestati
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.codeAttestations[rec.SEPubKey] = rec
+	if old, ok := s.codeAttestations[rec.SEPubKey]; !ok || !rec.AttestedAt.Before(old.AttestedAt) {
+		if ok && sameCodeProof(old, rec) && old.ContinuousCoverageUntil != nil && (rec.ContinuousCoverageUntil == nil || old.ContinuousCoverageUntil.After(*rec.ContinuousCoverageUntil)) {
+			rec.ContinuousCoverageUntil = old.ContinuousCoverageUntil
+		}
+		s.codeAttestations[rec.SEPubKey] = cloneCodeAttestation(rec)
+	}
 	return nil
 }
 

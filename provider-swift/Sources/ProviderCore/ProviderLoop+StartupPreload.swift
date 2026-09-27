@@ -7,7 +7,8 @@
 /// was cold at once (first_chunk_timeout storm).
 ///
 /// Now `run()` calls `runStartupPreloadGate()` BEFORE the coordinator client
-/// is created: the previously-served (or operator-configured) model set is
+/// is created: the previously-served (or operator-configured) model set, plus
+/// newly selected models, is
 /// loaded via the normal `ensureModelLoaded` path (weights + EngineV2 bridge),
 /// optionally followed by a 1-token greedy
 /// decode through the real serving path so Metal JIT, compiled buckets, and
@@ -39,13 +40,16 @@ extension ProviderLoop {
     internal enum StartupPreloadGateOutcome: Sendable, Equatable {
         /// `startup_preload = false`.
         case disabled
-        /// Nothing to preload (no config list, no persisted set, or nothing
-        /// advertised) — legacy register-immediately timing.
+        /// Nothing to preload (no configured, previously-served or selected
+        /// model) — legacy register-immediately timing.
         case nothingToPreload
         /// Preload finished within the timeout — registering fully warm.
         case warm
         /// Timeout hit — registering now; loads continue in the background.
         case timedOut
+        /// The serving task was cancelled (for example, a scheduled window
+        /// closed) — the preload driver is cancelled and registration stops.
+        case cancelled
     }
 
     /// Upper bound on one startup self-test decode so a wedged decode can
@@ -107,12 +111,15 @@ extension ProviderLoop {
     /// Build the ordered startup preload plan:
     ///   * `preload_models` non-empty → that list, in operator order;
     ///   * otherwise → the persisted previously-served set, biggest first
-    ///     (the largest model loads while memory is emptiest).
-    /// Ids not in the advertised set are skipped with a WARN; the plan is
-    /// de-duplicated and capped at `maxModelSlots`.
+    ///     (the largest model loads while memory is emptiest);
+    ///   * append newly selected models so a fresh start warms them without
+    ///     waiting for their first request, regardless of idle-unload policy.
+    /// Ids not in the advertised set are skipped with a WARN. Retain every
+    /// candidate so a later small model can fill a slot when an earlier load
+    /// is skipped or fails; the driver checks the live slot cap before each.
     internal func startupPreloadPlan() -> [StartupPreloader.Candidate] {
         let backend = loopConfig.config.backend
-        let ids: [String]
+        var ids: [String]
         if !backend.preloadModels.isEmpty {
             ids = backend.preloadModels
         } else {
@@ -120,6 +127,7 @@ extension ProviderLoop {
                 (advertisedModels[$0]?.estimatedMemoryGb ?? 0)
                     > (advertisedModels[$1]?.estimatedMemoryGb ?? 0)
             }
+            ids.append(contentsOf: loopConfig.models.map(\.id))
         }
 
         var seen = Set<String>()
@@ -130,19 +138,27 @@ extension ProviderLoop {
                 logger.warning("Startup preload: '\(id)' is not in the advertised model set — skipping")
                 continue
             }
-            guard plan.count < maxModelSlots else {
-                logger.warning(
-                    "Startup preload: plan exceeds max_model_slots=\(self.maxModelSlots) — skipping '\(id)'")
-                continue
-            }
             plan.append(
                 StartupPreloader.Candidate(
                     modelId: id,
                     requiredGb: ModelLoadAdmission.requiredToLoadGb(
                         weightsGb: info.estimatedMemoryGb,
-                        headroomGb: Self.loadHeadroomGb)))
+                        headroomGb: loadHeadroomGb)))
         }
         return plan
+    }
+
+    /// The LIVE preload requirement for a candidate: measured-or-padded
+    /// weights plus the CURRENT serving-set headroom. Consulted at each
+    /// preloader admission step because a fail-closed retirement earlier in
+    /// the run can relax the floor the plan-time figure captured. nil when
+    /// the id left the advertised set (the preloader then keeps its planned
+    /// figure; the load itself re-guards).
+    internal func livePreloadRequiredGb(_ modelId: String) -> Double? {
+        guard let info = advertisedModels[modelId] else { return nil }
+        return ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: info.estimatedMemoryGb,
+            headroomGb: loadHeadroomGb)
     }
 
     // MARK: - Readiness gate
@@ -152,6 +168,7 @@ extension ProviderLoop {
     /// the background (`startupPreloadTask`); shutdown cancels it.
     @discardableResult
     internal func runStartupPreloadGate() async -> StartupPreloadGateOutcome {
+        guard !Task.isCancelled, !servingDrain.refusing else { return .cancelled }
         let backend = loopConfig.config.backend
         guard backend.startupPreload else {
             logger.info("Startup preload disabled (startup_preload=false)")
@@ -162,6 +179,8 @@ extension ProviderLoop {
             logger.info("Startup preload: nothing to preload — registering immediately")
             return .nothingToPreload
         }
+        startupPreloadPendingModels = plan.map(\.modelId)
+        writeDaemonState()
 
         let timeout = Duration.seconds(Int64(max(1, backend.startupPreloadTimeoutSecs)))
         logger.info(
@@ -194,7 +213,10 @@ extension ProviderLoop {
             selfTestFailClosed: failClosed,
             retire: { modelId in await me.retireModelAfterFailedSelfTest(modelId: modelId) },
             onSelfTestFailed: onSelfTestFailed,
-            log: { line in log.info("\(line)") }
+            log: { line in log.info("\(line)") },
+            currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) },
+            canLoadMore: { await me.startupPreloadHasFreeSlot() },
+            onCandidateStarted: { modelId in await me.markStartupPreloadReached(modelId) }
         )
 
         let preloader = StartupPreloader(deps: deps)
@@ -206,7 +228,17 @@ extension ProviderLoop {
         }
         startupPreloadTask = driver
 
-        let finishedInTime = await waitForPreloads([driver], timeout: timeout)
+        let gateWaiter = OneShotBoolContinuation()
+        startupPreloadGateWaiter = gateWaiter
+        defer { startupPreloadGateWaiter = nil }
+        let finishedInTime = await waitForPreloads(
+            [driver], timeout: timeout, returnOnCancellation: true,
+            wake: gateWaiter)
+        if Task.isCancelled || servingDrain.refusing {
+            driver.cancel()
+            logger.info("Startup preload gate: serving stopped — cancelling before registration")
+            return .cancelled
+        }
         if finishedInTime {
             logger.info(
                 "Startup preload gate: warm after \(StartupPreloader.secs(clock.now - started)) — registering")
@@ -222,6 +254,7 @@ extension ProviderLoop {
     /// actor whether the gate was still waiting or had already timed out.
     private func finishStartupPreload(summary: StartupPreloader.Summary, elapsed: Duration) {
         startupPreloadTask = nil
+        startupPreloadPendingModels = []
         var parts = ["loaded=\(summary.loaded.count)"]
         if !summary.skippedInsufficientMemory.isEmpty {
             parts.append("skipped_memory=[\(summary.skippedInsufficientMemory.joined(separator: ", "))]")
@@ -237,6 +270,17 @@ extension ProviderLoop {
         }
         logger.info(
             "Startup preload complete in \(StartupPreloader.secs(elapsed)): \(parts.joined(separator: " "))")
+        writeDaemonState()
+    }
+
+    private func startupPreloadHasFreeSlot() -> Bool {
+        modelSlots.count < maxModelSlots
+    }
+
+    private func markStartupPreloadReached(_ modelID: String) {
+        if let index = startupPreloadPendingModels.firstIndex(of: modelID), index > 0 {
+            startupPreloadPendingModels.removeFirst(index)
+        }
         writeDaemonState()
     }
 
@@ -291,20 +335,98 @@ extension ProviderLoop {
     ///
     /// Post-registration retirement (the gate timed out, so the coordinator
     /// client is already live and the initial `register` carried this model):
-    /// registration is the only wire mechanism that communicates a REMOVAL
-    /// from the advertised set (`models_update` is additive), so mirror the
+    /// this automatic retirement path communicates removal by registration
+    /// (`models_update` is additive; operator switches use `models_replace`), so mirror the
     /// hard-swap drop (`dropAdvertisedBuild`) — remove it from the client's
     /// advertised store — and force a reconnect so a fresh `register`
     /// announces the shrunken set. Pre-registration (the common case:
     /// preload finished inside the gate) both are nil and the `run()` filter
     /// handles it with no extra traffic.
     private func retireModelAfterFailedSelfTest(modelId: String) async {
-        await unloadModel(modelId)
+        // Tombstone for the whole retirement, including the unload drain:
+        // with the slot still resident, a concurrent same-id prefetch sees
+        // `.alreadyAvailable` and its verified-insert would re-advertise the
+        // failed model, undoing the fail-closed removal below.
+        retiringModels.insert(modelId)
+        defer { retiringModels.remove(modelId) }
+        // Durable fail-closed mark, keyed by the bytes that failed: the
+        // tombstone above dies with this function, but a prefetch whose
+        // scan/hash suspension spans this whole retirement must STILL
+        // refuse to re-advertise the same weights (`applyVerifiedPrefetch`
+        // checks this map). A future build with a different hash clears it
+        // there and gets its chance.
+        // ALWAYS mark, from the SLOT-BOUND hash or the "" sentinel — never
+        // the scanner maps: those keep a previous value when recomputation
+        // fails, so a stale H1 could be recorded while H2's bytes actually
+        // loaded and failed, and a later verified H2 would sail past the
+        // record. `cacheEligibleWeightHash` is the slot's own verified
+        // binding for the bytes it loaded; absent that (or a cold retire),
+        // the sentinel refuses every same-id build until a daemon restart —
+        // conservative, fail-closed.
+        failedSelfTestHashes[modelId] =
+            modelSlots[modelId]?.cacheEligibleWeightHash ?? ""
+        // Un-advertise BEFORE unloading so unloadModel's own
+        // refresh-then-regrow runs against the SHRUNKEN serving set — with
+        // the old order the regrow was sized under the retiring model's
+        // floor and survivors stayed under-granted until the next lifecycle
+        // event (grant clamps are min(granted, current); heartbeats cannot
+        // heal upward).
         advertisedModels.removeValue(forKey: modelId)
-        if let client = coordinatorClient {
-            await client.unadvertiseModel(modelId)
-            await client.forceReconnect()
+        // Remove from the client's advertised store BEFORE the drain (any
+        // reconnect that happens during it re-registers without the failed
+        // model) — but do NOT force the reconnect yet: cancelling the
+        // WebSocket here would cancelAllInflight() and interrupt every
+        // unrelated in-flight request rather than letting them ride out the
+        // target's drain window. Until the post-drain reconnect lands, a
+        // newly routed request for the retired id can still arrive and 404
+        // at the advertised guard — bounded, and absorbed by the
+        // coordinator's dispatch retry machinery.
+        await coordinatorClient?.unadvertiseModel(modelId)
+        await unloadModel(modelId)
+        // Another task may already own the drain (unloadModel returns
+        // immediately for modelsUnloading ids) — hold the tombstone until
+        // the slot is actually gone, or a same-id prefetch landing between
+        // our defer and the real unload end would re-advertise the failed
+        // build against a still-resident slot.
+        if modelsUnloading.contains(modelId) {
+            await waitForModelUnload(modelId)
         }
+        // Cold retirement (the model never held a slot): unloadModel
+        // no-ops, so relax the reserve and regrow survivors here.
+        await refreshActivationReserve()
+        await resliceGrowSurvivors()
+        await updateAggregateCapacity()
+        scheduleRetirementReconnect()
+    }
+
+    /// The reconnect that communicates a removal (`models_update` is
+    /// additive; a fresh register is the wire mechanism) — DETACHED and
+    /// COALESCED. Detached: the startup preloader awaits retirement inline,
+    /// so waiting here would stall every remaining preload candidate
+    /// behind a busy box. Coalesced: a burst of retirements needs one
+    /// re-registration, and the client store already excludes every
+    /// retired id (un-advertised synchronously above) by the time it
+    /// fires. The wait lets unrelated in-flight work ride out first —
+    /// closing the socket cancels EVERY in-flight request on the box
+    /// (`.disconnected` → cancelAllInflight), not just the retired
+    /// model's (already drained by unloadModel) — bounded by the shutdown
+    /// drain budget. Until it lands, a routed request for a retired id
+    /// 404s at the advertised guard and the coordinator's dispatch retry
+    /// absorbs it: the wait extends that bounded window, it does not add
+    /// a failure mode.
+    /// True while `modelId` must be refused because of a failed self-test:
+    /// mid-retirement (tombstone), or retired and un-advertised with the
+    /// durable failed-hash record standing while the coordinator's
+    /// registered inventory has not yet converged (reconnect pending). Both
+    /// are `slot_state` rejections — the coordinator reroutes to a provider
+    /// whose build passed.
+    internal func isRefusedByRetirement(_ modelId: String) -> Bool {
+        retiringModels.contains(modelId)
+            || (advertisedModels[modelId] == nil && failedSelfTestHashes[modelId] != nil)
+    }
+
+    private func scheduleRetirementReconnect() {
+        requestPlannedReconnect()
     }
 
     // MARK: - Self-test decode (the serving path)
@@ -328,6 +450,7 @@ extension ProviderLoop {
         let tokenizer = slot.tokenizer
         let modelType = slot.modelType
         let slotContainer = slot.container
+        let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
         let slotEngineV2 = slot.engineV2
         let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
@@ -345,7 +468,7 @@ extension ProviderLoop {
             registryProvider: { @Sendable in
                 [modelId: .init(
                     tokenizer: tokenizer, modelType: modelType,
-                    container: slotContainer, isVLM: slotIsVLM,
+                    container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
                     engineV2Bridge: slotEngineV2,
                     visionGate: slotVisionGate)]
             },

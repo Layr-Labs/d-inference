@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
@@ -143,6 +144,17 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	s.providerReadLoop(r.Context(), conn, providerID, r)
 }
 
+// maxProviderVersionLength bounds the provider-reported binary version accepted
+// at registration. The Swift provider sends the compile-time constant
+// ProviderCore.version ("0.8.15"; release tags must equal it, dev builds are
+// published with the same exact-version contract), and the longest shape the
+// coordinator has ever handled is "0.8.15-rc.1+build" (17 bytes). 128 leaves
+// an order of magnitude of margin while keeping provider-controlled bytes out
+// of the registry's parse memos, metric tags and logs. Raising this must be
+// paired with the registry's memo bound (maxMemoizedVersionLen), which stops
+// caching above 64 bytes.
+const maxProviderVersionLength = 128
+
 // sessionDisconnectReason maps a provider read-loop exit to the disconnect
 // reason recorded on its provider_sessions row. Kept to a small, fixed
 // vocabulary so the column stays aggregatable:
@@ -151,20 +163,50 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 //   - "ws_close_<code>" — the peer sent a WebSocket close frame (1000 = normal
 //     shutdown, 1001 = going away, 1006/close codes from intermediaries, ...);
 //   - "read_error"      — the socket died without a close frame (TCP reset,
-//     NAT/LB teardown, machine went to sleep mid-write).
+//     NAT/LB teardown, machine went to sleep mid-write);
+//   - "read_error_control_frame" — nhooyr failed while handling a peer
+//     control frame (see readErrorDisconnectReason).
+//
+// readReason is the frame-less classification from readErrorDisconnectReason
+// and is used only when neither stronger signal applies.
 //
 // The registry's own generic "disconnect" remains the reason for closes the
 // read loop did NOT observe first — in practice the stale-eviction sweep —
 // so post-fix, lingering "disconnect" rows ≈ silent drops reaped by eviction.
-func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool) string {
+func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string) string {
 	switch {
 	case oomSuspected:
 		return string(registry.DisconnectReasonOOMSuspected)
 	case closeStatus != -1:
 		return "ws_close_" + strconv.Itoa(int(closeStatus))
 	default:
-		return "read_error"
+		return readReason
 	}
+}
+
+const (
+	readErrorReasonGeneric      = "read_error"
+	readErrorReasonControlFrame = "read_error_control_frame"
+)
+
+// readErrorDisconnectReason classifies a frame-less provider Read failure
+// into a fixed two-value vocabulary shared by the ws_disconnects metric, the
+// telemetry event, and the provider_sessions disconnect_reason column.
+//
+// nhooyr answers peer pings on its READ goroutine, with a 5s budget to take
+// the connection's per-frame write lock and put the pong on the wire. When
+// that fails, the library fails the Read with "failed to handle control frame
+// opPing: failed to write control frame opPong: failed to acquire lock: ..."
+// — the peer was alive (it just pinged us), so this is a
+// coordinator-side write stall, not a network drop, and must not be counted
+// with real drops. The same prefix covers any other control-frame handling
+// failure (e.g. a malformed control frame); close frames are never wrapped
+// this way (they surface as a CloseError on the peer_close branch).
+func readErrorDisconnectReason(err error) string {
+	if err != nil && strings.Contains(err.Error(), "failed to handle control frame") {
+		return readErrorReasonControlFrame
+	}
+	return readErrorReasonGeneric
 }
 
 // closeSessionWithReason closes this connection's provider_sessions row with a
@@ -192,10 +234,19 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
+	var terminalWork providerCompletionBarrier
+	var drainAcks providerDrainAcker
+	var appAttestShadow *attestservice.Session
 	tracker := newChallengeTracker()
 	var schedulerSEKey string
 	var schedulerGeneration uint64
 
+	// peerCloseStatus is the close code the peer sent, captured by the read
+	// loop so the deferred teardown can flush pending requests with the
+	// health-neutral restart cause on a graceful 1000/1001 close and the
+	// striking abrupt cause otherwise (registry.ClassifyPeerClose). -1 = no
+	// close frame observed.
+	peerCloseStatus := websocket.StatusCode(-1)
 	// Cancel context for cleanup of the challenge loop goroutine.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
@@ -211,7 +262,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		// provider down), so the measured reconnect gap starts here rather
 		// than at the last periodic coverage pass.
 		s.stopTrustCoverageForProvider(providerID)
-		s.registry.Disconnect(providerID)
+		s.stopCodeAttestCoverageForProvider(providerID)
+		s.registry.DisconnectWithReason(providerID, registry.ClassifyPeerClose(peerCloseStatus, false))
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
 
@@ -220,7 +272,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		if err != nil {
 			closeStatus := websocket.CloseStatus(err)
 			oomSuspected := false
+			readReason := readErrorReasonGeneric
 			if closeStatus != -1 {
+				peerCloseStatus = closeStatus
 				s.logger.Info("provider websocket closed",
 					"provider_id", providerID, "close_code", int(closeStatus))
 				// Peer-initiated closes were previously unmetered — only
@@ -236,20 +290,23 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"code:" + strconv.Itoa(int(closeStatus)),
 				})
 			} else {
-				s.logger.Error("provider websocket read error", "provider_id", providerID, "error", err)
+				readReason = readErrorDisconnectReason(err)
+				s.logger.Error("provider websocket read error",
+					"provider_id", providerID, "error", err, "reason", readReason)
 				s.emit(context.Background(), protocol.SeverityWarn, protocol.KindConnectivity,
 					"provider websocket read error",
 					map[string]any{
 						"provider_id": providerID,
 						"ws_state":    "read_error",
+						"reason":      readReason,
 						"last_error":  err.Error(),
 					})
 				if s.metrics != nil {
 					s.metrics.IncCounter("ws_disconnects_total",
-						MetricLabel{"reason", "read_error"},
+						MetricLabel{"reason", readReason},
 					)
 				}
-				s.ddIncr("ws.disconnects", []string{"reason:read_error"})
+				s.ddIncr("ws.disconnects", []string{"reason:" + readReason})
 
 				// An abrupt read_error under high last-known memory pressure with
 				// active inference is very likely a jetsam OOM (the kill leaves no
@@ -306,13 +363,23 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.Status = registry.StatusOffline
 				}
 				provider.Mu().Unlock()
-				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected))
+				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected, readReason))
 			}
 			return
 		}
 
 		var msg protocol.ProviderMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
+		// DecodeProviderMessage is json.Unmarshal minus its redundant outer
+		// validation pass; per-token chunk frames take a hand-written decoder.
+		if err := protocol.DecodeProviderMessage(data, &msg); err != nil {
+			if errors.Is(err, protocol.ErrAppAttestShadowFrameTooLarge) {
+				if appAttestShadow != nil {
+					// Inventory periodically persists this same atomic counter,
+					// including on disconnect. No proof or database work here.
+					appAttestShadow.RejectOversized()
+				}
+				s.ddIncr("app_attest.shadow.frames_rejected", []string{"reason:oversized"})
+			}
 			// Decoder errors may quote provider-controlled fields (notably an
 			// unknown message type). Never reflect the detail into logs.
 			s.logger.Warn("invalid provider message", "provider_id", providerID)
@@ -328,6 +395,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				return
 			}
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
+			// The version string is provider-controlled and flows into semver
+			// parsing memos, metric tags and logs; a legitimate build id is a
+			// few dozen bytes. Reject anything larger before it reaches the
+			// registry so a hostile client cannot retain multi-MiB keys.
+			if len(regMsg.Version) > maxProviderVersionLength {
+				s.logger.Warn("rejecting provider registration with oversized version",
+					"provider_id", providerID, "version_len", len(regMsg.Version))
+				s.ddIncr("providers.registration_rejected", []string{"reason:oversized_version"})
+				_ = conn.Close(websocket.StatusPolicyViolation, "version string too long")
+				return
+			}
 			if err := s.registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
 				// Validation errors can quote provider-controlled model IDs.
 				s.logger.Warn("rejecting malformed provider cache capabilities",
@@ -336,9 +414,35 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid prefix-cache capabilities")
 				return
 			}
+			// Resolve the token once before choosing the identity rollout path.
+			// Keep linkage after attestation restoration, as with legacy clients;
+			// only this validated account may select the App Attest cohort.
+			authenticatedAccountID, authenticatedTokenLabel := "", ""
+			accountResolved := false
+			resolveAccount := func() {
+				accountResolved = true
+				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
+				if err != nil || pt == nil {
+					s.logger.Warn("provider auth token invalid", "provider_id", providerID, "error", err)
+				} else {
+					authenticatedAccountID, authenticatedTokenLabel = pt.AccountID, pt.Label
+				}
+			}
+			if regMsg.AuthToken != "" && s.appAttestFeature().NeedsIdentityAccount(regMsg) {
+				resolveAccount()
+			}
 			provider = s.registry.Register(providerID, conn, regMsg)
+			if s.appAttestIdentityCandidate(regMsg, authenticatedAccountID) {
+				provider.RequireVerifiedMachineIdentity()
+			}
 			s.attachProviderLocation(providerID, provider, r)
-			s.verifyProviderAttestation(providerID, provider, regMsg)
+			if err := s.verifyProviderAttestation(loopCtx, providerID, provider, regMsg, authenticatedAccountID); err != nil {
+				// No duplicate eviction or account/MDM continuation after failed
+				// recovery. Pending state remains unroutable through teardown.
+				s.logger.Warn("provider registration recovery failed", "provider_id", providerID, "error", err)
+				_ = conn.Close(websocket.StatusTryAgainLater, "provider state temporarily unavailable")
+				return
+			}
 
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
@@ -356,36 +460,27 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"memory_gb":     regMsg.Hardware.MemoryGB,
 				})
 
-			// Resolve auth token → account linkage.
-			if regMsg.AuthToken != "" {
-				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
-				if err != nil {
-					s.logger.Warn("provider auth token invalid",
-						"provider_id", providerID,
-						"error", err,
-					)
-				} else {
-					provider.Mu().Lock()
-					provider.AccountID = pt.AccountID
-					provider.Mu().Unlock()
-					// Account linkage can be the provider's ONLY stable identity
-					// (Open Mode / invalid attestation → the acct: fallback), and
-					// it lands after the attestation-time bind — re-bind so fault
-					// state keys by identity instead of the session UUID.
-					provider.RebindStableFaultKey()
-					s.logger.Info("provider linked to account",
-						"provider_id", providerID,
-						"account_id", pt.AccountID,
-						"token_label", pt.Label,
-					)
-				}
+			// Legacy-only providers keep their original post-restoration lookup.
+			// A structurally eligible App Attest registration already resolved
+			// this token; never reroll its cohort through a second store read.
+			if regMsg.AuthToken != "" && !accountResolved {
+				resolveAccount()
+			}
+			if authenticatedAccountID != "" {
+				provider.Mu().Lock()
+				provider.AccountID = authenticatedAccountID
+				provider.Mu().Unlock()
+				provider.RebindStableFaultKey()
+				s.logger.Info("provider linked to account", "provider_id", providerID,
+					"account_id", authenticatedAccountID, "token_label", authenticatedTokenLabel)
 			}
 
-			// Store provider version.
+			// Store provider version. SetVersion also runs the version-changed
+			// reconnect reset for the session's stable identity, which the
+			// attestation bind above could not (the version was not stored
+			// yet) — see registry/version_reset.go.
 			if regMsg.Version != "" {
-				provider.Mu().Lock()
-				provider.Version = regMsg.Version
-				provider.Mu().Unlock()
+				provider.SetVersion(regMsg.Version)
 			}
 
 			// Verify runtime integrity against the known-good manifest. Swift
@@ -519,6 +614,41 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				})
 			}
 
+			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
+
+		case protocol.TypeAppAttestShadow:
+			if appAttestShadow != nil {
+				appAttestShadow.Offer(msg.Payload.(*protocol.AppAttestShadowMessage).Payload)
+			}
+
+		case protocol.TypeProviderDrain:
+			if provider == nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before drain")
+				return
+			}
+			barrier := msg.Payload.(*protocol.ProviderDrainMessage)
+			if barrier.RequestID == "" || len(barrier.RequestID) > 64 {
+				_ = conn.Close(websocket.StatusPolicyViolation, "invalid drain barrier")
+				return
+			}
+			if !drainAcks.offer(loopCtx, s, provider, &terminalWork, barrier.RequestID) {
+				return
+			}
+
+		case protocol.TypeModelsReplace:
+			if provider == nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before models_replace")
+				return
+			}
+			s.handleModelsReplace(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceMessage))
+
+		case protocol.TypeModelsReplaceReady:
+			if provider == nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before models_replace_ready")
+				return
+			}
+			s.handleModelsReplaceReady(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceReadyMessage))
+
 		case protocol.TypeHeartbeat:
 			if provider == nil {
 				// Heartbeats are meaningful only after this connection has
@@ -532,6 +662,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			replaceCacheCapabilities :=
 				hbMsg.PrefixCacheProtocol != 0 || hbMsg.PrefixCacheV2Models != nil
 			if replaceCacheCapabilities ||
+				hbMsg.PrefixCacheMemoryModels != nil ||
 				hbMsg.PrefixCacheStatuses != nil ||
 				hbMsg.PrefixCacheDonationOutcomes != nil {
 				var capabilities []protocol.PrefixCacheV2Capability
@@ -543,10 +674,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					replaceCacheCapabilities,
 					hbMsg.PrefixCacheProtocol,
 					capabilities,
+					hbMsg.PrefixCacheMemoryModels,
 					hbMsg.PrefixCacheStatuses,
 					hbMsg.PrefixCacheDonationOutcomes,
 				)
-				if err != nil && replaceCacheCapabilities {
+				if err != nil && (replaceCacheCapabilities || hbMsg.PrefixCacheMemoryModels != nil) {
 					s.logger.Warn("rejecting malformed heartbeat cache capabilities",
 						"provider_id", providerID)
 					s.ddIncr("routing.cache_capability_rejected", []string{"source:heartbeat"})
@@ -555,6 +687,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						providerID,
 						true,
 						1,
+						nil,
 						nil,
 						hbMsg.PrefixCacheStatuses,
 						hbMsg.PrefixCacheDonationOutcomes,
@@ -565,13 +698,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
-			s.registry.Heartbeat(providerID, hbMsg)
-			// Emit only from the accepted registry snapshot: malformed values
-			// have been clamped and slot model IDs constrained to this
-			// connection's coordinator-known inventory.
-			capacity := provider.BackendCapacitySnapshot()
-			s.recordBackendWedgeTelemetry(capacity)
-			s.recordMLXCacheTelemetry(providerID, capacity)
+			if s.applyProviderHeartbeat(providerID, provider, hbMsg) {
+				s.handleModelsReplaceHeartbeat(loopCtx, provider)
+			}
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)
@@ -611,13 +740,22 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// that can block for seconds under DB pressure. If the read loop is
 			// blocked, attestation challenge responses can't be read from the
 			// WebSocket, causing challenge timeouts and provider derouting.
+			terminalDone := terminalWork.begin()
 			saferun.Go(s.logger, "handleComplete", func() {
+				defer terminalDone()
 				s.handleCompleteAt(providerID, provider, completeMsg, receivedAt)
 			})
 
 		case protocol.TypeInferenceError:
 			errMsg := msg.Payload.(*protocol.InferenceErrorMessage)
+			var terminalDone func()
+			if drainAcks.latest != nil && s.registry.ProviderDraining(providerID) {
+				terminalDone = terminalWork.begin()
+			}
 			s.handleInferenceError(providerID, provider, errMsg)
+			if terminalDone != nil {
+				terminalDone()
+			}
 
 		case protocol.TypePrefixCacheLookup:
 			lookupMsg := msg.Payload.(*protocol.PrefixCacheLookupMessage)
@@ -639,31 +777,43 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypePrefixCacheLookupV2:
 			lookupMsg := msg.Payload.(*protocol.PrefixCacheLookupV2Message)
-			if s.registry.ApplyPrefixCacheLookupV2(providerID, lookupMsg) {
+			receipt := s.registry.ApplyPrefixCacheLookupV2Result(providerID, lookupMsg)
+			s.emitCacheReceiptResult("lookup_v2", receipt)
+			s.emitModelCacheReceipt(lookupMsg.ModelID, lookupMsg.Tier, "lookup_v2", receipt)
+			if receipt.Accepted {
+				s.emitModelCacheLookup(lookupMsg, receipt)
 				s.ddIncr("routing.cache_lookup_receipt", []string{
 					"protocol:v2",
 					"outcome:" + lookupMsg.Outcome,
 					"tier:" + lowCardinalityCacheTier(lookupMsg.Tier),
 				})
-				s.emitExactCacheSSDLookup("v2", lookupMsg.Outcome, lookupMsg.StageMs)
+				if lookupMsg.Tier == "ssd" {
+					s.emitExactCacheSSDLookup("v2", lookupMsg.Outcome, lookupMsg.StageMs)
+				}
 			} else {
-				s.ddIncr("routing.cache_receipt_rejected", []string{"type:lookup_v2"})
+				s.ddIncr("routing.cache_receipt_rejected", []string{"type:lookup_v2", "reason:" + string(receipt.Reason)})
 			}
 
 		case protocol.TypePrefixCacheReadyV2:
 			readyMsg := msg.Payload.(*protocol.PrefixCacheReadyV2Message)
-			if s.registry.ApplyPrefixCacheReadyV2(providerID, readyMsg) {
+			receipt := s.registry.ApplyPrefixCacheReadyV2Result(providerID, readyMsg)
+			s.emitCacheReceiptResult("ready_v2", receipt)
+			s.emitModelCacheReceipt(readyMsg.ModelID, readyMsg.Tier, "ready_v2", receipt)
+			if receipt.Accepted {
+				s.emitModelCacheDonation(readyMsg, receipt)
 				s.ddIncr("routing.cache_ready_receipt", []string{
 					"protocol:v2",
 					"tier:" + lowCardinalityCacheTier(readyMsg.Tier),
 				})
-				donatedTokens := 0
-				if len(readyMsg.ReadyAnchors) > 0 {
-					donatedTokens = readyMsg.ReadyAnchors[len(readyMsg.ReadyAnchors)-1].TokenCount
+				if readyMsg.Tier == "ssd" {
+					donatedTokens := 0
+					if len(readyMsg.ReadyAnchors) > 0 {
+						donatedTokens = readyMsg.ReadyAnchors[len(readyMsg.ReadyAnchors)-1].TokenCount
+					}
+					s.emitExactCacheSSDDonation("v2", readyMsg.StageMs, donatedTokens)
 				}
-				s.emitExactCacheSSDDonation("v2", readyMsg.StageMs, donatedTokens)
 			} else {
-				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready_v2"})
+				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready_v2", "reason:" + string(receipt.Reason)})
 			}
 
 		case protocol.TypeAttestationResponse:
@@ -707,7 +857,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
 				duration := s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, true, duration)
-				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
+				s.registry.DrainQueuedRequestsForModelWithReason(statusMsg.ModelID, registry.DrainTriggerLoad)
 			case protocol.LoadModelStatusFailed:
 				duration := s.registry.PendingModelLoadDuration(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, false, duration)
@@ -825,6 +975,7 @@ func (s *Server) emitCacheSelectionTerminal(pr *registry.PendingRequest, usage p
 		return false
 	}
 	tags := cacheSelectionTerminalTags(pr, usage, usageValid, usagePresent)
+	s.emitModelCacheSelection(pr, tags, usage, usageValid)
 	s.ddIncr("routing.cache_selection_terminal", tags)
 	if pr.CacheSelectionDiscountMs > 0 {
 		s.ddHistogram("routing.cache_selection_discount_ms", pr.CacheSelectionDiscountMs, tags)
@@ -851,6 +1002,7 @@ func (s *Server) emitCacheSelectionTTFT(pr *registry.PendingRequest, usage proto
 	if !ok {
 		return
 	}
+	s.cacheModelTiming("ttft", value, s.cacheModelSelectionLabels(pr.Model, tags)...)
 	s.ddHistogram("routing.cache_selection_ttft_ms", value, tags)
 }
 
@@ -920,9 +1072,10 @@ func (s *Server) attachProviderLocation(providerID string, provider *registry.Pr
 	provider.Location = loc
 	provider.Mu().Unlock()
 	s.registry.PersistProvider(provider)
-	if s.readCache != nil {
-		s.readCache.Invalidate("stats:v1")
-	}
+	// The stats:v1 read-cache entry is owned by the stats refresher (stats.go)
+	// and is NOT evicted here. Evicting it on every registration (~1,400/hour
+	// in production) turned its 60 s TTL into ~2.6 s and made every /v1/stats
+	// request rerun the multi-second usage analytics statements.
 	s.logger.Info("provider location resolved",
 		"provider_id", providerID,
 		"city", loc.City,
@@ -1579,7 +1732,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			// the next heartbeat / 120s queue timeout. Off the challenge goroutine,
 			// mirroring the code-attest / MDM hardware-grant drain.
 			saferun.Go(s.logger, "trustReuseDrain", func() {
-				s.registry.DrainQueuedRequestsForProvider(provider)
+				s.registry.DrainQueuedRequestsForProviderWithReason(provider, registry.DrainTriggerChallenge)
 			})
 		} else {
 			// Fast-skip missed. The submit-time refresh classification (a
@@ -1756,17 +1909,14 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	}
 	pr, receivedAt := provider.BeginPendingChunkIngress(msg.RequestID)
 	if pr == nil {
-		// Until it matches pending state, request_id is provider-controlled and
-		// therefore an arbitrary log-exfiltration channel.
-		s.logger.Warn("chunk for unknown request", "provider_id", providerID)
-		// The provider is still generating into a stream we abandoned (consumer
-		// gone / already settled), burning its GPU and token-budget admission.
-		// Nudge it to stop — throttled so a chunk-per-token zombie doesn't flood
-		// the provider with cancels.
-		if s.zombieCanceller.shouldCancel(msg.RequestID, time.Now()) {
-			s.sendProviderCancel(provider, msg.RequestID)
-			s.ddIncr("inference.zombie_stream_cancel", []string{})
-		}
+		s.ddIncr("inference.unknown_request_frames", []string{"kind:chunk"})
+		s.unknownRequestFrames.Add(1)
+		// The provider is generating into a stream the coordinator abandoned
+		// (cancelled, consumer gone, already settled) — or sent an id it never
+		// owned. noteStrayChunk re-sends the cancel on the escalating zombie
+		// schedule and rate-limits the log line per provider; request_id stays
+		// out of the log until it matches coordinator state.
+		s.noteStrayChunk(provider, providerID, msg.RequestID, receivedAt)
 		return
 	}
 	ingressClassified := false
@@ -1775,6 +1925,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			pr.FinishProviderChunkIngress(receivedAt, false)
 		}
 	}()
+	decryptStart := time.Now()
 	chunkData, err := s.decryptTextResponseChunk(provider, pr, msg)
 	if err != nil {
 		s.logger.Warn("rejecting insecure response chunk",
@@ -1783,6 +1934,12 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			"error", err,
 		)
 		s.registry.MarkUntrusted(providerID)
+		// The provider is still generating: the synthesized terminal below
+		// settles the request on our side, so the committed writer's exit
+		// will not send a cancel for it (a settled terminal means "nothing
+		// left to stop"). Stop the real work here, like the deadline and
+		// overflow branches do.
+		s.sendProviderCancel(provider, msg.RequestID)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   msg.RequestID,
@@ -1792,9 +1949,20 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		})
 		return
 	}
+	if ap := pr.Profile; ap != nil {
+		ap.ChunksIn.Add(1)
+		ap.DecryptUSTotal.Add(time.Since(decryptStart).Microseconds())
+		ap.MarkAt(registry.StampFirstChunkIngress, receivedAt)
+	}
+	if pr.Profile != nil && !pr.Profile.GeneratedContentObserved.Load() && (generatedContentSSE([]byte(chunkData)) || generatedContentJSON([]byte(chunkData))) {
+		pr.Profile.GeneratedContentObserved.Store(true)
+	}
 	contentBearing := !isBoilerplateChunk(chunkData)
 	firstContent := pr.FinishProviderChunkIngress(receivedAt, contentBearing)
 	ingressClassified = true
+	if firstContent {
+		pr.Profile.MarkAt(registry.StampFirstContentIngress, receivedAt)
+	}
 	deadlineExpiredWithoutContent := !pr.FirstContentDeadline.IsZero() &&
 		((firstContent && receivedAt.After(pr.FirstContentDeadline)) ||
 			(!contentBearing &&
@@ -1805,7 +1973,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// either late first content or an on-time chunk that finished
 		// classification as boilerplate only after the deadline.
 		s.ddIncr("inference.first_content_after_deadline", []string{})
-		s.sendProviderCancel(provider, pr.RequestID)
+		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseLateContent)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   pr.RequestID,
@@ -1836,7 +2004,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			"request_id", msg.RequestID,
 		)
 		s.ddIncr("inference.chunk_overflow_abort", []string{})
-		s.sendProviderCancel(provider, msg.RequestID)
+		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseOverflow)
 		// 499 + "request cancelled" classifies as a consumer-side terminal in
 		// handleInferenceError: no provider reputation hit for our backpressure.
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
@@ -1935,6 +2103,7 @@ func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *proto
 	if pr == nil {
 		return
 	}
+	pr.Profile.Mark(registry.StampAccepted)
 	// Non-blocking signal — the dispatch loop may have already committed.
 	select {
 	case pr.AcceptedCh <- struct{}{}:
@@ -1967,26 +2136,101 @@ func (s *Server) handleCompleteAt(
 	if receivedAt.IsZero() {
 		receivedAt = time.Now()
 	}
+	// terminalOwner is true only for the frame that claimed the attempt's
+	// terminal first: concurrent duplicate completions for one request all
+	// pass GetPending before one wins RemovePending, and only the owner may
+	// retain usage / the profile (the others are rejected as unknown below).
+	terminalOwner, terminalClaimed := false, false
+	// claimed is the attempt whose terminal this frame owns. Every return
+	// below must complete it: once claimed, neither the route-outcome funnel
+	// nor the no-terminal fallback will, so a pending request removed by a
+	// consumer-side cleanup between the claim and RemovePending would
+	// otherwise never finalize.
+	var claimed *registry.AttemptProfile
 	if pending := provider.GetPending(msg.RequestID); pending != nil {
+		if pending.Profile != nil {
+			pending.Profile.ProviderCompleteObserved.Store(true)
+		}
 		pending.MarkCompletionIngress(receivedAt)
+		pending.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
+		// The claim is the single ownership token: only the frame that owns
+		// the terminal proceeds to the deadline / speculative branches and to
+		// RemovePending + settlement, so claim ownership and settlement
+		// ownership can never diverge. A second concurrent frame for the same
+		// pending request is a provider duplicate and is dropped here. Without
+		// a profile (profiler off) there is no token and the pre-existing
+		// RemovePending race decides, exactly as before.
+		compact := compactOnlyAttempt(pending.Profile)
+		terminalOwner, terminalClaimed = pending.Profile == nil || compact || pending.Profile.ClaimTerminal(), true
+		if !terminalOwner {
+			s.logger.Warn("duplicate complete for in-flight request", "provider_id", providerID)
+			s.ddIncr("inference.unknown_request_frames", []string{"kind:duplicate_complete"})
+			s.unknownRequestFrames.Add(1)
+			return
+		}
+		if !compact {
+			claimed = pending.Profile
+		}
+		// Usage and the provider profile are retained BEFORE any branch below
+		// can discard this completion (the deadline-late conversion to an error,
+		// the speculative-loser return), so a losing or late racer that sent a
+		// profile is not recorded as absent. msg.Profile is cleared so the
+		// claim site below no-ops for this pending (a second retain would count
+		// a false duplicate); it still retains for a PARKED record, which has
+		// no pending entry.
+		if !compact {
+			pending.Profile.SetTerminalUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+		}
+		s.retainProviderProfile(pending.Profile, msg.Profile)
+		msg.Profile = nil
 		if !pending.HasFirstContentIngress() &&
 			!pending.FirstContentDeadline.IsZero() &&
 			receivedAt.After(pending.FirstContentDeadline) {
 			// A clean terminal without content is a valid empty completion only
 			// while the first-content SLA is still live. Once the absolute deadline
 			// has passed it must not race the dispatch timer into an empty HTTP 200.
-			s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+			// owned: this frame already holds the claim, so the error path
+			// must neither re-claim nor drop the conversion as a duplicate.
+			s.handleInferenceErrorOwned(providerID, provider, &protocol.InferenceErrorMessage{
 				Type:        protocol.TypeInferenceError,
 				RequestID:   pending.RequestID,
 				Error:       "provider completed after the first-content deadline",
 				StatusCode:  http.StatusServiceUnavailable,
 				ErrorReason: errorReasonDeadlineUnreachable,
 				FailureCode: protocol.FailureCodeCapacity,
-			})
+			}, true)
+			// handleInferenceError completes the terminal only when it still
+			// found the pending request; if a consumer-side cleanup removed it
+			// first, the provider still completed, so record that and close
+			// the claimed terminal here (both calls are first-write / idempotent).
+			claimed.SetOutcome("", "", "", "completed", "")
+			claimed.CompleteTerminal()
 			return
 		}
 		if !pending.HasFirstContentIngress() {
 			if accepted, waited := pending.AwaitSpeculativeEmptyCompletionDecision(); waited && !accepted {
+				// The losing racer's empty completion is discarded by the
+				// dispatch loop, which classifies the attempt through the
+				// route-outcome funnel (markSpeculativeLoser → cancelled /
+				// speculative_loser) and completes its terminal half there.
+				// Only the provider-side outcome is authoritative here — mirror
+				// handleInferenceError — and the idempotent CompleteTerminal
+				// covers the ordering where the funnel has not run yet.
+				//
+				// When the frame never reached the wire (releaseUnsentDispatch
+				// resolved the loser after a write failure), the dispatch side's
+				// closeUndispatchedAttempt records not_dispatched — the truthful
+				// provider outcome — so "completed" is written only for an
+				// attempt whose write completed. WriteDone is stamped before any
+				// race can be resolved and never on the write-failure path, so
+				// the check is deterministic; the close always lands because the
+				// attempt cannot finalize before the handler half (finalizeProfile).
+				if !compact && pending.Profile.Dispatched() {
+					pending.Profile.SetOutcome("", "", "", "completed", "")
+				}
+				if !compact {
+					pending.Profile.CompleteTerminal()
+				}
 				return
 			}
 		}
@@ -1995,15 +2239,83 @@ func (s *Server) handleCompleteAt(
 	// Clear any parked settlement record (consumer disconnected mid-stream):
 	// settles the disconnect case and stops the grace timer from no-op-refunding.
 	parked := s.claimSettlement(msg.RequestID)
+	// No live pending record means the attempt was abandoned (or is unknown):
+	// correlate the terminal with the cancel the coordinator sent. Metric-only
+	// — a parked post-commit record still settles billing below, and a
+	// pre-commit attempt was refunded when it was abandoned. Only a terminal
+	// that finds no live record is matched, so the coordinator's own
+	// synthesized errors (raised while the record is live) never resolve one.
+	var cancelled zombieEntry
+	wasCancelled := false
 	if pr == nil {
+		cancelled, wasCancelled = s.resolveCancelledTerminal(
+			msg.RequestID, cancelTerminalComplete, cancelledOutcomeCompletePartial, receivedAt)
 		pr = parked
 	}
 	if pr == nil {
-		// Until it matches pending state, request_id is provider-controlled and
-		// therefore an arbitrary log-exfiltration channel.
-		s.logger.Warn("complete for unknown request", "provider_id", providerID)
+		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+			// The id matched a cancel the coordinator recorded, so it is
+			// coordinator-minted and safe to log: the provider honored the
+			// cancel with a partial completion.
+			s.logger.Debug("complete for cancelled request",
+				"request_id", msg.RequestID, "provider_id", providerID, "cause", cancelled.cause)
+		} else {
+			// Until it matches pending state, request_id is provider-controlled and
+			// therefore an arbitrary log-exfiltration channel.
+			s.logger.Warn("complete for unknown request", "provider_id", providerID)
+			s.emitUnknownFrame(unknownFrameKindComplete, provider)
+		}
+		s.ddIncr("inference.unknown_request_frames", []string{"kind:complete"})
+		s.unknownRequestFrames.Add(1)
+		// A claimed terminal whose pending request a consumer-side cleanup
+		// removed in between: the provider completed, the coordinator lost
+		// ownership; close the record rather than leak the attempt.
+		claimed.SetOutcome("", "", "", "completed", "")
+		claimed.CompleteTerminal()
 		return
 	}
+	if pr.Profile != nil {
+		pr.Profile.ProviderCompleteObserved.Store(true)
+	}
+	pr.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
+	if compactOnlyAttempt(pr.Profile) {
+		// With heavy profiling off, RemovePending/claimSettlement is the
+		// existing arbitration. Only its actual winner claims compact
+		// evidence, after removal; receipt never gates another terminal.
+		pr.Profile.ClaimTerminal()
+		terminalOwner = true
+	}
+	if !terminalClaimed { // parked record (mutex single-winner): no pending entry above
+		terminalOwner = pr.Profile == nil || compactOnlyAttempt(pr.Profile) || pr.Profile.ClaimTerminal()
+	}
+	// Terminal usage is recorded at ingress, outside the billing gate, so a
+	// completion whose reservation was already finalized (a late terminal after
+	// a consumer-side refund, or any path that skips billing) still carries the
+	// provider's token counts for the profile consistency check. Only the
+	// terminal owner writes; msg.Profile is already nil when the pending block
+	// above retained it.
+	if terminalOwner {
+		pr.Profile.SetTerminalUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+		s.retainProviderProfile(pr.Profile, msg.Profile)
+		// The provider outcome is written here, OUTSIDE the billing gate: a
+		// consumer-side timeout can finalize (refund) the reservation after
+		// this frame claimed but before settlement, in which case the gate
+		// below is skipped and its own (idempotent) write never runs — the
+		// deferred CompleteTerminal would then close the record with an empty
+		// provider_outcome. Every branch that must not read "completed" (the
+		// deadline-late conversion, the losing racer) returned above.
+		pr.Profile.SetOutcome("", "", "", "completed", "")
+	}
+	msg.Profile = nil
+	// The terminal half completes when this handler returns, on every branch:
+	// after billing has settled and the settle_db_us stamp has landed, and after
+	// the consumer has been signalled. It completes regardless of billing state
+	// too — a reservation finalized earlier by a consumer-side path must not
+	// leave the record waiting on the (now suppressed) fallback. Deferred at the
+	// claim site (not inside the billing gate) so a PARKED completion, whose
+	// consumer is already gone, cannot enqueue its record before the settlement
+	// stamp is written.
+	defer pr.Profile.CompleteTerminal()
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
 	// A parked record means the consumer handler already returned: there is no
@@ -2072,6 +2384,7 @@ func (s *Server) handleCompleteAt(
 		s.emitExactCacheUsage(msg.Usage.CacheOutcome, lowCardinalityCacheTier(msg.Usage.CacheTier),
 			msg.Usage.CachedTokens, msg.Usage.PrefillTokensSaved, msg.Usage.CacheStageMs)
 	}
+	s.emitModelCacheUsage(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	cacheTerminalClaimed := s.emitCacheSelectionTerminal(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)
 
@@ -2094,6 +2407,7 @@ func (s *Server) handleCompleteAt(
 	// defaults. Service accounts run on a 0% fee.
 	var feePercent *int64
 	isServiceConsumer := false
+	settleStart := time.Now()
 	if u, err := s.store.GetUserByAccountID(pr.ConsumerKey); err == nil && u != nil {
 		feePercent = u.PlatformFeePercent
 		isServiceConsumer = u.Role == store.RoleService
@@ -2110,7 +2424,7 @@ func (s *Server) handleCompleteAt(
 	}
 	var customIn, customOut int64
 	var hasCustom bool
-	if !isServiceConsumer {
+	if !isServiceConsumer && pr.PromotionFreeTokens == 0 {
 		customIn, customOut, hasCustom = s.store.GetModelPrice(providerAccountForPricing, pr.Model)
 	}
 	if !hasCustom {
@@ -2138,7 +2452,7 @@ func (s *Server) handleCompleteAt(
 	// requesting account. Ownership is read from the serving provider object
 	// (stable across deregistration), not a fresh lookup.
 	freeSelfRoute := false
-	if pr.FreeSelfRoute || pr.PreferOwner {
+	if pr.FreeSelfRoute || pr.PreferOwner || pr.PromotionFreeTokens > 0 {
 		serving := s.registry.GetProvider(providerID)
 		if serving == nil {
 			serving = provider
@@ -2166,13 +2480,20 @@ func (s *Server) handleCompleteAt(
 		// log, settle as paid against the reservation.
 	}
 
+	recordAccounting := s.completionAccounting(pr, providerID, msg.Usage, feePercent, freeSelfRoute)
 	billingFinalized := true
 
 	// Settle billing against the pre-flight reservation. All balance
 	// mutations (overage charge, refund) happen inside the finalization
 	// gate so that a concurrent timeout/error refund path cannot race
 	// with the settlement here.
-	if pr.ServiceReservation && pr.ReservedMicroUSD > 0 {
+	if pr.ModelTokenReservationID != "" {
+		var promotionErr error
+		billingFinalized, totalCost, providerPayout, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, customIn, customOut, hasCustom, feePercent, freeSelfRoute, recordAccounting)
+		if promotionErr != nil {
+			s.logger.Error("promotion settlement failed", "request_id", msg.RequestID, "reservation_id", pr.ModelTokenReservationID, "error", promotionErr)
+		}
+	} else if pr.ServiceReservation && pr.ReservedMicroUSD > 0 {
 		var chargeErr error
 		finalized, _ := pr.FinalizeReservation(func() error {
 			if totalCost > 0 {
@@ -2315,31 +2636,6 @@ func (s *Server) handleCompleteAt(
 	}
 
 	if billingFinalized {
-		// Record in-memory usage (for current session queries).
-		s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
-			JobID:            msg.RequestID,
-			Model:            consumerModel(pr),
-			PromptTokens:     msg.Usage.PromptTokens,
-			CompletionTokens: msg.Usage.CompletionTokens,
-			CostMicroUSD:     totalCost,
-			Timestamp:        time.Now(),
-		})
-
-		// Persist usage to DB asynchronously — billing has already been
-		// settled above, so this INSERT is not on the critical path. KeyID
-		// carries per-key usage/spend attribution (empty for legacy callers).
-		//
-		// Skip the persistent (public-stats-feeding) row for FREE self-route:
-		// it is private, owner-only traffic and must not appear in the public
-		// /stats time-series, request-location, or flow aggregations. Private-only
-		// providers only ever serve free self-route, so this also keeps their
-		// traffic out of public stats. The owner still sees it via the in-memory
-		// RecordUsage above (their session/transparency view).
-		if !freeSelfRoute {
-			saferun.Go(s.logger, "recordUsage", func() {
-				s.store.RecordUsageFullWithPublicModel(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, consumerModel(pr), msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
-			})
-		}
 
 		// Fallback actual_ttft_ms anchor for the COMMITTED attempt only. The
 		// dispatch/handler goroutine normally stamps FirstContentAt at the
@@ -2399,6 +2695,9 @@ func (s *Server) handleCompleteAt(
 			}
 		}
 		s.updateInferenceRouteOutcomeWithModel(msg.RequestID, pr.Attempt, pr.Model, outcome)
+		// Outcome only: the terminal half completes on return (deferred at the
+		// claim site), after the settlement stamps below.
+		pr.Profile.SetOutcome(outcome.FinalStatus, profileErrorReason(outcome), "", "completed", "")
 
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
 		// Split the partial case out of the (intentionally unchanged) completions
@@ -2436,15 +2735,14 @@ func (s *Server) handleCompleteAt(
 			p = provider
 		}
 
-		// Compute platform fee (needs referral lookup before spawning goroutines).
-		platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
-		if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
-			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
-		}
-
-		// Run provider credit and platform fee credit concurrently —
-		// they target different accounts so there is no data dependency.
+		// Credit provider earnings for ordinary paid requests. Promotion
+		// earnings were already committed atomically with their reservation.
 		var settlementWg sync.WaitGroup
+		settlementWg.Add(1)
+		go func() {
+			defer settlementWg.Done()
+			recordAccounting(totalCost)
+		}()
 
 		// Credit the provider's linked account (if any).
 		if p != nil {
@@ -2457,8 +2755,8 @@ func (s *Server) handleCompleteAt(
 			// payout means either free self-route (consumer == provider account)
 			// or an uncollected charge (e.g. a self-route paid-fallback whose
 			// owner had no balance) — in both cases we must not record a
-			// (zero-value) earning row. Mirrors the platformFee > 0 guard below.
-			if accountID != "" && !freeSelfRoute && providerPayout > 0 {
+			// (zero-value) earning row. The accounting callback also skips zero fees.
+			if accountID != "" && !freeSelfRoute && providerPayout > 0 && pr.ModelTokenReservationID == "" {
 				settlementWg.Add(1)
 				go func() {
 					defer settlementWg.Done()
@@ -2487,24 +2785,10 @@ func (s *Server) handleCompleteAt(
 			}
 		}
 
-		// Record platform fee.
-		if platformFee > 0 {
-			settlementWg.Add(1)
-			go func() {
-				defer settlementWg.Done()
-				start := time.Now()
-				// Financial: a failed platform-fee credit drops revenue accounting. Never swallow it.
-				if err := s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID); err != nil {
-					s.logger.Error("failed to credit platform fee",
-						"request_id", msg.RequestID, "platform_fee_micro_usd", platformFee, "error", err)
-					s.ddIncr("billing.credit_failed", []string{"op:platform_fee"})
-				}
-				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
-				s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
-			}()
-		}
-
 		settlementWg.Wait()
+		if ap := pr.Profile; ap != nil {
+			ap.SettleDBUS.Add(time.Since(settleStart).Microseconds())
+		}
 	}
 
 	// Signal completion to the consumer response handler. This must happen
@@ -2531,7 +2815,19 @@ func (s *Server) handleCompleteAt(
 	)
 }
 
+// handleInferenceError handles a provider inference_error frame on the read
+// loop (and the coordinator-synthesized errors handleChunk raises there). The
+// frame holds no terminal claim; ownership is decided at the peek inside.
 func (s *Server) handleInferenceError(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage) {
+	s.handleInferenceErrorOwned(providerID, provider, msg, false)
+}
+
+// handleInferenceErrorOwned is handleInferenceError with terminal ownership
+// threaded in: owned is true only when the caller already holds the attempt's
+// terminal claim (handleCompleteAt converting a deadline-late empty
+// completion), so this path must neither re-claim nor drop that frame as a
+// duplicate.
+func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage, owned bool) {
 	if provider == nil {
 		s.logger.Warn("error from unregistered provider", "provider_id", providerID)
 		return
@@ -2547,22 +2843,113 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		s.ddIncr(metricUnknownTerminalCause, nil)
 		s.ddIncr(metricTypedTerminal, []string{"cause:unknown"})
 	}
+	// Ownership is decided BEFORE the pending request is removed. Completions
+	// settle on a worker goroutine while error frames run inline on the read
+	// loop, so an error frame for a request whose completion already claimed
+	// the terminal (parked on arbitration, or mid-settlement) used to remove
+	// the pending request, write the error outcome and settle — mixing the
+	// completion's usage/profile with this frame's outcome. The claim is the
+	// single ownership token across terminal TYPES: a frame that cannot claim
+	// is a duplicate of an in-flight owned terminal and is dropped here,
+	// leaving the pending request to its owner. Without a profile (profiler
+	// off) there is no token and the RemovePending race decides, as before.
+	// claimedHere is set only when THIS call took the claim: a pending request
+	// a consumer-side cleanup removes between the claim and RemovePending
+	// would otherwise never finalize (neither the funnel nor the fallback
+	// completes a claimed terminal).
+	var claimedHere *registry.AttemptProfile
+	pending := provider.GetPending(msg.RequestID)
+	if pending != nil && pending.Profile != nil && !compactOnlyAttempt(pending.Profile) && !owned {
+		if !pending.Profile.ClaimTerminal() {
+			s.logger.Warn("duplicate error for in-flight request", "provider_id", providerID)
+			s.ddIncr("inference.unknown_request_frames", []string{"kind:duplicate_error"})
+			s.unknownRequestFrames.Add(1)
+			msg.Profile = nil
+			return
+		}
+		owned, claimedHere = true, pending.Profile
+		// Retain the profile now, while the owner still holds the pending
+		// request: the record closes at the unknown-request return below if a
+		// consumer-side cleanup removes it before RemovePending.
+		s.retainProviderProfile(pending.Profile, msg.Profile)
+		msg.Profile = nil
+	}
+	if pending != nil && isDrainingErrorReason(msg.ErrorReason) {
+		s.noteProviderDraining(providerID, pending.Model)
+	}
 	pr := provider.RemovePending(msg.RequestID)
 	// Clear any parked settlement record (consumer disconnected mid-stream).
 	// Same object as a non-nil pr when the terminal raced the disconnect defer.
 	parked := s.claimSettlement(msg.RequestID)
+	// See handleCompleteAt: a terminal with no live pending record is matched
+	// against the cancel the coordinator sent for it (metric-only).
+	var cancelled zombieEntry
+	wasCancelled := false
 	if pr == nil {
+		cancelled, wasCancelled = s.resolveCancelledTerminal(
+			msg.RequestID, cancelTerminalError, cancelledErrorOutcome(msg), time.Now())
 		pr = parked
 	}
 	if pr == nil {
-		// request_id is provider-controlled until it matches coordinator-owned
-		// pending state. Do not log it: an attacker could use unknown IDs as an
-		// arbitrary log exfiltration channel.
-		s.logger.Warn("error for unknown request", "provider_id", providerID)
+		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+			// Coordinator-minted id (it matched a recorded cancel): the
+			// provider honored the cancel before producing output.
+			s.logger.Debug("error for cancelled request",
+				"request_id", msg.RequestID, "provider_id", providerID,
+				"cause", cancelled.cause, "status_code", msg.StatusCode)
+		} else {
+			// request_id is provider-controlled until it matches coordinator-owned
+			// pending state. Do not log it: an attacker could use unknown IDs as an
+			// arbitrary log exfiltration channel.
+			s.logger.Warn("error for unknown request", "provider_id", providerID)
+			s.emitUnknownFrame(unknownFrameKindError, provider)
+		}
+		s.ddIncr("inference.unknown_request_frames", []string{"kind:error"})
+		s.unknownRequestFrames.Add(1)
+		// A terminal claimed here whose pending request a consumer-side cleanup
+		// removed in between: the provider errored, the coordinator lost
+		// ownership; close the record rather than leak the attempt. An owned
+		// claim passed in by handleCompleteAt is closed by that caller instead
+		// (as "completed"); both calls are nil-safe when nothing was claimed.
+		claimedHere.SetOutcome("", "", "", "error", "")
+		claimedHere.CompleteTerminal()
 		return
 	}
 	// From this point onward use only the coordinator-owned identifier.
 	msg.RequestID = pr.RequestID
+	if pending == nil && isDrainingErrorReason(msg.ErrorReason) {
+		// A consumer-gone request may already be parked outside the pending
+		// map. Fence its provider before SetProviderIdle drains queued work.
+		s.noteProviderDraining(providerID, pr.Model)
+	}
+	if ap := pr.Profile; ap != nil {
+		if compactOnlyAttempt(ap) {
+			ap.ClaimTerminal()
+		}
+		ap.Mark(registry.StampCompleteIngress)
+		// A pending entry was claimed at the peek above; a PARKED record (no
+		// pending entry) is claimed here. claimSettlement is single-winner, so
+		// retention is exactly-once; in the narrow parked race (an owned
+		// completion claims on its worker, a post-commit disconnect parks the
+		// record, and this error frame wins the parked settlement) the settler
+		// can differ from the claim owner — the completion then closes its own
+		// record as completed without billing while this frame settles, which
+		// is safe because this defer is unconditional. Only the owner retains
+		// the profile, once.
+		if owned || ap.ClaimTerminal() {
+			s.retainProviderProfile(ap, msg.Profile)
+		}
+		msg.Profile = nil
+		// Leave final_status/error_reason to the phase-aware classifier (the
+		// relay or dispatch loop writes partial_success / error / cancelled
+		// through the route-outcome funnel); only the terminal cause and the
+		// provider-side outcome are authoritative here.
+		ap.SetOutcome("", "", string(msg.TerminalCause), "error", "")
+		// The terminal half completes when this handler returns: after the
+		// parked (consumer-gone) branch has classified partial_success, and
+		// after the live branch has pushed the error to its channel reader.
+		defer ap.CompleteTerminal()
+	}
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
 	consumerGone := parked != nil
@@ -2696,7 +3083,12 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 // if one was included in the registration message. If the attestation is valid,
 // the provider is marked as attested. If missing or invalid, the provider is
 // accepted in Open Mode only when no binary hash policy is configured.
-func (s *Server) verifyProviderAttestation(providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) {
+func (s *Server) verifyProviderAttestation(ctx context.Context, providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage, authenticatedAccount ...string) error {
+	account := ""
+	if len(authenticatedAccount) > 0 {
+		account = authenticatedAccount[0]
+	}
+	identityCandidate := s.appAttestIdentityCandidate(regMsg, account)
 	policyConfigured, knownBinaryHashes := s.binaryHashPolicySnapshot()
 	if len(regMsg.Attestation) == 0 {
 		if policyConfigured {
@@ -2708,12 +3100,12 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 				Error: "attestation missing",
 			})
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		s.logger.Info("provider registered without attestation (Open Mode)",
 			"provider_id", providerID,
 		)
-		return
+		return nil
 	}
 
 	result, err := attestation.VerifyJSON(regMsg.Attestation)
@@ -2729,7 +3121,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			})
 			s.registry.MarkUntrusted(providerID)
 		}
-		return
+		return nil
 	}
 
 	provider.SetAttestationResult(&result)
@@ -2742,7 +3134,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		if policyConfigured {
 			s.registry.MarkUntrusted(providerID)
 		}
-		return
+		return nil
 	}
 
 	enforceReconnectFreshness := regMsg.Version != "" &&
@@ -2755,7 +3147,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		s.registry.MarkUntrusted(providerID)
 		s.logger.Warn("provider registration attestation replay rejected",
 			"provider_id", providerID)
-		return
+		return nil
 	}
 
 	if !enforceReconnectFreshness {
@@ -2784,7 +3176,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			if policyConfigured {
 				s.registry.MarkUntrusted(providerID)
 			}
-			return
+			return nil
 		}
 		if result.EncryptionPublicKey != regMsg.PublicKey {
 			s.logger.Warn("attestation encryption key does not match register public key",
@@ -2798,7 +3190,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			if policyConfigured {
 				s.registry.MarkUntrusted(providerID)
 			}
-			return
+			return nil
 		}
 	}
 
@@ -2818,7 +3210,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			result.Error = "binary hash missing"
 			provider.SetAttestationResult(&result)
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		binaryHash, err := normalizeSHA256Hex(result.BinaryHash, "binary_hash")
 		if err != nil || !knownBinaryHashes[binaryHash] {
@@ -2830,7 +3222,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			result.Error = "binary hash not recognized"
 			provider.SetAttestationResult(&result)
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		s.logger.Info("provider binary hash verified",
 			"provider_id", providerID,
@@ -2863,42 +3255,37 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		"trust_level", registry.TrustSelfSigned,
 	)
 
-	// Restore persisted state: if this provider was previously known (by serial
-	// number or SE key), restore trust level, reputation, and account linkage.
-	// Fresh attestation verification still runs (above), but stored reputation
-	// is preserved so routing quality is maintained across coordinator restarts.
-	if s.storedProviders != nil {
-		var storedRec *store.ProviderRecord
-		if result.SerialNumber != "" {
-			storedRec = s.storedProviders[result.SerialNumber]
-		}
-		if storedRec == nil && result.PublicKey != "" {
-			storedRec = s.storedProviders["sekey:"+result.PublicKey]
-		}
-		if storedRec != nil {
-			s.registry.RestoreProviderState(provider, storedRec)
-			s.logger.Info("restored persisted provider state",
-				"provider_id", providerID,
-				"stored_serial", storedRec.SerialNumber,
-				"stored_trust", storedRec.TrustLevel,
-			)
-		}
+	// Resolve only this freshly verified identity, rather than loading all historical
+	// sessions before startup. Exclude every live session and keep incomplete
+	// registrations' identities unpublished across asynchronous persistence.
+	restoreSerial := result.SerialNumber
+	var expectedAccount []string
+	if identityCandidate {
+		restoreSerial = ""
+		expectedAccount = []string{account}
+	}
+	if err := s.restorePersistedProviderState(ctx, provider, restoreSerial, result.PublicKey, expectedAccount...); err != nil {
+		return err
 	}
 
-	// Stage the durable Apple MDA cert chain from a LIVE store read. storedProviders
-	// above is a one-time startup snapshot — empty for the coordinator's whole life
-	// under the in-memory store used in prod — so it cannot surface a chain earned
-	// during this coordinator's lifetime. The store record survives provider
-	// disconnect, so a serial lookup recovers a chain a previous connection earned,
-	// letting attachCachedMDAProof reuse it (re-verified + SE-key-bound) instead of
-	// forcing a fresh, Apple-rate-limited DevicePropertiesAttestation round-trip.
+	// Independently recover the newest non-empty durable MDA chain. A newer
+	// empty record must not shadow a chain earned by an earlier session. The
+	// hardware-grant path still re-verifies the certificate and SE-key binding.
+	//
+	// Identity candidates stage it too, although their self-reported serial
+	// restores no history and evicts no duplicate: the serial only selects a
+	// CANDIDATE chain, never a grant. attachCachedMDAProof attaches it only
+	// after this connection holds hardware trust, the chain re-verifies to
+	// Apple's pinned root, its FreshnessCode equals SHA-256 of THIS
+	// connection's SE key, and any Apple serial matches the attested one. A
+	// chain earned by another machine's SE key can never bind here.
 	s.stageDurableMDAChain(provider, result.SerialNumber)
 
 	// Deduplicate: if another provider connection exists from the same physical
 	// device (same serial number), disconnect it. This prevents multiple
 	// provider processes on the same machine from registering independently
 	// and competing for a single shared vllm-mlx backend.
-	if result.SerialNumber != "" && !s.allowDuplicateProviderSerials {
+	if !identityCandidate && result.SerialNumber != "" && !s.allowDuplicateProviderSerials {
 		s.registry.DisconnectDuplicatesBySerial(providerID, result.SerialNumber)
 	}
 
@@ -2914,6 +3301,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			"provider_id", providerID,
 		)
 	}
+	return nil
 }
 
 // mdmVerifyOutcome classifies one scheduler-owned MDM verification attempt.
@@ -3134,10 +3522,8 @@ func (s *Server) ApplyLateSecurityInfo(
 
 // stageDurableMDAChain recovers a previously-earned Apple MDA cert chain from the
 // store (by serial) and stages it on the provider as a reuse candidate for this
-// reconnect. The store record survives provider disconnect, so this works under
-// the in-memory store used in prod — where the startup storedProviders snapshot is
-// empty — as well as a durable store. Best-effort: a missing record / chain or a
-// read error simply stages nothing, and a fresh attestation is requested.
+// reconnect. A missing record / chain or a read error stages nothing, and a
+// fresh attestation is requested. This read is independent of counter recovery.
 func (s *Server) stageDurableMDAChain(provider *registry.Provider, serial string) {
 	if s.store == nil || serial == "" {
 		return
@@ -3343,16 +3729,32 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 	)
 }
 
-// handleProviderAttestation returns privacy-redacted trust status for all providers.
-// Device identity and raw MDA certificates stay coordinator-private because
-// Apple's leaf certificate embeds the hardware serial number and UDID.
+// providerAttestationCacheTTL bounds staleness of the public trust listing. It
+// reflects live connection state (trust level, status, models), so it uses the
+// same 2s window as GET /v1/models/capacity. The response is the same for every
+// caller (unauthenticated, no query parameters).
+const providerAttestationCacheTTL = 2 * time.Second
+
+const providerAttestationCacheKey = "providers:attestation:v1"
+
+// handleProviderAttestation returns trust status for public providers only.
+// Serial numbers, UDIDs and raw MDA certificates stay coordinator-private.
+// The legacy SE public key remains public for response signature verification;
+// unlike the connection ID, that key can link successive public sessions.
 func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Request) {
+	if body, ok := s.readCacheGet(providerAttestationCacheKey); ok {
+		writeCachedJSON(w, body)
+		return
+	}
 	type providerAttestation struct {
-		ProviderID    string `json:"provider_id"`
-		ChipName      string `json:"chip_name"`
-		HardwareModel string `json:"hardware_model"`
-		TrustLevel    string `json:"trust_level"`
-		Status        string `json:"status"`
+		ProviderID             string                `json:"provider_id"`
+		ChipName               string                `json:"chip_name"`
+		HardwareModel          string                `json:"hardware_model"`
+		TrustLevel             string                `json:"trust_level"`
+		Status                 string                `json:"status"`
+		Verification           registry.Verification `json:"verification"`
+		AppAttestAuthorized    bool                  `json:"app_attest_authorized"`
+		AuthorizationExpiresAt int64                 `json:"authorization_expires_at,omitempty"`
 
 		// Hardware specs
 		MemoryGB int      `json:"memory_gb"`
@@ -3385,17 +3787,19 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 
 	var providers []providerAttestation
 
-	publicProviderModels := s.registry.PublicProviderModels()
-	s.registry.ForEachProvider(func(p *registry.Provider) {
-		// Snapshot mutable fields under provider lock to avoid racing
-		// with background MDA verification and challenge goroutines.
-		p.Mu().Lock()
+	// The registry holds membership and provider locks for the whole row:
+	// verification and compatibility fields cannot observe different grants.
+	s.registry.ForEachProviderVerification(func(p *registry.Provider, verification registry.Verification, models registry.PublicProviderModelSnapshot) {
+		// Match the public stats roster. Private connections must never enter
+		// this unauthenticated response or its shared cache.
+		if p.PrivateOnly {
+			return
+		}
 		trustLevel := p.TrustLevel
 		status := p.Status
 		mdaVerified := p.MDAVerified
 		attestResult := p.AttestationResult
 		mdaResult := p.MDAResult
-		p.Mu().Unlock()
 
 		// The public proofs (mdm/mda) are reported true ONLY for a connection
 		// that currently holds hardware trust. A hardware proof is meaningful for
@@ -3406,16 +3810,20 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		// consistent.
 		isHardware := trustLevel == registry.TrustHardware
 		pa := providerAttestation{
-			ProviderID:  p.ID,
-			TrustLevel:  string(trustLevel),
-			Status:      string(status),
-			MemoryGB:    p.Hardware.MemoryGB,
-			GPUCores:    p.Hardware.GPUCores,
-			MDMVerified: isHardware,
-			MDAVerified: mdaVerified && isHardware,
+			ProviderID:   p.ID,
+			Verification: verification,
+			TrustLevel:   string(trustLevel),
+			Status:       string(status),
+			MemoryGB:     p.Hardware.MemoryGB,
+			GPUCores:     p.Hardware.GPUCores,
+			MDMVerified:  isHardware,
+			MDAVerified:  mdaVerified && isHardware,
 		}
 
-		pa.Models = append(pa.Models, publicProviderModels[p.ID].Models...)
+		pa.Models = models.Models
+		if verification.AppAttest.State == "verified" {
+			pa.AppAttestAuthorized, pa.AuthorizationExpiresAt = true, verification.AppAttest.ExpiresAt
+		}
 
 		if attestResult != nil {
 			pa.ChipName = attestResult.ChipName
@@ -3437,7 +3845,13 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	})
 
 	resp := map[string]any{"providers": providers}
-	writeJSON(w, http.StatusOK, resp)
+	body, err := encodeCachedJSON(resp)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode attestation"))
+		return
+	}
+	s.readCacheSet(providerAttestationCacheKey, body, providerAttestationCacheTTL)
+	writeCachedJSON(w, body)
 }
 
 // sendTrustStatus sends the provider its current trust level and status over
@@ -3448,10 +3862,11 @@ func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registr
 		return
 	}
 	msg := protocol.TrustStatusMessage{
-		Type:       protocol.TypeTrustStatus,
-		TrustLevel: string(trustLevel),
-		Status:     status,
-		Reason:     reason,
+		Type:          protocol.TypeTrustStatus,
+		TrustLevel:    string(trustLevel),
+		Status:        status,
+		Reason:        reason,
+		Authorization: s.providerServingAuthorizationStatus(provider),
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

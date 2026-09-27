@@ -96,7 +96,7 @@ func testCrossDecrypt(t *testing.T, binaryPath string, plaintext []byte) {
 		t.Fatalf("box.GenerateKey: %v", err)
 	}
 
-	// Generate a coordinator ephemeral session (per-request forward secrecy).
+	// Generate a fresh coordinator sender key pair for this request.
 	session, err := GenerateSessionKeys()
 	if err != nil {
 		t.Fatalf("GenerateSessionKeys: %v", err)

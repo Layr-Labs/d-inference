@@ -1,0 +1,40 @@
+{
+  "all_member_bytes_match_audited_collection": true,
+  "capsule_member_count": 158,
+  "capsule_sha256": "ceb3abb4146ab2202e97d7e8abc91927b88a7b96bfdf9848ef731e9ffced2ceb",
+  "compressed_yaml_graphs_decoded_and_scanned": true,
+  "excluded_payloads": [
+    "executables",
+    "binary metallib",
+    "model weights",
+    "checkpoint/cache bodies",
+    "private or public key material",
+    "build products/module caches",
+    "model-pilot results"
+  ],
+  "loose_log_extension": ".txt preserves original log bytes without matching the repository-wide *.log ignore rule.",
+  "machine_actions_or_runtime_execution": false,
+  "original_receipt_absolute_paths": "Frozen provenance only; active bank paths are the manifest files and archive members.",
+  "regular_relative_unique_members_only": true,
+  "repo_index_or_commits_changed": false,
+  "scope": "Metadata capsule and selected receipts; no binary/model/key payload copied.",
+  "secret_scan": {
+    "counts": {
+      "decoded_gzip_members": 3,
+      "files": 175,
+      "utf8_bytes": 37133505
+    },
+    "limitation": "Pattern and payload-type screening; not a proof that arbitrary secret formats cannot exist.",
+    "passed": true,
+    "rules": [
+      "aws_access_key",
+      "github_token",
+      "literal_bearer_secret",
+      "literal_secret_assignment",
+      "openai_token",
+      "openssh_public_key_payload",
+      "private_key",
+      "slack_token"
+    ]
+  }
+}

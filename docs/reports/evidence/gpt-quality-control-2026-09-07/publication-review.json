@@ -1,0 +1,36 @@
+{
+  "reviewer": "/root",
+  "reviewed_unix": 1788749674.23531,
+  "status": "INDEPENDENT_GPT144_PUBLICATION_REVIEW_PASSED",
+  "files": {
+    "report.md": {
+      "bytes": 3628,
+      "sha256": "f1b01a340e23fabb2731fbb45be1f0b381382b7ca48cddce0dfcd65983a5d0c2"
+    },
+    "evidence.json": {
+      "bytes": 15383,
+      "sha256": "1a5d65eb0419a9793aa3ca1cb64a409d752ee8b66c8d2a14b4c8a50c43fc29a2"
+    },
+    "manifest.json": {
+      "bytes": 5060,
+      "sha256": "3508bdf19b848f3ea021501baf7a8fbf19c384557df2457fcc861dad864d0b40"
+    },
+    "evidence.tar.gz": {
+      "bytes": 2266100,
+      "sha256": "96ebb689666456988c5180ebc749d237d6a5ea17f9fbe4c9d98cb924be5dcf1b"
+    }
+  },
+  "capsule_members_verified": 31,
+  "original_files_independently_verified": 326,
+  "exact_complete_requests_and_prompt_generated_arrays_and_text": 8,
+  "all_four_distinct_outputs_read_in_full": true,
+  "retained_semantic_outcomes": {
+    "failed": 2,
+    "inconclusive": 6
+  },
+  "before_after_audits_match": true,
+  "actual_width_structural_checks_and_zero_reservations_confirmed": true,
+  "complete_retirement": true,
+  "conclusion": "Bounded observed GPT concerns reproduce exactly under contiguous attention; migration-specific investigation closed without changing original task outcomes.",
+  "findings": []
+}

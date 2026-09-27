@@ -1,0 +1,206 @@
+{
+  "schema": 1,
+  "scope": "Request-owned UTC date and original four-artifact positive prompt parity; includes retained failures, isolated Go fixture correction, and measured preprocessing overhead. No Qwen tool parity or paged model claim.",
+  "swift_validation": {
+    "build3": {
+      "build_passed": true,
+      "build_seconds": 133.51,
+      "test_functions": 72,
+      "suites": 13,
+      "passed": false,
+      "issues": 3,
+      "failures": "Two leading-whitespace oracle mismatches and GPT reasoning_effort Swift-medium versus Rust-high mismatch"
+    },
+    "build4": {
+      "build_passed": true,
+      "build_seconds": 88.74,
+      "test_functions": 72,
+      "suites": 13,
+      "test_seconds": 13.63,
+      "passed": true,
+      "source_and_test_files": 1073,
+      "fixture_files": 5,
+      "production_token_cases": 56,
+      "model_manifest_entries": 4,
+      "unique_prompt_contracts": 3,
+      "positive_identity_checks": 4
+    }
+  },
+  "commands": {
+    "build": "swift build --package-path provider-swift --build-tests --jobs 4 --disable-automatic-resolution",
+    "tests": "PROMPT_PARITY_REQUIRED=1 PROMPT_PARITY_VECTORS=\"$PWD/fixtures/prompt-contract/v1/production_vectors.json\" PROMPT_PARITY_ARTIFACT_ROOT=/private/tmp/darkbloom-release-090/prompt-artifacts MLX_METALLIB_PATH=\"$PWD/provider-swift/.build/arm64-apple-macosx/debug/mlx.metallib\" swift test --package-path provider-swift --skip-build --filter \"PromptRenderDateTests|PromptDateRenderingTests|LocalChatRequestTests|PromptContractIdentityTests|SwiftJinjaCompatibilityTests|JinjaSanitizationTests|ProductionPromptParityTests|SSDPrefixCacheTelemetryTests|SSDCompleteDonationTelemetryTests|SSDHybridCheckpointStoreTests|SSDWholeRootMaintenanceTests|SSDPrefixCacheDonationOutcomeTests|SSDWholeRootTelemetryConcurrencyTests|QwenVLMTargetExtractionTests\""
+  },
+  "files": {
+    "swift-build3-build.log.gz": {
+      "bytes": 34157,
+      "sha256": "c434f69abb0fde5fb75d0dba674c8f20a94bce6020ce58de4c9447333fb2504f",
+      "uncompressed_bytes": 1240577,
+      "uncompressed_sha256": "82f6601dc66152e03c03e0229b188ef627ad0f302d8c502f83dd7ea5ba3d3651"
+    },
+    "swift-build3-focused-tests.log.gz": {
+      "bytes": 5618,
+      "sha256": "0457c2d12199ac3f683ab3a92d7cf02f83a85949fc55dd654d7c2b43835c5c4a",
+      "uncompressed_bytes": 30220,
+      "uncompressed_sha256": "1b7c69b401b7d6ff9c50a40393138e6f5c97365af39b6882d70f600eafbacae0"
+    },
+    "swift-build3-source-manifest.json.gz": {
+      "bytes": 54697,
+      "sha256": "83dc2832b2c42d44da770aa76e244c146b1a583a86fa828f09c6f27865f824d3",
+      "uncompressed_bytes": 156464,
+      "uncompressed_sha256": "bb7b10285d505601614673a22ed8a0e59b92d249476095a6ea29557c6c8ed0e1"
+    },
+    "swift-build4-build.log.gz": {
+      "bytes": 10985,
+      "sha256": "5b64f1084dcdbf525530a50af2644d275738082274e8ffa4d48331b5fdb1a641",
+      "uncompressed_bytes": 218661,
+      "uncompressed_sha256": "416bff2e665f8041c9478610b06a165a62d9ce3554134bb1b48061305f3ec156"
+    },
+    "swift-build4-focused-tests.log.gz": {
+      "bytes": 5022,
+      "sha256": "07d8686b2658a26cc93d05c5da36f45e25ee5a8e198f81b16f96d22fb5103607",
+      "uncompressed_bytes": 27369,
+      "uncompressed_sha256": "524c2f6c29996119bbd1cce59cc555d7a3e60457b31398d6fb84179077f4947e"
+    },
+    "swift-build4-source-manifest.json.gz": {
+      "bytes": 54761,
+      "sha256": "414f2f7223ae5b4f71727bba37935f20c4994d9e92b83e0569294f856cb1eba7",
+      "uncompressed_bytes": 156584,
+      "uncompressed_sha256": "3e33d1e5ee28bb2ab8ed9cdd7905d972c79942f36e78a6e149bad7c4354b82c3"
+    },
+    "request-date-owned-source-manifest.json.gz": {
+      "bytes": 2922,
+      "sha256": "7629b525666b25afbecb2bd685b6f47f692855440042134daf14e59031af554e",
+      "uncompressed_bytes": 7533,
+      "uncompressed_sha256": "51e76ac481f41229cedbb0c0d8fe63ad748cd2b63076b2dfc9b8402a7a22ce53"
+    },
+    "go-initial-source-manifest.json.gz": {
+      "bytes": 41413,
+      "sha256": "b3ecd1325271b81331dabbbd78189b4b0a89be2b7eaac46434fff9ef5b2d4059",
+      "uncompressed_bytes": 102280,
+      "uncompressed_sha256": "9f8a7ab24f805b514eac5113ae5e1592d0898b14a3e8634db96a284137f918de"
+    },
+    "go-final-source-manifest.json.gz": {
+      "bytes": 41774,
+      "sha256": "0a9775122a7aba743cd74ce6c2775518e444550afc1d8c1bc81a4f05b4160160",
+      "uncompressed_bytes": 103098,
+      "uncompressed_sha256": "dc7e6c1f224461601582088a9e4d9311e8ea3ee7f4d4223676014dbe03ec92b4"
+    },
+    "go-full-initial.log.gz": {
+      "bytes": 979,
+      "sha256": "8d29ba3c4627f59f26cf38fef518baaf21b965ea6c075aa3cb5528a5e5308f49",
+      "uncompressed_bytes": 4255,
+      "uncompressed_sha256": "0b06ad84b0878ad7a8926dd12ddc7dde4f7664500428842211942a4fe120190e"
+    },
+    "go-package-recheck.log.gz": {
+      "bytes": 88,
+      "sha256": "210070ebdc9984499cd04200ba690c200323b00d3d43eb1ae4aea0bf7fb2f3a0",
+      "uncompressed_bytes": 77,
+      "uncompressed_sha256": "ebf9a250a5303fe4825071e79a0276af620260e72123944760c225e21e516aae"
+    },
+    "go-final-fixtures.log.gz": {
+      "bytes": 115,
+      "sha256": "424897d97141eec67d7dffbdc6cf21377949cb11cb9e3f70419d1ab8717c1bcb",
+      "uncompressed_bytes": 166,
+      "uncompressed_sha256": "e543ab29d3d85087e24d88765c4c06eba147990ba8aadf3cc042d669d045e1e2"
+    },
+    "go-races.log.gz": {
+      "bytes": 267,
+      "sha256": "6209929c327f5705076f99f4d7511b8a561ec25516338cfb95e728afb6500dc3",
+      "uncompressed_bytes": 435,
+      "uncompressed_sha256": "02384ad3bdf904cba541e4743a82585e809cc98511fd6f3ec223cb57514bbdd8"
+    },
+    "go-inventory-initial-failure.log.gz": {
+      "bytes": 9447,
+      "sha256": "fe77cd1c67e0c7fada1065efbb7007356e486f5408b740effe5f6a57287a959e",
+      "uncompressed_bytes": 304726,
+      "uncompressed_sha256": "7c99341a23d8b4f9622a3d0c0bbde20316a8d6445be1162d2edd097a863dbd94"
+    },
+    "rust-final.log.gz": {
+      "bytes": 2427,
+      "sha256": "1b4b9250659d3bb8c6b1418c86a55b10a041d0302be2d6ba9a760ab41287ff4c",
+      "uncompressed_bytes": 8296,
+      "uncompressed_sha256": "9eaa362fcb0caafd2d85537dd92f330b63abbd9a60e0ec24e10d6e1a14e09904"
+    },
+    "generate-vectors.log.gz": {
+      "bytes": 20,
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "uncompressed_bytes": 0,
+      "uncompressed_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "request-date-baseline-bench.log.gz": {
+      "bytes": 468,
+      "sha256": "a95481c2545bbd8f3e043e9a57eb92561d71d56c02206e2f6c6363b1a47dc2f5",
+      "uncompressed_bytes": 1729,
+      "uncompressed_sha256": "44681432ce286357f9fe1bd0e7e0347a21aade7f0be67721374c92690bc3580e"
+    },
+    "request-date-current-bench.log.gz": {
+      "bytes": 462,
+      "sha256": "805407ff3fa0e02d91b358e6a822f5578de4c9adc6766d82999b2c9557c14aea",
+      "uncompressed_bytes": 1729,
+      "uncompressed_sha256": "f65963d111d173ccbceaba5ff11e7676c9c402f84373142582ae286f935c6822"
+    },
+    "request-date-benchmark-summary.json.gz": {
+      "bytes": 304,
+      "sha256": "7f0f7819dd6a8ef159b3a610f5ec621fd2cffccf6362a38e338dcbb2d11f98f8",
+      "uncompressed_bytes": 1472,
+      "uncompressed_sha256": "de98ac2af5a19eb2fd21118738dcd6a82e21e81623e6200823847293265a7405"
+    },
+    "request-date-no-rewrite-baseline-bench.log.gz": {
+      "bytes": 330,
+      "sha256": "00b4a28cafd279fe6fa46331b4ee04092b0ed90c9eabc9873cbc2200bc2964a7",
+      "uncompressed_bytes": 1015,
+      "uncompressed_sha256": "116d41790dcdcd106c50b83fb1edc2adabb52a70f75e82cffa080051440a6007"
+    },
+    "request-date-no-rewrite-current-bench.log.gz": {
+      "bytes": 338,
+      "sha256": "a16af59a779dc69b95430d0c29faea1d2ea28c1c8b0f18321840a4ec3e6a5084",
+      "uncompressed_bytes": 1015,
+      "uncompressed_sha256": "ef5a6a1d617f569d106c3e2e89f50e2ccfab447344467ad2cc632059998c9f11"
+    },
+    "request-date-no-rewrite-benchmark-summary.json.gz": {
+      "bytes": 245,
+      "sha256": "7610e282f9e74cd42d2966e85cedb0572f3242e1b99979cccce8536d7bcd30e0",
+      "uncompressed_bytes": 805,
+      "uncompressed_sha256": "2b502a2d6b6a80606737b9a0790c5b5a4668fc453746265c47f7317d44276d78"
+    },
+    "request_date_no_rewrite_bench_test.go.gz": {
+      "bytes": 592,
+      "sha256": "20eac2d97553c32c9986a9531b8b041af2b40595100277492fcecae3c812feaa",
+      "uncompressed_bytes": 999,
+      "uncompressed_sha256": "8a32fec93055684662737c8a1623c5e16e948f909aa1bb450a5d5eca4011d5c5"
+    },
+    "docs-check.log.gz": {
+      "bytes": 47,
+      "sha256": "2ceb90a9805dfdf1739f583f7f6e3b7f4192cb6e4d1c2ec221bdd1d17401c5fa",
+      "uncompressed_bytes": 27,
+      "uncompressed_sha256": "10f9ee790f8198e1c72234b5727c1e57594c3161255b535f78cd7259f90e1fac"
+    }
+  },
+  "go_validation": {
+    "initial_baseline": "363588e64",
+    "initial_full_run": "24packages passed; supervisor child startup timeout; initial isolated overlay retained old production vectors",
+    "unchanged_promptcontract_recheck": "complete package passed three runs in6.841s",
+    "final_fixture_overlay": "allfourdatefixtures and updated4eligible/56vector load-proof assertion",
+    "final_fixture_packages_seconds": [
+      2.646,
+      0.512
+    ],
+    "races_seconds": [
+      4.893,
+      2.942
+    ],
+    "shared_integration_failure": "old load-proof inventory assertion expected GPT cold; test corrected; fullfailure retained"
+  },
+  "rust_validation": {
+    "passed_tests": 87,
+    "toolchain": "1.88.0",
+    "locked": true
+  },
+  "source": {
+    "owned_code_fixture_paths": 35,
+    "normalization": "darkbloom-request-normalization-v3",
+    "renderer": "swift-jinja-request-date-v2",
+    "final_vector_sha256": "719988470a274209530dffc1be98c0a93adac20fcb38f137077d0df0fd959782",
+    "native_build_commit": "28c2635c801a80ca6721142dd2eb2428de764ece"
+  }
+}

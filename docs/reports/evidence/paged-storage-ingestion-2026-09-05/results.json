@@ -1,0 +1,155 @@
+{
+  "base_commit": "544cfa5eef9c6a02021d81f0054a5bbe624e89d3",
+  "scope": "Go and TypeScript ingestion only; native provenance and Swift producer pending; no live provider or model measurement",
+  "commands": {
+    "packages": "GOTOOLCHAIN=go1.25.0 go test -json ./coordinator/protocol ./coordinator/registry ./coordinator/registry/routingsim",
+    "api": "GOTOOLCHAIN=go1.25.0 go test -json ./coordinator/api -run 'Test(PagedStorageTelemetry|CapacitySamplesAge|PrefixCacheTelemetry)' -count=1",
+    "races": "GOTOOLCHAIN=go1.25.0 go test -race -json ./coordinator/protocol ./coordinator/registry ./coordinator/api -run 'Test(PagedStorageTelemetry|CapacitySamplesAge|PrefixCacheTelemetry)' -count=1",
+    "clock": "GOTOOLCHAIN=go1.25.0 go test -json ./coordinator/registry ./coordinator/api -run 'Test(PagedStorageTelemetry|CapacitySamplesAge|PrefixCacheTelemetry)' -count=1",
+    "clock-races": "GOTOOLCHAIN=go1.25.0 go test -race -json ./coordinator/registry ./coordinator/api -run 'Test(PagedStorageTelemetry|CapacitySamplesAge|PrefixCacheTelemetry)' -count=1"
+  },
+  "checks": {
+    "packages": {
+      "exit_code": 0,
+      "packages": {
+        "github.com/eigeninference/d-inference/coordinator/protocol": {
+          "top_level_passed": 101,
+          "subtests_passed": 147,
+          "failed": 0,
+          "skipped": 0,
+          "result": "pass",
+          "elapsed_seconds": 0.225
+        },
+        "github.com/eigeninference/d-inference/coordinator/registry": {
+          "top_level_passed": 953,
+          "subtests_passed": 493,
+          "failed": 0,
+          "skipped": 0,
+          "result": "pass",
+          "elapsed_seconds": 18.175
+        },
+        "github.com/eigeninference/d-inference/coordinator/registry/routingsim": {
+          "top_level_passed": 14,
+          "subtests_passed": 2,
+          "failed": 0,
+          "skipped": 0,
+          "result": "pass",
+          "elapsed_seconds": 0.591
+        }
+      },
+      "stdout": "packages.jsonl.gz",
+      "stderr": "packages.stderr.gz",
+      "source_manifest": "source-before-clock-fix.json"
+    },
+    "api": {
+      "exit_code": 0,
+      "packages": {
+        "github.com/eigeninference/d-inference/coordinator/api": {
+          "top_level_passed": 2,
+          "subtests_passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "result": "pass",
+          "elapsed_seconds": 5.408
+        }
+      },
+      "stdout": "api.jsonl.gz",
+      "stderr": "api.stderr.gz",
+      "source_manifest": "source-before-clock-fix.json"
+    },
+    "races": {
+      "exit_code": 0,
+      "packages": {
+        "github.com/eigeninference/d-inference/coordinator/protocol": {
+          "top_level_passed": 3,
+          "subtests_passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "result": "pass",
+          "elapsed_seconds": 1.228
+        },
+        "github.com/eigeninference/d-inference/coordinator/registry": {
+          "top_level_passed": 7,
+          "subtests_passed": 11,
+          "failed": 0,
+          "skipped": 0,
+          "result": "pass",
+          "elapsed_seconds": 1.35
+        },
+        "github.com/eigeninference/d-inference/coordinator/api": {
+          "top_level_passed": 2,
+          "subtests_passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "result": "pass",
+          "elapsed_seconds": 6.441
+        }
+      },
+      "stdout": "races.jsonl.gz",
+      "stderr": "races.stderr.gz",
+      "source_manifest": "source-before-clock-fix.json"
+    },
+    "clock": {
+      "exit_code": 0,
+      "packages": {
+        "github.com/eigeninference/d-inference/coordinator/registry": {
+          "top_level_passed": 8,
+          "subtests_passed": 11,
+          "failed": 0,
+          "skipped": 0,
+          "result": "pass",
+          "elapsed_seconds": 0.354
+        },
+        "github.com/eigeninference/d-inference/coordinator/api": {
+          "top_level_passed": 2,
+          "subtests_passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "result": "pass",
+          "elapsed_seconds": 5.354
+        }
+      },
+      "stdout": "clock.jsonl.gz",
+      "stderr": "clock.stderr.gz",
+      "source_manifest": "source-manifest.json"
+    },
+    "clock-races": {
+      "exit_code": 0,
+      "packages": {
+        "github.com/eigeninference/d-inference/coordinator/registry": {
+          "top_level_passed": 8,
+          "subtests_passed": 11,
+          "failed": 0,
+          "skipped": 0,
+          "result": "pass",
+          "elapsed_seconds": 1.353
+        },
+        "github.com/eigeninference/d-inference/coordinator/api": {
+          "top_level_passed": 2,
+          "subtests_passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "result": "pass",
+          "elapsed_seconds": 6.5280000000000005
+        }
+      },
+      "stdout": "clock-races.jsonl.gz",
+      "stderr": "clock-races.stderr.gz",
+      "source_manifest": "source-manifest.json"
+    }
+  },
+  "corrected_attempts": [
+    {
+      "log": "initial-focused-failure.log.gz",
+      "cause": "Existing assertBoundedTags helper expected provider_version:0.8.x, but the new test provider uses 0.9.0 and correctly emits 0.9.x. Fixed the test to assert its actual bounded version/chip labels. No production change for this failure."
+    }
+  ],
+  "other_checks": {
+    "eslint": "npx eslint src/app/providers/types.ts (console-ui): pass",
+    "docs": "scripts/docs-check.sh --all: pass",
+    "format": "git diff --check and gofmt: pass"
+  },
+  "review_corrections": [
+    "Separate accepted capacity-sample time from LastHeartbeat so rejected capacity frames cannot erase elapsed observation age; verified first/reload/removal/nil initialization and six-minute stopped sample with interleaved rejected frames."
+  ]
+}

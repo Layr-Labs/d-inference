@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "reviewer": "gpt_finish",
+  "status": "PASS_FINAL_ROUTING_PUBLICATION_IDENTITIES_AND_CLAIMS",
+  "publication_root": "/private/tmp/darkbloom-release090-final-routing-publication1",
+  "publication_manifest": {
+    "sha256": "82a613233138d5e858931418bde77a990e7215a843b3aed4ed34d6fd279a1789",
+    "bytes": 827
+  },
+  "published_files": {
+    "docs/reports/2026-09-07-final-cache-routing.md": {
+      "sha256": "5719ec258e15c6ad35112f102bd84ef9625ffd8644d977a1a87d1235112d868e",
+      "bytes": 5287
+    },
+    "docs/reports/evidence/final-cache-routing-2026-09-07/evidence.json": {
+      "sha256": "11c5816f18f5b671ff553446405595ce873d3249e6b7927c839df69e68abd058",
+      "bytes": 104777
+    },
+    "docs/reports/evidence/final-cache-routing-2026-09-07/manifest.json": {
+      "sha256": "5e230194efe880052a6408ee00158a1780daf825ea28d5841c41ef8b5e3af621",
+      "bytes": 22256
+    },
+    "docs/reports/evidence/final-cache-routing-2026-09-07/evidence.tar.gz": {
+      "sha256": "e13e265da31504c9d44039380bed21c4a7305a587e6030a572cafd6d8da12fbd",
+      "bytes": 4234366
+    }
+  },
+  "actual_capsule_members_verified": 76,
+  "all_members_equal_recorded_original_paths": true,
+  "evidence_summary_cases_verified_against_originals": 20,
+  "originals_review": {
+    "sha256": "a03758d9cd1adf46ca31ec916bc2244eac3f8075b2761c1d95e9325084b6b4bd",
+    "bytes": 51906
+  },
+  "claim_review": [
+    "Both accepted arms have10actualcases/twoisolatedsamehost providers. SSD originalbranch case selects donorA among2candidates; other constrained cases are not described as independent routing contests.",
+    "Eight lookups/fourhits/fourmisses/threedonations and4x4096saved tokens agree with original receipts, lifecycle deltas and terminal usage.",
+    "Tool JSON and30-token vision descriptions agree with original HTTP output and previously viewed image;64-token reasoning outputs are not presented as complete answers.",
+    "Two cancellations have separate provider completion,0tokens aftercancel and successful recovery. Final retirement/cleanhost claims do not imply every intermediate heartbeat snapshot was alreadyidle.",
+    "Prior143 startupfailure remains unexplained and preserved; loggingchange is not claimed to fix its cause. Collectorheat/scope summary errors are separate from accepted run verdicts.",
+    "Scope explicitly excludes crossmachineperformance, productiontrust and persistentKeychainrestart; no universalquality or fullreleaseclaim."
+  ],
+  "new_model_or_gpu_actions": false
+}

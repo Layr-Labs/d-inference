@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "state": "SUCCESS_SIGNING_INFRASTRUCTURE_ONLY_WITH_FLAT_EXPORT_CAVEAT",
+  "run_id": 34043318652,
+  "run_attempt": 1,
+  "workflow_sha": "f9423f94ef41ced998009f4d503919e038c35175",
+  "workflow_path": ".github/workflows/ci.yml",
+  "workflow_branch": "release/signing-validation-enable",
+  "source_sha": "f91fe843b0cb22e2d1b2a85c0652982f3a8ff146",
+  "version": "0.8.16",
+  "terminal_conclusion": "success",
+  "terminal_updated_at_utc": "2026-09-06T15:55:25Z",
+  "build_job_id": 101513853907,
+  "signing_job_id": 101514973062,
+  "ordinary_jobs_skipped": [
+    "Swift Build + Cache",
+    "Coordinator Tests",
+    "Release Integrity",
+    "Docs Lint",
+    "Prompt Sidecar Tests",
+    "Console UI Lint & Build",
+    "Provider Tests",
+    "Coordinator Lint"
+  ],
+  "artifacts": [
+    {
+      "id": 9992474273,
+      "name": "provider-signing-validation-diagnostics",
+      "size_in_bytes": 1002,
+      "digest": "sha256:882cd22e4d979e955d33b53332cc227acd2abb5393ba9a7793697e1ef25b61d5"
+    },
+    {
+      "id": 9992474118,
+      "name": "provider-signing-validation",
+      "size_in_bytes": 196289205,
+      "digest": "sha256:659f66cebf9bb53566253d928fb13336a6b9edbbd002e2f089d90f72fec1b1db"
+    },
+    {
+      "id": 9992450956,
+      "name": "provider-signing-input",
+      "size_in_bytes": 99224612,
+      "digest": "sha256:874883bac9460db3ba3166d3a76180b37f4eb9b947de91775b6466aa83beb31f"
+    }
+  ],
+  "same_run_unsigned_manifest_matches_signed_manifest": true,
+  "scope": "Old public source signing infrastructure only; intact notarized app, not Qwen56fa or production rollout",
+  "prior_failed_run_id": 34030878981,
+  "app_or_model_executed_by_observer": false,
+  "observer_redispatches": 0,
+  "release_register_deploy_install_authorized": false
+}

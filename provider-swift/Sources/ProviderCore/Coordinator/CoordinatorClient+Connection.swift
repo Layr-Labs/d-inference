@@ -109,6 +109,8 @@ extension CoordinatorClient {
             // quote snapshot is dropped with it so quotes never answer from a
             // session the new coordinator connection has not seen.
             self.sessionRegistered = false
+            self.failDrainBarriers()
+            self.failModelReplacements()
             self.state.resetCapacitySession()
             // Detach the inference-chunk fast path from this connection (drops any
             // queued chunks; their requests are cancelled on disconnect). Guarded
@@ -179,6 +181,7 @@ extension CoordinatorClient {
         // inference replies flowing after a reconnect. Activate before announcing
         // .connected so any immediate outbound is buffered, not dropped.
         let (outboundStream, outboundCont) = AsyncStream<OutboundMessage>.makeStream()
+        failDrainBarriers()
         outboundRouter.activate(outboundCont)
 
         // Bind the inference-chunk fast path to THIS connection. A per-session
@@ -247,7 +250,7 @@ extension CoordinatorClient {
                 for await msg in outboundStream {
                     if self.shutdownRequested { break }
                     let json = self.encodeOutbound(msg)
-                    self.sendTextFrame(json, on: connection, identifier: "chunk")
+                    self.sendTextFrame(json, on: connection, identifier: "chunk", onWritten: msg.onWritten)
                 }
             }
 
@@ -315,13 +318,8 @@ extension CoordinatorClient {
             // the failure-stream child would block until connectAndRun's defer
             // finishes the stream — but defer runs AFTER sessionLoop returns,
             // creating a deadlock.
-            do {
-                try await group.next()
-                group.cancelAll()
-            } catch {
-                group.cancelAll()
-                throw error
-            }
+            defer { group.cancelAll() }
+            try await group.next()
         }
     }
 
@@ -338,7 +336,8 @@ extension CoordinatorClient {
     nonisolated internal func sendTextFrame(
         _ json: String,
         on connection: NWConnection,
-        identifier: String
+        identifier: String,
+        onWritten: (@Sendable () -> Void)? = nil
     ) {
         let logger = self.logger
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
@@ -356,6 +355,8 @@ extension CoordinatorClient {
                     // this, the outbound loop keeps draining chunks that silently
                     // vanish, and the coordinator-side request waits for a timeout.
                     connection.cancel()
+                } else {
+                    onWritten?()
                 }
             }
         )
@@ -374,8 +375,9 @@ extension CoordinatorClient {
             // callback won't fire until the connection is cancelled. Cancel it
             // here so the continuation unblocks and the reconnect loop proceeds
             // immediately instead of hanging until the transport times out.
-            let (data, context, receivedAt):
-                (Data?, NWConnection.ContentContext?, ContinuousClock.Instant) =
+            let (data, context, receivedAt, profileAnchor):
+                (Data?, NWConnection.ContentContext?, ContinuousClock.Instant,
+                 SuspendingClock.Instant) =
                 try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation { cont in
                         connection.receiveMessage { data, context, _isComplete, error in
@@ -383,11 +385,16 @@ extension CoordinatorClient {
                             // scheduling or any UTF-8/String materialization can
                             // consume the coordinator's relative deadline.
                             let receivedAt = ContinuousClock.now
+                            // Profiler anchor `t0p` on the suspending clock
+                            // (mach_absolute_time, the engine's DispatchTime
+                            // domain). Taken beside — never instead of — the
+                            // continuous deadline stamp (plan v2 P3).
+                            let profileAnchor = SuspendingClock.now
                             if let error {
                                 cont.resume(throwing: CoordinatorError.connectionClosed(error))
                                 return
                             }
-                            cont.resume(returning: (data, context, receivedAt))
+                            cont.resume(returning: (data, context, receivedAt, profileAnchor))
                         }
                     }
                 } onCancel: {
@@ -421,7 +428,8 @@ extension CoordinatorClient {
                 throw CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET))
             }
 
-            await handleIncomingFrame(data, receivedAt: receivedAt)
+            await handleIncomingFrame(
+                data, receivedAt: receivedAt, profileAnchor: profileAnchor)
         }
     }
 

@@ -56,6 +56,12 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	if v2 == nil {
 		t.Fatal("register v2 provider")
 	}
+	memory := cacheEligibilityV2Capability("private-model-memory")
+	reg.Register("private-provider-memory", nil, &protocol.RegisterMessage{
+		PrefixCacheProtocol:     2,
+		Models:                  []protocol.ModelInfo{{ID: memory.ModelID, WeightHash: memory.ModelAggregateHash}},
+		PrefixCacheMemoryModels: []protocol.PrefixCacheV2Capability{memory},
+	})
 
 	request := httptest.NewRequest(http.MethodGet, "/v1/cache/status", nil)
 	response := httptest.NewRecorder()
@@ -68,7 +74,8 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		t.Fatal(err)
 	}
 	if status.Providers.V0 != 1 || status.Providers.V1 != 1 ||
-		status.Providers.V2 != 1 || status.Providers.V2ReadyModels != 1 {
+		status.Providers.V2 != 2 || status.Providers.V2ReadyModels != 1 ||
+		status.Providers.MemoryReadyModels != 1 {
 		t.Fatalf("provider protocol status=%+v", status.Providers)
 	}
 	if status.Providers.LoadedModels != 2 ||
@@ -106,6 +113,8 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_activation{outcome=sampled_out}",
 		"exact_cache_activation{outcome=rate_limited}",
 		"exact_cache_activation{outcome=cold_only}",
+		"exact_cache_artifact_allowlist_configured",
+		"exact_cache_artifact_allowlist_count",
 		"exact_cache_sidecar_enabled",
 		"exact_cache_sidecar_running",
 		"exact_cache_sidecar_ready",
@@ -134,6 +143,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_provider_protocol{version=1}",
 		"exact_cache_provider_protocol{version=2}",
 		"exact_cache_v2_ready_models",
+		"exact_cache_memory_ready_models",
 		"exact_cache_loaded_models",
 		"exact_cache_reported_loaded_models",
 		"exact_cache_unreported_loaded_models",
@@ -155,8 +165,15 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_holder_added",
 		"exact_cache_holder_removed{reason=ttl}",
 		"exact_cache_holder_removed{reason=capability_change}",
+		"exact_cache_holder_removed{reason=shorter_hit}",
 		"exact_cache_donation_outcome{outcome=donated}",
 		"exact_cache_donation_outcome{outcome=write_queue_full}",
+		"exact_cache_fence{event=applied}",
+		"exact_cache_fence{event=expired}",
+		"exact_cache_fenced_capabilities",
+		"exact_cache_donation_outcome{outcome=skipped_novel}",
+		"exact_cache_demand_entries",
+		"exact_cache_demand_cap_evictions",
 	} {
 		if _, ok := gauges[key]; !ok {
 			t.Fatalf("missing exact-cache gauge %q", key)
@@ -171,12 +188,19 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()
 	for _, metric := range []string{
+		"exact_cache.artifact_allowlist.configured",
+		"exact_cache.artifact_allowlist.count",
+		"exact_cache.memory_ready_models",
 		"exact_cache.eligibility_state",
 		"exact_cache.eligibility_reason",
 		"exact_cache.eligibility_backend",
 		"exact_cache.eligibility_strategy",
 		"exact_cache.holder_removed",
 		"exact_cache.donation_outcome",
+		"exact_cache.fence",
+		"exact_cache.fenced_capabilities",
+		"exact_cache.demand_entries",
+		"exact_cache.demand_cap_evictions",
 	} {
 		if !hasMetric(packets, metric) {
 			t.Fatalf("missing Datadog gauge %q in %v", metric, packets)

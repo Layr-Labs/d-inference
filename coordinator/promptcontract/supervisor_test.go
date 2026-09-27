@@ -90,13 +90,16 @@ func TestSupervisorRestartsChildAndBecomesReady(t *testing.T) {
 	t.Setenv("PROMPT_SIDECAR_HELPER_MARKER", marker)
 
 	supervisor := NewSupervisor(SupervisorConfig{
-		Enabled:                true,
-		BinaryPath:             script,
-		SocketPath:             socket,
-		ArtifactRoot:           temp,
-		RequestTimeout:         50 * time.Millisecond,
-		HealthTimeout:          50 * time.Millisecond,
-		StartupTimeout:         time.Second,
+		Enabled:      true,
+		BinaryPath:   script,
+		SocketPath:   socket,
+		ArtifactRoot: temp,
+		// This verifies recovery after the helper's intentional first exit,
+		// not startup latency. Cold test-binary launches can exceed a second
+		// while other Go/Swift packages compile concurrently.
+		RequestTimeout:         500 * time.Millisecond,
+		HealthTimeout:          500 * time.Millisecond,
+		StartupTimeout:         5 * time.Second,
 		HealthInterval:         10 * time.Millisecond,
 		HealthFailureThreshold: 3,
 		ShutdownTimeout:        500 * time.Millisecond,
@@ -105,7 +108,7 @@ func TestSupervisorRestartsChildAndBecomesReady(t *testing.T) {
 	})
 	supervisor.Start(context.Background())
 	defer supervisor.Close()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		status := supervisor.Status()
 		if status.Ready && status.Restarts >= 1 {

@@ -6,6 +6,11 @@ import { render, screen } from "@testing-library/react";
 // pages can import them without hitting Privy, Zustand persistence, etc.
 // ---------------------------------------------------------------------------
 
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+  usePathname: () => "/",
+}));
+
 // Mock @/hooks/useToast — provides addToast
 vi.mock("@/hooks/useToast", () => ({
   useToastStore: () => vi.fn(),
@@ -38,8 +43,8 @@ vi.mock("@/hooks/useAuth", () => ({
   }),
 }));
 
-// Mock @/components/providers/PrivyClientProvider
-vi.mock("@/components/providers/PrivyClientProvider", () => ({
+// Mock @/components/app-providers/PrivyClientProvider
+vi.mock("@/components/app-providers/PrivyClientProvider", () => ({
   useAuthContext: () => ({
     ready: true,
     authenticated: true,
@@ -231,9 +236,9 @@ describe("ProvidersPage", () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByText("No provider machines linked yet");
-    expect(screen.getByText("Set up a provider")).toBeInTheDocument();
-    expect(screen.getByText("Open calculator")).toBeInTheDocument();
+    await screen.findByText("Put your Mac to work.");
+    expect(screen.getByRole("region", { name: "Provider setup steps" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open the earnings calculator" })).toBeInTheDocument();
   });
 
   it("renders the fleet, verdict, and a machine card when a machine is linked", async () => {
@@ -259,7 +264,7 @@ describe("ProvidersPage", () => {
       decode_tps: 50,
       system_metrics: { memory_pressure: 0.3, cpu_usage: 0.2, thermal_state: "nominal" },
       reputation: {
-        score: 0.9, total_jobs: 100, successful_jobs: 99, failed_jobs: 1,
+        total_jobs: 100, successful_jobs: 99, failed_jobs: 1,
         total_uptime_seconds: 3600, avg_response_time_ms: 200, challenges_passed: 5, challenges_failed: 0,
       },
       lifetime_requests_served: 100,
@@ -344,7 +349,7 @@ describe("ProvidersPage", () => {
       pending_requests: 0,
       max_concurrency: 8,
       reputation: {
-        score: 0.8, total_jobs: 50, successful_jobs: 49, failed_jobs: 1,
+        total_jobs: 50, successful_jobs: 49, failed_jobs: 1,
         total_uptime_seconds: 3600, avg_response_time_ms: 250, challenges_passed: 5, challenges_failed: 0,
       },
       lifetime_requests_served: 50,
@@ -393,5 +398,40 @@ describe("ProvidersPage", () => {
     expect(screen.getAllByText(/NOT EARNING/i).length).toBeGreaterThan(0);
     // The offline machine surfaces its start command as the fix.
     expect(screen.getAllByText("darkbloom start").length).toBeGreaterThan(0);
+  });
+});
+
+// =========================================================================
+// Models page
+// =========================================================================
+
+describe("ModelsPage", () => {
+  it("shows the provider hardware requirement badge only on gated models", async () => {
+    const api = await import("@/lib/api");
+    vi.mocked(api.fetchModels).mockResolvedValueOnce([
+      {
+        id: "qwen3.8-27b",
+        object: "model",
+        display_name: "Qwen 3.8 27B",
+        required_provider_capabilities: ["apple_m5", "mlx_nax"],
+      },
+      {
+        id: "gemma-4-26b",
+        object: "model",
+        display_name: "Gemma 4 26B",
+        required_provider_capabilities: [],
+      },
+    ]);
+    const ModelsPage = (await import("@/app/models/page")).default;
+    render(<ModelsPage />);
+
+    const badge = await screen.findByText("Apple M5 + NAX runtime only");
+    expect(badge).toHaveAttribute(
+      "title",
+      "Served only by providers with: Apple M5, NAX runtime"
+    );
+    // The ungated model renders no requirement pill.
+    expect(screen.getAllByText(/ only$/)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Gemma 4 26B" })).toBeInTheDocument();
   });
 });

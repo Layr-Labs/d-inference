@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "qwen_plan": {
+    "bytes": 13146,
+    "mode": 420,
+    "path": "/private/tmp/darkbloom-qwen-first-validation-plan1/qwen_plan.py",
+    "sha256": "d0ed09c9c553ef730217817fda5ed874faafa1f96fb41ef5461dc0fd1bd00c7e"
+  },
+  "scope": "qwen_plan.verify_reviews only; not pilot authorization"
+}

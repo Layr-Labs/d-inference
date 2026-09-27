@@ -1,0 +1,50 @@
+{
+  "state": "M5_RELEASED_TO_ROOT_FOR_GEMMA_VERIFIER_AMPERE_HANDOFF",
+  "released_at_utc": "2026-09-06T10:18:37.919004+00:00",
+  "recipient": "ROOT relay to gemma_verifier/Ampere",
+  "next_owner_review": "/tmp/darkbloom-two-host-controller8-root-review1.json",
+  "two_native_traces_complete": true,
+  "mandatory_analysis": "valid_bounded_logit_observations",
+  "owned_audit": {
+    "source_and_runtime_reverified": true,
+    "owned_pids_checked": [
+      48815,
+      48814,
+      49103,
+      49102
+    ],
+    "remaining_owned_processes": [],
+    "remote_owner_pids": [],
+    "observation": {
+      "hardware_model": "Mac17,6",
+      "memory_bytes": 137438953472,
+      "gpu_temperature_c": 26.34151840209961,
+      "load1": 0.498046875,
+      "free_bytes": 348607500288,
+      "unexpected_processes": [],
+      "owned_pids": []
+    },
+    "checked_unix": 1788689917.901821
+  },
+  "handles": {
+    "off": {
+      "native_pid": 48815,
+      "telemetry_pid": 48814,
+      "local_ssh_pid": 24583,
+      "native_exit_code": 0,
+      "native_and_telemetry_cleanup_complete": true
+    },
+    "automatic": {
+      "native_pid": 49103,
+      "telemetry_pid": 49102,
+      "local_ssh_pid": 24771,
+      "native_exit_code": 0,
+      "native_and_telemetry_cleanup_complete": true
+    }
+  },
+  "remote_results_retained": "/Users/gaj/autoresearch/radix-prefix-cache/090-gemma-contiguous-logit30-plan1",
+  "no_completed_native_cell_restarted": true,
+  "prelaunch_stage_parent_failure_preserved": "/tmp/darkbloom-gemma-contiguous-logit-execution2/failed-prelaunch-attempt1",
+  "manifest_sha256": "daa0255adb64afa1a1dd223ae01407d1ab28927950d33af877447585df492729",
+  "binding_sha256": "d84748d0aa2ec873dec51770cd9788308512b78704b83c048ffc45e6e00342bf"
+}

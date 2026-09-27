@@ -308,6 +308,68 @@ func writeProviderJSON(t *testing.T, ctx context.Context, conn *websocket.Conn, 
 	}
 }
 
+func TestResidentCapabilityHeartbeatThroughProviderWebSocket(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	reg := registry.New(logger)
+	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	httpServer := httptest.NewServer(srv.Handler())
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/provider", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	capability := cacheEligibilityV2Capability("model")
+	memory := []protocol.PrefixCacheV2Capability{capability}
+	writeProviderJSON(t, ctx, conn, protocol.RegisterMessage{
+		Type: protocol.TypeRegister, Backend: "mlx-swift",
+		Models:              []protocol.ModelInfo{{ID: "model", WeightHash: capability.ModelAggregateHash}},
+		PrefixCacheProtocol: 2, PrefixCacheMemoryModels: memory,
+	})
+	configureCachePreparationTest(t, reg)
+	plan := cachePreparationPlanForTest(t, reg, capability)
+	participates := func() bool {
+		ids := reg.ProviderIDs()
+		if len(ids) != 1 {
+			return false
+		}
+		p := reg.GetProvider(ids[0])
+		pr := &registry.PendingRequest{RequestID: "probe", Model: "model", CachePlan: plan}
+		if err := reg.PrepareCacheAttempt(pr, p); err != nil {
+			t.Fatal(err)
+		}
+		present := pr.CacheRoutingParticipates()
+		reg.ForgetCacheAttempt(pr)
+		return present
+	}
+	waitCacheCondition(t, participates)
+	// A legacy omission preserves state; an explicit empty resident inventory
+	// clears it even when the SSD fields and protocol number are omitted.
+	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, Status: "idle"})
+	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle", PrefixCacheMemoryModels: &memory,
+	})
+	waitCacheCondition(t, participates)
+	empty := []protocol.PrefixCacheV2Capability{}
+	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle", PrefixCacheMemoryModels: &empty,
+	})
+	waitCacheCondition(t, func() bool { return !participates() })
+	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle", PrefixCacheMemoryModels: &memory,
+	})
+	waitCacheCondition(t, participates)
+	invalid := capability
+	invalid.BlockSize = 16
+	bad := []protocol.PrefixCacheV2Capability{invalid}
+	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle", PrefixCacheMemoryModels: &bad,
+	})
+	waitCacheCondition(t, func() bool { return !participates() })
+}
+
 func waitCacheCondition(t *testing.T, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

@@ -1,0 +1,32 @@
+{
+  "parent": "5d1c905826205e24a05092043761943217444eee",
+  "lm": "31c454165b750cedeee2e246f5d6bd1fa9ff29f0",
+  "artifact_hashes": {
+    "radix-engine": "d2d08f606c6645637c1d10d09eeda7540761a7fffa70926dfbd6fc3d2e55d6f2",
+    "darkbloom": "b4c9747541740ec5fcaf33e47e8c20029ba2f471fcd40b627be0a332ba49c3b7",
+    "mlx.metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+  },
+  "strict_pins": true,
+  "source_files_verified": 7724,
+  "product_builds_passed": true,
+  "tests": {
+    "provider_swift_testing": 270,
+    "benchmark_swift_testing": 31,
+    "benchmark_xctest": 2,
+    "native_swift_testing": 169,
+    "native_xctest": 25,
+    "all_pass": true
+  },
+  "real_model_results": {
+    "checkpoint_restart": {
+      "passed": true,
+      "prompt_tokens": 6846,
+      "restored_tokens": 6144,
+      "bytes_read": 335646082,
+      "restored_answer": "ALDER-427",
+      "cold_answer": "ALDER-427",
+      "seconds": 27.839,
+      "same_injected_key_fresh_engine": true
+    }
+  }
+}

@@ -13,13 +13,16 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     /// 2 adds required effective config-projected Gemma settings.
     /// 3 adds `soloPrefillStripeTokens` — the effective solo-stripe posture
     /// the measured engines were built with (nil/absent = plain 512 chunks).
-    public static let currentSchemaVersion = 3
+    /// 4 adds per-cell memory evidence and full-context warmup.
+    public static let currentSchemaVersion = 4
 
     public struct Sample: Codable, Sendable {
         public let strategy: String
         public let promptTokens: Int
         public let iteration: Int
         public let ttftMs: Double
+        public let peakMemoryBytes: Int
+        public let activeMemoryBytes: Int
         public let msPerPrefillToken: Double
         /// The backend THIS sample's engine actually resolved to. Per sample
         /// rather than once per run because each measurement builds its own
@@ -87,6 +90,7 @@ public enum SchedulerPrefillBenchmark {
     ) async throws -> SchedulerPrefillBenchmarkReport {
         let lengths = promptLengths.filter { $0 > 1 }.sorted()
         let iterations = max(1, iterations)
+        Memory.peakMemory = 0
         log("loading model \(modelID)")
         log("  path: \(modelDirectory.path)")
 
@@ -106,10 +110,12 @@ public enum SchedulerPrefillBenchmark {
             )
         }
         let facts = await container.perform { ctx -> (baseTokens: [Int], weightBytes: Int) in
+            eval(ctx.model.parameters().flattened().map { $0.1 })
             let encoded = ctx.tokenizer.encode(text: ThroughputSweep.seedText, addSpecialTokens: false)
             let bytes = ctx.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
             return (encoded.isEmpty ? [0] : encoded, bytes)
         }
+        log("load memory: active_bytes=\(Memory.activeMemory) peak_bytes=\(Memory.peakMemory)")
         let baseTokens = facts.baseTokens
 
         // The production factory selects the dense-Qwen long-context stripe
@@ -135,6 +141,7 @@ public enum SchedulerPrefillBenchmark {
         // matrix of measurements nobody can attribute.
         _ = try await measureOne(
             container: container,
+            modelID: modelID,
             baseTokens: baseTokens,
             promptTokens: min(lengths.first ?? 128, 128),
             iteration: 0,
@@ -147,9 +154,19 @@ public enum SchedulerPrefillBenchmark {
         var samples: [SchedulerPrefillBenchmarkReport.Sample] = []
         var resolved: [String] = []
         for length in lengths {
+            // Warm the actual context geometry; the short bootstrap cannot
+            // compile all kernels a long-context cell will exercise.
+            log("warming prefill shape: prompt=\(length), maxTokens=1 (unmeasured)")
+            _ = try await measureOne(
+                container: container, modelID: modelID, baseTokens: baseTokens,
+                promptTokens: length, iteration: 0, weightBytes: facts.weightBytes,
+                isVLM: isVLM, modelDirectory: modelDirectory, kvBackend: kvBackend)
+        }
+        for length in lengths {
             for iteration in 1 ... iterations {
                 let sample = try await measureOne(
                     container: container,
+                    modelID: modelID,
                     baseTokens: baseTokens,
                     promptTokens: length,
                     iteration: iteration,
@@ -185,6 +202,7 @@ public enum SchedulerPrefillBenchmark {
 
     private static func measureOne(
         container: ModelContainer,
+        modelID: String,
         baseTokens: [Int],
         promptTokens: Int,
         iteration: Int,
@@ -215,9 +233,11 @@ public enum SchedulerPrefillBenchmark {
                 model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
             let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,
+                modelID: modelID,
                 tokenizer: ctx.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: 1,
+                kvBudget: BenchmarkMemoryBudget.shared,
                 kvBackend: kvBackend)
             return EngineParts(
                 engine: build.engine,
@@ -226,6 +246,7 @@ public enum SchedulerPrefillBenchmark {
         let engine = parts.engine
 
         let prompt = ThroughputSweep.tile(baseTokens, to: promptTokens, offset: iteration * 17)
+        Memory.peakMemory = 0
         let started = ContinuousClock.now
         let stream = try engine.submit(CBv2Request(
             id: CBv2RequestID(1),
@@ -235,19 +256,32 @@ public enum SchedulerPrefillBenchmark {
         ))
 
         var firstOutput: Duration?
+        var generatedTokens = 0
+        var finishReason: CBv2FinishReason?
         for await event in stream {
-            if firstOutput == nil {
-                firstOutput = ContinuousClock.now - started
+            if case .delta(_, let tokens, _) = event {
+                generatedTokens += tokens.count
+                if !tokens.isEmpty, firstOutput == nil {
+                    firstOutput = ContinuousClock.now - started
+                }
             }
             if case .finished(let reason, _) = event {
-                if case .error(let message) = reason {
-                    await stopAndReclaim(engine)
-                    throw BenchmarkError.requestFailed(message)
-                }
+                finishReason = reason
                 break
             }
         }
-        let elapsed = firstOutput ?? (ContinuousClock.now - started)
+        if let failure = ThroughputSweep.decodeRowFailure(
+            expectedTokens: 1, tokenCount: generatedTokens, finishReason: finishReason)
+        {
+            await stopAndReclaim(engine)
+            throw BenchmarkError.requestFailed(failure)
+        }
+        guard let elapsed = firstOutput else {
+            await stopAndReclaim(engine)
+            throw BenchmarkError.requestFailed("prefill produced no output token")
+        }
+        let peakMemoryBytes = Memory.peakMemory
+        let activeMemoryBytes = Memory.activeMemory
         let ttftMs = ThroughputSweep.seconds(elapsed) * 1000.0
         let prefillTokens = max(1, promptTokens - 1)
         await stopAndReclaim(engine)
@@ -256,6 +290,8 @@ public enum SchedulerPrefillBenchmark {
             promptTokens: promptTokens,
             iteration: iteration,
             ttftMs: ttftMs,
+            peakMemoryBytes: peakMemoryBytes,
+            activeMemoryBytes: activeMemoryBytes,
             msPerPrefillToken: ttftMs / Double(prefillTokens),
             resolvedKVBackend: parts.resolvedBackend
         )

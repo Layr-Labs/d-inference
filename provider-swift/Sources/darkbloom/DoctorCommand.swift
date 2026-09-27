@@ -101,12 +101,9 @@ struct Doctor: AsyncParsableCommand {
             print("  pid file: \(ProcessLifecycle.defaultPIDFile().path)")
         }
 
-        let hasFailure = checks.contains { $0.status == .fail }
-            || diagnosis.contains { $0.level == .fail }
-        let hasWarning = checks.contains { $0.status == .warn }
-            || diagnosis.contains { $0.level == .warn }
-
-        if hasFailure || (strict && hasWarning) {
+        if checks.contains(where: { $0.status.isFailure(strict: strict) })
+            || DiagnosticReportRenderer.hasFailure(diagnosis, strict: strict)
+        {
             throw ExitCode.failure
         }
     }
@@ -116,10 +113,6 @@ struct Doctor: AsyncParsableCommand {
     /// binds one binary version); this verb exists for the operator who has
     /// diagnosed the box — or set the kill switch / an explicit backend —
     /// and wants `.auto` resolving normally again without waiting for one.
-    /// Since v0.8.1 "normally" is CONTIGUOUS, which is also what a tripped
-    /// guard forces, so clearing it is a no-op for backend selection on a
-    /// default box; it still matters for `status`/`doctor` reporting and
-    /// for any box that later takes an explicit paged selection.
     ///
     /// The clear also RESETS the persisted crash-loop chain
     /// (`watchdog-state.json`): the guard usually gets cleared within
@@ -172,10 +165,13 @@ struct Doctor: AsyncParsableCommand {
             }
         }
         output(
-            "Cleared. Note that since v0.8.1 `.auto` resolves CONTIGUOUS on its "
-                + "own, so clearing the guard only restores normal resolution — it "
-                + "does not move this box onto paged; that needs "
-                + "`engine_v2_kv_backend = \"paged\"`. If the box re-enters a crash "
+            "Cleared. On the next model load, `auto` retries paged only for the "
+                + "candidate Qwen allowlist; all other models stay contiguous. "
+                + "Automatic paged failures still fall back to contiguous. "
+                + "Explicit backend settings, capability/span-mask vetoes and "
+                + "`DARKBLOOM_CBV2_PAGED_KV=0` still apply. "
+                + "Candidate rollout is not yet validated; see "
+                + "docs/design/qwen-first-paged-ssd-rollout.md. If the box re-enters a crash "
                 + "loop, the guard re-trips after "
                 + "\(WatchdogPolicy.crashLoopTripThreshold) crash-loop restarts.")
     }
@@ -183,17 +179,11 @@ struct Doctor: AsyncParsableCommand {
 
 // MARK: - Doctor
 
-enum CheckStatus: Equatable {
-    case pass
-    case warn
-    case fail
+typealias CheckStatus = DiagnosticLevel
 
-    var marker: String {
-        switch self {
-        case .pass: return "[PASS]"
-        case .warn: return "[WARN]"
-        case .fail: return "[FAIL]"
-        }
+extension DiagnosticLevel {
+    func isFailure(strict: Bool) -> Bool {
+        self == .fail || (strict && self == .warn)
     }
 
     init(_ verdict: BootSecurityVerdict) {
@@ -259,20 +249,9 @@ func buildDoctorChecks(
         detail: snapshot.configFileExists ? "loaded" : "missing, defaults are in memory only"
     ))
 
-    if let cacheDir = ModelScanner.defaultCacheDirectory(),
-       FileManager.default.fileExists(atPath: cacheDir.path) {
-        checks.append(.init(
-            name: "huggingface cache",
-            status: .pass,
-            detail: cacheDir.path
-        ))
-    } else {
-        checks.append(.init(
-            name: "huggingface cache",
-            status: .warn,
-            detail: "not found"
-        ))
-    }
+    // Diagnose the saved location or unchanged legacy cache, never ambient HF variables.
+    checks.append(hfCacheCheck(
+        configuredDirectory: snapshot.configuredModelCacheDirectory))
 
     checks.append(.init(
         name: "local mlx models",
@@ -346,11 +325,16 @@ func buildCoordinatorDoctorChecks(
 ) async -> [DoctorCheck] {
     let base = coordinatorHTTPBase(coordinatorOverride ?? snapshot.config.coordinator.url)
     var checks: [DoctorCheck] = []
+    let now = Date().timeIntervalSince1970
+    let authorization = DaemonStateFile.read()?.currentProviderAuthorization(
+        coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
+    let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 
+    let linked = AuthTokenStore.load() != nil
     checks.append(.init(
         name: "account link",
-        status: AuthTokenStore.load() == nil ? .warn : .pass,
-        detail: AuthTokenStore.load() == nil ? "not logged in; run darkbloom login" : "auth token present"
+        status: linked ? .pass : .warn,
+        detail: !linked ? "not logged in; run darkbloom login" : "auth token present"
     ))
 
     switch checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url) {
@@ -359,12 +343,13 @@ func buildCoordinatorDoctorChecks(
             name: "mdm enrollment", status: .pass, detail: "Darkbloom profile installed"))
     case .enrolledOtherMDM(let serverURL):
         checks.append(.init(
-            name: "mdm enrollment", status: .warn,
-            detail: "enrolled in another MDM (\(serverURL)) — Darkbloom hardware trust unavailable on this Mac"))
+            name: "mdm enrollment", status: appAttestAuthorized ? .pass : .warn,
+            detail: "managed by another MDM (\(serverURL)); keep that profile installed. "
+                + (appAttestAuthorized ? "App Attest authorizes this connection." : "Awaiting qualified App Attest serving.")))
     case .notEnrolled:
         checks.append(.init(
-            name: "mdm enrollment", status: .warn,
-            detail: "not enrolled; hardware trust may remain pending"))
+            name: "mdm enrollment", status: appAttestAuthorized ? .pass : .warn,
+            detail: appAttestAuthorized ? "not required for this App Attest-authorized connection" : "not enrolled; awaiting coordinator serving authorization"))
     case .checkFailed:
         checks.append(.init(
             name: "mdm enrollment", status: .warn,
@@ -384,6 +369,13 @@ func buildCoordinatorDoctorChecks(
             status: .fail,
             detail: "\(base): \(error.localizedDescription)"
         ))
+        return checks
+    }
+
+    if let authorization {
+        checks.append(.init(name: "serving authorization",
+                            status: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
+                            detail: ProviderAuthorizationReadiness.summary(authorization, now: now)))
         return checks
     }
 

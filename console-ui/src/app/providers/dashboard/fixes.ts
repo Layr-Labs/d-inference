@@ -61,9 +61,9 @@ const FIX_TABLE: Record<string, FixAction> = {
   },
   trust_self_signed: {
     kind: "link",
-    label: "Complete hardware attestation",
+    label: "Check serving verification",
     href: "/providers/setup",
-    note: "The network requires MDM enrollment + Apple Device Attestation.",
+    note: "macOS 27 uses App Attest without MDM. Check darkbloom status; older macOS uses legacy enrollment during the transition.",
   },
   trust_none: {
     kind: "command",
@@ -107,16 +107,21 @@ const FIX_TABLE: Record<string, FixAction> = {
   backend_idle_shutdown: {
     kind: "guidance",
     label: "No action needed",
-    note: "Model was unloaded after idle; the next request pays a ~10–30s cold start.",
+    note: "Your idle-memory policy freed the model; the next request reloads it (~10–30 s). To keep models resident for instant responses, run `darkbloom idle keep-loaded` on the machine.",
   },
   low_success_rate: {
     kind: "link",
     label: "Inspect failed jobs",
     href: "/providers/earnings",
-    note: "Then check the provider logs to recover routing priority.",
+    note: "Check the provider logs for failure details.",
   },
 
   // ── Info ───────────────────────────────────────────────────────────────
+  macos_upgrade: {
+    kind: "guidance",
+    label: "Upgrade macOS on this Mac",
+    note: "Open System Settings → General → Software Update. After upgrading, restart Darkbloom and check darkbloom status. Keep the MDM profile until App Attest migration is approved.",
+  },
   no_payout: {
     kind: "command",
     label: "Link to your account",

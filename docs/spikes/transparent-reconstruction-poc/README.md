@@ -1,5 +1,7 @@
 # Transparent model-shard reconstruction spike
 
+> Last updated: 2026-09-27 · commit `93d556533`
+
 This local-only spike tests whether an existing large model-shard URL can be
 served byte-for-byte from smaller backing objects without changing the client,
 model manifest, safetensors index, final file, or aggregate hash.
@@ -38,9 +40,16 @@ The compatibility contract covered by the tests is:
   `Content-Range: bytes */<original-size>`.
 - A failure after some chunk bytes have streamed can resume from the exact
   durable prefix using `Range: bytes=N-`.
+- Cancellation aborts pending chunk fetches and releases active or late response
+  bodies; invalid upstream responses are cancelled before rejection.
 - Chunk manifests must cover the logical object contiguously with no gaps or
   overlaps.
 
 The implementation is written against standard `Request`, `Response`, Headers,
 and `ReadableStream` APIs so the reconstruction logic can be adapted to a
 Cloudflare Worker, while remaining runnable without Cloudflare access.
+
+
+This spike is separate from the [recorded storage benchmark](../model-download-benchmark/README.md),
+which downloaded parts as independent manifest files and concatenated them in an
+external verifier. Neither experiment establishes production delivery performance.

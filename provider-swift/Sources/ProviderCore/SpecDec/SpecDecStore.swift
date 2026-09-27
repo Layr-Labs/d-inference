@@ -1,4 +1,5 @@
 import CryptoKit
+import CoreFoundation
 import Foundation
 import Logging
 import ProviderCoreFoundation
@@ -8,11 +9,12 @@ enum SpecDecStore {
     private static let logger = Logger(label: "darkbloom.SpecDecStore")
 
     private struct InlineWeightIndex: Decodable {
-        let metadata: [String: Int64]?
+        // Official MLX indices may mix numeric total_size and string format
+        // metadata. This reader needs only weight_map; digest the full index
+        // below so ignored metadata still participates in load revalidation.
         let weightMap: [String: String]
 
         enum CodingKeys: String, CodingKey {
-            case metadata = "metadata"
             case weightMap = "weight_map"
         }
     }
@@ -324,23 +326,29 @@ enum SpecDecStore {
         else {
             return rejectInline("config.json is not a JSON object: \(configURL.path)")
         }
-        guard let inline = root["mtplx_mtp"] as? [String: Any],
-            inline["included"] as? Bool == true
-        else {
-            return rejectInline(
-                "config.json does not declare mtplx_mtp.included=true — not an inline-MTP checkpoint: \(configURL.path)")
-        }
-        guard root["mtplx_mtp_quantization"] as? [String: Any] != nil else {
-            return rejectInline(
-                "config.json is missing the mtplx_mtp_quantization object: \(configURL.path)")
-        }
         guard let index = try? JSONDecoder().decode(InlineWeightIndex.self, from: indexData)
         else {
             return rejectInline(
                 "model.safetensors.index.json does not decode (weight_map): \(indexURL.path)")
         }
 
-        let prefix = (inline["prefix"] as? String) ?? "mtp."
+        let prefix: String
+        if let inline = root["mtplx_mtp"] as? [String: Any],
+            inline["included"] as? Bool == true
+        {
+            guard root["mtplx_mtp_quantization"] as? [String: Any] != nil else {
+                return rejectInline(
+                    "config.json is missing the mtplx_mtp_quantization object: \(configURL.path)")
+            }
+            prefix = (inline["prefix"] as? String) ?? "mtp."
+        } else if let nativePrefix = nativeQwen4InlinePrefix(root: root, index: index) {
+            prefix = nativePrefix
+        } else if declaresNemotronLightningMTP(root) {
+            prefix = "mtp."
+        } else {
+            return rejectInline(
+                "config.json does not declare mtplx_mtp.included=true, native Qwen4 MTP, or retained Nemotron Lightning MTP — not an inline-MTP checkpoint: \(configURL.path)")
+        }
         guard !prefix.isEmpty, prefix.utf8.count <= 128,
             prefix.utf8.allSatisfy({
                 (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
@@ -417,7 +425,7 @@ enum SpecDecStore {
     /// `inline_artifact_invalid` instead of being misreported as
     /// config-disabled or silently skipped.
     enum InlineDeclarationProbe: Equatable {
-        /// Config parsed and declares `mtplx_mtp.included = true`.
+        /// Config parsed and declares a supported embedded assistant.
         case declared
         /// Config parsed and declares nothing (or an explicit `false`).
         case absent
@@ -442,12 +450,69 @@ enum SpecDecStore {
             data.count <= Self.inlineProbeMaximumConfigBytes,
             let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return .undeterminable }
-        guard let inline = root["mtplx_mtp"] as? [String: Any],
+        if let inline = root["mtplx_mtp"] as? [String: Any],
             inline["included"] as? Bool == true
-        else { return .absent }
-        return .declared
+        {
+            return .declared
+        }
+        if declaresNativeQwen4MTP(root) || declaresNemotronLightningMTP(root) {
+            return .declared
+        }
+        return .absent
     }
 
+    /// The native checkpoint declares its trained head through the Qwen4
+    /// architecture and an integral 1...4 head count. Its source organization,
+    /// model ID, and quantization label do not establish this contract.
+    static func declaresNativeQwen4MTP(_ root: [String: Any]) -> Bool {
+        guard SpecDecArtifactFunnel.isQwen4ExpTarget(modelType: root["model_type"] as? String)
+        else { return false }
+        let text: [String: Any]?
+        if let rawText = root["text_config"] {
+            guard let configuration = rawText as? [String: Any] else { return false }
+            text = configuration
+        } else {
+            text = nil
+        }
+        if let rawTextType = text?["model_type"] {
+            guard let textType = rawTextType as? String,
+                SpecDecArtifactFunnel.isQwen4ExpTarget(modelType: textType)
+            else { return false }
+        }
+        guard let layers = (text?["mtp_num_hidden_layers"] ?? root["mtp_num_hidden_layers"]) as? NSNumber,
+            CFGetTypeID(layers) != CFBooleanGetTypeID()
+        else { return false }
+        let value = layers.doubleValue
+        return value.isFinite && value >= 1 && value <= 4 && value.rounded(.towardZero) == value
+    }
+
+    private static func nativeQwen4InlinePrefix(
+        root: [String: Any], index: InlineWeightIndex
+    ) -> String? {
+        guard declaresNativeQwen4MTP(root) else { return nil }
+        // Keep the same prefix order as Qwen4ExpInlineMTPAssistant's loader.
+        if index.weightMap.keys.contains(where: { $0.hasPrefix("language_model.mtp.") }) {
+            return "language_model.mtp."
+        }
+        if index.weightMap.keys.contains(where: { $0.hasPrefix("mtp.") }) {
+            return "mtp."
+        }
+        return nil
+    }
+
+    /// Lightning must explicitly declare the retained attention/MoE MTP head.
+    static func declaresNemotronLightningMTP(_ root: [String: Any]) -> Bool {
+        guard root["model_type"] as? String == "nemotron_h",
+            let declaration = root["darkbloom_embedded_mtp"] as? [String: Any],
+            declaration["architecture"] as? String == "nemotron_h_attention_moe",
+            let version = declaration["version"] as? NSNumber,
+            CFGetTypeID(version) != CFBooleanGetTypeID(), version.doubleValue == 1,
+            let layers = root["num_nextn_predict_layers"] as? NSNumber,
+            CFGetTypeID(layers) != CFBooleanGetTypeID(), layers.doubleValue == 1,
+            root["mtp_layers_block_type"] as? [String] == ["attention", "moe"]
+        else { return false }
+        return true
+    }
     private static func rejectInline(
         _ reason: String
     ) -> Result<SpecDecArtifact, InlineArtifactRejection> {

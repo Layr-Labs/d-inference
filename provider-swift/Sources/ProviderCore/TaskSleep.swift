@@ -10,15 +10,15 @@
 // never crash, and the non-generic `Task.sleep(nanoseconds:)` codegen
 // path is stable across repeated runs).
 //
-// EVERY sleep in ProviderCore routes through this shim; do not call
-// `taskSleep()` directly. Revisit on a toolchain bump — if the
+// ProviderCore sleeps use this shim; avoid the generic
+// `Task.sleep(for:tolerance:clock:)` overload. Revisit on a toolchain bump — if the
 // runtime bug is fixed, this file shrinks to a deprecation note.
 
 import Foundation
 
 /// Suspend the current task for `duration` via the non-generic
 /// nanoseconds entry point. Throws `CancellationError` on cancellation,
-/// exactly like `taskSleep()`.
+/// matching the task sleep API.
 @inlinable
 public func taskSleep(_ duration: Duration) async throws {
     let comps = duration.components

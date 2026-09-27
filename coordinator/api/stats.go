@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -23,20 +25,21 @@ const (
 // publicProviderLocationBucket is the privacy-safe shape returned to
 // callers in the provider_locations array.
 type publicProviderLocationBucket struct {
-	Key              string   `json:"key"`
-	Scope            string   `json:"scope"`
-	City             string   `json:"city,omitempty"`
-	Region           string   `json:"region,omitempty"`
-	RegionCode       string   `json:"region_code,omitempty"`
-	Country          string   `json:"country,omitempty"`
-	CountryCode      string   `json:"country_code,omitempty"`
-	Latitude         float64  `json:"latitude,omitempty"`
-	Longitude        float64  `json:"longitude,omitempty"`
-	Providers        int      `json:"providers"`
-	HardwareAttested int      `json:"hardware_attested"`
-	GPUCores         int      `json:"gpu_cores"`
-	MemoryGB         int      `json:"memory_gb"`
-	Models           []string `json:"models,omitempty"`
+	Key              string                   `json:"key"`
+	Scope            string                   `json:"scope"`
+	City             string                   `json:"city,omitempty"`
+	Region           string                   `json:"region,omitempty"`
+	RegionCode       string                   `json:"region_code,omitempty"`
+	Country          string                   `json:"country,omitempty"`
+	CountryCode      string                   `json:"country_code,omitempty"`
+	Latitude         float64                  `json:"latitude,omitempty"`
+	Longitude        float64                  `json:"longitude,omitempty"`
+	Providers        int                      `json:"providers"`
+	HardwareAttested int                      `json:"hardware_attested"`
+	Verification     verificationMethodCounts `json:"verification_counts"`
+	GPUCores         int                      `json:"gpu_cores"`
+	MemoryGB         int                      `json:"memory_gb"`
+	Models           []string                 `json:"models,omitempty"`
 }
 
 // publicRequestLocationBucket is the privacy-safe shape returned for
@@ -80,36 +83,85 @@ type flowEndpoint struct {
 	Longitude   float64 `json:"longitude,omitempty"`
 }
 
+// statsCacheKey is the readCache entry for GET /v1/stats. One background
+// goroutine (StartCacheRefreshers, cache_refresher.go) owns it; handlers only
+// read it.
+const statsCacheKey = "stats:v1"
+
 // handleStats returns aggregate platform statistics for the frontend dashboard.
 //
-// Cached for 60s — the underlying SQL aggregation runs in <5ms but this
-// endpoint is hit by every dashboard refresh and the homepage live ticker.
+// The response is served from the stats:v1 read-cache entry, which the
+// refresher recomputes every statsRefreshInterval. A handler only computes on
+// a cold start (no entry at all), and concurrent cold misses share one
+// computation.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	const cacheKey = "stats:v1"
-	if cached, ok := s.readCache.Get(cacheKey); ok {
+	if cached, ok := s.readCache.Get(statsCacheKey); ok {
 		writeCachedJSON(w, cached)
 		return
 	}
+	body, ok := s.getCachedEntry(&s.statsRefresh, statsCacheKey, s.computeStats)
+	if !ok {
+		// Nothing cached and the computation could not produce a body (or a
+		// coalesced computation failed for this waiter).
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable", "stats are temporarily unavailable"))
+		return
+	}
+	writeCachedJSON(w, body)
+}
+
+// runStatsRefresher owns the stats:v1 entry with an injectable interval.
+func (s *Server) runStatsRefresher(ctx context.Context, interval time.Duration) {
+	s.runCacheRefreshLoop(ctx, interval, func() { s.refreshStats() })
+}
+
+// refreshStats recomputes stats, retaining an unexpired success on failure.
+func (s *Server) refreshStats() ([]byte, bool) {
+	return s.refreshCachedEntry(&s.statsRefresh, statsCacheKey, s.computeStats)
+}
+
+// computeStats returns core stats with the latest independently refreshed
+// geography. Core query failures prevent publication; geography failures are
+// represented explicitly and never block the core snapshot.
+func (s *Server) computeStats() ([]byte, error) {
+	// Preserve the start of the source observation through successful cache hits
+	// and bounded stale-on-error reads; downstream caches must not renew its age.
+	snapshotAt := time.Now()
 	var (
-		totalRequests    int64
-		totalTokensGen   int64
-		totalGPUCores    int
-		totalCPUCores    int
-		totalMemoryGB    int
-		totalBandwidthGB float64
-		providers        []map[string]any
-		modelMap         = map[string]int{} // model ID → provider count
-		activePowerWatts float64            // sum of estimated watts over online public providers
+		totalRequests             int64
+		totalTokensGen            int64
+		totalGPUCores             int
+		totalCPUCores             int
+		totalMemoryGB             int
+		totalBandwidthGB          float64
+		providers                 []map[string]any
+		providerLocationsSnapshot []providerLocationSnapshot
+		modelMap                  = map[string]int{} // model ID → provider count
+		activePowerWatts          float64            // sum of estimated watts over online public providers
 	)
 
-	publicProviderModels := s.registry.PublicProviderModels()
-	s.registry.ForEachProvider(func(p *registry.Provider) {
+	var verificationTotals verificationCounts
+	machines := map[[2]string]struct{}{}
+	s.registry.ForEachProviderVerification(func(p *registry.Provider, verification registry.Verification, modelSnapshot registry.PublicProviderModelSnapshot) {
 		// Private-only providers serve only their owner's self-route traffic and
 		// are not part of the public fleet, so they must not inflate public
 		// totals, provider counts, per-model provider counts, or active power.
 		if p.PrivateOnly {
 			return
 		}
+		verificationTotals.addProvider(p, verification, machines)
+		locationSnapshot := providerLocationSnapshot{
+			verification: verification,
+			gpuCores:     p.Hardware.GPUCores,
+			memoryGB:     p.Hardware.MemoryGB,
+		}
+		if p.Location != nil {
+			locationSnapshot.location = *p.Location
+			locationSnapshot.hasLocation = true
+		}
+		if p.Attested && p.TrustLevel == registry.TrustHardware {
+			locationSnapshot.hardwareAttested = 1
+		}
+		providerLocationsSnapshot = append(providerLocationsSnapshot, locationSnapshot)
 		activePowerWatts += registry.EstimateMachineWatts(p.Hardware.ChipFamily, p.Hardware.ChipTier, p.Hardware.GPUCores)
 		totalRequests += p.Stats.RequestsServed
 		totalTokensGen += p.Stats.TokensGenerated
@@ -125,16 +177,17 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 		// Use the registry's capability-filtered provider snapshot so a catalog
 		// hot change cannot leave an ineligible pair on the public stats feed.
-		modelSnapshot := publicProviderModels[p.ID]
 		provModels := modelSnapshot.Models
 
 		lastChallengeVerified := ""
-		if last := p.GetLastChallengeVerified(); !last.IsZero() {
+		if last := p.LastChallengeVerified; !last.IsZero() {
 			lastChallengeVerified = last.UTC().Format(time.RFC3339)
 		}
 
 		prov := map[string]any{
 			"id":                             p.ID,
+			"verification":                   verification,
+			"os_version":                     reportedOSVersionLocked(p),
 			"chip":                           p.Hardware.ChipName,
 			"chip_family":                    p.Hardware.ChipFamily,
 			"chip_tier":                      p.Hardware.ChipTier,
@@ -188,7 +241,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read historical totals via SQL aggregation (no per-row wire transfer).
-	totals := s.store.UsageTotals()
+	totals, totalsErr := s.store.UsageTotals()
 	if totals.Requests > totalRequests {
 		totalRequests = totals.Requests
 	}
@@ -207,11 +260,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	// Build time series via SQL bucket aggregation (last 30 minutes), plus exact
 	// 24-hour totals for the headline deltas. Geography and route analytics use
 	// the full 24-hour window advertised by the public UI.
-	now := time.Now()
+	now := snapshotAt
 	timeSeriesCutoff := now.Add(-30 * time.Minute)
 	analyticsCutoff := now.Add(-24 * time.Hour)
-	buckets := s.store.UsageTimeSeries(timeSeriesCutoff, now, time.Minute)
-	last24h := s.store.UsageTotalsSince(analyticsCutoff)
+	buckets, seriesErr := s.store.UsageTimeSeries(timeSeriesCutoff, now, time.Minute)
+	last24h, last24hErr := s.store.UsageTotalsSince(analyticsCutoff)
 
 	timeSeries := make([]map[string]any, 0, len(buckets))
 	for _, b := range buckets {
@@ -225,13 +278,14 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- Provider location aggregation ---
-	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := s.aggregateProviderLocations()
+	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := aggregateProviderLocations(providerLocationsSnapshot)
 
-	// --- Request location aggregation ---
-	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs := s.aggregateRequestLocations(analyticsCutoff)
-
-	// --- Request flow aggregation ---
-	requestFlows := s.aggregateRequestFlows(analyticsCutoff)
+	// Geography queries run independently of the core stats refresher. Never
+	// wait for them here, including on a cold cache or during a geo outage.
+	geography := s.cachedStatsGeography()
+	if err := errors.Join(totalsErr, seriesErr, last24hErr); err != nil {
+		return nil, err
+	}
 
 	// --- APNs code-identity coverage (for watching the grace→enforce rollout) ---
 	codeAttestedProviders, _ := s.registry.CodeAttestationCoverage()
@@ -249,6 +303,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	util := s.registry.NetworkUtilizationSnapshot()
 
 	resp := map[string]any{
+		"snapshot_at":                    snapshotAt.UTC().Format(time.RFC3339Nano),
 		"total_requests":                 totalRequests,
 		"total_prompt_tokens":            totalPromptTokens,
 		"total_completion_tokens":        totalCompletionTokens,
@@ -260,6 +315,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"location_window_hours":          24,
 		"avg_tokens_per_request":         avgTokens,
 		"active_providers":               len(providers),
+		"verification_counts":            verificationTotals,
 		"active_power_watts":             activePowerWatts,
 		"code_attested_providers":        codeAttestedProviders,
 		"code_attestation_enforced":      codeAttestationEnforced,
@@ -283,172 +339,25 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"unknown_location_providers":         unknownLocationProviders,
 		"suppressed_city_location_providers": suppressedCityProviders,
 		"location_privacy_min_providers":     minProvidersPerCityBucket,
-
-		"request_locations":                     requestLocations,
-		"request_regions":                       requestRegions,
-		"unknown_request_location_requests":     unknownRequestLocReqs,
-		"suppressed_request_city_requests":      suppressedReqCityReqs,
-		"request_location_privacy_min_requests": minRequestsPerCityBucket,
-
-		"request_flows": requestFlows,
 	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode stats"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
-}
-
-// aggregateProviderLocations builds privacy-floored city and region
-// buckets from the live provider fleet.
-func (s *Server) aggregateProviderLocations() (
-	cityBuckets []publicProviderLocationBucket,
-	regionBuckets []publicProviderLocationBucket,
-	unknownProviders int,
-	suppressedCityProviders int,
-) {
-	type cityKey struct {
-		City, Region, RegionCode, Country, CountryCode string
-	}
-	type regionKey struct {
-		Region, RegionCode, Country, CountryCode string
-	}
-	type cityAgg struct {
-		key              cityKey
-		latSum, lngSum   float64
-		coordCount       int
-		providers        int
-		hardwareAttested int
-		gpuCores         int
-		memoryGB         int
-	}
-	type regionAgg struct {
-		key              regionKey
-		latSum, lngSum   float64
-		coordCount       int
-		providers        int
-		hardwareAttested int
-		gpuCores         int
-		memoryGB         int
-	}
-	cities := make(map[cityKey]*cityAgg)
-	regions := make(map[regionKey]*regionAgg)
-
-	s.registry.ForEachProvider(func(p *registry.Provider) {
-		// Private-only providers are not part of the public fleet — keep them off
-		// the public network map and out of its provider/hardware counts.
-		if p.PrivateOnly {
-			return
-		}
-		if p.Location == nil || p.Location.CountryCode == "" {
-			unknownProviders++
-			return
-		}
-		loc := p.Location
-		hwAttested := 0
-		if p.Attested && p.TrustLevel == registry.TrustHardware {
-			hwAttested = 1
-		}
-
-		ck := cityKey{loc.City, loc.Region, loc.RegionCode, loc.Country, loc.CountryCode}
-		ca, ok := cities[ck]
-		if !ok {
-			ca = &cityAgg{key: ck}
-			cities[ck] = ca
-		}
-		ca.providers++
-		ca.hardwareAttested += hwAttested
-		ca.gpuCores += p.Hardware.GPUCores
-		ca.memoryGB += p.Hardware.MemoryGB
-		if loc.Latitude != 0 || loc.Longitude != 0 {
-			ca.latSum += loc.Latitude
-			ca.lngSum += loc.Longitude
-			ca.coordCount++
-		}
-
-		rk := regionKey{loc.Region, loc.RegionCode, loc.Country, loc.CountryCode}
-		ra, ok := regions[rk]
-		if !ok {
-			ra = &regionAgg{key: rk}
-			regions[rk] = ra
-		}
-		ra.providers++
-		ra.hardwareAttested += hwAttested
-		ra.gpuCores += p.Hardware.GPUCores
-		ra.memoryGB += p.Hardware.MemoryGB
-		if loc.Latitude != 0 || loc.Longitude != 0 {
-			ra.latSum += loc.Latitude
-			ra.lngSum += loc.Longitude
-			ra.coordCount++
-		}
-	})
-
-	cityBuckets = make([]publicProviderLocationBucket, 0, len(cities))
-	for _, ca := range cities {
-		if ca.providers < minProvidersPerCityBucket {
-			suppressedCityProviders += ca.providers
-			continue
-		}
-		b := publicProviderLocationBucket{
-			Key:              locationKey(ca.key.CountryCode, ca.key.RegionCode, ca.key.City),
-			Scope:            "city",
-			City:             ca.key.City,
-			Region:           ca.key.Region,
-			RegionCode:       ca.key.RegionCode,
-			Country:          ca.key.Country,
-			CountryCode:      ca.key.CountryCode,
-			Providers:        ca.providers,
-			HardwareAttested: ca.hardwareAttested,
-			GPUCores:         ca.gpuCores,
-			MemoryGB:         ca.memoryGB,
-		}
-		if ca.coordCount > 0 {
-			b.Latitude = ca.latSum / float64(ca.coordCount)
-			b.Longitude = ca.lngSum / float64(ca.coordCount)
-		}
-		cityBuckets = append(cityBuckets, b)
-	}
-	sort.Slice(cityBuckets, func(i, j int) bool {
-		return cityBuckets[i].Providers > cityBuckets[j].Providers
-	})
-
-	regionBuckets = make([]publicProviderLocationBucket, 0, len(regions))
-	for _, ra := range regions {
-		b := publicProviderLocationBucket{
-			Key:              locationKey(ra.key.CountryCode, ra.key.RegionCode, ""),
-			Scope:            "region",
-			Region:           ra.key.Region,
-			RegionCode:       ra.key.RegionCode,
-			Country:          ra.key.Country,
-			CountryCode:      ra.key.CountryCode,
-			Providers:        ra.providers,
-			HardwareAttested: ra.hardwareAttested,
-			GPUCores:         ra.gpuCores,
-			MemoryGB:         ra.memoryGB,
-		}
-		if ra.coordCount > 0 {
-			b.Latitude = ra.latSum / float64(ra.coordCount)
-			b.Longitude = ra.lngSum / float64(ra.coordCount)
-		}
-		regionBuckets = append(regionBuckets, b)
-	}
-	sort.Slice(regionBuckets, func(i, j int) bool {
-		return regionBuckets[i].Providers > regionBuckets[j].Providers
-	})
-	return
+	geography.addTo(resp)
+	return json.Marshal(resp)
 }
 
 // aggregateRequestLocations builds privacy-floored city and region
-// buckets from usage records with request-origin locations.
+// buckets from usage records with request-origin locations. A failed query
+// makes request locations unavailable without affecting the core snapshot.
 func (s *Server) aggregateRequestLocations(since time.Time) (
 	cityBuckets []publicRequestLocationBucket,
 	regionBuckets []publicRequestLocationBucket,
 	unknownRequests int64,
 	suppressedCityRequests int64,
+	err error,
 ) {
-	locBuckets := s.store.UsageLocationBuckets(since)
+	locBuckets, err := s.store.UsageLocationBuckets(since)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
 
 	// Count requests without any location by subtracting located requests
 	// from total requests in the window.
@@ -457,8 +366,12 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 		locatedRequests += b.Requests
 	}
 	// Total usage records in the window (SQL COUNT, no row transfer).
-	totalInWindow := s.store.UsageCountSince(since)
-	unknownRequests = totalInWindow - locatedRequests
+	var totalInWindow int64
+	totalInWindow, err = s.store.UsageCountSince(since)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
+	unknownRequests = max(0, totalInWindow-locatedRequests)
 
 	type cityKey struct {
 		City, Region, RegionCode, Country, CountryCode string
@@ -574,7 +487,7 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 // consumer and provider regions. Uses a SQL JOIN via UsageFlowBuckets to
 // avoid loading all usage rows + all provider rows into Go memory (the
 // previous approach held two pool connections for up to 10s each).
-func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucket {
+func (s *Server) aggregateRequestFlows(since time.Time) ([]publicRequestFlowBucket, error) {
 	// Build live provider location map from the registry so recently-
 	// connected providers (not yet persisted) are included.
 	providerLocs := make(map[string]*store.ProviderLocation)
@@ -585,7 +498,10 @@ func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucke
 		}
 	})
 
-	buckets := s.store.UsageFlowBuckets(since, providerLocs)
+	buckets, err := s.store.UsageFlowBuckets(since, providerLocs)
+	if err != nil {
+		return nil, err
+	}
 
 	out := make([]publicRequestFlowBucket, 0, len(buckets))
 	for _, b := range buckets {
@@ -621,7 +537,7 @@ func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucke
 	if len(out) > 24 {
 		out = out[:24]
 	}
-	return out
+	return out, nil
 }
 
 // locationKey builds a stable, lowercase key from country/region/city parts.

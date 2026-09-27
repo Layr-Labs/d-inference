@@ -1,89 +1,50 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { useId, useState } from "react";
+import { ChevronDown, LockKeyhole } from "lucide-react";
 import { trackEvent } from "@/lib/google-analytics";
 import type { Endpoint } from "./content";
 
-// One expandable endpoint reference row. The only interactive (client) island
-// in the otherwise-static endpoint reference.
-export function EndpointRow({
-  method,
-  path,
-  description,
-  icon: Icon,
-  auth,
-  request,
-  response,
-  notes,
-}: Endpoint) {
+export function EndpointRow({ method, path, description, auth, request, response, notes }: Endpoint) {
   const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
 
   return (
-    <div className="border-b border-border-dim/50 last:border-0">
+    <div className="border-b border-border-dim last:border-0">
       <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={detailsId}
         onClick={() => {
           const nextExpanded = !expanded;
           setExpanded(nextExpanded);
-          if (nextExpanded) {
-            trackEvent("api_endpoint_expanded", {
-              endpoint_path: path,
-              http_method: method,
-              requires_auth: auth,
-            });
-          }
+          if (nextExpanded) trackEvent("api_endpoint_expanded", { endpoint_path: path, http_method: method, requires_auth: auth });
         }}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-bg-hover transition-colors"
+        className="group flex w-full items-start gap-3 py-4 text-left transition-colors hover:bg-bg-hover/50 sm:items-center sm:px-3"
       >
-        <Icon size={16} className="text-text-tertiary shrink-0" />
-        <span
-          className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${
-            method === "GET"
-              ? "bg-accent-green/10 text-accent-green"
-              : "bg-accent-brand/10 text-accent-brand"
-          }`}
-        >
-          {method}
+        <span className={`mt-0.5 w-12 shrink-0 rounded py-1 text-center font-mono text-[11px] font-medium sm:mt-0 ${method === "GET" ? "bg-accent-green/10 text-accent-green" : "bg-accent-brand/8 text-accent-brand"}`}>{method}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block break-all font-mono text-sm text-text-primary">{path}</span>
+          <span className="mt-1.5 block text-xs leading-relaxed text-text-secondary">{description}</span>
         </span>
-        <span className="text-sm font-mono text-text-primary">{path}</span>
-        {auth && (
-          <span className="text-xs text-text-tertiary px-1.5 py-0.5 bg-bg-tertiary rounded">
-            Auth
-          </span>
-        )}
-        <span className="flex-1 text-xs text-text-tertiary text-right truncate ml-2">
-          {description}
-        </span>
-        <ChevronDown
-          size={14}
-          className={`text-text-tertiary transition-transform ${expanded ? "rotate-180" : ""}`}
-        />
+        {auth && <LockKeyhole size={13} className="mt-2 shrink-0 text-text-secondary sm:mt-0" aria-label="Authentication required" />}
+        <ChevronDown size={16} className={`mt-1.5 shrink-0 text-text-secondary transition-transform sm:mt-0 ${expanded ? "rotate-180" : ""}`} />
       </button>
-      {expanded && (
-        <div className="px-4 pb-4 space-y-3">
-          <p className="text-sm text-text-secondary">{description}</p>
-          {auth && (
-            <p className="text-xs text-text-tertiary">
-              Requires <code className="text-accent-brand">Authorization: Bearer &lt;api_key&gt;</code> header
-            </p>
-          )}
-          {request && (
-            <div>
-              <p className="text-xs font-mono text-text-tertiary mb-1.5">Request</p>
-              <pre className="bg-bg-primary border border-border-dim rounded-lg px-3 py-2.5 text-xs font-mono text-text-primary overflow-x-auto whitespace-pre">{request}</pre>
-            </div>
-          )}
-          {response && (
-            <div>
-              <p className="text-xs font-mono text-text-tertiary mb-1.5">Response</p>
-              <pre className="bg-bg-primary border border-border-dim rounded-lg px-3 py-2.5 text-xs font-mono text-text-primary overflow-x-auto whitespace-pre">{response}</pre>
-            </div>
-          )}
-          {notes && (
-            <p className="text-xs text-text-tertiary leading-relaxed">{notes}</p>
-          )}
-        </div>
-      )}
+      <div id={detailsId} hidden={!expanded} className="space-y-4 pb-5 pt-1 sm:pl-[4.5rem] sm:pr-3">
+        {auth && <p className="text-xs leading-relaxed text-text-secondary">Requires an <code className="break-all text-text-primary">Authorization: Bearer &lt;api_key&gt;</code> header.</p>}
+        {request && <ReferenceCode label="Request" code={request} />}
+        {response && <ReferenceCode label="Response" code={response} />}
+        {notes && <p className="max-w-3xl text-xs leading-relaxed text-text-secondary">{notes}</p>}
+      </div>
+    </div>
+  );
+}
+
+function ReferenceCode({ label, code }: { label: string; code: string }) {
+  return (
+    <div>
+      <p className="mb-2 text-xs font-medium text-text-secondary">{label}</p>
+      <pre className="overflow-x-auto whitespace-pre rounded-lg border border-border-dim bg-bg-white p-4 font-mono text-xs leading-relaxed text-text-primary"><code>{code}</code></pre>
     </div>
   );
 }

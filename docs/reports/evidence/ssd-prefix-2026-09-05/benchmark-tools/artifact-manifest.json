@@ -1,0 +1,21 @@
+{
+  "source_parent": "d428ce5e6c47e5694803228d30d64dc67617c1ed",
+  "source_mlx_lm": "72902c4a9a0faa1053c348fbb9d2dc381e3f19f7",
+  "candidate_define": "RADIX_CANDIDATE",
+  "configuration": "release",
+  "files": {
+    "darkbloom": "4e3e3fbaa7dfc6306a1511970166cadfda99321f0999b02364e6753e2956e8c3",
+    "harness-source-manifest.json": "9dcf4159877ce58e1b955b250495fc0b8941283b5dd478da5dc8e2d3fc02f270",
+    "harness.patch.gz": "b0c7482d933999f61a12e3eb258b5ee1accea2fc114fb38eba37abde7b5636f5",
+    "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": "1a5b813ef89a36aa802951a1c5bccab789dd0746f2159846e649974572be368b",
+    "mlx.metallib": "4ffbbac48a99b495916c3fa0921ce813eb554de1a09aff408d9b5a5a8053e6b0",
+    "radix-engine": "19ad280d027bf97ac2dd0f21add1581070ff9ef23efa6dc642e154f0ac9691e6",
+    "run_radix_engine.py": "d7176f37228a41e6bf9d14ee729e2b3b85d73f987d06c27f3376f628b614ab14",
+    "run_radix_http.py": "9608cef72cea2f08cab343fe70d8948338cffab451c8636a9ccc0dc7e83eeefe",
+    "source-manifest.json": "e35341a548b7c5fd92118af997f62adc821f055fa9599b34f1121aac72465877",
+    "swift-crypto_Crypto.bundle/PrivacyInfo.xcprivacy": "42fb8a30dd8d7ba0900e1bf17fe64ed8c12cfdb8a9c791ab6b4e1eceb0f299c0",
+    "swift-nio_NIOPosix.bundle/PrivacyInfo.xcprivacy": "982f20d820bc4460acc9d4116c3e6c8ec837f717dc82edbb7308f7400515c909",
+    "swift-transformers_Hub.bundle/gpt2_tokenizer_config.json": "551e26ec611d8d0c8edc3ef72e518a38418cb71f40de1347dd486a595e1557d7",
+    "swift-transformers_Hub.bundle/t5_tokenizer_config.json": "e0aff0b1de9071e30d9a60a199303b6abe916a64a19932bd1c46992279b41a1f"
+  }
+}

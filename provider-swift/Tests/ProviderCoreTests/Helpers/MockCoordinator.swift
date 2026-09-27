@@ -17,6 +17,7 @@
 /// real (the encryption helpers run inside `NodeKeyPair`).
 
 import Foundation
+import ProviderAppAttest
 import HTTPTypes
 import Hummingbird
 import HummingbirdCore
@@ -30,6 +31,8 @@ import NIOCore
 /// Captured wire messages received from the provider. Cumulative for the
 /// lifetime of the mock; tests inspect a snapshot after each interaction.
 public struct CapturedMessages: Sendable {
+    public var drainBarriers: [String] = []
+    public var appAttestShadow: [AppAttestShadowPayload] = []
     public var registers: [ProviderMessage.Register] = []
     public var heartbeats: [ProviderMessage.Heartbeat] = []
     public var attestationResponses: [ProviderMessage.AttestationResponse] = []
@@ -41,6 +44,8 @@ public struct CapturedMessages: Sendable {
     public var loadModelStatuses: [ProviderMessage.LoadModelStatus] = []
     public var prefetchModelStatuses: [ProviderMessage.PrefetchModelStatus] = []
     public var modelsUpdates: [ProviderMessage.ModelsUpdate] = []
+    public var modelsReplacements: [ProviderMessage.ModelsReplace] = []
+    public var modelsReplacementReadiness: [ProviderMessage.ModelsReplaceReady] = []
     public var prefixCacheLookups: [ProviderMessage.PrefixCacheLookup] = []
     public var prefixCacheReady: [ProviderMessage.PrefixCacheReady] = []
     public var prefixCacheLookupsV2: [ProviderMessage.PrefixCacheLookupV2] = []
@@ -174,6 +179,7 @@ public final class MockCoordinator: @unchecked Sendable {
 
     private let lock = NSLock()
     private var captured = CapturedMessages()
+    private var acknowledgedReadiness = Set<String>()
     private var activeOutbound: WebSocketOutboundWriter?
     private var bound: BoundServer?
 
@@ -189,9 +195,20 @@ public final class MockCoordinator: @unchecked Sendable {
         let serverTask: Task<Void, Never>
     }
 
+    private let acknowledgeDrains: Bool
+    private let acknowledgeModelReplacements: Bool
+    private let acknowledgeModelReadiness: Bool
+    private let modelReplacementRejection: String?
+    private let rejectedReplacementModelIDs: Set<String>
+
     // MARK: Init
 
     public init(
+        acknowledgeDrains: Bool = true,
+        acknowledgeModelReplacements: Bool = true,
+        acknowledgeModelReadiness: Bool = true,
+        modelReplacementRejection: String? = nil,
+        rejectedReplacementModelIDs: Set<String> = [],
         catalog: [CatalogModel] = MockCoordinator.defaultCatalog,
         release: MockReleaseFixture = MockReleaseFixture(),
         releaseArtifact: Data? = nil,
@@ -199,6 +216,11 @@ public final class MockCoordinator: @unchecked Sendable {
         mobileConfig: Data = MockCoordinator.defaultMobileConfig,
         deviceCode: MockDeviceCodeFixture = MockDeviceCodeFixture()
     ) {
+        self.acknowledgeDrains = acknowledgeDrains
+        self.acknowledgeModelReplacements = acknowledgeModelReplacements
+        self.acknowledgeModelReadiness = acknowledgeModelReadiness
+        self.modelReplacementRejection = modelReplacementRejection
+        self.rejectedReplacementModelIDs = rejectedReplacementModelIDs
         self.catalog = catalog
         self.release = release
         self.releaseArtifact = releaseArtifact
@@ -347,14 +369,15 @@ public final class MockCoordinator: @unchecked Sendable {
         chatRequestJSON: Data,
         firstContentBudgetMs: Int64? = nil,
         cacheReceiptNonce: String? = nil,
-        cacheScope: String? = nil
+        cacheScope: String? = nil,
+        consumerKeyPair: NodeKeyPair? = nil
     ) async throws {
         guard let providerPubKeyData = Data(base64Encoded: providerPublicKeyBase64),
               providerPubKeyData.count == 32
         else {
             throw MockCoordinatorError.invalidProviderPublicKey
         }
-        let consumerKeys = NodeKeyPair.generate()
+        let consumerKeys = consumerKeyPair ?? NodeKeyPair.generate()
         let payload = try consumerKeys.encryptPayload(
             recipientPublicKey: providerPubKeyData,
             plaintext: chatRequestJSON
@@ -373,6 +396,18 @@ public final class MockCoordinator: @unchecked Sendable {
     public func pushCancel(requestId: String) async throws {
         let msg = CoordinatorMessage.cancel(.init(requestId: requestId))
         try await sendCoordinatorMessage(msg)
+    }
+
+    public func pushModelsReplaceAck(_ ack: CoordinatorMessage.ModelsReplaceAck) async throws {
+        try await sendCoordinatorMessage(.modelsReplaceAck(ack))
+    }
+
+    public func pushModelsReplaceResumed(_ ack: CoordinatorMessage.ModelsReplaceResumed) async throws {
+        try await sendCoordinatorMessage(.modelsReplaceResumed(ack))
+    }
+
+    public func pushDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry]) async throws {
+        try await sendCoordinatorMessage(.desiredModels(.init(models: entries)))
     }
 
     public func pushLoadModel(modelId: String) async throws {
@@ -599,6 +634,8 @@ public final class MockCoordinator: @unchecked Sendable {
 
         lock.withLock {
             switch parsed {
+            case .drainBarrier(let id): captured.drainBarriers.append(id)
+            case .appAttestShadow(let p): captured.appAttestShadow.append(p)
             case .register(let r):           captured.registers.append(r)
             case .heartbeat(let h):          captured.heartbeats.append(h)
             case .attestationResponse(let a): captured.attestationResponses.append(a)
@@ -610,6 +647,8 @@ public final class MockCoordinator: @unchecked Sendable {
             case .loadModelStatus(let s):    captured.loadModelStatuses.append(s)
             case .prefetchModelStatus(let s): captured.prefetchModelStatuses.append(s)
             case .modelsUpdate(let u):       captured.modelsUpdates.append(u)
+            case .modelsReplace(let r): captured.modelsReplacements.append(r)
+            case .modelsReplaceReady(let r): captured.modelsReplacementReadiness.append(r)
             case .prefixCacheLookup(let r):  captured.prefixCacheLookups.append(r)
             case .prefixCacheReady(let r):   captured.prefixCacheReady.append(r)
             case .prefixCacheLookupV2(let r): captured.prefixCacheLookupsV2.append(r)
@@ -618,6 +657,45 @@ public final class MockCoordinator: @unchecked Sendable {
             }
         }
         eventContinuation.yield(.providerMessage(parsed))
+        if acknowledgeDrains, case .drainBarrier(let id) = parsed {
+            Task { try? await self.sendCoordinatorMessage(.drainAck(id)) }
+        }
+        if acknowledgeModelReplacements, case .modelsReplace(let replacement) = parsed {
+            let rejection = modelReplacementRejection ?? (replacement.models.contains {
+                rejectedReplacementModelIDs.contains($0.id)
+            } ? "invalid_models" : nil)
+            Task {
+                try? await self.sendCoordinatorMessage(.modelsReplaceAck(.init(
+                    requestId: replacement.requestId,
+                    drainRequestId: replacement.drainRequestId,
+                    validateOnly: replacement.validateOnly,
+                    accepted: rejection == nil,
+                    error: rejection)))
+            }
+        }
+        if acknowledgeModelReadiness {
+            let readyToAck: ProviderMessage.ModelsReplaceReady? = lock.withLock {
+                switch parsed {
+                case .heartbeat, .modelsReplaceReady: break
+                default: return nil
+                }
+                guard let ready = captured.modelsReplacementReadiness.last,
+                      captured.heartbeats.contains(where: { heartbeat in
+                          (heartbeat.status == .idle || heartbeat.status == .serving) &&
+                              (heartbeat.backendCapacity?.capacitySeq ?? 0) >= ready.capacitySeq
+                      }) else { return nil }
+                let key = "\(ready.requestId):\(ready.drainRequestId):\(ready.capacitySeq)"
+                if case .heartbeat = parsed, acknowledgedReadiness.contains(key) { return nil }
+                acknowledgedReadiness.insert(key)
+                return ready
+            }
+            if let readyToAck {
+                Task { try? await self.sendCoordinatorMessage(.modelsReplaceResumed(.init(
+                    requestId: readyToAck.requestId,
+                    drainRequestId: readyToAck.drainRequestId,
+                    capacitySeq: readyToAck.capacitySeq))) }
+            }
+        }
     }
 
     // MARK: Response helpers

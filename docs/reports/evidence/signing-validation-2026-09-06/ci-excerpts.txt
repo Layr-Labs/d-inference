@@ -1,0 +1,11 @@
+Selected CI output; runner paths replaced with <CI_APP>. No environment or full build logs retained.
+
+--- successful run 34043318652 ---
+Provider signing validation (manual only) / Build unsigned validation input	UNKNOWN STEP	2026-09-06T15:46:31.8915510Z release version integrity: 0.8.16
+Provider signing validation (manual only) / Validate signing and notarization without publication	UNKNOWN STEP	2026-09-06T15:55:03.5603320Z The staple and validate action worked!
+Provider signing validation (manual only) / Validate signing and notarization without publication	UNKNOWN STEP	2026-09-06T15:55:03.6494430Z The validate action worked!
+Provider signing validation (manual only) / Validate signing and notarization without publication	UNKNOWN STEP	2026-09-06T15:55:03.8584320Z <CI_APP>: accepted
+Provider signing validation (manual only) / Validate signing and notarization without publication	UNKNOWN STEP	2026-09-06T15:55:03.8584630Z source=Notarized Developer ID
+
+--- original failed run 34030878981 ---
+Provider signing validation (manual only) / Validate signing and notarization without publication	UNKNOWN STEP	2026-09-06T11:47:53.2858760Z Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL): no identity found

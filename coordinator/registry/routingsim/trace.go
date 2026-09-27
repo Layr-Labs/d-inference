@@ -1,12 +1,44 @@
 package routingsim
 
-// Arrival is a single request in a replay trace. It carries only the fields the
-// preflight admission path consumes: the model, the estimated prompt-token
-// count, and the requested max output tokens.
+import "time"
+
+// Arrival is a single request in a replay trace. The first three fields are
+// what the preflight admission path consumes: the model, the estimated
+// prompt-token count, and the requested max output tokens. Generated traces
+// (GenerateTrace) set only those; traces loaded from a request_profiles export
+// (LoadProfilesNDJSON) also carry the recorded arrival time, request traits
+// and production outcome so a replay can be scored against what actually
+// happened.
 type Arrival struct {
 	Model        string
 	PromptTokens int
 	MaxTokens    int
+
+	// ArrivedAt is the coordinator's received_at for the request; zero for
+	// generated traces.
+	ArrivedAt time.Time
+	// RequiresVision / HasTools are the request traits the router gated on.
+	RequiresVision bool
+	HasTools       bool
+	// ChosenProviderID is the provider production dispatched the winning
+	// attempt to ("" when unknown).
+	ChosenProviderID string
+	// ActualTTFTMs is the provider-side time-to-first-content proxy available
+	// in the profile export: (first_content_us - write_done_us)/1000, i.e.
+	// request-fully-written-to-the-provider to first content chunk decoded by
+	// the coordinator. It includes transport, provider queueing and prefill
+	// but not the coordinator's own pre-dispatch stages. 0 means unknown. The
+	// exact client-facing actual_ttft_ms lives on inference_routes (joined in
+	// the request_waterfall view), not in this export.
+	ActualTTFTMs float64
+	// CoordRequestID / Attempt identify the source row (coord_request_id,
+	// attempt) for joining a replay result back to production records.
+	CoordRequestID string
+	Attempt        int
+	// Served is true when the row this arrival came from was the winning
+	// attempt; a fully-failed logical request is replayed as demand with
+	// Served=false and no ActualTTFTMs.
+	Served bool
 }
 
 // PromptRange is a half-open [Min,Max) prompt-token range that contributes

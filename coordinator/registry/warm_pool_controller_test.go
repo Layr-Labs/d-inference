@@ -593,9 +593,16 @@ func TestQualityConcurrencyFromDecodeFloor(t *testing.T) {
 
 func TestWarmTargetLittlesLaw(t *testing.T) {
 	params := warmTargetParams{
-		DecodeFloorTPS:             15,
-		LoadFactorK:                effectiveTPSLoadFactor,
-		BurstBuffer:                0,
+		DecodeFloorTPS: 15,
+		LoadFactorK:    effectiveTPSLoadFactor,
+		BurstBuffer:    0,
+		// Proactive growth on, as in prod. No input here carries an OccupancyRamp,
+		// so the headroom floor itself contributes 0 and these cases isolate the
+		// Little's Law math. The disabled-switch behaviour is asserted in
+		// TestHeadroomDisabledGatesAllNoPressureGrowth.
+		HeadroomEnabledParams:      true,
+		HeadroomMaxProviders:       64,
+		HeadroomLoadWindows:        1,
 		FallbackQualityConcurrency: 4,
 		MinServiceTime:             warmPoolMinServiceTime,
 		MaxServiceTime:             warmPoolMaxServiceTime,
@@ -608,11 +615,15 @@ func TestWarmTargetLittlesLaw(t *testing.T) {
 	if got := warmTarget(served, params, time.Second); got != 8 {
 		t.Fatalf("warmTarget(served) = %d, want 8", got)
 	}
-	// No demand pressure -> leave the pool at its current warm count.
+	// No demand pressure: the pool is still sized to the load it is ALREADY
+	// carrying. This used to assert target==1 (leave the pool alone) — i.e. 8
+	// requests in flight against 20 idle cold boxes still warmed nothing until
+	// a request failed. Growth is no longer gated on a failure; the Little's
+	// Law term alone covers served load.
 	noPressure := served
 	noPressure.DemandPressure = false
-	if got := warmTarget(noPressure, params, time.Second); got != 1 {
-		t.Fatalf("warmTarget(no pressure) = %d, want 1", got)
+	if got := warmTarget(noPressure, params, time.Second); got != 8 {
+		t.Fatalf("warmTarget(no pressure) = %d, want 8 (demand-sized without a failure)", got)
 	}
 	// Spill-driven: 2 req/s * E[S] 5s = 10 concurrent, qc=1 -> target 10.
 	spill := warmTargetInputs{

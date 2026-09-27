@@ -52,12 +52,17 @@ function makeChunkFetcher(failAtOriginalOffset = null) {
       failAtOriginalOffset <= selectedOriginalEnd
     ) {
       const prefixLength = failAtOriginalOffset - selectedOriginalStart;
+      let prefixSent = false;
       const body = new ReadableStream({
-        start(controller) {
-          if (prefixLength > 0) controller.enqueue(selected.slice(0, prefixLength));
-          controller.error(new Error(`synthetic transport failure at ${failAtOriginalOffset}`));
+        pull(controller) {
+          if (!prefixSent && prefixLength > 0) {
+            prefixSent = true;
+            controller.enqueue(selected.slice(0, prefixLength));
+          } else {
+            controller.error(new Error(`synthetic transport failure at ${failAtOriginalOffset}`));
+          }
         },
-      });
+      }, { highWaterMark: 0 });
       return new Response(body, {
         status: request.wholeChunk ? 200 : 206,
         headers,

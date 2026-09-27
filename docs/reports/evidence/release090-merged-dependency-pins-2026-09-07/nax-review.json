@@ -1,0 +1,76 @@
+{
+  "review_thread": "PRRT_kwDOSRyOs86fuv3O",
+  "conclusion": "The expression concern is real for a hypothetical half/bfloat template instantiation, but these five helpers have no callers in the current NAX source/preamble closure. Active NAX QuantizedBlockLoader calls dequantize, which promotes scale and bias to float before arithmetic. No current serving defect established; no production arithmetic change required for this thread.",
+  "latest_core_commit": "6005bca7a3ee99f81c043299b1f73327d3755c9c",
+  "swift_commit": "d1d40d0ee2de101c5d9a04eb66d9e1b4299c6074",
+  "header_sha256": "3dc0dfa3dab060ce1f75dcbb9a4c7ae4546693d74f71cafe7658c1e6743af745",
+  "latest_core_header_equals_swift_generated_header": true,
+  "generated_cpp_contains_exact_complete_latest_core_header_once": true,
+  "generated_cpp_sha256": "6fb8b82747b3cc3b124533cc631fd86aa0fb1eb4b330192afcbe26344ef22b64",
+  "exact133_generated_preamble_files_verified": {
+    "utils.cpp": "4522a0026513dd5ed4c13013ff46b2bc83e4f2e67383645ac4f2e646fabbcf52",
+    "gemm_nax.cpp": "13046c15f9d552f234adbd9d5c18c68dfcb0a3cdee9ebb1bc15c55f63309fcdb",
+    "quantized_utils.cpp": "17db0ca3682900ade1f6dd6deab3e4f7e31a05d936192fd7a210fa29c7dca5d2",
+    "quantized_nax.cpp": "6fb8b82747b3cc3b124533cc631fd86aa0fb1eb4b330192afcbe26344ef22b64"
+  },
+  "symbol_occurrences_in_full_jit_nax_preamble": {
+    "load_vector": {
+      "utils.cpp": 0,
+      "gemm_nax.cpp": 0,
+      "quantized_utils.cpp": 0,
+      "quantized_nax.cpp": 1
+    },
+    "load_vector_safe": {
+      "utils.cpp": 0,
+      "gemm_nax.cpp": 0,
+      "quantized_utils.cpp": 0,
+      "quantized_nax.cpp": 1
+    },
+    "qdot": {
+      "utils.cpp": 0,
+      "gemm_nax.cpp": 0,
+      "quantized_utils.cpp": 0,
+      "quantized_nax.cpp": 1
+    },
+    "qdot_safe": {
+      "utils.cpp": 0,
+      "gemm_nax.cpp": 0,
+      "quantized_utils.cpp": 0,
+      "quantized_nax.cpp": 1
+    },
+    "qouter": {
+      "utils.cpp": 0,
+      "gemm_nax.cpp": 0,
+      "quantized_utils.cpp": 0,
+      "quantized_nax.cpp": 1
+    }
+  },
+  "header_line_evidence": {
+    "unused_load_vector": 32,
+    "unused_load_vector_safe": 111,
+    "unused_qdot": 195,
+    "unused_qdot_safe": 296,
+    "unused_qouter": 399,
+    "active_dequantize": 488,
+    "float_scale_bias": [
+      494,
+      495
+    ],
+    "actual_dequantize_calls": [
+      646,
+      673,
+      786,
+      813
+    ]
+  },
+  "jit_kernels_cpp_lines": {
+    "ordinary_affine_qmv_uses_quantized_cpp": 1036,
+    "nax_preamble_only": [
+      1224,
+      1244
+    ]
+  },
+  "limits": "Static exact-source call-path review; no new runtime or numerical test claimed. Ordinary quantized.h is separate and its active QMV calls do not use the NAX helpers.",
+  "source_changes": false,
+  "remote_mutations": false
+}

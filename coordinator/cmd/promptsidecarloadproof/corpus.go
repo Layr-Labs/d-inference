@@ -15,7 +15,7 @@ import (
 
 const (
 	productionCorpusSchema   = 1
-	productionModelCount     = 4
+	productionModelCount     = 7
 	maxProductionCorpusBytes = 16 << 20
 )
 

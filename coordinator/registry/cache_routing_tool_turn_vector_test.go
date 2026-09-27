@@ -71,13 +71,13 @@ func TestGemmaToolTurnVectorCreatesExactHolderMatch(t *testing.T) {
 		Model:     "model",
 		CachePlan: plan,
 	}
-	if err := r.PrepareCacheAttempt(request, provider); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, request, provider); err != nil {
 		t.Fatal(err)
 	}
 
 	longest := boundaries[len(boundaries)-1]
 	lookup := &protocol.PrefixCacheLookupV2Message{
-		RequestID: request.RequestID, CacheReceiptNonce: request.CacheReceiptNonce,
+		RequestID: request.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(request).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: contractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 1, PromptAnchor: longest, Outcome: "miss_absent", Tier: "ssd", StageMs: 1,
@@ -86,7 +86,7 @@ func TestGemmaToolTurnVectorCreatesExactHolderMatch(t *testing.T) {
 		t.Fatal("Gemma tool-turn lookup proof was rejected")
 	}
 	ready := &protocol.PrefixCacheReadyV2Message{
-		RequestID: request.RequestID, CacheReceiptNonce: request.CacheReceiptNonce,
+		RequestID: request.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(request).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: contractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 2, Outcome: "ready", Tier: "ssd",

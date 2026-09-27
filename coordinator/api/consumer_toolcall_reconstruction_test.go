@@ -1,6 +1,88 @@
 package api
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+// Each call's builder must remain independent as the accumulator grows, IDs
+// arrive after argument fragments, and sparse indices change output order.
+func TestExtractMessageLongInterleavedToolArguments(t *testing.T) {
+	const fragments = 512
+	fragmentA, fragmentB := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	chunks := []string{
+		tcDelta(8, "", "", `{"text":"`),
+		tcDelta(2, "call_b", "second", `{"text":"`),
+	}
+	for range fragments {
+		chunks = append(chunks, tcDelta(8, "", "", fragmentA), tcDelta(2, "", "", fragmentB))
+	}
+	chunks = append(chunks,
+		tcDelta(8, "call_a", "first", `"}`),
+		tcDelta(2, "call_b", "", `"}`),
+	)
+	msg := extractMessage(chunks)
+	if len(msg.ToolCalls) != 2 {
+		t.Fatalf("got %d calls, want 2", len(msg.ToolCalls))
+	}
+	for i, want := range []struct{ id, name, text string }{
+		{"call_b", "second", strings.Repeat(fragmentB, fragments)},
+		{"call_a", "first", strings.Repeat(fragmentA, fragments)},
+	} {
+		call := msg.ToolCalls[i]
+		function := call["function"].(map[string]any)
+		if call["id"] != want.id || function["name"] != want.name {
+			t.Fatalf("call %d metadata = %v", i, call)
+		}
+		var arguments struct{ Text string }
+		if err := json.Unmarshal([]byte(function["arguments"].(string)), &arguments); err != nil {
+			t.Fatal(err)
+		}
+		if arguments.Text != want.text {
+			t.Fatalf("call %d arguments were truncated or mixed", i)
+		}
+		if _, present := call["index"]; present {
+			t.Fatal("wire index leaked into reconstructed response")
+		}
+	}
+}
+
+func TestExtractMessageToolCallOptionalFields(t *testing.T) {
+	msg := extractMessage([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{}},{"index":1,"id":"call_1","type":"function","function":{"name":"run"}}]}}]}`,
+	})
+	encoded, err := json.Marshal(msg.ToolCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"function":{"arguments":""}},{"function":{"arguments":"","name":"run"},"id":"call_1","type":"function"}]`
+	if string(encoded) != want {
+		t.Fatalf("optional fields changed:\n got: %s\nwant: %s", encoded, want)
+	}
+}
+
+func TestExtractMessageMalformedToolDeltaDoesNotCorruptKeptCall(t *testing.T) {
+	for _, invalid := range []string{
+		`{"index":"bad","function":{"arguments":"LEAK"}}`,
+		`{"index":0,"function":"bad"}`,
+		`{"index":0,"function":{"arguments":42}}`,
+		`{"index":0,"id":42,"function":{"arguments":"LEAK"}}`,
+	} {
+		msg := extractMessage([]string{
+			tcDelta(0, "call_a", "run", `{"n":`),
+			`data: {"choices":[{"delta":{"tool_calls":[` + invalid + `]}}]}`,
+			tcDelta(0, "", "", `1}`),
+		})
+		if len(msg.ToolCalls) != 1 {
+			t.Fatalf("invalid delta %s changed kept calls: %v", invalid, msg.ToolCalls)
+		}
+		function := msg.ToolCalls[0]["function"].(map[string]any)
+		if function["arguments"] != `{"n":1}` {
+			t.Fatalf("invalid delta %s corrupted arguments: %v", invalid, function)
+		}
+	}
+}
 
 // E6 (2026-07-15 platform errors deep dive): the engine emits EVERY streamed
 // parallel tool call with `index: 0`, and extractMessage keyed reconstruction

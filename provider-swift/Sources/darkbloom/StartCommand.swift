@@ -15,6 +15,7 @@ struct Start: AsyncParsableCommand {
     )
 
     @OptionGroup var configOptions: ConfigOptions
+    @OptionGroup var drain: DrainOptions
 
     @Option(help: "Override coordinator WebSocket URL.")
     var coordinatorURL: String?
@@ -25,7 +26,7 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Serve all local models (skips interactive picker).")
     var all = false
 
-    @Option(help: "Idle timeout in minutes before unloading the model.")
+    @Option(help: "Minutes without requests before a model is unloaded (0 = keep loaded). Saved to your config; the interactive picker asks this too. See `darkbloom idle`.")
     var idleTimeout: UInt64?
 
     @Flag(inversion: .prefixedNo, help: .hidden)
@@ -45,6 +46,13 @@ struct Start: AsyncParsableCommand {
 
     @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
     var noAuth = false
+
+    /// Only the process actually owned by launchd ignores stale baked argv.
+    /// A manually launched foreground command retains explicit --model priority.
+    static func usesPinnedModelSelection(configPath: URL, launchManaged: Bool) -> Bool {
+        guard launchManaged, let content = try? String(contentsOf: configPath, encoding: .utf8) else { return false }
+        return tomlKeyPresent(content, section: "backend", key: "enabled_models")
+    }
 
     /// Public URL of the Darkbloom Terms of Service.
     static let termsURL = "https://darkbloom.dev/terms.html"
@@ -78,7 +86,28 @@ struct Start: AsyncParsableCommand {
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
         if let idleTimeout {
-            effectiveConfig.backend.idleTimeoutMins = idleTimeout
+            if let problem = IdleUnloadPolicy.validate(minutes: idleTimeout) {
+                printError("--idle-timeout: \(problem)")
+                throw ExitCode.failure
+            }
+            if foreground {
+                // Plists written before the idle policy moved to TOML baked
+                // `--idle-timeout` into the daemon argv. The TOML key is the
+                // authority now — `darkbloom idle` must win over a stale plist
+                // after `restart` — so the flag only fills in when the config
+                // does not set the key.
+                if !idleTimeoutPinned(at: snapshot.configPath) {
+                    effectiveConfig.backend.idleTimeoutMins = idleTimeout
+                }
+            } else {
+                // Operator-facing: `--idle-timeout` is a writer of the one
+                // authority, so `restart` and later `start`s keep the choice.
+                let result = try setIdleUnloadMinutes(idleTimeout, configPath: configOptions.config)
+                if result.changed {
+                    print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: idleTimeout)) (saved to \(result.path.path))")
+                }
+                effectiveConfig.backend.idleTimeoutMins = idleTimeout
+            }
         }
 
         // These controls are process-start latches in MLX/MLXLM. Project the

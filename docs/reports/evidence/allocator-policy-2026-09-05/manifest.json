@@ -1,0 +1,356 @@
+{
+  "schema": 1,
+  "scope": "Detached allocation policy over the accepted allocator foundation; CPU/Metal/Swift validation only.",
+  "commits": {
+    "commits": {
+      "mlx": "30ae65605cca3fa9f9d5548e7f4fee07cd1e267c",
+      "mlx-c": "3ccef143eaa28658f8d095fdbc8ff0e9049e2449",
+      "swift": "67153a874b6d8dd0e1ad04c256298eaae8249cd7"
+    },
+    "parent_base": "2dcec357414cf59ec3347febb9f5ee655d89aae7",
+    "native_unchanged": "a486a55d032deae001190bf9795ece1cb3d9a609",
+    "validation_manifest_sha256": "45fa645950258545f9b1942f1db585007e8b16607afdf5dc42f48949acd541a9",
+    "owned_source_files": 12,
+    "verified_dependency_inputs": 1356,
+    "verified_payloads": 55,
+    "source_unchanged_after_tests": true
+  },
+  "validation": {
+    "status": "pass",
+    "new_cpp_functions": 1,
+    "cpp_cases_each_backend": 4,
+    "cpp_backends": [
+      "CPU",
+      "Metal"
+    ],
+    "new_swift_functions": 2,
+    "swift_functions": 6,
+    "swift_cases": 6,
+    "swift_build_seconds_reported": 46.43,
+    "source_verified": {
+      "owned_inputs": 35,
+      "dependency_inputs": 1356,
+      "frozen_native_inputs": 455,
+      "no_drift": true,
+      "mutable_primary_excluded_during_root_bank": true
+    },
+    "policy_owned_paths": 12,
+    "failure_count": 0,
+    "source_corrections": "None beyond applying exact policy12 delta while preserving approved Foundation import and metadata test completion fences from foundation. Two merged Swift hashes explicitly recorded in integration.json.",
+    "baseline_foundation_parent": "2dcec357414cf59ec3347febb9f5ee655d89aae7",
+    "baseline_foundation_native": "a486a55d032deae001190bf9795ece1cb3d9a609",
+    "limits": [
+      "CUDA allocation backend is unexecuted; its pure parameterized sizing formula is exercised as data by the C++ policy test.",
+      "No native404 rerun in this policy-only gate; native behavior and real provider U/C/M integration are checked in the subsequent provider gate.",
+      "No real model, factory rollout, default change or latency claim."
+    ]
+  },
+  "foundation_evidence": "../allocator-footprint-2026-09-05/manifest.json",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "sha256": "72bb105e02fffc56f92423345b61e98d829fe51a4105ceffaa6f8dd65b053d79",
+    "bytes": 285976
+  },
+  "entries": [
+    {
+      "path": "bank/commits.json",
+      "sha256": "203b39ad062dc53054b98b8f501cf742dd948f323ab4a1f3ed288e3af03f3c97",
+      "bytes": 551
+    },
+    {
+      "path": "bank/package.py",
+      "sha256": "28f298f4028eac629145c30d1abd70b06cfe372306fbf505ca6d0fe083e04430",
+      "bytes": 7159
+    },
+    {
+      "path": "source/requested-manifest.json",
+      "sha256": "d61dcbb82ad7debcf3f2c4a7114a82c0f72691231a584e46092a80f59d0e7965",
+      "bytes": 4685
+    },
+    {
+      "path": "source/root-review.json",
+      "sha256": "1fc5840156eb9485d371dc245b7c06aa76b182a2afd52129355f3be8a4883469",
+      "bytes": 977
+    },
+    {
+      "path": "validation/accepted-foundation-manifest.json",
+      "sha256": "1028f760d648cae2161f81b0a1be7c9250bca9e39ba7ce44f91dbaac00d5dc4e",
+      "bytes": 11036
+    },
+    {
+      "path": "validation/bankable-patches.json",
+      "sha256": "eeca2f619755fa7149611c3525403c221a6d0f4fd7f8162f31a45ff3d1b4f4e2",
+      "bytes": 1013
+    },
+    {
+      "path": "validation/build-binary-records.json",
+      "sha256": "af05a5ea2fd498ec04b5f06d6b28796142201d155025d01eb856fa55cd5eb4d2",
+      "bytes": 862
+    },
+    {
+      "path": "validation/cpp-execution.json",
+      "sha256": "b2e958c120c4f3a60447db7a939fcb871bcd03a5856b0c01d5c6d761fdd5d6db",
+      "bytes": 5332
+    },
+    {
+      "path": "validation/cpu-actual-cmake-cache.txt.gz",
+      "sha256": "05a4f38db8e6eb93d48af9eda20661a2b451a0c19eef9c0740bdf2bcfb945d91",
+      "bytes": 5110
+    },
+    {
+      "path": "validation/cpu-actual-compile-commands.json.gz",
+      "sha256": "9592d6b73a83d3dd8e0f1aaed557796c0e10ad0c1a2b0e46f291c8a7e6757477",
+      "bytes": 2955
+    },
+    {
+      "path": "validation/cpu-bounds.log",
+      "sha256": "f15fc5059e77683623568f7d289ea3b4648a5bd38e58f5db9c3bb24328101800",
+      "bytes": 295
+    },
+    {
+      "path": "validation/cpu-build.log",
+      "sha256": "fe7ebe2b645add6278bff575595b20b793f9d23ae98b3ef315bb16e01ae1d54e",
+      "bytes": 7162
+    },
+    {
+      "path": "validation/cpu-cache-regression.log",
+      "sha256": "517b697a26cf1f667ef07b4a65df11106f58e59d41e567a333a7837d9ac4c60d",
+      "bytes": 291
+    },
+    {
+      "path": "validation/cpu-configure.log",
+      "sha256": "976ff0943934a5f7cee6e508e6bcb84b416bdbce89f902ba9ea440195e2c2e10",
+      "bytes": 1764
+    },
+    {
+      "path": "validation/cpu-policy.log",
+      "sha256": "a1dacbd738de9d2c0fe9826c95bf337a2d611f2de6e239b06cb6bbbb51734b05",
+      "bytes": 299
+    },
+    {
+      "path": "validation/cpu-prediction.log",
+      "sha256": "7c11ba44b4f12179a5c68d401c62e611a828856c298a3447e7eabe8733a81ec6",
+      "bytes": 291
+    },
+    {
+      "path": "validation/dependency-source-manifest.json",
+      "sha256": "f1e16b19ad215312c227f0b27f0370556eddfb7afde02fb2c6940fecdb0c1419",
+      "bytes": 161754
+    },
+    {
+      "path": "validation/design.md",
+      "sha256": "9add5140bbce5d75a24f28929179957b3ab92d9e33f561ecb9aff9b132f2f0e6",
+      "bytes": 1424
+    },
+    {
+      "path": "validation/integration.json",
+      "sha256": "4ae04dbbc7fd3a77baa71c4cdfb2010f32c8870f79978d7324f0e5aca68e0dcc",
+      "bytes": 4257
+    },
+    {
+      "path": "validation/manifest.json",
+      "sha256": "45fa645950258545f9b1942f1db585007e8b16607afdf5dc42f48949acd541a9",
+      "bytes": 8167
+    },
+    {
+      "path": "validation/metal-actual-cmake-cache.txt.gz",
+      "sha256": "85feaa17c5444480445b2d418da4182ed51610832f4c77d8b5d120b963d36ba5",
+      "bytes": 5226
+    },
+    {
+      "path": "validation/metal-actual-compile-commands.json.gz",
+      "sha256": "4c665eda3b01f46cd16e12d189599a52e099487c5423adcbbcef0568532fae97",
+      "bytes": 5102
+    },
+    {
+      "path": "validation/metal-bounds.log",
+      "sha256": "f15fc5059e77683623568f7d289ea3b4648a5bd38e58f5db9c3bb24328101800",
+      "bytes": 295
+    },
+    {
+      "path": "validation/metal-build.log",
+      "sha256": "3bfa59978f1ce24cd4e522395fee7d146de6ce51a88aa3e44154987ca7f03b0f",
+      "bytes": 15408
+    },
+    {
+      "path": "validation/metal-cache-regression.log",
+      "sha256": "517b697a26cf1f667ef07b4a65df11106f58e59d41e567a333a7837d9ac4c60d",
+      "bytes": 291
+    },
+    {
+      "path": "validation/metal-configure.log",
+      "sha256": "e7cf3956544162d257053e73e749d1690ae7c4f45e0d881065e56bb88f67bd28",
+      "bytes": 2260
+    },
+    {
+      "path": "validation/metal-policy.log",
+      "sha256": "a1dacbd738de9d2c0fe9826c95bf337a2d611f2de6e239b06cb6bbbb51734b05",
+      "bytes": 299
+    },
+    {
+      "path": "validation/metal-prediction.log",
+      "sha256": "7c11ba44b4f12179a5c68d401c62e611a828856c298a3447e7eabe8733a81ec6",
+      "bytes": 291
+    },
+    {
+      "path": "validation/mlx-after-accepted-foundation.patch",
+      "sha256": "a9a1aba527a87df1d9dc85435500d4461db8ccf7e3b443325ca11c419f8b67a4",
+      "bytes": 5453
+    },
+    {
+      "path": "validation/mlx-c-after-accepted-foundation.patch",
+      "sha256": "5dd0c6736b2ffd28d4b283db7e207156b6b543dc2babf4993296b0120f701de6",
+      "bytes": 2137
+    },
+    {
+      "path": "validation/mlx-c-requested-policy.patch",
+      "sha256": "d922e32dc5fa336f683712bc4130a71733d0d1aab880cf30612be878642609e4",
+      "bytes": 2231
+    },
+    {
+      "path": "validation/mlx-requested-policy.patch",
+      "sha256": "2009e207f7516c02356cfc71da742d446a79d6d74880511673b31a2c1d8b180b",
+      "bytes": 5798
+    },
+    {
+      "path": "validation/native-source-manifest.json",
+      "sha256": "54efb8d12c0a7f54f0e5947f76508bf824d32a990bf801d203595de267b0a247",
+      "bytes": 58195
+    },
+    {
+      "path": "validation/owned-manifest.json",
+      "sha256": "997913bbd6683133d2cbc4d878daff4869db93cbef156adb2ca15c57b5a5f5dc",
+      "bytes": 4497
+    },
+    {
+      "path": "validation/package-evidence.py",
+      "sha256": "0aec180bfc8be5c8a104a3256bbb43e44642905c1ec99020ed4a2227282e48b6",
+      "bytes": 5546
+    },
+    {
+      "path": "validation/policy-owned-manifest.json",
+      "sha256": "0798bd783f8947d066f9247fbb7b96aea1c12c4ecd0b0a9184107fcde158f674",
+      "bytes": 1355
+    },
+    {
+      "path": "validation/policy-owned-source.tar.gz",
+      "sha256": "45f824c4b114f2401be1254a2786058e3a2145641c59b64ebee9ea4c45501eb5",
+      "bytes": 14472
+    },
+    {
+      "path": "validation/requested-policy-manifest.json",
+      "sha256": "d61dcbb82ad7debcf3f2c4a7114a82c0f72691231a584e46092a80f59d0e7965",
+      "bytes": 4685
+    },
+    {
+      "path": "validation/root-review.json",
+      "sha256": "1fc5840156eb9485d371dc245b7c06aa76b182a2afd52129355f3be8a4883469",
+      "bytes": 977
+    },
+    {
+      "path": "validation/run-cpp.py",
+      "sha256": "a3bc7371df7f064ea0e1eddaad561fd9ce4451b08bc6840f2553577eb5c62618",
+      "bytes": 2210
+    },
+    {
+      "path": "validation/run-swift.py",
+      "sha256": "d3644c13fbe95217405acdbd9cf1c67a27ccaa4ab34139e683e6b24bf2a24563",
+      "bytes": 3193
+    },
+    {
+      "path": "validation/selected-identifiers.json",
+      "sha256": "179402fbb7816c88be054a47fe2991a107b0a12e4b6e723c2360be00f284a73d",
+      "bytes": 863
+    },
+    {
+      "path": "validation/source-verified-after-cpp.json",
+      "sha256": "f9d762ae56451f75774eaa073a2458aac80cafc65d66b400ebb9648d9995a05c",
+      "bytes": 158
+    },
+    {
+      "path": "validation/source-verified-after-swift.json",
+      "sha256": "f9d762ae56451f75774eaa073a2458aac80cafc65d66b400ebb9648d9995a05c",
+      "bytes": 158
+    },
+    {
+      "path": "validation/source-verified-before-cpp.json",
+      "sha256": "f9d762ae56451f75774eaa073a2458aac80cafc65d66b400ebb9648d9995a05c",
+      "bytes": 158
+    },
+    {
+      "path": "validation/source-verified-before-swift.json",
+      "sha256": "f9d762ae56451f75774eaa073a2458aac80cafc65d66b400ebb9648d9995a05c",
+      "bytes": 158
+    },
+    {
+      "path": "validation/swift-actual-build-graph-after.yaml.gz",
+      "sha256": "93def962052487078127bf7b2ca0e1fd0550661985da84fa92dca0a86f5b60ce",
+      "bytes": 50952
+    },
+    {
+      "path": "validation/swift-actual-build-graph.yaml.gz",
+      "sha256": "dcd661323cbeff7172e1c1ce491600d48e6598587ab328d03ca32cd835d9c7a8",
+      "bytes": 50946
+    },
+    {
+      "path": "validation/swift-actual-package-state-after.json",
+      "sha256": "9ea9fcc12ad6ff0583c98d34ef573cb466ffe7983fb9fdfafc409809890c31ae",
+      "bytes": 16630
+    },
+    {
+      "path": "validation/swift-actual-package-state.json",
+      "sha256": "9ea9fcc12ad6ff0583c98d34ef573cb466ffe7983fb9fdfafc409809890c31ae",
+      "bytes": 16630
+    },
+    {
+      "path": "validation/swift-after-accepted-foundation.patch",
+      "sha256": "0781eabadd44971a5afde806cf5ef4634c064ecbadac6ed24af977262c491ec6",
+      "bytes": 7679
+    },
+    {
+      "path": "validation/swift-build.log",
+      "sha256": "d126e50facf98468749ef4dcd62b2eed1d5fd1afe031b49be318c70d431a7709",
+      "bytes": 165645
+    },
+    {
+      "path": "validation/swift-compiler-source-proof.json",
+      "sha256": "481d12c4c8eedfc55212973a1a591a08d2c1b1ecde35c7256f026a0d217ced12",
+      "bytes": 465712
+    },
+    {
+      "path": "validation/swift-execution.json",
+      "sha256": "361851884b70589f8e7bf2d2ff291ae8575c6b166c91577f85cf97b4673477c1",
+      "bytes": 1105
+    },
+    {
+      "path": "validation/swift-footprint.log",
+      "sha256": "2f59d3a22e29b9ece71b4320870e799416c8eebb58e4f21d3d37af3a6ba5c335",
+      "bytes": 2229
+    },
+    {
+      "path": "validation/swift-identifiers.log",
+      "sha256": "d85d4267316bb0e527a5ab022bcf67069d53a6037848a5322e2091415d2ebedb",
+      "bytes": 24696
+    },
+    {
+      "path": "validation/swift-metallib-placement.json",
+      "sha256": "f917ebeb2fd81014805cf1d25056dad526483daf2e39dd7a270e68b09a6f1b34",
+      "bytes": 555
+    },
+    {
+      "path": "validation/swift-requested-policy.patch",
+      "sha256": "d24e007b66e5ef06a690538e1ebe111b71a47f937aff904f31aad767ea1ca9cb",
+      "bytes": 8166
+    },
+    {
+      "path": "validation/verdict.json",
+      "sha256": "11380a2d4e999c22325aaa6f0a61b83e39785573c307314d823facf9365d5888",
+      "bytes": 1234
+    },
+    {
+      "path": "validation/verify.py",
+      "sha256": "27d9461e9184b2e08fdb413bf1ad8ca85931401022758db3421477a797a52100",
+      "bytes": 1541
+    }
+  ]
+}

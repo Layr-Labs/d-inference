@@ -24,8 +24,9 @@ func TestRestoreProviderStateStagesMDAChain(t *testing.T) {
 		MDAVerified:  true,
 		MDACertChain: chainJSON,
 	}
-
-	reg.RestoreProviderState(p, rec)
+	if err := reg.RestoreProviderState(p, rec); err != nil {
+		t.Fatal(err)
+	}
 
 	// MDAVerified must stay false (drift guard) — the proof is re-earned this
 	// connection, not resurrected.
@@ -48,7 +49,9 @@ func TestRestoreProviderStateStagesMDAChain(t *testing.T) {
 func TestRestoreProviderStateNoMDAChain(t *testing.T) {
 	reg := New(testLogger())
 	p := reg.Register("p1", nil, testRegisterMessage())
-	reg.RestoreProviderState(p, &store.ProviderRecord{ID: "p1", TrustLevel: string(TrustSelfSigned)})
+	if err := reg.RestoreProviderState(p, &store.ProviderRecord{ID: "p1", TrustLevel: string(TrustSelfSigned)}); err != nil {
+		t.Fatal(err)
+	}
 	if staged := p.StagedMDAChain(); staged != nil {
 		t.Errorf("StagedMDAChain = %v, want nil", staged)
 	}

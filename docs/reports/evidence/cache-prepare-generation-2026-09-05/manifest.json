@@ -1,0 +1,273 @@
+{
+  "scope": "Coordinator configuration/attempt generation correctness; no live routing or model speedup measurement",
+  "base_parent": "a9eee7871f563af44def7097876e836f930af9a2",
+  "source_freeze_sha256": "472b31a26b75197395cfb3f935301ce0b455cc7520f0248f02b7f5e9b2b273f4",
+  "verification": {
+    "full-2": [
+      2568,
+      1524,
+      2
+    ],
+    "focused-race-3": [
+      154,
+      220,
+      0
+    ],
+    "integrated-race-1": [
+      160,
+      240,
+      0
+    ]
+  },
+  "archive": {
+    "path": "payloads.tar.gz",
+    "sha256": "c2c64c5801a830244c426df5a2d0101f9f836df14522a81e83977f7863adc764",
+    "bytes": 742348
+  },
+  "payloads": {
+    "freeze/REVIEW.md": {
+      "sha256": "94e58503fce037d50376c2294595ac61484821bff5878976d486b20b746d1e17",
+      "bytes": 5628
+    },
+    "freeze/baseline-regression-fixtures/coordinator/api/cache_generation_regression_test.go": {
+      "sha256": "b01e4d8b904c2d7c6f3cc79c4aa2f5a7e088e34603af9f89849adc1c1c87850a",
+      "bytes": 2157
+    },
+    "freeze/baseline-regression-fixtures/coordinator/api/cache_preparation_helpers_test.go": {
+      "sha256": "acdc631a05ebb5014edcaaed78f399c54ea8c0982412d67f0822180eaadad925",
+      "bytes": 3662
+    },
+    "freeze/baseline-regression-fixtures/coordinator/api/provider_wire_benchmark_test.go": {
+      "sha256": "ed7b2e154c225d89292db91d366da22d002357c51177b56974cf94a7f988cdf4",
+      "bytes": 1087
+    },
+    "freeze/baseline-regression-fixtures/coordinator/registry/cache_plan_generation_test.go": {
+      "sha256": "77039196fcabb3db8372d2dbf7c3fe3784f3864d50bf8080ded637c3b01264cc",
+      "bytes": 3772
+    },
+    "freeze/evidence/cache-prepare-baseline-bench.txt.gz": {
+      "sha256": "a7281ce2266e58e912e5dccc6720fdcb79eb7d2bf3f1b22abb13c5e4e08e8e21",
+      "bytes": 319
+    },
+    "freeze/evidence/cache-prepare-baseline-regressions-2.jsonl.gz": {
+      "sha256": "bd2360232d8c13b97dedb830a702615a70f726736c5d315f517fcac166b001b6",
+      "bytes": 1434
+    },
+    "freeze/evidence/cache-prepare-baseline-regressions.jsonl.gz": {
+      "sha256": "d12912e5a3a6e9a2e2058267742d0ee6a67495ba6c06f887592630952a595a63",
+      "bytes": 1427
+    },
+    "freeze/evidence/cache-prepare-benchmark-summary.json.gz": {
+      "sha256": "346b811c3cab9f0eeff20a29e53eea9c2c2aac3c6b80bf874b326d6f77df439e",
+      "bytes": 266
+    },
+    "freeze/evidence/cache-prepare-candidate-bench.txt.gz": {
+      "sha256": "dffb8229cf05e70f34d3a5bb3ad546d63716e7d4c088aadcc8537d31a56c0c7b",
+      "bytes": 530
+    },
+    "freeze/evidence/cache-prepare-docs-check.txt.gz": {
+      "sha256": "a95c1d2d5849a91bc425fca709980e672f81d416f043395673df2a1ffd48b8fd",
+      "bytes": 62
+    },
+    "freeze/evidence/cache-prepare-first-api-2.jsonl.gz": {
+      "sha256": "21633d3c874c51d2a13b50e7762ed7a9ed3a66b0cc88c8fe1a83900edabecd77",
+      "bytes": 882
+    },
+    "freeze/evidence/cache-prepare-first-api-3.jsonl.gz": {
+      "sha256": "3e35c40fd71810600b5979f7323b21ee2c77087109fecff1d25ac0cca8e75b39",
+      "bytes": 2413
+    },
+    "freeze/evidence/cache-prepare-first-api.jsonl.gz": {
+      "sha256": "9a06a131c8f352ffd9906913dee9fbbe582fbaa8d694d84a7f8ed37bfd8985be",
+      "bytes": 364
+    },
+    "freeze/evidence/cache-prepare-first-registry.jsonl.gz": {
+      "sha256": "9ff1baf1d6040c9d8addc6c280799f5d702b6e4648e77005ae352860bdcafa99",
+      "bytes": 9678
+    },
+    "freeze/evidence/cache-prepare-focused-race-1.jsonl.gz": {
+      "sha256": "c222062272f4b6367f33ec33583c710fde71536773236355cc73843465b622fa",
+      "bytes": 2891
+    },
+    "freeze/evidence/cache-prepare-focused-race-2.jsonl.gz": {
+      "sha256": "ad943da00cf91444b955d4113fd874e801084a516657eefe433998ac7799a84e",
+      "bytes": 11780
+    },
+    "freeze/evidence/cache-prepare-focused-race-3.jsonl.gz": {
+      "sha256": "8a3dbbfadb34fd22e374f0f2b561cbb44e4f430354167607ff919e1ef950debd",
+      "bytes": 22074
+    },
+    "freeze/evidence/cache-prepare-full-1.jsonl.gz": {
+      "sha256": "4935dda4e0b50a02392dd5fa08af046bc1e916a2f26b16f3495ca7994ee14c5a",
+      "bytes": 252016
+    },
+    "freeze/evidence/cache-prepare-full-2.jsonl.gz": {
+      "sha256": "60334ed50c92e259f586b713276394ec73f7ca3d1ce3fe83da2d63ff3b64f8b4",
+      "bytes": 254889
+    },
+    "freeze/evidence/cache-prepare-generation-tests-1.jsonl.gz": {
+      "sha256": "9ba10680a804fa3e2adc64a6865be3ac976148ba0bd913cbf82f1b2b44c67027",
+      "bytes": 1399
+    },
+    "freeze/evidence/cache-prepare-hint-query-1.jsonl.gz": {
+      "sha256": "d7e1b003db1691e9eef1debf10f660153c588a98b37a7b0acb43a9e42c2063de",
+      "bytes": 21017
+    },
+    "freeze/evidence/cache-prepare-integrated-race-1.jsonl.gz": {
+      "sha256": "67d705257baa237df46c75175b52db2b4b50906cfb9721872815549f3c7bb8b8",
+      "bytes": 23253
+    },
+    "freeze/evidence/cache-prepare-plan-wire-1.jsonl.gz": {
+      "sha256": "b2b34f40ccc83f17e290d3cd803bcca1027dfd297df18a2a15bedd2f68d09ce8",
+      "bytes": 989
+    },
+    "freeze/evidence/cache-prepare-plan-wire-2.jsonl.gz": {
+      "sha256": "f324dfa62f5e0ee6001b0ef5bca6a25bc99d81bced58e1169ea888fef8971e93",
+      "bytes": 893
+    },
+    "freeze/files/CHANGELOG.md": {
+      "sha256": "42178399e73e33db709ea25cef8278bc171e91e755d9595eb8150c9826eeb8b3",
+      "bytes": 57523
+    },
+    "freeze/files/coordinator/api/cache_eligibility_integration_test.go": {
+      "sha256": "b398b71462b3d90245a346242118697a8ddbd3ed98e57a194e28650b614d31bd",
+      "bytes": 13963
+    },
+    "freeze/files/coordinator/api/cache_preparation_helpers_test.go": {
+      "sha256": "acdc631a05ebb5014edcaaed78f399c54ea8c0982412d67f0822180eaadad925",
+      "bytes": 3662
+    },
+    "freeze/files/coordinator/api/provider_wire.go": {
+      "sha256": "45457ba19d7ba17b9d4985bb41c6f397b7d50f5a66725dbae5a1074a3a5b7d47",
+      "bytes": 3029
+    },
+    "freeze/files/coordinator/api/provider_wire_benchmark_test.go": {
+      "sha256": "ed7b2e154c225d89292db91d366da22d002357c51177b56974cf94a7f988cdf4",
+      "bytes": 1087
+    },
+    "freeze/files/coordinator/api/provider_wire_test.go": {
+      "sha256": "200522ce23e870e5151417913ad095abf45a24c8eeb8f3c8c4761f26d246e1a2",
+      "bytes": 6184
+    },
+    "freeze/files/coordinator/api/reputation_latency_test.go": {
+      "sha256": "fc7c8d0a0897508750f89061c3ce24ae99c68d26c706be65980cffcfa49b4263",
+      "bytes": 4366
+    },
+    "freeze/files/coordinator/registry/cache_artifact_allowlist_test.go": {
+      "sha256": "d0524162a10c2f3840ee43335920abdfeccb511d95c80c3e6905b571889a7310",
+      "bytes": 9079
+    },
+    "freeze/files/coordinator/registry/cache_attempt_benchmark_test.go": {
+      "sha256": "913aef3c1b9b837ef3646bca43155a3a9bece28023684c43ac38984d83829dc7",
+      "bytes": 799
+    },
+    "freeze/files/coordinator/registry/cache_attempt_ownership.go": {
+      "sha256": "27c7459acf3c07b433371fe1c7a7c6583d48d622a138e0821c395cacfa5e7b94",
+      "bytes": 4347
+    },
+    "freeze/files/coordinator/registry/cache_capability_generation_test.go": {
+      "sha256": "262c624ebb8d0fd7aeaeefb1ca196fbf21f5ed3d302583215254c0b07f8d4bee",
+      "bytes": 3911
+    },
+    "freeze/files/coordinator/registry/cache_checkpoint_test.go": {
+      "sha256": "6e48a63e2bacbb3324894fe652aea1c637e51b82ac10c502723a2cc97998531a",
+      "bytes": 11358
+    },
+    "freeze/files/coordinator/registry/cache_checkpoint_turn_cost_test.go": {
+      "sha256": "f7766d1e5a8c41fb352e29775e309d9eb35d3cff5b2c558d95d28b1f3fd0f7a0",
+      "bytes": 3737
+    },
+    "freeze/files/coordinator/registry/cache_hint_generation_test.go": {
+      "sha256": "405a0e6e8ef517e5c6730d3ddbc8a50f63479b87db7fde01e904a1b83a1d187c",
+      "bytes": 2735
+    },
+    "freeze/files/coordinator/registry/cache_holder_index_benchmark_test.go": {
+      "sha256": "e203c726548fdd86363aba33ae3deabd2244730c93cbf8c465c9bab156d91fdc",
+      "bytes": 3751
+    },
+    "freeze/files/coordinator/registry/cache_memory_test.go": {
+      "sha256": "26408f884ae2c20ed22532662314db16b197908b0fa69c506ac5587a6072590d",
+      "bytes": 13270
+    },
+    "freeze/files/coordinator/registry/cache_plan_generation_test.go": {
+      "sha256": "f2d6d8e61841fb80abda0535ec5f82a8965cb416847b3ec0aa1578db416a8094",
+      "bytes": 3627
+    },
+    "freeze/files/coordinator/registry/cache_prepare_generation_test.go": {
+      "sha256": "fc26310c306150cd454ec7faebe23e43b8f10c8e3156a3bf0d66a563892c6e74",
+      "bytes": 9420
+    },
+    "freeze/files/coordinator/registry/cache_receipts.go": {
+      "sha256": "ae013534deab6fae6da0782a09c2275815e28ac5ca26349cd9a132e4c57a9676",
+      "bytes": 8547
+    },
+    "freeze/files/coordinator/registry/cache_receipts_v2.go": {
+      "sha256": "488dd2215a07b2a79d65dac7e0c298c8a706ba364cabba0246bafcc4ab040515",
+      "bytes": 15441
+    },
+    "freeze/files/coordinator/registry/cache_route_keys.go": {
+      "sha256": "e4c8e3a5def0e9e16446862f8d20bfa7de58dfed934a881faa21527a4eaa1e08",
+      "bytes": 9295
+    },
+    "freeze/files/coordinator/registry/cache_routing.go": {
+      "sha256": "264b6b6795349e04d9345fe754585f68aed0e5b7d43c9fca7b798d923d655e93",
+      "bytes": 12933
+    },
+    "freeze/files/coordinator/registry/cache_routing_exact_test.go": {
+      "sha256": "d46967c4e33150712103e5eaebc1c81b4db58e2af476c883341461e3ced98571",
+      "bytes": 32648
+    },
+    "freeze/files/coordinator/registry/cache_routing_hints.go": {
+      "sha256": "deff28427feb4b169ac5674a4505973cb589d6518537f2c3c17fa877371969e6",
+      "bytes": 6489
+    },
+    "freeze/files/coordinator/registry/cache_routing_tool_turn_vector_test.go": {
+      "sha256": "80327a73f8c8418b70a9d46317b47070492a188feabf57d8b9599b06e509d174",
+      "bytes": 3686
+    },
+    "freeze/files/coordinator/registry/cache_service_cost_test.go": {
+      "sha256": "07877c0a97ef6484183cb79041f4335e7ada0d8ead5b3f3c805d33c2acb2cd28",
+      "bytes": 8514
+    },
+    "freeze/files/coordinator/registry/pending_request.go": {
+      "sha256": "54dd6331ed991037ff4c12c4ff5f4a22f665e7459c75bbda652fee130bfb41dd",
+      "bytes": 29643
+    },
+    "freeze/files/coordinator/registry/provider_lifecycle.go": {
+      "sha256": "21625ab29299baf5264a9840970c532f37c70278c36a5c5cb468c24046d73b8a",
+      "bytes": 21614
+    },
+    "freeze/files/docs/architecture/cache-aware-routing.md": {
+      "sha256": "4bd3435b6af9111d081af7c2532bf4c7a8a641da694b07d9bb2eab0d869a3c34",
+      "bytes": 37669
+    },
+    "freeze/integration/apply-checks.json": {
+      "sha256": "8c27394f739f45aff3916afce0cf2f6560f00571f1a2bc2cff65fc9963b2f2e4",
+      "bytes": 694
+    },
+    "freeze/integration/go-source-manifest.json": {
+      "sha256": "dc7ba24a7cc400b2fd3e7c9878c2f331d91a9b1707d5b3093a7df99502bfa157",
+      "bytes": 3384
+    },
+    "freeze/integration/signed-cost-fixture-followup.patch": {
+      "sha256": "60c15f0fd05ea75956471b04f5999660f404ed7fc27a5473725db3e952f2562b",
+      "bytes": 724
+    },
+    "freeze/manifest.json": {
+      "sha256": "472b31a26b75197395cfb3f935301ce0b455cc7520f0248f02b7f5e9b2b273f4",
+      "bytes": 10928
+    },
+    "freeze/source.patch": {
+      "sha256": "b1faaa5d3fe1b145a2cf921945fa98a8c8b9128fd455d8630dc8859a3d994728",
+      "bytes": 106429
+    },
+    "freeze/verification.json": {
+      "sha256": "8afce62789ceccd87276ff37e699988c86c8e200173f8138f184308a2dcb7c87",
+      "bytes": 4686
+    },
+    "root/integration.json": {
+      "sha256": "7eaedf7b2e1f4268575bca5cf6d0bd779ce2cdc02607579539c3c8e4b6a57deb",
+      "bytes": 4014
+    }
+  }
+}

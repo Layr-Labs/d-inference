@@ -1,0 +1,16 @@
+{
+  "started_unix": 1788589073.6468768,
+  "arguments": {
+    "binary": "/Users/gaj/autoresearch/radix-prefix-cache/artifacts/candidate-mtp-build3/radix-engine",
+    "model_directory": "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/local",
+    "input": "/Users/gaj/autoresearch/radix-prefix-cache/inputs/paged-attention-input.json",
+    "output": "/Users/gaj/autoresearch/radix-prefix-cache/runs/candidate-engine-paged-gpt-oss",
+    "cache": "on",
+    "mtp": "off",
+    "kv_backend": "paged"
+  },
+  "entry_gpu_temp_c": 31.39583396911621,
+  "exit_code": 0,
+  "ended_unix": 1788589086.991632,
+  "ranked_job_at_end": false
+}

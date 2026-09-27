@@ -1,0 +1,342 @@
+{
+  "scope": "Coordinator measured SSD stage preservation and query capability binding; source and Go tests only",
+  "parent_base": "06b02df7a3efe35541dca6519fdd9c05e4bd146c",
+  "freeze_manifest_sha256": "61307ecd3c40d5db2efd716bc0174104537e7ad065a3a706ff67a5488584710d",
+  "verification": {
+    "go_toolchain": "go1.25.0 darwin/arm64",
+    "final_full": {
+      "counts": {
+        "pass_functions": 2583,
+        "pass_subtests": 1557,
+        "skip_functions": 2
+      },
+      "packages": [
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/protocol",
+          "Action": "pass",
+          "Elapsed": 0.189
+        },
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+          "Action": "pass",
+          "Elapsed": 16.007
+        },
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/api",
+          "Action": "pass",
+          "Elapsed": 158.98
+        }
+      ],
+      "skipped_tests": [
+        "TestPerfE2E_ChatCompletions",
+        "TestVerifyProviderViaMDM_TimeoutTransient"
+      ],
+      "failed_tests": [],
+      "raw_sha256": "f83a8c4aec6836d70df7d019bdb8d16c1b93bac0deacdee1377b15f899bc7a3c"
+    },
+    "final_race": {
+      "counts": {
+        "pass_functions": 169,
+        "pass_subtests": 253
+      },
+      "packages": [
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+          "Action": "pass",
+          "Elapsed": 3.432
+        },
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/api",
+          "Action": "pass",
+          "Elapsed": 18.33
+        }
+      ],
+      "skipped_tests": [],
+      "failed_tests": [],
+      "raw_sha256": "c6c8cc82419a24d1838402b328b90a238267bc88b629f75471d77f9592cc10ae"
+    },
+    "new_focused": {
+      "counts": {
+        "pass_subtests": 13,
+        "pass_functions": 8
+      },
+      "packages": [
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+          "Action": "pass",
+          "Elapsed": 0.336
+        }
+      ],
+      "skipped_tests": [],
+      "failed_tests": [],
+      "raw_sha256": "07dbcc5c1622c99c8300e0d846c3dd573acb1359dccf176d5a7c09ec415e2027"
+    },
+    "baseline_expected_failure": {
+      "counts": {
+        "fail_subtests": 4,
+        "fail_functions": 7,
+        "pass_subtests": 9,
+        "pass_functions": 1
+      },
+      "packages": [
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+          "Action": "fail",
+          "Elapsed": 0.343
+        }
+      ],
+      "skipped_tests": [],
+      "failed_tests": [
+        "TestSSDMeasuredStageSurvivesReadyAndChangesRouting/slow_read_not_erased",
+        "TestSSDMeasuredStageSurvivesReadyAndChangesRouting/fast_read_not_overpriced",
+        "TestSSDMeasuredStageSurvivesReadyAndChangesRouting",
+        "TestSSDReadyDoesNotExtendMeasuredStageDeadline",
+        "TestSSDNewLookupReplacesPreviousMeasurement",
+        "TestSSDMeasurementStaysAtExactEndpoint",
+        "TestSSDStageMeasurementConcurrentQueryAndReady",
+        "TestSSDStageHintFreezesQueryObservation",
+        "TestSSDMeasuredStageQueryFencesCapabilityPublication/expired=false",
+        "TestSSDMeasuredStageQueryFencesCapabilityPublication/expired=true",
+        "TestSSDMeasuredStageQueryFencesCapabilityPublication"
+      ],
+      "raw_sha256": "de1a926f9dc40adeeb5dfd68d601d950b1f877874c11f0f366b55a704e86e100"
+    },
+    "superseded_draft_query_gap_expected_failure": {
+      "counts": {
+        "fail_subtests": 2,
+        "fail_functions": 1
+      },
+      "packages": [
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+          "Action": "fail",
+          "Elapsed": 0.313
+        }
+      ],
+      "skipped_tests": [],
+      "failed_tests": [
+        "TestSSDMeasuredStageQueryFencesCapabilityPublication/expired=false",
+        "TestSSDMeasuredStageQueryFencesCapabilityPublication/expired=true",
+        "TestSSDMeasuredStageQueryFencesCapabilityPublication"
+      ],
+      "raw_sha256": "4e8c1c53a4b03994b489324df7dd6d46e44cd2a6fbcc5d1d0e10859d79855b57"
+    },
+    "superseded_first_full": {
+      "counts": {
+        "pass_functions": 2582,
+        "pass_subtests": 1555,
+        "skip_functions": 2
+      },
+      "packages": [
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/protocol",
+          "Action": "pass",
+          "Elapsed": 0.683
+        },
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+          "Action": "pass",
+          "Elapsed": 16.134
+        },
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/api",
+          "Action": "pass",
+          "Elapsed": 157.243
+        }
+      ],
+      "skipped_tests": [
+        "TestPerfE2E_ChatCompletions",
+        "TestVerifyProviderViaMDM_TimeoutTransient"
+      ],
+      "failed_tests": [],
+      "raw_sha256": "87a03058b28118824ebcf37b60a0ae6099a7ac4e2920a4f3d4a023fa41148eb5"
+    },
+    "superseded_first_race": {
+      "counts": {
+        "pass_functions": 168,
+        "pass_subtests": 251
+      },
+      "packages": [
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+          "Action": "pass",
+          "Elapsed": 3.463
+        },
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/api",
+          "Action": "pass",
+          "Elapsed": 18.625
+        }
+      ],
+      "skipped_tests": [],
+      "failed_tests": [],
+      "raw_sha256": "acfde3359e26fd806e501a09fdebbc753785e26b5e1df27414f53e42cbc20e79"
+    },
+    "commands": {
+      "full": "GOTOOLCHAIN=go1.25.0 go test ./registry ./api ./protocol -count=1 -json",
+      "race": "GOTOOLCHAIN=go1.25.0 go test -race ./registry ./api -run 'Test.*(Cache|Checkpoint|SSD|ProviderInference)' -count=1 -json",
+      "focused_and_baseline": "GOTOOLCHAIN=go1.25.0 go test ./registry -run 'TestSSD(MeasuredStage|ReadyDoesNotExtend|NewLookupReplaces|Measurement|Stage)' -count=1 -json",
+      "query_gap_draft": "GOTOOLCHAIN=go1.25.0 go test ./registry -run TestSSDMeasuredStageQueryFencesCapabilityPublication -count=1 -json",
+      "docs": "make docs-check"
+    },
+    "docs": "166 files pass",
+    "gofmt": "all 5 owned Go files clean",
+    "diff_check": "pass",
+    "patch_path_set": "7 source paths exact, new files included",
+    "base_index_apply_check": "02f6af71, pass",
+    "current_parent_apply_check": "06b02df7, pass",
+    "limits": [
+      "No provider, protocol, configuration or default changes",
+      "No Swift/Metal/GPU/model/network builds or measurements",
+      "Baseline and superseded failures are negative controls; superseded full/race do not validate final source",
+      "No live rollout action or commit from this lane"
+    ]
+  },
+  "archive": {
+    "path": "payloads.tar.gz",
+    "sha256": "f1ad91111b5ecd3edcf9e000bd8a256f5f9ff6be195e621b45414490091779aa",
+    "bytes": 683183
+  },
+  "payloads": {
+    "REVIEW.md": {
+      "sha256": "e085fadf44bfb4088b288eed3e91a0479ac83022061589f4f7a0ec6e4b4c14e9",
+      "bytes": 6322
+    },
+    "evidence/baseline-before-query-fix.jsonl.gz": {
+      "sha256": "0d0730666020f004118bfdb761a854c73fd780c638af2f6798a9922da850b33b",
+      "bytes": 2881
+    },
+    "evidence/baseline-final.jsonl.gz": {
+      "sha256": "84011b570d155f0ba58ce7f73bd30c77015cf5023bfd2d7c10de6e978b14ad27",
+      "bytes": 3281
+    },
+    "evidence/cache-stage-measurement-focused.jsonl.gz": {
+      "sha256": "e0839de74cd5cd09bcd242fd7d1b5f977e5153c81db11709c597e38250862a5a",
+      "bytes": 247
+    },
+    "evidence/cache-stage-measurement-focused1.jsonl.gz": {
+      "sha256": "77bdbd10c0090dc790efb691d55b0cf65042f4e1aedd8666cae5f2c971116332",
+      "bytes": 1122
+    },
+    "evidence/cache-stage-measurement-focused2.jsonl.gz": {
+      "sha256": "03f46be23b4f1764f606ff221067fa6c9548ceb6ad4fe2869e74ab3cd7614620",
+      "bytes": 283
+    },
+    "evidence/cache-stage-measurement-focused3.jsonl.gz": {
+      "sha256": "e7499660d38c4daf0d867dce3173feaa1b43eae1ac0fab09ff63983cacae3dfb",
+      "bytes": 1232
+    },
+    "evidence/docs-check.log": {
+      "sha256": "cd4a266f61695e63f26bd25974424db684fa333ba9a4385915cefbf987a96352",
+      "bytes": 51
+    },
+    "evidence/focused4.jsonl.gz": {
+      "sha256": "2980d6f4ed5fff5c4d0d42df6fb467cfc259f22f99586d310a818545336d5e74",
+      "bytes": 1358
+    },
+    "evidence/full-before-query-fix.jsonl.gz": {
+      "sha256": "6adf2a6e9e288b3579bf0a4a669047a85bec847ca8c986bd37b2e4e35ee51100",
+      "bytes": 252207
+    },
+    "evidence/full-final.jsonl.gz": {
+      "sha256": "76ec72bc467051988fa0b55c9187e1b00f04b978577fbaffde729566cc8888e5",
+      "bytes": 254907
+    },
+    "evidence/query-gap-before-fix.jsonl.gz": {
+      "sha256": "3bd66ac381a697cd51cc56ec372b0d07f4bef588671d61f7e2ffcd568b1490b1",
+      "bytes": 738
+    },
+    "evidence/race-before-query-fix.jsonl.gz": {
+      "sha256": "7b055fa42ca7b90c1920c923023856696c3a36d9290260c63156def39f5f1f33",
+      "bytes": 24500
+    },
+    "evidence/race-final.jsonl.gz": {
+      "sha256": "b497da6443ab0c5aa2619b44ed7e22b5297515419c4ecc221b518c7602014109",
+      "bytes": 24755
+    },
+    "final-source-hashes.json": {
+      "sha256": "fdbef962ec6241c3407d312b408d2ea84c3781e13620ccbd638cf95ef9111f98",
+      "bytes": 878
+    },
+    "final-source/CHANGELOG.md": {
+      "sha256": "793cfaf4dc1e0572a9af1c536eadac0bafd69c2b9bac8fb8653c8827199afeac",
+      "bytes": 58687
+    },
+    "final-source/coordinator/registry/cache_receipts_v2.go": {
+      "sha256": "c52df1b2c1daa9fbe88b8ac1d0fca68393c3ab693305bb32eb65b8ca7808b83d",
+      "bytes": 15765
+    },
+    "final-source/coordinator/registry/cache_routing.go": {
+      "sha256": "8b8b33bd9e024c01bfb05c0b0b8607d80dc50248fb7d894aa9c20506f4322c90",
+      "bytes": 12981
+    },
+    "final-source/coordinator/registry/cache_routing_hints.go": {
+      "sha256": "1215da118d3f1cef506a00ca682dbc60ac75aca4d5dfeca84ec4df0994c8320a",
+      "bytes": 6904
+    },
+    "final-source/coordinator/registry/cache_stage_measurement.go": {
+      "sha256": "14aff6f226f39915f1dc43c57c4916d116992ba222fff2e49e88b73950464b2b",
+      "bytes": 1391
+    },
+    "final-source/coordinator/registry/cache_stage_measurement_test.go": {
+      "sha256": "1219b46c245f42f33e2c9f9947df0055610be878b9d980c682261069e5219dd9",
+      "bytes": 11515
+    },
+    "final-source/docs/architecture/cache-aware-routing.md": {
+      "sha256": "f570408c3ff0e5f2a1735764da277847cb85a83cc67bc2ef86ee407afb74eb4c",
+      "bytes": 40601
+    },
+    "freeze.py": {
+      "sha256": "54caa77aa4a2c9efe8a2bcefdfbd2746b0207aa01f5cfce52d82e282133b36fd",
+      "bytes": 6068
+    },
+    "manifest.json": {
+      "sha256": "61307ecd3c40d5db2efd716bc0174104537e7ad065a3a706ff67a5488584710d",
+      "bytes": 13215
+    },
+    "root/integration.json": {
+      "sha256": "6a9924fa39090e919a15c13c81f525c667a0baff87ba9d082d0d255b5197aa15",
+      "bytes": 2675
+    },
+    "source.patch": {
+      "sha256": "abb5db824c41e1dd783da82e594af760c43b422b7d8df579ce6f913193b23d6b",
+      "bytes": 21491
+    },
+    "superseded-review1/files/CHANGELOG.md": {
+      "sha256": "793cfaf4dc1e0572a9af1c536eadac0bafd69c2b9bac8fb8653c8827199afeac",
+      "bytes": 58687
+    },
+    "superseded-review1/files/coordinator/registry/cache_receipts_v2.go": {
+      "sha256": "c52df1b2c1daa9fbe88b8ac1d0fca68393c3ab693305bb32eb65b8ca7808b83d",
+      "bytes": 15765
+    },
+    "superseded-review1/files/coordinator/registry/cache_routing.go": {
+      "sha256": "8b8b33bd9e024c01bfb05c0b0b8607d80dc50248fb7d894aa9c20506f4322c90",
+      "bytes": 12981
+    },
+    "superseded-review1/files/coordinator/registry/cache_routing_hints.go": {
+      "sha256": "ca149eb4c198d4f93671a17d97755370f2c8ee560278e1570ca0787e0cfb9947",
+      "bytes": 6680
+    },
+    "superseded-review1/files/coordinator/registry/cache_stage_measurement.go": {
+      "sha256": "14aff6f226f39915f1dc43c57c4916d116992ba222fff2e49e88b73950464b2b",
+      "bytes": 1391
+    },
+    "superseded-review1/files/coordinator/registry/cache_stage_measurement_test.go": {
+      "sha256": "e3ed135d1f246fa5d79ee87cdc356046d4bfa6d164d9ca0f935dc793a2eae11f",
+      "bytes": 10227
+    },
+    "superseded-review1/files/docs/architecture/cache-aware-routing.md": {
+      "sha256": "f570408c3ff0e5f2a1735764da277847cb85a83cc67bc2ef86ee407afb74eb4c",
+      "bytes": 40601
+    },
+    "superseded-review1/manifest.json": {
+      "sha256": "cc3a2abc3bbe1bd86c0b240b510cf2cbb5aef7de4fe40137ae57711e82a692f4",
+      "bytes": 951
+    },
+    "verification.json": {
+      "sha256": "e58aafd272788b461b0a658c1e25918b072082b864adea4a330d55e7d4b3c414",
+      "bytes": 6215
+    }
+  }
+}

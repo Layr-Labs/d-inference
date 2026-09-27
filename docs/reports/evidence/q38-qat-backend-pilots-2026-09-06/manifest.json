@@ -1,0 +1,810 @@
+{
+  "schema": 1,
+  "scope": "Seven actual B1r1 pilots; seven individual passes, five strict pair passes, one strict QAT backend failure and two unsupported comparisons. No performance/release acceptance.",
+  "review_base_commit": "384c321aa7565864182c02210fc4d212efc6501b",
+  "source_inventories_reverified": [
+    {
+      "path": "/tmp/darkbloom-q38-qat-backend-pilots1/package/package-manifest.json",
+      "sha256": "b34ccb5ab1f71e017b9aa12d230098afd661844637e1ca77c8dda096797e8762",
+      "payloads": 33
+    },
+    {
+      "path": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/manifest.json",
+      "sha256": "8429a6fe9f4ca4de2a505dfcc7bd2c52e44f5b3ee811a7dd82162dcc6d67fae9",
+      "payloads": 80
+    },
+    {
+      "path": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-failed-cell1/manifest.json",
+      "sha256": "012913af09d6c8ae1ad8fbfccba42cd7db445a27ee08828f5e0d5aa6de69061f",
+      "payloads": 69
+    },
+    {
+      "path": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qwen38-group1/manifest.json",
+      "sha256": "de5f2a2065a39c2aa4fe7f9426f467bf0fb8462e7134251d92746b1320e03939",
+      "payloads": 48
+    }
+  ],
+  "payloads": 129,
+  "uncompressed_bytes": 9220169,
+  "archive": {
+    "sha256": "42abf4c910af4ff56b5f34a6287583dd350b3d2b4429500515c3e3cabcba436f",
+    "bytes": 622859,
+    "mode": "0o644"
+  },
+  "files": {
+    "analysis/final-postflight-handoff1.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/final-postflight-handoff1.json",
+      "sha256": "059db09ee0581c5b3a28dbbfd77c7936cacfb288ed4c22d1062ffd1d7b598906",
+      "bytes": 892,
+      "mode": "0o644"
+    },
+    "analysis/freeze.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/freeze.json",
+      "sha256": "a96d929067c89e7c56f1dd073c74d6dad883524f3306130557b064cd31f75f3e",
+      "bytes": 2312,
+      "mode": "0o644"
+    },
+    "analysis/pending-binding-refusal.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/pending-binding-refusal.json",
+      "sha256": "5f13780ea9b8c003f6b6d3e1426d7740b029660806eba11f2091f85ea380bed0",
+      "bytes": 68,
+      "mode": "0o644"
+    },
+    "analysis/pilot-review-sequence1.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/pilot-review-sequence1.json",
+      "sha256": "e3753bbb44b1f3e2c4b2b69f039781f9312e4cf7ad8c6679a88cfdd3ab187c21",
+      "bytes": 1055,
+      "mode": "0o644"
+    },
+    "analysis/qat-cold-backend-divergence1.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/qat-cold-backend-divergence1.json",
+      "sha256": "6b1112c5f6f712a1671c43959cf3ec292306d43b1cf436ae06fe989034d0f7c0",
+      "bytes": 3782,
+      "mode": "0o644"
+    },
+    "analysis/qwen38-mtp-observations1.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/qwen38-mtp-observations1.json",
+      "sha256": "41230d4f259fb87247da7215fa1657bed338bfd38d876acec3b2376139b3b325",
+      "bytes": 18377,
+      "mode": "0o644"
+    },
+    "analysis/root-final-results-review.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/root-final-results-review.json",
+      "sha256": "2b62745e04332d3bbde9563a881eb4a8341db2ef87ae641d9799e0e79fc54162",
+      "bytes": 429,
+      "mode": "0o644"
+    },
+    "execution/independent-collection.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/independent-collection.json",
+      "sha256": "62d109a9d17a19aaf42f51d2321a81a9188259c5601ffd74b5e23b7252ce821a",
+      "bytes": 12593,
+      "mode": "0o644"
+    },
+    "execution/manifest.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/manifest.json",
+      "sha256": "8429a6fe9f4ca4de2a505dfcc7bd2c52e44f5b3ee811a7dd82162dcc6d67fae9",
+      "bytes": 16250,
+      "mode": "0o644"
+    },
+    "execution/payload/bindings.reviewed.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/bindings.reviewed.json",
+      "sha256": "073dbc2123892971a4581c66a7abeeb5276fd749b639fa0756e0d4d253d23f28",
+      "bytes": 4457,
+      "mode": "0o644"
+    },
+    "execution/payload/collection-after-gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/collection-after-gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off.json",
+      "sha256": "6e8881e219990746617cf351f87ded5e1869a5bd739040f605e5bc2e1003a634",
+      "bytes": 9643,
+      "mode": "0o644"
+    },
+    "execution/payload/collection-after-gemma-4-26b-qat-4bit-b1-r1-paged-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/collection-after-gemma-4-26b-qat-4bit-b1-r1-paged-cache-off.json",
+      "sha256": "29e048310fda984129e718ce2ede6de5e96230556860bb46a2c578d2d17be7d3",
+      "bytes": 11387,
+      "mode": "0o644"
+    },
+    "execution/payload/collection-after-gemma-4-26b-qat-4bit-b1-r1-paged-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/collection-after-gemma-4-26b-qat-4bit-b1-r1-paged-cache-on.json",
+      "sha256": "70db1eb915243da5387963feb99ca444e62b733cdd02fa806e8a93c187eac827",
+      "bytes": 12593,
+      "mode": "0o644"
+    },
+    "execution/payload/collection-after-qwen38-b1-r1-contiguous-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/collection-after-qwen38-b1-r1-contiguous-cache-off.json",
+      "sha256": "0ce89515ae840349df2e270c1f85d045afa1e1d9d2ae929a31503415d7e3d3cf",
+      "bytes": 4805,
+      "mode": "0o644"
+    },
+    "execution/payload/collection-after-qwen38-b1-r1-contiguous-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/collection-after-qwen38-b1-r1-contiguous-cache-on.json",
+      "sha256": "80feb87092e8e011dec2abaca64d58f13bcc899f180ebd81aab207059f5f3e1d",
+      "bytes": 6011,
+      "mode": "0o644"
+    },
+    "execution/payload/collection-after-qwen38-b1-r1-paged-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/collection-after-qwen38-b1-r1-paged-cache-off.json",
+      "sha256": "be43a73bd108ac38f8d096aaebf16765663e804528be7d2eb6bfa5f670d381ff",
+      "bytes": 7227,
+      "mode": "0o644"
+    },
+    "execution/payload/collection-after-qwen38-b1-r1-paged-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/collection-after-qwen38-b1-r1-paged-cache-on.json",
+      "sha256": "2fa457ba4a2d67c5e6419f937b802974033b2f18bbce2e0055df1d21675ad976",
+      "bytes": 9409,
+      "mode": "0o644"
+    },
+    "execution/payload/group-failed-cell1.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/group-failed-cell1.json",
+      "sha256": "aa515cd8abfd620b442315381bd1513bdf3aeba0028e283a17d4367d72bea66a",
+      "bytes": 12452,
+      "mode": "0o644"
+    },
+    "execution/payload/group-qat-group1.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/group-qat-group1.json",
+      "sha256": "0a531413e7e64ab7ebee2e7d71fb404d603cc67741ca6b3b721dc1b8e3951909",
+      "bytes": 13720,
+      "mode": "0o644"
+    },
+    "execution/payload/group-qwen38-group1.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/group-qwen38-group1.json",
+      "sha256": "cebdfc2abfc7fd6cd1abfb6faa7d36adb9a9ca4350db3284e1dd7636c0ec3587",
+      "bytes": 10358,
+      "mode": "0o644"
+    },
+    "execution/payload/launch-gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/launch-gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off.json",
+      "sha256": "5fdeebae919e0ee7a9d872edc613b282e1e5bfebd246d4b4191c08e9e3f9eac8",
+      "bytes": 1523,
+      "mode": "0o644"
+    },
+    "execution/payload/launch-gemma-4-26b-qat-4bit-b1-r1-paged-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/launch-gemma-4-26b-qat-4bit-b1-r1-paged-cache-off.json",
+      "sha256": "44e3e6473f44fdc9588ad0755daf75073425e7ac25879543fc366a186982fb84",
+      "bytes": 1508,
+      "mode": "0o644"
+    },
+    "execution/payload/launch-gemma-4-26b-qat-4bit-b1-r1-paged-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/launch-gemma-4-26b-qat-4bit-b1-r1-paged-cache-on.json",
+      "sha256": "4ca2e86e396e0780aa0c6a913395fd6dc8832de7477fa47ec0154986889326fe",
+      "bytes": 1505,
+      "mode": "0o644"
+    },
+    "execution/payload/launch-qwen38-b1-r1-contiguous-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/launch-qwen38-b1-r1-contiguous-cache-off.json",
+      "sha256": "a2bb3b5cdf242034eb8361a594b6d21c08e377ae997dbf7a76b6ccdc15af47e4",
+      "bytes": 1383,
+      "mode": "0o644"
+    },
+    "execution/payload/launch-qwen38-b1-r1-contiguous-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/launch-qwen38-b1-r1-contiguous-cache-on.json",
+      "sha256": "67a8536a887c37db236b832c2cdce7cec44016d2890ffab01962ac661f9ce978",
+      "bytes": 1381,
+      "mode": "0o644"
+    },
+    "execution/payload/launch-qwen38-b1-r1-paged-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/launch-qwen38-b1-r1-paged-cache-off.json",
+      "sha256": "56d40a602ac1ab7bf7ea88a329d65ab322187461896f463d017777387799dc68",
+      "bytes": 1368,
+      "mode": "0o644"
+    },
+    "execution/payload/launch-qwen38-b1-r1-paged-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/launch-qwen38-b1-r1-paged-cache-on.json",
+      "sha256": "3dce02822459ace2fd1fb23ff5f5be8de51c6c1fca31b6c59a26b409ddbaab68",
+      "bytes": 1365,
+      "mode": "0o644"
+    },
+    "execution/payload/postflight-gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/postflight-gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off.json",
+      "sha256": "e07114c1537a21ca75507e9114743249d0708c73b62f01885a48cfbdd3d10c2b",
+      "bytes": 321,
+      "mode": "0o644"
+    },
+    "execution/payload/postflight-gemma-4-26b-qat-4bit-b1-r1-paged-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/postflight-gemma-4-26b-qat-4bit-b1-r1-paged-cache-off.json",
+      "sha256": "7617508289b17d884fb39f56d2523f786a8215c7bfb15a00eeb8bfc237af01fe",
+      "bytes": 323,
+      "mode": "0o644"
+    },
+    "execution/payload/postflight-gemma-4-26b-qat-4bit-b1-r1-paged-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/postflight-gemma-4-26b-qat-4bit-b1-r1-paged-cache-on.json",
+      "sha256": "b267ce12362d18573d3c0d22211253abb22a995ec9a3ec887d001009878fcc8e",
+      "bytes": 322,
+      "mode": "0o644"
+    },
+    "execution/payload/postflight-qwen38-b1-r1-contiguous-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/postflight-qwen38-b1-r1-contiguous-cache-off.json",
+      "sha256": "8b888ab463da29029fe66296fb97bc9fb9a4f11b175933a4689ef83b09ad6453",
+      "bytes": 313,
+      "mode": "0o644"
+    },
+    "execution/payload/postflight-qwen38-b1-r1-contiguous-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/postflight-qwen38-b1-r1-contiguous-cache-on.json",
+      "sha256": "1e53d919039dfaa1e76972acc5727debd5eda2c5620aa0f84c066f761d8d7967",
+      "bytes": 321,
+      "mode": "0o644"
+    },
+    "execution/payload/postflight-qwen38-b1-r1-paged-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/postflight-qwen38-b1-r1-paged-cache-off.json",
+      "sha256": "f8acec65b69cbe554fcc8be1229cbea5438c6da8b32993825957490c9f5b64f0",
+      "bytes": 326,
+      "mode": "0o644"
+    },
+    "execution/payload/postflight-qwen38-b1-r1-paged-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/postflight-qwen38-b1-r1-paged-cache-on.json",
+      "sha256": "276d2014555d3aa1a0c1fd89fb8b574df4c3728cbb3888120bb178b7b3b9142f",
+      "bytes": 320,
+      "mode": "0o644"
+    },
+    "execution/payload/preflight-before-stage.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/preflight-before-stage.json",
+      "sha256": "d20228a6d038a6bee3d93e4deecab4882a844db7789892a9b4e924a272b90851",
+      "bytes": 323,
+      "mode": "0o644"
+    },
+    "execution/payload/readiness-gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/readiness-gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off.json",
+      "sha256": "f96a469175278240de2d2b7153cf6a22c6f91aadc59803f1663c9a48f8e81b43",
+      "bytes": 319,
+      "mode": "0o644"
+    },
+    "execution/payload/readiness-gemma-4-26b-qat-4bit-b1-r1-paged-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/readiness-gemma-4-26b-qat-4bit-b1-r1-paged-cache-off.json",
+      "sha256": "bd5b087c978c84eaa5e520b9d059df4340e4fd505e7e1ab6e8df2145fcd4c954",
+      "bytes": 325,
+      "mode": "0o644"
+    },
+    "execution/payload/readiness-gemma-4-26b-qat-4bit-b1-r1-paged-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/readiness-gemma-4-26b-qat-4bit-b1-r1-paged-cache-on.json",
+      "sha256": "2b0081516bcfc6c0adf42fd8f6594b749a0edc08bc30e516ec27b5d71ef5bc43",
+      "bytes": 323,
+      "mode": "0o644"
+    },
+    "execution/payload/readiness-qwen38-b1-r1-contiguous-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/readiness-qwen38-b1-r1-contiguous-cache-off.json",
+      "sha256": "c047be6671166477855986005889cf17c01258cdc66691677ce1a325ae4caf70",
+      "bytes": 312,
+      "mode": "0o644"
+    },
+    "execution/payload/readiness-qwen38-b1-r1-contiguous-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/readiness-qwen38-b1-r1-contiguous-cache-on.json",
+      "sha256": "c45fa66473fec76ff43d956e9f9831391d21310e9f0b8a207ac26e048afd07f4",
+      "bytes": 314,
+      "mode": "0o644"
+    },
+    "execution/payload/readiness-qwen38-b1-r1-paged-cache-off.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/readiness-qwen38-b1-r1-paged-cache-off.json",
+      "sha256": "85fc12a75ea8666a957045632d61b6a0a656b00def5a5dd7eed063423cbff458",
+      "bytes": 322,
+      "mode": "0o644"
+    },
+    "execution/payload/readiness-qwen38-b1-r1-paged-cache-on.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/readiness-qwen38-b1-r1-paged-cache-on.json",
+      "sha256": "3c0ac1c2eeb34aa5ffa05054edc7df97bb0410e37bfee426cbc8c268827a7605",
+      "bytes": 316,
+      "mode": "0o644"
+    },
+    "execution/payload/root-review.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/root-review.json",
+      "sha256": "ca46e97354f232dc424294731ac6672ce8a729ec069b898787091e2b1b3dc3b0",
+      "bytes": 749,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off/engine.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off/engine.log",
+      "sha256": "f1d3051f779713d9c3ec2e84e75afe1841d08df4b988329324f1612e741750c1",
+      "bytes": 752,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off/input.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off/input.json",
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "bytes": 72541,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off/metadata.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off/metadata.json",
+      "sha256": "081a078ee96b85f7fb39c03a580ad4bb441f9f8e60d007770ae88867c4104f7b",
+      "bytes": 2729,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off/report.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off/report.json",
+      "sha256": "d953c651c51916d897e8242008e95e8158d4694b830d4e9adca6e57087360575",
+      "bytes": 721455,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off/telemetry.jsonl",
+      "sha256": "66a4515805849def4b8d57ace8ff2f143ca72569a936aa0d819e8a0430b5a33c",
+      "bytes": 97905,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-off/engine.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-off/engine.log",
+      "sha256": "f5ae7d27919ecd3c7d20d12c6b14dc69064f289fe47c7c306245bf978240d625",
+      "bytes": 752,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-off/input.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-off/input.json",
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "bytes": 72541,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-off/metadata.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-off/metadata.json",
+      "sha256": "56c2469ca0935b407fdb017a0603dc18f8a2b82603b7d5c81ec1f40740f3f3b3",
+      "bytes": 2700,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-off/report.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-off/report.json",
+      "sha256": "790863b00fc0a557dbe2ed7dcf66672d69edfdb9e14223752b3b8950ab7e64f6",
+      "bytes": 715344,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-off/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-off/telemetry.jsonl",
+      "sha256": "b313c312aa310cf8b17646ff86cd4864546d123498e1d1279253dba8ec2953ba",
+      "bytes": 96963,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-on/engine.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-on/engine.log",
+      "sha256": "3b83998306e6f6dcbfb84412b178f806e94818acd6a3cc92d289a19a8afe4887",
+      "bytes": 743,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-on/input.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-on/input.json",
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "bytes": 72541,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-on/metadata.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-on/metadata.json",
+      "sha256": "f59f7c47d06a2f3fb55b5ead651dafd0769ea42234499d061d83dbdf3de3ff55",
+      "bytes": 2694,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-on/report.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-on/report.json",
+      "sha256": "3e3648ec05e97748e04dc5391a13ffd0b34dac5e3c2652a12ad0e697c8b66b10",
+      "bytes": 732103,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-on/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/gemma-4-26b-qat-4bit-b1-r1-paged-cache-on/telemetry.jsonl",
+      "sha256": "4aeaa89c5ebd934bbcedd123d78de2bc924425c7239587d002113b95108e85c3",
+      "bytes": 86215,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-contiguous-cache-off/engine.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-contiguous-cache-off/engine.log",
+      "sha256": "eece7773cc93b927caeb671b2d65f65a2ed7102e076f2fe3df5e0f5a83d99162",
+      "bytes": 791,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-contiguous-cache-off/input.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-contiguous-cache-off/input.json",
+      "sha256": "fc0416c745ee7f7811fe4c3b92b07d0f4eec5af9612331fd94fb9611a7f59ec3",
+      "bytes": 72681,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-contiguous-cache-off/metadata.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-contiguous-cache-off/metadata.json",
+      "sha256": "abd8cf853ac0fc9fb246db6325aef33105ad099e5b53e9efa1b184d16210f502",
+      "bytes": 2504,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-contiguous-cache-off/report.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-contiguous-cache-off/report.json",
+      "sha256": "646cafc8aa067c8dbdb430f04582376292a81653d353c36096b5831feba1fae7",
+      "bytes": 710990,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-contiguous-cache-off/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-contiguous-cache-off/telemetry.jsonl",
+      "sha256": "eadae6e7fd98a7edf6a397ccd7856e9593496d59e0b0eafdfda1d5608ff67f9a",
+      "bytes": 254959,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-contiguous-cache-on/engine.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-contiguous-cache-on/engine.log",
+      "sha256": "7b7bbfcf5c24dd2814f096aa58c08a619e18c052c8d6d602811da32d9a1e497d",
+      "bytes": 786,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-contiguous-cache-on/input.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-contiguous-cache-on/input.json",
+      "sha256": "fc0416c745ee7f7811fe4c3b92b07d0f4eec5af9612331fd94fb9611a7f59ec3",
+      "bytes": 72681,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-contiguous-cache-on/metadata.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-contiguous-cache-on/metadata.json",
+      "sha256": "3f66a7c3525e3238410dc0f61b199cb15d791e86b3cc1a2cd3b709628bdbad2a",
+      "bytes": 2495,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-contiguous-cache-on/report.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-contiguous-cache-on/report.json",
+      "sha256": "03a541cc5f94a09ec2f44b1b734833ff4b7aa89a801ea3d3aeb47101c583cd5c",
+      "bytes": 727353,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-contiguous-cache-on/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-contiguous-cache-on/telemetry.jsonl",
+      "sha256": "2f0afcb1fcca12ede7bec919fc282a88d21f29efa7c7667bd256a5f65b70cc14",
+      "bytes": 197078,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-paged-cache-off/engine.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-paged-cache-off/engine.log",
+      "sha256": "a6e0e52d708784f6e95f60f1d4a5e84e183ba679cce7c020d23c988d6e843358",
+      "bytes": 792,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-paged-cache-off/input.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-paged-cache-off/input.json",
+      "sha256": "fc0416c745ee7f7811fe4c3b92b07d0f4eec5af9612331fd94fb9611a7f59ec3",
+      "bytes": 72681,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-paged-cache-off/metadata.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-paged-cache-off/metadata.json",
+      "sha256": "f99e968216fba902535e9f9fbff94045945ee2275349b9a8d5719a6906b6d5af",
+      "bytes": 2472,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-paged-cache-off/report.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-paged-cache-off/report.json",
+      "sha256": "12fb8020ae6c6f5e1260fac9187e5b1ee8a7115e0c48de72686e0ba1b3b25cd9",
+      "bytes": 720269,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-paged-cache-off/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-paged-cache-off/telemetry.jsonl",
+      "sha256": "cf04f883363852769371de292f74b371dad15a6830b69c3cc4b5d91d40748914",
+      "bytes": 264886,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-paged-cache-on/engine.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-paged-cache-on/engine.log",
+      "sha256": "23cc959747b57dfc43677883fa3991824091f4f1e224077afe5f10fc5e782820",
+      "bytes": 786,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-paged-cache-on/input.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-paged-cache-on/input.json",
+      "sha256": "fc0416c745ee7f7811fe4c3b92b07d0f4eec5af9612331fd94fb9611a7f59ec3",
+      "bytes": 72681,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-paged-cache-on/metadata.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-paged-cache-on/metadata.json",
+      "sha256": "96a57630e54d03ad398648d006d868e31eb5c4646c5f5606dabee27de8390d78",
+      "bytes": 2467,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-paged-cache-on/report.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-paged-cache-on/report.json",
+      "sha256": "77fc0ab63a884725996ad48ee426250d6b3d35adb33f5580a2fe406d61589d1d",
+      "bytes": 736257,
+      "mode": "0o644"
+    },
+    "execution/payload/runs/qwen38-b1-r1-paged-cache-on/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runs/qwen38-b1-r1-paged-cache-on/telemetry.jsonl",
+      "sha256": "28948af02ee9902bb4a53ca94041871e121da31fe097ba4b396c8af51dfeb61f",
+      "bytes": 199406,
+      "mode": "0o644"
+    },
+    "execution/payload/runtime-and-payload-receipt1.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/runtime-and-payload-receipt1.json",
+      "sha256": "86543220f7259efbb885b006ab15078f0a110932bb7012c2cf2c20e986c5befa",
+      "bytes": 12603,
+      "mode": "0o644"
+    },
+    "execution/payload/staging-receipt.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/staging-receipt.json",
+      "sha256": "e8850b1f2b96371e242a1bb15693dcb8c2685a8cf08e4b8391f3308a25ff3e85",
+      "bytes": 980,
+      "mode": "0o644"
+    },
+    "execution/payload/wrapper-gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/wrapper-gemma-4-26b-qat-4bit-b1-r1-contiguous-cache-off.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o644"
+    },
+    "execution/payload/wrapper-gemma-4-26b-qat-4bit-b1-r1-paged-cache-off.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/wrapper-gemma-4-26b-qat-4bit-b1-r1-paged-cache-off.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o644"
+    },
+    "execution/payload/wrapper-gemma-4-26b-qat-4bit-b1-r1-paged-cache-on.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/wrapper-gemma-4-26b-qat-4bit-b1-r1-paged-cache-on.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o644"
+    },
+    "execution/payload/wrapper-qwen38-b1-r1-contiguous-cache-off.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/wrapper-qwen38-b1-r1-contiguous-cache-off.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o644"
+    },
+    "execution/payload/wrapper-qwen38-b1-r1-contiguous-cache-on.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/wrapper-qwen38-b1-r1-contiguous-cache-on.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o644"
+    },
+    "execution/payload/wrapper-qwen38-b1-r1-paged-cache-off.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/wrapper-qwen38-b1-r1-paged-cache-off.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o644"
+    },
+    "execution/payload/wrapper-qwen38-b1-r1-paged-cache-on.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/payload/wrapper-qwen38-b1-r1-paged-cache-on.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o644"
+    },
+    "execution/row-summary.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qat-group1/row-summary.json",
+      "sha256": "291f6a07ee01b8e1d2143d4fbc317d4424b8dbbbaa25ae11193f522cda0de569",
+      "bytes": 98370,
+      "mode": "0o644"
+    },
+    "orchestration/execute_pilot_cell.py": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execute_pilot_cell.py",
+      "sha256": "0d5613a602ee8cf0436155882a08bd8d03aee502606476b0e02f01e153a3027e",
+      "bytes": 4890,
+      "mode": "0o644"
+    },
+    "orchestration/freeze.py": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/freeze.py",
+      "sha256": "61519aa01c27e9b6a5cb0ea3b5be3871dc83cfc3df08178dd875489d72810f54",
+      "bytes": 9787,
+      "mode": "0o644"
+    },
+    "orchestration/freeze_execution.py": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/freeze_execution.py",
+      "sha256": "ccd1c153e07123357ecc837018490e94e8f1c258b22c5cc19235eafeff270352",
+      "bytes": 5919,
+      "mode": "0o644"
+    },
+    "orchestration/prepare_milestone.py": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/prepare_milestone.py",
+      "sha256": "1abeb8c8d7e936ec0d2c4409acc267ae9ab3a45a442d56bbaf0e2e99cd63a9da",
+      "bytes": 13092,
+      "mode": "0o644"
+    },
+    "plan/README.md": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/README.md",
+      "sha256": "ee1e18038e88bc27f5fb964af2c1451cd6bb9d42eeca799256c15817a55bcedd",
+      "bytes": 6469,
+      "mode": "0o644"
+    },
+    "plan/bindings.candidate.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/bindings.candidate.json",
+      "sha256": "1515aaf645d77f7566e217d7ee687df57f460fcb7fa8de474cbe1d689ce78c46",
+      "bytes": 4382,
+      "mode": "0o644"
+    },
+    "plan/command-preview.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/command-preview.json",
+      "sha256": "5c89ab2f4705c1c8052ce3f1c42cc18f36e387246d7312225779dfad0d2eba0e",
+      "bytes": 20586,
+      "mode": "0o644"
+    },
+    "plan/inputs/gemma-4-26b-qat-4bit.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/inputs/gemma-4-26b-qat-4bit.json",
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "bytes": 72541,
+      "mode": "0o644"
+    },
+    "plan/inputs/qwen38.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/inputs/qwen38.json",
+      "sha256": "fc0416c745ee7f7811fe4c3b92b07d0f4eec5af9612331fd94fb9611a7f59ec3",
+      "bytes": 72681,
+      "mode": "0o644"
+    },
+    "plan/manifest.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/manifest.json",
+      "sha256": "2ec461f4927b9865cf7c2c98ed07bb60d624294b9df777f75fe8e6c534e5cf42",
+      "bytes": 5635,
+      "mode": "0o644"
+    },
+    "plan/matrix_cells.py": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/matrix_cells.py",
+      "sha256": "ec034da50d384bc6816f20278752dd6e9bb6c86a06bf948599fbba8b8398d7ca",
+      "bytes": 30659,
+      "mode": "0o644"
+    },
+    "plan/origin-plan.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/origin-plan.json",
+      "sha256": "781532482bdb5ebdbabee4461e574c796e0e2cc04f94513dd81baa23415c7689",
+      "bytes": 185960,
+      "mode": "0o644"
+    },
+    "plan/package-manifest.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/package-manifest.json",
+      "sha256": "b34ccb5ab1f71e017b9aa12d230098afd661844637e1ca77c8dda096797e8762",
+      "bytes": 5984,
+      "mode": "0o644"
+    },
+    "plan/pilot-selection.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/pilot-selection.json",
+      "sha256": "a26d12a2d9708b6cb57661f3720e326932c04f7feb3ea3d4b39a0ade99158d24",
+      "bytes": 920,
+      "mode": "0o644"
+    },
+    "plan/pilot_cells.py": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/pilot_cells.py",
+      "sha256": "14e25d924275751aef71e5d740d297a3fc1cfc442e947c83a2f5594c8fe40175",
+      "bytes": 7754,
+      "mode": "0o644"
+    },
+    "plan/provenance/cpu/cpu-prompt-plan.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/provenance/cpu/cpu-prompt-plan.json",
+      "sha256": "be67ad4382b64a6b05d3d630eb15d16094be8bfff2f0475e1975a64d792b4786",
+      "bytes": 18314,
+      "mode": "0o644"
+    },
+    "plan/provenance/cpu/cpu-requests/gemma-4-26b-qat-4bit-current.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/provenance/cpu/cpu-requests/gemma-4-26b-qat-4bit-current.json",
+      "sha256": "8538440c7bffef7c672fcf7e557ea65fd1cdefbf6ac53ef0eddf5023be31edd5",
+      "bytes": 35660,
+      "mode": "0o644"
+    },
+    "plan/provenance/cpu/cpu-requests/qwen38-current.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/provenance/cpu/cpu-requests/qwen38-current.json",
+      "sha256": "e3b2afa92948e35c8f764d65a2d3dd1b9bfecef6cb6aba303a2752de0abc226f",
+      "bytes": 35732,
+      "mode": "0o644"
+    },
+    "plan/provenance/cpu/cpu-responses/gemma-4-26b-qat-4bit-current.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/provenance/cpu/cpu-responses/gemma-4-26b-qat-4bit-current.json",
+      "sha256": "58808c46722612d91d41043a59456e1b4db5f6de21449aebfe4bd60840c2cfed",
+      "bytes": 2915,
+      "mode": "0o644"
+    },
+    "plan/provenance/cpu/cpu-responses/qwen38-current.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/provenance/cpu/cpu-responses/qwen38-current.json",
+      "sha256": "5055906072fab083ba193183d3092ff94d0db55219474de3a25e4be440ab4d1e",
+      "bytes": 2915,
+      "mode": "0o644"
+    },
+    "plan/provenance/gemma-two-file-fixture-proof.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/provenance/gemma-two-file-fixture-proof.json",
+      "sha256": "c137fad64fec8e0a5ca47d6d26f58f7504c383ec626fbdd95262a9f83705f9c2",
+      "bytes": 1537,
+      "mode": "0o644"
+    },
+    "plan/provenance/origin-bindings-reviewed3.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/provenance/origin-bindings-reviewed3.json",
+      "sha256": "89e4dde9db4029e01bf907ebe77f8be66a7422bcfb0f199cd98b213023ba132b",
+      "bytes": 6198,
+      "mode": "0o644"
+    },
+    "plan/provenance/origin-plan3-manifest.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/provenance/origin-plan3-manifest.json",
+      "sha256": "5e1a08ab7be37a9209cf92becfb3ee1abef2112780ee5e85880f1b06a1fd04bb",
+      "bytes": 49875,
+      "mode": "0o644"
+    },
+    "plan/provenance/qat/target-manifest.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/provenance/qat/target-manifest.json",
+      "sha256": "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd",
+      "bytes": 1822,
+      "mode": "0o644"
+    },
+    "plan/provenance/qwen38-manifest.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/provenance/qwen38-manifest.json",
+      "sha256": "ec9001f5eabca1837c6688397c071c7d9da3a22a40c2130316d150882576a65d",
+      "bytes": 2434,
+      "mode": "0o644"
+    },
+    "plan/provenance/root-plan3-review.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/provenance/root-plan3-review.json",
+      "sha256": "fbe20644b5d7fae9dbd98941ebd2419b0730ac5f28f9a583d11d71f4410949ab",
+      "bytes": 1100,
+      "mode": "0o644"
+    },
+    "plan/runner/compare_radix_engine.py": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/runner/compare_radix_engine.py",
+      "sha256": "b33922deda8f21128873a8b71b639a0626005d449e3cc603cb35e2d660a253cc",
+      "bytes": 13154,
+      "mode": "0o644"
+    },
+    "plan/runner/radix_engine_evidence.py": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/runner/radix_engine_evidence.py",
+      "sha256": "e0f57723d4be3f1a00068b9870f70a6bc9a0174b76fdea285d33f0f4eb658e4e",
+      "bytes": 15658,
+      "mode": "0o644"
+    },
+    "plan/runner/run_radix_engine.py": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/runner/run_radix_engine.py",
+      "sha256": "2758eed3098edb1496ea6547860bd02bd270eb2f3fdce1a373d7fb31a170b6e4",
+      "bytes": 13248,
+      "mode": "0o644"
+    },
+    "plan/runner/run_radix_http.py": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/runner/run_radix_http.py",
+      "sha256": "9608cef72cea2f08cab343fe70d8948338cffab451c8636a9ccc0dc7e83eeefe",
+      "bytes": 6998,
+      "mode": "0o644"
+    },
+    "plan/source-correspondence.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/source-correspondence.json",
+      "sha256": "e225249abc7990e44d14d5070bcaaf6204de524de05f5a50fa508bcaedf95ba5",
+      "bytes": 5889,
+      "mode": "0o644"
+    },
+    "plan/support/build8/manifest.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/support/build8/manifest.json",
+      "sha256": "2f54714f9d4e788710fe5cdd7103e723676c5666e239898750fd14936dccbe98",
+      "bytes": 10843,
+      "mode": "0o644"
+    },
+    "plan/support/model-audits/gemma-4-26b-qat-4bit.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/support/model-audits/gemma-4-26b-qat-4bit.json",
+      "sha256": "d67dce5d87c150de11174a28547edc239efeb8d2db1dbfa1e9aba6899180546d",
+      "bytes": 715415,
+      "mode": "0o644"
+    },
+    "plan/support/model-audits/qwen38.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/support/model-audits/qwen38.json",
+      "sha256": "d0bfc522a60b242f48f077bc826683512ce64216e9de5eb46e9de92f173031f0",
+      "bytes": 712691,
+      "mode": "0o644"
+    },
+    "plan/test_pilot_cells.py": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/test_pilot_cells.py",
+      "sha256": "db94035d9a31ca9d884dfdd580db6e900fbdb3f26272422778cf69899b8c5b18",
+      "bytes": 10160,
+      "mode": "0o644"
+    },
+    "plan/validation/summary.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/validation/summary.json",
+      "sha256": "6f097539946a852abace0ed8bfbc483e76c5ec62020447150c2339c19fcb3e47",
+      "bytes": 684,
+      "mode": "0o644"
+    },
+    "plan/validation/test_matrix_cells.py.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/validation/test_matrix_cells.py.log",
+      "sha256": "92978a8efcca59d73a48ac62b62dab7802e88b0899f3db4b51de0f4036e26a57",
+      "bytes": 2885,
+      "mode": "0o644"
+    },
+    "plan/validation/test_pilot_cells.py.log": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/package/validation/test_pilot_cells.py.log",
+      "sha256": "16ffa84f68c7eb18155f7c355c70b8be29809c50c6ba3b91b68df5732d5c3063",
+      "bytes": 1925,
+      "mode": "0o644"
+    },
+    "provenance/first-cell-manifest.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-first-cell1/manifest.json",
+      "sha256": "ffca3de8931eca37ee6f027b4ef6a966d19fd87c32571f4a454a29ac89d06360",
+      "bytes": 2984,
+      "mode": "0o644"
+    },
+    "provenance/qwen38-group-manifest.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-qwen38-group1/manifest.json",
+      "sha256": "de5f2a2065a39c2aa4fe7f9426f467bf0fb8462e7134251d92746b1320e03939",
+      "bytes": 9545,
+      "mode": "0o644"
+    },
+    "provenance/six-cell-stop-manifest.json": {
+      "source": "/tmp/darkbloom-q38-qat-backend-pilots1/execution-failed-cell1/manifest.json",
+      "sha256": "012913af09d6c8ae1ad8fbfccba42cd7db445a27ee08828f5e0d5aa6de69061f",
+      "bytes": 13981,
+      "mode": "0o644"
+    }
+  }
+}

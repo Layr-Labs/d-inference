@@ -66,55 +66,6 @@ enum SSDDonationSubmitResult: Sendable, Equatable {
     case closed
 }
 
-// MARK: - Endurance rate limiter
-
-/// Continuous-refill token bucket over encrypted bytes written
-/// (default cap 150 GB/day — protects the 512 GB hot-box worst case;
-/// at expected fleet volumes it never binds). Capacity 0 ⇒ unlimited.
-final class SSDWriteRateLimiter: @unchecked Sendable {
-    private let capBytesPerDay: Double
-    private var tokens: Double
-    private var lastRefill: Double
-    private let nowSeconds: @Sendable () -> Double
-    private let lock = NSLock()
-
-    init(
-        capBytesPerDay: Int,
-        nowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }
-    ) {
-        self.capBytesPerDay = Double(max(0, capBytesPerDay))
-        self.tokens = Double(max(0, capBytesPerDay))
-        self.nowSeconds = nowSeconds
-        self.lastRefill = nowSeconds()
-    }
-
-    /// Consume `bytes` if the bucket allows; false ⇒ the write is dropped.
-    func tryConsume(bytes: Int) -> Bool {
-        guard capBytesPerDay > 0 else { return true }
-        return lock.withLock {
-            let now = nowSeconds()
-            let elapsed = max(0, now - lastRefill)
-            tokens = min(capBytesPerDay, tokens + elapsed * capBytesPerDay / 86_400.0)
-            lastRefill = now
-            guard tokens >= Double(bytes) else { return false }
-            tokens -= Double(bytes)
-            return true
-        }
-    }
-
-    /// Cheap pre-check (no consumption) so `donate` can skip extraction
-    /// work when the bucket is already empty.
-    func mightAccept(bytes: Int) -> Bool {
-        guard capBytesPerDay > 0 else { return true }
-        return lock.withLock {
-            let now = nowSeconds()
-            let refilled = min(
-                capBytesPerDay, tokens + max(0, now - lastRefill) * capBytesPerDay / 86_400.0)
-            return refilled >= Double(bytes)
-        }
-    }
-}
-
 // MARK: - Write-behind
 
 final class SSDWriteBehind: @unchecked Sendable {
@@ -212,12 +163,9 @@ final class SSDWriteBehind: @unchecked Sendable {
     /// byte cap) — the caller settles the in-flight tags and counts the
     /// drop. Safe to call from the engine's donation queue.
     ///
-    /// Admission is bounded on OUR job/byte counters (< maxJobs and
-    /// ≤ maxQueuedBytes) so the pipeline's `.bufferingNewest` buffer can
-    /// never overflow: an overflow would silently EVICT the OLDEST job,
-    /// stranding its in-flight dedupe tags until restart (those blocks
-    /// could never be rewritten). With the pre-count, a full queue drops
-    /// THIS donation instead — whose tags the caller settles immediately.
+    /// Job/byte counters enforce both caps before enqueue. The underlying
+    /// pipeline also uses bufferingOldest: overflow drops this donation,
+    /// whose tags the caller settles, and preserves accepted FIFO work.
     func submit(_ job: SSDDonationJob) -> Bool {
         submitWithResult(job) == .accepted
     }
@@ -309,10 +257,12 @@ final class SSDWriteBehind: @unchecked Sendable {
             settleAll(job, dropped: job.blocks.count)
             return
         }
-        // Low-disk guard: stop writing under max(20 GiB, 5% capacity) free.
+        // Admit the whole donation above the reserve, not just its first
+        // block. Like the hybrid checkpoint writer, account for the pending
+        // payload before any I/O. This is not an OS disk-space reservation.
         if let space = config.volumeSpace() {
             let floor = SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: space.capacity)
-            if space.free < floor {
+            if space.free < floor || job.totalBytes > space.free - floor {
                 diskUnavailable = true
                 settleAll(job, dropped: job.blocks.count)
                 return
@@ -336,16 +286,11 @@ final class SSDWriteBehind: @unchecked Sendable {
             do {
                 if let writeBlock = config.writeBlock {
                     fileBytes = try writeBlock(block, url)
-                    index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
-                    stats.add(
-                        blocksWritten: 1, bytesWritten: fileBytes,
-                        windowSidecarsWritten: sidecar)
-                    durableWriteSucceeded = true
-                    continue
+                } else {
+                    fileBytes = try SSDBlockStore.write(
+                        to: url, metadata: block.metadata, chunks: block.chunks,
+                        kekKey: config.kekKey, strictFsync: config.strictFsync)
                 }
-                fileBytes = try SSDBlockStore.write(
-                    to: url, metadata: block.metadata, chunks: block.chunks,
-                    kekKey: config.kekKey, strictFsync: config.strictFsync)
             } catch {
                 stats.add(donationsDropped: 1)
                 if isENOSPC(error) {

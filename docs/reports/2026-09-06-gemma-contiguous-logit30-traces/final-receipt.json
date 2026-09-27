@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "status": "COMPLETE_VALID_BOUNDED_TRACES_M5_RELEASED",
+  "completed_at_utc": "2026-09-06T10:21:35.245053+00:00",
+  "mandatory_analysis": "valid_bounded_logit_observations",
+  "retained_verifier_correctness": "FAILED: frozen automatic and ordinary controls differ at index 30; diagnostic success does not waive it.",
+  "full_KV_state_identity": "UNOBSERVED",
+  "full_rectangular_target_input": "UNOBSERVED",
+  "runtime_source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "de30ef9892cbd247b219cfde891f180ffbf5f47a",
+    "parent": "53f3c3d0c0d0a09f4d89fe4346aa72ebdecbe4e6",
+    "swift": "c06149b4f7defa1b958c1e175f6c9a12c86c8a4f"
+  },
+  "binding_sha256": "d84748d0aa2ec873dec51770cd9788308512b78704b83c048ffc45e6e00342bf",
+  "package_manifest_sha256": "daa0255adb64afa1a1dd223ae01407d1ab28927950d33af877447585df492729",
+  "root_review_sha256": "725d3ce796b2e3c6130c5fb10ee7d3173e1bd0159d0206ea7491991e67768cb0",
+  "result_manifest": {
+    "sha256": "372f7a6434a42308504d1a05b59d4f1dadb82d1bbfea4dba5e8320bd4ac1e8ae",
+    "bytes": 22631
+  },
+  "result_files": 137,
+  "analysis": {
+    "sha256": "fa7078cdbd0d7ca7077b45ec02e8f6a91aa150c339ef9cc3a75fcf59a68ae82c",
+    "bytes": 5118
+  },
+  "report": {
+    "sha256": "e5630062805b1136bf869425fa0de9da762ce7a124ea440242afa5f47231a096",
+    "bytes": 4597
+  },
+  "preservation_check": {
+    "sha256": "b196b7f8233e07556c1ea1989594d87f402df942b43876a6a4af92ac4392570b",
+    "bytes": 783
+  },
+  "M5_release": {
+    "sha256": "5a6cb1b817253977c51d1eda163ce73acb05ddd76d6ef59fc273b42dbe0c1505",
+    "bytes": 1739
+  },
+  "handles": {
+    "off": {
+      "native_pid": 48815,
+      "telemetry_pid": 48814,
+      "local_ssh_pid": 24583,
+      "native_exit_code": 0,
+      "native_and_telemetry_cleanup_complete": true
+    },
+    "automatic": {
+      "native_pid": 49103,
+      "telemetry_pid": 49102,
+      "local_ssh_pid": 24771,
+      "native_exit_code": 0,
+      "native_and_telemetry_cleanup_complete": true
+    }
+  },
+  "prelaunch_failure_preserved": true,
+  "native_model_executions": 2,
+  "no_completed_native_cell_restarted": true,
+  "no_controls_rerun": true,
+  "no_thresholds_or_oracles_changed": true
+}

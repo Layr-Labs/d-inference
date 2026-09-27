@@ -1,0 +1,91 @@
+{
+  "valid_requests_while_metadata_blocked": 2,
+  "valid_requests_while_weights_blocked": 2,
+  "requests": 22,
+  "valid_requests": 22,
+  "interrupted_or_invalid_streams": 0,
+  "serving_5xx": 0,
+  "serving_non_2xx": 0,
+  "observed_target_only": true,
+  "observed_activation_transition": false,
+  "first_active_monotonic": null,
+  "mtp_rounds_max": 0.0,
+  "mtp_rounds_after_activation_max": 0,
+  "fixture_failure_served": true,
+  "latency": {
+    "all": {
+      "ttft": {
+        "n": 22,
+        "p50_s": 0.1811552919999997,
+        "p95_s": 0.18337537499999712,
+        "max_s": 22.11625125
+      },
+      "total": {
+        "n": 22,
+        "p50_s": 1.784017249999998,
+        "p95_s": 1.9725383330000028,
+        "max_s": 23.526883208
+      }
+    },
+    "waiting_metadata": {
+      "ttft": {
+        "n": 2,
+        "p50_s": 0.1813619580000001,
+        "p95_s": 22.11625125,
+        "max_s": 22.11625125
+      },
+      "total": {
+        "n": 2,
+        "p50_s": 1.5747959159999994,
+        "p95_s": 23.526883208,
+        "max_s": 23.526883208
+      }
+    },
+    "waiting_weights": {
+      "ttft": {
+        "n": 20,
+        "p50_s": 0.1810834589999999,
+        "p95_s": 0.1827450409999969,
+        "max_s": 0.18337537499999712
+      },
+      "total": {
+        "n": 20,
+        "p50_s": 1.784017249999998,
+        "p95_s": 1.9268924169999977,
+        "max_s": 1.9725383330000028
+      }
+    },
+    "active": {
+      "ttft": {
+        "n": 0,
+        "p50_s": null,
+        "p95_s": null,
+        "max_s": null
+      },
+      "total": {
+        "n": 0,
+        "p50_s": null,
+        "p95_s": null,
+        "max_s": null
+      }
+    }
+  },
+  "limitations": [
+    "Descriptive latency only; phases include startup/cache/compile differences and are not a decode speed A/B.",
+    "SSE structural validity is checked and full answers retained; human semantic review is still required.",
+    "Counter can reset at engine replacement; maximum is reported, not sum across engine lifetimes."
+  ],
+  "checks": {
+    "all_serving_requests_valid": true,
+    "no_runner_error_or_abort": true,
+    "provider_alive_until_cleanup": true,
+    "requests_served_during_metadata_delay": true,
+    "initial_target_only_metrics": true,
+    "injected_failure_reached": true,
+    "remained_target_only": true,
+    "failure_observed_for_30_seconds": true,
+    "enough_requests_after_failure": true,
+    "requests_served_during_weight_delay": true
+  },
+  "passed": true
+}

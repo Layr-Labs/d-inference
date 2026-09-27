@@ -36,12 +36,14 @@ func bucketIndexFor(promptTokens int) int {
 
 // BucketStats holds outcome counts and rates for one prompt-size bucket.
 type BucketStats struct {
-	Label        string
-	Total        int
-	Served       int
-	MachineBusy  int
-	TTFTTooSlow  int
-	OtherRejects int // any non-served outcome that is not the two known reject codes
+	Label         string
+	Total         int
+	Served        int
+	MachineBusy   int
+	TTFTTooSlow   int
+	NoProvider    int // no candidate at all (capability, catalog, or fleet gap)
+	ModelTooLarge int // providers advertise the model but none can fit it
+	OtherRejects  int // any non-served outcome not covered by the counters above
 }
 
 // AcceptRate is the fraction of arrivals in the bucket that were served.
@@ -71,11 +73,14 @@ func (b BucketStats) TTFTRejectRate() float64 {
 // Report aggregates a simulation run: overall outcome counts plus per-bucket
 // stats in ReportBuckets order.
 type Report struct {
-	Total       int
-	Served      int
-	MachineBusy int
-	TTFTTooSlow int
-	Buckets     []BucketStats
+	Total         int
+	Served        int
+	MachineBusy   int
+	TTFTTooSlow   int
+	NoProvider    int
+	ModelTooLarge int
+	OtherRejects  int
+	Buckets       []BucketStats
 }
 
 // Summarize aggregates per-arrival results into a Report.
@@ -100,7 +105,14 @@ func Summarize(results []Result) Report {
 		case OutcomeTTFTTooSlow:
 			rep.TTFTTooSlow++
 			b.TTFTTooSlow++
+		case OutcomeNoProvider:
+			rep.NoProvider++
+			b.NoProvider++
+		case OutcomeModelTooLarge:
+			rep.ModelTooLarge++
+			b.ModelTooLarge++
 		default:
+			rep.OtherRejects++
 			b.OtherRejects++
 		}
 	}
@@ -151,12 +163,12 @@ func EstimatedCliff(results []Result) int {
 // String renders a compact human-readable table of the report.
 func (r Report) String() string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "routingsim report: %d arrivals  served=%d (%.1f%%)  machine_busy=%d  ttft_too_slow=%d\n",
-		r.Total, r.Served, r.AcceptRate()*100, r.MachineBusy, r.TTFTTooSlow)
-	fmt.Fprintf(&sb, "%-12s %7s %8s %8s %12s %12s\n", "bucket", "total", "served", "accept%", "machine_busy", "ttft_slow")
+	fmt.Fprintf(&sb, "routingsim report: %d arrivals  served=%d (%.1f%%)  machine_busy=%d  ttft_too_slow=%d  no_provider=%d  model_too_large=%d  other=%d\n",
+		r.Total, r.Served, r.AcceptRate()*100, r.MachineBusy, r.TTFTTooSlow, r.NoProvider, r.ModelTooLarge, r.OtherRejects)
+	fmt.Fprintf(&sb, "%-12s %7s %8s %8s %12s %12s %12s %10s %6s\n", "bucket", "total", "served", "accept%", "machine_busy", "ttft_slow", "no_provider", "too_large", "other")
 	for _, b := range r.Buckets {
-		fmt.Fprintf(&sb, "%-12s %7d %8d %7.1f%% %12d %12d\n",
-			b.Label, b.Total, b.Served, b.AcceptRate()*100, b.MachineBusy, b.TTFTTooSlow)
+		fmt.Fprintf(&sb, "%-12s %7d %8d %7.1f%% %12d %12d %12d %10d %6d\n",
+			b.Label, b.Total, b.Served, b.AcceptRate()*100, b.MachineBusy, b.TTFTTooSlow, b.NoProvider, b.ModelTooLarge, b.OtherRejects)
 	}
 	return sb.String()
 }

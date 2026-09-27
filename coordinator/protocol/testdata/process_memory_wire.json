@@ -1,0 +1,21 @@
+{
+  "low_power_mode": false,
+  "process_memory": {
+    "generation": 7,
+    "sample_seq": 2,
+    "sample_age_ms": 3,
+    "policy_epoch": 4,
+    "cap_bytes": 1000,
+    "activation_reserve_bytes": 100,
+    "active_bytes": 500,
+    "cache_bytes": 100,
+    "charged_bytes": 250,
+    "materialized_bytes": 200,
+    "unmaterialized_bytes": 50,
+    "remaining_bytes": 250,
+    "commitment_debt_bytes": 0,
+    "owner_count": 3,
+    "closing_owner_count": 1,
+    "system_available_bytes": 700
+  }
+}

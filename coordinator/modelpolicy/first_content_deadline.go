@@ -1,6 +1,11 @@
 package modelpolicy
 
-import "time"
+import (
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
 
 const (
 	// Qwen3VL30BA3BInstructModelID is the concrete catalog identifier used by
@@ -25,26 +30,128 @@ const (
 	// response margin used by the ordinary production posture (10s upstream,
 	// 9s coordinator) inside Qwen3-VL's 5s upstream SLA.
 	Qwen3VL30BA3BInstructCoordinatorFirstContentBase = Qwen3VL30BA3BInstructUpstreamFirstContentBase - FirstContentResponseHeadroom
+
+	// maxFirstContentBase is the sanity ceiling for an env-supplied exact-model
+	// upstream base (SetFirstContentBasesFromEnv): no first-content SLA is
+	// minutes long, and rejecting anything above it also rules out
+	// time.Duration overflow (the overflow point is ~2.9e11 minutes of ms).
+	maxFirstContentBase = 10 * time.Minute
 )
 
 type firstContentDeadlineBases struct {
 	upstream    time.Duration
 	coordinator time.Duration
+	perToken    time.Duration
+	customSLA   bool
 }
 
-// exactFirstContentDeadlineBases keeps every per-model upstream/live pair in
-// one exact-match table. Add future model-specific policies here so shadow
-// evaluation and live dispatch cannot select different model sets.
-func exactFirstContentDeadlineBases(model string) (firstContentDeadlineBases, bool) {
-	switch model {
-	case Qwen3VL30BA3BInstructModelID:
-		return firstContentDeadlineBases{
+var (
+	basesMu sync.RWMutex
+	// exactBases keeps every per-model upstream/live pair in one exact-match
+	// table. It defaults to the built-in policy
+	// (defaultExactFirstContentDeadlineBases) and may be REPLACED once at
+	// startup via SetFirstContentBasesFromEnv
+	// (EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES) — the operator escape hatch
+	// the 2026-09-01 incident lacked: the hardcoded Qwen3-VL 5s/4s pair can
+	// only TIGHTEN the global base, so when vision success p90 sat at 3.4s
+	// (right at the 4s line, ~47% of vision traffic killed) nothing short of
+	// a rebuild could loosen it.
+	exactBases = defaultExactFirstContentDeadlineBases()
+)
+
+// defaultExactFirstContentDeadlineBases is the built-in exact-model policy.
+// Add future model-specific policies here so shadow evaluation and live
+// dispatch cannot select different model sets.
+func defaultExactFirstContentDeadlineBases() map[string]firstContentDeadlineBases {
+	return map[string]firstContentDeadlineBases{
+		"ternary-bonsai-2-27b":                    bonsaiFirstContentSLA(),
+		"EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit": bonsaiFirstContentSLA(),
+		"prism-ml/Ternary-Bonsai-2-27B-mlx-2bit":  bonsaiFirstContentSLA(),
+		Qwen3VL30BA3BInstructModelID: {
 			upstream:    Qwen3VL30BA3BInstructUpstreamFirstContentBase,
 			coordinator: Qwen3VL30BA3BInstructCoordinatorFirstContentBase,
-		}, true
-	default:
-		return firstContentDeadlineBases{}, false
+		},
 	}
+}
+
+func exactFirstContentDeadlineBases(model string) (firstContentDeadlineBases, bool) {
+	basesMu.RLock()
+	bases, ok := exactBases[model]
+	basesMu.RUnlock()
+	return bases, ok
+}
+
+// HasFirstContentPolicy lets account-scoped callers prefer an explicit public
+// alias policy over the resolved build's defaults.
+func HasFirstContentPolicy(model string) bool {
+	_, ok := exactFirstContentDeadlineBases(model)
+	return ok
+}
+
+// SetFirstContentBasesFromEnv parses an override of the form
+// "<model>=<upstream_ms>,..." (e.g. "qwen3-vl-30b-a3b-instruct=8000") and
+// REPLACES the exact-model table when at least one valid pair is present.
+// Each valid pair replaces that model's upstream base; the coordinator base
+// keeps the standard response margin (upstream − FirstContentResponseHeadroom).
+// A value of 0 or "off" REMOVES the exact entry so the model falls back to the
+// global base. Invalid pairs (malformed, non-numeric, an upstream base not
+// strictly above the headroom, or above the 10-minute sanity ceiling —
+// maxFirstContentBase, which also rules out time.Duration overflow long
+// before math.MaxInt64/int64(time.Millisecond)) are skipped; a blank string
+// is a no-op. The
+// exact-model policy remains a tightening ceiling relative to the global base
+// (UpstreamFirstContentDeadline/CoordinatorFirstContentDeadline), so an
+// override above the global base is inert rather than loosening it. Returns
+// the number of pairs replaced and removed. Called once at startup from
+// main.go, mirroring api.SetPromptContextCalibrationFromEnv.
+func SetFirstContentBasesFromEnv(raw string) (replaced, removed int) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, 0
+	}
+	next := defaultExactFirstContentDeadlineBases()
+	for _, pair := range strings.Split(raw, ",") {
+		kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		model := strings.TrimSpace(kv[0])
+		value := strings.TrimSpace(kv[1])
+		if model == "" {
+			continue
+		}
+		if strings.EqualFold(value, "off") || value == "0" {
+			if _, ok := next[model]; ok {
+				delete(next, model)
+				removed++
+			}
+			continue
+		}
+		ms, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || ms <= 0 || ms > int64(maxFirstContentBase/time.Millisecond) {
+			// Non-numeric, non-positive, or absurd (> 10 minutes — no
+			// first-content SLA is minutes long, and the cap sits far below
+			// the ms count that would overflow time.Duration).
+			continue
+		}
+		upstream := time.Duration(ms) * time.Millisecond
+		if upstream <= FirstContentResponseHeadroom {
+			// The coordinator base (upstream − headroom) must stay positive.
+			continue
+		}
+		policy := next[model]
+		policy.upstream = upstream
+		policy.coordinator = upstream - FirstContentResponseHeadroom
+		next[model] = policy
+		replaced++
+	}
+	if replaced == 0 && removed == 0 {
+		return 0, 0
+	}
+	basesMu.Lock()
+	exactBases = next
+	basesMu.Unlock()
+	return replaced, removed
 }
 
 // UpstreamFirstContentDeadline returns the caller-facing first-content SLA for
@@ -56,8 +163,13 @@ func UpstreamFirstContentDeadline(model string, estimatedPromptTokens int, defau
 	if base <= 0 {
 		base = StandardUpstreamFirstContentBase
 	}
-	if exact, ok := exactFirstContentDeadlineBases(model); ok && base > exact.upstream {
-		base = exact.upstream
+	if exact, ok := exactFirstContentDeadlineBases(model); ok {
+		if exact.customSLA {
+			return addFirstContentSlope(exact.upstream, estimatedPromptTokens, exact.perToken)
+		}
+		if base > exact.upstream {
+			base = exact.upstream
+		}
 	}
 	return addPromptTokenSlope(base, estimatedPromptTokens)
 }
@@ -72,15 +184,17 @@ func CoordinatorFirstContentDeadline(model string, estimatedPromptTokens int, de
 	if base <= 0 {
 		base = StandardUpstreamFirstContentBase - FirstContentResponseHeadroom
 	}
-	if exact, ok := exactFirstContentDeadlineBases(model); ok && base > exact.coordinator {
-		base = exact.coordinator
+	if exact, ok := exactFirstContentDeadlineBases(model); ok {
+		if exact.customSLA {
+			return addFirstContentSlope(exact.coordinator, estimatedPromptTokens, exact.perToken)
+		}
+		if base > exact.coordinator {
+			base = exact.coordinator
+		}
 	}
 	return addPromptTokenSlope(base, estimatedPromptTokens)
 }
 
 func addPromptTokenSlope(base time.Duration, estimatedPromptTokens int) time.Duration {
-	if estimatedPromptTokens < 0 {
-		estimatedPromptTokens = 0
-	}
-	return base + time.Duration(estimatedPromptTokens)*time.Millisecond
+	return addFirstContentSlope(base, estimatedPromptTokens, time.Millisecond)
 }

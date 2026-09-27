@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-26 · commit `e81dee198`
+> Last updated: 2026-09-27 · commit `681ecd8c4`
 
 The complete public HTTP surface of the coordinator, derived from the 117 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -444,6 +444,8 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `lifecycle.fences_applied` | Proof-fence windows opened or escalated | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/registry/cache_proof_fence.go` (`rejectCapability`) |
 | `lifecycle.fences_expired` | Windows that lifted by time, each counted once | Same; `coordinator/registry/cache_proof_fence.go` (`countLapseLocked`) |
 | `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | Same; `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
+| `lifecycle.demand_entries` | Entries currently in the observed-demand index | `coordinator/registry/cache_demand.go` (`stats`) |
+| `lifecycle.demand_cap_evictions` | Demand entries evicted by the cap inside their TTL; a growing count means repeated prefixes are being reported as novel | Same |
 
 The artifact-list fields have Prometheus gauges
 `exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`

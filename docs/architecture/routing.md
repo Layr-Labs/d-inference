@@ -365,7 +365,7 @@ and their flag are the subject of
 [`cache-aware-routing.md`](cache-aware-routing.md). Cache planning first requires
 an acknowledged tokenizer and current exact Registry eligibility. If verified
 contracts exceed sidecar capacity, bounded authenticated demand selects the
-preloaded subset without waiting for tokenizer preload or raising that capacity;
+preloaded subset without delaying ordinary inference or raising that capacity;
 see [tokenizer selection](prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
 
 ### Native model capacity and registry identity

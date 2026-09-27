@@ -123,9 +123,9 @@ requests return `ineligible` with no participating plan or reusable remote scope
 `coordinator/registry/cache_route_keys.go`, `PlanCacheRouteWithResult`).
 
 An authenticated eligible request can record bounded demand for its exact resolved
-artifact tuple before tokenizer readiness, without waiting for tokenizer preload
-or changing its original deadline. Overflow selection retains the full verified
-catalog and never raises the sidecar's configured capacity. See the canonical
+artifact tuple before tokenizer readiness, without waiting or changing its original
+deadline. Overflow selection retains the full verified catalog and never raises the
+sidecar's configured capacity. See the canonical
 [tokenizer preload policy](prompt-contract-sidecar.md#bounded-tokenizer-preload-selection).
 Advisory public provider availability is neither cache ownership nor authorization.
 

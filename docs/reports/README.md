@@ -1,11 +1,10 @@
 # Reports — dated records
 
-> Last updated: 2026-09-26 · commit `3e9dcf6b4`
+> Last updated: 2026-09-27 · commit `d621f9772`
 
 - [Cache planning admission](2026-09-24-cache-planner-admission.md) — reproduced admission loss, bounded client repair and exactness/lifecycle qualification.
-
 - [SSD eviction and cache discovery](2026-09-24-cache-eviction-publication.md) — reproduced discovery loss, active-store retirement repair and native qualification.
-- [Connected cache qualification](2026-09-27-cache-connected-qualification.md) — real API reuse, concurrent requests, Gemma reconstruction, expiry boundaries and preserved release limitations.
+- [Connected cache qualification](2026-09-27-cache-connected-qualification.md) — real API reuse, concurrent requests, Gemma reconstruction, expiry boundaries and release limitations.
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none

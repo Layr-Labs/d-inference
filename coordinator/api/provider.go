@@ -1379,7 +1379,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	// so the security boundary is the signed runtime's buffer-registration
 	// discipline.
 	if resp.RDMADisabled == nil {
-		s.handleChallengeFailure(providerID, "RDMA status not reported — provider must update to v0.2.0+")
+		s.handleChallengeFailure(providerID, "RDMA status not reported")
 		return
 	}
 	if !*resp.RDMADisabled {

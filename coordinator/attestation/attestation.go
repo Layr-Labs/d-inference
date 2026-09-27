@@ -108,7 +108,6 @@ type VerificationResult struct {
 	SecureEnclaveAvailable   bool
 	SIPEnabled               bool
 	SecureBootEnabled        bool
-	RDMADisabled             bool
 	RuntimeCapabilities      []string
 	AuthenticatedRootEnabled bool
 	SystemVolumeHash         string
@@ -144,7 +143,6 @@ func Verify(signed SignedAttestation) VerificationResult {
 		SecureEnclaveAvailable:   signed.Attestation.SecureEnclaveAvailable,
 		SIPEnabled:               signed.Attestation.SIPEnabled,
 		SecureBootEnabled:        signed.Attestation.SecureBootEnabled,
-		RDMADisabled:             signed.Attestation.RDMADisabled,
 		RuntimeCapabilities:      append([]string(nil), signed.Attestation.RuntimeCapabilities...),
 		AuthenticatedRootEnabled: signed.Attestation.AuthenticatedRootEnabled,
 		SystemVolumeHash:         signed.Attestation.SystemVolumeHash,
@@ -228,10 +226,8 @@ func Verify(signed SignedAttestation) VerificationResult {
 		result.Valid = false
 		result.Error = "Secure Boot not enabled"
 	}
-	// RDMA status in the attestation blob is informational — old enclave binaries
-	// don't include this field (defaults to false). The real RDMA check happens in
-	// the challenge-response flow where the provider reports fresh rdma_ctl status.
-	// TEMPORARY: once all providers run v0.2.0+ enclave, enforce this.
+	// RDMA status in the attestation blob is signed but not a registration
+	// requirement; the challenge-response flow requires fresh rdma_ctl status.
 	// ARV is informational — not all environments report it reliably
 	// (e.g. multi-boot Macs, older macOS). Logged but not enforced.
 	result.AuthenticatedRootEnabled = signed.Attestation.AuthenticatedRootEnabled

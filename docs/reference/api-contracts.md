@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-27 · commit `f99e56eb0`
+> Last updated: 2026-09-26 · commit `c60610bb1`
 
 The complete public HTTP surface of the coordinator, derived from the 117 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -441,6 +441,9 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `artifact_allowlist.count` | Number of configured exact tuples; never returns their model IDs or hashes | Same |
 | `providers.v2_ready_models` | Ready durable SSD capabilities; preserves the existing meaning | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `providers.memory_ready_models` | Ready resident capabilities, counted separately from SSD readiness | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
+| `lifecycle.fences_applied` | Proof-fence windows opened or escalated | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/registry/cache_proof_fence.go` (`rejectCapability`) |
+| `lifecycle.fences_expired` | Windows that lifted by time, each counted once | Same; `coordinator/registry/cache_proof_fence.go` (`countLapseLocked`) |
+| `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | Same; `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
 
 The artifact-list fields have Prometheus gauges
 `exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`
@@ -451,12 +454,20 @@ and Datadog gauges `exact_cache.artifact_allowlist.configured`,
 The additive resident count has Prometheus gauge
 `exact_cache_memory_ready_models` and Datadog gauge
 `exact_cache.memory_ready_models` (`coordinator/api/exact_cache_metrics.go`).
+The fence fields have Prometheus gauges `exact_cache_fence{event}`
+(`event` ∈ `applied`, `expired`) and `exact_cache_fenced_capabilities`, and
+Datadog gauges `exact_cache.fence` tagged `event:applied|expired` and
+`exact_cache.fenced_capabilities` (same file).
 The existing `prefix_cache_statuses` state/reason aggregates retain their SSD
 meaning; resident routing uses the separate memory capability and bounded holder
 receipts described in [cache-aware routing](../architecture/cache-aware-routing.md).
 
 The exact-cache lifecycle `holder_removed` map includes `proof_mismatch`, separate
-from `capability_change`. Updating one model preserves unchanged models' holders,
+from `capability_change`. `proof_mismatch` counts plan-scoped drops (anchor
+mismatches, `invalidateProviderPlan`) and whole provider/model drops (identity
+mismatches, `invalidateProviderModel`); the fence windows themselves are
+defined in [cache-aware routing](../architecture/cache-aware-routing.md#protocol-v2-proof).
+Updating one model preserves unchanged models' holders,
 pending receipts and proof fences. See `coordinator/registry/cache_model_changes.go`
 and `coordinator/registry/cache_receipt_result.go`.
 

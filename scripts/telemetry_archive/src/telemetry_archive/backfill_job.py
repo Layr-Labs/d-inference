@@ -44,6 +44,10 @@ def database_url() -> str:
 
 
 def replica_ready(dsn: str) -> None:
+    # Operator-required conservative replay-recency gate, not a precise lag metric.
+    # A quiet primary can therefore stop a caught-up replica. Receive/replay LSN
+    # equality alone does not prove the receiver has caught up to the primary;
+    # do not use it to bypass the explicitly required <30-second replay age.
     with psycopg.connect(
         dsn,
         connect_timeout=10,

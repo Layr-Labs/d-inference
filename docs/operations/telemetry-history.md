@@ -1,6 +1,6 @@
 # Queryable telemetry history
 
-> Last updated: 2026-09-26 · commit `86895ace9`
+> Last updated: 2026-09-27 · commit `a7a672cf1`
 
 Copy and verify retained PostgreSQL telemetry into private Cloud Storage, then
 publish BigQuery views without changing coordinator writes, retention, or
@@ -17,7 +17,7 @@ failed or dropped writes cannot be reconstructed by this exporter.
 ## Prerequisites
 
 - Authorization for the archive bucket, isolated worker, and BigQuery dataset.
-- A physical, read-only replica with replay enabled and replay age at most
+- A physical, read-only replica with replay enabled and replay age strictly below
   30 seconds. The worker checks this before each bounded capture.
 - The independent worker built from `scripts/telemetry_archive/Dockerfile`.
 - Private Standard bucket `darkbloom-mainnet-telemetry-history` in us-east4,
@@ -28,6 +28,14 @@ failed or dropped writes cannot be reconstructed by this exporter.
 
 The earlier `darkbloom-mainnet-telemetry-archive` bucket and September 8 job
 remain independent. Their incomplete data is not assumed to cover this run.
+
+The replay-age check is an intentionally conservative **recency** requirement,
+not an exact replication-lag estimate. A quiet primary can leave an old transaction
+replay timestamp even when its replica is caught up; this worker still stops.
+PostgreSQL defines that timestamp as the last replayed transaction's primary-side
+commit/abort time ([recovery information functions](https://www.postgresql.org/docs/17/functions-admin.html#FUNCTIONS-RECOVERY-INFO-TABLE)).
+Receive/replay LSN equality alone does not prove the receiver has reached the
+primary's current position. The approved <30-second gate remains mandatory.
 
 ## Steps
 
@@ -51,7 +59,11 @@ remain independent. Their incomplete data is not assumed to cover this run.
    receipt identity and object generations, and excludes unfinished windows.
    `publish.publish` retains previously published coverage, creates immutable
    manifest/catalog generations, and switches each stable reader view only
-   after its backing objects exist. Run only one publisher at a time.
+   after its backing objects exist. This switch is atomic per view, not across
+   tables. Cross-table consumers must pin one explicit catalog generation via
+   `publish.reader_sql`; never combine independently moving aliases. The
+   `archive_coverage` pointer changes last, after every table is ready. Run only
+   one publisher at a time.
 5. Query `telemetry_history.archive_coverage` first. It lists the exact
    published source windows, snapshot times, rows, and file sizes. Missing
    intervals are not zero traffic. Then query the table-named reader views:

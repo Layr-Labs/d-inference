@@ -41,7 +41,7 @@ type Snapshot struct {
 
 func (s *Snapshot) Fresh(now time.Time) bool {
 	return !s.SourceCompleteThrough.After(now) && !s.AsOf.After(s.SourceCompleteThrough) &&
-		!s.GeneratedAt.After(now.Add(time.Minute)) && !s.GeneratedAt.Before(s.AsOf) &&
+		!s.GeneratedAt.After(now.Add(time.Minute)) && !s.GeneratedAt.Before(s.SourceCompleteThrough) &&
 		now.Sub(s.SourceCompleteThrough) <= MaxSourceAge && now.Sub(s.AsOf) <= MaxSourceAge &&
 		now.Sub(s.GeneratedAt) <= MaxResultAge
 }

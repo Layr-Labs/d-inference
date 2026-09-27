@@ -1,10 +1,11 @@
+import re
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 
 from telemetry_archive import analytics_preview
-from telemetry_archive.analytics_sql import parameters, query_sql
+from telemetry_archive.analytics_sql import parameters, query_sql, source_tables
 from telemetry_archive.cli import parser
 from telemetry_archive.model import ArchiveError, utc
 
@@ -132,3 +133,37 @@ def test_unbounded_usage_execution_is_rejected_before_cloud(monkeypatch):
         analytics_preview.preview(
             arguments("--query", "usage-timeseries", "--window", "all", "--execute")
         )
+
+
+@pytest.mark.parametrize("query", ["leaderboard", "network-totals", "usage-timeseries"])
+def test_execute_ignores_mixed_generation_stable_aliases(query, monkeypatch):
+    class MixedAliases(Client):
+        def get_table(self, name):
+            assert name == f"archive-test.accounting_history.catalog_{CATALOG}"
+            return super().get_table(name)
+
+        def query(self, sql, job_config):
+            # Simulate publication selecting a new earnings alias before ledger.
+            # Any use of these aliases would mix cuts; the immutable inputs stay A.
+            aliases = {
+                "archive-test.accounting_history.provider_earnings": "b" * 16,
+                "archive-test.accounting_history.ledger_entries": CATALOG,
+                "archive-test.accounting_history.usage": "b" * 16,
+            }
+            referenced = set(re.findall(r"`([^`]+)`", sql))
+            assert not referenced.intersection(aliases)
+            expected = {f"archive-test.accounting_history.catalog_{CATALOG}"}
+            if not sql.startswith("SELECT DISTINCT table_name"):
+                expected.update(
+                    f"archive-test.accounting_history.{table}_files_{CATALOG}"
+                    for table in self.tables
+                )
+            assert referenced == expected
+            return super().query(sql, job_config)
+
+    client = MixedAliases(tables=source_tables(query))
+    monkeypatch.setattr(analytics_preview.cloud, "bigquery_client", lambda *_: client)
+    report = analytics_preview.preview(arguments("--query", query, "--execute"))
+    assert report["catalog_version"] == CATALOG
+    assert report["serving_eligible"] is False
+    assert len(client.calls) == 2

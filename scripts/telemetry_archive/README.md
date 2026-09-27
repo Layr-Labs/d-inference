@@ -120,9 +120,11 @@ indexed source bounds. Each table may appear once, and each range is at most
 365 days. Freeze the end explicitly; this is a finite historical copy.
 
 The runner checks replica replay age before every new capture and exits with
-code 75 when it exceeds 30 seconds or the execution budget is exhausted.
+code 75 when it reaches 30 seconds or the execution budget is exhausted.
 Runtime budgets are checked between windows; the hosting platform must also
-set its hard task timeout. No automatic service retry or schedule is created.
+set its hard task timeout. This conservative replay-recency gate also stops a
+caught-up replica if the primary has been quiet; receive/replay LSN equality does
+not bypass it. No automatic service retry or schedule is created.
 Rerun the same plan ID to resume. Saved data/manifest generations are checked
 before skipping completed work. Persistent split decisions prevent overlapping
 parent/child snapshots from entering the same completed coverage.
@@ -188,7 +190,9 @@ See [the operator runbook](../../docs/operations/telemetry-archive.md).
 
 `analytics-preview` compiles SQL by default. Add `--execute` for a SELECT-only
 BigQuery check against one published catalog generation; it never changes a
-view or the serving API. The output is explicitly shadow data with
+view or the serving API. All inputs use the same explicit catalog version;
+independently moving stable aliases are for single-table exploration only.
+The output is explicitly shadow data with
 `serving_eligible=false`, `retention_eligible=false`, and uncertified source
 completeness. An empty result from an incomplete archive does not mean no
 production activity occurred.

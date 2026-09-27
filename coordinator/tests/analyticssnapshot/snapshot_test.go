@@ -42,6 +42,10 @@ func TestSnapshotRejectsIncompleteStaleAndOverflow(t *testing.T) {
 			s.SourceCompleteThrough = now.Add(-11 * time.Minute)
 			s.AsOf = s.SourceCompleteThrough
 		},
+		"generated_before_watermark": func(s *Snapshot) {
+			s.GeneratedAt = s.AsOf
+			s.SourceCompleteThrough = s.AsOf.Add(30 * time.Second)
+		},
 		"old_asof": func(s *Snapshot) { s.AsOf = now.Add(-11 * time.Minute) },
 		"future":   func(s *Snapshot) { s.SourceCompleteThrough = now.Add(time.Minute) },
 		"overflow": func(s *Snapshot) {

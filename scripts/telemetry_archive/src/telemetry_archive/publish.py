@@ -1,4 +1,8 @@
-"""Publish immutable catalog generations and atomically switch reader views."""
+"""Publish immutable catalogs and update independent single-table reader aliases.
+
+Cross-table analytics pin an explicit generation via reader_sql; stable aliases
+are not switched as one group. archive_coverage selects the completed catalog last.
+"""
 
 import hashlib
 import re
@@ -145,7 +149,9 @@ def publish(args):
                 }
             )
             client.create_table(external, exists_ok=True)
-            # Each stable view changes only after its immutable backing objects exist.
+            # Each alias changes independently after its backing objects exist.
+            # Multi-table consumers must pin a catalog with reader_sql, as the
+            # analytics preview does; these aliases are for single-table reads.
             sql = reader_sql(args.project, args.dataset, table, version)
             view_id = f"{args.project}.{args.dataset}.{table}"
             client.query(

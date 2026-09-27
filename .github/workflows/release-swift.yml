@@ -17,10 +17,8 @@ name: Release Provider Bundle (Swift)
 # build. The legacy `release.yml` was deleted alongside `app/` once we
 # committed to a CLI-only migration.
 #
-# Swift cutover tag conventions:
+# Tag convention:
 #   - vX.Y.Z           -> prod Swift release (reviewer approval required)
-#   - vX.Y.Z-swift     -> accepted alias while the migration is in progress
-#   - vX.Y.Z-swift.N   -> accepted alias while the migration is in progress
 # Dev releases use workflow_dispatch so the requested version can remain
 # byte-identical to the checked-in provider and coordinator source constants.
 #
@@ -40,8 +38,6 @@ on:
   push:
     tags:
       - 'v*.*.*'
-      - 'v*-swift'
-      - 'v*-swift.*'
   workflow_dispatch:
     inputs:
       environment:

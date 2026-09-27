@@ -337,11 +337,11 @@ git tag -a v0.9.10 -m "v0.9.10 — <one-line theme>
 git push origin v0.9.10
 ```
 
-Accepted tag patterns (`on.push.tags`): `v*.*.*`, `v*-swift`, `v*-swift.*`.
+Accepted tag pattern (`on.push.tags`): `v*.*.*`.
 Tags containing `-dev.` are rejected by `resolve-env` ("`-dev` tags are
 unsupported by the exact-version release contract"); use step 5 for dev.
-The version is derived from the tag (`v` stripped, `-swift*` suffix stripped)
-and must equal the source constants. `scripts/resolve-provider-release.sh` checks
+The version is the tag with `v` stripped and must equal the source constants,
+so a retired `vX.Y.Z-swift` alias fails resolution. `scripts/resolve-provider-release.sh` checks
 this before writing job outputs or requesting environment approval.
 
 ### 5. Dev release (manual dispatch)

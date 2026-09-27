@@ -193,7 +193,7 @@ Never create a release unless explicitly asked. A release bumps
 and `LatestProviderVersion` (`coordinator/api/server.go`) together
 (`scripts/check-release-version.sh` enforces this), then tags the merged master
 commit with an annotated `vX.Y.Z` tag. `.github/workflows/release-swift.yml`
-runs on `vX.Y.Z` tags (plus legacy `vX.Y.Z-swift[.N]`); dev publication uses
+runs on `vX.Y.Z` tags; dev publication uses
 `workflow_dispatch`, and every requested version must equal the checked-in
 constants.
 

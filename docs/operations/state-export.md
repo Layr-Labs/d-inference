@@ -1,6 +1,6 @@
 # State export
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 How to pull the coordinator's sealed on-disk state — the MicroMDM enrollment
 database and everything else on the persistent disk that is not in Postgres —

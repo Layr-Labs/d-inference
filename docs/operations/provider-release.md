@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-27 · commit `5d0dd2674`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`

@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-27 · commit `a2ccc2499`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.

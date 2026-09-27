@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-27 · commit `3ca0bffd8`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside

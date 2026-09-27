@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-21 · commit `ce809b792`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an

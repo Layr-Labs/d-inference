@@ -73,12 +73,11 @@ func (t *cacheRoutingTracker) sweepIfDueLocked(now time.Time) {
 // what draining both full indexes takes, so the loop ends even if receipts
 // keep adding entries that are already stale.
 func (t *cacheRoutingTracker) stateCounts(now time.Time) (holders, attempts int) {
-	passes := (t.maxEntries+t.maxAttempts)/cacheRoutingMaxSweepRemovals + 1
-	for {
+	for pass := 1; ; pass++ {
 		t.mu.Lock()
 		t.sweepIfDueLocked(now)
-		passes--
-		if !t.sweepBacklog || passes <= 0 {
+		limit := (t.maxEntries+t.maxAttempts)/cacheRoutingMaxSweepRemovals + 1
+		if !t.sweepBacklog || pass >= limit {
 			holders, attempts = t.holderCount, len(t.attempts)
 			t.mu.Unlock()
 			return holders, attempts

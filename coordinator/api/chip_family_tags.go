@@ -14,7 +14,7 @@ func sanitizeChipFamilyTag(family string) string {
 		"M2", "M2 Pro", "M2 Max", "M2 Ultra",
 		"M3", "M3 Pro", "M3 Max", "M3 Ultra",
 		"M4", "M4 Pro", "M4 Max", "M4 Ultra",
-		"M5", "M5 Pro", "M5 Max", "M5 Ultra":
+		"M5", "M5 Pro", "M5 Max", "M5 Ultra", "M6":
 		return strings.ReplaceAll(family, " ", "_")
 	default:
 		return "other"

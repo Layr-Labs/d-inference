@@ -147,11 +147,12 @@ type routingSnapshot struct {
 	// can load right now (net of cap/reserve/headroom, idle models reclaimed).
 	// When non-nil it is the authoritative cold-load gate; nil = legacy provider
 	// (fall back to the total-memory heuristic). See protocol.BackendCapacity.
-	freeForLoadGB   *float64
-	modelSizeGB     float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
-	minRAMGb        int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
-	modelLoaded     bool    // true when the requested model is resident (running or idle)
-	availableOnDisk bool    // model is in provider's Models list but not currently loaded
+	freeForLoadGB              *float64
+	modelSizeGB                float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
+	estimatedOffloadedMemoryGB float64 // validated padded native weights; zero preserves legacy policy
+	minRAMGb                   int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
+	modelLoaded                bool    // true when the requested model is resident (running or idle)
+	availableOnDisk            bool    // model is in provider's Models list but not currently loaded
 
 	observedDecodeTPS     float64
 	observedPrefillTPS    float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
@@ -211,6 +212,7 @@ type routingSnapshot struct {
 }
 
 type routingCandidate struct {
+	cacheAffinityEligible bool
 	// Exact base-score work eligible for a cache credit; never includes load or decode.
 	pricedPromptTokens int
 	prefillCostMs      float64
@@ -226,6 +228,9 @@ type routingCandidate struct {
 	capacityRejectRate        float64
 	cacheTier                 string
 	cacheEstimatedTTFTSavedMs float64
+	// cacheEvidenceWeight is the age weight of the credited holder evidence,
+	// captured with the hint so near-tie ranking and reservation agree.
+	cacheEvidenceWeight float64
 	// calibrationRatio is the TTFT calibration ratio this candidate was
 	// scored with (recorded on the RoutingDecision for the profiler).
 	calibrationRatio float64
@@ -593,7 +598,8 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	// scan itself land on the decision as LockWaitUS / ScanUS; ~25 ns each.
 	tScanStart := time.Now()
 	// Snapshot receipt-confirmed cache hints before taking the registry scan lock.
-	// The tracker has its own mutex and must never be nested under r.mu.
+	// Query holders outside the scan lock; the later candidate quarantine check
+	// uses the same registry -> provider -> tracker order as receipt rejection.
 	r.mu.RLock()
 	cacheTracker, cacheMode := r.cacheRouting, r.cacheRoutingMode
 	// Skip digest derivation and holder lookup unless the request can use them.
@@ -607,9 +613,10 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	}
 	r.mu.RUnlock()
 	pr.cacheRoutingHints = nil
+	pr.CacheOpportunity = CacheOpportunity{}
 	if wantHints {
-		pr.cacheRoutingHints = r.cacheRoutingHints(
-			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, time.Now())
+		pr.cacheRoutingHints, pr.CacheOpportunity = r.cacheRoutingHintsWithObservation(
+			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, cacheTracker.now())
 	}
 	pr.CacheSelectionMode = ""
 	pr.CacheSelectionTier = ""
@@ -629,6 +636,7 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 		r.cacheRouting != cacheTracker {
 		pr.cacheRoutingHints = nil
 		pr.CacheSelectionMode = ""
+		pr.CacheOpportunity = CacheOpportunity{}
 	}
 	selected, candidates := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
 	if r.reservationAfterScan != nil {
@@ -755,15 +763,17 @@ func (r *Registry) commitProviderReservation(
 	}
 	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
 
-	// Another reservation changed this winner after the shared scan. Re-scan the
-	// fleet so cost ranking observes that debit instead of herding the whole scan
-	// cohort onto the formerly-cheapest provider. The counters compared here
+	// Another reservation or cache quarantine changed this winner after the
+	// shared scan. Re-scan before committing stale cost or affinity preference.
+	// Quarantine can change affinity without changing any cost. The counters here
 	// were read under the p.mu this section still holds, so a concurrent commit
 	// on the same provider is either fully before (and visible) or fully after.
 	if snapshot.pendingForModel != selected.snapshot.pendingForModel ||
 		snapshot.totalPending != selected.snapshot.totalPending ||
 		candidate.effectiveQueue != selected.effectiveQueue ||
-		candidate.costMs != selected.costMs {
+		candidate.costMs != selected.costMs ||
+		candidate.breakdown.CacheDiscountMs != selected.breakdown.CacheDiscountMs ||
+		candidate.cacheAffinityEligible != selected.cacheAffinityEligible {
 		return nil, nil, reservationNeedsRescan, RoutingDecision{}
 	}
 
@@ -913,20 +923,24 @@ func routingDecisionForCandidate(model string, provider *Provider, candidate *ro
 }
 
 // applyCacheRoutingCost reads the candidate's own snapshot (the scan
-// builds it in place; no copy is taken). The caller does NOT hold p.mu (the
-// scan): the hint currency check takes it.
+// builds it in place; no copy is taken). The caller holds r.mu, but not p.mu;
+// the hint currency and affinity quarantine checks take the provider lock.
 func (r *Registry) applyCacheRoutingCost(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
-	hint, present := pr.cacheRoutingHints[p.ID]
-	if !present {
+	_, present := pr.cacheRoutingHints[p.ID]
+	if !present && pr.CachePlan.affinityKey == "" {
 		return
 	}
 	p.mu.Lock()
-	r.applyCacheHintLocked(hint, model, candidate)
+	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
 	p.mu.Unlock()
 }
 
-// applyCacheRoutingCostPLocked is the reservation path, already holding p.mu.
+// applyCacheRoutingCostPLocked is shared by scan and reservation; both hold
+// r.mu and p.mu so capability/quarantine checks use the current provider state.
 func (r *Registry) applyCacheRoutingCostPLocked(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
+	if pr.CachePlan.affinityKey != "" {
+		candidate.cacheAffinityEligible = r.cacheAffinityEligibleLocked(p, model, pr.CachePlan)
+	}
 	r.applyCacheHintLocked(pr.cacheRoutingHints[p.ID], model, candidate)
 }
 
@@ -1324,12 +1338,32 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		return nil, scan
 	}
 
-	winner, runnerUp, nearTieSize, path := selectRoutingCandidate(scan.pool)
+	affinity := ""
+	if pr.CacheSelectionMode == "active" && r.cacheRouting != nil &&
+		pr.CachePlan.generation == r.cacheRouting.generation && !r.cacheRouting.generation.revoked.Load() {
+		affinity = pr.CachePlan.affinityKey
+	}
+	pr.CacheOpportunity.UsableCandidates = 0
+	pr.CacheOpportunity.CreditedCandidates = 0
+	for _, candidate := range scan.pool {
+		if candidate.cacheTier != "" {
+			pr.CacheOpportunity.UsableCandidates++
+			if candidate.breakdown.CacheDiscountMs > 0 {
+				pr.CacheOpportunity.CreditedCandidates++
+			}
+		}
+	}
+	winner, runnerUp, nearTieSize, path := selectRoutingCandidateWithAffinity(scan.pool, affinity)
+	pr.CacheOpportunity.AffinityApplied = path == SelectionPrefixAffinity
+	// The runner-up is the pool minimum whenever the winner is not; a credited
+	// winner that costs more than it won only through the near-tie preference.
+	pr.CacheOpportunity.CreditWonNearTie = path == SelectionCacheCredit &&
+		runnerUp != nil && winner.costMs > runnerUp.costMs
 	scan.runnerUp = candidateSummaryOf(runnerUp)
 	scan.nearTieSize = clampInt32(nearTieSize)
 	scan.path = path
 	scan.promoteWinnerTop(winner)
-	r.logRoutingDecision(model, pr, winner, scan.candidateCount)
+	r.logRoutingDecision(model, pr, winner, scan.candidateCount, scan.path)
 	return winner, scan
 }
 
@@ -1430,7 +1464,7 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 // logRoutingDecision emits a structured debug-level record of the
 // winning candidate and its cost breakdown. Cheap when the level is
 // disabled, since slog short-circuits before formatting.
-func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *routingCandidate, candidates int) {
+func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *routingCandidate, candidates int, path SelectionPath) {
 	if r.logger == nil || winner == nil {
 		return
 	}
@@ -1452,6 +1486,7 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 		"backlog_ms", bd.BacklogMs,
 		"this_req_ms", bd.ThisReqMs,
 		"health_ms", bd.HealthMs,
+		"selection_path", path.String(),
 		"cache_tier", winner.cacheTier,
 		"cache_discount_ms", bd.CacheDiscountMs,
 		"cache_estimated_ttft_saved_ms", winner.cacheEstimatedTTFTSavedMs,
@@ -1662,87 +1697,20 @@ func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provid
 		return false, reason
 	}
 
-	*dst = routingSnapshot{}
-	snap := dst
-	snap.provider = p
-	snap.model = model
-	snap.chipFamily = p.Hardware.ChipFamily
-	snap.binaryVersion = p.Version
-	snap.slotState = "unknown"
-	snap.totalPending = p.pendingCount()
-	snap.systemMetrics = p.SystemMetrics
-	snap.decodeTPS = resolvedDecodeTPS(p)
-	snap.prefillTPS = resolvedPrefillTPS(p)
-	snap.totalMemoryGB = float64(p.Hardware.MemoryGB)
-	snap.modelSizeGB = r.modelSizeGBForFitLocked(p, model)
-	snap.minRAMGb = r.catalogMinRAMGbLocked(model)
+	r.fillRoutingSnapshotPLocked(dst, p, model, now)
 	// Heartbeat age from the scan clock (system-profiler record); a zero
 	// LastHeartbeat saturates rather than reading as "fresh".
-	snap.hbAgeMs = heartbeatAgeMs(now, p.LastHeartbeat)
+	dst.hbAgeMs = heartbeatAgeMs(now, p.LastHeartbeat)
 
-	fillSnapshotPendingAndPool(snap, p, model)
 	// Concurrency headroom with the quality-concurrency cap: a slow model whose
 	// quality batch is below the flat fallback (e.g. Gemma at ~14 tok/s solo →
 	// batch 1-2) stops being admittable once it is at its quality cap, so load
 	// spreads across boxes instead of collapsing a few. The cap resolves the
 	// model's own static solo rate internally (solo median / seed → provider
-	// benchmark fallback) — NOT snap.decodeTPS, which stays the provider-level
+	// benchmark fallback) — NOT dst.decodeTPS, which stays the provider-level
 	// rate for TTFT/cost estimation, and NOT the observed-under-load value.
 	// No-op (legacy flat cap) when the cap is disabled.
-	snap.hasHeadroom = r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model)
-	snap.hasBackendCapacity = p.BackendCapacity != nil
-
-	if p.BackendCapacity != nil {
-		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
-		snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
-		if p.BackendCapacity.TotalMemoryGB > 0 {
-			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
-		}
-		for _, slot := range p.BackendCapacity.Slots {
-			if slot.Model != model {
-				continue
-			}
-			snap.slotState = slot.State
-			snap.backendRunning = int(slot.NumRunning)
-			snap.backendWaiting = int(slot.NumWaiting)
-			snap.maxTokensPotential = slot.MaxTokensPotential
-			snap.observedDecodeTPS = slot.ObservedDecodeTPS
-			snap.observedPrefillTPS = slot.ObservedPrefillTPS
-			snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
-			snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
-			snap.queuedTokenBudget = slot.QueuedTokenBudget
-			snap.kvBytesPerToken = clampKVBytesPerToken(slot.KVBytesPerToken)
-			snap.stepsExecuted = slot.StepsExecuted
-			snap.admits = slot.Admits
-			snap.firstTokensEmitted = slot.FirstTokensEmitted
-			snap.secondsSinceLastStep = slot.SecondsSinceLastStep
-			snap.secondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
-			snap.wedgeSuspected = slot.WedgeSuspected
-			snap.evalInFlightMs = slot.EvalInFlightMs
-			snap.idleClearInFlightMs = slot.IdleClearInFlightMs
-			break
-		}
-	}
-	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
-	snap.availableOnDisk = !snap.modelLoaded
-	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
-
-	// Gray-box budget clamp (budget_clamp.go): when a capacity-503 has proven
-	// the pair's live gate is rejecting, admission must not believe the
-	// stale-optimistic heartbeat budget. Evaluated for budgetless snapshots
-	// too — a reconnected session has no BackendCapacity until its first
-	// heartbeat, and a clamp armed on a budget-reporting pair must keep
-	// holding through that window instead of shedding onto the legacy memory
-	// path (never-budget-reporting legacy pairs stay exempt inside the check).
-	// p.LastHeartbeat is when the CURRENT BackendCapacity was delivered
-	// (Heartbeat stamps both in one critical section), which is what the
-	// release-freshness check compares against the clamp time. p.mu and r.mu
-	// are both held here (see lock discipline above); the clamp read is one
-	// lock-free flag load unless the identity actually carries a clamp, and is
-	// confirmed against p.gate like the gates above (gateView).
-	rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
-	snap.budgetClamped = r.budgetClampedFor(p, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
-
+	dst.hasHeadroom = r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model)
 	return true, GateReasonCount
 }
 
@@ -1784,16 +1752,13 @@ func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {
 // or unknown catalog size that can't be normalized). Used by every cold-load
 // decision path (direct admission, the swap planner, the warm pool, and the
 // cold-spill predicate) so they cannot drift.
-// The PADDED conversion on purpose, for every binary and model: this
+// The legacy PADDED conversion is deliberate without explicit SSD offload: it
 // mirrors the provider's ADMIT gate, which deliberately charges the
 // disk×1.2 load-transient figure (shard staging exceeds steady residency).
 // Measured post-load residency (servabilityMeasuredResidentGiB) informs
 // only coldTokenBudgetEstimate — the POST-load arithmetic.
 func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (admit bool, reported bool) {
-	if freeForLoadGB == nil || catalogSizeGB <= 0 {
-		return false, false
-	}
-	return catalogSizeGB*coldLoadCatalogGBToMemGiB <= *freeForLoadGB, true
+	return reportedFreeForLoadAdmitsWithOffload(catalogSizeGB, 0, freeForLoadGB)
 }
 
 // freeMemoryAdmits returns true when the provider has enough headroom.
@@ -1898,7 +1863,7 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 		// provider's padded-GiB load basis so it exactly mirrors the provider's own
 		// ModelLoadAdmission gate (no over-admit → OOM, no under-admit on evictable
 		// weights).
-		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); reported {
+		if admit, reported := reportedFreeForLoadAdmitsWithOffload(snap.modelSizeGB, snap.estimatedOffloadedMemoryGB, snap.freeForLoadGB); reported {
 			return admit
 		}
 		// Fallback for legacy providers that don't report freeForLoadGB: the old
@@ -2750,63 +2715,9 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			continue
 		}
 
-		// Build a snapshot for the admission gate (slot state + free memory).
-		snap := routingSnapshot{
-			provider:           p,
-			model:              model,
-			chipFamily:         p.Hardware.ChipFamily,
-			binaryVersion:      p.Version,
-			slotState:          "unknown",
-			totalPending:       p.pendingCount(),
-			systemMetrics:      p.SystemMetrics,
-			decodeTPS:          resolvedDecodeTPS(p),
-			prefillTPS:         resolvedPrefillTPS(p),
-			totalMemoryGB:      float64(p.Hardware.MemoryGB),
-			modelSizeGB:        r.modelSizeGBForFitLocked(p, model),
-			minRAMGb:           r.catalogMinRAMGbLocked(model),
-			hasBackendCapacity: p.BackendCapacity != nil,
-		}
-		fillSnapshotPendingAndPool(&snap, p, model)
-		if snap.hasBackendCapacity {
-			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
-			snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
-			if p.BackendCapacity.TotalMemoryGB > 0 {
-				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
-			}
-			for _, slot := range p.BackendCapacity.Slots {
-				if slot.Model != model {
-					continue
-				}
-				snap.slotState = slot.State
-				snap.backendRunning = int(slot.NumRunning)
-				snap.backendWaiting = int(slot.NumWaiting)
-				snap.observedDecodeTPS = slot.ObservedDecodeTPS
-				snap.observedPrefillTPS = slot.ObservedPrefillTPS
-				snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
-				snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
-				snap.queuedTokenBudget = slot.QueuedTokenBudget
-				snap.maxTokensPotential = slot.MaxTokensPotential
-				snap.kvBytesPerToken = clampKVBytesPerToken(slot.KVBytesPerToken)
-				snap.stepsExecuted = slot.StepsExecuted
-				snap.admits = slot.Admits
-				snap.firstTokensEmitted = slot.FirstTokensEmitted
-				snap.secondsSinceLastStep = slot.SecondsSinceLastStep
-				snap.secondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
-				snap.wedgeSuspected = slot.WedgeSuspected
-				snap.evalInFlightMs = slot.EvalInFlightMs
-				snap.idleClearInFlightMs = slot.IdleClearInFlightMs
-				break
-			}
-		}
-		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
-		snap.availableOnDisk = !snap.modelLoaded
-		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
-
-		// Gray-box budget clamp — same evaluation as snapshotProviderLockedEx
-		// (including the budgetless-snapshot hold for reconnecting sessions)
-		// so the preflight cannot report capacity that routing then refuses.
-		rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
-		snap.budgetClamped = r.budgetClampedFor(p, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
+		// Project the same locked provider state used by reservation scoring.
+		var snap routingSnapshot
+		r.fillRoutingSnapshotPLocked(&snap, p, model, now)
 
 		p.mu.Unlock()
 
@@ -3133,7 +3044,7 @@ func (r *Registry) drainModelQueuePass(queue *RequestQueue, model, reason string
 		decision.QueueDepth = req.DepthAtEnqueue
 		decision.DrainTrigger = reason
 		if provider == nil {
-			if req.Pending.Traits.RequiresToolConstraint &&
+			if (req.Pending.Traits.RequiresToolConstraint || req.Pending.Traits.RequiresNativeMediaTools) &&
 				!r.hasToolConstraintProviderForPending(model, req.Pending) {
 				req.DrainTrigger = reason
 				req.Decision = decision

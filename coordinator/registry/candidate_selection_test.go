@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"cmp"
 	"fmt"
 	"math/rand"
 	"slices"
@@ -51,54 +52,68 @@ func BenchmarkSelectRoutingCandidate(b *testing.B) {
 // every permitted winner rather than requiring a particular random draw.
 func TestSelectRoutingCandidateMatchesRankingPolicy(t *testing.T) {
 	rng := rand.New(rand.NewSource(82427))
-	for trial := 0; trial < 1000; trial++ {
+	for trial := 0; trial < 2000; trial++ {
 		pool := make([]*routingCandidate, 1+rng.Intn(25))
 		for i := range pool {
 			discount := 0.0
 			if rng.Intn(4) == 0 {
-				discount = 500
+				discount = float64(100 * (1 + rng.Intn(5)))
 			}
 			pool[i] = mkCandidate(fmt.Sprint(i), float64(rng.Intn(20)*500), rng.Intn(4), rng.Intn(4), discount)
+			if discount > 0 {
+				pool[i].cacheEvidenceWeight = float64(1+rng.Intn(4)) / 4
+			} else if rng.Intn(6) == 0 {
+				// A restore penalty: executable evidence whose staging costs more
+				// than the prefill it replaces.
+				pool[i].cacheEstimatedTTFTSavedMs = -float64(1 + rng.Intn(500))
+			}
 		}
 		original := slices.Clone(pool)
-		near := slices.Clone(pool)
-		slices.SortStableFunc(near, func(a, b *routingCandidate) int {
-			if a.costMs < b.costMs {
-				return -1
+		minimum := slices.MinFunc(pool, func(a, b *routingCandidate) int {
+			return cmp.Compare(a.costMs, b.costMs)
+		}).costMs
+		near := slices.DeleteFunc(slices.Clone(pool), func(c *routingCandidate) bool {
+			if c.cacheEstimatedTTFTSavedMs < 0 {
+				return c.costMs != minimum
 			}
-			if a.costMs > b.costMs {
-				return 1
-			}
-			return 0
+			return c.costMs > minimum+nearTieCostWindowMs
 		})
-		minimum := near[0].costMs
-		window := nearTieCostWindowMs
-		if slices.ContainsFunc(pool, func(c *routingCandidate) bool { return c.breakdown.CacheDiscountMs > 0 }) {
-			window = 0
-		}
-		near = slices.DeleteFunc(near, func(c *routingCandidate) bool {
-			return c.costMs > minimum+window
+		credited := slices.DeleteFunc(slices.Clone(near), func(c *routingCandidate) bool {
+			return c.breakdown.CacheDiscountMs <= 0
 		})
-		slices.SortStableFunc(near, func(a, b *routingCandidate) int {
-			if a.effectiveQueue != b.effectiveQueue {
-				return a.effectiveQueue - b.effectiveQueue
-			}
-			return a.snapshot.totalPending - b.snapshot.totalPending
-		})
-		equivalent := slices.Clone(near)
-		queue, pending := near[0].effectiveQueue, near[0].snapshot.totalPending
-		equivalent = slices.DeleteFunc(equivalent, func(c *routingCandidate) bool {
-			return c.effectiveQueue != queue || c.snapshot.totalPending != pending
-		})
-		choices := equivalent
+		var choices []*routingCandidate
 		wantPath := SelectionUniqueMin
-		switch {
-		case len(choices) > 1:
-			wantPath = SelectionRandom
-		case len(near) > 1:
-			wantPath = SelectionTieQueue
-			if slices.ContainsFunc(near, func(c *routingCandidate) bool { return c != choices[0] && c.effectiveQueue == queue }) {
-				wantPath = SelectionTiePending
+		if len(credited) > 0 && len(near) > 1 {
+			rank := func(a, b *routingCandidate) int {
+				return cmp.Or(
+					cmp.Compare(a.costMs, b.costMs),
+					cmp.Compare(b.breakdown.CacheDiscountMs, a.breakdown.CacheDiscountMs),
+					cmp.Compare(b.cacheEvidenceWeight, a.cacheEvidenceWeight),
+					cmp.Compare(a.effectiveQueue, b.effectiveQueue),
+					cmp.Compare(a.snapshot.totalPending, b.snapshot.totalPending))
+			}
+			slices.SortStableFunc(credited, rank)
+			// Every credited holder equal to the top on all terms is a permitted
+			// (uniformly spread) winner.
+			choices = slices.DeleteFunc(slices.Clone(credited), func(c *routingCandidate) bool { return rank(c, credited[0]) != 0 })
+			wantPath = SelectionCacheCredit
+		} else {
+			slices.SortStableFunc(near, func(a, b *routingCandidate) int {
+				return cmp.Or(cmp.Compare(a.effectiveQueue, b.effectiveQueue),
+					cmp.Compare(a.snapshot.totalPending, b.snapshot.totalPending))
+			})
+			queue, pending := near[0].effectiveQueue, near[0].snapshot.totalPending
+			choices = slices.DeleteFunc(slices.Clone(near), func(c *routingCandidate) bool {
+				return c.effectiveQueue != queue || c.snapshot.totalPending != pending
+			})
+			switch {
+			case len(choices) > 1:
+				wantPath = SelectionRandom
+			case len(near) > 1:
+				wantPath = SelectionTieQueue
+				if slices.ContainsFunc(near, func(c *routingCandidate) bool { return c != choices[0] && c.effectiveQueue == queue }) {
+					wantPath = SelectionTiePending
+				}
 			}
 		}
 		winner, runnerUp, nearSize, path := selectRoutingCandidate(pool)
@@ -113,6 +128,14 @@ func TestSelectRoutingCandidateMatchesRankingPolicy(t *testing.T) {
 		}
 		if runnerUp != wantRunnerUp || !slices.Equal(pool, original) {
 			t.Fatalf("trial %d: incorrect runner-up or mutated candidate pool", trial)
+		}
+		// A restore penalty never wins over a cheaper peer, and a credited
+		// winner never lies beyond the band of the minimum.
+		if winner.cacheEstimatedTTFTSavedMs < 0 && winner.costMs != minimum {
+			t.Fatalf("trial %d: restore penalty displaced a cheaper peer", trial)
+		}
+		if winner.costMs > minimum+nearTieCostWindowMs {
+			t.Fatalf("trial %d: winner beyond the near-tie band", trial)
 		}
 	}
 }

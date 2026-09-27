@@ -7,6 +7,7 @@ const LATENCY_BOUNDS_US: [u64; 15] = [
     1_000_000, 2_500_000, 5_000_000,
 ];
 
+#[derive(Default)]
 pub struct Metrics {
     plans_started: AtomicU64,
     plans_succeeded: AtomicU64,
@@ -24,29 +25,6 @@ pub struct Metrics {
     preload_contracts: AtomicU64,
     plan_latency: LatencyHistogram,
     cold_load_latency: LatencyHistogram,
-}
-
-impl Default for Metrics {
-    fn default() -> Self {
-        Self {
-            plans_started: AtomicU64::new(0),
-            plans_succeeded: AtomicU64::new(0),
-            plans_cold_only: AtomicU64::new(0),
-            plans_failed: AtomicU64::new(0),
-            plans_at_capacity: AtomicU64::new(0),
-            plans_not_ready: AtomicU64::new(0),
-            plan_timeouts: AtomicU64::new(0),
-            cold_loads: AtomicU64::new(0),
-            warm_loads: AtomicU64::new(0),
-            load_waits: AtomicU64::new(0),
-            load_failures: AtomicU64::new(0),
-            preload_runs: AtomicU64::new(0),
-            preload_failures: AtomicU64::new(0),
-            preload_contracts: AtomicU64::new(0),
-            plan_latency: LatencyHistogram::default(),
-            cold_load_latency: LatencyHistogram::default(),
-        }
-    }
 }
 
 impl Metrics {

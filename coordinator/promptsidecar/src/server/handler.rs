@@ -8,7 +8,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use hyper::{Method, Request, Response, StatusCode};
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 use std::time::Duration;
 
 type ResponseBody = Full<Bytes>;
@@ -55,34 +55,16 @@ async fn handle_preload(
     max_body_bytes: usize,
     body_read_timeout: Duration,
 ) -> Response<ResponseBody> {
-    if content_length_exceeds(&request, max_body_bytes) {
-        return body_too_large_response();
-    }
-    let bytes = match tokio::time::timeout(
+    let preload_request: PreloadRequest = match decode_request(
+        request,
+        max_body_bytes,
         body_read_timeout,
-        collect_bounded(request.into_body(), max_body_bytes),
+        "request body is not a valid preload request",
     )
     .await
     {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(error)) => return collect_error_response(error),
-        Err(_) => {
-            return error_response(
-                StatusCode::REQUEST_TIMEOUT,
-                "body_deadline_exceeded",
-                "request body deadline exceeded",
-            );
-        }
-    };
-    let preload_request: PreloadRequest = match serde_json::from_slice(&bytes) {
         Ok(request) => request,
-        Err(_) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "malformed_json",
-                "request body is not a valid preload request",
-            );
-        }
+        Err(response) => return response,
     };
     match planner
         .preload_contracts(preload_request.prompt_contract_ids)
@@ -103,34 +85,16 @@ async fn handle_plan(
     body_read_timeout: Duration,
     planning_timeout: Duration,
 ) -> Response<ResponseBody> {
-    if content_length_exceeds(&request, max_body_bytes) {
-        return body_too_large_response();
-    }
-    let bytes = match tokio::time::timeout(
+    let plan_request: PlanRequest = match decode_request(
+        request,
+        max_body_bytes,
         body_read_timeout,
-        collect_bounded(request.into_body(), max_body_bytes),
+        "request body is not a valid plan request",
     )
     .await
     {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(error)) => return collect_error_response(error),
-        Err(_) => {
-            return error_response(
-                StatusCode::REQUEST_TIMEOUT,
-                "body_deadline_exceeded",
-                "request body deadline exceeded",
-            );
-        }
-    };
-    let plan_request: PlanRequest = match serde_json::from_slice(&bytes) {
         Ok(request) => request,
-        Err(_) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "malformed_json",
-                "request body is not a valid plan request",
-            );
-        }
+        Err(response) => return response,
     };
     let started = std::time::Instant::now();
     match tokio::time::timeout(planning_timeout, planner.plan(plan_request)).await {
@@ -141,6 +105,34 @@ async fn handle_plan(
             plan_timeout_response()
         }
     }
+}
+
+// Both operations share the HTTP body boundary; planning and preloading retain
+// their own worker lifetime and timeout policies after decoding succeeds.
+async fn decode_request<T: DeserializeOwned>(
+    request: Request<Incoming>,
+    max_body_bytes: usize,
+    body_read_timeout: Duration,
+    malformed_message: &'static str,
+) -> Result<T, Response<ResponseBody>> {
+    if content_length_exceeds(&request, max_body_bytes) {
+        return Err(body_too_large_response());
+    }
+    let bytes = tokio::time::timeout(
+        body_read_timeout,
+        collect_bounded(request.into_body(), max_body_bytes),
+    )
+    .await
+    .map_err(|_| {
+        error_response(
+            StatusCode::REQUEST_TIMEOUT,
+            "body_deadline_exceeded",
+            "request body deadline exceeded",
+        )
+    })?
+    .map_err(collect_error_response)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| error_response(StatusCode::BAD_REQUEST, "malformed_json", malformed_message))
 }
 
 #[derive(Serialize)]

@@ -12,6 +12,7 @@ export interface GeographyPlace {
   country: string;
   countryCode: string;
   value: number;
+  verification?: { authorized: number; appAttest: number; legacy: number; overlap: number };
   latitude?: number;
   longitude?: number;
 }
@@ -73,6 +74,12 @@ function aggregateLocations(buckets: LocationBucket[], minimum = 0): GeographyPl
       place.longitude = ((place.longitude ?? 0) * weight + bucket.longitude! * value) / (weight + value);
       coordinateWeights.set(key, weight + value);
     }
+    if ("verification_counts" in bucket && bucket.verification_counts) {
+      const v = bucket.verification_counts;
+      const c = place.verification ?? { authorized: 0, appAttest: 0, legacy: 0, overlap: 0 };
+      c.authorized += v.authorized; c.appAttest += v.app_attest; c.legacy += v.legacy; c.overlap += v.overlap;
+      place.verification = c;
+    }
     place.value += value;
     locations.set(key, place);
   }
@@ -97,7 +104,7 @@ export function buildGeographyData(stats: PlatformStats, mode: GeographyMode): G
     yPct: ((90 - place.latitude!) / 180) * 100,
     nodes: place.value,
     label: place.label === place.country ? place.label : `${place.label}, ${place.country}`,
-    detail: `${place.value.toLocaleString()} ${mode}`,
+    detail: `${place.value.toLocaleString()} ${providers ? "connections" : mode}${place.verification ? ` · ${place.verification.authorized} authorized at snapshot (${place.verification.appAttest} App Attest, ${place.verification.legacy} legacy, ${place.verification.overlap} both)` : ""}`,
   }));
   const requestPeriod = stats.location_window_hours ? `Last ${stats.location_window_hours} hours` : "Recent request window";
   return {

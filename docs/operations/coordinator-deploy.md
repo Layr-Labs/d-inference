@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-27 · commit `f99e56eb0`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -9,6 +9,12 @@ may read build metadata and health endpoints but must not pull, stop, start, or
 edit the env file. Provider CLI releases are a separate runbook:
 [`provider-release.md`](provider-release.md); the dev coordinator is
 [dev-environment.md](dev-environment.md).
+
+For the 0.9.10 upgrade, complete the console compatibility, database migration,
+App Attest cohort, and mixed-version checks in the
+[0.9.10 rollout order](provider-release.md#0910-rollout-order) before and after
+the container swap. The production operation still requires the approval and
+image/digest preflight below.
 
 For the remaining coordinator performance upgrade, also follow
 [the Tiers 2 and 3 rollout checks](coordinator-perf-tier23-rollout.md).
@@ -254,6 +260,7 @@ sudo sh -c 'umask 077; awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ || $1 =
   /etc/d-inference/env | LC_ALL=C sort | sha256sum | cut -d" " -f1 > /tmp/darkbloom-cache-env.pre-swap.sha256'
 sudo cmp /tmp/darkbloom-cache-env.before.sha256 /tmp/darkbloom-cache-env.pre-swap.sha256
 sudo grep -Fx 'EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS=9000' /etc/d-inference/env   # production first-content base
+sudo grep '^EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS=' /etc/d-inference/env  # exact account selector; verify against the stored user
 ```
 
 Record the current container's immutable image and persist the rollback state
@@ -460,9 +467,15 @@ reference copy; editing it changes nothing on the host.
 
 ## Related
 
-- [dev-environment.md](dev-environment.md) — the dev coordinator (`sepolia-ai`), which auto-deploys from Cloud Build.
+- [dev-environment.md](dev-environment.md) — the dev coordinator (`darkbloom-dev`).
 - [`provider-release.md`](provider-release.md) — provider CLI release runbook.
 - [`../developer/build.md`](../developer/build.md) — what the Dockerfile builds.
 - [`../reference/configuration.md`](../reference/configuration.md) — every environment variable.
 - [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md) — what the cache-routing controls do.
 - [`../reports/2026-07-17-eigencloud-to-gcp-migration.md`](../reports/2026-07-17-eigencloud-to-gcp-migration.md) — why prod is on GCE (historical).
+
+## First-content SLA account selection
+
+`EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS` selects exact authenticated account IDs or stored emails; an empty value disables the SLA for everyone. Provision the selector privately in the runtime environment and verify it against the stored user before rollout. The checked-in template contains only a commented placeholder. Prefer a verified account ID. This is independent of the service role and cannot be selected by a User-Agent/header. Set model exceptions in `EIGENINFERENCE_MODEL_FIRST_CONTENT_SLAS`, for example `ternary-bonsai-2-27b=10000:5` (10-second upstream base, 9-second coordinator base, 5 ms/input token). The code change and template do not mutate the running environment.
+
+During the authorized rollout, verify that an OpenRouter request carries a positive provider first-content budget with its configured slope, while a direct request has no budget and can pass the old cutoff. Verify both API keys on the same selected account inherit the policy. Preserve and restore the prior immutable image and environment for rollback. Policy implementation: `coordinator/api/first_content_accounts.go` (`requestFirstContentDeadline`); configuration details: [configuration](../reference/configuration.md#routing-admission-and-ttft).

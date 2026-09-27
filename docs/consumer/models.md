@@ -1,10 +1,23 @@
 # Models reference
 
-> Last updated: 2026-09-05 · commit `169b342e6`
+> Last updated: 2026-09-22 · commit `31a6ca37f`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
 ## `GET /v1/models`
+
+The native DiffusionGemma wrapper reports its supported vision configuration
+through provider discovery and validates multimodal template inputs. Its
+[native block adapter](../architecture/native-block-inference.md) accepts images
+and timestamped video frames; runtime capability does not publish a registry
+model or change catalog modalities. Complete release qualification remains separate.
+
+The Bonsai 2 support draft admits the explicit `prism_hadamard_qwen35` artifact
+through `EngineV2SupportedModels` without adding a public catalog listing. Its
+published configuration and tensors include vision but no MTP. Native context
+is derived from configuration; measured hardware coverage and coordinator
+routing limits are separate. See `libs/mlx-swift-lm/docs/bonsai2.md` for scope;
+API/media qualification remains a release gate, not a consequence of a model tag.
 
 Handler `handleListModels` (`coordinator/api/models_endpoints.go`). Requires a bearer credential (`requireAuth`).
 
@@ -90,7 +103,7 @@ A key created with `allowed_models` can only use those ids. Any other `model` fa
 | Capability | Where to read it | What the API enforces |
 |---|---|---|
 | Vision | `"image"` in `input_modalities` | Image parts on a model without it → 400; a vision model with no vision-capable provider online → 503 `model_unavailable` (`visionToolsFailFast`, `coordinator/api/inference_preprocess.go`) |
-| Tools | `"tools"` in `supported_features` | Tool definitions are normalised and validated for every model (`NormalizeToolSchemas`, `coordinator/api/toolschema.go`; `validateToolConstraintPolicy`, `coordinator/api/tool_constraints.go`); uncompilable schemas → 422; only providers at or above the `tools` version floor (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`) are eligible, and an inference-enforced `tool_choice` (`required` / named) cannot be combined with image content (400) |
+| Tools | `"tools"` in `supported_features` | Tool definitions are normalised and validated for every model (`NormalizeToolSchemas`, `coordinator/api/toolschema.go`; `validateToolConstraintPolicy`, `coordinator/api/tool_constraints.go`); uncompilable schemas → 422; only providers at or above the `tools` version floor (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`) are eligible. Forced media tools and media-bearing tool results require an explicit per-model capability; see the [API contract](../reference/api-contracts.md) |
 | JSON / structured output | `"json_mode"`, `"structured_outputs"` in `supported_features` | `response_format` is forwarded to the provider without coordinator validation; whether it is honoured depends on the build's capabilities |
 | Reasoning | `"reasoning"` in `supported_features` | `reasoning` / `reasoning_effort` are applied per model policy (`applyResolvedModelReasoningPolicy`, `coordinator/api/reasoning_request_policy.go`); reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens` |
 | Context | `context_length`, `max_output_length` | `max_tokens` clamped to `max_output_length`; prompts no provider can accept → 413 `payload_too_large` (`runInferenceAdmission`, `coordinator/api/inference_admission.go`) |
@@ -99,9 +112,55 @@ A key created with `allowed_models` can only use those ids. Any other `model` fa
 Prefix reuse is a runtime provider capability scoped to the exact model artifact,
 prompt contract and request isolation scope. A family name or model-list entry
 alone does not guarantee a cache hit. Complete SSD checkpoints support eligible
-loaded Qwen recurrent targets and paged GPT-OSS/Gemma historical attention;
+loaded Qwen and selected Nemotron Lightning recurrent targets (including typed
+embedded MTP history), and paged GPT-OSS/Gemma historical attention;
 the [cache capability reference](../reference/ssd-kv-cache.md#per-family-reuse-capability)
 records backend and identity gates. This does not change API feature flags.
+
+## GPT-OSS 20B prefix-cache default
+
+Exact build `gpt-oss-20b` enables encrypted complete paged SSD checkpoints by
+default. Repeated eligible prompts can reuse their cached prefix; the API does
+not require a cache flag. This is a provider runtime default and does not publish
+a model or enable coordinator cache routing.
+
+| Behavior | Default and limits | Source |
+|---|---|---|
+| Prefix reuse | Requires the loaded historical-attention capability, segmented paged storage, verified model/runtime identity and the same request isolation scope. A miss or refused checkpoint computes the prompt normally | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+CompletePrefixCache.swift` (`prepareCompletePrefixCache`); [cache capability](../reference/ssd-kv-cache.md#per-family-reuse-capability) |
+| Operator control | `DARKBLOOM_PREFIX_CACHE=0` disables reuse; a contiguous fallback also serves cold. Resident retention remains opt-in. API aliases follow their resolved build's default, including `gpt-oss-20b`; other provider artifact IDs remain opt-in | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`, `isMemoryEnabled`); `coordinator/api/consumer.go` (`resolveRequestedModel`); [cache controls](../reference/configuration.md#ssd-prefix-cache) |
+| Usage | Successful reuse contributes to `usage.prompt_tokens_details.cached_tokens`; a family name or previous request alone does not guarantee a hit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCache.swift`; [cache usage](../architecture/prefix-cache.md) |
+
+## Gemma 4 26B QAT runtime defaults
+
+The v0.9.1 provider source enables these defaults only for exact build
+`gemma-4-26b-qat-4bit`. This does not publish a catalog entry or change the
+API feature flags above; other Gemma artifacts, including 8-bit, do not inherit
+these defaults.
+
+| Behavior | Default and limits | Source |
+|---|---|---|
+| Prefix caching | Encrypted complete paged SSD checkpoints enabled, subject to loaded capability, verified identity, cache key and tenant scope. A cache hit is not guaranteed; explicit cache disable wins | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`); [cache defaults](../architecture/prefix-cache.md#kv-layouts) |
+| Multi-token prediction (MTP) | `mtp_mode = "auto"` resolves the catalog-declared assistant; adaptive decoding chooses ordinary decode or one draft token. Missing, invalid or memory-ineligible assistants retain target-only serving; explicit `off` and the process kill switch win | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); [MTP policy and controls](../architecture/inference.md#multi-token-prediction) |
+| Assistant activation | Requests continue during download and preparation. Network providers also serve during rollout jitter, then temporarily close admissions only for this model while accepted requests finish and the prepared engine swaps in. Racing/new acquisitions can receive transient 503; timeout or cancellation reopens the original engine without force-cancelling accepted work. Random jitter provides no fleet availability guarantee | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPIdleUpgrade.swift` (`run`); [provider memory and availability](../provider/hardware-requirements.md#gemma-qat-assistant-footprint-and-availability) |
+
+## Native Flash-Next candidate
+
+The [native Flash-Next candidate](../reference/qwen4-next-support.md)
+recognizes the registry ID and legacy developer ID listed in that reference.
+Native image/video routing requires the validated full vision declaration and
+explicit non-language-only configuration; unsupported media is rejected rather
+than silently reduced to text
+(`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`,
+`advertisesMedia`). Its local listing and bridge apply the native
+[candidate context policy](../reference/configuration.md#native-flash-next-candidate)
+to prompt plus reserved completion tokens. Coordinator SLA and device capacity
+may still reject a request within native context. This source change does not edit the
+coordinator's catalog limits, aliases, prices or marketplace feed.
+
+Paging/cache defaults and embedded-MTP source support do not certify a cache
+hit, device tier or answer quality. Final same-artifact build, serving and
+restart qualification remain distinct; unit-level ID/context checks do not
+certify full native-context operation on the minimum-RAM device.
 
 ## Related
 
@@ -109,3 +168,15 @@ records backend and identity gates. This does not change API feature flags.
 - Aliases, builds and the registry lifecycle: [`../architecture/model-registry.md`](../architecture/model-registry.md)
 - Prices: [`../reference/pricing-model.md`](../reference/pricing-model.md)
 - Making your first call: [`quickstart.md`](quickstart.md)
+
+### DiffusionGemma exact tool arguments
+
+DiffusionGemma tool calls are checked for function name, schema and cardinality
+by `ToolChoiceEnforcementPolicy` and `ToolConstraintValidation`. Those checks do
+not establish that free-form string arguments faithfully copy a user's text.
+The live `record_text` fixture currently fails when asked to copy literal native
+channel markers, with thinking both enabled and disabled; the direct native
+output already contains the changed value before parsing. Consumers requiring
+byte-exact arguments must validate that requirement before executing a tool.
+This is an unresolved model-quality limitation, not a repaired parser case.
+See [native block inference](../architecture/native-block-inference.md).

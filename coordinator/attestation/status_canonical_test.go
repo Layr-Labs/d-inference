@@ -18,7 +18,7 @@ import (
 // reports the retired hypervisor_active field. The bytes asserted here
 // MUST be identical to the bytes produced by the Swift provider's
 // StatusCanonical.build for the same input. The matching Swift test
-// lives in provider-swift/Tests/ProviderCoreTests/SecurityTests.swift
+// lives in provider-swift/Tests/ProviderCoreTests/Security/SecurityTests.swift
 // (statusCanonicalMatchesCoordinatorGoldenBytes). If either side drifts,
 // both tests fail and you catch the protocol drift before it ships.
 func TestBuildStatusCanonicalGoldenBytes(t *testing.T) {

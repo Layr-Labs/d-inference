@@ -2,6 +2,7 @@
 // runtime hashes, outbound message enum + attestation payload, and errors.
 
 import Foundation
+import ProviderAppAttest
 import Network
 #if canImport(os)
 import os
@@ -86,6 +87,8 @@ public enum PreContentDeadlineFailure: String, Error, LocalizedError, Sendable, 
 // MARK: - Event Types
 
 public enum CoordinatorEvent: Sendable {
+    /// Ordered behind earlier inference events so late arrivals are refused before the barrier completes.
+    case drainAck(String)
     case connected
     case disconnected
     /// `ciphertext` is the **decoded** NaCl-box ciphertext (nonce ‖ tag ‖ body),
@@ -104,6 +107,9 @@ public enum CoordinatorEvent: Sendable {
         cacheScope: String?,
         prefixCacheProtocol: Int?,
         cacheReceiptBoundaryMode: String? = nil,
+        /// Coordinator-observed fleet-wide repeat demand (token count); nil
+        /// from an older coordinator. See `InferenceRequest.cacheRepeatedPrefixTokens`.
+        cacheRepeatedPrefixTokens: Int? = nil,
         toolSchemaMetadataProtocol: Int?,
         firstContentDeadline: FirstContentDeadline?,
         receivedAt: ContinuousClock.Instant,
@@ -114,6 +120,7 @@ public enum CoordinatorEvent: Sendable {
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
     case codeAttestationResumeChallenge(EncryptedPayload)
+    case appAttestShadow(AppAttestShadowPayload)
     case runtimeOutdated(mismatches: [RuntimeMismatch])
     /// Coordinator-driven preload. Provider should eagerly load the model
     /// (off-thread) and reply with a `loadModelStatus` outbound message
@@ -130,7 +137,8 @@ public enum CoordinatorEvent: Sendable {
     /// every change. Replaces the old push-driven migration ramp.
     case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry])
     /// Coordinator informs the provider of its current trust level and status.
-    case trustStatus(trustLevel: String, status: String, reason: String)
+    case trustStatus(trustLevel: String, status: String, reason: String,
+                     authorization: ProviderAuthorizationStatus? = nil)
 }
 
 
@@ -228,6 +236,7 @@ public struct RuntimeHashes: Sendable {
 // MARK: - Outbound message type (provider -> coordinator)
 
 public enum OutboundMessage: Sendable {
+    case drainBarrier(String)
     case inferenceAccepted(requestId: String)
     case inferenceChunk(requestId: String, data: String, encryptedData: EncryptedPayload?)
     /// `profile` rides the terminal as the live BUILDER, not the wire
@@ -249,7 +258,8 @@ public enum OutboundMessage: Sendable {
         profile: RequestProfileBuilder? = nil
     )
     case attestationResponse(AttestationResponsePayload)
-    case codeAttestationResponse(nonce: String, signature: String)
+    case codeAttestationResponse(nonce: String, signature: String, onWritten: (@Sendable () -> Void)? = nil)
+    case appAttestShadow(AppAttestShadowPayload)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
     case prefetchModelStatus(
         modelId: String,
@@ -262,6 +272,8 @@ public enum OutboundMessage: Sendable {
     /// (e.g. a verified prefetch), carrying full `ModelInfo` including the
     /// computed weight hash so the coordinator can cross-check before routing.
     case modelsUpdate(models: [ModelInfo])
+    case modelsReplace(requestId: String, drainID: String, models: [ModelInfo], validateOnly: Bool)
+    case modelsReplaceReady(requestId: String, drainID: String, capacitySeq: UInt64)
     case prefixCacheLookup(
         requestId: String,
         cacheReceiptNonce: String,

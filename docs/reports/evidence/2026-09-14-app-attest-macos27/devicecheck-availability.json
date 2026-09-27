@@ -1,0 +1,10 @@
+{
+  "app_attest_supported": true,
+  "devicecheck_supported": true,
+  "os": "Version 27.0 (Build 26A428)",
+  "probe": "availability only; no key/token generation or bit updates",
+  "capture_date": "2026-09-14",
+  "launch": "Developer ID signed full app through LaunchServices in the user session",
+  "bundle_id": "io.darkbloom.provider",
+  "server_api_round_trip_tested": false
+}

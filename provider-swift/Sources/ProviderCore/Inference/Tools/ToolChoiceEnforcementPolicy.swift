@@ -1,0 +1,138 @@
+// Copyright © 2026 Eigen Labs.
+
+import Foundation
+import MLXLMCommon
+import MLXLMServer
+
+/// Selects the enforcement boundary for forced tool choices. Gemma keeps its
+/// token-level grammar; supported native structured formats are prompt-forced and
+/// then rejected fail-closed unless parsing, function selection, and schema
+/// validation all succeed before any call is exposed to the client.
+enum ToolChoiceEnforcementPolicy {
+    enum Strategy: Equatable {
+        case none
+        case gemmaGrammar
+        case structuredPostValidation
+    }
+
+    static let qwen38ConstrainedModelID = "EigenLabs/Qwen3.8-27B-4bit"
+
+    /// Per-model wire capability, never inferred from a caller's model label.
+    /// Other families retain their existing media/grammar behavior until their
+    /// complete forced-choice and tool-result-media paths are qualified.
+    static func advertisesNativeMediaTools(for model: ModelInfo) -> Bool {
+        model.modelType == "diffusion_gemma" && model.isVision == true
+            && model.templateRenderOK == true && advertisesCapability(for: model)
+    }
+
+    /// Bonsai media uses the same withheld/schema-validated native tool frames
+    /// as its text path; it does not require a sampler grammar. Admission must
+    /// also attest the actual loaded native wrapper, not only caller metadata.
+    static func supportsForcedMedia(context: ChatTemplateFixContext, nativeWrapperLoaded: Bool) -> Bool {
+        if nativeWrapperLoaded && context.modelType == "diffusion_gemma" { return true }
+        return nativeWrapperLoaded && context.modelType == "prism_hadamard_qwen35"
+            && EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+    }
+
+    static func isFramingWhitespace(_ text: String) -> Bool {
+        // XML framing whitespace only. Foundation's broader character set
+        // also includes invisible Unicode characters that are not framing.
+        text.utf8.allSatisfy { $0 == 0x20 || $0 == 0x09 || $0 == 0x0A || $0 == 0x0D }
+    }
+
+    static func forcedStrategy(
+        mode: ToolConstraintMode,
+        modelContext: ChatTemplateFixContext
+    ) throws -> Strategy {
+        switch mode {
+        case .required, .named:
+            break
+        case .none, .auto:
+            return .none
+        }
+
+        if Gemma4TemplateFix.applies(to: modelContext) { return .gemmaGrammar }
+        if Qwen35TemplateFix.applies(to: modelContext) || nativeStructuredTarget(modelContext) {
+            return .structuredPostValidation
+        }
+        throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+            "inference-enforced tool_choice is unsupported for this model family")
+    }
+
+    /// Whether this concrete advertised model can honor required/named tool
+    /// choice. Gemma's sampler grammar remains bound to its pinned template;
+    /// native Qwen/Nemotron use prompt forcing plus withheld post-validation.
+    static func advertisesCapability(for model: ModelInfo) -> Bool {
+        let context = ChatTemplateFixContext(
+            modelId: model.id, modelType: model.modelType)
+        if Gemma4TemplateFix.applies(to: context) {
+            return model.toolConstraintTemplateHash
+                == Gemma4ToolConstraintContract.pinnedTemplateSHA256
+        }
+        if nativeStructuredTarget(context) {
+            return true
+        }
+        return model.id == qwen38ConstrainedModelID
+            && Qwen35TemplateFix.applies(to: context)
+    }
+
+    /// Explicit family admission is supplied by each model onboarding change.
+    /// Shared tool-frame validation alone must not advertise a new model.
+    static func nativeStructuredTarget(_ context: ChatTemplateFixContext) -> Bool {
+        let type = context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if type == "qwen4_exp" || type == "qwen4_exp_text" { return true }
+        // Native block diffusion retains its trained sampler. Required/named
+        // calls use prompt selection plus withheld schema/cardinality validation,
+        // never an AR automaton advanced on provisional canvas tokens.
+        if type == "diffusion_gemma" { return true }
+        if type == "prism_hadamard_qwen35" {
+            return EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+        }
+        return type == "nemotron_h"
+            && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
+    }
+
+    /// Nested examples inside native XML-family reasoning stay reasoning.
+    /// Admission is family-specific; this is a wire policy, not an architecture
+    /// alias, and must not change legacy Nemotron or other model behavior.
+    static func preservesInnerReasoningSpans(_ context: ChatTemplateFixContext) -> Bool {
+        if Qwen4ModelIdentity.isQualified(context.modelId), context.modelType == "qwen4_exp" {
+            return true
+        }
+        return context.modelType == "prism_hadamard_qwen35"
+            && EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+    }
+
+    static func validateParser(
+        _ format: ToolCallFormat,
+        strategy: Strategy,
+        modelContext: ChatTemplateFixContext? = nil
+    ) throws {
+        switch strategy {
+        case .none:
+            return
+        case .gemmaGrammar:
+            guard format == .gemma else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "inference-enforced Gemma tool_choice requires the gemma tool parser")
+            }
+        case .structuredPostValidation:
+            let type = modelContext?.modelType?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if type == "diffusion_gemma" {
+                guard format == .gemma else {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "native diffusion tool_choice requires the Gemma tool parser")
+                }
+                return
+            }
+            let nativeQwen = type == "qwen4_exp" || type == "qwen4_exp_text"
+                || type == "prism_hadamard_qwen35"
+            let framedFormat: ToolCallFormat = nativeQwen ? .qwen35 : .nemotron
+            guard format == .xmlFunction || format == framedFormat else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "inference-enforced structured tool_choice requires the native model's framed or XML tool parser")
+            }
+        }
+    }
+}

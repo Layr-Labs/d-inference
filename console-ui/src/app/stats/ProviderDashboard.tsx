@@ -2,12 +2,13 @@
 
 import { useMemo, useState } from "react";
 import { ArrowLeft, ArrowRight } from "lucide-react";
+import { summarizeSnapshotVerification, verificationCountLabel } from "@/lib/verification";
 import { isProviderRoutable, shortProviderModel, summarizeProviderFleet, type ProviderStats } from "./provider-fleet";
 import { ProviderFilters } from "./providers/ProviderFilters";
 import { ProviderTable } from "./providers/ProviderTable";
 import { DEFAULT_DIRECTORY_FILTERS, filterProviderDirectory, providerDirectoryPage, providerModels, type ProviderDirectoryFilters } from "./providers/provider-directory";
 
-function FleetMetric({ label, value }: { label: string; value: number }) {
+function FleetMetric({ label, value }: { label: string; value: number | string }) {
   return <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"><p className="text-xl font-semibold tabular-nums tracking-tight text-text-primary">{value.toLocaleString()}</p><p className="text-xs text-text-tertiary">{label}</p></div>;
 }
 
@@ -45,7 +46,7 @@ export function ProviderDashboard({ providers }: { providers: ProviderStats[] })
       </div>
       <div className="mt-4 grid grid-cols-2 gap-x-5 gap-y-3 border-b border-border-dim pb-4 sm:grid-cols-4">
         <FleetMetric label="Visible nodes" value={summary.visible} />
-        <FleetMetric label="Hardware verified" value={summary.hardware} />
+        <FleetMetric label="Verified at snapshot" value={verificationCountLabel(summarizeSnapshotVerification(providers))} />
         <FleetMetric label="Serving now" value={summary.serving} />
         <FleetMetric label="Routing unreported" value={summary.unreported} />
       </div>
@@ -61,7 +62,7 @@ export function ProviderDashboard({ providers }: { providers: ProviderStats[] })
       {filtered.length > 0 ? <ProviderTable providers={pagination.providers} selectedId={selectedId} onSelect={(id) => setSelectedId((current) => current === id ? null : id)} /> : (
         <div className="border-y border-border-dim py-16 text-center"><p className="text-sm font-medium text-text-primary">{hasFilters ? "No nodes match these filters" : "No provider nodes reported"}</p><p className="mt-2 text-sm text-text-tertiary">{hasFilters ? "Try a different search or reset the filters." : "Connected machines will appear here in the next snapshot."}</p>{hasFilters && <button type="button" onClick={resetFilters} className="mt-4 text-sm font-medium text-accent-brand">Reset filters</button>}</div>
       )}
-      <p className="mt-5 text-xs leading-5 text-text-tertiary">Public verification fields do not include every routing check. Per-node routing eligibility is unknown unless explicitly reported; model capacity is reported separately.</p>
+      <p className="mt-5 text-xs leading-5 text-text-tertiary">Verification counts and filters describe the source snapshot, whose age is shown above. Public verification fields do not include every routing check. Per-node routing eligibility is unknown unless explicitly reported; model capacity is reported separately.</p>
     </section>
   );
 }

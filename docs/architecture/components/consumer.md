@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-11 · commit `5e41029dd`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline: it speaks OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and legacy Completions to clients and turns each request into one provider job through a single pipeline in `handleChatCompletions` (`coordinator/api/consumer.go`), with an endpoint-specific lowering step before it and a re-shaping step after it. This page is for engineers changing or debugging that pipeline: it explains what "compatible" means concretely, walks the stages, and lists the invariants and failure modes that follow. The exact routes, headers, and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 
@@ -42,6 +42,8 @@ Stages in the order `handleChatCompletions` runs them. Each stage either advance
 | 13 | Dispatch: select a provider from the scheduler plan, encrypt, send, wait for first content, race a speculative backup, fail over, commit | `dispatchState.run` → `dispatchPrimary`, `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover`, `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`); selection through `registry.Queue`, scoring in [`../routing.md`](../routing.md); payload encryption with `e2e.GenerateSessionKeys` / `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`), model in [`../security/encryption.md`](../security/encryption.md) | 429 on capacity or first-content deadline, 502/503/504 `provider_error`, 503 `model_unavailable` (`preContentTerminal`, `coordinator/api/dispatch_terminal_write.go`; exhausted branch of `dispatchState.run`) |
 | 14 | Relay: stream or assemble the provider's chunks | `handleStreamingResponseWithFirstChunkAndError`, `handleResponsesStreamingResponseWithFirstChunk` (`coordinator/api/consumer_stream.go`); `handleNonStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_response.go`) | Terminal SSE `error` event (status already 200) |
 | 15 | Settle: charge the account from provider-reported usage, record usage, credit the provider | `handleCompleteAt` (`coordinator/api/provider.go`): `claimSettlement`, `ledger.Charge`, `store.RecordUsageFullWithPublicModel`, `store.CreditProviderAccount`; rules in [`../billing.md`](../billing.md) | — |
+
+Non-streaming raw responses and reconstructed deltas both wait for terminal usage through `awaitNonStreamUsage` in `coordinator/api/consumer_response.go`. A closed completion channel refunds and returns 502; expiry refunds and returns 504; client cancellation refunds without writing a replacement response. Buffered provider errors keep their existing precedence before that wait.
 
 Provider-side execution between stages 13 and 14 — the WebSocket `inference_request` → `inference_response_chunk` → `inference_complete` exchange (`coordinator/protocol/messages.go`) and the engine behind it — is described in [`../inference.md`](../inference.md) and [`provider.md`](provider.md). The whole journey as a sequence diagram is in [`../data-flow.md`](../data-flow.md).
 

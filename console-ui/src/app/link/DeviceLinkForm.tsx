@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { useAuthContext } from "@/components/providers/PrivyClientProvider";
+import { useAuthContext } from "@/components/app-providers/PrivyClientProvider";
 import { trackEvent } from "@/lib/google-analytics";
 
 type LinkStatus = "idle" | "submitting" | "success" | "error";

@@ -4,7 +4,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { RemoveMachineButton } from "./RemoveMachineButton";
 import { makeProvider } from "./testFixtures";
 
-const getAccessToken = vi.fn(async () => "tok");
+const getAccessToken = vi.fn<() => Promise<string | null>>().mockResolvedValue("tok");
 vi.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({ getAccessToken }),
 }));
@@ -15,9 +15,9 @@ vi.mock("@/hooks/useToast", () => ({
     selector({ addToast }),
 }));
 
-const deleteProvider = vi.fn(async () => {});
+const deleteProvider = vi.fn<typeof import("@/lib/api").deleteProvider>().mockResolvedValue(undefined);
 vi.mock("@/lib/api", () => ({
-  deleteProvider: (...args: unknown[]) => deleteProvider(...args),
+  deleteProvider: (...args: Parameters<typeof deleteProvider>) => deleteProvider(...args),
 }));
 
 const REMOVE_BTN = { name: "Remove machine" } as const;
@@ -77,7 +77,7 @@ describe("RemoveMachineButton", () => {
   });
 
   it("warns and aborts when no auth token is available", async () => {
-    getAccessToken.mockResolvedValue(null as unknown as string);
+    getAccessToken.mockResolvedValue(null);
     render(<RemoveMachineButton provider={makeProvider()} />);
     fireEvent.click(screen.getByRole("button", REMOVE_BTN));
 

@@ -45,9 +45,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -555,13 +553,6 @@ func etaForMethod(method, accountCountry string) string {
 	// agreement accounts add +24h of transfer availability delay.
 	return "1-3 business days"
 }
-
-// Compile-time check we don't accidentally drop the auth import; the Privy
-// helpers stay in scope via requirePrivyUser.
-var _ = auth.UserFromContext
-
-// Compile-time check on time import staying live.
-var _ = time.Now
 
 // sweepDeliveryMessage is the human copy for a standard withdrawal's success
 // response, honest about the country's actual sweep cadence.

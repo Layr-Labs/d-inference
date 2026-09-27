@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useToastStore } from "@/hooks/useToast";
 import { healthCheck } from "@/lib/api";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 import { apiExampleUrl } from "@/lib/api-example-url";
 import { clearCoordinatorKeyCache, getCoordinatorKey, isEncryptionEnabled, setEncryptionEnabled } from "@/lib/encryption";
 

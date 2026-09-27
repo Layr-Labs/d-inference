@@ -3,8 +3,9 @@ import Foundation
 /// Persists the set of models currently loaded by the serving daemon so the
 /// NEXT boot can preload them before registering with the coordinator.
 ///
-/// This is the default input to the startup preload (`preload_models` empty):
-/// "warm what you were serving before the restart". The daemon rewrites the
+/// This is the priority input to the coordinator startup preload when
+/// `preload_models` is empty: warm the previous set first, then newly selected
+/// models. The daemon rewrites the
 /// file on every model load and on every non-shutdown unload (idle timeout,
 /// eviction, retirement), so the file always describes the live serving set.
 /// Shutdown teardown deliberately does NOT clear it — a stop/update/restart
@@ -13,10 +14,10 @@ import Foundation
 /// The file lives in the provider's data dir (`~/.darkbloom/`, the same place
 /// as `daemon-state.json`) so it survives auto-updates, which replace the
 /// install layout but never touch the data dir. Best-effort like the daemon
-/// state file: read/write failures degrade to "no preload", never a crash.
+/// state file: read/write failures degrade to selected-model preload, never a crash.
 public enum LoadedModelsStore {
     /// Schema version; bump on incompatible shape changes. A mismatched schema
-    /// reads as empty (safe: worst case the next boot preloads nothing).
+    /// reads as empty (safe: the next boot still preloads selected models).
     public static let currentSchema = 1
 
     /// Persisted shape: schema + loaded model ids + write timestamp.

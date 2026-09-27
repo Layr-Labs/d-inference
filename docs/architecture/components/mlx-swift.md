@@ -1,6 +1,6 @@
 # MLX stack: the three pinned submodules and the metallib
 
-> Last updated: 2026-09-05 · commit `2dcec3574`
+> Last updated: 2026-09-13 · commit `d4bab49a9`
 
 What the provider links from `libs/`, at which commits, what each submodule
 contributes, how the Metal kernel library (`mlx.metallib`) is built from the
@@ -109,7 +109,7 @@ The provider does not run the upstream inference server. Generation goes
 
 | Provider code | `MLXLMServer` symbols used |
 |---|---|
-| `provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngine.swift` | Conforms to `MLXServerEngine`; consumes the OpenAI `ChatCompletionRequest` types; resolves tool parsers with `ServerToolParser.resolve` |
+| `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` | Conforms to `MLXServerEngine`; consumes the OpenAI `ChatCompletionRequest` types; resolves tool parsers with `ServerToolParser.resolve` |
 | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` | `ReasoningParser`, `ReasoningParserFormat` (`inferReasoningParser`) |
 | `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`, `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift`, `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` | `MLXServerApplication` router, `MLXOpenAIService`, `InMemoryResponseStore`, `ServerMetrics`, `OpenAIErrorEnvelope` — the local / standalone OpenAI-compatible HTTP surface, served by the same `MultiModelBatchSchedulerEngine` |
 
@@ -193,7 +193,7 @@ flowchart LR
 | Metallib locate / snapshot / bind / hash | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift`, `provider-swift/Sources/ProviderMetallibControl/ProviderMetallibControl.cpp` |
 | Bind before first GPU op | `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift`, `provider-swift/Sources/darkbloom/StartCommand.swift` |
 | Digest on the wire | `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`augmentRuntimeHashesWithMetallib`) |
-| `MLXLMServer` contracts used | `provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngine.swift`, `libs/mlx-swift-lm/Libraries/MLXLMServer/` |
+| `MLXLMServer` contracts used | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift`, `libs/mlx-swift-lm/Libraries/MLXLMServer/` |
 | CBv2 engine | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/` — [`../inference.md`](../inference.md) |
 
 ## Related

@@ -28,6 +28,9 @@ func TestVerifyValidAttestation(t *testing.T) {
 	if result.ChipName != "Apple M3 Max" {
 		t.Errorf("expected Apple M3 Max, got %s", result.ChipName)
 	}
+	if result.OSVersion != "15.3.0" {
+		t.Errorf("signed OS report was not retained: %s", result.OSVersion)
+	}
 	if !result.SecureEnclaveAvailable {
 		t.Error("expected SecureEnclaveAvailable=true")
 	}

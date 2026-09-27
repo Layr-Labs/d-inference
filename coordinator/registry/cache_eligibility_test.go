@@ -40,10 +40,11 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 		"donation outcomes": {
 			got: PrefixCacheDonationOutcomes(),
 			want: "donated,below_effective_token_floor,no_complete_block,lossy_snapshot," +
-				"incomplete_layer_state,stage_size_exceeded,write_rate_limited,write_queue_full," +
+				"incomplete_layer_state,stage_size_exceeded,write_rate_limited,write_priority_limited,write_queue_full," +
 				"already_durable,already_queued,cache_closed,disk_unavailable,write_failed," +
 				"host_memory_unavailable,cache_epoch_changed,cache_maintenance_busy," +
-				"disk_space_insufficient,unsafe_cache_root,write_io_failed,existing_cache_unreadable,cache_entry_evicted",
+				"disk_space_insufficient,unsafe_cache_root,write_io_failed,existing_cache_unreadable,cache_entry_evicted," +
+				"skipped_novel",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -56,8 +57,11 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 
 func TestDonationOutcomeForwardVersionHeadroomPreservesKnownCounters(t *testing.T) {
 	knownOutcomes := PrefixCacheDonationOutcomes()
-	if len(knownOutcomes) != 21 {
-		t.Fatalf("known outcome buckets=%d, want 21", len(knownOutcomes))
+	if len(knownOutcomes) != 23 {
+		t.Fatalf("known outcome buckets=%d, want 23", len(knownOutcomes))
+	}
+	if reserve := maxPrefixCacheDonationOutcomeEntries - len(knownOutcomes); reserve < 9 {
+		t.Fatalf("forward-version reserve=%d, want at least 9", reserve)
 	}
 	knownCounters := func(offset uint64) []protocol.PrefixCacheDonationOutcomeCount {
 		result := make(
@@ -677,5 +681,36 @@ func TestPrefixCacheDonationDeltasAndModelUpdateCleanup(t *testing.T) {
 	if got := reg.CacheRoutingLifecycleStatus().
 		HolderRemoved[string(cacheHolderRemovalCapabilityChange)]; got != 1 {
 		t.Fatalf("model update capability-change removals=%d, want 1", got)
+	}
+}
+
+// An older coordinator receiving a provider's newer outcome (here modelled by
+// a future name) must drop only that entry, never the snapshot, so a provider
+// that reports skipped_novel keeps every other counter flowing.
+func TestSanitizeDonationOutcomesDropsUnknownEntriesIndividually(t *testing.T) {
+	outcomes := []protocol.PrefixCacheDonationOutcomeCount{
+		{Outcome: "donated", Count: 5},
+		{Outcome: "skipped_novel", Count: 9},
+		{Outcome: "future_outcome_from_newer_provider", Count: 3},
+		{Outcome: "write_queue_full", Count: 0},
+		{Outcome: "write_rate_limited", Count: 2},
+	}
+	got := sanitizePrefixCacheDonationOutcomes(&outcomes)
+	want := map[string]uint64{"donated": 5, "skipped_novel": 9, "write_rate_limited": 2}
+	if len(got) != len(want) {
+		t.Fatalf("sanitized=%v, want %v", got, want)
+	}
+	for outcome, count := range want {
+		if got[outcome] != count {
+			t.Fatalf("%s=%d, want %d", outcome, got[outcome], count)
+		}
+	}
+	if len(outcomes) != 3 {
+		t.Fatalf("retained entries=%d, want 3 (unknown and zero dropped entry-wise)", len(outcomes))
+	}
+	for _, outcome := range outcomes {
+		if outcome.Outcome == "future_outcome_from_newer_provider" || outcome.Outcome == "write_queue_full" {
+			t.Fatalf("dropped entry survived: %+v", outcomes)
+		}
 	}
 }

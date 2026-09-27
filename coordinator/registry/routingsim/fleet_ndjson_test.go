@@ -465,3 +465,54 @@ func TestLoadFleetNDJSONPreservesReportedZeroFreeCapacity(t *testing.T) {
 		t.Fatalf("providers missing from the reconstructed fleet: zero=%v legacy=%v", sawZero, sawLegacy)
 	}
 }
+
+// Tick selection must not assume the export is sorted or stop validating once
+// it finds an exact match. Keep all rows of the selected tick in file order.
+func TestLoadFleetNDJSONInterleavedTicks(t *testing.T) {
+	tick := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	before, after := tick.Add(-time.Minute), tick.Add(time.Minute)
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+		rows []store.FleetSnapshotRow
+	}{
+		{"exact match", tick, []store.FleetSnapshotRow{
+			slotRow(after, "discard-after", simModel, "running", 0, 25),
+			slotRow(tick, "kept", simModel, "running", 1, 25),
+			slotRow(before, "discard-before", simModel, "running", 0, 25),
+			slotRow(tick, "kept", simModel2, "idle", 0, 20),
+			slotRow(tick, "kept", simModel, "crashed", 3, 5),
+		}},
+		{"earlier tie replaces later", tick.Add(30 * time.Second), []store.FleetSnapshotRow{
+			slotRow(after, "discard-after", simModel, "running", 0, 25),
+			slotRow(tick, "kept", simModel, "running", 1, 25),
+			slotRow(after, "discard-after-2", simModel, "running", 0, 25),
+			slotRow(tick, "kept", simModel2, "idle", 0, 20),
+		}},
+		{"latest", time.Time{}, []store.FleetSnapshotRow{
+			slotRow(before, "discard-before", simModel, "running", 0, 25),
+			slotRow(tick, "kept", simModel, "running", 1, 25),
+			slotRow(before, "discard-before-2", simModel, "running", 0, 25),
+			slotRow(tick, "kept", simModel2, "idle", 0, 20),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fleet, err := routingsim.LoadFleetNDJSON(snapshotsNDJSON(t, tc.rows...), tc.at, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !fleet.SampledAt.Equal(tick) || len(fleet.Providers) != 1 || fleet.Providers[0].ID != "kept" {
+				t.Fatalf("unexpected selected fleet: %+v", fleet)
+			}
+			slots := fleet.Providers[0].Slots
+			if len(slots) != 2 || slots[0].Model != simModel || slots[0].State != "running" || slots[0].NumRunning != 1 || slots[1].Model != simModel2 {
+				t.Fatalf("lost selected row or first-row precedence: %+v", slots)
+			}
+		})
+	}
+	input := snapshotsNDJSON(t, slotRow(tick, "exact", simModel, "running", 0, 25))
+	input.WriteString(`{"sampled_at":"2026-09-02T12:00:00Z","num_running":"invalid"}` + "\n")
+	if fleet, err := routingsim.LoadFleetNDJSON(input, tick, nil); err == nil || !strings.Contains(err.Error(), "line 2") || len(fleet.Providers) != 0 {
+		t.Fatalf("malformed discarded tick must fail the whole load: fleet=%+v err=%v", fleet, err)
+	}
+}

@@ -152,17 +152,7 @@ public func hashFile(atPath path: String) -> String? {
     }
     defer { try? handle.close() }
 
-    var hasher = SHA256()
-    let chunkSize = 65_536
-
-    while true {
-        let chunk = handle.readData(ofLength: chunkSize)
-        if chunk.isEmpty { break }
-        hasher.update(data: chunk)
-    }
-
-    let digest = hasher.finalize()
-    return digest.hexString
+    return sha256Digest(of: handle).hexString
 }
 
 /// Compute SHA-256 of a byte buffer, returning the hex digest.
@@ -186,20 +176,24 @@ public func hashFilesSorted(_ paths: [String]) -> String? {
         }
         defer { try? handle.close() }
 
-        var fileHasher = SHA256()
-        let chunkSize = 65_536
-        while true {
-            let chunk = handle.readData(ofLength: chunkSize)
-            if chunk.isEmpty { break }
-            fileHasher.update(data: chunk)
-        }
-
-        let fileDigest = fileHasher.finalize()
+        let fileDigest = sha256Digest(of: handle)
         finalHasher.update(data: Data(fileDigest))
     }
 
     let digest = finalHasher.finalize()
     return digest.hexString
+}
+
+/// Hash an already-open stream. Callers retain their own path/error policy
+/// and handle lifetime; anonymous metallib copying has a separate write loop.
+func sha256Digest(of handle: FileHandle, chunkSize: Int = 65_536) -> SHA256.Digest {
+    var hasher = SHA256()
+    while true {
+        let chunk = handle.readData(ofLength: chunkSize)
+        if chunk.isEmpty { break }
+        hasher.update(data: chunk)
+    }
+    return hasher.finalize()
 }
 
 // MARK: - Metallib hashing
@@ -211,9 +205,9 @@ public func hashFilesSorted(_ paths: [String]) -> String? {
 ///   2. `<executable-dir>/Resources/mlx.metallib`
 ///
 /// `MLX_METALLIB_PATH` is intentionally ignored: MLX does not read that
-/// environment variable. A custom file is load-bearing only after an explicit
-/// `mlx::core::metal::set_metallib_path` C-API call; ProviderCore makes no such
-/// call. Hashing an env-only path would attest one file while MLX loads another.
+/// environment variable. Explicit binding pins the loader to an anonymous
+/// snapshot through `bindRuntimeMetallibForMLX`; this function only discovers
+/// the default source. Hashing an env-only path would attest different bytes.
 public func locateRuntimeMetallib() -> URL? {
     guard let path = executablePath() else { return nil }
     return locateRuntimeMetallib(

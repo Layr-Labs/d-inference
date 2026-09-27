@@ -7,7 +7,7 @@ const { auth } = vi.hoisted(() => ({
   auth: { ready: true, authenticated: false, login: vi.fn() },
 }));
 
-vi.mock("@/components/providers/PrivyClientProvider", () => ({ useAuthContext: () => auth }));
+vi.mock("@/components/app-providers/PrivyClientProvider", () => ({ useAuthContext: () => auth }));
 
 beforeEach(() => {
   auth.ready = true;

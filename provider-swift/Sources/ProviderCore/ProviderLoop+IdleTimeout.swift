@@ -51,14 +51,14 @@ extension ProviderLoop {
     /// Re-validates each candidate before unloading since `await unloadModel`
     /// is a suspension point that could allow new requests to arrive.
     private func tickIdleMonitor(timeout: Duration) async {
-        guard !modelSlots.isEmpty else { return }
+        guard modelSwitchTask == nil, !modelSlots.isEmpty else { return }
 
         let now = ContinuousClock.now
 
         var candidates: [String] = []
         let modelsWithInflight = Set(requestToModel.values)
         for (modelId, slot) in modelSlots {
-            if modelsUnloading.contains(modelId) { continue }
+            if modelsUnloading.contains(modelId) || isMTPUpgradeTargetRetained(modelId) { continue }
             let elapsed = now - slot.lastInferenceAt
             let hasInflight = modelsWithInflight.contains(modelId) || hasLocalReservation(modelId)
             if IdleTimeoutPolicy.shouldUnload(
@@ -72,6 +72,8 @@ extension ProviderLoop {
         }
 
         for modelId in candidates {
+            guard modelSwitchTask == nil else { return }
+            guard !isMTPUpgradeTargetRetained(modelId) else { continue }
             let currentInflight = Set(requestToModel.values)
             guard !currentInflight.contains(modelId),
                   !hasLocalReservation(modelId),
@@ -87,7 +89,7 @@ extension ProviderLoop {
             ) else { continue }
 
             logger.info("Idle timeout exceeded (\(formatDuration(elapsed)) since last activity); unloading \(modelId)")
-            await unloadModel(modelId)
+            await unloadModel(modelId, forEviction: true)
         }
     }
 

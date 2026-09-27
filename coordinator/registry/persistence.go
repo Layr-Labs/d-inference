@@ -51,6 +51,7 @@ func (r *Registry) RestoreProviderStateContext(ctx context.Context, p *Provider,
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.historyRestored = true
 
 	// Restore trust level, but NEVER above self_signed. Hardware trust must be
 	// re-earned via a fresh live challenge + MDM verification on every (re)connection.

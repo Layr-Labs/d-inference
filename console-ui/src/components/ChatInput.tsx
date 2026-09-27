@@ -84,7 +84,7 @@ export function ChatInput({
         <div className="rounded-2xl border border-border-dim bg-bg-white p-5 shadow-sm sm:p-6">
           <p className="text-[15px] text-text-secondary">Start your first conversation.</p>
           <div className="mt-7 flex flex-wrap items-center justify-between gap-4">
-            <span className="inline-flex items-center gap-2 text-xs text-text-secondary"><LockKeyhole size={14} /> End-to-end encrypted</span>
+            <span className="inline-flex items-center gap-2 text-xs text-text-secondary"><LockKeyhole size={14} /> Encrypted in transit</span>
             <button
               type="button"
               onClick={() => {

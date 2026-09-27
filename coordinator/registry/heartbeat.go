@@ -346,9 +346,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 			}
 		}
 	}
-	// Credit wall-clock time since the previous heartbeat as uptime, so an
-	// always-online provider's uptimeRate reaches 1.0 and its reputation can
-	// exceed the old 0.85 cap (RecordUptime was never called in prod).
+	// Credit wall-clock time since the previous heartbeat as provider uptime.
 	// Bound the credit to a window just above the heartbeat interval (30s) and
 	// within the eviction staleness (90s): a larger gap means the provider was
 	// effectively offline (it would have been reaped, or this is an in-process
@@ -374,6 +372,13 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// "idle"/"serving" clear it. Independent of p.Status below — a draining
 	// provider keeps its online/serving accounting; only routing changes.
 	applyHeartbeatDrainStateLocked(p, msg.Status, now)
+	// A post-commit serving heartbeat is the provider's refreshed capacity
+	// snapshot. Only an applied, non-nil backend report may release a model
+	// replacement; a pre-resume draining frame or stale capacity_seq cannot.
+	if p.drainReplacementPending && p.drainReplacementAcked && backendCapacity != nil &&
+		backendCapacity.CapacitySeq > 0 && (msg.Status == "idle" || msg.Status == "serving") {
+		p.drainReplacementAppliedSeq = backendCapacity.CapacitySeq
+	}
 	// Only update status from heartbeat if provider is not actively serving
 	// (serving status is managed by request lifecycle). Crucially, an
 	// untrusted provider must NOT transition back to StatusOnline here —

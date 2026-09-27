@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-26 · commit `c60610bb1`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -11,7 +11,70 @@ Capacity, queues, slot states and the warm pool are covered in
 [`scheduling.md`](scheduling.md); this page covers only choosing among
 eligible providers.
 
+## Provider lifecycle drain boundary
+
+`provider_drain` fences a live connection until disconnect or an explicit,
+validated model replacement; heartbeat TTL expiry cannot reopen it. `authorizeInferenceHandoff` in
+`coordinator/registry/inference_authorization.go` rechecks the drain after writer
+queueing and reservation: direct, queued, cold, retry and hedge reservations
+cannot send a new inference frame across the boundary. A late reservation gets
+`ErrProviderDraining`, releases its unused reservation, and retries through the
+existing transient-capacity path. No response output is replayed by this change.
+
+Warm/cold model-load and prefetch selection also exclude drains. Provider-side
+admission checks remain necessary for already handed-off frames: these receive
+a typed 503 draining refusal before acceptance. Already accepted coordinator
+queues (including a cold model load) finish. Local requests that have not acquired
+a model may still receive 503; acquired local requests and their HTTP response
+writes are drained. See [the terminal barrier](../reference/protocol-messages.md#provider-lifecycle-drain)
+for the asynchronous settlement boundary. Existing draining-capacity preflight
+semantics (transient 429/capacity, not structural absence) remain unchanged.
+
+`darkbloom switch` resumes the same provider session through `models_replace`
+(`coordinator/registry/provider_models_replace.go`, `ReplaceProviderModels`).
+The latest drain must be settled, and its generation must match both completion
+and the control-writer handoff even if a provider reuses a request ID. One
+connection-bound acknowledgement worker coalesces the latest barrier rather than
+dropping it when prior settlement is slow. It waits for pre-barrier reservations
+to leave the writer/pending set and for terminal billing before acknowledgement
+(`providerReadLoop` in `coordinator/api/provider.go`).
+
+A validation-only request checks the complete model set without changing routing.
+A committed replacement updates model indexes and stale residency/cache evidence
+but keeps the fence until its acknowledgement is written successfully and the
+provider confirms that local admission has reopened for that replacement and
+an accepted `idle`/`serving` heartbeat supplies its refreshed `BackendCapacity`
+at or after the `capacity_seq` named in `models_replace_ready`.
+Ack failure, missing readiness, or stale/draining capacity never dispatches
+queued work. The readiness frame is matched to the current session, replacement
+and drain; its sequence was stamped after local admission opened. Either
+readiness or that heartbeat may arrive first. Only after both does
+the coordinator force desired-model reconciliation and dispatch queued work.
+The provider restores prefetching before it sends readiness, so the refreshed
+`desired_models` snapshot can be processed even if it arrives before the final
+receipt. Snapshots received while prefetching was unavailable remain deferred.
+It sends `models_replace_resumed` after those steps. The provider reports a
+successful switch only when that receipt matches the current connection,
+replacement, drain and capacity sequence; a missing receipt leaves the outcome
+unconfirmed even if routing already resumed.
+Removed model IDs remain queued for cleanup across a failed receipt and another
+same-session drain, until routing resumes or disconnect.
+Invalid selections leave inventory and drain unchanged. See
+[the replacement contract](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready--models_replace_resumed).
+
+
 ## Context
+
+Forced tool choice with media, and media-bearing tool results even with
+`tool_choice: none`, carry `RequestTraits.RequiresNativeMediaTools`. The shared
+eligibility gate requires the selected model's explicit `native_media_tools`
+advertisement, vision support and existing tool-constraint protocol. This trait
+survives alias resolution, queued requests, retries and final reservation;
+ordinary media or text-only tools do not acquire it. A model update or disconnect
+immediately removes eligibility. Code: `coordinator/api/native_media_tools.go`
+(`requestHasMediaToolResults`), `coordinator/registry/native_media_tools.go`
+(`providerSupportsNativeMediaToolsLocked`) and
+`coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`).
 
 The fleet is heterogeneous consumer Apple-silicon hardware that comes and
 goes. Any single provider may be cold for a model, thermally throttled,
@@ -83,7 +146,7 @@ flowchart TD
     C -->|ttft_ceiling| X5[tallyGate]
     C --> D[applyCacheRoutingCost]
     D --> P[pool narrowing: prefer owner, avoid version, min decode TPS]
-    P --> SEL[selectRoutingCandidate: unique_min / tie_queue / tie_pending / random]
+    P --> SEL[selectRoutingCandidateWithAffinity: unique_min / tie_queue / tie_pending / random / prefix_affinity / cache_credit]
     SEL --> PLAN[dispatch plan: winner + alternates]
     PLAN --> DISP[dispatch to winner]
     DISP -->|no first content by speculativeAt| H[runSpeculative: hedge governor + backup]
@@ -91,6 +154,30 @@ flowchart TD
     DISP -->|first content| OK[stream]
     RACE --> OK
 ```
+
+### SSD-offloaded model weights
+
+Native Qwen4 can advertise a validated immutable offloaded payload alongside
+its native-weight loading estimate. `advertisedOffloadedMemoryGBLocked`
+(`coordinator/registry/offloaded_weights.go`) requires matching model ID and
+native Qwen4 type, finite positive memory, and an offloaded byte count strictly
+between zero and total artifact bytes. It uses the larger of the reported
+estimate and the remaining weight bytes plus a valid explicit
+`native_load_transient_bytes` allowance (at least 1 GiB, without overflow).
+Missing/invalid allowance declarations retain the 1.2 load-transient padding.
+Missing/invalid offload or other-family declarations keep the existing
+catalog/measured-weight policy.
+
+`coordinator/registry/scheduler.go` carries this estimate into cold snapshots.
+`reportedFreeForLoadAdmitsWithOffload` in
+`coordinator/registry/offloaded_weights.go` uses it at the cold-load boundary;
+`coldTokenBudgetEstimateWithOffload` in `coordinator/registry/servability.go`
+uses it for the post-load token-budget estimate.
+This does not subtract request KV, prove physical capacity, waive catalog
+minimum RAM or activate a model. Wire fields are defined in
+[model registration messages](../reference/protocol-messages.md#models), and
+the [private candidate reference](../reference/qwen4-next-support.md)
+records the unqualified serving boundary.
 
 ### Eligibility gates and the `GateReason` vocabulary
 
@@ -277,6 +364,26 @@ Useful reuse subtracts a bounded credit; excess restore cost increases
 and their flag are the subject of
 [`cache-aware-routing.md`](cache-aware-routing.md).
 
+### Native model capacity and registry identity
+
+Native model context describes a capability, not an SLA promise. The provider
+enforces prompt plus reserved output against the native window and retains
+physical-memory safeguards. Coordinator token budgets, queueing, TTFT and
+throughput policies decide which eligible requests can be routed; historical
+test sizes must not become hidden provider context ceilings. The native
+Flash-Next policy is defined in [the support reference](../reference/qwen4-next-support.md).
+
+`providerEligibleForTraitsLocked` applies the exact registry-ID compatibility
+floor before request-shape gates. `qwen3.8-flash-next` requires `0.9.6` or newer;
+unknown/older versions are ineligible even for plain text. The 0.9.5 signed
+app crashes when resolving Qwen Metal resources, so it is excluded for Flash
+while remaining eligible for other supported models. This prevents an
+older provider from accepting that ID without its qualified native policies.
+Other IDs, including the legacy developer ID, retain existing version rules.
+Sources: `coordinator/registry/qwen4_model_policy.go`
+(`providerMeetsQwen4CatalogPolicyLocked`) and
+`coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`).
+
 ### Selection paths
 
 Before selection the candidate pool may be narrowed, each step only when it
@@ -292,23 +399,31 @@ leaves at least one candidate (`scanCandidatesLocked`):
    `0` disables it.
 
 `preferRoutingCandidates` compacts the request-local pool in place.
-`selectRoutingCandidate` ranks it without allocating intermediate lists
+`selectRoutingCandidateWithAffinity` ranks it without allocating intermediate candidate lists
 (`coordinator/registry/candidate_selection.go`):
 
 1. **Best cost.** The minimum `costMs`.
-2. **Cost ties.** When any candidate has a cache credit or restore penalty, keep only
-   exact minimum-cost candidates. Otherwise keep every candidate within
-   `nearTieCostWindowMs` ([cost model](#cost-model)), preserving ordinary load
-   spreading. Among the retained candidates choose the lowest `effectiveQueue`,
-   then the lowest `totalPending`.
+2. **Cost ties.** Every candidate within `nearTieCostWindowMs`
+   ([cost model](#cost-model)) of the minimum is retained; a candidate with a
+   restore penalty is retained only at the exact minimum. If the retained set
+   has more than one member and any carries a cache credit, the cheapest
+   credited candidate wins (`cache_credit`; ranking in
+   [cache-aware routing](cache-aware-routing.md#scheduler)); otherwise choose
+   the lowest `effectiveQueue`, then the lowest `totalPending`.
 3. **Equivalents.** More than one candidate sharing the retained cost range,
-   queue and pending count resolves uniformly by `random`.
-4. **Path label**: `unique_min` when only one candidate is retained;
+   queue and pending count normally resolves uniformly by `random`. With active
+   cache routing and observed repeat demand, a stable keyed ranking prefers a
+   matching, non-quarantined cache
+   capability (`prefix_affinity`). See [cache affinity](cache-aware-routing.md#observed-demand-and-soft-prefix-affinity).
+4. **Path label**: `cache_credit` when a credited candidate wins a retained set
+   of more than one member; `unique_min` when only one candidate is retained;
    `tie_pending` when pending count decides between equal queue depths;
-   otherwise `tie_queue`. Exact equivalent choices use `random`.
+   otherwise `tie_queue`. Equivalent choices use `random` or `prefix_affinity`
+   under the conditions above; an empty pool uses `none`.
 
 `SelectionPath` values (`coordinator/registry/gate_reason.go`): `none`,
-`unique_min`, `tie_queue`, `tie_pending`, `random`. Historical profiler rows may
+`unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`,
+`cache_credit`. Historical profiler rows may
 still contain the retired `cache_tiebreak` string. The
 runner-up (the lowest-cost candidate other than the winner) is recorded for telemetry
 and as the first alternate in the dispatch plan.
@@ -466,7 +581,7 @@ outcome exactly once at first content or completion.
 | Mechanism | File | Keyed by | Trips when | Holds for |
 |---|---|---|---|---|
 | Inference-error cooldown (`error_cooldown`) | `coordinator/registry/error_cooldown.go` | provider × model × error shape | `inferenceErrorThreshold = 2` strikes within `inferenceErrorWindow = 60 * time.Second` | `inferenceErrorCooldownTTL = 5 * time.Minute` |
-| Node-health breaker (`breaker`) | `coordinator/registry/provider_breaker.go` | stable provider identity | `providerBreakerConsecTrip = 5` consecutive genuine faults, or fail rate ≥ `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `providerBreakerWindow = 120 * time.Second` (ring of `providerHealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
+| Node-health breaker (`breaker`) | `coordinator/registry/provider_breaker.go` | stable provider identity | `providerBreakerConsecTrip = 5` consecutive genuine faults, or fail rate > `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `providerBreakerWindow = 120 * time.Second` (ring of `providerHealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
 | Health ejection (`ejection`) | `coordinator/registry/health_ejection.go` | stable provider identity | `healthEjectionConsecTrip = 8` consecutive failures, or success rate < `healthEjectionMinSuccessRate = 0.10` over ≥ `healthEjectionMinSample = 15` outcomes in `healthEjectionWindow = 10 * time.Minute`, or `healthEjectionCapacityConsecTrip = 10` consecutive capacity rejects | `healthEjectionBaseCooldown = 60 * time.Second`, doubling to `healthEjectionMaxCooldown = 10 * time.Minute` |
 | Dispatch-load cooldown (`dispatch_load_cooldown`) | `coordinator/registry/model_loading.go` | provider × model | a dispatch-time `load_model` fails | `dispatchLoadCooldownTTL = 2 * time.Minute` |
 
@@ -475,6 +590,12 @@ survives disconnect and reconnect (`Disconnect`, `coordinator/registry/provider_
 Every tracker in this table and in [gray-box capacity signals](#gray-box-capacity-signals)
 stores its state in one `gateState` per identity
 ([below](#concurrency-scan-commit-and-fault-state-gates)).
+
+The health rings share `providerHealthWindow.recordOutcome` for insertion and
+`rebuild` for identity merges and version-reset filtering. Rebuilds preserve
+each outcome's disconnect-flush marker and recompute the trailing fault streak
+from the retained chronological history (`coordinator/registry/provider_breaker.go`,
+`coordinator/registry/version_reset.go`).
 
 **Fail-open.** If the scan produced no winner, at least one provider was
 rejected only by the breaker or ejection, and there were no capacity or TTFT
@@ -581,30 +702,20 @@ of a live gate is never pruned.
 `site:`, via `SetGateWaitObserver`) records a recorder's `gate.mu`
 acquisition wait when it exceeds `gateWaitReportThreshold = time.Millisecond`.
 
-### Reputation
+### Provider operational history
 
-`Reputation.Score` (`coordinator/registry/reputation.go`) is
+`Reputation` (`coordinator/registry/reputation.go`) retains job success/failure
+counts, accumulated uptime, attestation challenge counts, and the
+prefill-adjusted first-content latency EWMA (`RecordLatency`,
+`ttftEWMAAlpha = 0.2`). These values are persisted and exposed as raw metrics
+in the owner provider API. There is no composite reputation score.
 
-```text
-score = 0.4 × jobRate + 0.3 × uptimeRate + 0.2 × challengeRate + 0.1 × responseTimeFactor
-```
-
-- `jobRate` = `SuccessfulJobs / TotalJobs` (`0.5` with no jobs).
-- `uptimeRate` = `TotalUptime / 24h`, floored at `0.5`, capped at `1.0`.
-- `challengeRate` = passed / (passed + failed) (`0.5` with no challenges).
-- `responseTimeFactor` = `1.0` at ≤ 1 000 ms average, `0.0` at ≥ 10 000 ms,
-  linear between (`0.5` with no data). The average is an EWMA of
-  prefill-adjusted first-content latency, `ttftEWMAAlpha = 0.2`
-  (`RecordLatency`).
-
-A provider with no history scores `0.5`. The score is exposed on the
-provider-facing `/me` endpoints (`coordinator/api/me_handlers.go`) and
-persisted; **it is not a term in the routing cost** — `buildCandidateInto`
-never reads it. The header comment in `reputation.go` still says the score
-factors into routing; the code does not. Reputation inputs do reach routing
-indirectly: `RecordChallengeFailure` feeds `challenge_stale`, and the latency
-EWMA is fed only by non-cache, non-hedge first-content samples
-(`coordinator/api/dispatch.go`).
+The dashboard presents job counts; low historical success rate is an
+informational warning, not a reduced-routing-priority signal
+(`console-ui/src/app/providers/warnings.ts`, `computeWarnings`). Routing uses
+the cost function and live gates described above, not these historical
+counters. Attestation failures still update their separate live trust state
+through `RecordChallengeFailure`.
 
 ### `Retry-After` derivation
 
@@ -640,6 +751,10 @@ traffic before deploy. It has no binary; it is driven from tests.
   (`FleetConfig`, `DefaultHardwareSpec`) into a fresh `Registry`.
 - `fleet_ndjson.go` — `LoadFleetNDJSON` reconstructs a fleet from exported
   fleet snapshots (`store.FleetSnapshotRow`) at the tick nearest a given time.
+  The loader validates every line while retaining only rows for the current
+  best tick; it accepts interleaved timestamps, chooses the earlier tick on a
+  distance tie and keeps duplicate-slot precedence in file order. A zero
+  requested time selects the latest tick.
 - `trace.go` / `trace_ndjson.go` — `GenerateTrace` and
   `CalibrationPromptMix` build synthetic prompt mixes;
   `LoadProfilesNDJSON` turns exported request profiles into arrivals.
@@ -707,7 +822,7 @@ must not run in parallel with other scheduler tests in the same process.
 | `no_provider` | No provider advertises the model, or every advertising provider fails a non-capacity gate (`candidateCount == 0` with no capacity rejections). | Preflight returns `429` with `Retry-After` and reason code `no_provider` (`coordinator/api/inference_admission.go`). With [`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft) enabled and an idle on-disk provider that could load the model, the request is queued for a cold dispatch instead (`coldSpillAvailable`, `coordinator/api/cold_dispatch.go`). With breaker-only rejections, fail-open re-scans first (`shouldBypassBreakerFailOpen`). |
 | `model_too_large` | Every advertising provider is cold and `modelFitsHardware` fails (`rejectModelTooLarge`). | Permanent rejection for this fleet composition; `routingsim` reports `OutcomeModelTooLarge`. |
 | All gated on capacity (`machine_busy`) | Providers serve the model but all are at `no_headroom`, `free_memory` or `capacity_cooldown`. | With [`EIGENINFERENCE_QUEUE_BEFORE_SHED`](../reference/configuration.md#routing-admission-and-ttft) enabled (`coordinator/api/cold_dispatch.go`) the request queues per [`scheduling.md`](scheduling.md); otherwise `429` with `Retry-After` from `estimateRetryAfter`. |
-| `ttft_too_slow` | Every candidate's estimated TTFT exceeds the first-content deadline. | Soft by default: the best-available provider still serves. `EIGENINFERENCE_TTFT_HARD_REJECT=true` restores the legacy `429`; vision requests are never TTFT-gated. |
+| `ttft_too_slow` | Every candidate's estimated TTFT exceeds the first-content deadline. | Soft by default: the best-available provider still serves. `EIGENINFERENCE_TTFT_HARD_REJECT=true` restores the legacy `429`; vision requests and accounts outside the first-content SLA selector are never TTFT-gated. |
 | Queue timeout | A queued request found no eligible provider within the queue's wait bound. | `ErrQueueTimeout` → `429` with `Retry-After`; see [`scheduling.md`](scheduling.md#per-model-request-queue). |
 | Budget-clamped fleet | Every pair for the model is clamped after capacity 503s. | Pairs show as `free_memory` until release or `defaultBudgetClampTTL` ([above](#gray-box-capacity-signals)); heartbeat headroom plus one accept releases early. |
 | Hedge suppressed under load | Governor returns a suppress verdict. | Primary alone is waited on for the remaining deadline (`waitNoBackup`); `routing.hedge_governor_suppressed` counts the verdict. |
@@ -717,6 +832,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Concern | File / symbol |
 |---|---|
 | Dispatch-time selection, cost model, TTFT estimate | `coordinator/registry/scheduler.go` — `ReserveProviderWithPlan`, `scanCandidatesLocked`, `snapshotProviderIntoLockedEx`, `buildCandidateInto`, `slotStatePenalty`, `healthPenaltyMs`, `resolveEffectiveTPS`, `ttftMsFromSnapshot`, `longPromptPenalty` |
+| Provider-state projection for selection and capacity preflight | `coordinator/registry/routing_snapshot.go` — `fillRoutingSnapshotPLocked`; callers retain their own eligibility gates and hold both registry and provider locks |
 | Candidate preferences and ranking | `coordinator/registry/candidate_selection.go` — `preferRoutingCandidates`, `selectRoutingCandidate` |
 | Shared gate primitives | `coordinator/registry/routing_eligibility.go` — `providerLivenessGateReasonLocked`, `providerServesRoutableModelLocked` |
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |
@@ -729,7 +845,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Budget clamp | `coordinator/registry/budget_clamp.go` — `recordBudgetClampLocked`, `releaseBudgetClampsOnHeartbeat` |
 | Capacity-rate penalty and cooldown | `coordinator/registry/capacity_rate.go`, `coordinator/registry/capacity_cooldown.go` |
 | Breakers and ejection | `coordinator/registry/error_cooldown.go`, `coordinator/registry/provider_breaker.go`, `coordinator/registry/health_ejection.go` |
-| Reputation | `coordinator/registry/reputation.go` — `Score`, `RecordLatency` |
+| Provider operational history | `coordinator/registry/reputation.go` — `Reputation`, `RecordLatency` |
 | TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/settlement.go` |
 | Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |
 | Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |
@@ -748,3 +864,23 @@ must not run in parallel with other scheduler tests in the same process.
 - [`../operations/routing-v2-rollout.md`](../operations/routing-v2-rollout.md) — kill switches for the routing flags named on this page.
 - [`../design/routing-v2.md`](../design/routing-v2.md), [`../design/routing-telemetry-and-calibration.md`](../design/routing-telemetry-and-calibration.md) — the design history behind the current constants.
 - [`request-outcome-observability.md`](request-outcome-observability.md) — how routing outcomes surface in telemetry.
+
+## Account-scoped first-content SLA
+
+`coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) configures both fixed and per-input-token terms for exact model IDs, independently of model registration. Bonsai 2 uses a 10-second upstream base plus 5 ms per estimated prompt token; the live coordinator cutoff retains the existing 1-second response margin. This is the request-absolute first-content budget, carried through admission, queueing, retries and provider writer handoff, not an independent kernel prefill clock. These budgets apply only to accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`. Provision the selector privately in the deployment environment; its value must match the authenticated account ID or stored email. Other service accounts and direct consumers are exempt, including for Bonsai. An explicit public-model policy takes precedence over its resolved build, and the selected duration is pinned before media, admission and alias fallback. Configuration details are in [configuration.md](../reference/configuration.md).
+
+`coordinator/api/first_content_accounts.go` (`requestFirstContentDeadline`) selects the policy using authenticated identity. Empty selectors disable the SLA for all accounts. An email lookup storage failure returns a retryable service error before reservation rather than silently changing account policy. Missing user records do not match an email selector.
+
+For exempt accounts, zero explicitly disables first-content deadlines: preflight skips its TTFT ceiling, queued and dispatched requests retain an empty `FirstContentDeadline`, and the provider frame omits `first_content_budget_ms`. The Swift inbound handler already interprets an omitted budget as no coordinator first-content deadline. `coordinator/api/first_token_clock.go` (`newFirstContentTimer`) disables the timeout select arm in every first-content wait, including accepted, retry and speculative-race paths. There is no 600-second first-content fallback. Clean empty completions remain eligible for speculative arbitration even with a zero deadline.
+
+Queue limits, provider write watchdogs, client cancellation and disconnect cleanup remain. The existing response/stream timers apply after first content commits. Ranking, ordinary hedge launch hints and capacity probes remain active; exempt probes use a finite advisory planning horizon without arming a request timeout or advancing SLA hedges. Exempt primary scans use the short admission scan-wait slice. Speculative backup scans only acquire an immediately available scan slot; saturation skips the backup and resumes reading the primary. Shadow TTFT metrics remain counterfactual measurements, not enforcement.
+
+### Planned provider reconnects
+
+`provider-swift/Sources/ProviderCore/ProviderLoop+PlannedDisconnect.swift`
+(`requestPlannedReconnect`, `waitForSafeDisconnect`) gates late APNs registration
+and inventory reconciliation on the same accepted-work/terminal barrier used
+for update activation. Requests are coalesced by revision so an inventory change
+while a close is underway cannot be lost. Deadlines leave work alive; lifecycle
+stop takes precedence. Unexpected network loss still cancels work on the dead
+connection and does not replay partially emitted output.

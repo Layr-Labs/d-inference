@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { ArrowRight, CheckCircle2 } from "lucide-react";
-import { useAuthContext } from "@/components/providers/PrivyClientProvider";
+import { useAuthContext } from "@/components/app-providers/PrivyClientProvider";
 import { ProviderRequirements } from "./ProviderRequirements";
 import { ProviderQuestions } from "./ProviderQuestions";
 import { SetupCommand } from "./SetupCommand";
 import { SETUP_STEPS } from "./content";
+import { MacOSUpgradeNotice } from "./MacOSUpgradeNotice";
 
 const ACTION_CLASS = "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-accent-brand px-4 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-wait disabled:opacity-50 dark:text-bg-primary";
 
@@ -29,6 +30,8 @@ export function ProviderOnboarding({ hasLinkedProviders = false }: { hasLinkedPr
           {hasLinkedProviders && <Link href="/providers" className="inline-flex min-h-9 items-center gap-1.5 font-medium text-accent-brand hover:underline">Back to your providers<ArrowRight size={14} aria-hidden /></Link>}
         </div>
       </header>
+
+      <div className="pt-6"><MacOSUpgradeNotice /></div>
 
       <div className="grid gap-9 py-8 sm:py-10 lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-12">
         <ProviderRequirements />

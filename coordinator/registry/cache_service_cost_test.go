@@ -41,8 +41,12 @@ func TestCacheServiceCostBalancesQueueAndHardware(t *testing.T) {
 		wantWarm       bool
 	}{
 		{"modest_queue", 1000, 1, 1, true},
+		// 3,524 ms above the idle cold peer: outside the near-tie band.
 		{"large_queue", 1000, 2, 2, false},
-		{"slower_cached_hardware", 500, 0, 0, false},
+		// 1,928 ms above the cold peer with 8 s of proven saving: inside the band.
+		{"slower_cached_hardware_near_tie", 500, 0, 0, true},
+		// 4,880 ms above the cold peer: the band does not scale with the saving.
+		{"slower_cached_hardware", 400, 0, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, warm, hint := serviceCostFixture(tc.rate, tc.queue, tc.pending)

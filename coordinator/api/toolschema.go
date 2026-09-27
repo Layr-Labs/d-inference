@@ -11,7 +11,7 @@ import (
 
 // Tool-schema normalization (DAR-130), a Go port of the Swift provider's
 // ToolSchemaNormalization.ensureParameterTypes
-// (provider-swift/Sources/ProviderCore/Inference/ToolSchemaNormalization.swift).
+// (provider-swift/Sources/ProviderCore/Inference/Tools/ToolSchemaNormalization.swift).
 // The per-schema repair semantics (injectDefaultTypes and helpers) must stay
 // semantically in sync with the Swift implementation.
 //

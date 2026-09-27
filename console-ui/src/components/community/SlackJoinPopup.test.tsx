@@ -35,7 +35,7 @@ describe("SlackJoinPopup", () => {
     );
     const link = screen.getByRole("link", { name: /Join Slack/i }) as HTMLAnchorElement;
     expect(link.href).toBe(SLACK_INVITE_URL);
-    expect(link.href).toContain("zt-47wmq0xbr");
+    expect(link.href).toContain("zt-4avxpng6o");
   });
 
   it("stays hidden when not signed in", async () => {

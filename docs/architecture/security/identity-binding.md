@@ -1,26 +1,24 @@
 # Identity binding
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-27 · commit `93d556533`
 
-A provider connection carries five identities — a Secure Enclave P-256 key, an
-X25519 process key `K`, an APNs device token, an Apple device identity
-(serial, UDID), and an account — and a consumer carries one (a Privy DID).
-This page lists every binding between them and the check that enforces it, so
-that "the prompt was decrypted by the attested process on the enrolled Mac
-owned by this account" is a chain of verified links rather than an assumption.
+How the coordinator binds a provider's process encryption key, account and
+verification credentials. Legacy MDM/APNs evidence and App Attest credentials
+have distinct bindings; [provider trust](provider-trust.md) describes how those
+paths combine into a serving decision.
 
 ## Context
 
-Each identity is produced by a different party and can be swapped
-independently: the SE key by the Mac, `K` by every provider process start, the
-APNs token by the OS, the device identity by Apple, the account by the
-operator. [`attestation.md`](./attestation.md) decides how much to trust the
-connection; [`encryption.md`](./encryption.md) seals the prompt to `K`. Neither
-means anything unless `K` is provably the key of the process that also holds
-the SE key, on the device Apple says it is, linked to the account that gets
-paid. That is what the bindings below establish.
+The X25519 process key `K` changes at provider startup; the legacy SE key,
+APNs token, App Attest key and account have separate lifetimes. A signature binds
+its transcript to a key holder. It does not independently establish that every
+hardware or runtime value in that transcript is true. The checks below connect
+identity evidence to the endpoint used by [encryption](encryption.md); the
+[attestation mechanisms](attestation.md) describe the evidence behind each path.
 
 ## Mechanism
+
+The legacy binding chain is shown below; the App Attest v3 chain follows it.
 
 ```mermaid
 flowchart LR
@@ -66,6 +64,31 @@ flowchart LR
 | B7 | consumer ↔ account | `Authorization: Bearer <Privy access token>` verified as below; the JWT subject (Privy DID) maps to an account via `GetOrCreateUser` | `coordinator/api/server.go` (`requirePrivyAuth`, `extractBearerToken`); `coordinator/auth/privy.go` (`VerifyToken`, `GetOrCreateUser`) |
 | B8 | durable evidence ↔ device | Trust-reuse rows are keyed by SE public key and carry `serial`, `mda_udid`, posture bits and generations; reuse refuses `serial_mismatch`, `missing_identity`, `no_device_evidence` | `coordinator/store/interface.go` (`ProviderTrustReuse`); `coordinator/api/trust_reuse.go` (`tryTrustReuseFastSkip`) |
 
+### App Attest v3 endpoint binding
+
+`ProviderLoop.handleAppAttestShadow` decrypts the coordinator's assertion
+challenge with its own process `NodeKeyPair`; it never accepts another
+process's public key as the endpoint to certify. The client then passes the
+hash of a length-prefixed transcript to DeviceCheck. Code:
+`provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift`
+(`handleAppAttestShadow`), `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift`
+(`AppAttestShadowPayload.clientHash`), and
+`provider-swift/Sources/ProviderAppAttest/AppAttestShadowClient.swift` (`exchange`).
+
+| Binding | Transcript or check | Code |
+|---|---|---|
+| Credential ↔ current endpoint | Domain/version, action, session, environment, key ID, challenge and process public key `K` enter `clientHash` | `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift` (`clientHash`) |
+| Credential ↔ account | Account scope enters v2/v3 transcripts and local key storage scope; a changed account during an exchange is rejected | `provider-swift/Sources/ProviderAppAttest/AppAttestShadowClient.swift` (`keyScope`, `exchange`) |
+| Credential ↔ reported app/hardware/SE identity | v2 binds local OS/build, app version, chip and binary hash; v3 also binds machine model, memory, CPU/GPU counts and the legacy attestation public key. These are app-origin values, not independent Apple hardware measurements | `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift` (`clientHash`); `provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift` (`handleAppAttestShadow`) |
+| Authorization ↔ live request destination | The coordinator rechecks connection, endpoint, account and canonical machine at the final inference write, together with current authorization and model gates | `coordinator/registry/inference_authorization.go` (`providerRequestAuthorizationBindingLocked`, `authorizeInferenceHandoff`) |
+
+Local process/security diagnostics are outside `clientHash`. An App Attest
+assertion binds the challenge to its credential and transcript; the serving
+lease additionally needs the coordinator's [qualification and receipt policy](../../reference/provider-authorization.md).
+The request's verification snapshot records that coordinator decision at dispatch;
+it is not a new Apple signature over the inference input, output or computation.
+See `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`).
+
 ### Stable identity for coordinator state
 
 Reconnects, reputation, fault ejection, and stored trust must follow the
@@ -99,15 +122,16 @@ RFC 8628-style flow implemented in `coordinator/api/device_auth.go` and
 | Key | A single **static** PEM `SubjectPublicKeyInfo` parsed with `x509.ParsePKIXPublicKey`; must be ECDSA. There is no JWKS fetch and no key rotation without a restart | `coordinator/auth/privy.go` (`NewPrivyAuth`) |
 | Token checks | Algorithm exactly `ES256`; issuer `privy.io`; audience = app ID; standard `exp`/`nbf` via `jwt.RegisteredClaims`; non-empty `sub` | `coordinator/auth/privy.go` (`VerifyToken`) |
 | Result | `sub` is the Privy DID (`did:privy:…`); `GetOrCreateUser` looks it up or creates `User{AccountID: uuid, PrivyUserID, Email}` after fetching details from `https://auth.privy.io/api/v1/users/<did>` with Basic auth `app_id:app_secret` and `Privy-App-Id` | `coordinator/auth/privy.go` (`GetOrCreateUser`, `fetchUserDetails`) |
+| Admin email OTP | `InitEmailOTP` and `VerifyEmailOTP` encode email/code with typed JSON serialization before calling Privy; quotes, backslashes and control characters remain inside their string fields | `coordinator/auth/privy.go` |
 | Failure | Missing header → `401 authentication_error "missing credentials"`; bad token → `401 authentication_error "invalid Privy token"` | `coordinator/api/server.go` (`requirePrivyAuth`) |
 
 ## Invariants
 
-1. The provider's X25519 key is accepted only if the SE-signed blob names it as `encryptionPublicKey` — `coordinator/api/provider.go` (`verifyProviderAttestation`).
-2. All challenge and code-identity signatures are checked against the registration-time SE key — `coordinator/api/provider.go` (`verifyChallengeResponse`), `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`).
-3. Code identity is granted only if `K` and the APNs token are unchanged since the challenge was issued — `coordinator/registry/provider_evidence.go` (`GrantProcessCodeAttested`).
+1. The legacy registration attestation is valid only if its SE-signed blob names the registration X25519 key as `encryptionPublicKey` — `coordinator/api/provider.go` (`verifyProviderAttestation`).
+2. All legacy challenge and APNs code-identity signatures are checked against the registration-time SE key — `coordinator/api/provider.go` (`verifyChallengeResponse`), `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`).
+3. Legacy APNs code identity is granted only if `K` and the APNs token are unchanged since the challenge was issued — `coordinator/registry/provider_evidence.go` (`GrantProcessCodeAttested`).
 4. An MDA chain is attached only when it binds this SE key or the blob's serial, and only on a `hardware` connection — `coordinator/registry/provider_evidence.go` (`SetMDAProofIfHardwareBound`).
-5. Hardware posture is taken from the device selected by the blob's serial and must agree with the blob — `coordinator/api/provider.go` (`verifyProviderViaMDM`).
+5. Legacy MDM hardware posture is taken from the device selected by the blob's serial and must agree with the blob — `coordinator/api/provider.go` (`verifyProviderViaMDM`).
 6. `AccountID` is set only from a valid device-linked token, never from anything in the attestation blob — `coordinator/api/provider.go` (`handleProviderWS`), `coordinator/registry/health_ejection.go` (`stableProviderIdentityLocked`).
 7. Provider tokens and API keys are stored and looked up by SHA-256 hash only — `coordinator/store/postgres.go` (`hashKey`), `coordinator/api/device_auth.go` (`handleDeviceToken`).
 8. Privy tokens are accepted only with `ES256`, issuer `privy.io`, and the configured audience, under the static configured key — `coordinator/auth/privy.go` (`VerifyToken`).
@@ -117,7 +141,7 @@ RFC 8628-style flow implemented in `coordinator/api/device_auth.go` and
 
 | Failure | Effect | Code |
 |---|---|---|
-| Provider restarts | New `K`; B1 re-established by the fresh blob; old-process continuity cannot transfer to the new key. Resume requires a recent APNs proof and an approved application-evidence transition, otherwise a new push | `coordinator/api/code_attest_throttle.go` (`reuseAttestation`) |
+| Provider restarts | New `K`; B1 re-established by the fresh blob; old-process continuity cannot transfer to the new key. Legacy resume requires a recent APNs proof and an approved application-evidence transition, otherwise a new push. App Attest needs a fresh assertion bound to the new endpoint | `coordinator/api/code_attest_throttle.go` (`reuseAttestation`) |
 | Persistent SE key unusable (keychain locked, poisoned) | `loadOrCreateVerified` repairs once, else ephemeral fallback: a new SE identity, so stored trust, code proofs, and MDA binding start over | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |
 | APNs token rotates | `CodeAttested` cleared; push budget re-keyed (at most once per `budgetClearCooldown` = 20m) | `coordinator/api/code_attest_throttle.go` |
 | Blob serial does not match any MicroMDM device | `device-not-found`; stays `self_signed`; retried | `coordinator/api/provider.go` (`verifyProviderViaMDM`) |
@@ -130,6 +154,7 @@ RFC 8628-style flow implemented in `coordinator/api/device_auth.go` and
 
 | Concern | File (symbol) |
 |---|---|
+| App Attest transcript and endpoint binding | `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift` (`clientHash`); `provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift` (`handleAppAttestShadow`); `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) |
 | SE key lifecycle | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`loadOrCreateVerified`, `defaultLabel`, `defaultAccessGroup`); `provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift` (`createEphemeral`); `provider-swift/Sources/ProviderCore/ProviderLoop.swift` (`createAttestationSigner`) |
 | `K` lifecycle | `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` (`generate`, `purgeLegacyFiles`) |
 | Blob ↔ `K` binding | `coordinator/api/provider.go` (`verifyProviderAttestation`); `coordinator/attestation/attestation.go` (`AttestationBlob`) |
@@ -142,6 +167,7 @@ RFC 8628-style flow implemented in `coordinator/api/device_auth.go` and
 
 ## Related
 
+- [Provider trust](provider-trust.md) — the shared hybrid authorization decision and its limits.
 - [`attestation.md`](./attestation.md) — the trust levels and flags these bindings feed.
 - [`encryption.md`](./encryption.md) — what is sealed to `K`.
 - [`enrollment.md`](./enrollment.md) — how the device becomes addressable by serial in MicroMDM.

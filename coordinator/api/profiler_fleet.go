@@ -107,6 +107,11 @@ func (s *Server) pruneTelemetryOnce(ctx context.Context) {
 	sweepCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	now := time.Now()
+	if backend, ok := store.As[store.ModelDemandStore](s.store); ok {
+		if _, err := backend.PruneModelDemand(sweepCtx, now.Add(-store.ModelDemandRetention), profilePruneBatch); err != nil && s.logger != nil {
+			s.logger.Warn("model demand retention stopped early", "error", err)
+		}
+	}
 	deleted, err := s.store.PruneTelemetry(sweepCtx, now.Add(-profileRetainProfiles), now.Add(-profileRetainFleet), profilePruneBatch)
 	if err != nil && s.logger != nil {
 		s.logger.Warn("telemetry retention sweep stopped early", "deleted", deleted, "error", err)

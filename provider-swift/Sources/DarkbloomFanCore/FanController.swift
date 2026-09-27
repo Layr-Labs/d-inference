@@ -274,16 +274,7 @@ public actor TransactionalFanController {
                 // can fail after the kernel accepted it, so "threw" is not proof
                 // that the fan stayed automatic.
                 possiblyControlledFans[fan.index] = fan
-                do {
-                    try writeAndVerifyManualMode(fan)
-                } catch {
-                    let directFailure = normalize(error)
-                    guard shouldAttemptFtst(after: directFailure) else {
-                        throw directFailure
-                    }
-                    try acquireFtstIfNeeded(recordOwnership: recordOwnership)
-                    try retryManualMode(fan)
-                }
+                try enterManualMode(fan, recordOwnership: recordOwnership)
                 guard let precomputedTarget = targets[fan.index] else {
                     throw FanControllerError.incompleteSession(index: fan.index)
                 }
@@ -322,15 +313,7 @@ public actor TransactionalFanController {
                 ownsFtst: mayOwnFtst
             )
         } catch {
-            let primary = normalize(error)
-            let failures = restoreTrackedState(recordOwnership: recordOwnership)
-            if !failures.isEmpty {
-                throw FanControllerError.rollbackFailed(
-                    primary: primary,
-                    failures: failures
-                )
-            }
-            throw primary
+            throw rollbackError(after: error, recordOwnership: recordOwnership)
         }
     }
 
@@ -386,16 +369,7 @@ public actor TransactionalFanController {
                 case .manual:
                     break
                 case .automatic, .system:
-                    do {
-                        try writeAndVerifyManualMode(fan)
-                    } catch {
-                        let directFailure = normalize(error)
-                        guard shouldAttemptFtst(after: directFailure) else {
-                            throw directFailure
-                        }
-                        try acquireFtstIfNeeded(recordOwnership: recordOwnership)
-                        try retryManualMode(fan)
-                    }
+                    try enterManualMode(fan, recordOwnership: recordOwnership)
                 case .unknown(let value):
                     throw FanControllerError.unknownFanMode(
                         index: fan.index,
@@ -430,21 +404,40 @@ public actor TransactionalFanController {
                 ownsFtst: mayOwnFtst
             )
         } catch {
-            let primary = normalize(error)
-            let failures = restoreTrackedState(recordOwnership: recordOwnership)
-            if !failures.isEmpty {
-                throw FanControllerError.rollbackFailed(
-                    primary: primary,
-                    failures: failures
-                )
-            }
-            throw primary
+            throw rollbackError(after: error, recordOwnership: recordOwnership)
         }
     }
 
     @discardableResult
     public func reassert() throws -> FanControlSession {
         try maintain()
+    }
+
+    /// Engage and maintenance use the same verified transition. Firmware
+    /// rejection or failed mode readback permits Ftst fallback; permission does not.
+    private func enterManualMode(
+        _ fan: FanCapability,
+        recordOwnership: @Sendable (FanControlOwnership) throws -> Void
+    ) throws {
+        do {
+            try writeAndVerifyManualMode(fan)
+        } catch {
+            let directFailure = normalize(error)
+            guard shouldAttemptFtst(after: directFailure) else {
+                throw directFailure
+            }
+            try acquireFtstIfNeeded(recordOwnership: recordOwnership)
+            try retryManualMode(fan)
+        }
+    }
+
+    private func rollbackError(
+        after error: Error,
+        recordOwnership: @Sendable (FanControlOwnership) throws -> Void
+    ) -> FanControllerError {
+        let primary = normalize(error)
+        let failures = restoreTrackedState(recordOwnership: recordOwnership)
+        return failures.isEmpty ? primary : .rollbackFailed(primary: primary, failures: failures)
     }
 
     private func writeAndVerifyManualMode(_ fan: FanCapability) throws {

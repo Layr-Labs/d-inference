@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -284,7 +283,7 @@ func TestFirstTokenHeartbeatRotatesTokenlessEvidence(t *testing.T) {
 	// First non-empty token heartbeat: the empty-token evidence is stranded the
 	// instant the token is installed — it must be cleared and the ordinary
 	// challenge loop kicked NOW, not on the next periodic tick.
-	srv.maybeRearmCodeAttest(context.Background(), "late-token-provider", provider, &protocol.HeartbeatMessage{
+	srv.maybeRearmCodeAttest(t.Context(), "late-token-provider", provider, &protocol.HeartbeatMessage{
 		Type: protocol.TypeHeartbeat, Status: "idle",
 		APNsDeviceToken: "late-apns-token",
 	})
@@ -325,7 +324,7 @@ func TestFirstTokenHeartbeatRotatesTokenlessEvidence(t *testing.T) {
 
 	// Steady state: an unchanged-token heartbeat is still a no-op — evidence
 	// retained, no kick, still routable.
-	srv.maybeRearmCodeAttest(context.Background(), "late-token-provider", provider, &protocol.HeartbeatMessage{
+	srv.maybeRearmCodeAttest(t.Context(), "late-token-provider", provider, &protocol.HeartbeatMessage{
 		Type: protocol.TypeHeartbeat, Status: "idle",
 		APNsDeviceToken: "late-apns-token",
 	})

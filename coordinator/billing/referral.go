@@ -17,16 +17,9 @@ import (
 // established. On each inference charge, the referrer earns a percentage
 // of the platform fee.
 //
-// Fee split with referral:
-//
-//	Total cost  = 100%
-//	Provider    = 95%
-//	Platform    = 5% × (100% - referralSharePercent)
-//	Referrer    = 5% × referralSharePercent
-//
-// Default referralSharePercent = 20, so:
-//
-//	Provider = 95%, Platform = 4%, Referrer = 1%
+// The caller resolves the consumer's platform fee. DistributeReferralReward
+// credits referralSharePercent of that fee to the referrer and returns the
+// remainder for the platform; it does not change the provider's payout.
 type ReferralService struct {
 	store                store.Store
 	logger               *slog.Logger

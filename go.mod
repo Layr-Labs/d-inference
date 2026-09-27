@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	filippo.io/age v1.3.1
+	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/DataDog/datadog-go/v5 v5.8.3
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
@@ -77,6 +78,7 @@ require (
 	github.com/tinylib/msgp v1.2.5 // indirect
 	github.com/tklauser/go-sysconf v0.3.15 // indirect
 	github.com/tklauser/numcpus v0.10.0 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/collector/component v1.31.0 // indirect

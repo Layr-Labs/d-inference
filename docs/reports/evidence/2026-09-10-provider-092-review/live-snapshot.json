@@ -1,0 +1,114 @@
+{
+  "observed_at_utc": "2026-09-11T05:05:44.911937+00:00",
+  "health": {
+    "status": "ok",
+    "providers": 1182,
+    "version": "0.9.1",
+    "build_commit": "73093957b8f2f7058f9eabab3ab004c3d758ec16",
+    "build_date": "2026-09-09T20:57:54Z"
+  },
+  "latest_release": {
+    "version": "0.9.1",
+    "active": true,
+    "created_at": "2026-09-09T21:33:35.264057Z",
+    "binary_hash": "ef480e5216ac9b3675fe1ffda678106ace4dc9c15ab7c6a7f68bd4bd28ec03fd",
+    "bundle_hash": "806aaa7a723f5ec6437e64947b1755d670b2d53893c101660aaecad004815ed2",
+    "metallib_hash": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2"
+  },
+  "cache_status": {
+    "artifact_allowlist": {
+      "configured": true,
+      "count": 3
+    },
+    "routing_mode": "on",
+    "activation": {
+      "percent": 100,
+      "max_plan_qps": 40,
+      "evaluated": 1104324,
+      "sampled_in": 1104324,
+      "sampled_out": 0,
+      "rate_limited": 255466,
+      "admitted": 848858,
+      "planned": 754465,
+      "cold_only": 0,
+      "plan_empty": 51253,
+      "plan_failed": 43140
+    }
+  },
+  "selected_catalog_entries": [
+    {
+      "active": true,
+      "aggregate_sha256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+      "architecture": "",
+      "capabilities": [
+        "chat",
+        "tools",
+        "reasoning",
+        "json_mode",
+        "vision",
+        "video"
+      ],
+      "created": 1781143034,
+      "description": "",
+      "display_name": "Gemma 4 26B",
+      "family": "",
+      "file_count": 10,
+      "hugging_face_id": "gemma-4-26b-qat-4bit",
+      "id": "gemma-4-26b-qat-4bit",
+      "input_modalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "max_context_length": 131072,
+      "max_output_length": 32768,
+      "metadata": {
+        "spec_dec": {
+          "allowed_file_types": [
+            "config",
+            "weight"
+          ],
+          "config_sha256": "0cd54ff36e53a258532c5c1433bc44b88ba758cfe9b59bb4e6eecfd5453fabcf",
+          "file_count": 2,
+          "manifest_sha256": "8b7c00b7f131345156f5f20fa9c94a895c5340f16d9331bafb9e59628bf45bf2",
+          "max_file_count": 2,
+          "r2_prefix": "v2/mlx-community-gemma-4-26B-A4B-it-qat-assistant-4bit--2acc3ce46483/bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c",
+          "revision": "bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c",
+          "total_size_bytes": 236127665
+        }
+      },
+      "min_ram_gb": 36,
+      "model_type": "text",
+      "name": "Gemma 4 26B",
+      "output_modalities": [
+        "text"
+      ],
+      "quantization": "4bit",
+      "r2_prefix": "v2/gemma-4-26b-qat-4bit--69619d858022/2026-06-08-r1",
+      "required_provider_capabilities": [],
+      "runtime_parameters": {},
+      "s3_name": "v2/gemma-4-26b-qat-4bit--69619d858022/2026-06-08-r1",
+      "size_gb": 15.641239295,
+      "status": "beta",
+      "supported_features": [
+        "json_mode",
+        "reasoning",
+        "tools"
+      ],
+      "supported_sampling_parameters": [
+        "temperature",
+        "top_p",
+        "top_k",
+        "frequency_penalty",
+        "presence_penalty",
+        "repetition_penalty",
+        "stop",
+        "seed",
+        "max_tokens"
+      ],
+      "total_size_bytes": 15641239295,
+      "version": "2026-06-08-r1",
+      "weight_hash": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785"
+    }
+  ]
+}

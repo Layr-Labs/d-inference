@@ -9,6 +9,7 @@ struct SpecDecArtifactReference: Sendable, Equatable, Hashable {
     let allowedFileRoles: Set<String>
     let configSHA256: String
     let revision: String
+    let huggingFaceArtifact: HuggingFaceArtifact?
 }
 
 struct SpecDecMetadataError: Error, Sendable, CustomStringConvertible {
@@ -133,6 +134,13 @@ enum SpecDecMetadata {
             return .failure(.init(reason: .metadataMalformed, description: "revision is required and must be valid"))
         }
 
+        let huggingFaceArtifact: HuggingFaceArtifact?
+        do {
+            huggingFaceArtifact = try pinnedHuggingFaceArtifact(values["hugging_face_artifact"])
+        } catch {
+            return .failure(.init(reason: .metadataMalformed, description: String(describing: error)))
+        }
+
         return .success(
             SpecDecArtifactReference(
                 r2Prefix: prefix,
@@ -142,7 +150,8 @@ enum SpecDecMetadata {
                 maximumFileCount: maximumCount,
                 allowedFileRoles: roles,
                 configSHA256: configDigest,
-                revision: revision))
+                revision: revision,
+                huggingFaceArtifact: huggingFaceArtifact))
     }
 
     static func validPrefix(_ prefix: String) -> Bool {

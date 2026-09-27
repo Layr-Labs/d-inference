@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // SumProviderEarningsByKey returns total organic micro-USD for one provider node
@@ -38,7 +40,15 @@ func (s *PostgresStore) SumProviderEarningsByKey(ctx context.Context, providerKe
 // nothing and credits nothing. A zero-amount draw still records the audit row (so
 // it is "settled, $0") but the credit/ledger CTEs (guarded by amount > 0) are
 // no-ops. Returns credited=true when this call inserted the row.
+type floorDrawDB interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 func (s *PostgresStore) SettleProviderFloorDraw(ctx context.Context, draw *ProviderFloorDraw) (bool, error) {
+	return settleProviderFloorDraw(ctx, s.pool, draw)
+}
+
+func settleProviderFloorDraw(ctx context.Context, db floorDrawDB, draw *ProviderFloorDraw) (bool, error) {
 	if draw == nil {
 		return false, errors.New("provider floor draw is required")
 	}
@@ -56,7 +66,7 @@ func (s *PostgresStore) SettleProviderFloorDraw(ctx context.Context, draw *Provi
 	earningJobID := "floor:" + draw.EpochID + ":" + draw.ProviderKey
 
 	var credited bool
-	err := s.pool.QueryRow(ctx, `
+	err := db.QueryRow(ctx, `
 		WITH draw AS (
 			INSERT INTO provider_floor_draws (provider_key, account_id, epoch_id, amount_micro_usd,
 				floor_micro_usd, earned_micro_usd, uptime_frac, memory_gb, created_at)

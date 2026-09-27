@@ -7,7 +7,7 @@
 // `localStorage || NEXT_PUBLIC || "https://api.darkbloom.dev"` chain that was
 // copy-pasted across settings, setup, earnings, encryption, etc. (proposal F6).
 
-import { STORAGE_KEYS } from "./constants";
+import { STORAGE_KEYS } from "./storage-keys";
 
 const DEFAULT_COORDINATOR_URL = "https://api.darkbloom.dev";
 

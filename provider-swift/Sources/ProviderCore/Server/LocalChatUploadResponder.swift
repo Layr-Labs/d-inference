@@ -98,7 +98,8 @@ where Inner.Context == BasicRequestContext {
         // throws (unknown model, admission refusal) travel to
         // `CORSResponder`'s status mapping unchanged.
         if item.request.stream == true {
-            let frames = try await requestService.streamChatCompletionFrames(request: item.request)
+            let frames = try await requestService.streamChatCompletionFrames(
+                request: item.request, frameGenerationErrors: true)
             return Self.sseResponse(frames)
         }
         return try Self.jsonResponse(

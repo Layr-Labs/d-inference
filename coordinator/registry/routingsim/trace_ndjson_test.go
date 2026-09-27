@@ -180,3 +180,19 @@ func TestLoadProfilesNDJSONKeepsFailedRequests(t *testing.T) {
 		t.Fatalf("arrivals not in arrival-time order: %v", []string{arrivals[0].CoordRequestID, arrivals[1].CoordRequestID, arrivals[2].CoordRequestID})
 	}
 }
+
+func TestLoadProfilesNDJSONEqualArrivalsKeepFirstRequestOrder(t *testing.T) {
+	tick := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	first := store.RequestProfileRecord{CoordRequestID: "first", EstimatedPromptTokens: 300, ReceivedAt: tick}
+	second := first
+	second.CoordRequestID, second.Winning = "second", true
+	winner := first
+	winner.Winning, winner.ProviderID = true, "winner"
+	arrivals, err := routingsim.LoadProfilesNDJSON(profilesNDJSON(t, first, second, winner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(arrivals) != 2 || arrivals[0].CoordRequestID != "first" || arrivals[0].ChosenProviderID != "winner" || arrivals[1].CoordRequestID != "second" {
+		t.Fatalf("winner replacement changed equal-time request order: %+v", arrivals)
+	}
+}

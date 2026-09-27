@@ -3,6 +3,8 @@ package store
 import (
 	"sort"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func (s *MemoryStore) RecordGlobalPayoutRejection(id string, attempt int, code string) error {
@@ -22,22 +24,10 @@ func (s *MemoryStore) RecordGlobalPayoutRejection(id string, attempt int, code s
 func (s *PostgresStore) RecordGlobalPayoutRejection(id string, attempt int, code string) error {
 	ctx, cancel := payoutContext()
 	defer cancel()
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	var p GlobalPayout
-	if err = readPayoutJSON(tx.QueryRow(ctx, `SELECT data FROM global_payout_withdrawals WHERE id=$1 FOR UPDATE`, id), &p); err != nil {
-		return err
-	}
-	if err = recordGlobalRejection(&p, attempt, code); err != nil {
-		return err
-	}
-	if err = persistGlobalPayout(ctx, tx, p); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	_, err := s.mutateGlobalPayout(ctx, id, func(_ pgx.Tx, p *GlobalPayout) (bool, error) {
+		return true, recordGlobalRejection(p, attempt, code)
+	})
+	return err
 }
 
 // Only unconfirmed, expired quotes are disposable. The same row lock used by

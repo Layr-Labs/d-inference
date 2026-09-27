@@ -8,7 +8,7 @@ import { useStore } from "@/lib/store";
 const environment = vi.hoisted(() => ({ mobile: false, pathname: "/chat", push: vi.fn() }));
 vi.mock("next/navigation", () => ({ usePathname: () => environment.pathname, useRouter: () => ({ push: environment.push }) }));
 vi.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ ready: true, authenticated: false, login: vi.fn(), logout: vi.fn() }) }));
-vi.mock("@/components/providers/ThemeProvider", () => ({ useTheme: () => ({ theme: "light", toggleTheme: vi.fn() }) }));
+vi.mock("@/components/app-providers/ThemeProvider", () => ({ useTheme: () => ({ theme: "light", toggleTheme: vi.fn() }) }));
 vi.mock("@/components/Toasts", () => ({ Toasts: () => null }));
 
 beforeEach(() => {

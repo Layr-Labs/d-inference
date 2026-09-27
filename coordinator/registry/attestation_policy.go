@@ -35,6 +35,16 @@ func (r *Registry) providerSupportsPrivateTextModeLocked(p *Provider, enforceEvi
 // providerSupportsPrivateTextModeAtLocked is the chokepoint body at an explicit
 // instant (see providerSupportsPrivateTextAtLocked). Caller holds r.mu.
 func (r *Registry) providerSupportsPrivateTextModeAtLocked(p *Provider, enforceEvidence bool, now time.Time) bool {
+	return r.providerSupportsPrivateTextAuthorizationAtLocked(p, enforceEvidence, true, now)
+}
+
+// allowAppAttest=false evaluates the independent legacy path for status and
+// migration diagnostics without mutating live evidence to manufacture a view.
+func (r *Registry) providerSupportsPrivateTextAuthorizationAtLocked(p *Provider, enforceEvidence, allowAppAttest bool, now time.Time) bool {
+	if p.appAttestSecurityDenied {
+		return false
+	}
+	appAttest := allowAppAttest && r.providerHasAppAttestAuthorizationLocked(p, now)
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}
@@ -43,7 +53,10 @@ func (r *Registry) providerSupportsPrivateTextModeAtLocked(p *Provider, enforceE
 	}
 	// Require coordinator-verified SIP (from attestation challenge) rather
 	// than trusting the provider's self-reported SIPEnabled field.
-	if !p.ChallengeVerifiedSIP {
+	// A qualified App Attest lease includes Apple's SIP/Full Security access
+	// policy and a fresh endpoint assertion. Do not fabricate legacy SIP or
+	// APNs evidence to represent that independent authorization path.
+	if !appAttest && !p.ChallengeVerifiedSIP {
 		return false
 	}
 	// A configured release policy makes current active-release application
@@ -54,11 +67,12 @@ func (r *Registry) providerSupportsPrivateTextModeAtLocked(p *Provider, enforceE
 	// so operators prove coverage BEFORE anything can be derouted.
 	if r.releasePolicyRequired &&
 		enforceEvidence &&
+		!appAttest &&
 		!r.providerHoldsCurrentApplicationEvidenceLocked(p) {
 		return false
 	}
 	// APNs code-identity gate — the SINGLE chokepoint, no self-route exemption.
-	if r.codeAttestationEnforcedAtLocked(now) && !p.CodeAttested {
+	if !appAttest && r.codeAttestationEnforcedAtLocked(now) && !p.CodeAttested {
 		return false
 	}
 	caps := p.PrivacyCapabilities
@@ -136,6 +150,17 @@ func (r *Registry) SetReleasePolicyGeneration(
 	stillApproved func(ApplicationEvidence) bool,
 ) (needChallenge []string) {
 	r.mu.Lock()
+	// The same release snapshot generation binds both authorization paths.
+	// App Attest is re-evaluated by the API under the refreshed qualification
+	// and revocation policy; carrying a stale verdict forward is not safe.
+	if generation != r.appAttestPolicyGeneration {
+		r.appAttestPolicyGeneration = generation
+		for _, p := range r.providers {
+			p.mu.Lock()
+			p.appAttestAuthorization = AppAttestServingAuthorization{}
+			p.mu.Unlock()
+		}
+	}
 	r.releasePolicyGeneration = generation
 	r.releasePolicyRequired = required
 	enforced := r.releasePolicyEnforcedLocked()
@@ -333,6 +358,13 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 	hook := r.onHardUntrust // capture under r.mu (race-safe)
 
 	p.mu.Lock()
+	// A missing legacy challenge is not negative security evidence. A live
+	// independently valid App Attest lease can continue until its own deadline.
+	if recoverable && r.providerHasAppAttestAuthorizationLocked(p, time.Now()) {
+		p.mu.Unlock()
+		r.mu.Unlock()
+		return
+	}
 	if p.Status != StatusUntrusted {
 		r.onlineCount.Add(-1)
 		for _, m := range p.Models {
@@ -354,6 +386,10 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 		seKey = p.AttestationResult.PublicKey
 	}
 	if !recoverable {
+		p.appAttestAuthorization = AppAttestServingAuthorization{}
+		if p.requireVerifiedMachineIdentity || p.appAttestCredentialID != "" {
+			p.appAttestSecurityDenied = true
+		}
 		p.DeviceEvidence = DeviceEvidence{}
 		p.ApplicationEvidence = ApplicationEvidence{}
 		p.CodeAttested = false
@@ -528,6 +564,10 @@ func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool)
 
 	if !transientOnly {
 		// Security failure — clear routing eligibility immediately.
+		p.appAttestAuthorization = AppAttestServingAuthorization{}
+		if p.requireVerifiedMachineIdentity || p.appAttestCredentialID != "" {
+			p.appAttestSecurityDenied = true
+		}
 		p.LastChallengeVerified = time.Time{}
 		p.ChallengeVerifiedSIP = false
 	} else if count >= MaxFailedChallenges {

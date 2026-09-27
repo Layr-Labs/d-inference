@@ -12,6 +12,7 @@
 
 import CryptoKit
 import Foundation
+import ProviderAppAttest
 import MLXLMServer
 #if canImport(os)
 import os
@@ -144,9 +145,17 @@ struct RetryNotifyingPrefetchSink: PrefetchStatusSink {
 internal final class OneShotBoolContinuation: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
+    private var cancelled = false
 
-    init(_ continuation: CheckedContinuation<Bool, Never>) {
+    func install(_ continuation: CheckedContinuation<Bool, Never>) {
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            continuation.resume(returning: false)
+            return
+        }
         self.continuation = continuation
+        lock.unlock()
     }
 
     func resume(returning value: Bool) {
@@ -155,6 +164,15 @@ internal final class OneShotBoolContinuation: @unchecked Sendable {
         self.continuation = nil
         lock.unlock()
         continuation?.resume(returning: value)
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: false)
     }
 }
 
@@ -178,6 +196,19 @@ internal enum ProviderLoopError: Error, CustomStringConvertible {
 // purely-local members (e.g. `configuredMaxModelSlots`, `bytesPerGiB`,
 // `createAttestationSigner`) stay `private`. Behavior is unchanged.
 public actor ProviderLoop {
+    internal var appAttestShadowClient: AppAttestShadowClient?
+    internal var appAttestShadowTask: Task<Void, Never>?
+    internal var appAttestShadowGeneration: UInt64 = 0
+    /// Last local App Attest observation, published in the daemon state file.
+    internal var appAttestLocalStatus: AppAttestLocalStatus?
+    /// Watches a stalled DeviceCheck operation until a restart is safe.
+    internal var appAttestStallMonitorTask: Task<Void, Never>?
+    /// Last logged reason for deferring the stall restart (log on change only).
+    internal var appAttestStallLastSkip: AppAttestStallRestartPolicy.SkipReason?
+    /// After a stall-restart attempt drained but could not restart, the next
+    /// attempt waits until this instant (monotonic; this process only, since a
+    /// new process has no stalled call).
+    internal var appAttestStallRetryAt: ContinuousClock.Instant?
     internal let loopConfig: ProviderLoopConfig
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?
@@ -204,7 +235,7 @@ public actor ProviderLoop {
 
     /// Test seam (`ProviderLoop+Testing`): overrides the environment, the
     /// container EOS snapshot, and the production CBv2 engine builder used
-    /// by `makeEngineV2BridgeForSlot`. nil in production.
+    /// by `makeEngineV2BundleForSlot`. nil in production.
     internal var engineV2SlotHooks: EngineV2SlotHooks?
 
     /// Operator-configured hard cap on concurrent model slots
@@ -276,6 +307,11 @@ public actor ProviderLoop {
     /// retirements coalesces into one re-registration, fired once
     /// box-wide in-flight work has drained.
     internal var pendingRetirementReconnect: Task<Void, Never>?
+    internal var plannedReconnectTaskGeneration: UInt64 = 0
+    internal var plannedReconnectRevision: UInt64 = 0
+    internal var issuedReconnectRevision: UInt64 = 0
+    internal var connectionGeneration: UInt64 = 0
+    internal var disconnectBarrierPending = false
 
     /// Admission barrier across the post-retirement reconnect: raised on
     /// the actor immediately before the socket is closed, cleared when the
@@ -310,6 +346,32 @@ public actor ProviderLoop {
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
+    internal var servingDrain = ProviderDrain()
+    internal var lifecycleStatus = ProviderDrainStatus()
+    internal var lastLifecycleTelemetry: ProviderDrainStatus?
+    internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
+    internal var lifecycleDrainRequestID: String?
+    internal var lifecycleCommandReceived = false
+    internal var lifecycleMonitorTask: Task<Void, Never>?
+    internal var modelSwitchTask: Task<ProviderModelSwitchStatus, Never>?
+    internal var modelSwitchStatus = ProviderModelSwitchStatus()
+    /// IO-only seams keep validation on real scanner/hash paths in lifecycle tests.
+    internal var modelSwitchSnapshotResolver: @Sendable (String) -> URL? = { ModelScanner.resolveLocalPath(modelID: $0) }
+    internal var modelSwitchWeightHasher: @Sendable (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
+    /// Invalidates prefetch work begun before an operator replaced the set.
+    internal var modelSelectionRevision: UInt64 = 0
+    internal var modelAdvertisementsInFlight = 0
+    /// Distinguishes an explicit switch back to the already-saved IDs from
+    /// unchanged TOML while a manual foreground override was serving.
+    public internal(set) var hasPersistedModelSwitch = false
+    internal var acceptedLifecycleRequests: Set<String> = []
+    internal let localResponseTracker = LocalResponseTracker()
+    internal var mtpStagingReservations = MTPStagingReservations()
+    internal var mtpAdmissionDrains = MTPAdmissionDrains()
+    internal var mtpUpgradeMonitorTask: Task<Void, Never>?
+    internal var mtpUpgradeTransitions: Set<String> = []
+    internal var mtpUpgradeWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
 
     /// Phase of a graceful auto-update cycle. Drives admission: in `.draining`
     /// we refuse new requests (503 reroute) so in-flight work can finish before
@@ -336,17 +398,17 @@ public actor ProviderLoop {
     /// durable commit.
     internal var updateSession: SelfUpdater.UpdateSession?
 
-    /// Latest `desired_models` push received while update-draining. Normally
-    /// the restart makes it moot (registration gets fresh desired state), but
-    /// if the restart is aborted (commit/restart failure) the deferred state
-    /// is replayed by `resumeServingAfterUpdate` so the provider does not keep
-    /// serving from a desired set the coordinator has since changed.
+    /// Latest desired_models push received while admission is closed. A switch
+    /// clears obsolete state before committing, then replays the fresh snapshot
+    /// after reopening; an aborted update likewise replays its deferred state.
+    /// Reconnecting providers receive a new snapshot during registration.
     internal var deferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
 
     /// Models remain tracked while their scheduler is tearing down so
     /// reentrant loads cannot start against memory that has not been freed yet.
     internal var modelsUnloading: Set<String> = []
     internal var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    internal var qwen4MemoryRetirement: NativeMemoryRetirementWindow?
 
     /// Serializes KV-GRANT mutations: the load-side re-slice
     /// (`resliceAndBuildEngineV2Slot` — snapshot grants → shrink → build →
@@ -469,12 +531,23 @@ public actor ProviderLoop {
     internal var preloadTasks: [String: Task<Void, Never>] = [:]
 
     /// Startup preload driver (`ProviderLoop+StartupPreload`). Non-nil while
-    /// the boot-time preload of the configured/previously-served model set is
+    /// the boot-time preload of the selected model set is
     /// still running — it may outlive the registration gate when the
     /// `startup_preload_timeout_secs` deadline passes (loads continue in the
     /// background). Cancelled and awaited on shutdown alongside the
     /// coordinator-driven preloads.
     internal var startupPreloadTask: Task<Void, Never>?
+    /// Wakes the registration gate when lifecycle draining starts, even if
+    /// the preload driver is inside a slow model load.
+    internal var startupPreloadGateWaiter: OneShotBoolContinuation?
+    /// Coalesces pre-registration teardown requested by the serve task and a
+    /// concurrent signal handler. Detached from a cancelled schedule task.
+    internal var preRegistrationCleanupTask: Task<Void, Never>?
+    /// Set once the coordinator event reader owns the normal shutdown path.
+    internal var coordinatorEventLoopStarted = false
+    /// Suffix of the startup plan not yet completed by the driver. Exposed in
+    /// the daemon state so status can distinguish warmup from request loading.
+    internal var startupPreloadPendingModels: [String] = []
 
     /// Test seam: overrides the loaded-models persistence file
     /// (default: `LoadedModelsStore.path()`).
@@ -487,6 +560,11 @@ public actor ProviderLoop {
     /// other's temp files (swift-testing runs suites in parallel;
     /// `.serialized` only orders tests WITHIN a suite).
     internal var daemonStateFileOverride: URL?
+
+    /// APNs code-identity push receipt/reply history beside the state file.
+    internal var apnsPushHistory: APNsPushHistoryStore {
+        APNsPushHistoryStore(directory: (daemonStateFileOverride ?? DaemonStateFile.path()).deletingLastPathComponent())
+    }
 
     /// Gate on the loaded-models persistence writes. `run()` flips it on at
     /// startup; it stays FALSE for `ProviderLoop` instances that never serve
@@ -596,7 +674,9 @@ public actor ProviderLoop {
         purgeLegacyFiles: Bool,
         attestationSigner: (any AttestationSigner)?,
         preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
-        beforeModelLoad: (@Sendable (String) async -> Void)? = nil
+        beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
+        // Scripted slot fixtures must not inherit the test host's RAM.
+        kvBudgetForTesting: GlobalKVCacheBudget? = nil
     ) throws {
         self.loopConfig = config
         self.specDecFunnel = SpecDecArtifactFunnel(
@@ -621,7 +701,7 @@ public actor ProviderLoop {
                 ineligibleModelIds.append(model.id)
                 continue
             }
-            if EngineV2SupportedModels.isSupported(modelType: model.modelType) {
+            if EngineV2SupportedModels.isSupported(model: model) {
                 advertised[model.id] = model
             } else {
                 unsupportedModelIds.append(model.id)
@@ -655,14 +735,14 @@ public actor ProviderLoop {
         // (measured per-model floors; env raise-only above them) and re-pushed
         // via refreshActivationReserve() whenever that set changes, so the
         // runtime KV gate and the load gate always carve the same reserve.
-        self.kvBudget = GlobalKVCacheBudget(
+        self.kvBudget = kvBudgetForTesting ?? GlobalKVCacheBudget(
             activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
                 modelIDs: Array(advertised.keys)),
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
         // so this cleanup cannot delete current cache data.
-        LegacyKVCacheSweeper.sweep()
+        if purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad
@@ -711,7 +791,7 @@ public actor ProviderLoop {
     static func inferReasoningParser(for modelType: String?) -> ReasoningParserFormat {
         guard let type = modelType?.lowercased() else { return .qwen3 }
         if type == "gpt_oss" { return .harmony }
-        if type.hasPrefix("gemma") { return .gemma4 }
+        if type.hasPrefix("gemma") || type == "diffusion_gemma" { return .gemma4 }
         if type.hasPrefix("qwen") { return .qwen3 }
         if type.hasPrefix("deepseek") { return .deepseekR1 }
         // Safe default: qwen3's <think> parser handles the most common format.
@@ -727,7 +807,8 @@ public actor ProviderLoop {
         var engineV2: EngineV2Bridge { engineBundle.bridge }
         /// Retained for VLM vision preprocessing and liveness rebuilds; the
         /// wrapper owns the exact text tower retained by the engine.
-        let container: MLXLMCommon.ModelContainer
+        let modelContainer: ProviderModelContainer
+        var container: MLXLMCommon.ModelContainer? { modelContainer.autoregressive }
         let tokenizer: TokenizerHandle
         /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —
         /// feeds re-slicing, heartbeat fleet context, and the vision gate.
@@ -771,8 +852,23 @@ public actor ProviderLoop {
             modelType: String?,
             lastInferenceAt: ContinuousClock.Instant
         ) {
+            self.init(engineBundle: engineBundle, modelContainer: .autoregressive(container),
+                tokenizer: tokenizer, sizing: sizing, cacheEligibleWeightHash: cacheEligibleWeightHash,
+                isVLM: isVLM, modelType: modelType, lastInferenceAt: lastInferenceAt)
+        }
+
+        init(
+            engineBundle: ProviderEngineBundle,
+            modelContainer: ProviderModelContainer,
+            tokenizer: TokenizerHandle,
+            sizing: SlotSizingSnapshot,
+            cacheEligibleWeightHash: String? = nil,
+            isVLM: Bool,
+            modelType: String?,
+            lastInferenceAt: ContinuousClock.Instant
+        ) {
             self.engineBundle = engineBundle
-            self.container = container
+            self.modelContainer = modelContainer
             self.tokenizer = tokenizer
             self.sizing = sizing
             self.cacheEligibleWeightHash = cacheEligibleWeightHash

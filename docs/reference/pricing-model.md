@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-18 · commit `e64b9df42`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -170,7 +170,8 @@ Connected-account status `users.stripe_account_status`
 | `DefaultReductionK` | `0.0` (additive) | `floor.go` |
 | `MinUptimeForAvail` / `FullUptimeForAvail` | `0.90` / `1.00` | `floor.go` |
 | `defaultGraceSeconds` | `90` (open sessions accrue to `last_seen + grace`) | `engine.go` |
-| Health gates | `MemoryPressure < 0.8`; `ThermalState != "critical"`; online; model loaded; attested and trust ≥ minimum; linked account; hardware model known to `mdm.ModelMaxMemoryGB` | `engine.go` (`buildCandidates`) |
+| `FloorDrawBatchLimit` | `4096` pending rows; a larger plan returns an error without truncation or credit | `coordinator/store/floor_draw_batch.go` |
+| Health gates | Current complete public serving authorization; memory/thermal health and loaded-model readiness; linked account; qualified hardware capped by `hardware.ModelMaxMemoryGB` | `machine_candidates.go` (`rewardSnapshotEligible`, `rewardMemoryGB`) |
 
 Tier table (`floor.go` `floorTiers`; a machine takes the largest tier whose
 `MinGB` it meets; below 24 GB → `0`):
@@ -193,6 +194,8 @@ Formulas: `Avail(u) = clamp((u − 0.90) / 0.10, 0, 1)`;
 `provider_earnings` row has `model = 'base_reward'` and
 `job_id = floor:<epoch_id>:<provider_key>` (`coordinator/store/postgres_base_rewards.go`
 `SettleProviderFloorDraw`).
+
+`settleCandidatePlan` commits all pending rows atomically through `FloorDrawBatchStore`, rechecking current session authorization before each planned credit and before commit. A late rejection rolls back the pending plan and triggers reallocation under the same pool/account caps. Canonical identities, endpoint continuity and prior finalized rows follow the [provider authorization contract](provider-authorization.md#machine-identity-and-base-rewards). Code: `coordinator/payments/baserewards/settlement_plan.go`, `coordinator/store/floor_draw_batch.go`.
 
 ## Routes
 
@@ -238,7 +241,7 @@ the financial rate limiter ([Constants](#constants)).
 | `GET /v1/admin/invite-codes` | requireAuth; admin | `handleAdminListInviteCodes` |
 | `DELETE /v1/admin/invite-codes` | requireAuth; admin | `handleAdminDeactivateInviteCode` |
 | `POST /v1/invite/redeem` | requireAuth + financial | `handleRedeemInviteCode` |
-| `POST /v1/admin/credit` | requireAuth; admin | `coordinator/api/billing_handlers.go` (`handleAdminCredit`) |
+| `POST /v1/admin/credit` | requireAuth; admin | `coordinator/api/admin_balance_adjustment.go` (`handleAdminCredit`) |
 | `POST /v1/admin/reward` | requireAuth; admin | `handleAdminReward` |
 | `GET /v1/admin/base-rewards` | admin (in handler) | `coordinator/api/base_rewards_handlers.go` (`handleAdminBaseRewards`) |
 
@@ -297,3 +300,19 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/global_payouts_postgres.go` (`ListGlobalPayoutsToReconcile`) |
 
 Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/global_payouts_withdraw.go`, `handleGlobalPayoutQuote`).
+
+## Promotional model tokens
+
+| Rule | Contract | Code |
+|---|---|---|
+| Allocation | Explicit claim, one grant per account/model; campaign claim cap and persisted signup cutoff; start-inclusive/end-exclusive claim window; issued tokens never expire | `coordinator/store/model_token_promotions.go` (`ModelTokenPromotion`) |
+| Token unit | Prompt plus completion tokens, including cached input and generated reasoning as reported in usage | `coordinator/api/model_token_settlement.go` (`settleModelTokenPromotion`) |
+| Coverage | Input first, then output; fully covered usage costs the consumer zero | `coordinator/api/model_token_admission.go` (`modelTokenQuote`) |
+| Paid fallback | Uncovered tokens use paid balance; the normal request minimum applies when any tokens are paid | `coordinator/api/model_token_admission.go` (`modelTokenQuote`) |
+| Provider earnings | Sponsored portion uses exact platform token price and fee share, with no request or one-micro-dollar payout floor; fractional earnings carry across requests per provider account. Paid portion retains its funded minimum. Same-account sponsored serving produces no payout | `coordinator/api/provider.go` (`handleComplete`) |
+| Fractional payout storage | Remainders use 1/100000000 of a micro-dollar; whole units become withdrawable atomically with grant settlement; replay never adds the fraction twice | `coordinator/store/model_token_earnings.go` (`ModelTokenPayoutScale`, `carryModelTokenEarning`) |
+| Zero-token completion | Reject any nonzero charge or payout; release token/cash holds | `coordinator/store/model_token_promotions.go` (`promotionSettlement`) |
+| Settlement reconciliation | Resume usage, key spend and fee accounting once using the stored consumer cost; insufficient cash closes and refunds holds | `coordinator/api/completion_accounting.go` (`completionAccounting`); `coordinator/api/model_token_settlement.go` (`abandonModelTokenSettlement`) |
+| Reservation recovery | Renew every 30 seconds; reclaim after ten minutes without renewal | `coordinator/api/model_token_maintenance.go` (`runModelTokenMaintenance`, `modelTokenLeaseTimeout`) |
+
+Configure using the [model token promotion runbook](../operations/model-token-promotions.md).

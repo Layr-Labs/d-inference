@@ -1,4 +1,5 @@
 use crate::normalize::NormalizeError;
+use crate::render_values::sanitize;
 use serde_json::{Map, Value};
 
 pub(super) fn normalize(mut messages: Vec<Value>) -> Result<Vec<Value>, NormalizeError> {
@@ -41,22 +42,6 @@ pub(super) fn normalize(mut messages: Vec<Value>) -> Result<Vec<Value>, Normaliz
         }
     }
     Ok(messages)
-}
-
-fn sanitize(value: Value) -> Option<Value> {
-    match value {
-        Value::Null => None,
-        Value::Array(values) => Some(Value::Array(
-            values.into_iter().filter_map(sanitize).collect(),
-        )),
-        Value::Object(values) => Some(Value::Object(
-            values
-                .into_iter()
-                .filter_map(|(key, value)| sanitize(value).map(|value| (key, value)))
-                .collect(),
-        )),
-        value => Some(value),
-    }
 }
 
 #[cfg(test)]

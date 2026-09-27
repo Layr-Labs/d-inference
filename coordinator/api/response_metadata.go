@@ -19,6 +19,7 @@ const (
 // committedProviderInfo is the consumer-safe provider snapshot taken at
 // dispatch commit — the same values written to X-Provider-* headers.
 type committedProviderInfo struct {
+	Verification  *registry.Verification
 	ProviderID    string
 	Attested      bool
 	TrustLevel    registry.TrustLevel
@@ -135,6 +136,11 @@ func collectCommittedProviderInfo(provider *registry.Provider) committedProvider
 }
 
 func writeCommittedProviderHeaders(w http.ResponseWriter, info committedProviderInfo) {
+	if info.Verification != nil {
+		raw, _ := json.Marshal(info.Verification)
+		w.Header().Set("X-Provider-Verification", string(raw))
+		w.Header().Set("X-Provider-Authorization-Method", info.Verification.Method())
+	}
 	if info.Encrypted {
 		w.Header().Set("X-Provider-Encrypted", "true")
 	}
@@ -198,6 +204,7 @@ func requestTimingDetails(timing *registry.RequestTiming) *types.RequestTimingDe
 
 func buildChatCompletionMetadata(info committedProviderInfo, jobID string, timing *types.RequestTimingDetails) *types.ChatCompletionMetadata {
 	return &types.ChatCompletionMetadata{
+		Verification:           info.Verification,
 		ProviderID:             info.ProviderID,
 		ProviderAttested:       info.Attested,
 		ProviderTrustLevel:     string(info.TrustLevel),

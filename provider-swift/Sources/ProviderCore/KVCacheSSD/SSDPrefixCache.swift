@@ -1,8 +1,8 @@
 // Copyright © 2026 Eigen Labs.
 //
 // SSDPrefixCache — the encrypted SSD KV-offload prefix cache (v0.7.5).
-// Conforms to the engine's frozen `CBv2PrefixCache` protocol and is the only
-// reusable prefix-cache implementation wired into production `EngineV2`:
+// Implements attention-only reuse through `CBv2PrefixCache`. Complete model
+// checkpoints have a separate `SSDHybridCheckpointStore` implementation:
 //
 //   * DONATION (engine donation queue → write-behind): `donate` chain-hashes
 //     the finished request's tokens, dedupes against the index + in-flight
@@ -29,7 +29,7 @@
 //
 // Threat model T-041: at-rest artifacts return with this tier, but names/
 // index/metadata carry only HMAC tags under the SE-rooted per-install
-// K_lookup (leak #2 CLOSED), the 15-minute sliding TTL bounds the at-rest
+// K_lookup (leak #2 CLOSED), the 30-minute sliding TTL bounds the at-rest
 // window, and the AES-GCM per-file DEK/KEK scheme is the reviewed legacy
 // core unchanged. Salt scoping is preserved on disk (folded into both the
 // chain hash and the HMAC tag). SEC-035 (in-process TTFT oracle) stays the
@@ -250,8 +250,11 @@ public final class SSDPrefixCache:
     private var closed = false
     private var scanReady = false
     private var scanFailed = false
-    private var cacheStatusFailure: PrefixCacheStatusReason?
-    private var destructiveChangeInProgress = false
+    /// Serializes per-file removals (budget eviction, TTL sweep, corrupt
+    /// drops, external reconciliation) with each other. Bodies do unlink +
+    /// index work only and never take `lock` for more than a state read, so
+    /// it nests safely inside `SSDDiskBudget`'s lock.
+    private let removalLock = NSLock()
     /// tag16 of the run's TERMINAL block → staged entry.
     private var stagedEntries: [Data: StagedEntry] = [:]
     /// requestID → terminal tag16 (the bridge-backstop handle).
@@ -374,7 +377,6 @@ public final class SSDPrefixCache:
     private func prefixCacheV2CapabilityLocked() -> PrefixCacheV2Capability? {
         guard !closed,
             scanReady,
-            !destructiveChangeInProgress,
             let epoch = config.epochStore?.current,
             config.blockSize > 0,
             config.blockSize <= Int(UInt32.max)
@@ -398,9 +400,7 @@ public final class SSDPrefixCache:
             status = (.error, .cacheInitFailed)
         } else if scanFailed {
             status = (.error, .scanFailed)
-        } else if let cacheStatusFailure {
-            status = (.error, cacheStatusFailure)
-        } else if !scanReady || destructiveChangeInProgress {
+        } else if !scanReady {
             status = (.pending, .scanPending)
         } else if config.epochStore != nil && config.epochStore?.current == nil {
             status = (.error, .cacheInitFailed)
@@ -417,7 +417,7 @@ public final class SSDPrefixCache:
 
     func takeNextPrefixCacheV2Sequence(expectedEpoch: String) -> UInt64? {
         lock.withLock {
-            guard !closed, !destructiveChangeInProgress else { return nil }
+            guard !closed else { return nil }
             return config.epochStore?.takeNextSequence(expectedEpoch: expectedEpoch)
         }
     }
@@ -431,7 +431,6 @@ public final class SSDPrefixCache:
             closed = true
             scanReady = false
             scanFailed = false
-            cacheStatusFailure = nil
             // Release the PER-ENTRY reservations (each resident entry holds
             // exactly one, keyed by its creator). Attaching requests already
             // released their redundant provisional reservation at attach
@@ -517,12 +516,12 @@ public final class SSDPrefixCache:
         // submit thread — never any disk I/O here. All I/O happened in the
         // pre-submit `stage`.
         let maxStagedBlocks = lock.withLock { () -> Int in
-            guard !closed, !destructiveChangeInProgress, !stagedEntries.isEmpty else { return 0 }
+            guard !closed, !stagedEntries.isEmpty else { return 0 }
             let epoch = config.epochStore?.current
             guard config.epochStore == nil || epoch != nil else { return 0 }
-            return stagedEntries.values
+            return stagedEntries.values.lazy
                 .filter { $0.cacheEpoch == epoch }
-                .map { $0.matched / config.blockSize }
+                .map { $0.matched / self.config.blockSize }
                 .max() ?? 0
         }
         guard maxStagedBlocks > 0 else {
@@ -542,7 +541,6 @@ public final class SSDPrefixCache:
             let hit: (Int, [(keys: MLXArray, values: MLXArray, offset: Int)?])? = lock.withLock {
                 let epoch = config.epochStore?.current
                 guard !closed,
-                    !destructiveChangeInProgress,
                     config.epochStore == nil || epoch != nil
                 else { return nil }
                 guard let staged = stagedEntries[tag16],
@@ -1185,7 +1183,7 @@ public final class SSDPrefixCache:
         // Sliding-TTL bump for the sidecars this donation re-covered, exactly
         // as the block path bumps its reused tags. Without it a conversation
         // can keep its block run warm forever while the sidecars underneath it
-        // expire at 15 minutes — silently re-arming the full replay and paying
+        // expire at the TTL — silently re-arming the full replay and paying
         // their (much larger) write wear again on the next donation.
         if !reused.isEmpty {
             index.touch(tags16: reused, now: now)
@@ -1256,7 +1254,7 @@ public final class SSDPrefixCache:
     /// benefit and staging caps as stage(). No file reads, reservations, LRU
     /// touches or hit accounting occur here. Staging revalidates this hint.
     func estimatedPrefillTokensSaved(promptTokens: [Int], cacheScope: String) -> Int {
-        guard index.count > 0, lock.withLock({ !closed && !destructiveChangeInProgress }),
+        guard index.count > 0, lock.withLock({ !closed }),
             config.epochStore == nil || config.epochStore?.current != nil
         else { return 0 }
         let hasher = hasher(cacheSalt: cacheScope)
@@ -1335,7 +1333,6 @@ public final class SSDPrefixCache:
         let reservationKey = reservationKey(forRequestID: requestID)
         let attachedDeviceBytes = lock.withLock { () -> Int? in
             guard !closed,
-                !destructiveChangeInProgress,
                 cacheEpochMatches(stageEpoch)
             else { return nil }
             guard let existing = stagedEntries[terminalTag],
@@ -1364,6 +1361,7 @@ public final class SSDPrefixCache:
 
         var builder: SSDNativePrefixBuilder?
         var shortenedByCorruption = false
+        var shortenedByAbsence = false
         for i in 0..<k {
             let url = SSDBlockStore.fileURL(
                 root: config.root, tag16Hex: SSDLookupKeys.hex(tags16[i]))
@@ -1408,8 +1406,16 @@ public final class SSDPrefixCache:
                 await releaseReservation(reservationKey)
                 return finish(.skippedCapacity)
             } catch {
+                if SSDBlockStore.isAbsentBlockFailure(error, at: url, under: config.root) {
+                    // Evicted or expired between the index probe and the
+                    // read: nothing on disk was unreadable. Forget the entry
+                    // and keep whatever leading run was already read.
+                    forgetMissing(tags16[i])
+                    shortenedByAbsence = true
+                    break
+                }
                 statsBox.add(corruptDropped: 1)
-                _ = performDestructiveChange {
+                _ = performIndexedRemoval {
                     _ = SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
                     index.remove(tag16: tags16[i])
                 }
@@ -1428,7 +1434,8 @@ public final class SSDPrefixCache:
         guard usableBlocks > 0, effective >= config.minEffectiveTokens else {
             builder?.close()
             await releaseReservation(reservationKey)
-            return finish(shortenedByCorruption ? .missCorrupt : .skippedCost)
+            if shortenedByCorruption { return finish(.missCorrupt) }
+            return finish(shortenedByAbsence ? .missAbsent : .skippedCost)
         }
         // A shorter prefix cannot keep views of the original allocation while
         // charging only its logical size. Reserve the rare compact-copy peak
@@ -1499,7 +1506,6 @@ public final class SSDPrefixCache:
         }
         let resolution: StageResolution = lock.withLock {
             guard !closed,
-                !destructiveChangeInProgress,
                 cacheEpochMatches(stageEpoch)
             else { return .failed }
             if let existing = stagedEntries[terminalTag],
@@ -1648,8 +1654,13 @@ public final class SSDPrefixCache:
             } catch is SSDNativePrefixBuilder.Failure {
                 return nil
             } catch {
+                if SSDBlockStore.isAbsentBlockFailure(error, at: url, under: config.root) {
+                    // An evicted sidecar is a replay fallback, not corruption.
+                    forgetMissing(tag16)
+                    return nil
+                }
                 statsBox.add(corruptDropped: 1)
-                _ = performDestructiveChange {
+                _ = performIndexedRemoval {
                     _ = SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
                     index.remove(tag16: tag16)
                 }
@@ -1733,6 +1744,11 @@ public final class SSDPrefixCache:
 
     var evictionRoot: URL { config.root }
 
+    var ownsEvictionRoot: Bool {
+        lock.withLock { !closed }
+            && (config.epochStore == nil || config.epochStore?.current != nil)
+    }
+
     var diskBytesOnDisk: Int { index.totalBytes }
 
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
@@ -1745,7 +1761,7 @@ public final class SSDPrefixCache:
         // skipped so a newer victim can still satisfy the box-wide budget.
         let victims = index.oldestEntries()
         guard !victims.isEmpty else { return 0 }
-        return performDestructiveChange {
+        return performIndexedRemoval {
             for victim in victims {
                 let url = SSDBlockStore.fileURL(
                     root: config.root, tag16Hex: SSDLookupKeys.hex(victim.tag16))
@@ -1776,15 +1792,30 @@ public final class SSDPrefixCache:
         guard hasSafeRoot else { return }
         let removed = externallyRemovedTags()
         guard !removed.isEmpty else { return }
-        _ = performDestructiveChange {
+        performIndexReconciliation {
             for tag16 in removed {
                 index.remove(tag16: tag16)
             }
         }
     }
 
+    /// Forget one entry whose file a reader found already gone. Index-only,
+    /// and rechecked under the removal lock so a block rewritten at the same
+    /// tag since the failed read keeps its entry.
+    private func forgetMissing(_ tag16: Data) {
+        performIndexReconciliation {
+            let url = SSDBlockStore.fileURL(
+                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+            guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular
+            else { return }
+            index.remove(tag16: tag16)
+        }
+    }
+
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool {
-        let completed: Void? = performDestructiveChange {
+        // Whole-root callers do not know this store's index. Reconcile before
+        // the removal barrier lifts so the index never outlives the files.
+        let completed: Void? = performIndexedRemoval {
             body()
             for tag16 in externallyRemovedTags() {
                 index.remove(tag16: tag16)
@@ -1809,7 +1840,7 @@ public final class SSDPrefixCache:
         guard hasSafeRoot else { return }
         let expired = index.expired(now: config.nowSeconds(), ttlSeconds: config.ttlSeconds)
         guard !expired.isEmpty else { return }
-        _ = performDestructiveChange {
+        _ = performIndexedRemoval {
             var removed = 0
             for tag16 in expired {
                 let url = SSDBlockStore.fileURL(
@@ -1971,35 +2002,33 @@ public final class SSDPrefixCache:
         }
     }
 
-    /// Persist a fresh generation before deleting or forgetting durable
-    /// blocks, and suppress capability publication until the mutation ends.
-    private func performDestructiveChange<T>(_ body: () -> T) -> T? {
-        guard beginDestructiveChange() else { return nil }
-        defer { endDestructiveChange() }
-        guard let epochStore = config.epochStore else { return body() }
-        guard let result = epochStore.performOwnedDestructiveChange(body) else {
-            lock.withLock {
-                scanReady = false
-                cacheStatusFailure = .cacheInitFailed
-            }
-            return nil
-        }
-        return result
-    }
-
-    private func beginDestructiveChange() -> Bool {
-        lock.withLock {
-            guard !closed, !destructiveChangeInProgress else { return false }
-            destructiveChangeInProgress = true
-            return true
+    /// Per-file removal: unlink plus index/accounting update, serialized
+    /// with other removals. The cache epoch is untouched and the capability
+    /// stays advertised: every other block remains reusable, and the
+    /// coordinator forgets a removed one through an ordinary lookup miss
+    /// (`miss_invalidation`), which costs one cold serve and never a fence.
+    ///
+    /// Refused once closed, or once a different-binding successor has taken
+    /// the root (its rebuild publishes a new epoch, so `current` is nil
+    /// here). A same-binding successor republishes the same epoch, so an
+    /// instance it supersedes is stopped only by `close()`. The check is
+    /// also not atomic with a successor's rebuild, which runs under the epoch
+    /// store's record lock rather than this one: a body that already passed
+    /// can unlink during that wipe, which the wipe tolerates
+    /// (`SSDCacheEpochStore.removeStaleBlock`).
+    private func performIndexedRemoval<T>(_ body: () -> T) -> T? {
+        removalLock.withLock {
+            guard ownsEvictionRoot else { return nil }
+            return body()
         }
     }
 
-    private func endDestructiveChange() {
-        lock.withLock {
-            precondition(destructiveChangeInProgress)
-            destructiveChangeInProgress = false
-        }
+    /// Index-only reconciliation touches no files, so it runs even after
+    /// this cache lost its epoch: a disowned but still registered cache must
+    /// stop reporting bytes that a successor's wipe already removed, or the
+    /// box-wide budget over-evicts healthy stores until it closes.
+    private func performIndexReconciliation(_ body: () -> Void) {
+        removalLock.withLock(body)
     }
 
     private func cacheEpochMatches(_ expected: String?) -> Bool {
@@ -2007,12 +2036,6 @@ public final class SSDPrefixCache:
         guard let expected else { return false }
         return epochStore.current == expected
     }
-
-    #if DEBUG
-    func holdDestructiveEpochForTesting(_ body: () -> Void) -> Bool {
-        performDestructiveChange(body) != nil
-    }
-    #endif
 
     private func reservationKey(forRequestID id: String) -> String {
         "ssd-stage:\(cacheInstanceNamespace):\(id)"

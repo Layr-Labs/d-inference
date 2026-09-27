@@ -180,25 +180,24 @@ func storeRejectsTamperedMetadata() async throws {
         chunks: [plaintext], kek: kek
     )
 
-    // Find the metadata block and flip a byte there. We don't bother
-    // parsing the header — we know "Llama" appears in the modelArch
-    // field, so locate it directly and flip.
+    // Change a metadata value without invalidating JSON or shifting the body.
+    // Invalid UTF-8 would fail parsing before the AAD authentication check.
     var raw = try Data(contentsOf: url)
-    let pattern = Data("Llama".utf8)
-    var hit: Int?
-    for i in 0...(raw.count - pattern.count) {
-        if raw.subdata(in: i..<(i + pattern.count)) == pattern {
-            hit = i
-            break
-        }
-    }
-    let metaByteOffset = try #require(hit, "couldn't locate metadata in file")
-    raw[metaByteOffset] ^= 0xFF
+    let field = try #require(raw.range(of: Data(#""modelArch":"Llama""#.utf8)))
+    raw.replaceSubrange(field, with: Data(#""modelArch":"Mlama""#.utf8))
     try raw.write(to: url)
+    #expect(try EncryptedKVStore.readMetadataOnly(from: url).modelArch == "Mlama")
 
     // DEK unwrap binds metadata as AAD, so tamper must fail there
     // (KVCacheKEKError) — not at chunk decrypt.
-    await #expect(throws: (any Error).self) {
+    await #expect(throws: KVCacheKEKError.self) {
+        _ = try await EncryptedKVStore.read(from: url, kek: kek)
+    }
+
+    // Malformed metadata is still rejected by the header parser.
+    raw[field.lowerBound] = 0xFF
+    try raw.write(to: url)
+    await #expect(throws: EncryptedKVStoreError.self) {
         _ = try await EncryptedKVStore.read(from: url, kek: kek)
     }
 }

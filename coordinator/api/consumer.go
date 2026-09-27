@@ -126,10 +126,12 @@ const (
 )
 
 // FirstContentDeadline returns this server's request-absolute first-content
-// budget for a concrete model. The ordinary base is instance-owned so
+// policy duration for a concrete model. Account enforcement is selected by
+// requestFirstContentDeadline; this helper also supplies a hedge timing hint.
+// The ordinary base is instance-owned so
 // production-like E2E servers can use the production value without mutating
-// concurrent unit tests. Exact-model overrides and the fixed 1ms/token slope
-// are centralized in modelpolicy.
+// concurrent unit tests. Exact-model overrides and per-token slopes are
+// centralized in modelpolicy.
 func (s *Server) FirstContentDeadline(model string, estimatedPromptTokens int) time.Duration {
 	base := s.firstContentDeadlineBase
 	if base <= 0 {
@@ -210,18 +212,6 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 		return false
 	}
 	return true
-}
-
-func writeProviderInferenceRequestDeferred(
-	ctx context.Context,
-	provider *registry.Provider,
-	builder registry.TextFrameBuilder,
-	onHandoff registry.TextFrameHandoff,
-) (registry.TextFrameWriteMetadata, error) {
-	if provider == nil || provider.Conn == nil {
-		return registry.TextFrameWriteMetadata{}, errors.New("provider websocket is not connected")
-	}
-	return provider.WriteTextDeferred(ctx, builder, onHandoff)
 }
 
 // cancelDispatch abandons a dispatch attempt that may still be generating
@@ -319,6 +309,9 @@ func (s *Server) cancelDispatchForFirstContentTimeout(
 // here — that is handled once by refundReservation (full failure) or by the
 // winning attempt's settlement.
 func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
+	if pr != nil && pr.ModelTokenReservationID != "" {
+		return
+	}
 	if pr == nil {
 		return
 	}
@@ -810,7 +803,7 @@ func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMod
 }
 
 func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool, threshold time.Duration) bool {
-	return hasTTFT && bestTTFT > threshold
+	return threshold > 0 && hasTTFT && bestTTFT > threshold
 }
 
 // hardTTFTGateApplies reports whether the scheduler's token-prefill estimate is
@@ -985,10 +978,9 @@ func (s *Server) dispatchOneProvider(
 // provider dispatch: pending construction and admission stamps, the pluggable
 // reservation, the billing surcharge, E2E encryption, and the
 // deadline-bounded provider write, with releaseUnsentDispatch cleanup on every
-// failure path. onDispatched (nil-safe) fires inside the write handoff
-// callback — the same instant Timing.DispatchedAt is stamped — so
-// providerDispatches counts frames that actually reached a provider, never
-// loop attempts.
+// failure path. onDispatched (nil-safe) fires only after the writer confirms
+// final authorization and socket handoff. Rejected preparations neither retain
+// DispatchedAt nor increment providerDispatches or dispatched profile attempts.
 func (s *Server) dispatchWithReserver(
 	r *http.Request,
 	model string,
@@ -1080,12 +1072,14 @@ func (s *Server) dispatchWithReserver(
 		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
 		Timing:                 timing,
 	}
-	if !receivedAt.IsZero() {
+	stampModelTokenReservation(pr, modelTokenReservation(r))
+	if !receivedAt.IsZero() && requestDeadline > 0 {
 		pr.FirstContentDeadline = receivedAt.Add(requestDeadline)
 	}
 
-	// Public inference routes (not self-route / prefer-owner) enforce the
-	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
+	// Selected accounts on public routes (not self-route / prefer-owner)
+	// enforce the OpenRouter TTFT ceiling inside the scheduler. Exempt accounts
+	// have a zero requestDeadline and therefore no predictive ceiling. This makes the preflight
 	// check authoritative: the router cannot select a provider whose estimated
 	// TTFT is above the threshold.
 	// Routing v2 (P1 fix): only enforce the TTFT ceiling inside the scheduler when
@@ -1145,8 +1139,19 @@ func (s *Server) dispatchWithReserver(
 	// and either scans as soon as a slot frees or sheds capacity-shaped
 	// (errRoutingScanSaturated → one retryable 429) once the budget is gone.
 	if fullScan {
+		// Exempt requests still shed routing overload using the same short
+		// admission slice; this is a scan wait, not a first-content timeout.
+		scanBudget := preflightScanWait(0)
+		if requestDeadline > 0 {
+			scanBudget = firstTokenRemainingSince(receivedAt, requestDeadline)
+		}
+		if backupOf != "" {
+			// Backup selection runs on the primary's stream reader. Never park
+			// it behind fleet scans while healthy primary chunks accumulate.
+			scanBudget = 0
+		}
 		switch s.acquireRoutingScanSlot(
-			firstTokenRemainingSince(receivedAt, requestDeadline),
+			scanBudget,
 			r.Context().Done(),
 		) {
 		case scanSlotClientGone:
@@ -1243,6 +1248,9 @@ func (s *Server) dispatchWithReserver(
 	// reserveAdditionalForProvider may have added. The caller's
 	// refundReservation only covers the base reservation.
 	refundExtra := func() {
+		if pr.ModelTokenReservationID != "" {
+			return
+		}
 		extra := pr.ReservedMicroUSD - reservedMicroUSD
 		if extra > 0 {
 			start := time.Now()
@@ -1320,12 +1328,10 @@ func (s *Server) dispatchWithReserver(
 	_, writeErr := writeProviderInferenceRequestDeferred(
 		writeCtx,
 		provider,
+		pr,
 		providerInferenceFrameBuilder(
 			requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, pr),
 		func(metadata registry.TextFrameWriteMetadata) {
-			if pr.Timing != nil {
-				pr.Timing.DispatchedAt = metadata.DequeuedAt
-			}
 			if onDispatched != nil {
 				onDispatched()
 			}
@@ -1349,6 +1355,9 @@ func (s *Server) dispatchWithReserver(
 			ap.Mark(registry.StampCancelSent)
 			s.sendProviderCancel(provider, requestID)
 			return nil, nil, decision, plan, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
+		}
+		if errors.Is(writeErr, registry.ErrProviderDraining) {
+			return nil, nil, decision, plan, protocol.ProviderDrainingForUpdate, http.StatusServiceUnavailable
 		}
 		return nil, nil, decision, plan, "failed to send request to provider", http.StatusBadGateway
 	}
@@ -1558,6 +1567,13 @@ func (s *Server) reservationCost(model string, promptTokens, maxTokens int) int6
 }
 
 func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference string) bool {
+	if pr != nil && pr.ModelTokenReservationID != "" {
+		finalized, err := pr.FinalizeReservation(func() error { _, e := s.releaseModelTokenReservation(pr.ModelTokenReservationID); return e })
+		if err != nil {
+			s.logger.Error("promotion refund failed", "reservation_id", pr.ModelTokenReservationID, "error", err)
+		}
+		return finalized && err == nil
+	}
 	if pr == nil || pr.ReservedMicroUSD <= 0 {
 		return false
 	}
@@ -1723,6 +1739,9 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 	if pr == nil {
 		return 0, fmt.Errorf("pending request is required")
 	}
+	if pr.ModelTokenReservationID != "" {
+		return s.topUpModelTokenPromotion(pr, provider)
+	}
 	// Service/wholesale consumers are billed at the platform price at
 	// settlement, so don't top the reservation up to a provider's higher custom
 	// price — the base platform reservation already covers the actual charge.
@@ -1795,6 +1814,7 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool, bound int)
 // provider-facing chat shape while their original parsed form remains the
 // source for accounting and consumer-facing response conversion.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	r = withModelTokenRequest(r)
 	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
 	rp := s.newRequestProfile(r, "", "", false)
 
@@ -1877,8 +1897,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var validatedPolicy validatedToolConstraintPolicy
 	var validationErr error
 	if isResponsesAPI {
-		loweredConstraintBody, err := promptcontract.LowerProviderBody(
-			promptcontract.EndpointResponses, originalRawBody)
+		loweredConstraintBody, err := promptcontract.LowerResponsesInferenceBody(originalRawBody)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errorResponse(
 				"invalid_request_error", err.Error()))
@@ -1909,19 +1928,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	parallelToolCalls := validatedPolicy.parallel
 	s.recordToolConstraintMetric(validatedMode, "requested")
 	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
-	if requiresToolConstraint && requiresVision {
-		writeJSON(w, http.StatusBadRequest, errorResponse(
-			"invalid_request_error",
-			"inference-enforced tool_choice is not supported for multimodal requests",
-			withParam("tool_choice")))
-		return
-	}
+	requiresNativeMediaTools := requiresVision && (requiresToolConstraint || requestHasMediaToolResults(parsed))
 	aliasTraits := registry.RequestTraits{
-		HasTools:               hasTools,
-		RequiresToolConstraint: requiresToolConstraint,
-		ToolChoiceMode:         string(validatedMode),
-		ToolChoiceName:         toolChoiceName,
-		ParallelToolCalls:      parallelToolCalls,
+		HasTools:                 hasTools,
+		RequiresToolConstraint:   requiresToolConstraint,
+		RequiresNativeMediaTools: requiresNativeMediaTools,
+		ToolChoiceMode:           string(validatedMode),
+		ToolChoiceName:           toolChoiceName,
+		ParallelToolCalls:        parallelToolCalls,
 	}
 
 	// Resolve a public alias (e.g. "gemma-4-26b") to a concrete build id, now
@@ -1957,12 +1971,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		body.markDirty()
 	}
 
-	// Shared media/tools fail-fast. Chat completions additionally rejects media
-	// sent via the Responses API surface (input-without-messages), because the
-	// Responses→chat lowering doesn't carry image/video parts through.
+	// The serving lowerer has already validated Responses media without dropping
+	// content. Keep the ordinary vision/provider capability gates on both APIs.
+	if requiresNativeMediaTools && s.nativeMediaToolsFailFast(w, model, publicModel, policy, allowedProviderSerials) {
+		return
+	}
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
 		requiresToolConstraint, string(validatedMode),
-		input != nil && len(messages) == 0, policy, allowedProviderSerials) {
+		policy, allowedProviderSerials) {
 		return
 	}
 	// Remote media URL gate (phase 1, pre-billing). With the media resolver
@@ -2023,7 +2039,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	estimatedPromptTokens := shape.routingPromptTokens(parsed)
 	billingPromptTokens := shape.billingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
-	deadline := s.FirstContentDeadline(model, estimatedPromptTokens)
+	deadline, deadlineErr := s.requestFirstContentDeadline(r, publicModel, model, estimatedPromptTokens)
+	if deadlineErr != nil {
+		s.writeServiceUnavailable(w, model)
+		return
+	}
 	timing.ParsedAt = time.Now()
 	rp.Mark(registry.StampReqParsed)
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
@@ -2042,7 +2062,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	providerBody := rawBody
 	if isResponsesAPI {
-		loweredProviderBody, err := promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rawBody)
+		loweredProviderBody, err := promptcontract.LowerResponsesInferenceBody(rawBody)
 		if err != nil {
 			s.recordRejection(rejectionInfo{
 				r:                     r,
@@ -2087,6 +2107,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			traits = registry.RequestTraits{HasTools: hasTools}
 		}
 		traits.RequiresToolConstraint = requiresToolConstraint
+		traits.RequiresNativeMediaTools = requiresNativeMediaTools
 		traits.ToolChoiceMode = string(validatedMode)
 		traits.ToolChoiceName = toolChoiceName
 		traits.ParallelToolCalls = parallelToolCalls
@@ -2125,6 +2146,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Refund reservation on early errors (before inference starts).
 	refundReservation := func() {
+		if s.releaseModelTokenRequest(r) {
+			return
+		}
 		if reservedMicroUSD > 0 {
 			s.releaseInitialReservation(consumerKeyFromContext(r.Context()), model, reservedMicroUSD, serviceReservation)
 		}
@@ -2166,17 +2190,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// derived from the pre-inline body is refreshed via refreshForwardBody.
 	var mediaInlined bool
 	rawBody, mediaInlined, ok = s.resolveRemoteMedia(w, r, rawBody, parsed, timing, mediaResolveMeta{
-		model:                 model,
-		publicModel:           publicModel,
-		stream:                stream,
-		estimatedPromptTokens: estimatedPromptTokens,
-		firstContentDeadline:  deadline,
-		requestedMaxTokens:    requestedMaxTokens,
-		hasTools:              hasTools,
-		requiresVision:        requiresVision,
-		selfRoute:             policy.enabled,
-		ownerAccountID:        policy.ownerAccountID,
-		traits:                routingTraits,
+		model:                   model,
+		publicModel:             publicModel,
+		stream:                  stream,
+		estimatedPromptTokens:   estimatedPromptTokens,
+		firstContentDeadline:    deadline,
+		firstContentDeadlineSet: true,
+		requestedMaxTokens:      requestedMaxTokens,
+		hasTools:                hasTools,
+		requiresVision:          requiresVision,
+		selfRoute:               policy.enabled,
+		ownerAccountID:          policy.ownerAccountID,
+		traits:                  routingTraits,
 	})
 	if !ok {
 		refundReservation()
@@ -2205,7 +2230,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return true
 		}
 		var err error
-		providerBody, err = promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rawBody)
+		providerBody, err = promptcontract.LowerResponsesInferenceBody(rawBody)
 		if err != nil {
 			refundReservation()
 			s.recordRejection(rejectionInfo{
@@ -2406,7 +2431,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		timing:                 timing,
 		profile:                rp,
 		deadline:               deadline,
-		speculativeAt:          time.Duration(float64(deadline) * speculativeTimerRatio),
+		speculativeAt:          s.firstContentHedgeDelay(model, estimatedPromptTokens, deadline),
 		modelMaxContext:        modelMaxContext,
 		refundReservation:      refundReservation,
 		// Track providers that failed during retry so we don't dispatch to them again.
@@ -2465,6 +2490,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // to the hardcoded LatestProviderVersion.
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	if cached, ok := s.readCache.Get(apiVersionCacheKey); ok {
+		var version types.VersionResponse
+		if json.Unmarshal(cached, &version) != nil || !s.appAttestVersionDownloadReady(version) {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("release_not_ready", "release authorization is not ready"))
+			return
+		}
 		writeCachedJSON(w, cached)
 		return
 	}
@@ -2472,6 +2502,10 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	var resp types.VersionResponse
 	// Try release table first.
 	if release := s.store.GetLatestRelease(defaultReleasePlatform); release != nil {
+		if !s.appAttestDownloadReady(release) {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("release_not_ready", "release authorization is not ready"))
+			return
+		}
 		resp = types.VersionResponse{
 			Version:      release.Version,
 			Platform:     release.Platform,
@@ -2483,6 +2517,10 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 			Changelog:    release.Changelog,
 		}
 	} else {
+		if s.requiresAppAttestPublication() {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("release_not_ready", "no authorized provider release available"))
+			return
+		}
 		// Fallback to hardcoded version + coordinator download.
 		scheme := "https"
 		if r.TLS == nil && !strings.Contains(r.Host, "darkbloom.dev") {
@@ -2644,6 +2682,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 // final provider body to OpenAI chat format, and reuses the same E2E encryption
 // and provider routing as chat completions.
 func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
+	r = withModelTokenRequest(r)
 	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
 	rp := s.newRequestProfile(r, "", "", false)
 
@@ -2708,12 +2747,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
 	requiresVision := detectMediaRequirement(parsed)
 	hasTools := requestHasTools(parsed)
+	requiresNativeMediaTools := requiresVision && (requiresToolConstraint || requestHasMediaToolResults(parsed))
 	aliasTraits := registry.RequestTraits{
-		HasTools:               hasTools,
-		RequiresToolConstraint: requiresToolConstraint,
-		ToolChoiceMode:         string(validatedMode),
-		ToolChoiceName:         toolChoiceName,
-		ParallelToolCalls:      parallelToolCalls,
+		HasTools:                 hasTools,
+		RequiresToolConstraint:   requiresToolConstraint,
+		RequiresNativeMediaTools: requiresNativeMediaTools,
+		ToolChoiceMode:           string(validatedMode),
+		ToolChoiceName:           toolChoiceName,
+		ParallelToolCalls:        parallelToolCalls,
 	}
 
 	// Resolve a public alias to a concrete build id, constraint-aware (after
@@ -2755,12 +2796,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
 	}
-	// Shared media/tools fail-fast (see visionToolsFailFast). Completions and
-	// Anthropic bodies share the top-level "tools" field; neither has the
-	// Responses-API media surface, so rejectResponsesMedia is false here.
+	// Shared media/tools fail-fast (see visionToolsFailFast).
+	if requiresNativeMediaTools && s.nativeMediaToolsFailFast(w, model, publicModel, policy, allowedProviderSerials) {
+		return
+	}
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
 		requiresToolConstraint, string(validatedMode),
-		false, policy, allowedProviderSerials) {
+		policy, allowedProviderSerials) {
 		return
 	}
 	if s.rejectRemoteMediaURLs(w, r, parsed, model, publicModel, requiresVision, hasTools) {
@@ -2787,7 +2829,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
-	genericDeadline := s.FirstContentDeadline(model, estimatedPromptTokens)
+	genericDeadline, deadlineErr := s.requestFirstContentDeadline(r, publicModel, model, estimatedPromptTokens)
+	if deadlineErr != nil {
+		s.writeServiceUnavailable(w, model)
+		return
+	}
 	timing.ParsedAt = time.Now()
 	rp.Mark(registry.StampReqParsed)
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
@@ -2823,6 +2869,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	refundReservation := func() {
+		if s.releaseModelTokenRequest(r) {
+			return
+		}
 		if reservedMicroUSD > 0 {
 			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
 		}
@@ -2855,6 +2904,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		traits, _ := routingTraitsForProviderBody(
 			hasTools, candidateBody, requiresVision)
 		traits.RequiresToolConstraint = requiresToolConstraint
+		traits.RequiresNativeMediaTools = requiresNativeMediaTools
 		traits.ToolChoiceMode = string(validatedMode)
 		traits.ToolChoiceName = toolChoiceName
 		traits.ParallelToolCalls = parallelToolCalls
@@ -2890,6 +2940,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		routingTraits, _ = routingTraitsForProviderBody(
 			hasTools, inferenceBody, requiresVision)
 		routingTraits.RequiresToolConstraint = requiresToolConstraint
+		routingTraits.RequiresNativeMediaTools = requiresNativeMediaTools
 		routingTraits.ToolChoiceMode = string(validatedMode)
 		routingTraits.ToolChoiceName = toolChoiceName
 		routingTraits.ParallelToolCalls = parallelToolCalls
@@ -2994,7 +3045,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		timing:                 timing,
 		profile:                rp,
 		deadline:               genericDeadline,
-		speculativeAt:          time.Duration(float64(genericDeadline) * speculativeTimerRatio),
+		speculativeAt:          s.firstContentHedgeDelay(model, estimatedPromptTokens, genericDeadline),
 		modelMaxContext:        modelMaxContext,
 		refundReservation:      refundReservation,
 		excludeProviders:       make(map[string]struct{}),

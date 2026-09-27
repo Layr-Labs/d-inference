@@ -6,7 +6,14 @@ export interface ModelStats {
   providers: number;
 }
 
+export interface VerificationCounts {
+  connections: number; authorized: number; app_attest: number; legacy: number; overlap: number;
+  known_unique_machines: number; connections_without_machine_identity: number;
+  reported_macos_27_or_later: number; connections_with_reported_os: number;
+}
+
 export interface ProviderLocationBucket {
+  verification_counts?: Pick<VerificationCounts, "connections" | "authorized" | "app_attest" | "legacy" | "overlap">;
   key: string;
   scope: "city" | "region" | "country" | string;
   city?: string;
@@ -72,6 +79,7 @@ export interface NetworkUtilization {
 }
 
 export interface PlatformStats {
+  verification_counts?: VerificationCounts;
   total_requests: number;
   total_prompt_tokens: number;
   total_completion_tokens: number;

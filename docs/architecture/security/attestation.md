@@ -1,22 +1,81 @@
 # Provider attestation
 
-> Last updated: 2026-09-08 · commit `eba352122`
+> Last updated: 2026-09-27 · commit `93d556533`
 
-How the coordinator decides how far to trust a provider connection: three
-trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
-the level (`mda_verified`, `code_attested`), the five-minute challenge that
-keeps the verdict fresh, and the single routing gate that consumes all of it.
+The evidence checks behind legacy MDM/APNs verification and qualified App
+Attest authorization. The [provider trust overview](provider-trust.md) owns the
+shared decision model and threat boundaries; this page details the checks,
+legacy levels and flags, refresh behavior, and routing gates.
+
+The legacy levels and flags below retain their meaning. With the explicit serving opt-in, [qualified App Attest authorization](../../reference/provider-authorization.md) is an independent path alongside complete legacy verification. `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) binds permission to the account, verified machine, credential, live connection, endpoint and policy generation. `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) checks every final inference handoff after queueing. Expired, revoked or replaced authorizations cannot permit new dispatch; no legacy flags are fabricated. Shadow mode alone still changes no trust.
+
+The [durable build qualification policy](../../reference/provider-authorization.md#durable-build-qualification) adds a separate qualification generation to App Attest leases. `coordinator/appattest/service/authorizer.go` (`apply`) recomputes the build/code match using the current approved record and retained Apple-signed type-2 measurement; cached true booleans cannot survive withdrawal. Apple's 20-byte CandidateCDHash form must uniquely bind to the exact durable qualified artifact's full 32-byte hash and cannot use environment bootstrap. `coordinator/registry/app_attest_authorization.go` (`providerHasAppAttestAuthorizationLocked`) rejects stale generations at every shared dispatch gate. Qualification expiry is independent of assertion and receipt expiry.
+
+Initial App Attest enrollment is a one-time Apple operation. `provider-swift/Sources/ProviderAppAttest/AppAttestShadowClient.swift` persists an attempt marker before the call and uses `EnrollmentKeyLifecycle.swift` to retire uncertain or failed enrollment keys under the existing generation budgets. Service-unavailable retries retain the original key/hash and enrollment transaction across reconnects and upgrades; cached proofs survive response loss. Generic assertion errors never rotate an already accepted credential. A cached enrollment whose original server transaction has expired is rejected and retried later, allowing local cache retirement; owner, account, key and environment mismatches remain terminal. This follows [Apple’s attestation error guidance](https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity) without weakening independent authorization or revocation.
+
+`coordinator/appattest/authenticator.go` accepts the observed macOS attestation
+and assertion variant whose authenticated CDhash extension dictionary omits
+the ED bit. `Verifier.Attestation` in `coordinator/appattest/verify.go` first
+validates Apple's chain, Mac ACL and nonce; `Verifier.Assertion` first validates
+the signature over all authenticator bytes. Unflagged assertions require the
+complete Developer ID category 6 and type-2 20- or 32-byte CodeDirectory hash. Parsing
+remains bounded and exact; arbitrary trailing bytes stay invalid. Public
+network verification is labeled at its source snapshot; live owner controls
+continue to enforce expiry.
+
+The lifecycle readiness diagnostic reports an explicit `self_route` path when
+an owned connection satisfies the existing self/preferred-owner gate but lacks
+public serving authorization. `coordinator/registry/owner_authorization.go`
+(`ProviderOwnerServingAuthorized`) applies `TrustNone` with the existing runtime,
+privacy, challenge and liveness checks. This reports owner eligibility only;
+it neither changes the public trust floor nor creates App Attest/legacy evidence.
+
+MDM removal guidance is a separate local operation. `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift` (`installedTarget`) validates the exact Darkbloom profile and, when needed, uses `ProfileInventoryAuthorization.readAuthenticatedProfiles` for a fixed read-only inventory. That helper requires its own process group to own the foreground terminal before launching native `sudo` authentication, inherits only terminal input/error and captured XML output, and returns no target on denial or background execution. The CLI never removes the profile itself or grants serving permission; coordinator authorization still gates the App Attest path.
+
+## Presentation and dispatch history
+
+`coordinator/registry/verification.go` (`ProviderVerificationAndAuthorization`) evaluates the
+two authorization paths, owner compatibility lease and live account/status under
+one registry/provider lock observation; unsupported App Attest protocol versions
+never appear pending. It exports only bounded public states and timestamps.
+Legacy hardware trust is preserved as evidence, not
+rewritten by App Attest. `authorizeInferenceHandoff` captures the verdict on the
+pending request at the final writer check. The response metadata uses that
+immutable winning-attempt snapshot, not a later live grant.
+
+Live views use each path's expiry and a bounded source-snapshot age. Historical
+chat uses the recorded dispatch time; revocation fences future work without
+rewriting prior claims. Counts distinguish connection-level union/breakdowns
+from privately deduplicated machine inventory and reported OS adoption. Stats
+location buckets are derived from the same detached fleet walk as provider rows,
+so store work between aggregation stages cannot mix connection generations. See
+[the presentation contract](../../reference/api-contracts.md#verification-presentation-contract)
+for cache bounds and unknown-field behavior. No raw Apple certificate or receipt
+is added to public/owner presentation; detailed archive access remains on its
+existing authorized operations path.
 
 ## Context
 
-Providers are adversarial until proven otherwise ([`../../threat-model.yaml`](../../threat-model.yaml),
-`ADV-001`). A provider's self-report is worthless on its own — the reporter is
-the thing being judged — so every claim that matters is either signed by a key
-the provider cannot extract (the Secure Enclave P-256 key), corroborated by
-Apple's MDM subsystem (SecurityInfo), or proven by a channel only genuine code
-can use (APNs). The result feeds one routing decision: the public floor is
-`Registry.MinTrustLevel` (`EIGENINFERENCE_MIN_TRUST`, default under
-[configuration](../../reference/configuration.md#routing-admission-and-ttft); `coordinator/registry/config.go`).
+Generic client-reported Apple API failures (`apple_error`) use bounded [exchange recovery](../../reference/app-attest-shadow.md). They are unknown observations, not verified security denials. Retrying neither creates a serving grant nor extends its deadline; fresh proof still passes all qualification, receipt, revocation and binding checks. Verified cryptographic or policy violations remain terminal.
+
+Closed client diagnostics separate local availability failures and synthetic callback/proof failures from native DeviceCheck errors. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds them before archival; `coordinator/appattest/service/observation.go` (`observeWithClientDiagnostics`) emits them only as evidence about a failed exchange. They do not enter `clientDataHash`, the verifier, or `EvaluateAuthorization`, so reporting a reason cannot grant serving.
+
+A verified first App Attest assertion may have no **verified** risk receipt yet: the initial `ATTEST` receipt can require renewal, or a verified receipt can lack a risk metric. With receipt renewal configured and no first serving record, the coordinator requests a fresh assertion after one minute, five minutes, then at the normal ten-minute cadence while the independent receipt worker renews evidence. An unverified receipt or another assertion does not itself create a grant. The [serving authorization policy](../../reference/provider-authorization.md) still requires a verified current risk receipt and complete metric, fresh assertion, non-revoked credential, qualified build and bound identity before granting permission.
+
+Providers are adversarial ([`../../threat-model.yaml`](../../threat-model.yaml),
+`ADV-001`). The legacy blob authenticates provider-supplied data with its embedded
+P-256 public key; a valid self-signature alone does not prove Secure Enclave
+provenance or the truth of its posture fields. MDM independently supplies
+SecurityInfo, while APNs binds its entitled application identity to a challenge
+answered by the endpoint and signing keys. App Attest adds Apple-verified key
+and application evidence under the separate qualification policy. Its signed
+app-origin hardware and runtime reports remain distinct from independent Apple
+measurements. See [identity binding](identity-binding.md#app-attest-v3-endpoint-binding)
+and [provider trust](provider-trust.md) for those limits. Sources:
+`coordinator/attestation/attestation.go` (`VerifyJSON`),
+`coordinator/appattest/verify.go` (`Verifier.Attestation`, `Verifier.Assertion`),
+and `provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift`
+(`buildAttestation`).
 
 ## Mechanism
 
@@ -121,6 +180,19 @@ The coordinator's Secure Boot signal is MDM `SecurityInfo.SecureBootLevel`
 | Freshness for routing | `now − LastChallengeVerified ≤ challengeFreshnessMaxAge` ([routing](../routing.md#challenge-freshness)), else the scheduler skips the provider (`GateChallengeStale`) | `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`); `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
 | Stop | `ChallengeShouldStop` when hard-untrusted or gone | `coordinator/registry/provider_evidence.go` (`ChallengeShouldStop`) |
 
+`provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift`
+(`StatusCanonical.build`) encodes a typed payload with `JSONEncoder.sortedKeys`,
+including keys inside `model_hashes` and `template_hashes`. The resulting UTF-8
+key order matches `BuildStatusCanonical`; Unicode U+2028 and U+2029 are escaped
+as `\u2028` and `\u2029` to match Go's JSON encoder. Literal backslash escape
+text remains distinct. Nil optional fields, empty hash strings and empty maps
+are omitted; explicit `false` values remain signed. Matching Swift and Go
+golden vectors cover these byte rules; signature verification still rejects
+changed fields (`provider-swift/Tests/ProviderCoreTests/Security/StatusCanonicalTests.swift`,
+`statusCanonicalMatchesCoordinatorNestedMapVectors`;
+`coordinator/attestation/status_canonical_mixed_case_test.go`,
+`TestBuildStatusCanonicalNestedMapVectors`, `TestVerifyStatusSignatureBindsMixedCaseNestedMaps`).
+
 ### Runtime manifest
 
 The coordinator-owned policy on which runtime a connected provider may run,
@@ -186,11 +258,25 @@ the same MicroMDM → APNs channel as SecurityInfo).
 | Fact | Value | Code |
 |---|---|---|
 | When | After a hardware grant on this connection (`mda` scheduler task, or inline for direct callers) | `coordinator/api/provider.go` (`verifyProviderViaMDM`, `verifyAppleDeviceAttestation`); `coordinator/api/mdm_scheduler_exec.go` |
-| Fast path | A durable chain from the store is re-verified against the pinned root and re-bound to this connection's SE key; reused only when `FreshnessCode == SHA-256(SE public key string)` (Apple rate-limits fresh attestations to about one per device per 7 days) | `coordinator/api/provider.go` (`attachCachedMDAProof`, `stageDurableMDAChain`) |
+| Fast path | A durable chain from the store is re-verified against the pinned root and re-bound to this connection's SE key; reused only when `FreshnessCode == SHA-256(SE public key string)` (Apple rate-limits fresh attestations to about one per device per 7 days). App Attest identity candidates stage the chain too (see below) | `coordinator/api/provider.go` (`attachCachedMDAProof`, `stageDurableMDAChain`) |
 | Fresh request | `DeviceInformation` with `Queries = [DeviceAttestation]` and `DeviceAttestationNonce = SHA-256(SE public key string)`; await ≤ 60s | `coordinator/mdm/mdm.go` (`RequestDeviceAttestation`) |
 | Verification | Chain to the embedded Apple Enterprise Attestation Root CA (P-384); leaf OIDs `OIDSIPStatus 1.2.840.113635.100.8.13.1`, `OIDSecureBootStatus …13.2`, `OIDKextStatus …13.3`, `OIDDeviceSerialNumber …9.1`, `OIDDeviceUDID …9.2`, `OIDSoftwareUpdateDeviceID …9.4`, `OIDOSVersion …10.1`, `OIDSepOSVersion …10.2`, `OIDLLBVersion …10.3`, `OIDFreshnessCode …11.1` | `coordinator/attestation/mda.go` (`VerifyMDADeviceAttestation`) |
 | Attach | Only if `TrustLevel == hardware` **and** (`FreshnessCode` binds the SE key **or** the leaf serial equals the blob `serialNumber`); sets `MDAVerified`, `MDACertChain`, `MDAResult`, `SEKeyBound` | `coordinator/registry/provider_evidence.go` (`SetMDAProofIfHardwareBound`) |
 | Exposure | `mda_verified`, `mda_os_version`, `mda_sepos_version` on `GET /v1/providers/attestation` only while the connection holds `hardware`; the chain, serial, and UDID are never published | `coordinator/api/provider.go` (`handleProviderAttestation`) |
+
+App Attest identity candidates (`appAttestIdentityCandidate`, macOS 27 in the
+production rollout cohort) skip serial-based history restore and serial
+duplicate eviction, because their blob serial is self-reported and must not
+become an operational identity. They still stage the newest durable MDA chain
+for that serial in `verifyProviderAttestation`. This adds no trust path: the
+serial only selects a *candidate* chain, and `attachCachedMDAProof` attaches
+it only after the connection holds `hardware`, the chain re-verifies to the
+pinned Apple root, its `FreshnessCode` equals SHA-256 of **this** connection's
+SE key, and any Apple serial equals the attested one. A chain earned under
+another SE key — another machine claiming the serial, or a rotated key —
+never attaches, and `mda_verified` never changes the trust level or App Attest
+authorization. Staging it keeps a candidate whose App Attest key has died
+from also losing `mda_verified` on reconnect.
 
 ### Flag — APNs code identity
 
@@ -214,10 +300,10 @@ selected by `register.apns_environment`.
 | 2 Loop start | `codeAttestLoop` waits for this connection's first signed challenge, then decides between resume and push | `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`) |
 | 3 Resume | If a durable proof for (SE key, version, APNs token, process key `K`) is younger than `reuseWindow` = 30m, or the exact same process has coordinator-observed verified continuity within `codeAttestContinuityGap` = 120s, or a release-approved transition has a recent APNs proof, the coordinator sends `code_attestation_resume_challenge{code_challenge}` over the WebSocket — a NaCl-Box-sealed nonce to `K` — and waits `resumeTimeout` = 30s. Cached evidence only *authorises* the challenge; the flag is set by the answer | `coordinator/api/provider_codeattest.go` (`sendCodeIdentityResumeChallenge`, `tryCrossVersionReuse`); `coordinator/api/code_attest_throttle.go` (`reuseAttestation`); `coordinator/api/code_attest_coverage.go` |
 | 4 Push | Otherwise a 32-byte nonce is sealed to `K` with `e2e.Encrypt` and sent as APNs JSON `{aps: {"content-available": 1}, code_challenge: {ephemeral_public_key, ciphertext}}`; alert mode adds `aps.alert = {title: "Darkbloom", body: "attestation"}` (safe only because the provider never requests notification authorisation). Headers `apns-topic`, `apns-push-type: background|alert`, `apns-priority: 5|10`, `apns-expiration = now + challengeExpirySeconds` (300). Provider-token JWT (ES256) cached `jwtMaxAge` = 50m; HTTP timeout 15s | `coordinator/apns/attestor.go` (`BuildCodeChallengePayload`, `SendChallenge`) |
-| 5 Throttle | Per device: at most one push per `backgroundPushCooldown` = 20m (background) or `alertPushCooldown` = 75s (alert); `maxAttempts` = 3 per loop; retry delay `retrySpacing` = 15s + jitter in [0, `retryJitter` = 15s); a pushed nonce is accepted for `challengeValidity` = `CodeAttestResponseTimeout` = 300s; token-rotation budget resets at most once per `budgetClearCooldown` = 20m | `coordinator/api/code_attest_throttle.go` |
+| 5 Throttle | Per device: at most one push per `backgroundPushCooldown` = 20m (background) or `alertPushCooldown` = 75s (alert); `maxAttempts` = 3 pushes per loop on the fast cadence, then at most one push per `slowRetryInterval` = 60m; retry delay `retrySpacing` = 15s + jitter in [0, `retryJitter` = 15s); a pushed nonce is accepted for `challengeValidity` = `CodeAttestResponseTimeout` = 300s; token-rotation budget resets at most once per `budgetClearCooldown` = 20m | `coordinator/api/code_attest_throttle.go`; `coordinator/api/code_attest_push_schedule.go` (`codeAttestPushSchedule`) |
 | 6 Reply | `code_attestation_response{nonce, signature}`: the nonce must match the outstanding challenge recorded for **this** SE key + APNs token + `K` (`matchChallengeForIdentity` / `matchResumeChallenge`); `signature` = ECDSA over the nonce bytes, verified against the **registration** SE key; consumed atomically; `GrantProcessCodeAttested` refuses if the token or `K` rotated meanwhile | `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`); `coordinator/registry/provider_evidence.go` (`GrantProcessCodeAttested`) |
 | 7 Persist | An APNs-proven round-trip is upserted as `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}` so step 3 can authorise a resume on a later connection; the push budget (`CodeAttestPushBudget`) stores only the token hash | `coordinator/api/code_attest_throttle.go` (`persistCodeAttestation`); `coordinator/store/interface.go` (`CodeAttestation`, `CodeAttestPushBudget`) |
-| 8 Exhaustion | After `maxAttempts` unanswered pushes the loop stops and waits for a later reconnect; `CodeAttested` stays false. Token rotation or hard untrust clears an existing flag | `coordinator/api/provider_codeattest.go`; `coordinator/registry/attestation_policy.go` (`MarkUntrusted`) |
+| 8 Slow retry | After `maxAttempts` unanswered pushes (`code_attest` outcome `max_attempts`) the loop keeps running while the connection is alive and `CodeAttested` is false: every `slowRetryInterval` it reserves one more push through `reservePush` and the durable per-device budget (outcome `slow_retry`). It stops on disconnect, loop-generation change (token rotation, re-arm), hard untrust (`ChallengeShouldStop`) or success. Token rotation or hard untrust clears an existing flag | `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`); `coordinator/registry/attestation_policy.go` (`MarkUntrusted`) |
 | 9 Enforcement | `SetCodeAttestationConfigured(true)` when an attestor exists; `SetCodeAttestationDeadline` from `APNS_ENFORCE_AFTER`; `codeAttestationEnforcedLocked` = configured ∧ deadline non-zero ∧ now ≥ deadline. Before that the fleet is measured (`attestation.code_attested`, `attestation.code_enforced`) but routes un-attested providers | `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`); `coordinator/cmd/coordinator/main.go` (`parseAPNsEnforceAfter`) |
 
 Same-process continuity is separate from hardware continuity. The coordinator
@@ -241,6 +327,31 @@ The first deployment from a coordinator that never recorded code continuity
 has no such evidence to reuse. Do not backfill it from hardware-only liveness
 or move proof timestamps forward administratively.
 
+Push outcome diagnostics tell a rejected push from an undelivered or
+unanswered one. `SendCodeChallengeResult` returns the APNs HTTP status, the
+error body's `reason` mapped to the closed set `BadDeviceToken`,
+`Unregistered`, `TooManyRequests`, `DeviceTokenNotForTopic`,
+`ExpiredProviderToken`, `InternalServerError`, `ServiceUnavailable` or
+`other` (`ParseReason`; non-JSON bodies are `other`) and whether an `apns-id`
+came back; `SendCodeChallenge` keeps its exact error. Every push increments
+`code_attest.push{outcome}` (and `code_attest_push_total` at
+`/v1/admin/metrics`) with `sent_ok`, `throttled` (APNs 429 or local
+Retry-After backoff), `transport_error`, `not_sent` (local failure before a
+request) or `rejected_<reason>` (snake_case). An accepted push later
+increments `code_attest.push_reply{result}`: `answered` when a verified reply
+consumes its nonce, `unanswered` when a loop for the device, including the
+new loop of a reconnected provider, reserves the next push while an accepted
+push is still unconsumed, or when its originating loop terminates (disconnect,
+hard untrust, replacement or success through another path). Finalization is
+scoped to that loop generation and counted once; it does not invalidate
+outstanding nonces. The accepted mark lives with the outstanding
+challenge in coordinator memory, so a coordinator restart or a reconnect to
+another replica still loses it. A late verified reply after retry or loop finalization counts both. Outstanding APNs nonces are still verified and consumed after authorization is satisfied, but these late replies do not re-grant authorization, refresh reuse state, or drain the queue again. Metric tags carry no provider, device or token identifier; one
+structured log line per push and per reply carries `provider_id`. Outcomes are
+not persisted and never affect `CodeAttested`. See
+`coordinator/apns/push_result.go` and
+`coordinator/api/code_attest_push_outcome.go`.
+
 APNs proves which *binary* is running; it proves nothing about SIP, Secure
 Boot, or hardware genuineness (Layers 3 and MDA). It binds App ID and Team ID,
 not an exact `cdhash`. Delivery needs a logged-in Aqua session
@@ -249,40 +360,50 @@ is an availability event, not a confidentiality breach.
 
 ### Routing gate
 
-One chokepoint decides whether a provider may receive a request. Evaluated in
-this order; the first failure is the `GateReason`
-(`coordinator/registry/routing_eligibility.go`, `providerLivenessGateReasonLocked`):
+The shared liveness gate evaluates these conditions in order; the first failure
+is the `GateReason`. Model, capacity and request-trait checks follow in callers.
+Code: `coordinator/registry/routing_eligibility.go`
+(`providerLivenessGateReasonLocked`).
 
 | # | Gate | Reason |
 |---|---|---|
 | 1 | `Status != offline` | `GateOffline` |
-| 2 | `Status != untrusted` | `GateUntrusted` |
-| 3 | `!(PrivateOnly && !allowPrivate)` | `GatePrivateOnly` |
-| 4 | `trustRank(TrustLevel) ≥ trustRank(minTrust)` | `GateTrustFloor` |
-| 5 | `RuntimeVerified` ([runtime manifest](#runtime-manifest)) | `GateRuntimeUnverified` |
-| 6 | `providerSupportsPrivateTextLocked` (below) | `GatePrivateText` |
-| 7 | `LastChallengeVerified` non-zero and within [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) | `GateChallengeStale` |
+| 2 | `Status != untrusted` and no App Attest security denial | `GateUntrusted` |
+| 3 | Verified identity's durable state restoration is complete | `GateStateRestoring` |
+| 4 | `!(PrivateOnly && !allowPrivate)` | `GatePrivateOnly` |
+| 5 | Legacy trust meets `minTrust`, or a current qualified App Attest authorization exists | `GateTrustFloor` |
+| 6 | `RuntimeVerified` ([runtime manifest](#runtime-manifest)) | `GateRuntimeUnverified` |
+| 7 | Private-text authorization below | `GatePrivateText` |
+| 8 | A fresh legacy challenge, or a current qualified App Attest authorization | `GateChallengeStale` |
 
-`providerSupportsPrivateTextLocked` (`coordinator/registry/attestation_policy.go`) requires
-all of: non-empty X25519 `PublicKey`; `Backend == "mlx-swift"`
-(`privateTextBackendSupported`); `EncryptedResponseChunks`;
-`RuntimeManifestChecked`; `ChallengeVerifiedSIP` (coordinator-verified, not
-self-reported); current application evidence when a release policy is enforced
-(`releasePolicyEnforcedLocked`); `CodeAttested` when
-`codeAttestationEnforcedLocked()`; and `PrivacyCapabilities`
-`text_backend_inprocess`, `text_proxy_disabled`, `anti_debug_enabled`,
-`core_dumps_disabled`, `env_scrubbed` all true. `python_runtime_locked`,
-`dangerous_modules_blocked`, and `sip_enabled` in `PrivacyCapabilities` are
-wire-compatibility fields and are not consulted.
+`providerSupportsPrivateTextAuthorizationAtLocked` in
+`coordinator/registry/attestation_policy.go` requires a nonempty X25519
+`PublicKey`, `mlx-swift` backend, encrypted response chunks,
+`RuntimeManifestChecked`, and the privacy capabilities `text_backend_inprocess`,
+`text_proxy_disabled`, `anti_debug_enabled`, `core_dumps_disabled`, and
+`env_scrubbed`. Both authorization paths retain these common checks.
 
-| Level | Public routing — `publiclyRoutableLocked`, which is the liveness gate called with `minTrust = MinTrustLevel` ([default](../../reference/configuration.md#routing-admission-and-ttft)) and `allowPrivate = false` | Owner self-route (`minTrust = TrustNone`, `allowPrivate = true`) |
+Without a current App Attest authorization, the same predicate also requires
+`ChallengeVerifiedSIP`, current application evidence when release policy is
+enforced, and `CodeAttested` when APNs enforcement is enabled. App Attest
+satisfies those authorization branches without fabricating the legacy fields.
+The legacy challenge's signed SIP report is checked by the coordinator; the
+signature itself is not an independent posture measurement.
+
+| Authorization state | Public routing | Owner self-route |
 |---|---|---|
-| `none` | no (`GateTrustFloor`) | yes, if gates 1–2 and 5–7 pass |
-| `self_signed` | no (`GateTrustFloor`) | yes, same conditions |
-| `hardware` | yes, if every other gate passes | yes |
+| Legacy `none` or `self_signed`, no qualified App Attest grant | Fails when below configured `MinTrustLevel` | May pass with `TrustNone` and `allowPrivate`, if all other gates pass |
+| Legacy trust meets the configured floor | May pass if all other gates pass | Same common and legacy privacy requirements |
+| Current qualified App Attest grant, including legacy `self_signed` | May pass if all common and model gates pass | Same common requirements |
+| Offline, security-denied, expired evidence without another valid path, or runtime failure | No | No bypass for common security failures |
 
-Self-route relaxes only the trust floor and the private-only rule; every
-privacy gate, including code identity once enforced, still applies.
+`coordinator/registry/app_attest_authorization.go`
+(`providerTrustMeetsMinimumAtLocked`, `providerChallengeFreshAtLocked`) implements
+the two authorization alternatives. The final writer repeats the live gates and
+endpoint/account/machine binding checks after queueing, then captures the dispatch
+verification snapshot: `coordinator/registry/inference_authorization.go`
+(`authorizeInferenceHandoff`). Later revocation blocks subsequent handoffs; it
+cannot recall an already committed request or plaintext already delivered.
 
 ### Trust status messages to providers
 
@@ -301,13 +422,13 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 2. A stored `hardware` level and a stored `MDAVerified` flag are never restored on reconnect; the connection re-earns them — `coordinator/registry/persistence.go` (`RestoreProviderState`).
 3. Only a posture mismatch proven by a received SecurityInfo demotes; lookup failures, timeouts, and not-enrolled outcomes leave trust unchanged and retry — `coordinator/api/provider.go` (`verifyProviderViaMDM`).
 4. The coordinator sends only `SecurityInfo` and `DeviceInformation` MDM commands and honours only webhook responses for an outstanding `CommandUUID` — `coordinator/mdm/mdm.go` (`assertReadOnlyCommand`, `HandleWebhook`).
-5. Every challenge and code-identity signature is verified against the SE key from the registration blob, never a key carried in the reply — `coordinator/api/provider.go` (`verifyChallengeResponse`), `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`).
+5. Every legacy challenge and APNs code-identity signature is verified against the SE key from the registration blob, never a key carried in the reply — `coordinator/api/provider.go` (`verifyChallengeResponse`), `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`).
 6. `sip_enabled == false` or `secure_boot_enabled == false` in any challenge reply, a binary/model-hash drift, or an encrypted-chunk violation untrusts the provider immediately, without the three-strike count — `coordinator/api/provider.go` (`verifyChallengeResponse`, `decryptTextResponseChunk`).
 7. A code-identity proof is accepted only for the exact (SE key, APNs token, `K`) it was issued to and only within `challengeValidity`; cached proofs authorise a resume challenge, never a grant — `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`, `handleCodeAttestationResponse`), `coordinator/api/code_attest_throttle.go`.
-8. Code identity becomes mandatory only when an attestor is configured and `APNS_ENFORCE_AFTER` has passed — `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`).
-9. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order and skips any provider whose last verified challenge is older than [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/scheduler.go`.
+8. The legacy path requires APNs code identity when an attestor is configured and `APNS_ENFORCE_AFTER` has passed; a current qualified App Attest authorization satisfies the independent authorization branch — `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`).
+9. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order; challenge freshness is satisfied by a current App Attest authorization or a legacy challenge within [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/app_attest_authorization.go` (`providerChallengeFreshAtLocked`).
 10. Hard untrust writes a durable tombstone that wins any race with a pending hardware grant — `coordinator/api/trust_reuse.go` (`invalidateTrustReuse`), `coordinator/registry/provider_evidence.go` (`GrantHardwareEvidenceAtEpochIfNotUntrusted`).
-11. Effective `RuntimeCapabilities` require hardware trust and code proof; `SetAttested` below hardware and `SetCodeAttested(false)` clear them — `coordinator/registry/provider_evidence.go`.
+11. Effective `RuntimeCapabilities` require qualified App Attest authorization or complete legacy evidence, together with the runtime and capability consistency checks — `coordinator/registry/provider_capabilities.go` (`ReconcileAttestedRuntimeCapabilities`).
 12. The [runtime manifest](#runtime-manifest) accepts every active release's values (one set per template name, `mlx_metallib` included); registering a release can only widen it and deactivating one narrows it, so a registration never deroutes providers on the previous release — `coordinator/api/server.go` (`SyncRuntimeManifest`, `RuntimeManifest`).
 
 ## Failure modes
@@ -325,7 +446,7 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | MDM `securityinfo-timeout` / `error` | Stays `self_signed`; retried; a late webhook can still grant | `coordinator/api/provider.go` (`ApplyLateSecurityInfo`) |
 | MDM `posture-mismatch` | `untrusted`, terminal for the connection | `coordinator/api/provider.go` |
 | MDA chain invalid or unbound | `mda_verified` stays false; level unaffected | `coordinator/api/provider.go` (`verifyAppleDeviceAttestation`) |
-| No APNs token / no Aqua session / pushes unanswered | `CodeAttested` false; routable in grace mode, derouted from private text after `APNS_ENFORCE_AFTER` | `coordinator/api/provider_codeattest.go` |
+| No APNs token / no Aqua session / pushes unanswered | `CodeAttested` false; routable in grace mode, derouted from private text after `APNS_ENFORCE_AFTER`. Unanswered pushes are retried every `slowRetryInterval` while the connection lives, so a later answer (or a coordinator restart, whose fresh loops honour the durable per-device budget) recovers without provider action | `coordinator/api/provider_codeattest.go` |
 | APNs token rotates after a grant | `CodeAttested` cleared; new challenge cycle | `coordinator/api/provider_codeattest.go` |
 | Reconnect | Level capped to `self_signed`, `MDAVerified` reset; trust reuse may restore `hardware` on the first passing challenge within `defaultTrustReuseWindow` or a measured gap ≤ `defaultTrustReuseReconnectGap` ([Layer 3 trust reuse](#layer-3--mdm-securityinfo-the-hardware-grant)) | `coordinator/registry/persistence.go`, `coordinator/api/trust_reuse.go` |
 
@@ -342,6 +463,7 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | MDA | `coordinator/attestation/mda.go` (`VerifyMDADeviceAttestation`); `coordinator/api/provider.go` (`verifyAppleDeviceAttestation`, `attachCachedMDAProof`); `coordinator/mdm/mdm.go` (`RequestDeviceAttestation`) |
 | Code identity | `coordinator/apns/attestor.go`; `coordinator/api/provider_codeattest.go`; `coordinator/api/code_attest_throttle.go`; `coordinator/cmd/coordinator/main.go` (`parseAPNsEnforceAfter`) |
 | Routing gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`); `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`); `coordinator/registry/model_capacity.go` (`publiclyRoutableLocked`); `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`) |
+| Release evidence publication | `coordinator/api/release_policy_publish.go` (`publishReleaseTrustPolicy`, `retainedReleaseTrustPolicy`, `addRelease`): successful sync and committed-mutation recovery publish the snapshot, revalidate the generation, then challenge invalidated providers; cold-start deny-all stays separate in `coordinator/api/server.go` |
 | Runtime manifest | `coordinator/api/server.go` (`SyncRuntimeManifest`, `RuntimeManifest`, `verifyRuntimeHashesForBackend`, `verifyRuntimeHashesAgainstManifest`, `runtimeManifestApprovesMetallib`, `revalidateConnectedProvidersAgainstRuntimePolicy`, `handleRuntimeManifest`); `coordinator/api/provider.go` (`applyChallengeRuntimePolicy`); `coordinator/api/release_handlers.go` |
 | Release-policy / evidence-mode gate | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextModeLocked`, `releasePolicyEnforcedLocked`, `SetReleasePolicyGeneration`) |
 | Trust status messages to providers | `coordinator/api/provider.go` (`sendTrustStatus`); `coordinator/protocol/messages.go` (`TypeTrustStatus`) |

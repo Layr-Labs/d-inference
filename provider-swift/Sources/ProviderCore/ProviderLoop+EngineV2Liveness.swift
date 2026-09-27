@@ -188,7 +188,7 @@ extension ProviderLoop {
                 modelId: modelId,
                 isVLM: slot.isVLM,
                 modelDirectory: modelDirectory,
-                container: slot.container,
+                container: slot.modelContainer,
                 previousArtifact: slot.engineBundle.mtpArtifact,
                 previousStatus: slot.engineBundle.mtpStatus,
                 assistant: recoveryAssistant,
@@ -208,7 +208,7 @@ extension ProviderLoop {
                 modelType: slot.modelType,
                 isVLM: slot.isVLM,
                 modelDirectory: modelDirectory,
-                container: slot.container,
+                container: slot.modelContainer,
                 tokenizer: slot.tokenizer,
                 sizing: rebuiltSizing,
                 kvBytesCapacity: grant,
@@ -218,14 +218,15 @@ extension ProviderLoop {
             // The replacement bundle now owns the moved handle.
             recoveryAssistant = nil
             var newBridge = newBundle.bridge
-            // makeEngineV2BridgeForSlot re-registered `newBridge` in
+            // makeEngineV2BundleForSlot re-registered `newBridge` in
             // engineV2Runtime (replacing the old bridge's entry).
 
             MLX.Memory.clearCache()
             var postBuildServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: newBridge.kvBackendKind,
                 pagedPoolBytes: await newBridge.kvBackendPoolBytes(),
-                activationReserveBytes: resolvedActivationReserveBytes)
+                activationReserveBytes: resolvedActivationReserveBytes,
+                measuredHeadroomBytes: engineV2SlotHooks?.measuredKVHeadroomBytes)
             // Scripted hook engines are not concrete EngineV2 instances and
             // cannot expose MTP metrics; their prepared bundle status is the
             // test seam's runtime truth. Production still requires live metrics.
@@ -254,7 +255,7 @@ extension ProviderLoop {
                     modelType: slot.modelType,
                     isVLM: slot.isVLM,
                     modelDirectory: modelDirectory,
-                    container: slot.container,
+                    container: slot.modelContainer,
                     tokenizer: slot.tokenizer,
                     sizing: rebuiltSizing,
                     kvBytesCapacity: grant,
@@ -266,7 +267,8 @@ extension ProviderLoop {
                 postBuildServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: newBridge.kvBackendKind,
                     pagedPoolBytes: await newBridge.kvBackendPoolBytes(),
-                    activationReserveBytes: resolvedActivationReserveBytes)
+                    activationReserveBytes: resolvedActivationReserveBytes,
+                    measuredHeadroomBytes: engineV2SlotHooks?.measuredKVHeadroomBytes)
             }
             if !postBuildServeable {
                 await engineV2Runtime.unregister(modelId: modelId)
@@ -303,7 +305,7 @@ extension ProviderLoop {
 
             modelSlots[modelId] = ModelSlot(
                 engineBundle: newBundle,
-                container: slot.container,
+                modelContainer: slot.modelContainer,
                 tokenizer: slot.tokenizer,
                 sizing: rebuiltSizing,
                 cacheEligibleWeightHash: slot.cacheEligibleWeightHash,

@@ -90,7 +90,7 @@ scripts/              build, signing, install, and deploy helpers
 ├── publish-model.sh  model registry publish workflow
 ├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
 ├── smoke-dev.sh      dev-coordinator smoke test
-├── benchmark-models.py, load_soak.py, …  benchmark + soak helpers
+├── benchmarks/       attention, radix and cache benchmark harnesses
 └── entitlements.plist hardened runtime entitlements (network, keychain)
 
 deploy/               infra config: gcp/ (Cloud Build + VM bootstrap), environments/ (dev/prod env),

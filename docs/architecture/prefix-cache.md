@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-27 · commit `414594d09`
+> Last updated: 2026-09-27 · commit `8c44a3dee`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -239,7 +239,9 @@ The recurrent bank captures at every 256-token-aligned prompt range end,
 whatever chunk produced it: dense Qwen's solo prefill stripe is normally 4,096
 tokens, plain chunks under decode company 512. Packed prefill and preemption
 disarm capture; a ragged range end is simply not a boundary. A bank adopter
-still continues its donor's chunk geometry (`EngineV2.hybridPrefixLookup`). Completed `stop`/`length` donors publish after the
+resumes at the restored boundary under ordinary chunking, out of packed
+prefill, exactly as a complete-checkpoint adopter does
+(`EngineV2.hybridPrefixLookup`). Completed `stop`/`length` donors publish after the
 checkpoint and KV have materialized, before their terminal completion. The bank
 inherits the earliest checkpoint and the endpoint actually adopted, then rolls
 its newest checkpoint as the continuation advances. It never inherits a donor
@@ -414,8 +416,8 @@ disarm capture for the rest of the prompt (a packed disarm is counted once per
 request in the heartbeat's `recurrent_capture_disarmed_packed_total`); a
 ragged range end is not a boundary. The manifest records `chunkSize` as the
 chunk that ended at the boundary, provenance only: the adopter resumes at `p`
-under ordinary chunk sizing with `excludesPackedPrefill`, and
-`CBv2PrefixReusePlan.recurrentChunkSize` is set only by the resident bank.
+under ordinary chunk sizing with `excludesPackedPrefill`;
+`CBv2PrefixReusePlan.recurrentChunkSize` no longer has a producer.
 Measured on Qwen3.5-9B with the MTP head and the live fixture's solo stripe
 pinned at 2,048 (production dense Qwen stripes at 4,096, where the same
 donor publishes 4,096 / 8,192 with the first boundary doubling as the

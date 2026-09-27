@@ -1,6 +1,6 @@
 # Qwen chunk-partition parity and chunk-agnostic recurrent capture (2026-09-27)
 
-> Last updated: 2026-09-27 · commit `414594d09`
+> Last updated: 2026-09-27 · commit `8c44a3dee`
 
 **Question.** Does a hybrid recurrent Qwen (GatedDeltaNet + full attention)
 reach the same complete-checkpoint state at a prefill boundary whatever chunk
@@ -108,8 +108,10 @@ restore removes all of it.
 
 ## Not changed
 
-- The resident recurrent bank still forces a donor's chunk on its adopter
-  (`EngineV2.hybridPrefixLookup`); the bank is off in production.
+- The resident recurrent bank (off in production) captures under the same
+  rule and its adopters now also resume under ordinary chunking; the
+  scheduler's handling of a forced `recurrentChunkSize` has no producer left
+  and can be removed separately.
 - MoE output variance by chunk width and by decode batch composition is a
   pre-existing property of the expert-MLP kernel route, not of checkpoints. It
   belongs in the numerics contract as its own note.

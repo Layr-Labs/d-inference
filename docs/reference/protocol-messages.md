@@ -517,9 +517,9 @@ Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
 |---|---|---|---|---|
 | `nonce` | `string` | `String` | req | echoed |
 | `signature` | `string` | `String` | req | base64 SE signature over nonce + timestamp (liveness) |
-| `status_signature` | `string` | `String?` | opt | v0.3.11+; signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, `coordinator/attestation/`); absent ⇒ status fields are advisory only |
+| `status_signature` | `string` | `String?` | opt | signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, `coordinator/attestation/`). Swift always sends it; for a provider with an attested SE key an absent or empty value fails the challenge |
 | `public_key` | `string` | `String` | req | base64 |
-| `rdma_disabled`, `sip_enabled`, `secure_boot_enabled` | `*bool` | `Bool?` | opt | fresh posture at challenge time |
+| `rdma_disabled`, `sip_enabled`, `secure_boot_enabled` | `*bool` | `Bool?` | opt | fresh posture at challenge time; Swift always sends all three, and an omitted value fails the challenge |
 | `binary_hash`, `active_model_hash` | `string` | `String?` | opt | SHA-256 |
 | `template_hashes`, `model_hashes` | `map[string]string` | `[String: String]` | opt | Swift omits when empty |
 

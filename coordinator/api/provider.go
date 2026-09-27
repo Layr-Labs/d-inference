@@ -1240,10 +1240,9 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	}
 
 	// statusFieldsTrusted gates whether we treat resp.SIPEnabled,
-	// resp.BinaryHash etc. as authoritative. False means the provider
-	// signed only nonce+timestamp (legacy or downgrade), so the status
-	// fields are advisory and we must not act on them as if they were
-	// cryptographically bound.
+	// resp.BinaryHash etc. as authoritative. It is true only when the
+	// status signature verified against the attested SE key; a provider
+	// without an attested key (trust none) keeps advisory status fields.
 	statusFieldsTrusted := false
 
 	// If the provider has an attested SE public key, verify the signature.
@@ -1264,10 +1263,10 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			return
 		}
 
-		// Now verify the extended status signature if the provider sent
-		// one. Old providers (pre-v0.3.11) won't — log and continue with
-		// status fields untrusted. Mismatch is fatal: it means either
-		// tampering or the provider is signing a different canonical
+		// Now verify the extended status signature. Every Swift provider
+		// signs the canonical status in every challenge response, so a
+		// missing signature is as fatal as a mismatch: either tampering,
+		// a downgrade, or a provider signing a different canonical
 		// payload than this code expects.
 		statusInput := attestation.StatusCanonicalInput{
 			Nonce:             pc.nonce,
@@ -1289,9 +1288,11 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			statusFieldsTrusted = true
 		case attestation.ErrStatusSignatureMissing:
 			s.ddIncr("attestation.challenges", []string{"outcome:status_sig_missing"})
-			s.logger.Warn("provider sent no status_signature — status fields are advisory; upgrade provider to bind them",
+			s.logger.Error("provider sent no status_signature — failing the challenge",
 				"provider_id", providerID,
 			)
+			s.handleChallengeFailure(providerID, "status signature missing")
+			return
 		default:
 			// Instrumentation for the non-recovering status-sig lockout seen on
 			// a couple of nodes (cause unconfirmed). Because the plain challenge
@@ -1327,28 +1328,12 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Status-field enforcement policy (asymmetric, by design):
-	//
-	// The checks below act on resp.SIPEnabled / SecureBootEnabled /
-	// RDMADisabled / BinaryHash / ActiveModelHash regardless of
-	// statusFieldsTrusted. The asymmetry is intentional during the
-	// v0.3.11 rollout window:
-	//
-	//   - Negative reports (SIP=false, hash mismatch, etc.) ALWAYS mark
-	//     the provider untrusted. Acting on a negative is safe even if
-	//     the field is spoofable: the worst case is a compromised
-	//     provider DoS-ing itself, which we want anyway.
-	//
-	//   - Positive reports (SIP=true, hash matches) are accepted but
-	//     can only be fully trusted when statusFieldsTrusted is true.
-	//     A v0.3.10 provider with a compromised process (but intact SE
-	//     key) can echo a valid nonce signature while lying that
-	//     SIPEnabled=true. We accept this risk during rollout.
-	//
-	// TODO(security/v0.3.13+): Once `attestation_challenges_total{
-	// outcome="status_sig_missing"}` is zero across the fleet for a
-	// week, treat ErrStatusSignatureMissing as a hard challenge failure
-	// (target: 2 release cycles after v0.3.11 GA).
+	// Status-field enforcement policy: for a provider with an attested SE
+	// key the fields below are bound by the verified status signature.
+	// Negative reports (SIP=false, hash mismatch, etc.) mark the provider
+	// untrusted, and an omitted mandatory field fails the challenge; for a
+	// provider without an attested key the fields stay advisory and it
+	// never holds hardware trust.
 	s.logger.Debug("attestation challenge response verified",
 		"provider_id", providerID,
 		"status_fields_trusted", statusFieldsTrusted,
@@ -1372,8 +1357,13 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		return
 	}
 
-	// Verify fresh Secure Boot status.
-	if resp.SecureBootEnabled != nil && !*resp.SecureBootEnabled {
+	// Verify fresh Secure Boot status. Like SIP, it is mandatory: an omitted
+	// value is not evidence of safety, so fail closed.
+	if resp.SecureBootEnabled == nil {
+		s.handleChallengeFailure(providerID, "Secure Boot status not reported")
+		return
+	}
+	if !*resp.SecureBootEnabled {
 		s.logger.Error("provider Secure Boot disabled in challenge response — marking untrusted",
 			"provider_id", providerID,
 		)

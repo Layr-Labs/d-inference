@@ -386,10 +386,12 @@ trust_boundaries:
       mark the provider permanently untrusted; SIP=false or SecureBoot=false in any
       response triggers immediate untrust without the 3-strike rule.
 
-      Status fields (SIPEnabled, BinaryHash, ActiveModelHash, etc.) may optionally be
-      covered by a separate status_signature over a canonical JSON payload. For providers
-      that omit status_signature, negative reports (SIP=false) are still acted on
-      immediately, but positive reports are treated as advisory only.
+      Status fields (SIPEnabled, SecureBootEnabled, BinaryHash, ActiveModelHash, etc.)
+      are covered by a separate status_signature over a canonical JSON payload. Since
+      2026-09-27 a provider with an attested SE key must send it: a missing or empty
+      status_signature fails the challenge, as does an omitted SIP or Secure Boot
+      status. Only a provider without an attested key (trust none) has advisory
+      status fields.
 
       Optional App Attest ready/proof diagnostics (process and boot history,
       signing preflight, local SIP/root observations, key/push history and native
@@ -416,10 +418,6 @@ trust_boundaries:
       - "Weight hash enforcement is fail-open: a provider can omit weight_hash entirely
         and still be admitted, even for models with a known expected hash in the catalog
         (registry.go, SEC-007)."
-      - "status_signature is optional for pre-v0.3.11 providers. Positive status claims
-        (SIP=true, BinaryHash=X) are not cryptographically bound for older providers,
-        creating a rollout window where a compromised OS can echo a valid nonce while
-        lying about its security posture (provider.go)."
       - "WebSocket frames after registration are not individually authenticated. Trust
         for the session is based entirely on the connection identity established at
         registration."
@@ -875,15 +873,10 @@ trust_boundaries:
       fixes false signature failures without changing the signed field set or trust
       policy. Malformed or mismatching signatures remain challenge failures in
       coordinator/api/provider.go (verifyChallengeResponse). If status_signature is
-      absent, ErrStatusSignatureMissing is returned; the caller treats the fields as
-      advisory for compatibility with providers older than v0.3.11. Negative status
-      reports (SIP=false) are still acted on regardless of whether the status_signature
-      is present. Canonical mechanism: docs/architecture/security/attestation.md.
+      absent or empty, ErrStatusSignatureMissing is returned and the challenge fails
+      (outcome status_sig_missing); every Swift provider signs the status in every
+      challenge response. Canonical mechanism: docs/architecture/security/attestation.md.
     current_limitations:
-      - "status_signature is optional for pre-v0.3.11 providers. A compromised provider
-        running OS-level code can report a valid (nonce, timestamp) signature from the
-        SE while reporting SIP=true in unsigned status fields, avoiding untrust during
-        the rollout window (provider.go)."
       - "Nonce and timestamp are concatenated without a delimiter for the challenge
         signature (nonce + timestamp). A crafted nonce ending with a partial timestamp
         string could theoretically produce the same signed bytes as a different

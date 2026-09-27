@@ -218,7 +218,7 @@ func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
 		nonce:     "nonce-1",
 		timestamp: challengeTimestamp,
-	}, &protocol.AttestationResponseMessage{
+	}, withTestStatusSignature("nonce-1", challengeTimestamp, pubKey, &protocol.AttestationResponseMessage{
 		Type:              protocol.TypeAttestationResponse,
 		Nonce:             "nonce-1",
 		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
@@ -226,7 +226,7 @@ func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 		SIPEnabled:        &sipEnabled,
 		SecureBootEnabled: &secureBootEnabled,
 		RDMADisabled:      &rdmaDisabled,
-	})
+	}))
 
 	p.Mu().Lock()
 	defer p.Mu().Unlock()
@@ -268,7 +268,7 @@ func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testi
 	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
 		nonce:     "nonce-1",
 		timestamp: challengeTimestamp,
-	}, &protocol.AttestationResponseMessage{
+	}, withTestStatusSignature("nonce-1", challengeTimestamp, pubKey, &protocol.AttestationResponseMessage{
 		Type:              protocol.TypeAttestationResponse,
 		Nonce:             "nonce-1",
 		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
@@ -277,7 +277,7 @@ func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testi
 		SecureBootEnabled: &secureBootEnabled,
 		RDMADisabled:      &rdmaDisabled,
 		BinaryHash:        otherKnownHash,
-	})
+	}))
 
 	p.Mu().Lock()
 	defer p.Mu().Unlock()
@@ -318,7 +318,7 @@ func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
 	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
 		nonce:     "nonce-1",
 		timestamp: challengeTimestamp,
-	}, &protocol.AttestationResponseMessage{
+	}, withTestStatusSignature("nonce-1", challengeTimestamp, pubKey, &protocol.AttestationResponseMessage{
 		Type:              protocol.TypeAttestationResponse,
 		Nonce:             "nonce-1",
 		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
@@ -327,7 +327,7 @@ func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
 		SecureBootEnabled: &secureBootEnabled,
 		RDMADisabled:      &rdmaDisabled,
 		BinaryHash:        knownGoodBinaryHashForTest,
-	})
+	}))
 
 	p.Mu().Lock()
 	defer p.Mu().Unlock()

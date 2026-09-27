@@ -442,10 +442,9 @@ func BuildStatusCanonical(in StatusCanonicalInput) ([]byte, error) {
 // covers the supplied fields; an error if the signature is missing,
 // malformed, or doesn't match.
 //
-// Empty signatures (legacy providers that don't yet implement the
-// extended signature) return ErrStatusSignatureMissing — callers should
-// treat this as "status fields are advisory, not signed" and refuse to
-// upgrade trust based on them.
+// An empty signature returns ErrStatusSignatureMissing. Every Swift
+// provider signs the status in every challenge response, so the challenge
+// handler fails the challenge on it like any other verification error.
 func VerifyStatusSignature(sePublicKeyB64, statusSigB64 string, in StatusCanonicalInput) error {
 	if statusSigB64 == "" {
 		return ErrStatusSignatureMissing
@@ -458,9 +457,9 @@ func VerifyStatusSignature(sePublicKeyB64, statusSigB64 string, in StatusCanonic
 }
 
 // ErrStatusSignatureMissing is returned by VerifyStatusSignature when the
-// provider didn't supply a status signature at all. Callers should
-// downgrade trust in the status fields rather than fail the connection,
-// to remain compatible with pre-v0.3.11 providers.
+// provider didn't supply a status signature at all. It is a distinct error
+// so the caller can count the outcome separately (status_sig_missing); the
+// challenge still fails.
 var ErrStatusSignatureMissing = fmt.Errorf("status_signature missing — status fields not cryptographically bound")
 
 // VerifyChallengeSignature verifies a P-256 ECDSA signature over challenge
@@ -473,26 +472,17 @@ var ErrStatusSignatureMissing = fmt.Errorf("status_signature missing — status 
 //
 // Returns nil on success, an error describing the failure otherwise.
 //
-// Security note (signature scope, 2026-04-16):
-// The signed payload currently covers ONLY (nonce + timestamp). The status
-// fields the provider reports in AttestationResponseMessage — SIPEnabled,
-// SecureBootEnabled, RDMADisabled, BinaryHash,
-// TemplateHashes, ActiveModelHash — are NOT included in the signature. A
-// provider with a valid SE key (e.g. a compromised device) can therefore
-// echo a correct signature while lying about its current security posture
-// or runtime hashes.
+// Signature scope: this signature covers ONLY (nonce + timestamp). The
+// status fields the provider reports in AttestationResponseMessage —
+// SIPEnabled, SecureBootEnabled, RDMADisabled, BinaryHash, TemplateHashes,
+// ActiveModelHash, ModelHashes — are bound by the separate status signature
+// (VerifyStatusSignature), which the challenge handler requires.
 //
 // Replay and clock-skew defenses are sound under this scheme: the
 // coordinator generates the nonce and timestamp itself (provider.go
 // sendChallenge) and tracks unused nonces in challengeTracker. A response
 // with a duplicate nonce hits "unknown challenge" because tracker.remove
 // was already called. The provider's clock is never trusted.
-//
-// Closing the signature-scope gap requires a coordinated protocol change:
-// extend the signed payload to include canonical status fields, update both
-// the Swift provider's handleAttestationChallenge (ProviderLoop.swift) and
-// this file, and migrate carefully (a hard switch would invalidate all
-// in-fleet providers). Tracked separately from this file's reliability work.
 func VerifyChallengeSignature(sePublicKeyB64, signatureB64, data string) error {
 	// Decode public key
 	pubKeyBytes, err := base64.StdEncoding.DecodeString(sePublicKeyB64)

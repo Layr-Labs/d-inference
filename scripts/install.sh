@@ -142,7 +142,10 @@ verify_staged_app() {
         fi
         return 1
     }
-    [ "$marker_present" -eq 1 ] || return 0
+    [ "$marker_present" -eq 1 ] || {
+        fail_install "Staged app predates the paged runtime; pre-paged releases are no longer installable."
+        return 1
+    }
     [ "$(tr -d '[:space:]' < "$marker")" = "1" ] || {
         fail_install "Paged runtime capability marker is invalid."
         return 1

@@ -365,6 +365,28 @@ assert_flat_only_rejected() {
     test ! -e "$install_dir/bin/darkbloom"
 }
 
+# A signed app with neither paged runtime code nor the paged marker is a
+# pre-paged release (below the 0.9.5 floor): refused, previous install kept.
+assert_pre_paged_rejected() {
+    local install_dir=$1
+    local log="$ROOT/pre-paged-$RANDOM.log"
+    local status=0
+    mkdir -p "$install_dir/Darkbloom.app"
+    printf 'pre-paged-old\n' > "$install_dir/Darkbloom.app/sentinel"
+    run_install "$LEGACY" "$install_dir" >"$log" 2>&1 || status=$?
+    if [ "$status" -eq 0 ]; then
+        echo "pre-paged app unexpectedly installed" >&2
+        exit 1
+    fi
+    grep -q 'Staged app predates the paged runtime; pre-paged releases are no longer installable.' "$log" || {
+        echo "pre-paged app was refused for the wrong reason:" >&2
+        cat "$log" >&2
+        exit 1
+    }
+    test -f "$install_dir/Darkbloom.app/sentinel"
+    test ! -e "$install_dir/bin/darkbloom"
+}
+
 INSTALL="$ROOT/install"
 mkdir -p "$INSTALL/Darkbloom.app"
 printf 'old\n' > "$INSTALL/Darkbloom.app/sentinel"
@@ -404,10 +426,7 @@ test "$(stat -f '%Lp' "$INSTALLED_FAN_HELPER")" = "755"
 test "$(tr -d '[:space:]' < "$INSTALLED_FAN_MARKER")" = "1"
 codesign --verify --strict "-R=$FAN_HELPER_REQUIREMENT" "$INSTALLED_FAN_HELPER"
 
-LEGACY_INSTALL="$ROOT/legacy-install"
-run_install "$LEGACY" "$LEGACY_INSTALL"
-test -x "$LEGACY_INSTALL/bin/darkbloom"
-test ! -e "$LEGACY_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
+assert_pre_paged_rejected "$ROOT/legacy-install"
 
 TAMPER_ROOT="$ROOT/tamper"
 mkdir -p "$TAMPER_ROOT"
@@ -453,10 +472,7 @@ test ! -f "$COORD_INSTALL/Darkbloom.app/sentinel"
 test -x "$COORD_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
 test "$(stat -f '%Lp' "$COORD_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper")" = "755"
 
-COORD_LEGACY_INSTALL="$ROOT/coordinator-legacy-install"
-run_install "$LEGACY" "$COORD_LEGACY_INSTALL"
-test -x "$COORD_LEGACY_INSTALL/bin/darkbloom"
-test ! -e "$COORD_LEGACY_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
+assert_pre_paged_rejected "$ROOT/coordinator-legacy-install"
 
 echo "atomic installer tests passed"
 

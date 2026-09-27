@@ -1,6 +1,6 @@
 # Launch the copy-only telemetry backfill
 
-> Last updated: 2026-09-26 · commit `86895ace9`
+> Last updated: 2026-09-27 · commit `a7a672cf1`
 
 Run a finite historical copy in us-east4 near the database, with resumable
 Cloud Storage checkpoints and BigQuery verification. This runbook prepares a
@@ -131,7 +131,7 @@ Runtime remains uncertain until a colocated sample is measured.
 ## Verification and resume
 
 Read the execution status and checkpoint logs. Every new source capture first
-checks physical recovery and replay age; more than 30 seconds of replay age
+checks physical recovery and replay age; 30 seconds or more of replay age
 exits with code 75 and retains progress. All data reads retain the 15-second
 statement timeout and 1-second lock timeout. Replica pressure must recover
 before resuming. Do not run overlapping executions of this job.

@@ -1,6 +1,6 @@
 # Serve public analytics from verified snapshots
 
-> Last updated: 2026-09-27 · commit `64c621e14`
+> Last updated: 2026-09-27 · commit `a7a672cf1`
 
 Use the opt-in coordinator reader to serve leaderboard, network totals and network usage charts from a
 small local snapshot, removing history scans from those request paths. This
@@ -75,7 +75,8 @@ It rejects changed content under the same generation. An invalid
 refresh leaves the prior valid in-memory generation in place; every read checks
 freshness again. Source and as-of age must be at most 10 minutes, result age at
 most 15 minutes; future source times are rejected and generated time allows one
-minute of clock skew.
+minute of clock skew. `generated_at` must be at or after `source_complete_through`,
+which must be at or after `as_of`.
 
 With this mode configured, leaderboard/totals/series never fall back to historical
 PostgreSQL queries, even on cold start or expiry. Missing/stale data returns 503.

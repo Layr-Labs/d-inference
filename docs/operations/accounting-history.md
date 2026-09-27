@@ -1,6 +1,6 @@
 # Queryable accounting history
 
-> Last updated: 2026-09-26 · commit `bcf5dcce9`
+> Last updated: 2026-09-27 · commit `a7a672cf1`
 
 Preserve complete accounting-history snapshots in private Cloud Storage and
 query them through BigQuery. This copy-only phase does not change billing,
@@ -78,7 +78,7 @@ live withdrawal workflows are not exportable with this worker.
      --dataset accounting_history
    ```
 
-6. Query the stable views. Amounts are integer micro-USD; sum with BIGNUMERIC
+6. Query the stable views for single-table exploration. Amounts are integer micro-USD; sum with BIGNUMERIC
    before converting units to prevent INT64 aggregate overflow:
 
    ```sql
@@ -93,6 +93,17 @@ live withdrawal workflows are not exportable with this worker.
    The full original row remains available in `row_json`, with its PostgreSQL
    column types in the receipt. Published views deduplicate by source ID and
    latest archived observation. They are not a zero-lag source of current balances.
+
+   Stable aliases switch independently and can temporarily reference different
+   generations if publication is interrupted. Never join them for cross-table
+   accounting. Use `analytics-preview --catalog CATALOG_VERSION` (or generate every
+   input with `publish.reader_sql` and that same explicit version). Select a
+   successfully published version from the command result or resolve the
+   `archive_coverage` view definition once; that pointer is switched last.
+   Listing `catalog_*` tables is not proof that a publication finished. If a
+   required versioned input is absent, the query must fail rather than use an alias.
+   Catalog pinning fixes the archive generation; it does not turn independent
+   captures into a database-wide transactional snapshot.
 
 ## Verification
 

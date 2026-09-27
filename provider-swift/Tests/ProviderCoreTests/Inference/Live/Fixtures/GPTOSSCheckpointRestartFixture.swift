@@ -33,6 +33,71 @@ final class GPTOSSCheckpointRestartFixture: @unchecked Sendable {
         let donor: [Int]
         let branch: [Int]
         let changedPrefix: [Int]
+        /// The donor's records, for prompts that share only part of it.
+        let records: [String]
+    }
+
+    static let releaseQuestion = "What is the release marker given at the beginning?"
+    static let backupQuestion = "What is the backup marker given at the beginning?"
+    static let instruction = " Reply with that marker only; do not include the other marker."
+
+    struct Conversation {
+        /// The turn a cold provider serves first, and the turn after it.
+        let second: [Int]
+        let third: [Int]
+        /// Tokens the previous turn's prompt shares with each of them: what
+        /// the coordinator's repeat observation would be built from.
+        let sharedWithFirst: Int
+        let sharedWithSecond: Int
+    }
+
+    static func sharedPrefix(_ lhs: [Int], _ rhs: [Int]) -> Int {
+        zip(lhs, rhs).prefix { $0 == $1 }.count
+    }
+
+    func tokenize(_ messages: [[String: String]]) throws -> [Int] {
+        try tokenizer.inner.applyChatTemplate(messages: messages, tools: nil,
+                                              additionalContext: ["reasoning_effort": "low"])
+    }
+
+    /// A different prompt that shares only the donor's opening records: its
+    /// common prefix with the donor lands in `[minimum, minimum + 512)`.
+    func forkPrompt(sharingAtLeast minimum: Int) throws -> (tokens: [Int], shared: Int) {
+        for count in 1 ..< prompts.records.count {
+            var records = Array(prompts.records.prefix(count))
+            for index in 0 ..< 24 {
+                records.append("Entry \(index): depot \(index % 11) filed an unrelated shipping note. The manifest was countersigned, the pallet count was reconciled, and the customs hold remains pending rather than released.")
+            }
+            let tokens = try tokenize([["role": "user", "content":
+                records.joined(separator: "\n") + "\n" + Self.backupQuestion + Self.instruction]])
+            let shared = Self.sharedPrefix(tokens, prompts.donor)
+            guard shared >= minimum else { continue }
+            try #require(shared < minimum + 512 && tokens.count > shared + 512,
+                         "fork prompt must diverge shortly after the fork boundary")
+            return (tokens, shared)
+        }
+        throw FixtureFailure.promptTooShort
+    }
+
+    /// Three turns of one growing conversation. The first turn is never
+    /// served here; it only defines what the second turn shares with it.
+    func conversation() throws -> Conversation {
+        let half = prompts.records.count / 2
+        let opening = prompts.records.prefix(half).joined(separator: "\n") + "\n"
+            + Self.releaseQuestion + Self.instruction
+        let followUp = "More records follow.\n" + prompts.records.dropFirst(half).joined(separator: "\n")
+            + "\n" + Self.backupQuestion + Self.instruction
+        let first: [[String: String]] = [["role": "user", "content": opening]]
+        let second = first + [["role": "assistant", "content": "ALDER-427"],
+                              ["role": "user", "content": followUp]]
+        let third = second + [["role": "assistant", "content": "BRONZE-913"],
+                              ["role": "user", "content": Self.releaseQuestion + Self.instruction]]
+        let tokens = (first: try tokenize(first), second: try tokenize(second), third: try tokenize(third))
+        try #require(tokens.second.count >= 6_144 + 64 && tokens.third.count < 8_192,
+                     "conversation prompts left the fixture's bounds: \(tokens.second.count), \(tokens.third.count)")
+        return Conversation(second: tokens.second, third: tokens.third,
+                            sharedWithFirst: Self.sharedPrefix(tokens.first, tokens.second),
+                            sharedWithSecond: Self.sharedPrefix(tokens.second, tokens.third))
     }
 
     init() async throws {
@@ -90,11 +155,12 @@ final class GPTOSSCheckpointRestartFixture: @unchecked Sendable {
             let donor = try tokenize(records, question: "What is the release marker given at the beginning?")
             if donor.count >= 6_144 {
                 let branch = try tokenize(records, question: "What is the backup marker given at the beginning?")
+                let donorRecords = records
                 records[0] = "The release marker is ALDER-427. The backup marker is CEDAR-682. Preserve both exactly."
                 let changed = try tokenize(records, question: "What is the backup marker given at the beginning?")
                 try #require(max(donor.count, branch.count, changed.count) < 8_192,
                              "bounded prompt construction exceeded its limit")
-                return Prompts(donor: donor, branch: branch, changedPrefix: changed)
+                return Prompts(donor: donor, branch: branch, changedPrefix: changed, records: donorRecords)
             }
         }
         throw FixtureFailure.promptTooShort
@@ -172,9 +238,9 @@ final class GPTOSSCheckpointRestartFixture: @unchecked Sendable {
             let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(try #require(manifestBytes))
             #expect(manifest.identity == identity)
             #expect(manifest.backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
-            #expect(manifest.cacheSalt == "tenant-a" || manifest.cacheSalt == "tenant-b")
-            #expect(prompts.donor.starts(with: manifest.prefixTokens)
-                || prompts.changedPrefix.starts(with: manifest.prefixTokens))
+            #expect(manifest.cacheSalt?.hasPrefix("tenant-") == true)
+            #expect(manifest.position % 1024 == 0 && manifest.chunkSize == 1024,
+                    "historical manifests carry the capture stride as their alignment")
             let layers = try #require(manifest.attentionLayers)
             #expect(layers.count == model.cbv2LayerKinds.count)
             #expect(layers.contains { $0.window == 128 })

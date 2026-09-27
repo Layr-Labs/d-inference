@@ -179,7 +179,8 @@ import Testing
         promptContractId: String(repeating: "b", count: 64),
         cacheEpoch: "11111111-1111-1111-1111-111111111111", cacheSeq: 3, tier: .ssd,
         readyAnchors: many, requiredRecomputeTokens: 0, expectedPrefillTokensSaved: 16 * 1024, stageMs: 2)
-    #expect(capped.readyAnchors == Array(many.prefix(16)), "the coordinator accepts at most 16 anchors")
+    #expect(capped.readyAnchors == Array(many.suffix(16)),
+            "the coordinator accepts at most 16 anchors; the deepest, ending at the final anchor, stay")
 }
 
 @Test func registerEncodingUsesSnakeCaseAndPreservesRawAttestation() throws {

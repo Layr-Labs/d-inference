@@ -2433,9 +2433,9 @@ struct SSDPrefixCacheReservationTests {
     }
 }
 
-// MARK: - Own-root isolation (legacy upgrade sweeper safety)
+// MARK: - Own-root isolation (kv3 is a sibling of the retired kv root)
 
-@Suite("SSD prefix cache: own root survives the legacy kv sweep")
+@Suite("SSD prefix cache: own root outside the retired kv tree")
 struct SSDRootIsolationTests {
 
     @Test("cacheDirectory lives under darkbloom/kv3, never under the legacy darkbloom/kv root")

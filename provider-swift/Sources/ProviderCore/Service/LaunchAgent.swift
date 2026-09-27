@@ -337,7 +337,7 @@ public enum LaunchAgent: Sendable {
 
     /// Build the child argv without touching launchd or the filesystem.
     /// A custom config is explicit so every relaunch reads the same TOML;
-    /// the canonical default remains implicit and follows normal migration.
+    /// the canonical default path stays implicit.
     static func serviceProgramArguments(
         binaryPath: String,
         coordinatorURL: String,

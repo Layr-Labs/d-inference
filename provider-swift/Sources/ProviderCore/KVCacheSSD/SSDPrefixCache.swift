@@ -131,8 +131,8 @@ public final class SSDPrefixCache:
         let layoutEpoch: String
         let epochStore: SSDCacheEpochStore?
         /// `…/darkbloom/kv3/<modelKey>` — files live here, per-model, in
-        /// the SSD tier's OWN root (never under the legacy `kv/` root the
-        /// upgrade sweeper sheds).
+        /// the SSD tier's OWN root (a sibling of the retired pre-v0.7.5
+        /// `kv/` root, never inside it).
         let root: URL
         /// Canonical `…/darkbloom/kv3` parent. Production construction pins
         /// the model directory as a direct child; direct test construction

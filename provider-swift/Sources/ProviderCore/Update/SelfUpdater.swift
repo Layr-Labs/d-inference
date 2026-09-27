@@ -795,7 +795,8 @@ public struct SelfUpdater: Sendable {
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
         }
-        // Flat bin/ layout or unknown: bin -> root
+        // A bare binary outside an .app (e.g. a dev build in some bin/):
+        // bin -> root
         return parentDir.deletingLastPathComponent()
     }
 

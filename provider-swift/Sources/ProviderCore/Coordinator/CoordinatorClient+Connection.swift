@@ -82,7 +82,7 @@ extension CoordinatorClient {
         // URLSessionWebSocketTask.maximumMessageSize.
         wsOptions.maximumMessageSize = Self.maxInboundMessageBytes
         // The legacy URLSession path issued the WebSocket upgrade with NO custom
-        // HTTP headers (auth/version/wallet travel inside the `register` frame, not
+        // HTTP headers (auth/version travel inside the `register` frame, not
         // headers), so there are none to forward via
         // `wsOptions.setAdditionalHeaders(...)` here.
         params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)

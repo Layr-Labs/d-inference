@@ -8,7 +8,7 @@ import Testing
 @Suite("Beta command config mutation")
 struct BetaCommandTests {
 
-    /// Write a unique temporary config; mutation calls disable home-directory migration.
+    /// Write a unique temporary config so mutation calls never touch the home-directory one.
     private func makeTempConfig(_ toml: String?) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("beta-cfg-\(UUID().uuidString)")

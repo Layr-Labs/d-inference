@@ -143,8 +143,8 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
 
     /// errSecInteractionNotAllowed — the key exists but cannot be used right
     /// now: the data-protection keychain is locked (headless box never unlocked
-    /// since boot) or the key's access policy is too strict (a leftover
-    /// WhenUnlocked v1 key, or a poisoned v2 key).
+    /// since boot) or the key's access policy is too strict (a poisoned v2
+    /// key).
     private static let errInteractionNotAllowed: OSStatus = -25308
 
     /// Signs a fixed probe to prove the key can actually produce a signature.

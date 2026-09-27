@@ -599,7 +599,7 @@ struct CoordinatorIntegrationTests {
 // MARK: - Helpers
 
 /// Build a CoordinatorClient configured for tests against a mock URL. Uses a
-/// fixed hardware/model profile and skips registering wallet, attestation, etc.
+/// fixed hardware/model profile and skips registering attestation, etc.
 private func makeClient(
     url: String,
     publicKey: String,

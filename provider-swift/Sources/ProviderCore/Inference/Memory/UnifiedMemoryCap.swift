@@ -132,9 +132,11 @@ public enum UnifiedMemoryCap {
     /// peak-over-resident rows).
     ///
     /// Mirrored by coordinator/registry/servability.go
-    /// (`servabilityModelActivationFloorsGB` +
-    /// `servabilityPerModelFloorMinVersion`); the tables MUST move in the
-    /// same commit — see the doc comment on ``defaultActivationReserveBytes``.
+    /// (`servabilityModelActivationFloorsGB`, with `servabilityActivationFloorGB`
+    /// as the 5.5 GiB default): `servabilityActivationFloor` takes the model's
+    /// measured floor, else the default — no provider-version regimes. The
+    /// tables MUST move in the same commit — see the doc comment on
+    /// ``defaultActivationReserveBytes``.
     static let measuredActivationFloorsBytes: [String: UInt64] = [
         // Measured B=8 activation peak: 2.56 GiB eager, 3.20 GiB compiled
         // (fused SDPA, head_dim 64). 3.5 = 3.20 + 0.30 slack. Basis: raw

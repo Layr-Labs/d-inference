@@ -52,8 +52,8 @@ struct AutoUpdate: AsyncParsableCommand {
 /// config commands. A snapshot read before a switch cannot write old models
 /// over the switch's durable selection.
 func setAutoUpdate(_ value: Bool, configPath: String?) throws {
-    // Avoid a migration write before the sidecar lock. The selected path is
-    // reloaded by withMutableConfig after acquiring the switch's lock.
+    // Read the config only under the sidecar lock: withMutableConfig reloads
+    // the selected path after acquiring the switch's lock.
     try withMutableConfig(configPath: configPath) { path, config in
         if config.provider.autoUpdate == value,
            FileManager.default.fileExists(atPath: path.path) {

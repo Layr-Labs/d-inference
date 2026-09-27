@@ -3,7 +3,7 @@
 /// Configuration is stored in TOML format at `~/.config/darkbloom/provider.toml`
 /// (or an explicit `--config` path). The config includes:
 ///   - Provider identity (name, memory reserve)
-///   - Backend settings (port, model, continuous batching, idle timeout)
+///   - Backend settings (port, model, concurrency, idle timeout, MTP)
 ///   - Coordinator connection settings (URL, heartbeat interval)
 ///   - Scheduling windows
 ///   - Config-backed Gemma optimization controls

@@ -79,7 +79,7 @@ extension Models {
                 URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
             } ?? ConfigManager.defaultConfigPath()
             // Do not use a runtime snapshot: inspection/cancellation must not
-            // migrate config, scan other caches, or initialize serving state.
+            // scan other caches or initialize serving state.
             let config = try FileManager.default.fileExists(atPath: configPath.path)
                 ? ConfigManager.load(from: configPath)
                 : ProviderConfig(provider: ProviderSettings(name: "darkbloom"))

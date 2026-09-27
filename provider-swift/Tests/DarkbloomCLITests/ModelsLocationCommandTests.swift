@@ -124,7 +124,7 @@ struct ModelsLocationCommandTests {
         try makeModel(in: fixture.selected, id: "acme/Selected-4bit")
         let before = try fixture.contents()
 
-        // Even the normal migration-enabled command path is read-only for check.
+        // Even the normal interactive command path is read-only for check.
         let result = try fixture.command(["--check", fixture.selected.path]).execute(
             isInteractive: true, environment: [:], homeDirectory: fixture.home,
             readInput: { Issue.record("--check must not prompt"); return "yes" }, writeLine: { _ in })

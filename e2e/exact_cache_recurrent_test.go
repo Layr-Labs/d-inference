@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -124,20 +125,28 @@ func TestIntegrationExactCacheRecurrentCompanyLeaves(t *testing.T) {
 	holders, _ := suite.Coordinator.Registry.CacheRoutingStateCounts()
 	require.Zero(t, holders, "a fleet-novel prime must not publish a holder (skipped_novel)")
 
-	// 2. Donor under company. The company request starts first and keeps
-	// decoding while the donor arrives, so the donor prefills in plain chunks
-	// beside it; the company finishes well inside the donor's prompt and the
-	// donor continues on its solo stripe. Wall-clock overlap is asserted; the
-	// provider's chunk trace is the engine live test's job.
+	// 2. Donor under company. The company request streams; its first content
+	// token is the provider's evidence that the row is decoding, and only then
+	// is the donor submitted, so the donor's first prompt chunks share the
+	// step with a decoding row (plain chunks, not the solo stripe). The
+	// company must still be streaming when the donor starts and finish inside
+	// the donor's lifetime, so the donor's later chunks run solo again: that
+	// is the cap switch the old uniform-chunk rule disarmed on. The provider's
+	// chunk trace itself is the engine live test's job.
 	var wg sync.WaitGroup
-	var company recurrentChatResult
-	companyStarted := time.Now()
+	var company recurrentStreamResult
+	firstToken := make(chan time.Time, 1)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		company = postRecurrentChat(t, suite, companyUser, model, recurrentCompanyPrompt(), 256)
+		company = streamRecurrentChat(t, suite, companyUser, model, recurrentCompanyPrompt(), 256, firstToken)
 	}()
-	time.Sleep(600 * time.Millisecond)
+	select {
+	case at := <-firstToken:
+		t.Logf("company first token at %s", at.Format(time.StampMilli))
+	case <-time.After(3 * time.Minute):
+		t.Fatal("company never produced a first token")
+	}
 	donorStarted := time.Now()
 	donor := postRecurrentChat(t, suite, donorUser, model, donorPrompt, 16)
 	donorFinished := time.Now()
@@ -145,10 +154,13 @@ func TestIntegrationExactCacheRecurrentCompanyLeaves(t *testing.T) {
 	require.NotEmpty(t, company.content)
 	require.Zero(t, donor.cachedTokens, "nothing durable existed before the donor")
 	requireRecurrentMarker(t, "donor", donor.content)
+	require.True(t, company.firstToken.Before(donorStarted),
+		"the donor must be submitted after the company's first token")
 	require.True(t, company.finished.After(donorStarted) && company.finished.Before(donorFinished),
-		"company must finish inside the donor's lifetime: company %s..%s donor %s..%s",
-		companyStarted.Format(time.StampMilli), company.finished.Format(time.StampMilli),
+		"company must still be decoding when the donor starts and finish inside its lifetime: company %s..%s donor %s..%s",
+		company.firstToken.Format(time.StampMilli), company.finished.Format(time.StampMilli),
 		donorStarted.Format(time.StampMilli), donorFinished.Format(time.StampMilli))
+	require.Greater(t, company.chunks, 1, "the company must have streamed more than one content chunk")
 	require.Eventually(t, func() bool {
 		holders, _ := suite.Coordinator.Registry.CacheRoutingStateCounts()
 		return holders > 0
@@ -173,7 +185,7 @@ func TestIntegrationExactCacheRecurrentCompanyLeaves(t *testing.T) {
 	t.Logf("recurrent company-leaves: prompt=%d restored=%d prime=%s donor=%s repeat=%s company=%s",
 		repeat.promptTokens, repeat.cachedTokens,
 		prime.elapsed.Round(10*time.Millisecond), donor.elapsed.Round(10*time.Millisecond),
-		repeat.elapsed.Round(10*time.Millisecond), company.elapsed.Round(10*time.Millisecond))
+		repeat.elapsed.Round(10*time.Millisecond), company.finished.Sub(company.firstToken).Round(10*time.Millisecond))
 }
 
 // requireRecurrentMarker checks the answer semantically. The prime prefills
@@ -192,6 +204,81 @@ const (
 	recurrentReleaseMarker = "ALDER-427"
 	recurrentBackupMarker  = "BRONZE-913"
 )
+
+type recurrentStreamResult struct {
+	content    string
+	chunks     int
+	firstToken time.Time
+	finished   time.Time
+}
+
+// streamRecurrentChat posts a streaming chat completion and reports the
+// wall-clock time of the first content delta on `firstToken` (once), then
+// returns when the stream ends. The first delta is the provider's evidence
+// that the row has left prefill and is decoding.
+func streamRecurrentChat(
+	t *testing.T, suite *testbed.Suite, apiKey, model, prompt string, maxTokens int,
+	firstToken chan<- time.Time,
+) recurrentStreamResult {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"model":    model,
+		"messages": []map[string]string{{"role": "user", "content": prompt}},
+		"stream":   true, "max_tokens": maxTokens, "temperature": 0,
+		"reasoning":       map[string]any{"enabled": false},
+		"enable_thinking": false,
+	})
+	require.NoError(t, err)
+	request, err := http.NewRequestWithContext(
+		suite.Ctx, http.MethodPost,
+		suite.Coordinator.BaseURL()+"/v1/chat/completions", bytes.NewReader(body))
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Minute}).Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var result recurrentStreamResult
+	var content strings.Builder
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	signalled := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		if payload == "[DONE]" {
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(payload), &chunk) != nil || len(chunk.Choices) == 0 {
+			continue
+		}
+		if delta := chunk.Choices[0].Delta.Content; delta != "" {
+			content.WriteString(delta)
+			result.chunks++
+			if !signalled {
+				result.firstToken = time.Now()
+				firstToken <- result.firstToken
+				signalled = true
+			}
+		}
+	}
+	require.NoError(t, scanner.Err())
+	result.finished = time.Now()
+	result.content = content.String()
+	require.True(t, signalled, "the company stream produced no content")
+	return result
+}
 
 type recurrentChatResult struct {
 	content      string

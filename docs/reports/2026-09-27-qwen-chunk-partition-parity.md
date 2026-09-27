@@ -1,6 +1,6 @@
 # Qwen chunk-partition parity and chunk-agnostic recurrent capture (2026-09-27)
 
-> Last updated: 2026-09-27 · commit `d5135d366`
+> Last updated: 2026-09-27 · commit `9914044e2`
 
 **Question.** Does a hybrid recurrent Qwen (GatedDeltaNet + full attention)
 reach the same complete-checkpoint state at a prefill boundary whatever chunk
@@ -70,6 +70,40 @@ stripes at 4,096, where the solo rows publish 4,096 / 8,192 with the first
 boundary doubling as the target. Before the change the company-leaves rows
 published only what the uniform-chunk rule allowed below the first cap
 change, so the 7,168 restore did not exist.
+
+## Through the coordinator
+
+`e2e/exact_cache_recurrent_test.go` (`TestIntegrationExactCacheRecurrentCompanyLeaves`,
+opt-in via `DARKBLOOM_EXACT_CACHE_RECURRENT_MODEL`) runs the shape above
+through a real coordinator, prompt sidecar, Postgres and a release-built
+provider: an 18,438-token prompt is primed once (fleet-novel, the coordinator
+sends a 0 repeat hint, the provider settles `skipped_novel`, no holder), sent
+again while a second tenant is decoding on the same provider (the donor
+prefills in plain chunks beside it, the company finishes inside the donor's
+lifetime, the coordinator's observed demand names the hint, the provider
+writes), and then repeated. With Qwen thinking disabled so the 16-token
+answers are comparable:
+
+| Checkpoint (release provider, paged KV) | Prime, cold | Donor under company | Repeat | Restored |
+|---|---:|---:|---:|---:|
+| Qwen3.5-9B | 84.3 s | 73.3 s (company 73.6 s) | 1.39 s | 18,432 of 18,438 |
+| Qwen3.5-35B-A3B (`qwen3.5-35b-a3b`) | 39.5 s | 48.0 s (company 48.5 s) | 0.83 s | 18,432 of 18,438 |
+
+Under the earlier uniform-chunk rule the donor's capture disarmed at the
+first cap change and the repeat could restore at most the last plain chunk
+before it (3,072); the test asserts at least the last full chunk end
+(prompt minus 2,048). The wall times are the testbed provider's cold prefill
+at its default geometry for a non-catalog ID plus a 16-token answer; the
+restore removes all of it.
+
+## Coverage by checkpoint
+
+| Served checkpoint | Architecture | Evidence |
+|---|---|---|
+| `qwen3.5-35b-a3b` (Qwen3.5-35B-A3B) and `qwen3.6-35b-a3b-vl-mtp-mxfp8` (Qwen3.6-35B-A3B) | `qwen3_5_moe`, 40 layers, 256 experts | Live retention runs on both checkpoints (solo and company-leaves shapes); the 3.5 run restores 8,192 on the next turn with identical text, 2.85 s warm against 22.0 s cold; the coordinator-routed run above passes on 3.5-35B |
+| Qwen3.5-9B | `qwen3_5`, 24 GDN + 8 attention layers | Live retention runs above and the coordinator-routed run; not a production catalog ID |
+| `EigenLabs/Qwen3.8-27B-4bit-mtp` (Qwen3.8-27B) | `qwen3_5`, 48 GDN + 16 attention layers | Not run: the provider gates this build to Apple M5 with NAX (`ModelRuntimeRequirements.qwen38RequiredCapabilities`), and the build machine is an M4 Max. The in-process fixture bypasses that gate and trips the engine's 30-second step watchdog during prefill, which is the gate's reason. Its capture path is the dense `qwen3_5` path the 9B exercises |
+| Qwen3.8-Flash-Next (`qwen4_exp`), Nemotron 3.5 Lightning (`nemotron_h`), Bonsai 2 | other recurrent layouts | Shared capture rule and engine oracles only; no live retention run |
 
 ## Not changed
 

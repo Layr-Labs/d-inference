@@ -15,10 +15,19 @@ import Testing
 /// head is served through the production inline assistant when it loads, so
 /// checkpoints carry MTP history as in production; `mtpActive` says so.
 final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
-    static let modelID = "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp"
+    /// `DARKBLOOM_LIVE_MLX_QWEN_RETENTION_MODEL` points the dense runs at
+    /// another `qwen3_5` checkpoint in the cache (Qwen3.8-27B shares the
+    /// architecture: 48 GDN + 16 full-attention layers, embedded MTP head).
+    static let modelID = ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_QWEN_RETENTION_MODEL"]
+        ?? "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp"
     /// The MoE sibling for the partition sanity run: 35B-A3B, 40 layers,
-    /// 256 experts, no embedded MTP head.
-    static let moeModelID = "EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8"
+    /// 256 experts. `DARKBLOOM_LIVE_MLX_QWEN_MOE_MODEL` selects another
+    /// `qwen3_5_moe` checkpoint (Qwen3.5-35B-A3B is the same architecture).
+    static let moeModelID = ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_QWEN_MOE_MODEL"]
+        ?? "EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8"
+    /// `DARKBLOOM_LIVE_MLX_QWEN_RETENTION_BUDGET_GIB` widens the dense runs'
+    /// slot budget for the larger checkpoints.
+    static let denseBudgetBytes = (Int(ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_QWEN_RETENTION_BUDGET_GIB"] ?? "") ?? 32) << 30
     static let stripeTokens = 2_048
     let modelID: String
     let modelType: String
@@ -107,7 +116,7 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
     }
 
     init(modelID: String = Qwen35CheckpointRetentionFixture.modelID,
-         memoryBudgetBytes: Int = 32 << 30) async throws {
+         memoryBudgetBytes: Int = Qwen35CheckpointRetentionFixture.denseBudgetBytes) async throws {
         self.modelID = modelID
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
@@ -126,13 +135,18 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
             EngineV2ModelSnapshot(model: context.model, eosTokenIds: context.configuration.eosTokenIds,
                                  extraEOSTokens: context.configuration.extraEOSTokens.sorted())
         }
-        // The catalog artifact advertises media, so it loads as the VLM
-        // wrapper; production serves its text tower through the same
-        // extraction the slot factory uses.
-        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
-            from: snapshot.model, modelDirectory: directory)
-        model = try #require(extraction.servingModel as? Qwen35Model,
-                             "the artifact must serve as a Qwen3.5-family text target (dense or MoE)")
+        // A catalog artifact that advertises media loads as the VLM wrapper;
+        // production serves its text tower through the same extraction the
+        // slot factory uses. A `language_model_only` artifact (Qwen3.8-27B)
+        // loads as the text model directly and needs no extraction.
+        if let direct = snapshot.model as? Qwen35Model {
+            model = direct
+        } else {
+            let extraction = try EngineV2VLMTextExtraction.extractTextModel(
+                from: snapshot.model, modelDirectory: directory)
+            model = try #require(extraction.servingModel as? Qwen35Model,
+                                 "the artifact must serve as a Qwen3.5-family text target (dense or MoE)")
+        }
         try #require(model.cbv2Capabilities.supportsRecurrentCheckpointReuse)
         do {
             assistant = try Qwen35InlineMTPAssistant.load(from: directory, target: model)

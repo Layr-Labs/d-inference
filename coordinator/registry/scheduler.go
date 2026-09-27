@@ -228,6 +228,9 @@ type routingCandidate struct {
 	capacityRejectRate        float64
 	cacheTier                 string
 	cacheEstimatedTTFTSavedMs float64
+	// cacheEvidenceWeight is the age weight of the credited holder evidence,
+	// captured with the hint so near-tie ranking and reservation agree.
+	cacheEvidenceWeight float64
 	// calibrationRatio is the TTFT calibration ratio this candidate was
 	// scored with (recorded on the RoutingDecision for the profiler).
 	calibrationRatio float64
@@ -769,6 +772,7 @@ func (r *Registry) commitProviderReservation(
 		snapshot.totalPending != selected.snapshot.totalPending ||
 		candidate.effectiveQueue != selected.effectiveQueue ||
 		candidate.costMs != selected.costMs ||
+		candidate.breakdown.CacheDiscountMs != selected.breakdown.CacheDiscountMs ||
 		candidate.cacheAffinityEligible != selected.cacheAffinityEligible {
 		return nil, nil, reservationNeedsRescan, RoutingDecision{}
 	}
@@ -1351,6 +1355,10 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 	}
 	winner, runnerUp, nearTieSize, path := selectRoutingCandidateWithAffinity(scan.pool, affinity)
 	pr.CacheOpportunity.AffinityApplied = path == SelectionPrefixAffinity
+	// The runner-up is the pool minimum whenever the winner is not; a credited
+	// winner that costs more than it won only through the near-tie preference.
+	pr.CacheOpportunity.CreditWonNearTie = path == SelectionCacheCredit &&
+		runnerUp != nil && winner.costMs > runnerUp.costMs
 	scan.runnerUp = candidateSummaryOf(runnerUp)
 	scan.nearTieSize = clampInt32(nearTieSize)
 	scan.path = path

@@ -13,6 +13,15 @@ private final class PausedMaintenanceStore: SSDEvictableStore, @unchecked Sendab
     func oldestEntryAccess() -> Int64? { nil }
     func evictOldestEntry() -> Int { 0 }
     func reconcileExternalRemovals() {}
+    func retireOwnedEntries(_ urls: [URL]) -> Set<String> {
+        var removed = Set<String>()
+        _ = performExternalDestructiveChange {
+            for url in urls where SSDBlockStore.removeItemIfSafe(at: url, under: evictionRoot) {
+                removed.insert(url.standardizedFileURL.path)
+            }
+        }
+        return removed
+    }
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool {
         entered.signal()
         release.wait()

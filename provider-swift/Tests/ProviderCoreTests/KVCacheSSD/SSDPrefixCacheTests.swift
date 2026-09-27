@@ -1079,6 +1079,81 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(!(await cache.stage(requestID: "r-cold", promptTokens: cold + [9], cacheScope: "")).staged)
     }
 
+    @Test("attention TTL characterization: read eligibility changes only after the expiry sweep",
+          arguments: [899, 900, 901], [false, true])
+    func ttlStageBeforeSweepCharacterization(age: Int, sweepFirst: Bool) async throws {
+        try await Device.withDefaultDevice(.cpu) {
+            #expect(Device.defaultDevice().deviceType == .cpu)
+            let parent = try SSDTestDirectory.parent()
+            let dir = parent.appendingPathComponent("ssd-idle-boundary-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
+            defer {
+                do { try FileManager.default.removeItem(at: dir) }
+                catch { Issue.record("attention expiry fixture cleanup failed: \(error)") }
+            }
+            let clock = ClockBox(10_000)
+            let cache = makeCache(dir: dir, kek: SymmetricKey(size: .bits256), clock: clock,
+                ttlSeconds: 900, maintainWholeRoot: {})
+            do {
+                let tokens = Array(0 ..< tokenCount)
+                donateFixture(cache, tokens: tokens)
+                await cache.waitForWritesForTesting()
+                try #require(cache.index.count == 8, "donation setup must publish every fixture block")
+                try #require(cache.index.oldest()?.lastAccess == 10_000)
+                let files = dbk3Files(under: dir)
+                try #require(files.count == 8)
+                let ciphertext = try files.map { try Data(contentsOf: $0) }
+                try #require(cache.bytesInUse == 0)
+
+                // No background tasks are started. The completed writer cannot
+                // race this injected clock or perform a delayed expiry sweep.
+                clock.advance(Int64(age))
+                let expired = age >= 900
+                #expect(cache.index.expired(now: clock.now, ttlSeconds: 900).count == (expired ? 8 : 0))
+                if sweepFirst { cache.sweepExpiredEntries() }
+                let expectedStage = !expired || !sweepFirst
+                let prompt = tokens + [999]
+                let result = await cache.stage(requestID: "idle-boundary", promptTokens: prompt, cacheScope: "")
+                // Characterize the existing sweep-enforced contract. This is
+                // not a proposed strict read-time cutoff or an expected-red fix.
+                #expect(result.staged == expectedStage)
+                if expectedStage {
+                    let matched: Int = try {
+                        let hit = try #require(cache.lookup(tokens: prompt, layerKinds: fixtureLayerKinds, cacheSalt: nil))
+                        let actual = try #require(hit.prefix[0])
+                        let expected = try #require(fixtureSnapshots(tokenCount: tokenCount)[0])
+                        #expect(hit.matched == tokenCount)
+                        #expect(actual.offset == tokenCount)
+                        #expect(actual.keys.asType(.float32).asArray(Float.self).map(\.bitPattern)
+                            == expected.keys.asType(.float32).asArray(Float.self).map(\.bitPattern))
+                        #expect(actual.values.asType(.float32).asArray(Float.self).map(\.bitPattern)
+                            == expected.values.asType(.float32).asArray(Float.self).map(\.bitPattern))
+                        return hit.matched
+                    }()
+                    // Only the scalar matched count escapes the borrowed arrays.
+                    cache.endAdoption(tokens: prompt, matched: matched, cacheSalt: nil)
+                    #expect(cache.index.oldest()?.lastAccess == clock.now)
+                    #expect(cache.index.expired(now: clock.now, ttlSeconds: 900).isEmpty)
+                    for (file, original) in zip(files, ciphertext) {
+                        let retained = try Data(contentsOf: file)
+                        #expect(retained == original)
+                    }
+                } else {
+                    #expect(result.disposition == .missAbsent)
+                    #expect(cache.index.count == 0)
+                    #expect(dbk3Files(under: dir).isEmpty)
+                }
+                cache.completeStaging(requestID: "idle-boundary")
+                #expect(cache.bytesInUse == 0)
+            } catch {
+                await cache.closeAndWait()
+                throw error
+            }
+            await cache.closeAndWait()
+            #expect(cache.bytesInUse == 0)
+        }
+    }
+
     @Test("LRU eviction at the box-wide budget: oldest-by-last-hit unlinked first")
     func lruEvictionAtBudget() async throws {
         let dir = tempDir("lru")
@@ -1113,8 +1188,8 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(!(await cache.stage(requestID: "r-old", promptTokens: old + [1], cacheScope: "")).staged)
     }
 
-    @Test("active capacity eviction persists a new epoch before unlink")
-    func activeEvictionRotatesEpoch() async throws {
+    @Test("active capacity eviction preserves the durable epoch of survivors")
+    func activeEvictionPreservesEpoch() async throws {
         let dir = tempDir("active-epoch-eviction")
         defer { try? FileManager.default.removeItem(at: dir) }
         let layoutEpoch = SSDBlockStore.layoutEpoch(
@@ -1140,7 +1215,7 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(await waitForIndexCount(cache, atLeast: 1))
         #expect(cache.evictOldestEntry() > 0)
         let rotatedEpoch = try #require(epochStore.current)
-        #expect(rotatedEpoch != originalEpoch)
+        #expect(rotatedEpoch == originalEpoch)
         #expect(try SSDCacheEpochStore(root: dir, binding: binding).current == rotatedEpoch)
     }
 
@@ -2653,7 +2728,7 @@ struct SSDWholeRootMaintenanceTests {
         #expect(rotated != original)
     }
 
-    @Test("whole-root eviction keeps an active cache on the rotated epoch")
+    @Test("whole-root owned eviction keeps an active cache on the same epoch")
     func activeWholeRootEvictionKeepsCapabilityReady() async throws {
         let root = tempDir("whole-root-active-epoch")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2704,7 +2779,7 @@ struct SSDWholeRootMaintenanceTests {
         SSDDiskBudget.shared.reconcileAll()
 
         let rotated = try #require(cache.prefixCacheV2Capability())
-        #expect(rotated.cacheEpoch != original.cacheEpoch)
+        #expect(rotated.cacheEpoch == original.cacheEpoch)
         #expect(cache.index.count == 0)
     }
 

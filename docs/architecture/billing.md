@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-22 · commit `6253ca765`
+> Last updated: 2026-09-27 · commit `1e4f506f2`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -295,8 +295,7 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
 
 The base-reward model memory ceiling lives in `coordinator/hardware/mac_models.go`
 (`ModelMaxMemoryGB`). Moving that static catalog out of MDM does not change any
-cap, eligibility rule, serial/accounting key, or payout. `coordinator/mdm/mac_models.go`
-retains a compatibility wrapper. App Attest hardware claims are observational in
+cap, eligibility rule, serial/accounting key, or payout. App Attest hardware claims are observational in
 this release; they do not replace the existing reward inputs or eligibility gates.
 The current catalog includes the 2026 M6 and M5 Pro Mac minis and M5 Max Mac
 Studio. The M5 Ultra Studio identifier remains excluded because Apple's model
@@ -442,9 +441,7 @@ balance still serves free self-route.
 `store.Credit` is not reference-idempotent. A redelivered
 `checkout.session.completed` that arrives between the credit and the mark, or
 after a failed `CompleteBillingSession`, credits the deposit twice. A session
-without `billing_session_id` metadata has no dedup at all. `IsExternalIDProcessed`
-(`coordinator/billing/billing.go`; `coordinator/store/postgres.go`) exists
-but is not called by the webhook.
+without `billing_session_id` metadata has no dedup at all.
 
 ### Stripe Connect webhook semantics
 
@@ -507,7 +504,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | Reservation | `coordinator/api/inference_admission.go` (`reserveInferenceBalance`, `topUpReservationForInlinedMedia`); `coordinator/api/consumer.go` (`reservationCost`, `providerReservationCost`, `reserveAdditionalForProvider`, `explicitMaxTokens`, `ensureMaxTokensBound`, `defaultMaxOutputTokens`); `coordinator/api/reservations.go` (`serviceReservationManager`, `useServiceReservation`) | — |
 | Settlement | `coordinator/api/provider.go` (`handleCompleteAt`); `coordinator/api/consumer.go` (`refundReservedBalance`, `refundProviderExtra`); `coordinator/api/settlement.go` (`settlementHolder`, `holdForSettlement`, `defaultTerminalSettleGrace`); `coordinator/registry/pending_request.go` (`PendingRequest.FinalizeReservation`, `MarkReservationFinalized`); `coordinator/payments/payments.go` (`Ledger.Charge`, `Ledger.RecordUsage`) | `GET /v1/payments/balance`, `GET /v1/payments/usage` |
 | Ledger and balances | `coordinator/store/interface.go` (`LedgerEntryType`, `RewardLedgerTypes`); `coordinator/store/postgres.go` (`balances`, `ledger_entries`, `provider_earnings`, `creditTx`, `creditWithdrawableTx`, `CreditWithdrawableOnce`, `Debit`, `CreditProviderAccount`, `idx_provider_earnings_job`) | `GET /v1/provider/earnings`, `GET /v1/provider/account-earnings`, `GET /v1/me/summary` |
-| Deposits | `coordinator/billing/stripe.go` (`CreateCheckoutSession`, `VerifyWebhookSignature`, `ParseCheckoutSession`); `coordinator/billing/billing.go` (`CreditDeposit`, `IsExternalIDProcessed`); `coordinator/api/billing_handlers.go` (`handleStripeCreateSession`, `handleStripeWebhook`, `handleStripeSessionStatus`, `handleWalletBalance`, `handleBillingMethods`) | `POST /v1/billing/stripe/create-session`, `POST /v1/billing/stripe/webhook`, `GET /v1/billing/stripe/session`, `GET /v1/billing/wallet/balance`, `GET /v1/billing/methods` |
+| Deposits | `coordinator/billing/stripe.go` (`CreateCheckoutSession`, `VerifyWebhookSignature`, `ParseCheckoutSession`); `coordinator/billing/billing.go` (`CreditDeposit`); `coordinator/api/billing_handlers.go` (`handleStripeCreateSession`, `handleStripeWebhook`, `handleStripeSessionStatus`, `handleWalletBalance`, `handleBillingMethods`) | `POST /v1/billing/stripe/create-session`, `POST /v1/billing/stripe/webhook`, `GET /v1/billing/stripe/session`, `GET /v1/billing/wallet/balance`, `GET /v1/billing/methods` |
 | Stripe response projection | `coordinator/billing/stripe_connect.go` (`parsePayout`, `parseAccount`) | Payout creation and reconciliation share the same decoded fields and parse errors. Account responses select the first currency-default destination, falling back to the first destination. |
 | Payouts | `coordinator/billing/stripe_connect.go` (`MinWithdrawMicroUSD`, `InstantFeeBps`, `InstantFeeMinMicroUSD`, `FeeForMethodMicroUSD`); `coordinator/billing/stripe_regions.go` (`RequiredServiceAgreement`); `coordinator/api/stripe_payouts.go` (`handleStripeOnboard`, `handleStripeStatus`, `handleStripeWithdrawals`, `handleStripeDashboardLink`, `handleStripeUnlink`, `microUSDToCents`); `coordinator/api/stripe_withdraw.go` (`handleStripeWithdraw`, `creditRefundOnceWithRetry`); `coordinator/api/stripe_payouts_webhooks.go` (`handleStripeConnectWebhook`, `stripeRecipientTransferDelay`); `coordinator/api/stripe_reconcile.go` (`StartStripePayoutReconciler`); `coordinator/store/postgres.go` (`CreateStripeWithdrawalWithDebit`) | `POST /v1/billing/stripe/onboard`, `GET /v1/billing/stripe/status`, `POST /v1/billing/withdraw/stripe`, `GET /v1/billing/stripe/withdrawals`, `POST /v1/billing/stripe/dashboard`, `DELETE /v1/billing/stripe/account`, `POST /v1/billing/stripe/connect/webhook` |
 | Referral | `coordinator/billing/referral.go` (`ReferralService`, `Register`, `Apply`, `DistributeReferralReward`, `validateReferralCode`); `coordinator/billing/config.go` (`ReferralSharePercent`) | `POST /v1/referral/register`, `POST /v1/referral/apply`, `GET /v1/referral/stats`, `GET /v1/referral/info` |

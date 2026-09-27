@@ -436,7 +436,7 @@ type Server struct {
 	dd          *datadog.Client
 	queueGauges queueGaugeState
 
-	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
+	// apiKeyCache memoizes AuthenticateKey results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after
 	// apiKeyCacheTTL. Bounded at apiKeyCacheMaxSize entries.
 	apiKeyCacheMu sync.RWMutex
@@ -3095,7 +3095,7 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// lookupAPIKeyCache returns a cached ValidateKeyFull result if present and
+// lookupAPIKeyCache returns a cached AuthenticateKey result if present and
 // not expired. Returns false on miss or expiry.
 func (s *Server) lookupAPIKeyCache(token string) (apiKeyCacheEntry, bool) {
 	s.apiKeyCacheMu.RLock()

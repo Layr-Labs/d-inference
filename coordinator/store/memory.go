@@ -392,18 +392,6 @@ func (s *MemoryStore) GetKeyAccount(key string) string {
 	return ""
 }
 
-// ValidateKeyFull returns the active status and owner account ID for an
-// API key in a single lookup. Returns an error if the key does not exist.
-func (s *MemoryStore) ValidateKeyFull(key string) (bool, string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	rec, ok := s.keyRecords[key]
-	if !ok {
-		return false, "", fmt.Errorf("key not found")
-	}
-	return !rec.Disabled, rec.OwnerAccountID, nil
-}
-
 // AuthenticateKey resolves a raw key to its active record for request auth.
 func (s *MemoryStore) AuthenticateKey(rawKey string) (*APIKey, error) {
 	s.mu.RLock()
@@ -647,43 +635,6 @@ func (s *MemoryStore) UsageRecords() []UsageRecord {
 	return out
 }
 
-// UsageRecordsSince returns usage records created at or after the given time.
-func (s *MemoryStore) UsageRecordsSince(since time.Time) []UsageRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if since.IsZero() {
-		out := make([]UsageRecord, len(s.usage))
-		copy(out, s.usage)
-		for i := range out {
-			if out[i].RequestLocation != nil {
-				loc := *out[i].RequestLocation
-				out[i].RequestLocation = &loc
-			}
-		}
-		return out
-	}
-	var out []UsageRecord
-	for _, r := range s.usage {
-		ts := r.Timestamp
-		if ts.IsZero() {
-			ts = r.CreatedAt
-		}
-		if ts.Before(since) {
-			continue
-		}
-		cp := r
-		if cp.RequestLocation != nil {
-			loc := *cp.RequestLocation
-			cp.RequestLocation = &loc
-		}
-		out = append(out, cp)
-	}
-	if out == nil {
-		return []UsageRecord{}
-	}
-	return out
-}
-
 // UsageCountSince returns the number of usage records created at or after the given time.
 func (s *MemoryStore) UsageCountSince(since time.Time) (int64, error) {
 	s.mu.RLock()
@@ -900,11 +851,6 @@ func (s *MemoryStore) UsageByConsumer(consumerKey string) []UsageRecord {
 		}
 	}
 	return out
-}
-
-// RecordUsageWithCost logs a usage event with request ID and cost (in-memory).
-func (s *MemoryStore) RecordUsageWithCost(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64) {
-	s.RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID, promptTokens, completionTokens, costMicroUSD, nil)
 }
 
 // RecordUsageWithCostAndLocation logs a usage event with request location (in-memory).
@@ -1709,19 +1655,6 @@ func (s *MemoryStore) CompleteBillingSession(sessionID string) error {
 	return nil
 }
 
-// IsExternalIDProcessed returns true if a completed billing session with this external ID exists.
-func (s *MemoryStore) IsExternalIDProcessed(externalID string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for _, session := range s.billingSessions {
-		if session.ExternalID == externalID && session.Status == "completed" {
-			return true
-		}
-	}
-	return false
-}
-
 // --- Custom Pricing ---
 
 func (s *MemoryStore) SetModelPrice(accountID, model string, inputPrice, outputPrice int64) error {
@@ -1910,24 +1843,6 @@ func (s *MemoryStore) GetModelManifest(modelID string) (*ModelManifest, error) {
 		return nil, err
 	}
 	return manifestFromRecord(rec), nil
-}
-
-func (s *MemoryStore) UpsertPublishingAPIKey(key *PublishingAPIKey) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	cp := *key
-	if cp.CreatedAt.IsZero() {
-		cp.CreatedAt = time.Now()
-	}
-	cp.LastUsedAt = cloneTimePtr(key.LastUsedAt)
-	s.publishingAPIKeys[key.ID] = &cp
-	return nil
-}
-
-func (s *MemoryStore) FindPublishingAPIKeys() []PublishingAPIKey {
-	keys, _ := s.FindPublishingAPIKeysWithError()
-	return keys
 }
 
 func (s *MemoryStore) FindPublishingAPIKeysWithError() ([]PublishingAPIKey, error) {
@@ -2747,16 +2662,6 @@ func (s *MemoryStore) RedeemInviteCode(code string, accountID string) error {
 	return nil
 }
 
-func (s *MemoryStore) HasRedeemedInviteCode(code, accountID string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if acctCodes, ok := s.accountRedemptions[accountID]; ok {
-		return acctCodes[code]
-	}
-	return false
-}
-
 // --- Provider Earnings ---
 
 // RecordProviderEarning stores an earning record for a specific provider node.
@@ -3220,45 +3125,6 @@ func (s *MemoryStore) DeleteProvidersBySerial(_ context.Context, ownerAccountID,
 		// preserved — they hold money/uptime history.
 	}
 	return len(matched), nil
-}
-
-func (s *MemoryStore) UpdateProviderLastSeen(_ context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	p, ok := s.providerRecords[id]
-	if !ok {
-		return fmt.Errorf("provider %q not found", id)
-	}
-	p.LastSeen = time.Now()
-	return nil
-}
-
-func (s *MemoryStore) UpdateProviderTrust(_ context.Context, id string, trustLevel string, attested bool, attestationResult json.RawMessage) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	p, ok := s.providerRecords[id]
-	if !ok {
-		return fmt.Errorf("provider %q not found", id)
-	}
-	p.TrustLevel = trustLevel
-	p.Attested = attested
-	p.AttestationResult = attestationResult
-	return nil
-}
-
-func (s *MemoryStore) UpdateProviderChallenge(_ context.Context, id string, lastVerified time.Time, failedCount int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	p, ok := s.providerRecords[id]
-	if !ok {
-		return fmt.Errorf("provider %q not found", id)
-	}
-	p.LastChallengeVerified = &lastVerified
-	p.FailedChallenges = failedCount
-	return nil
 }
 
 // --- Provider Reputation Persistence ---

@@ -86,6 +86,3 @@ func ReadConfig() ConfigPair {
 
 // Check validates the config. Currently a no-op.
 func (c Config) Check() error { return nil }
-
-// Check is a no-op for ConfigPair.
-func (cp ConfigPair) Check() error { return nil }

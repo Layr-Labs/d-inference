@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-21 · commit `b581bfd21`
+> Last updated: 2026-09-27 · commit `1e4f506f2`
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -416,7 +416,7 @@ gate.
    (`compute`).
 3. **Three implementations, one chain.** Go, Rust and the Swift provider
    produce byte-identical chain hashes and boundaries for the shared vectors —
-   `coordinator/promptcontract/blockhash.go` (`ChainHashes`,
+   `coordinator/promptcontract/blockhash.go` (`BlockHash`,
    `LastCompleteBoundary`), `coordinator/promptsidecar/src/hash.rs`
    (`chain_hashes`), `fixtures/prompt-contract/v1`,
    `scripts/verify-prompt-parity.sh`.

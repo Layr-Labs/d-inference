@@ -30,11 +30,6 @@ type APIKeyStore interface {
 	// GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
 	GetKeyAccount(key string) string
 
-	// ValidateKeyFull returns the active status and owner account ID for an
-	// API key in a single query, avoiding the 2-query overhead of
-	// ValidateKey + GetKeyAccount on every authenticated request.
-	ValidateKeyFull(key string) (active bool, ownerAccountID string, err error)
-
 	// RevokeKey deactivates a key. Returns true if the key existed.
 	RevokeKey(key string) bool
 
@@ -92,9 +87,6 @@ type UsageStore interface {
 	// RecordUsage logs an inference usage event.
 	RecordUsage(providerID, consumerKey, model string, promptTokens, completionTokens int)
 
-	// RecordUsageWithCost logs an inference usage event including request ID and cost.
-	RecordUsageWithCost(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64)
-
 	// RecordUsageWithCostAndLocation logs an inference usage event with an
 	// approximate request-origin location. Raw IP addresses are not stored.
 	RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
@@ -113,10 +105,6 @@ type UsageStore interface {
 
 	// UsageRecords returns all usage records.
 	UsageRecords() []UsageRecord
-
-	// UsageRecordsSince returns usage records created at or after the given time.
-	// Zero since returns all records.
-	UsageRecordsSince(since time.Time) []UsageRecord
 
 	// UsageCountSince returns the number of usage records created at or after
 	// the given time. Zero since returns all records. Uses SQL COUNT(*) to
@@ -324,10 +312,6 @@ type BillingStore interface {
 	// CompleteBillingSession marks a session as completed and sets the completion time.
 	CompleteBillingSession(sessionID string) error
 
-	// IsExternalIDProcessed returns true if a billing session with this external ID
-	// has already been completed. Used to prevent double-crediting the same on-chain tx.
-	IsExternalIDProcessed(externalID string) bool
-
 	// --- Custom Pricing ---
 
 	// SetModelPrice sets a custom price override for a model on an account.
@@ -429,8 +413,6 @@ type ModelRegistryStore interface {
 	ListActiveModelRegistryWithError() ([]ModelRegistryRecord, error)
 	GetModelRegistryRecord(modelID string) (*ModelRegistryRecord, error)
 	GetModelManifest(modelID string) (*ModelManifest, error)
-	UpsertPublishingAPIKey(key *PublishingAPIKey) error
-	FindPublishingAPIKeys() []PublishingAPIKey
 	FindPublishingAPIKeysWithError() ([]PublishingAPIKey, error)
 	MarkPublishingAPIKeyUsed(id string) error
 
@@ -552,9 +534,6 @@ type InviteStore interface {
 	// RedeemInviteCode atomically increments used_count and records the redemption.
 	// Returns error if code is inactive, expired, fully used, or already redeemed by this account.
 	RedeemInviteCode(code string, accountID string) error
-
-	// HasRedeemedInviteCode checks if an account has already redeemed a specific code.
-	HasRedeemedInviteCode(code, accountID string) bool
 }
 
 // ProviderEarningsStore tracks per-node provider earnings and payouts plus the
@@ -673,15 +652,6 @@ type ProviderStore interface {
 
 	// ListProvidersByAccount returns stored provider records linked to an account.
 	ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error)
-
-	// UpdateProviderLastSeen updates the last_seen timestamp for a provider.
-	UpdateProviderLastSeen(ctx context.Context, id string) error
-
-	// UpdateProviderTrust persists trust level and attestation state changes.
-	UpdateProviderTrust(ctx context.Context, id string, trustLevel string, attested bool, attestationResult json.RawMessage) error
-
-	// UpdateProviderChallenge persists challenge verification state.
-	UpdateProviderChallenge(ctx context.Context, id string, lastVerified time.Time, failedCount int) error
 
 	// DeleteProvidersBySerial removes every persisted provider record sharing the
 	// given stable identity (serial, or a session id when serial is empty),

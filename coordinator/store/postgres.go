@@ -1485,25 +1485,6 @@ func (s *PostgresStore) ValidateKey(key string) bool {
 	return active
 }
 
-// ValidateKeyFull returns the active status and owner account ID for an
-// API key in a single query. Returns an error if the key does not exist.
-func (s *PostgresStore) ValidateKeyFull(key string) (bool, string, error) {
-	h := hashKey(key)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var active bool
-	var ownerAccountID string
-	err := s.pool.QueryRow(ctx,
-		`SELECT active, owner_account_id FROM api_keys WHERE key_hash = $1`, h,
-	).Scan(&active, &ownerAccountID)
-	if err != nil {
-		return false, "", err
-	}
-	return active, ownerAccountID, nil
-}
-
 // AuthenticateKey resolves a raw key to its active record for request auth.
 func (s *PostgresStore) AuthenticateKey(rawKey string) (*APIKey, error) {
 	h := hashKey(rawKey)
@@ -1759,11 +1740,6 @@ func (s *PostgresStore) UsageByConsumer(consumerKey string) []UsageRecord {
 		records = append(records, r)
 	}
 	return records
-}
-
-// RecordUsageWithCost inserts a usage record with request ID and cost.
-func (s *PostgresStore) RecordUsageWithCost(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64) {
-	s.RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID, promptTokens, completionTokens, costMicroUSD, nil)
 }
 
 // RecordUsageWithCostAndLocation inserts a usage record with request ID, cost,
@@ -2802,19 +2778,6 @@ func (s *PostgresStore) CompleteBillingSession(sessionID string) error {
 	return nil
 }
 
-// IsExternalIDProcessed returns true if a completed billing session with this external ID exists.
-func (s *PostgresStore) IsExternalIDProcessed(externalID string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var count int
-	_ = s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM billing_sessions WHERE external_id = $1 AND status = 'completed'`,
-		externalID,
-	).Scan(&count)
-	return count > 0
-}
-
 // --- Custom Pricing ---
 
 func (s *PostgresStore) SetModelPrice(accountID, model string, inputPrice, outputPrice int64) error {
@@ -3808,18 +3771,6 @@ func (s *PostgresStore) RedeemInviteCode(code string, accountID string) error {
 	return tx.Commit(ctx)
 }
 
-func (s *PostgresStore) HasRedeemedInviteCode(code, accountID string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var count int
-	_ = s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM invite_redemptions WHERE code = $1 AND account_id = $2`,
-		code, accountID,
-	).Scan(&count)
-	return count > 0
-}
-
 // --- Provider Earnings ---
 
 // RecordProviderEarning stores an earning record for a specific provider node.
@@ -4397,49 +4348,6 @@ func (s *PostgresStore) DeleteProvidersBySerial(ctx context.Context, ownerAccoun
 		return 0, fmt.Errorf("store: delete providers commit: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
-}
-
-func (s *PostgresStore) UpdateProviderLastSeen(ctx context.Context, id string) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`UPDATE providers SET last_seen = NOW() WHERE id = $1`, id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update provider last_seen: %w", err)
-	}
-	return nil
-}
-
-func (s *PostgresStore) UpdateProviderTrust(ctx context.Context, id string, trustLevel string, attested bool, attestationResult json.RawMessage) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`UPDATE providers SET trust_level = $2, attested = $3, attestation_result = $4
-		 WHERE id = $1`,
-		id, trustLevel, attested, attestationResult,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update provider trust: %w", err)
-	}
-	return nil
-}
-
-func (s *PostgresStore) UpdateProviderChallenge(ctx context.Context, id string, lastVerified time.Time, failedCount int) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`UPDATE providers SET last_challenge_verified = $2, failed_challenges = $3
-		 WHERE id = $1`,
-		id, lastVerified, failedCount,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update provider challenge: %w", err)
-	}
-	return nil
 }
 
 // --- Provider Reputation Persistence ---

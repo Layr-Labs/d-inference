@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-20 · commit `76a8f03d`
+> Last updated: 2026-09-27 · commit `1e4f506f2`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, the field allowlist, and the tests
@@ -111,7 +111,7 @@ explicit raw value where the two differ; TS uses string-literal unions.
 
 | Enum | Values | Fallback |
 |---|---|---|
-| `source` | `coordinator`, `provider`, `app`, `console`, `bridge` | `custom` (`TelemetrySourceCustomValue`) for anything outside `KnownSources()`; authenticated providers were always rewritten to `provider` |
+| `source` | `coordinator`, `provider`, `app`, `console`, `bridge` | `custom` (`TelemetrySourceCustomValue`); client ingestion is disabled (`handleTelemetryIngest` returns 410), so the coordinator emitter writes `coordinator` |
 | `severity` | `debug`, `info`, `warn`, `error`, `fatal` | `info` |
 | `kind` | `panic`, `http_error`, `protocol_error`, `backend_crash`, `attestation_failure`, `inference_error`, `runtime_mismatch`, `connectivity`, `oom`, `engine_health`, `log`, `custom` | `custom` |
 

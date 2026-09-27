@@ -90,8 +90,10 @@ final class SSDCheckpointDemandHints: @unchecked Sendable {
         lock.withLock {
             if hints.updateValue(demand, forKey: requestID) == nil {
                 order.append(requestID)
-                // Terminal cleanup normally keeps this far below the bound; a
-                // leaked receipt only costs its own hint, never a write.
+                // Terminal cleanup normally keeps this far below the bound. An
+                // evicted or leaked hint fails OPEN: `demand(for:)` returns nil
+                // and `admitsWrite` falls back to the legacy write, so the cost
+                // is one extra checkpoint write, never a lost one.
                 while order.count > limit, let oldest = order.first {
                     order.removeFirst()
                     hints.removeValue(forKey: oldest)

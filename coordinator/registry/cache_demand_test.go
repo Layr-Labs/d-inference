@@ -144,8 +144,8 @@ func TestCacheDemandRetainsBoundaryForTTLAtFleetRate(t *testing.T) {
 		t.Fatalf("boundary observed %s earlier at %d/s was lost: repeat=%d key=%q",
 			now.Sub(start), fillRatePerSecond, got, key)
 	}
-	if len(sized.entries) > cacheDemandMaxEntries || sized.order.Len() != len(sized.entries) {
-		t.Fatalf("demand index exceeded its cap: %d entries", len(sized.entries))
+	if sized.order.Len() != len(sized.entries) {
+		t.Fatalf("map/order drift: %d vs %d", len(sized.entries), sized.order.Len())
 	}
 
 	holderSized := newCacheDemandTracker(cacheRoutingMaxEntries, defaultCacheRoutingTTL)
@@ -166,5 +166,60 @@ func TestCacheDemandCapIsIndependentOfHolderCaps(t *testing.T) {
 	}
 	if cacheDemandMaxEntries < 300*int(defaultCacheRoutingTTL/time.Second) {
 		t.Fatalf("demand cap %d does not hold %s at 300 entries/s", cacheDemandMaxEntries, defaultCacheRoutingTTL)
+	}
+}
+
+func TestCacheDemandEvictsAtExactlyTheCap(t *testing.T) {
+	d := newCacheDemandTracker(cacheDemandMaxEntries, defaultCacheRoutingTTL)
+	now := time.Unix(1_700_000_000, 0)
+	for i := 0; i <= cacheDemandMaxEntries; i++ {
+		d.observe([]cacheDemandBoundary{{fmt.Sprintf("k/%d", i), 256}}, now.Add(time.Duration(i)*time.Microsecond))
+	}
+	if len(d.entries) != cacheDemandMaxEntries || d.order.Len() != cacheDemandMaxEntries {
+		t.Fatalf("entries=%d order=%d, want exactly %d", len(d.entries), d.order.Len(), cacheDemandMaxEntries)
+	}
+	if _, ok := d.entries["k/0"]; ok {
+		t.Fatal("oldest entry survived the cap")
+	}
+	if _, ok := d.entries["k/1"]; !ok {
+		t.Fatal("cap evicted more than one entry")
+	}
+	if _, ok := d.entries[fmt.Sprintf("k/%d", cacheDemandMaxEntries)]; !ok {
+		t.Fatal("newest entry missing")
+	}
+}
+
+// The plan-path sweep must not drain a whole stale index under the lock. Each
+// observe expires a bounded slice from the head; stale entries that remain are
+// still never matched, and later calls finish draining.
+func TestCacheDemandExpiryIsBoundedPerObserveAndStaleNeverMatches(t *testing.T) {
+	const filled = 5 * cacheDemandMaxExpiryPerObserve
+	d := newCacheDemandTracker(cacheDemandMaxEntries, defaultCacheRoutingTTL)
+	start := time.Unix(1_700_000_000, 0)
+	for i := 0; i < filled; i++ {
+		d.observe([]cacheDemandBoundary{{fmt.Sprintf("stale/%d", i), 512}}, start.Add(time.Duration(i)*time.Millisecond))
+	}
+	later := start.Add(defaultCacheRoutingTTL + time.Minute)
+	if got, _ := d.observe([]cacheDemandBoundary{{"fresh", 256}}, later); got != 0 {
+		t.Fatalf("fresh key matched: %d", got)
+	}
+	if want := filled - cacheDemandMaxExpiryPerObserve + 1; len(d.entries) != want {
+		t.Fatalf("one observe expired %d entries, want exactly %d (bounded)",
+			filled+1-len(d.entries), cacheDemandMaxExpiryPerObserve)
+	}
+	// A stale entry that survived the bounded sweep must not read as demand.
+	if got, key := d.observe([]cacheDemandBoundary{{fmt.Sprintf("stale/%d", filled-1), 512}}, later); got != 0 || key != "" {
+		t.Fatalf("stale surviving entry matched: %d %q", got, key)
+	}
+	for i := 0; i < filled/cacheDemandMaxExpiryPerObserve+1; i++ {
+		d.observe([]cacheDemandBoundary{{fmt.Sprintf("fresh/%d", i), 256}}, later.Add(time.Duration(i)*time.Millisecond))
+	}
+	for key := range d.entries {
+		if len(key) >= 6 && key[:6] == "stale/" && key != fmt.Sprintf("stale/%d", filled-1) {
+			t.Fatalf("stale entry %q survived repeated sweeps", key)
+		}
+	}
+	if d.order.Len() != len(d.entries) {
+		t.Fatal("map/order drift after bounded sweeps")
 	}
 }

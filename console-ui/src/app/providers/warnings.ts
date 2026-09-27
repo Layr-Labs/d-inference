@@ -223,9 +223,9 @@ export function computeWarnings(
     });
   }
 
-  const coldModels = coldModelReadiness(p);
+  const coldModels = coldModelReadiness(p, ctx.heartbeat_timeout_seconds);
   const blockedLoads = coldModels.filter(
-    (model) => model.shortfallGb > 0 && model.canLoadAfterEviction === false);
+    (model) => !model.busyServing && model.shortfallGb > 0 && model.canLoadAfterEviction === false);
   if (blockedLoads.length > 0) {
     const first = blockedLoads[0];
     const allModelsBlocked = blockedLoads.length === p.models.length;
@@ -234,7 +234,8 @@ export function computeWarnings(
       severity: allModelsBlocked ? "blocking" : "degrading",
       title: allModelsBlocked ? "No selected model fits live memory" : "Some cold models cannot load now",
       detail: `${first.model} needs ${first.requiredGb.toFixed(1)} GB to load, but this Mac has `
-        + `${first.usableGb.toFixed(1)} GB usable right now (${first.shortfallGb.toFixed(1)} GB short). `
+        + `${first.usableGb.toFixed(1)} GB usable without eviction. `
+        + `Even after idle eviction the cold load is ${first.coldLoadShortfallGb?.toFixed(1)} GB short. `
         + `${blockedLoads.length > 1 ? `${blockedLoads.length - 1} more model(s) are blocked. ` : ""}`
         + "The hardware RAM figure is not live free memory. Free memory, run `darkbloom doctor`, then restart to retry the load.",
     });

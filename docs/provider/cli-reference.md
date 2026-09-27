@@ -583,8 +583,11 @@ Output includes:
   separated into `Startup preload pending`, `Not loaded (loads on request)`,
   `Preload skipped (no eviction)`, and `Cold load blocked (memory)`. A fresh daemon snapshot reports the no-eviction
   usable load memory beside a blocked model's scanner estimate, activation +
-  minimum-KV serving reserve, required total and shortfall. Older or stale
-  snapshots withhold the numeric verdict rather than guessing. `always ready`
+  minimum-KV serving reserve, required total and no-eviction shortfall. When
+  request-time eviction still cannot fit the model, the cold-load shortfall
+  (the amount to free) is shown separately. Older or stale snapshots and
+  snapshots taken during active inference withhold a definitive verdict.
+  `always ready`
   retains loaded models but does not override the memory load gate.
   An eviction-aware allowance distinguishes a preload that preserves resident
   models from a cold request that can evict idle slots; only the latter earns
@@ -647,8 +650,8 @@ load budget and their shortfall; it tells the operator to free memory, rerun
 `doctor` and restart to retry preload when enabled. Interactive terminals color section
 headings and PASS/WARN/FAIL markers. Pipes, `NO_COLOR`, `CLICOLOR=0`, and
 `TERM=dumb` retain plain text.
-When the daemon's capacity snapshot is fresh, `doctor` uses its exact
-no-eviction load sample; otherwise it falls back to a local read-only memory
+When the daemon's capacity snapshot is fresh, `doctor` uses its paired
+no-eviction usable memory and serving headroom sample; otherwise it falls back to a local read-only memory
 sample and does not claim to know the earlier startup decision.
 An already resident target is reported as resident without pretending it needs another cold
 load. When the fresh daemon reports that idle eviction could fit a cold model,

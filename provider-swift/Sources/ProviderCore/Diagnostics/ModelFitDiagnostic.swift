@@ -92,7 +92,9 @@ public enum ModelFitDiagnostic {
         alternatives: [ModelOption] = [],
         servingSetIDs: [String]? = nil,
         alreadyResident: Bool = false,
-        evictionAwareWeightGb: Double? = nil
+        evictionAwareWeightGb: Double? = nil,
+        loadHeadroomGb: Double? = nil,
+        busyServing: Bool = false
     ) -> Diagnostic {
         guard weightGb.isFinite, weightGb > 0, usableGb.isFinite, usableGb >= 0 else {
             return Diagnostic(
@@ -105,9 +107,7 @@ public enum ModelFitDiagnostic {
         // target's solo floor when other enabled models pin a larger one. The
         // target always joins the basis — the daemon's set includes whatever
         // it is loading (max is idempotent, so a duplicate id is harmless).
-        let needed = ModelLoadAdmission.requiredToLoadGb(
-            weightsGb: weightGb,
-            headroomGb: Double(
+        let resolvedHeadroom = loadHeadroomGb ?? Double(
                 // nil = no declared set → the target alone (a single-model
                 // box). An EMPTY declared set is the daemon's open world —
                 // it advertises nothing, so the target cannot be joining it;
@@ -115,7 +115,9 @@ public enum ModelFitDiagnostic {
                 // floor.
                 UnifiedMemoryCap.loadHeadroomBytes(
                     modelIDs: servingSetIDs.map { $0.isEmpty ? [] : $0 + [modelID] } ?? [modelID]))
-                / (1024.0 * 1024.0 * 1024.0))
+                / (1024.0 * 1024.0 * 1024.0)
+        let needed = ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: weightGb, headroomGb: resolvedHeadroom)
         let shortfall = max(0, needed - usableGb)
         if alreadyResident {
             return Diagnostic(
@@ -130,6 +132,13 @@ public enum ModelFitDiagnostic {
                 message: "\(modelID) needs ~\(fmt(needed)) GB; \(fmt(usableGb)) GB usable now.",
                 fix: nil)
         }
+        if busyServing {
+            return Diagnostic(
+                section: .traffic, name: "model fits in RAM", level: .info,
+                message: "\(modelID) needs ~\(fmt(needed)) GB, but another request is active. "
+                    + "The current load budget is temporary; recheck when this Mac is idle.",
+                fix: nil)
+        }
         if let evictionAwareWeightGb, evictionAwareWeightGb.isFinite,
            evictionAwareWeightGb >= weightGb {
             return Diagnostic(
@@ -140,6 +149,8 @@ public enum ModelFitDiagnostic {
                 fix: "No configuration change is required. Check `darkbloom status` for current slots; "
                     + "free memory if both models should stay resident.")
         }
+        let coldShortfall = evictionAwareWeightGb.map { max(0, weightGb - $0) }
+        let actionableShortfall = coldShortfall ?? shortfall
         // Each alternative is judged with ITS OWN activation floor — the
         // suggestion models what `enabled_models = [candidate]` would require.
         let fits = alternatives
@@ -147,14 +158,17 @@ public enum ModelFitDiagnostic {
             .sorted { $0.weightGb > $1.weightGb }
         let suggestion: String
         if fits.isEmpty {
-            suggestion = "Free at least \(fmt(shortfall)) GB of usable memory and rerun `darkbloom doctor`; restart to preload when enabled, or retry a request. A larger-memory Mac is another option."
+            suggestion = "Free at least \(fmt(actionableShortfall)) GB of usable memory and rerun `darkbloom doctor`; restart to preload when enabled, or retry a request. A larger-memory Mac is another option."
         } else {
             let list = fits.prefix(3).map { "\($0.id) (~\(fmt(requiredGb(estimatedMemoryGb: $0.weightGb, modelID: $0.id))) GB)" }.joined(separator: ", ")
-            suggestion = "Free at least \(fmt(shortfall)) GB of usable memory and rerun `darkbloom doctor`; restart to preload when enabled, or retry a request. Alternatively set `enabled_models` to a smaller model: \(list)."
+            suggestion = "Free at least \(fmt(actionableShortfall)) GB of usable memory and rerun `darkbloom doctor`; restart to preload when enabled, or retry a request. Alternatively set `enabled_models` to a smaller model: \(list)."
         }
         return Diagnostic(
             section: .traffic, name: "model fits in RAM", level: .fail,
-            message: "\(modelID) needs ~\(fmt(needed)) GB but only \(fmt(usableGb)) GB is usable now (\(fmt(shortfall)) GB short). The `status` hardware budget is not live free RAM; a cold load is blocked at this memory level.",
+            message: "\(modelID) needs ~\(fmt(needed)) GB but only \(fmt(usableGb)) GB is usable now "
+                + "(\(fmt(shortfall)) GB short for preload). "
+                + (coldShortfall.map { "Even after idle eviction, the cold load is \(fmt($0)) GB short. " } ?? "")
+                + "The `status` hardware budget is not live free RAM.",
             fix: suggestion)
     }
 

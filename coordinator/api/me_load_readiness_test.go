@@ -2,21 +2,35 @@ package api
 
 import (
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func TestColdModelLoadBlockedUsesLiveNoEvictionBudget(t *testing.T) {
 	usable, headroom := 14.3, 6.5
+	heartbeat := time.Now()
 	p := &myProvider{
-		Online: true,
-		Models: []protocol.ModelInfo{{ID: "qwen", EstimatedMemoryGB: 18.2}},
+		Online:        true,
+		LastHeartbeat: &heartbeat,
+		Models:        []protocol.ModelInfo{{ID: "qwen", EstimatedMemoryGB: 18.2}},
 		BackendCapacity: &protocol.BackendCapacity{
 			LoadUsableGB: &usable, LoadHeadroomGB: &headroom,
 		},
 	}
 	noEviction := 7.8
 	p.BackendCapacity.FreeForLoadGB = &noEviction
+	stale := time.Now().Add(-2 * time.Minute)
+	p.LastHeartbeat = &stale
+	if coldModelLoadBlocked(p) {
+		t.Fatal("stale heartbeat must withhold live load verdict")
+	}
+	p.LastHeartbeat = &heartbeat
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: "small", State: "running", NumRunning: 1}}
+	if coldModelLoadBlocked(p) {
+		t.Fatal("active work makes cold-load memory verdict temporary")
+	}
+	p.BackendCapacity.Slots = nil
 	if !coldModelLoadBlocked(p) {
 		t.Fatal("24.7 GB requirement must be blocked by 14.3 GB usable")
 	}

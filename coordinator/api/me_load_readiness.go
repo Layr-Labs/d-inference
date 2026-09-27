@@ -1,6 +1,11 @@
 package api
 
-import "math"
+import (
+	"math"
+	"time"
+)
+
+const ownerHeartbeatTimeoutSeconds = 90
 
 // An owner's attention count uses the same live no-eviction figures as the
 // My Macs model-readiness panel. Missing legacy fields never imply a fit or
@@ -8,7 +13,12 @@ import "math"
 func coldModelLoadBlocked(p *myProvider) bool {
 	if !p.Online || p.BackendCapacity == nil ||
 		p.BackendCapacity.LoadUsableGB == nil || p.BackendCapacity.LoadHeadroomGB == nil ||
-		p.BackendCapacity.FreeForLoadGB == nil {
+		p.BackendCapacity.FreeForLoadGB == nil || p.LastHeartbeat == nil ||
+		p.PendingRequests > 0 {
+		return false
+	}
+	age := time.Since(*p.LastHeartbeat)
+	if age < -30*time.Second || age > ownerHeartbeatTimeoutSeconds*time.Second {
 		return false
 	}
 	usable := *p.BackendCapacity.LoadUsableGB
@@ -25,6 +35,9 @@ func coldModelLoadBlocked(p *myProvider) bool {
 		resident[p.CurrentModel] = true
 	}
 	for _, slot := range p.BackendCapacity.Slots {
+		if slot.State == "running" || slot.NumRunning > 0 {
+			return false // today's shortage may clear when this request ends
+		}
 		if slot.State == "idle" || slot.State == "running" {
 			resident[slot.Model] = true
 		}

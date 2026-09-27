@@ -7,16 +7,24 @@ export interface ColdModelReadiness {
   requiredGb: number;
   usableGb: number;
   shortfallGb: number;
+  coldLoadShortfallGb?: number;
+  busyServing: boolean;
   /** Normal request loading may evict idle slots; startup preload never does. */
   canLoadAfterEviction?: boolean;
 }
 
 /** The provider's current no-eviction load check for each advertised cold model. */
-export function coldModelReadiness(provider: MyProvider): ColdModelReadiness[] {
+export function coldModelReadiness(
+  provider: MyProvider, heartbeatTimeoutSeconds = 90, nowMs = Date.now()
+): ColdModelReadiness[] {
   const cap = provider.backend_capacity;
   const usableGb = cap?.load_usable_gb;
   const headroomGb = cap?.load_headroom_gb;
-  if (!provider.online || usableGb === undefined || headroomGb === undefined ||
+  const heartbeatMs = provider.last_heartbeat ? Date.parse(provider.last_heartbeat) : NaN;
+  const heartbeatAgeMs = nowMs - heartbeatMs;
+  if (!provider.online || !Number.isFinite(heartbeatAgeMs) ||
+      heartbeatAgeMs < -30_000 || heartbeatAgeMs > heartbeatTimeoutSeconds * 1000 ||
+      usableGb === undefined || headroomGb === undefined ||
       !Number.isFinite(usableGb) || !Number.isFinite(headroomGb) || usableGb < 0 || headroomGb < 0) {
     return [];
   }
@@ -26,12 +34,17 @@ export function coldModelReadiness(provider: MyProvider): ColdModelReadiness[] {
   for (const slot of cap?.slots ?? []) {
     if (slot.state === "idle" || slot.state === "running") resident.add(slot.model);
   }
+  const busyServing = provider.pending_requests > 0 ||
+    (cap?.slots ?? []).some((slot) => slot.state === "running" || slot.num_running > 0);
 
   return provider.models.flatMap((model) => {
     const estimatedGb = model.estimated_memory_gb;
     if (resident.has(model.id) || estimatedGb === undefined ||
         !Number.isFinite(estimatedGb) || estimatedGb <= 0) return [];
     const requiredGb = estimatedGb + headroomGb;
+    const evictionAwareGb = cap?.free_for_load_gb;
+    const hasEvictionSample = evictionAwareGb !== undefined &&
+      Number.isFinite(evictionAwareGb) && evictionAwareGb >= 0;
     return [{
       model: model.id,
       estimatedGb,
@@ -39,9 +52,9 @@ export function coldModelReadiness(provider: MyProvider): ColdModelReadiness[] {
       requiredGb,
       usableGb,
       shortfallGb: Math.max(0, requiredGb - usableGb),
-      canLoadAfterEviction: cap?.free_for_load_gb === undefined ||
-        !Number.isFinite(cap.free_for_load_gb) || cap.free_for_load_gb < 0
-        ? undefined : cap.free_for_load_gb >= estimatedGb,
+      coldLoadShortfallGb: hasEvictionSample ? Math.max(0, estimatedGb - evictionAwareGb) : undefined,
+      busyServing,
+      canLoadAfterEviction: hasEvictionSample ? evictionAwareGb >= estimatedGb : undefined,
     }];
   });
 }

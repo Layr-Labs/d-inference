@@ -122,8 +122,14 @@ enum DoctorRunner {
             // A fresh daemon snapshot is the same no-eviction load gate that
             // decided startup preload. Prefer it over a second-process sample
             // so doctor, status and My Macs explain the same decision.
-            let usableGb = (loadSnapshotFresh ? state?.capacity?.loadUsableGb : nil)
-                ?? independentlySampledUsableGb
+            let liveLoadBudget = loadSnapshotFresh ? state?.capacity : nil
+            // Use the daemon's usable and headroom fields as one pair: a
+            // CLI-side reserve override can differ from the serving process.
+            let hasLiveLoadPair = liveLoadBudget?.loadUsableGb != nil
+                && liveLoadBudget?.loadHeadroomGb != nil
+            let usableGb = hasLiveLoadPair
+                ? (liveLoadBudget?.loadUsableGb ?? independentlySampledUsableGb)
+                : independentlySampledUsableGb
 
             // Prefer the live loaded model ONLY when the daemon is up and fresh;
             // otherwise diagnose the CONFIGURED model. A stale state file (daemon
@@ -194,7 +200,9 @@ enum DoctorRunner {
                         : (servingSetIDs.isEmpty ? nil : servingSetIDs),
                     alreadyResident: loadSnapshotFresh && (
                         state?.warmModels.contains(targetID) == true || state?.currentModel == targetID),
-                    evictionAwareWeightGb: loadSnapshotFresh ? state?.capacity?.freeForLoadGb : nil))
+                    evictionAwareWeightGb: hasLiveLoadPair ? liveLoadBudget?.freeForLoadGb : nil,
+                    loadHeadroomGb: hasLiveLoadPair ? liveLoadBudget?.loadHeadroomGb : nil,
+                    busyServing: loadSnapshotFresh && state?.inferenceActive == true))
             } else if !alternatives.isEmpty {
                 // No specific/known target; check the largest local model fits.
                 if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {

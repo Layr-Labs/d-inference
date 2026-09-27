@@ -106,6 +106,20 @@ import Testing
         modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
         evictionAwareWeightGb: 7.8)
     #expect(impossible.level == .fail)
+
+    let paired = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        evictionAwareWeightGb: 14, loadHeadroomGb: 8)
+    #expect(paired.level == .fail)
+    #expect(paired.message.contains("26.2 GB"))
+    #expect(paired.message.contains("4.2 GB short"))
+    #expect(paired.fix?.contains("Free at least 4.2 GB") == true)
+
+    let busy = ModelFitDiagnostic.diagnose(
+        modelID: "qwen", weightGb: 18.2, usableGb: 14.3,
+        evictionAwareWeightGb: 7.8, busyServing: true)
+    #expect(busy.level == .info)
+    #expect(busy.message.contains("recheck when this Mac is idle"))
 }
 
 @Test func modelFitPassesWhenItFits() {

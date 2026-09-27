@@ -144,7 +144,8 @@ struct Status: AsyncParsableCommand {
             currentModel: state.currentModel,
             startupPreloadPendingModels: state.startupPreloadPendingModels,
             readiness: readiness,
-            evictionAwareWeightGb: state.capacity?.freeForLoadGb)
+            evictionAwareWeightGb: state.capacity?.freeForLoadGb,
+            inferenceActive: state.inferenceActive)
         {
             print(line)
         }
@@ -224,7 +225,8 @@ struct Status: AsyncParsableCommand {
         currentModel: String?,
         startupPreloadPendingModels: [String]?,
         readiness: [String: ModelLoadReadiness] = [:],
-        evictionAwareWeightGb: Double? = nil
+        evictionAwareWeightGb: Double? = nil,
+        inferenceActive: Bool = false
     ) -> [String] {
         guard let advertised else { return [] }
         var resident = Set(warmModels)
@@ -232,10 +234,15 @@ struct Status: AsyncParsableCommand {
         let notLoaded = advertised.filter { !resident.contains($0) }
         let pending = Set(startupPreloadPendingModels ?? [])
         let preloading = notLoaded.filter { pending.contains($0) }
-        let blocked = notLoaded.filter {
-            !pending.contains($0) && (readiness[$0]?.shortfallGb ?? 0) > 0
+        let temporarilyBusy = notLoaded.filter {
+            inferenceActive && !pending.contains($0) && (readiness[$0]?.shortfallGb ?? 0) > 0
         }
-        let onRequest = notLoaded.filter { !pending.contains($0) && !blocked.contains($0) }
+        let blocked = notLoaded.filter {
+            !inferenceActive && !pending.contains($0) && (readiness[$0]?.shortfallGb ?? 0) > 0
+        }
+        let onRequest = notLoaded.filter {
+            !pending.contains($0) && !blocked.contains($0) && !temporarilyBusy.contains($0)
+        }
         var lines: [String] = []
         if !preloading.isEmpty {
             lines.append("Startup preload pending: \(preloading.joined(separator: ", "))")
@@ -243,11 +250,18 @@ struct Status: AsyncParsableCommand {
         if !onRequest.isEmpty {
             lines.append("Not loaded (loads on request): \(onRequest.joined(separator: ", "))")
         }
+        if !temporarilyBusy.isEmpty {
+            lines.append("Load readiness temporarily busy: \(temporarilyBusy.joined(separator: ", ")) — another request is active; recheck when idle.")
+        }
         var coldLoadBlocked = false
+        var coldShortfallGb = 0.0
         for model in blocked {
             guard let budget = readiness[model] else { continue }
             let mayEvict = evictionAwareWeightGb.map { $0 >= budget.estimatedMemoryGb }
-            if mayEvict == false { coldLoadBlocked = true }
+            if mayEvict == false {
+                coldLoadBlocked = true
+                coldShortfallGb = max(coldShortfallGb, budget.estimatedMemoryGb - (evictionAwareWeightGb ?? 0))
+            }
             let label = mayEvict == true ? "Preload skipped (no eviction)"
                 : mayEvict == false ? "Cold load blocked (memory)" : "Preload blocked (memory)"
             lines.append(
@@ -256,13 +270,16 @@ struct Status: AsyncParsableCommand {
                 + "\(String(format: "%.1f", budget.headroomGb)) GB serving reserve = "
                 + "\(String(format: "%.1f", budget.requiredGb)) GB needed; "
                 + "\(String(format: "%.1f", budget.usableGb)) GB usable now "
-                + "(\(String(format: "%.1f", budget.shortfallGb)) GB short).")
+                + "(\(String(format: "%.1f", budget.shortfallGb)) GB short without eviction)."
+                + (mayEvict == false
+                    ? " Still \(String(format: "%.1f", budget.estimatedMemoryGb - (evictionAwareWeightGb ?? 0))) GB short after idle eviction."
+                    : ""))
             if mayEvict == true {
                 lines.append("  A request may load it after evicting idle slots; startup preload keeps them resident.")
             }
         }
         if coldLoadBlocked {
-            lines.append("  Free memory, confirm with `darkbloom doctor`, then restart to retry the load.")
+            lines.append("  Free at least \(String(format: "%.1f", coldShortfallGb)) GB with margin, confirm with `darkbloom doctor`, then retry the load.")
         }
         return lines
     }

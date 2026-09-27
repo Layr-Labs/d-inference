@@ -491,7 +491,8 @@ owner-only response also carries optional `backend_capacity.load_usable_gb`
 the current serving set), and each model's `estimated_memory_gb`. My Macs
 shows `estimated_memory_gb + load_headroom_gb` against `load_usable_gb` for
 cold models. Missing fields from older providers mean unknown, never zero or
-"fits"; the coordinator does not route from these owner diagnostics.
+"fits"; a stale heartbeat or active request also withholds a definitive
+cold-load failure. The coordinator does not route from these owner diagnostics.
 The existing `free_for_load_gb` remains the routing input and may credit
 eviction of idle slots, so it is not interchangeable with the no-eviction
 preload budget. The

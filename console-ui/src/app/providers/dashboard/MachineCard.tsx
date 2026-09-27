@@ -91,7 +91,7 @@ export function MachineCard({
       <div className={dimmed ? "opacity-70" : ""}>
         <CardVitals provider={provider} fleetMaxDecodeTps={fleetMaxDecodeTps} />
         <ModelsStrip provider={provider} />
-        <LoadReadinessPanel provider={provider} />
+        <LoadReadinessPanel provider={provider} heartbeatTimeoutSeconds={ctx.heartbeat_timeout_seconds} />
         <CardEarningsRow provider={provider} />
       </div>
 

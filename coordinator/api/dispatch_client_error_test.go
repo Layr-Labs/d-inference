@@ -74,7 +74,7 @@ func TestShouldStopFailover_QueueFull429StillFailsOver(t *testing.T) {
 // loop — otherwise the storm resumes through the survivor's later transient error.
 func TestLatchDeterministicLoser_ClientError400(t *testing.T) {
 	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
-	d.latchDeterministicLoser(nil, protocol.InferenceErrorMessage{StatusCode: 400, Error: "invalid tool payload"})
+	d.latchDeterministicLoser(nil, protocol.InferenceErrorMessage{StatusCode: 400, Error: "invalid tool payload", FailureCode: protocol.FailureCodeInvalidRequest})
 	if !d.terminalClientError || d.terminalClientErrorCode != 400 {
 		t.Fatalf("race-loser 400 must latch terminalClientError; got latched=%v code=%d", d.terminalClientError, d.terminalClientErrorCode)
 	}
@@ -104,7 +104,7 @@ func TestClientErrorStop_KillSwitch(t *testing.T) {
 // it never pollutes the admission-mismatch gauge; a genuine 5xx still does.
 func TestClientErrorRouteOutcome_NotAdmittedButFailed(t *testing.T) {
 	pr := &registry.PendingRequest{RequestID: "r1", Model: "m"}
-	out := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{StatusCode: 400, Error: "invalid tool payload"})
+	out := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{StatusCode: 400, Error: "invalid tool payload", FailureCode: protocol.FailureCodeInvalidRequest})
 	if out.ErrorClass != errorClassClientError {
 		t.Fatalf("400 outcome class = %q, want %q", out.ErrorClass, errorClassClientError)
 	}
@@ -122,7 +122,7 @@ func TestClientErrorRouteOutcome_NotAdmittedButFailed(t *testing.T) {
 	}
 
 	// A genuine 5xx remains provider_error + AdmittedButFailed.
-	fout := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{StatusCode: 500, Error: "boom"})
+	fout := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{StatusCode: 500, Error: "boom", FailureCode: protocol.FailureCodeGenerationFailure})
 	if fout.ErrorClass != "provider_error" || !fout.AdmittedButFailed {
 		t.Fatalf("500 outcome: class=%q admitted=%v, want provider_error + admitted", fout.ErrorClass, fout.AdmittedButFailed)
 	}

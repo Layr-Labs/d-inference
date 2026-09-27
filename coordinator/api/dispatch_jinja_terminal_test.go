@@ -102,6 +102,7 @@ func TestLatchDeterministicLoser_JinjaReason(t *testing.T) {
 		StatusCode:  500,
 		Error:       "Runtime error: upper filter requires string",
 		ErrorReason: "jinja_template",
+		FailureCode: protocol.FailureCodeTemplateRender,
 	})
 	if !d.terminalClientError || d.terminalClientErrorCode != http.StatusUnprocessableEntity {
 		t.Fatalf("race-loser jinja must latch 422; got latched=%v code=%d", d.terminalClientError, d.terminalClientErrorCode)
@@ -123,6 +124,7 @@ func TestLatchDeterministicLoser_JinjaKillSwitch(t *testing.T) {
 	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
 	d.latchDeterministicLoser(nil, protocol.InferenceErrorMessage{
 		StatusCode: 500, ErrorReason: "jinja_template",
+		FailureCode: protocol.FailureCodeTemplateRender,
 	})
 	if d.terminalClientError {
 		t.Fatal("kill switch must disable the race-loser jinja latch")
@@ -154,6 +156,7 @@ func TestJinjaRouteOutcome_ClientErrorClassPreservesReason(t *testing.T) {
 		StatusCode:  500,
 		Error:       "Runtime error: upper filter requires string",
 		ErrorReason: "jinja_template",
+		FailureCode: protocol.FailureCodeTemplateRender,
 	})
 	if out.ErrorClass != errorClassClientError {
 		t.Fatalf("class = %q, want %q", out.ErrorClass, errorClassClientError)

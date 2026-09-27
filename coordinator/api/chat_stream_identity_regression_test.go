@@ -92,7 +92,7 @@ func TestChatStreamErrorMetadataRetainsIdentity(t *testing.T) {
 	first := `data: {"id":"native-response","object":"chat.completion.chunk","created":123,"model":"fixture-model","choices":[{"index":0,"delta":{"content":"kept"}}]}`
 	rec := httptest.NewRecorder()
 	srv.handleStreamingResponseWithFirstChunkAndError(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), pr,
-		[]string{first}, &protocol.InferenceErrorMessage{StatusCode: 500, Error: "fixture failure"})
+		[]string{first}, &protocol.InferenceErrorMessage{StatusCode: 500, Error: "fixture failure", FailureCode: protocol.FailureCodeGenerationFailure})
 	metadata := 0
 	for _, event := range identityRegressionEvents(t, rec.Body.String()) {
 		if _, ok := event["metadata"]; ok {

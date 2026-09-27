@@ -403,11 +403,12 @@ func testFailureClassification(errMsg string, statusCode int) (protocol.Inferenc
 		return protocol.FailureCodeCapacity, errorReasonQueueFull
 	case statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable:
 		return protocol.FailureCodeCapacity, errorReasonCapacityBusy
+	case statusCode == http.StatusBadRequest:
+		// A deterministic request-shape rejection. The raw text is still
+		// discarded by the production sanitizer.
+		return protocol.FailureCodeInvalidRequest, ""
 	default:
-		// Keep generic historical fixtures legacy-shaped. Their raw text is still
-		// discarded by the production sanitizer; bounded status supplies only the
-		// rolling-upgrade behavior under test.
-		return "", ""
+		return protocol.FailureCodeGenerationFailure, ""
 	}
 }
 

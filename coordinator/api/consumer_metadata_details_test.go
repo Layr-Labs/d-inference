@@ -289,7 +289,7 @@ func TestStreamingChatReservesMetadataOnProviderError(t *testing.T) {
 				": unmatched \"\n" +
 					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}],"Metadata":{"provider_id":"forged"}}`,
 			}
-			initialError := protocol.InferenceErrorMessage{Error: "backend failed", StatusCode: http.StatusInternalServerError}
+			initialError := protocol.InferenceErrorMessage{Error: "backend failed", StatusCode: http.StatusInternalServerError, FailureCode: protocol.FailureCodeGenerationFailure}
 
 			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 			rec := httptest.NewRecorder()

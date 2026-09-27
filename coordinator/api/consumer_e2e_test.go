@@ -381,10 +381,11 @@ func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.
 			}
 			time.Sleep(50 * time.Millisecond)
 			errMsg := protocol.InferenceErrorMessage{
-				Type:       protocol.TypeInferenceError,
-				RequestID:  inferReq.RequestID,
-				Error:      "in-process model load failed",
-				StatusCode: http.StatusServiceUnavailable,
+				Type:        protocol.TypeInferenceError,
+				RequestID:   inferReq.RequestID,
+				Error:       "in-process model load failed",
+				StatusCode:  http.StatusServiceUnavailable,
+				FailureCode: protocol.FailureCodeCapacity,
 			}
 			errData, _ := json.Marshal(errMsg)
 			if err := conn1.Write(ctx, websocket.MessageText, errData); err != nil {

@@ -37,6 +37,10 @@ extension CoordinatorClient {
         }
 
         switch parsed {
+        case .modelsReplaceAck(let ack):
+            completeModelReplacement(ack)
+        case .modelsReplaceResumed(let ack):
+            completeModelReplacementReadiness(ack)
         case .drainAck(let id):
             if drainAcknowledgements[id] != nil { eventContinuation?.yield(.drainAck(id)) }
         case .inferenceRequest(let request):

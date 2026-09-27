@@ -580,6 +580,7 @@ extension ProviderLoop {
         // load, so it is correct for startup, prefetched, AND dropped-resident.
         let modelType = slot.modelType
         let slotContainer = slot.container
+        let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
         // ONE ENGINE (v0.7.5): the slot's v2 bridge serves every request;
         // the scheduler-free vision gate covers media decode and generation
@@ -788,7 +789,7 @@ extension ProviderLoop {
                 registryProvider: { @Sendable in
                     [chatRequest.model: .init(
                         tokenizer: tokenizer, modelType: modelType,
-                        container: slotContainer, isVLM: slotIsVLM,
+                        container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
                         engineV2Bridge: slotEngineV2,
                         visionGate: slotVisionGate)]
                 },

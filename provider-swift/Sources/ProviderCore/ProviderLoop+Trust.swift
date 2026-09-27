@@ -48,6 +48,9 @@ extension ProviderLoop {
             advertisedModels: advertisedModels.keys.sorted(),
             inferenceActive: state.inferenceActive,
             lifecycle: lifecycleStatus,
+            modelSwitch: modelSwitchStatus,
+            configPath: loopConfig.configPath?.path,
+            runtimeCapabilities: loopConfig.runtimeCapabilities.map(\.rawValue).sorted(),
             stats: DaemonState.Stats(
                 requestsServed: stats.requestsServed,
                 tokensGenerated: stats.tokensGenerated,
@@ -74,7 +77,8 @@ extension ProviderLoop {
                 // default: 0 (unload disabled) never expires by age, a
                 // longer-than-default timeout keeps evidence just as long.
                 failureMaxAge: DaemonSlotPostureBuilder.failureMaxAge(
-                    idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins))
+                    idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins)),
+            appAttest: appAttestLocalStatus
         )
     }
 

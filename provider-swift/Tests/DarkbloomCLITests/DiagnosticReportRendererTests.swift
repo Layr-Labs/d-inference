@@ -37,3 +37,10 @@ import ProviderCore
     let withFail = [Diagnostic(section: .trust, name: "t", level: .fail, message: "m")]
     #expect(DiagnosticReportRenderer.hasFailure(withFail, strict: false) == true)
 }
+
+@Test func informationalDiagnosticsDoNotFailStrictDoctor() {
+    let diagnostics = [Diagnostic(section: .attestationReadiness, name: "apns pushes", level: .info,
+                                  message: "delivery is indeterminate")]
+    #expect(DiagnosticReportRenderer.render(diagnostics).contains("[INFO] apns pushes"))
+    #expect(!DiagnosticReportRenderer.hasFailure(diagnostics, strict: true))
+}

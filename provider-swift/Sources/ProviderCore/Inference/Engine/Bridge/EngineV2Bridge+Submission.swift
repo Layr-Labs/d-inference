@@ -214,6 +214,19 @@ extension EngineV2Bridge {
         // the durable tier. A shorter memory hit must not hide a longer SSD
         // prefix. Both probes are advisory; staging authenticates disk bytes
         // and the engine revalidates page generations before adoption.
+        let nativeRequestBytes: Int?
+        do {
+            nativeRequestBytes = try (ownedEngine as? CBv2NativeBlockEngine)?.estimatedRequestBytes(cbv2Request)
+            cbv2Request.nativeReservationBytes = nativeRequestBytes
+        } catch CBv2NativeBlockError.unsupportedRequest {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.finish()
+            throw MultiModelBatchSchedulerEngineError.requestRejected("Unsupported native block request controls or capacity")
+        } catch {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.finish()
+            throw MultiModelBatchSchedulerEngineError.generationFailed("Native block engine configuration is invalid")
+        }
         let residentPrefixCandidate: CBv2ResidentPrefixCandidate? =
             cacheEnabled && multimodal == nil
             ? ownedEngine?.residentPrefixCandidate(for: cbv2Request) : nil
@@ -225,9 +238,13 @@ extension EngineV2Bridge {
         // identify this concrete submission across both resident and SSD tiers.
         let prefixCacheReceiptID: CBv2RequestID?
         var readyReceiptRegistered = false
-        let mediaHybridCacheEligible = Qwen4SupportPolicy.isOwnedModelID(modelId)
+        let qwen4MediaCacheEligible = Qwen4SupportPolicy.isOwnedModelID(modelId)
             && multimodal != nil && hybridPrefixIdentity != nil
             && cbv2Request.positionState != nil && ssdHybridCheckpointStore != nil
+        let nativeMediaCacheEligible = ownedEngine is CBv2NativeBlockEngine
+            && multimodal != nil && hybridPrefixIdentity != nil
+            && cbv2Request.positionState == nil && ssdHybridCheckpointStore != nil
+        let mediaHybridCacheEligible = qwen4MediaCacheEligible || nativeMediaCacheEligible
         if cacheEnabled, (multimodal == nil || mediaHybridCacheEligible),
             ssdPrefixCache != nil || ssdHybridCheckpointStore != nil || residentPrefixCacheEvidence != nil
         {
@@ -237,7 +254,11 @@ extension EngineV2Bridge {
                 ssd.registerReadyReceipt(requestID: receiptID, callback: callback)
                 readyReceiptRegistered = true
             }
-            if let store = ssdHybridCheckpointStore, let callback = usageSignal?.onCacheReady {
+            // Native media keys address exact encoder boundaries, not the
+            // coordinator's fixed-block hash contract. Do not advertise a
+            // fabricated aligned holder; actual engine reuse still reports usage.
+            if !nativeMediaCacheEligible, let store = ssdHybridCheckpointStore,
+                let callback = usageSignal?.onCacheReady {
                 store.registerReadyReceipt(requestID: receiptID, promptTokens: promptTokens,
                                            cacheScope: checkpointScope, callback: callback)
                 readyReceiptRegistered = true
@@ -265,7 +286,8 @@ extension EngineV2Bridge {
         // SSD blocks off the engine queue so synchronous lookup can adopt them.
         // The engine balances successful staging via
         // endAdoption; rejection and terminal paths provide an idempotent
-        // backstop. Vision requests never stage.
+        // backstop. Media stages only with a trusted feature identity and a
+        // model-native planner; the AR media and native block layouts stay distinct.
         var ssdStaged = false
         var ssdReuseAttempted = false
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
@@ -283,6 +305,21 @@ extension EngineV2Bridge {
             let stageResult = await store.stage(requestID: prefixCacheReceiptID, request: importRequest,
                 reserveReadScratch: { try liveEngine.reserveCompleteCheckpointReadScratch() }) {
                 try liveEngine.planCompleteCheckpointImport(manifest: $0, request: importRequest)
+            }
+            profile?.markDuration(.ssdStage, start: stageStart)
+            ssdStaged = stageResult.staged
+            ssdReuseAttempted = stageResult.staged
+            usageSignal?.record(stageResult: stageResult)
+            if case .skippedCapacity = stageResult.disposition {
+                emitPrefixCacheColdFallback(requestId: id, reason: "stage_capacity", capacityRefusal: true)
+            }
+        } else if let store = ssdHybridCheckpointStore, let prefixCacheReceiptID,
+            let nativeEngine = ownedEngine as? CBv2NativeBlockEngine {
+            let stageStart = SuspendingClock.now
+            let importRequest = cbv2Request
+            let stageResult = await store.stageNativeBlock(requestID: prefixCacheReceiptID, request: importRequest,
+                reserveReadScratch: { try nativeEngine.reserveNativeCheckpointReadScratch() }) {
+                try nativeEngine.planNativeCheckpointImport(manifest: $0, request: importRequest)
             }
             profile?.markDuration(.ssdStage, start: stageStart)
             ssdStaged = stageResult.staged
@@ -330,10 +367,11 @@ extension EngineV2Bridge {
         // contiguous slots; every reservation rechecks live headroom.
         var sharedKVReserved = false
         if kvBackendKind == .contiguous, let kvBudget,
-            (kvBytesPerToken > 0 || fixedRequestBytes > 0), cbv2Request.maxTokens > 0
+            (ownedEngine as? CBv2NativeBlockEngine)?.usesProcessMemoryOwner != true,
+            (kvBytesPerToken > 0 || fixedRequestBytes > 0 || nativeRequestBytes != nil), cbv2Request.maxTokens > 0
         {
             sharedKVReserved = await reserveSharedRequestBytes(
-                budget: kvBudget, requestID: id, tokenCount: worstCaseTokens,
+                budget: kvBudget, requestID: id, tokenCount: worstCaseTokens, nativeBytes: nativeRequestBytes,
                 profile: profile)
             try await checkFirstContentDeadline(
                 firstContentDeadline,
@@ -357,7 +395,7 @@ extension EngineV2Bridge {
                     readyReceiptRegistered: readyReceiptRegistered,
                     usageSignal: usageSignal)
                 sharedKVReserved = await reserveSharedRequestBytes(
-                    budget: kvBudget, requestID: id, tokenCount: worstCaseTokens,
+                    budget: kvBudget, requestID: id, tokenCount: worstCaseTokens, nativeBytes: nativeRequestBytes,
                 profile: profile)
                 try await checkFirstContentDeadline(
                     firstContentDeadline,
@@ -470,6 +508,7 @@ extension EngineV2Bridge {
         }
 
         let events: AsyncStream<CBv2Event>
+        var nativeRetirement: CBv2RequestRetirement?
         // Ordinary submission registers synchronously; atomic submission
         // replaces this with the engine-queue commit instant returned by the
         // admission transaction.
@@ -594,7 +633,13 @@ extension EngineV2Bridge {
                 // Projection fails open when mode is off, no isolated rate has
                 // been measured, or media makes token projection incomplete.
                 // Absolute expiry does not: it was checked immediately above.
-                events = try engine.submit(engineRequest)
+                if let native = engine as? CBv2NativeBlockEngine {
+                    let submitted = try native.submitWithRetirement(engineRequest)
+                    events = submitted.events
+                    nativeRetirement = submitted.retirement
+                } else {
+                    events = try engine.submit(engineRequest)
+                }
                 profile?.observeDeadlineDecision(.accepted, deadline: firstContentDeadline)
                 if let profile {
                     // Evaluated AFTER the submit returned: the deadline may
@@ -687,7 +732,8 @@ extension EngineV2Bridge {
             usageSignal: usageSignal,
             prefixCacheReceiptID: prefixCacheReceiptID,
             readyReceiptRegistered: readyReceiptRegistered,
-            profile: profile
+            profile: profile,
+            nativeRetirement: nativeRetirement
         )
 
         let bridge = self

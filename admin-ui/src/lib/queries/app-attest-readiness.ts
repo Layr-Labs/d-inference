@@ -3,7 +3,7 @@ import { query } from "@/lib/db";
 // One current observation per machine. A success on an older connection never
 // makes a replacement connection ready. Stored prospective verdicts expire.
 // Keep this fail-closed qualification version aligned with appattest.AuthorizationPolicyVersion.
-const authorizationPolicyVersion = "mac-app-attest-v2";
+const authorizationPolicyVersion = "mac-app-attest-v3";
 const readiness = `WITH latest AS (
  SELECT DISTINCT ON (machine_id) machine_id,session_id,disconnected_at,last_seen,observation
  FROM darkbloom_machine_sessions WHERE last_seen>=NOW()-$1::int*INTERVAL '1 day'
@@ -22,6 +22,8 @@ const readiness = `WITH latest AS (
  WHEN credential_revoked THEN 'ineligible'
  WHEN outcome='eligible' AND (fields->>'policy_version' IS DISTINCT FROM '${authorizationPolicyVersion}'
    OR ((fields->>'valid_until')::timestamptz>NOW()) IS NOT TRUE) THEN 'stale'
+ WHEN outcome='eligible' AND fields ? 'authorization_result'
+   AND fields->>'authorization_result'<>'granted' THEN 'grant_failed'
  ELSE outcome END AS readiness
  FROM observed
 )`;
@@ -41,6 +43,8 @@ export async function appAttestReadinessReasons(days: number) {
       || CASE WHEN readiness='stale' AND fields->>'policy_version' IS DISTINCT FROM '${authorizationPolicyVersion}'
          THEN '["policy_version_stale"]'::jsonb ELSE '[]'::jsonb END
       || CASE WHEN readiness='stale' AND ((fields->>'valid_until')::timestamptz>NOW()) IS NOT TRUE
-         THEN '["verdict_expired_or_missing"]'::jsonb ELSE '[]'::jsonb END) reason
-    WHERE readiness IN ('unknown','ineligible','stale','not_evaluated') GROUP BY reason ORDER BY machines DESC,reason`, [days]);
+         THEN '["verdict_expired_or_missing"]'::jsonb ELSE '[]'::jsonb END
+      || CASE WHEN readiness='grant_failed' THEN jsonb_build_array('authorization_'||(fields->>'authorization_result'))
+         ELSE '[]'::jsonb END) reason
+    WHERE readiness IN ('unknown','ineligible','stale','not_evaluated','grant_failed') GROUP BY reason ORDER BY machines DESC,reason`, [days]);
 }

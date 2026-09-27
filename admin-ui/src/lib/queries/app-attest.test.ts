@@ -52,9 +52,13 @@ describe.skipIf(!enabled)("App Attest inventory queries on PostgreSQL", () => {
     expect(await appAttestReadinessReasons(7)).toEqual([
       {reason:"prospective_verdict_missing",machines:"2"},
     ]);
-    const fields = JSON.stringify({ policy_version:"mac-app-attest-v2", credential_id:"readiness-key", valid_until:new Date(Date.now()+600_000).toISOString(), reasons:[] });
+    const fields = JSON.stringify({ policy_version:"mac-app-attest-v3", credential_id:"readiness-key", valid_until:new Date(Date.now()+600_000).toISOString(), reasons:[] });
     await pool.query(`INSERT INTO app_attest_shadow_events VALUES('policy','session-b',NOW(),'prospective_policy','eligible',$1)`, [fields]);
     expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"eligible",version:"0.9.2",machines:"1"});
+    await pool.query(`UPDATE app_attest_shadow_events SET fields=fields || '{"authorization_result":"identity_lookup_failed"}'::jsonb WHERE id='policy'`);
+    expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"grant_failed",version:"0.9.2",machines:"1"});
+    expect(await appAttestReadinessReasons(7)).toContainEqual({reason:"authorization_identity_lookup_failed",machines:"1"});
+    await pool.query(`UPDATE app_attest_shadow_events SET fields=$1 WHERE id='policy'`,[fields]);
     await pool.query(`UPDATE app_attest_shadow_events SET fields=fields || '{"policy_version":"mac-app-attest-v1"}'::jsonb WHERE id='policy'`);
     expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"stale",version:"0.9.2",machines:"1"});
     expect(await appAttestReadinessReasons(7)).toEqual(withUnevaluatedMachine("policy_version_stale"));

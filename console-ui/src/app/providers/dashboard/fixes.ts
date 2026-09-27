@@ -113,7 +113,7 @@ const FIX_TABLE: Record<string, FixAction> = {
     kind: "link",
     label: "Inspect failed jobs",
     href: "/providers/earnings",
-    note: "Then check the provider logs to recover routing priority.",
+    note: "Check the provider logs for failure details.",
   },
 
   // ── Info ───────────────────────────────────────────────────────────────

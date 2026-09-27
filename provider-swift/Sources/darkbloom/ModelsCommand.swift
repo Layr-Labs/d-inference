@@ -9,12 +9,15 @@ struct Models: AsyncParsableCommand {
         Subcommands:
           catalog   Show available models with download status (default).
           list      Show local models only.
-          download  Download a catalog model into ~/.cache/huggingface/hub.
+          download  Download a catalog model into the saved model-cache location
+                    (default: ~/.cache/huggingface/hub). Use models location
+                    --from-env to explicitly import a Hugging Face cache path.
           remove    Delete a downloaded model.
+          location  Inspect or choose the model-cache directory.
 
         With no subcommand, shows the full catalog.
         """,
-        subcommands: [Catalog.self, List.self, Download.self, Remove.self],
+        subcommands: [Catalog.self, List.self, Download.self, Remove.self, Location.self],
         defaultSubcommand: Catalog.self
     )
 }
@@ -42,6 +45,7 @@ extension Models {
             await runUpdateBannerIfEnabled()
 
             if let hash {
+                try loadModelCacheConfiguration(configOptions: configOptions)
                 let digest = WeightHasher.computeHash(for: hash)
                 guard let digest else {
                     throw ValidationError("could not compute weight hash for '\(hash)'")
@@ -257,6 +261,8 @@ extension Models {
             abstract: "Delete a downloaded model from the local cache."
         )
 
+        @OptionGroup var configOptions: ConfigOptions
+
         @Argument(help: "Model ID to remove.")
         var modelID: String
 
@@ -264,6 +270,7 @@ extension Models {
         var force = false
 
         mutating func run() async throws {
+            try loadModelCacheConfiguration(configOptions: configOptions)
             let dir = ModelDownloader.cacheModelDirectory(for: modelID)
             guard FileManager.default.fileExists(atPath: dir.path) else {
                 printError("no local copy of '\(modelID)' (looked at \(dir.path))")

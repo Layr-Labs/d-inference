@@ -96,7 +96,10 @@ extension EngineV2Bridge {
         }
 
         let tps: Double
-        if let firstTokenAt = state.firstTokenAt, completion > 1 {
+        if usesNativeBlockTiming {
+            tps = EngineV2NativeBlockTiming.generationRate(
+                completionTokens: completion, timing: usage.timing) ?? 0
+        } else if let firstTokenAt = state.firstTokenAt, completion > 1 {
             let seconds = WedgeMonitor.seconds(now - firstTokenAt)
             tps = seconds > 0 ? Double(completion - 1) / seconds : 0
         } else {
@@ -107,7 +110,9 @@ extension EngineV2Bridge {
         // decode observation. MTP can deliver several accepted tokens in that
         // first burst; charging all but one over a near-zero interval would
         // catastrophically inflate the conservative decode rate.
-        if success, let firstTokenAt = state.firstTokenAt,
+        if success, usesNativeBlockTiming, tps > 0 {
+            updateDecodeTpsEwma(tps)
+        } else if success, !usesNativeBlockTiming, let firstTokenAt = state.firstTokenAt,
             completion > state.firstEmissionTokens
         {
             let decodeSeconds = WedgeMonitor.seconds(now - firstTokenAt)
@@ -171,8 +176,14 @@ extension EngineV2Bridge {
         isolatedAtSubmit: Bool
     ) {
         guard Self.isColdPrefillSample(usage: usage) else { return }
-        guard let firstTokenAt else { return }
-        let prefillSeconds = WedgeMonitor.seconds(firstTokenAt - submittedAt)
+        let prefillSeconds: Double
+        if usesNativeBlockTiming {
+            guard let native = EngineV2NativeBlockTiming.prefillSeconds(usage.timing) else { return }
+            prefillSeconds = native
+        } else {
+            guard let firstTokenAt else { return }
+            prefillSeconds = WedgeMonitor.seconds(firstTokenAt - submittedAt)
+        }
         guard
             let tps = Self.classifyPrefillSample(
                 prefilledTokens: promptTokens, prefillSeconds: prefillSeconds)

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -31,7 +32,7 @@ func (s *drainSettlementStore) GetModelPrice(account, model string) (int64, int6
 	return s.Store.GetModelPrice(account, model)
 }
 
-func TestProviderDrainAckFollowsUsageSettlementAndKeepsControlTrafficAlive(t *testing.T) {
+func TestProviderDrainLatestOverlappingBarrierFollowsUsageSettlementAndKeepsControlTrafficAlive(t *testing.T) {
 	for _, stream := range []bool{true, false} {
 		t.Run(map[bool]string{true: "streaming", false: "nonstreaming"}[stream], func(t *testing.T) {
 			s, reg, original, ts := setupTestServer(t)
@@ -50,6 +51,7 @@ func TestProviderDrainAckFollowsUsageSettlementAndKeepsControlTrafficAlive(t *te
 			waitForChallenge(t, ctx, conn, pub)
 			makeProviderRoutable(reg)
 			ack := make(chan struct{})
+			readerAlive := make(chan struct{})
 			worker := make(chan error, 1)
 			go func() {
 				for {
@@ -74,8 +76,29 @@ func TestProviderDrainAckFollowsUsageSettlementAndKeepsControlTrafficAlive(t *te
 						// Duplicate terminals remain exactly-once accounting even
 						// while their asynchronous workers are behind the barrier.
 						sendComplete(ctx, conn, request.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 1})
-						_ = conn.Write(ctx, websocket.MessageText, []byte(`{"type":"provider_drain","request_id":"final"}`))
+						for _, id := range []string{"switch", "preliminary", "final"} {
+							barrier, _ := json.Marshal(protocol.ProviderDrainMessage{Type: protocol.TypeProviderDrain, RequestID: id})
+							if err := conn.Write(ctx, websocket.MessageText, barrier); err != nil {
+								worker <- err
+								return
+							}
+						}
+						// A reply proves the reader processed all three barriers
+						// without blocking on the held billing worker.
+						_ = conn.Write(ctx, websocket.MessageText, []byte(`{"type":"models_replace","request_id":"probe","drain_request_id":"final","validate_only":true,"models":[{"id":"lifecycle-barrier-model"}]}`))
+					case protocol.TypeModelsReplaceAck:
+						var result protocol.ModelsReplaceAckMessage
+						if err := json.Unmarshal(data, &result); err != nil || result.Accepted || result.Error != "invalid_drain" {
+							worker <- fmt.Errorf("premature validation result: %s (%v)", data, err)
+							return
+						}
+						close(readerAlive)
 					case protocol.TypeProviderDrainAck:
+						var result protocol.ProviderDrainMessage
+						if err := json.Unmarshal(data, &result); err != nil || result.RequestID != "final" {
+							worker <- fmt.Errorf("latest overlapping drain was not acknowledged: %s (%v)", data, err)
+							return
+						}
 						close(ack)
 						worker <- nil
 						return
@@ -101,9 +124,16 @@ func TestProviderDrainAckFollowsUsageSettlementAndKeepsControlTrafficAlive(t *te
 				t.Fatal("settlement never started")
 			}
 			select {
+			case <-readerAlive:
+			case err := <-worker:
+				t.Fatalf("control reader stopped during billing: %v", err)
+			case <-ctx.Done():
+				t.Fatal("control reader blocked on billing")
+			}
+			select {
 			case <-ack:
 				t.Fatal("acknowledged before settlement")
-			case <-time.After(250 * time.Millisecond):
+			default:
 			}
 			for _, id := range reg.ProviderIDs() {
 				if !reg.ProviderDraining(id) {

@@ -123,9 +123,14 @@ type codeAttestThrottle struct {
 	challengeValidity time.Duration
 	resumeTimeout     time.Duration
 
-	maxAttempts int
-	now         func() time.Time
-	jitter      func(max time.Duration) time.Duration
+	// maxAttempts is the number of pushes on the fast retry cadence. After
+	// them a still-live, still-unattested connection keeps retrying on the
+	// slow cadence: at most one push per slowRetryInterval, each still
+	// admitted by reservePush and the durable per-device budget.
+	maxAttempts       int
+	slowRetryInterval time.Duration
+	now               func() time.Time
+	jitter            func(max time.Duration) time.Duration
 
 	// store persists the reuse cache across restarts/deploys (W5 Fix 2). nil
 	// until wired by Server.SeedCodeAttestCache at startup (and nil in unit tests
@@ -156,6 +161,10 @@ type codeAttestChallenge struct {
 	token   string
 	nodeKey string
 	at      time.Time
+	// Push-reply diagnostics only; never part of matching or attestation.
+	// accepted: APNs took the push. counted: already recorded as unanswered.
+	accepted, counted bool
+	loopGeneration    uint64
 }
 
 type codeAttestResumeChallenge struct {
@@ -190,6 +199,7 @@ func newCodeAttestThrottle() *codeAttestThrottle {
 		challengeValidity:      CodeAttestResponseTimeout,
 		resumeTimeout:          ChallengeResponseTimeout,
 		maxAttempts:            3,
+		slowRetryInterval:      60 * time.Minute, // after maxAttempts: <= 1 push/hour/connection
 		now:                    time.Now,
 		jitter:                 defaultJitter,
 	}
@@ -786,6 +796,37 @@ func (t *codeAttestThrottle) consumeChallengeForIdentity(
 		}
 	}
 	return false
+}
+
+// markChallengeAccepted records that APNs accepted the push carrying nonce.
+func (t *codeAttestThrottle) markChallengeAccepted(seKey, nonce string, generation uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i := range t.outstanding[seKey] {
+		if t.outstanding[seKey][i].nonce == nonce {
+			t.outstanding[seKey][i].accepted = true
+			t.outstanding[seKey][i].loopGeneration = generation
+		}
+	}
+}
+
+// takeUnansweredPushes counts this device's APNs-accepted pushes that no
+// verified reply consumed and no earlier call counted, and marks them
+// counted. Outstanding challenges outlive a connection, so a reconnected
+// provider's loop still counts the previous connection's push. Call it
+// before recording the next challenge, which prunes expired ones.
+func (t *codeAttestThrottle) takeUnansweredPushes(seKey string, generation ...uint64) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := 0
+	for i := range t.outstanding[seKey] {
+		if c := &t.outstanding[seKey][i]; c.accepted && !c.counted &&
+			(len(generation) == 0 || c.loopGeneration == generation[0]) {
+			c.counted = true
+			n++
+		}
+	}
+	return n
 }
 
 // outstandingChallenge reports whether the device has ANY still-valid pushed

@@ -6,11 +6,12 @@ import MLXLMCommon
 
 /// Durable complete checkpoints. Idle state is an opaque index; imported
 /// tensors exist only while a matching request owns a charged stage ticket.
-public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked Sendable {
+public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2NativeBlockPrefixCache, @unchecked Sendable {
     struct Config: Sendable {
         let modelId: String
         let identity: CBv2CompleteCheckpointIdentity
         var backendLayout = CBv2CompleteCheckpointManifest.layout
+        var nativePrefillChunkSize: Int? = nil
         let root: URL
         let dedicatedRoot: URL
         let epochStore: SSDCacheEpochStore?
@@ -43,7 +44,7 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked
     var closed = false
     var scanReady = false
     var destructiveChange = false
-    var stages: [CBv2RequestID: CBv2StagedCompleteCheckpoint] = [:]
+    var stages: [CBv2RequestID: SSDCheckpointStage] = [:]
     var stageReservations: [CBv2RequestID: SSDCheckpointStageReservation] = [:]
     var reading: [CBv2RequestID: SSDCheckpointFileCoordinator.Access] = [:]
     var writing: Set<Data> = []
@@ -91,15 +92,33 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked
     public func takeStaged(
         requestID: CBv2RequestID, tokens: [Int], cacheSalt: String?, maximumSequenceLength: Int
     ) -> CBv2StagedCompleteCheckpoint? {
+        guard let staged = takeStage(requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
+                                     maximumSequenceLength: maximumSequenceLength, native: false),
+            case .autoregressive(let value) = staged else { return nil }
+        return value
+    }
+
+    public func takeNativeStaged(
+        requestID: CBv2RequestID, tokens: [Int], cacheSalt: String?, maximumSequenceLength: Int
+    ) -> CBv2NativeBlockCheckpoint? {
+        guard let staged = takeStage(requestID: requestID, tokens: tokens, cacheSalt: cacheSalt,
+                                     maximumSequenceLength: maximumSequenceLength, native: true),
+            case .nativeBlock(let value) = staged else { return nil }
+        return value
+    }
+
+    private func takeStage(
+        requestID: CBv2RequestID, tokens: [Int], cacheSalt: String?, maximumSequenceLength: Int, native: Bool
+    ) -> SSDCheckpointStage? {
         let staged = lock.withLock {
             stageReservations.removeValue(forKey: requestID)
             return stages.removeValue(forKey: requestID)
         }
         guard let staged else { return nil }
-        guard !isClosed, staged.manifest.identity == identity,
+        guard !isClosed, staged.isNative == native, staged.manifest.identity == identity,
             staged.manifest.cacheSalt == cacheSalt,
             staged.maximumSequenceLength == maximumSequenceLength,
-            staged.manifest.position < tokens.count,
+            native ? staged.manifest.position <= tokens.count : staged.manifest.position < tokens.count,
             tokens.starts(with: staged.manifest.prefixTokens)
         else { staged.close(); return nil }
         statsBox.update { $0.stageConsumptions += 1; $0.consumedPrefixTokens += staged.manifest.position }
@@ -108,7 +127,8 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked
 
     public func acceptsCheckpoint(position: Int, packedBytes: Int) -> Bool {
         guard !isClosed, position >= config.minEffectiveTokens,
-            position.isMultiple(of: PrefixCachePolicy.blockSize), packedBytes > 0
+            (config.backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
+                || position.isMultiple(of: PrefixCachePolicy.blockSize)), packedBytes > 0
         else { return false }
         // Reserve the manifest's full bound when deciding which capture to
         // retain. The actual writer applies exact encoded sizes afterward.
@@ -144,7 +164,7 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked
     var hasSafeRoot: Bool { SSDBlockStore.isSafeModelRoot(config.root, dedicatedRoot: config.dedicatedRoot) }
 
     public func close() {
-        let retiring = lock.withLock { () -> (stages: [CBv2StagedCompleteCheckpoint], reads: [SSDCheckpointFileCoordinator.Access])? in
+        let retiring = lock.withLock { () -> (stages: [SSDCheckpointStage], reads: [SSDCheckpointFileCoordinator.Access])? in
             guard !closed else { return nil }
             closed = true
             let accesses = Array(reading.values)
@@ -182,6 +202,8 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked
     func hashes(tokens: [Int], scope: String) -> [Data] {
         let hasher = CBv2BlockHasher(blockSize: PrefixCachePolicy.blockSize,
                                     promptContractID: identity.promptContractID, scopeID: scope)
-        return hasher.chainHashes(tokens: tokens, maxBlocks: hasher.maxLookupBlocks(tokenCount: tokens.count))
+        let maximum = config.backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
+            ? tokens.count / PrefixCachePolicy.blockSize : hasher.maxLookupBlocks(tokenCount: tokens.count)
+        return hasher.chainHashes(tokens: tokens, maxBlocks: maximum)
     }
 }

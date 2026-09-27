@@ -1,6 +1,14 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-17 · commit `53e135e9e`
+> Last updated: 2026-09-21 · commit `b581bfd21`
+
+The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
+media; it does not broaden this sidecar's text-only cache-planning contract.
+Go `endpointContainsMedia` and Rust `content_collection_has_media` reject media
+in both message content and function-call outputs. Text-only production vectors
+and normalization identities remain unchanged. See the
+[Responses API contract](../reference/api-contracts.md#responses-api) for serving
+formats; native multimodal checkpoint reuse is a separate engine capability.
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which

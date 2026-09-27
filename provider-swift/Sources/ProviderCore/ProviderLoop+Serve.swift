@@ -20,7 +20,7 @@ extension ProviderLoop {
 
     public func run() async throws {
         startLifecycleMonitor()
-        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow() }
+        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(); cancelAppAttestStallMonitor() }
         if servingDrain.refusing { return }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
@@ -192,11 +192,18 @@ extension ProviderLoop {
         // replying over THIS WebSocket. The app delegate delivers pushes via the
         // bridge; we hop into the actor to use K + the signer + this send handle.
         #if os(macOS)
+        let pushHistory = apnsPushHistory
+        APNsBridge.shared.trackDeviceToken(in: pushHistory)
         APNsBridge.shared.setPushHandler { [weak self] userInfo in
+            // Receipt is recorded before any parsing or validation so doctor
+            // and `push_history` can tell "never delivered" from "not answered".
+            pushHistory.recordReceipt()
             // Extract the Sendable EncryptedPayload synchronously here so the
             // non-Sendable [String: Any] never crosses into the actor Task.
             guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
-            Task { await self.handleCodeChallenge(challenge, send: send) }
+            // Only a push-delivered challenge counts as a push reply; resume
+            // challenges arrive over the WebSocket through the same handler.
+            Task { await self.handleCodeChallenge(challenge, send: send, onWritten: { pushHistory.recordReply() }) }
         }
 
         // If the device token wasn't ready at registration (APNs slow / GUI
@@ -250,6 +257,7 @@ extension ProviderLoop {
 
                 case .disconnected:
                     clearConnectionAuthorization()
+                    modelSwitchTask?.cancel()
                     cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
@@ -313,16 +321,7 @@ extension ProviderLoop {
                     }
 
                 case .desiredModels(let entries):
-                    if isDraining {
-                        // Keep only the latest push (desired state is
-                        // declarative). A successful restart makes it moot —
-                        // registration receives fresh desired state — but an
-                        // aborted restart replays it via resumeServingAfterUpdate.
-                        deferredDesiredModels = entries
-                        logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
-                    } else {
-                        await reconcileDesiredModels(entries, send: send)
-                    }
+                    await handleDesiredModels(entries, send: send)
 
                 case .trustStatus(let trustLevel, let status, let reason, let authorization):
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason,
@@ -339,6 +338,7 @@ extension ProviderLoop {
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        await cancelModelSwitchAndWait()
         // Quote path mirror (routing v2): a shutting-down provider quotes
         // `slot_state` rejections for the brief window the socket stays up.
         state.refusingNewWork = true

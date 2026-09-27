@@ -37,7 +37,6 @@ function baseProvider(overrides: Partial<MyProvider> = {}): MyProvider {
     pending_requests: 0,
     max_concurrency: 8,
     reputation: {
-      score: 0.85,
       total_jobs: 0,
       successful_jobs: 0,
       failed_jobs: 0,
@@ -235,11 +234,10 @@ describe("computeWarnings", () => {
     expect(warnings.find((w) => w.id === "backend_idle_shutdown")?.severity).toBe("degrading");
   });
 
-  it("flags low success rate (degrading)", () => {
+  it("reports low success rate as informational job counts", () => {
     const warnings = computeWarnings(
       baseProvider({
         reputation: {
-          score: 0.3,
           total_jobs: 20,
           successful_jobs: 10,
           failed_jobs: 10,
@@ -251,14 +249,16 @@ describe("computeWarnings", () => {
       }),
       ctx
     );
-    expect(warnings.find((w) => w.id === "low_success_rate")?.severity).toBe("degrading");
+    expect(warnings.find((w) => w.id === "low_success_rate")).toMatchObject({
+      severity: "info",
+      detail: "10 of 20 jobs succeeded; 10 failed. Check provider logs for failure details.",
+    });
   });
 
   it("does NOT flag low success rate when sample size is small", () => {
     const warnings = computeWarnings(
       baseProvider({
         reputation: {
-          score: 0.3,
           total_jobs: 3,
           successful_jobs: 1,
           failed_jobs: 2,

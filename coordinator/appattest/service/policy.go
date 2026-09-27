@@ -14,7 +14,8 @@ import (
 func (x *Session) observeBuildPolicy(status *protocol.AppAttestStatus, metadata *appattest.Key) {
 	binding := appattest.AuthorizationBinding{Account: x.account, Machine: x.machineID(), Credential: x.key.KeyID, Connection: x.id, Endpoint: x.publicKey, AppID: x.key.AppID, Environment: x.key.Environment}
 	evidence := appattest.AuthorizationEvidence{Binding: binding, Expected: binding, ProtocolVersion: x.protocolVersion,
-		CredentialVerified: true, EndpointBound: true, AssertionAt: x.assertionAt, ArchiveComplete: x.dropped.Load() == 0,
+		CredentialVerified: true, EndpointBound: true, AssertionAt: x.assertionAt,
+		ArchiveComplete:   x.proofArchiveComplete(),
 		RenewalConfigured: x.s.config.ReceiptKeyPath != "" && x.s.config.ReceiptKeyID != ""}
 	evidence.Expected.AppID, evidence.Expected.Environment = x.s.config.AppID, x.s.config.Environment
 	if metadata != nil {
@@ -28,7 +29,9 @@ func (x *Session) observeBuildPolicy(status *protocol.AppAttestStatus, metadata 
 		evidence.VerificationKeyKnown = x.protocolVersion == 3 && x.attestationKey != "" && status.AttestationPublicKey != ""
 		evidence.VerificationKeyMatched = evidence.VerificationKeyKnown && status.AttestationPublicKey == x.attestationKey
 		evidence.ReportedVersion = status.AppVersion
-		evidence.CodeDirectoryHash = hex.EncodeToString(metadata.CodeDirectorySHA256())
+		candidate := metadata.CodeDirectorySHA256Candidate()
+		evidence.CodeDirectoryHash = hex.EncodeToString(candidate)
+		evidence.CodeMeasurementTruncated = len(candidate) == 20
 		x.s.applyBuildQualification(&evidence, status, snapshot)
 		evidence.BuildMatched = appAttestReleaseApproved(snapshot, x.provider, status)
 	}
@@ -66,11 +69,13 @@ func (x *Session) observeBuildPolicy(status *protocol.AppAttestStatus, metadata 
 	x.updateServingAuthorization(status, evidence, verdict)
 	x.policyFields = map[string]any{"policy_version": verdict.PolicyVersion, "reasons": verdict.Reasons,
 		"valid_until": verdict.ValidUntil, "assertion_at": x.assertionAt, "credential_id": x.key.KeyID,
+		"authorization_result": x.authorizationResult, "archive_complete": evidence.ArchiveComplete,
 		"release_matched": evidence.BuildMatched, "build_qualified": evidence.BuildQualified,
 		"apple_code_measurement_known": evidence.CodeMeasurementKnown, "apple_code_measurement_matched": evidence.CodeMeasurementMatched,
-		"hardware_claims_bound":  evidence.HardwareKnown && evidence.HardwareMatched,
-		"verification_key_bound": evidence.VerificationKeyKnown && evidence.VerificationKeyMatched,
-		"receipt_verified":       evidence.ReceiptVerified, "risk_metric_available": evidence.RiskMetric != nil}
+		"apple_code_measurement_ambiguous": evidence.CodeMeasurementAmbiguous,
+		"hardware_claims_bound":            evidence.HardwareKnown && evidence.HardwareMatched,
+		"verification_key_bound":           evidence.VerificationKeyKnown && evidence.VerificationKeyMatched,
+		"receipt_verified":                 evidence.ReceiptVerified, "risk_metric_available": evidence.RiskMetric != nil}
 	x.observe("prospective_policy", verdict.Outcome, nil)
 	x.policyFields = nil
 }
@@ -102,7 +107,7 @@ func (x *Session) observeFailedPolicy(reason string) {
 // observed unsafe Mac policy are hard evidence and fence both paths.
 func confirmedAppAttestViolation(reason string) bool {
 	switch reason {
-	case "signature", "nonce", "mac_acl", "app_identity", "credential_key", "challenge_mismatch":
+	case "signature", "nonce", "mac_acl", "app_identity", "credential_key":
 		return true
 	}
 	return false

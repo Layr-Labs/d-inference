@@ -52,6 +52,9 @@ func (x *Session) send(ctx context.Context, action string) bool {
 		}
 	}
 	if action == "assert" {
+		// The baseline belongs to the challenge, not to dequeue time. A
+		// later inbox drop must not be absorbed by an older queued proof.
+		x.beginAssertionChallenge()
 		pub, err := base64.StdEncoding.DecodeString(x.publicKey)
 		if err != nil || len(pub) != 32 {
 			x.observe(action, "encryption_key", nil)
@@ -88,8 +91,11 @@ func (x *Session) handleExchange(ctx context.Context, reply protocol.AppAttestSh
 		x.observe(x.expected, "timeout", nil)
 		return "stop"
 	}
+	if x.expected == "ready" {
+		x.readyDiagnostics = reply.RuntimeDiagnosticFields(time.Now())
+	}
 	if reply.Result != "ok" {
-		x.observe(x.expected, shadowClientResult(reply.Result), nil)
+		x.observeWithClientDiagnostics(x.expected, shadowClientResult(reply.Result), nil, reply)
 		return "stop"
 	}
 	if x.expected == "ready" {
@@ -98,7 +104,7 @@ func (x *Session) handleExchange(ctx context.Context, reply protocol.AppAttestSh
 			x.observe("ready", "key_id", nil)
 			return "stop"
 		}
-		x.observe("ready", "reported_supported", nil)
+		x.observeWithClientDiagnostics("ready", "reported_supported", nil, reply)
 		key, err := x.store.GetAppAttestShadowKey(ctx, reply.KeyID)
 		if err != nil {
 			x.observe("ready", "storage_error", nil)
@@ -114,6 +120,12 @@ func (x *Session) handleExchange(ctx context.Context, reply protocol.AppAttestSh
 		}
 		x.key = key
 		x.owner = key.Owner
+		if x.maybeRequestKeyRotation(ctx, key) {
+			// Retire the dead key: the client answers attest for an attested
+			// key with key_unregistered and generates a replacement, which
+			// must pass the full attestation path under a fresh session.
+			return "attest"
+		}
 		return "assert"
 	}
 	if x.key == nil || reply.KeyID != x.key.KeyID || reply.Challenge != x.challenge {
@@ -136,8 +148,9 @@ func (x *Session) handleExchange(ctx context.Context, reply protocol.AppAttestSh
 	hash, err := prepared.Hash, prepared.Err
 	if err != nil {
 		reason := "enrollment_context"
-		if err.Error() == "enrollment_storage_error" {
-			reason = "enrollment_storage_error"
+		switch err.Error() {
+		case "enrollment_storage_error", "enrollment_expired":
+			reason = err.Error()
 		}
 		x.observe(x.expected, reason, nil)
 		return "stop"
@@ -169,6 +182,9 @@ func (x *Session) handleExchange(ctx context.Context, reply protocol.AppAttestSh
 		return "stop"
 	}
 	x.key.Counter = counter
+	// The store advanced updated_at with this commit; later rotation counts
+	// start after this verified assertion, as they will after a reload.
+	x.key.UpdatedAt = time.Now().UTC()
 	x.assertionAt = time.Now().UTC()
 	x.observe("assertion", "verified", metadata)
 	x.observeBuildPolicy(reply.Status, metadata)

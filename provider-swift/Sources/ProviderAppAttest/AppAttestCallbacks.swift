@@ -31,13 +31,8 @@ struct SystemAppAttestCallbacks: AppAttestCallbacks {
         }
     }
 
-    private static func failure(_ error: Error?) -> ShadowFailure {
-        guard let error = error as NSError?, error.domain == DCErrorDomain else { return .appleError }
-        switch error.code {
-        case DCError.Code.featureUnsupported.rawValue: return .unsupported
-        case DCError.Code.serverUnavailable.rawValue: return .appleUnavailable
-        case DCError.Code.invalidKey.rawValue: return .appleInvalidKey
-        default: return .appleError
-        }
+    static func failure(_ error: Error?) -> any Error {
+        guard let error = error as NSError? else { return AppAttestAppleErrorSource.callbackWithoutNSError }
+        return AppleAppAttestFailure(error)
     }
 }

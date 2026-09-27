@@ -69,6 +69,7 @@ pub fn normalize(
         && crate::leading_system::qwen_applies(&model_id, model_type)
         && !native_structured_target(&model_id, model_type);
     let mut additional_context = template_additional_context(&body, forced_qwen_tool)?;
+    crate::diffusion::apply_reasoning(model_type, &mut additional_context)?;
     if crate::qwen4_identity::is_qualified(Some(&model_id))
         && matches!(
             model_type

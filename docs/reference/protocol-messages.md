@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-22 · commit `ce809b792`
+> Last updated: 2026-09-27 · commit `e8d00933d`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -20,6 +20,10 @@ This does not add a message type or change the public error code.
 
 The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 
+App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds both fields. `ready` replies may also carry optional `launch_session`, `boot_time` and `operation_stalled_seconds`; `coordinator/protocol/app_attest_runtime_diagnostic.go` (`SanitizeRuntimeDiagnostics`) strips invalid values without rejecting the frame. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).
+
+`ready` replies may also carry optional deep diagnostics (`process_started_at`, `previous_exit`, `start_reason`, `console_user_active`, `sip_enabled`, `authenticated_root`, `preflight`, `key_history`, `push_history`), and failed `attestation`/`assertion` replies with result `apple_error` or `apple_invalid_key` may carry `native_error_chain`; `coordinator/protocol/app_attest_deep_diagnostic.go` strips each invalid or misplaced member without rejecting the frame. See [Provider diagnostics](app-attest-shadow.md#provider-diagnostics).
+
 ## Provider lifecycle drain
 
 | Direction | Type | Required fields | Behavior / source |
@@ -28,19 +32,30 @@ The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) us
 | Coordinator → provider | `provider_drain_ack` | Matching `request_id` | Swift `CoordinatorMessage.drainAck`; only the issuing connection's current waiter can consume it |
 
 The registered provider closes admission first, then sends a barrier over the
-FIFO control writer. The coordinator permanently fences that connection from
-new dispatch and asynchronously waits for all earlier completion/billing workers
-before acknowledging. Heartbeat/challenge reads continue during that wait; the
-connection has at most two pending acknowledgement workers. A final barrier
-after accepted requests and local response writes finish establishes that prior
-terminal usage has been processed. The Swift acknowledgement also passes through
-the ordered provider event queue, so earlier inbound inference frames are refused
-before the barrier completes. It is not a bearer credential or permission
-to serve. A stale idle heartbeat or drain TTL cannot reopen this connection; a
-restart registers and authorizes a new connection. Code:
+FIFO control writer. The coordinator fences that connection from new dispatch
+and asynchronously waits for held/queued inference reservations to be removed,
+then for completion/billing workers to settle. Pending removal signals an event;
+there is no polling and ordinary serving allocates no reservation-wait tracking.
+Billing begun during reservation cleanup or settlement is included before the
+receipt. Heartbeat/challenge reads continue during that wait. Each connection
+has one acknowledgement worker and one coalesced latest barrier, so overlapping
+switch, preliminary-stop, and final-stop barriers cannot strand the final waiter.
+Every received barrier gets a new internal generation. The control writer checks
+that generation again at handoff: reusing a wire `request_id` cannot let an earlier
+worker or queued receipt settle the latest drain. Disconnect cancels the wait and
+clears its reservation tracking. A final barrier after accepted requests and local
+response writes finish establishes that prior terminal usage has been processed.
+The Swift acknowledgement also passes through the ordered provider event queue,
+so earlier inbound inference frames are refused before the barrier completes.
+It is not a bearer credential or permission to serve. A stale idle heartbeat or
+drain TTL cannot reopen this connection. Only a committing `models_replace`
+(`validate_only` omitted or false) against the latest settled drain, followed by
+successful receipt delivery and matching provider readiness, resumes the same connection; a restart instead
+registers and authorizes a new connection. Code:
 `coordinator/api/provider_completion_barrier.go` (`providerCompletionBarrier`),
+`coordinator/api/provider_drain_ack.go` (`providerDrainAcker`),
 `coordinator/api/provider.go` (`providerReadLoop`),
-`coordinator/registry/drain_state.go` (`CommitProviderDrain`),
+`coordinator/registry/drain_state.go` (`CommitProviderDrain`, `ProviderDrainPending`, `WriteProviderDrainAck`),
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Drain.swift`
 (`acknowledgeDrain`).
 
@@ -95,6 +110,10 @@ deliver a graceful-drain acknowledgement.
 | provider → coordinator | `load_model_status` | `LoadModelStatusMessage` | `.loadModelStatus` |
 | provider → coordinator | `prefetch_model_status` | `PrefetchModelStatusMessage` | `.prefetchModelStatus` |
 | provider → coordinator | `models_update` | `ModelsUpdateMessage` | `.modelsUpdate` |
+| provider → coordinator | `models_replace` | `ModelsReplaceMessage` | `.modelsReplace` |
+| coordinator → provider | `models_replace_ack` | `ModelsReplaceAckMessage` | `.modelsReplaceAck` |
+| provider → coordinator | `models_replace_ready` | `ModelsReplaceReadyMessage` | `.modelsReplaceReady` |
+| coordinator → provider | `models_replace_resumed` | `ModelsReplaceResumedMessage` | `.modelsReplaceResumed` |
 | provider → coordinator | `prefix_cache_lookup` | `PrefixCacheLookupMessage` | `.prefixCacheLookup` |
 | provider → coordinator | `prefix_cache_ready` | `PrefixCacheReadyMessage` | `.prefixCacheReady` |
 | provider → coordinator | `prefix_cache_lookup_v2` | `PrefixCacheLookupV2Message` | `.prefixCacheLookupV2` |
@@ -183,6 +202,7 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `quantization` | `string` | `String?` | req in Go | |
 | `weight_hash` | `string` | `String?` | opt | SHA-256 of the weight files |
 | `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media |
+| `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See `coordinator/registry/native_media_tools.go` (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
 | `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Padded native-weight load estimate in GiB; used for reduced offload admission only with a valid family-matched offload declaration |
@@ -536,6 +556,90 @@ encoding as `register`); `tool_constraint_protocol` (`int`, opt);
 `weight_hash` against the catalog before merging, so a verified build becomes
 routable without a re-register.
 
+### `models_replace` / `models_replace_ack` / `models_replace_ready` / `models_replace_resumed`
+
+Non-destructive target validation followed by atomic full inventory replacement
+and resume on the same registered connection; `models_update` retains its existing
+merge semantics.
+
+| Message | Fields | Contract / source |
+|---|---|---|
+| `models_replace` | `request_id`, `drain_request_id`, nonempty `models`; optional `validate_only` (Bool, omitted means false), `tool_constraint_protocol`, `tool_constraint_models` | `coordinator/protocol/messages.go` (`ModelsReplaceMessage`); Swift `provider-swift/Sources/ProviderCore/Protocol/ModelsReplace.swift` (`ModelsReplace`) |
+| `models_replace_ack` | matching `request_id`, `drain_request_id`, and echoed `validate_only` (Bool, always present), `accepted`; optional `error` | `coordinator/protocol/messages.go` (`ModelsReplaceAckMessage`); Swift `ModelsReplaceAck` |
+| `models_replace_ready` | matching `request_id`, `drain_request_id`, and nonzero `capacity_seq` stamped after the provider opens local admission | `coordinator/protocol/messages.go` (`ModelsReplaceReadyMessage`); Swift `ModelsReplaceReady` |
+| `models_replace_resumed` | exact `request_id`, `drain_request_id`, and `capacity_seq` from the accepted readiness frame | `coordinator/protocol/messages.go` (`ModelsReplaceResumedMessage`); Swift `ModelsReplaceResumed` |
+
+`request_id` is nonempty and at most 64 bytes. `drain_request_id` must name the
+latest committed **and settled** `provider_drain` on this exact live connection.
+Every model ID must be unique and nonempty and meet the attested runtime
+capability floor. Catalog-tracked models must carry their catalog-pinned hash.
+As with registration, off-catalog local models may be advertised regardless of
+`private_only` or whether the provider has a linked owner; advertising them does
+not grant trust or ownership. With a configured catalog, they are eligible only
+for their owner's self-route or preferred-owner requests, never public routing.
+Sources: `coordinator/registry/provider_lifecycle.go` (`Register`),
+`coordinator/registry/model_catalog.go` (`modelServableForOwnerLocked`,
+`providerServesCatalogModelLocked`).
+The tool allowlist must contain unique selected IDs and use protocol 1; protocol
+0 has no tool allowlist. The coordinator validates the entire set before mutation.
+Pending inference reservations must be gone. Both phases require the same committed
+and settled drain and validate the entire target. Rejection (`invalid_drain`,
+`invalid_models`, or `disconnected`) does not mutate inventory or reopen the drain;
+the provider may resubmit its old full set with `validate_only` false and the same
+valid drain ID to resume.
+
+Successful `validate_only: true` does not mutate any provider or registry state:
+the old model/hash inventory, resident warm/current/slot evidence, trust, reputation,
+challenge state, tool/cache/template capabilities, pending loads, routing indexes,
+and settled drain are unchanged. The handler does not drain or reject queued work.
+It is a preflight, not a reservation: the committing request revalidates the target.
+
+Committing success preserves the provider object, session, trust, reputation, and
+challenge state. Removed or hash-changed models lose warm/current/slot, pending-load,
+template, and cache evidence; tool capabilities become the complete new allowlist.
+Routing indexes reflect the new set immediately, but admission stays fenced until
+the accepted committing acknowledgement is successfully written and the provider
+reopens its own admission. It then sends `models_replace_ready` on the same
+connection and emits a refreshed capacity heartbeat. The coordinator checks
+the ready frame's request and drain IDs, then waits for an accepted `idle` or
+`serving` heartbeat with `backend_capacity.capacity_seq` at least as new as the
+nonzero sequence in readiness before resuming routing; either message may arrive
+first. Earlier or stale `capacity_seq`, draining status, and omitted
+capacity cannot release the fence. A failed write or missing readiness
+does not dispatch or reject queued work and does not force a reconnect. A later
+drain or another session cannot be reopened by stale readiness. Removed-model
+queue cleanup survives a later same-session reconciliation drain and is consumed
+only when routing resumes or the session disconnects. After resume the
+coordinator sends a fresh `desired_models` snapshot
+for the replaced inventory, bypassing its prior-snapshot deduplication, then
+reconciles queues including requests for removed models. It then sends
+`models_replace_resumed` on the same connection. The provider reports switch
+success only after receiving the matching receipt. Before sending readiness,
+the provider restores its prefetch subsystem; a desired snapshot received in
+the brief restoration gap is deferred and a newer snapshot supersedes it.
+If the receipt is lost or the connection drops, the result is unconfirmed even though routing may have
+resumed; retrying the same readiness frame on that connection resends the
+receipt without repeating the routing transition. A newer drain invalidates
+that retry. A drain remains reusable
+after validation but not after commit or disconnect. Sources:
+`coordinator/registry/provider_models_replace.go` (`ReplaceProviderModels`, `ResumeProviderModels`),
+`coordinator/api/provider_models_replace.go` (`handleModelsReplace`, `handleModelsReplaceReady`).
+
+Swift `prepareModelSwitch(timeout:)` returns the settled drain ID or nil.
+`validateModelSelectionAfterDrain(_:drainID:timeout:)` checks the candidate before
+the runtime unloads any resident model; it neither stages the candidate advertisement
+or hashes nor consumes the acknowledged drain, including on rejection or timeout.
+`replaceModelsAfterDrain(_:drainID:timeout:)` then commits. Both use the same sender
+and receipt waiter, correlating the request ID, drain ID, phase, and exact connection
+without reconnecting. A validation timeout is not validation success, but cannot
+change the inventory. A committing timeout or dropped connection is an **unknown
+outcome**, never success: the intended inventory and hashes remain staged for any
+ordinary reconnect, and the runtime keeps admission closed until reconciliation.
+An explicit commit rejection restores the client's pre-call advertisement; the
+runtime owns local and durable rollback. Sources:
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Drain.swift`,
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+ModelSwitch.swift`.
+
 ### `prefix_cache_lookup`
 
 Go `PrefixCacheLookupMessage` · Swift `PrefixCacheLookup`.
@@ -692,9 +796,15 @@ replies with `prefetch_model_status` and then `models_update`.
 
 Go `DesiredModelsMessage` · Swift `DesiredModels`. `models` (`[]DesiredModelEntry`):
 `model_name` (public alias), `desired_build` (concrete build id),
-`previous_build` (opt; still acceptable mid-rollout). Sent once right after
-`register` and again whenever a desired build changes. The provider reconciles:
-background-prefetch any missing desired build, hard-swap, emit `models_update`.
+`previous_build` (opt; still acceptable mid-rollout). Sent right after `register`,
+when desired builds or eligible capabilities change, and freshly recomputed after
+matching provider readiness for a committed replacement even when the alias snapshot
+equals the one sent before switching. The same backend/version and attested
+capability guards apply. Entries describe aliases whose desired, previous, or
+retired build is in the provider's advertised inventory; an empty set revokes old
+targets. The provider reconciles by background-prefetching a missing desired
+build, hard-swapping, and emitting `models_update`. Source:
+`coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `RefreshDesiredModels`).
 
 ### `trust_status`
 

@@ -16,7 +16,7 @@ export function HardwareIdentity({ data }: { data: HardwareCompositionData }) {
               <span className="h-full bg-accent-brand/20" style={{ width: `${data.otherAttestationProviders / data.providers * 100}%` }} />
             </div>
             <p className="mt-2 text-[11px] text-text-tertiary">{data.otherAttestationProviders.toLocaleString()} other states{data.attestationUnreportedProviders > 0 ? ` · ${data.attestationUnreportedProviders.toLocaleString()} unreported` : ""}</p>
-            <p className="mt-2 text-xs text-text-secondary">Current authorization: {verificationCountLabel(data.verification)} ({data.verification.unknown} unknown) · {data.verification.appAttest} App Attest · {data.verification.legacy} legacy · {data.verification.overlap} both, counted once.</p>
+            <p className="mt-2 text-xs text-text-secondary">Authorization at snapshot: {verificationCountLabel(data.verification)} ({data.verification.unknown} unknown) · {data.verification.appAttest} App Attest · {data.verification.legacy} legacy · {data.verification.overlap} both, counted once.</p>
           </div>
         </div>
   );

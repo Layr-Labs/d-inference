@@ -16,23 +16,30 @@ import (
 )
 
 func (x *Session) handle(ctx context.Context, reply protocol.AppAttestShadowPayload) string {
+	archiveProof := reply.Proof != "" || reply.Action == "attestation" || reply.Action == "assertion" || x.expected == "attestation" || x.expected == "assertion"
+	if x.archive == nil {
+		x.archive, _ = store.As[store.AppAttestArchiveStore](x.store)
+	}
+	// Optional reads have separate nonblocking admission and must not occupy
+	// the proof archival permits, even when their small timeout is exhausted.
+	if archiveProof && x.archive != nil {
+		x.deriveKeyLifecycleDiagnostics(ctx)
+	}
 	release, ok := x.acquireStorage()
 	if !ok {
 		x.lastOutcome = "storage_busy"
-		x.dropped.Add(1)
+		x.markDropped()
 		x.observe("archive", "storage_busy", nil)
 		return "stop"
 	}
 	// Registered first so the permit is released AFTER deferred completion.
 	defer release()
-	if x.archive == nil {
-		x.archive, _ = store.As[store.AppAttestArchiveStore](x.store)
-	}
 	var prepared *shadowProofContext
 	// Every admitted proof is archived before parsing, challenge checks, or
 	// cryptographic verification. Invalid base64 is retained verbatim too.
-	if reply.Proof != "" || reply.Action == "attestation" || reply.Action == "assertion" || x.expected == "attestation" || x.expected == "assertion" {
+	if archiveProof {
 		if x.archive == nil {
+			x.markDropped()
 			x.observe("archive", "unavailable", nil)
 			return "stop"
 		}
@@ -65,6 +72,25 @@ func (x *Session) handle(ctx context.Context, reply protocol.AppAttestShadowPayl
 		if enrollment != nil {
 			inputs["enrollment_context"] = enrollment
 		}
+		if reply.AppleError != nil && reply.AppleError.Valid() {
+			inputs["apple_error"] = reply.AppleError
+		}
+		if reply.ValidClientDiagnostics() {
+			if reply.AvailabilityReason != "" {
+				inputs["availability_reason"] = reply.AvailabilityReason
+			}
+			if reply.AppleErrorSource != "" {
+				inputs["apple_error_source"] = reply.AppleErrorSource
+			}
+		}
+		// Runtime context from this attempt's ready reply (or this reply, if
+		// it is itself an archived ready frame); sanitized, never trusted.
+		for key, value := range x.readyDiagnostics {
+			inputs[key] = value
+		}
+		for key, value := range reply.RuntimeDiagnosticFields(time.Now()) {
+			inputs[key] = value
+		}
 		inputs["proof_field_sha256"] = hex.EncodeToString(sum[:])
 		inputs["proof_field_checksum_encoding"] = "proof_field_utf8"
 		inputs["proof_decode_valid"] = decodeErr == nil
@@ -84,7 +110,7 @@ func (x *Session) handle(ctx context.Context, reply protocol.AppAttestShadowPayl
 		e := store.AppAttestEvidence{ID: x.evidenceID, SessionID: x.provider.ID, KeyID: reply.KeyID, ReceivedAt: time.Now().UTC(), Action: reply.Action,
 			ProofField: reply.Proof, Proof: raw, SHA256: hex.EncodeToString(sum[:]), Context: contextJSON}
 		if err := x.archive.BeginAppAttestEvidence(ctx, e); err != nil {
-			x.dropped.Add(1)
+			x.markDropped()
 			x.lastOutcome = "write_failed"
 			x.evidenceID = ""
 			x.observe("archive", "write_failed", nil)
@@ -100,6 +126,7 @@ func (x *Session) handle(ctx context.Context, reply protocol.AppAttestShadowPayl
 				final, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
 				if outcome, err := x.archive.CompleteAppAttestEvidence(final, x.evidenceID, store.AppAttestDecision{Outcome: x.evidenceOutcome, Receipt: unverifiedReceipt}); err != nil {
+					x.markDropped()
 					x.observe("archive", "completion_failed", nil)
 				} else {
 					x.s.ddIncr("app_attest.archive.completed", []string{"outcome:" + outcome})
@@ -111,6 +138,11 @@ func (x *Session) handle(ctx context.Context, reply protocol.AppAttestShadowPayl
 	// An unsolicited or wrong-session proof still has an audit record.
 	if reply.Session != x.id || reply.Action != x.expected {
 		x.observe("protocol", "unexpected_reply", nil)
+		if x.expected == "" && reply.Session == x.id {
+			// A delayed duplicate from the previous challenge has no power
+			// to satisfy a new one. Keep the scheduled assertion deadline.
+			return "ignore"
+		}
 		return "stop"
 	}
 	if x.rejectReason != "" {
@@ -124,11 +156,13 @@ func (x *Session) handle(ctx context.Context, reply protocol.AppAttestShadowPayl
 
 func (x *Session) commitEvidence(ctx context.Context, d store.AppAttestDecision) bool {
 	if x.archive == nil || x.evidenceID == "" {
+		x.markDropped()
 		x.observe("archive", "unavailable", nil)
 		return false
 	}
 	outcome, err := x.archive.CompleteAppAttestEvidence(ctx, x.evidenceID, d)
 	if err != nil {
+		x.markDropped()
 		x.evidenceOutcome = "storage_error"
 		x.lastOutcome = "storage_error"
 		x.observe("archive", "completion_failed", nil)
@@ -137,8 +171,16 @@ func (x *Session) commitEvidence(ctx context.Context, d store.AppAttestDecision)
 	x.evidenceID = ""
 	x.s.ddIncr("app_attest.archive.completed", []string{"outcome:" + outcome})
 	if outcome != "verified" {
+		if x.expected == "assertion" && x.s.authorizer != nil {
+			// The rejected proof is retained, but the older serving proof must
+			// not remain active after an assertion counter/commit conflict.
+			x.s.authorizer.forget(x.provider)
+		}
 		x.observe(x.expected, outcome, nil)
 		return false
+	}
+	if x.expected == "assertion" {
+		x.assertionArchived = true
 	}
 	return true
 }

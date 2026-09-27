@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-26 · commit `cf7393580`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -18,7 +18,7 @@ Attempt decision fields are additive columns and existing provider JSONB;
 [prediction telemetry](../reference/prediction-decision-telemetry.md#storage-and-rollout)
 defines migration, historical NULLs and the separately applied waterfall view.
 
-App Attest maintenance marks abandoned pending submissions `interrupted` without accepting old assertions or changing counters. Enrollment contexts retain their protocol version so an upgrade does not reinterpret a cached proof. Historical receipt recovery appends new versions; credential revocations are durable and account-scoped. See `coordinator/store/app_attest_maintenance.go` and `coordinator/store/app_attest_readiness.go`.
+App Attest maintenance marks abandoned pending submissions `interrupted` without accepting old assertions or changing counters. Enrollment contexts retain their protocol version so an upgrade does not reinterpret a cached proof. Historical receipt recovery appends new versions; credential revocations are durable and account-scoped. See `coordinator/store/app_attest_maintenance.go` and `coordinator/store/app_attest_readiness.go`. The additive `app_attest_key_rotations` table (`coordinator/store/app_attest_rotation.go`, created with the other App Attest DDL) records one coordinator-requested dead-key retirement per key with a `(machine_id, requested_at DESC)` index for rate limits; it is not a revocation.
 
 The additive [App Attest inventory and evidence tables](../reference/app-attest-shadow.md#storage-and-complete-evidence-archive) retain stable machine mappings, session/OS history, complete proof bytes, receipt versions, and atomic verification results. They do not restore live authorization. The [MDM-optional path](../reference/provider-authorization.md#machine-identity-and-base-rewards) uses verified canonical identity for new base-floor settlement, while retaining original organic-earning keys and historical ledger rows.
 
@@ -49,9 +49,10 @@ Keychain. Nothing prompt-derived is stored on either side.
 
 ### The store interface
 
-`Store` (`coordinator/store/interface.go`) is the union of thirteen domain
-interfaces declared in `coordinator/store/interface_domains.go`. Callers depend
-on the narrow slice they need; both implementations satisfy all thirteen.
+`Store` (`coordinator/store/interface.go`) is the union of thirteen embedded
+domain interfaces. Most are declared in `coordinator/store/interface_domains.go`;
+`RequestOutcomeStore` lives in `coordinator/store/request_outcomes.go`. Callers
+depend on the narrow slice they need; both implementations satisfy all thirteen.
 
 | Sub-interface | Owns |
 |---|---|
@@ -68,6 +69,13 @@ on the narrow slice they need; both implementations satisfy all thirteen.
 | `InviteStore` | Invite codes and redemptions. |
 | `ProviderEarningsStore` | Per-node earnings, payouts and the base-rewards settlement rows. |
 | `ProviderStore` | Provider records and sessions, reputation, the APNs code-identity and trust-reuse caches, verification jobs and log reports. |
+
+`ModelDemandStore` (`coordinator/store/model_demand.go`) is an optional capability,
+not an embedded member of `Store`. Both backends implement it; callers discover
+it through `store.As[store.ModelDemandStore]`, which unwraps decorators. It owns
+compact, revision-aware public demand projections and hourly
+per-model/consumer/outcome counters retained for 31 days; PostgreSQL aggregate
+reads use bounded read-only transactions.
 
 Telemetry *events* are not in the store at all: `TelemetryEventRecord` goes to
 Datadog only (see [`telemetry.md`](telemetry.md)).
@@ -223,6 +231,7 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 |---|---|---|
 | Identity and access | `api_keys`, `users`, `device_codes`, `provider_tokens`, `publishing_api_keys`, `invite_codes`, `invite_redemptions` | Keys are stored as hashes with a display prefix; `users` carries the Stripe Connect fields. |
 | Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `stripe_withdrawals`, `global_payout_recipients`, `global_payout_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. Semantics in [`billing.md`](billing.md). |
+| Public model demand | `model_demand_requests`, `model_demand_hourly`, `model_demand_collection` | One compact projection per scoped coordinator UUID, hourly counters updated atomically by trigger, and a persistent collection epoch; `coordinator/store/model_demand_migration.go`, `coordinator/store/postgres_model_demand.go`. |
 | Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter kept by `migrateUsageTotals`. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
@@ -244,6 +253,7 @@ The store keeps most business rows forever; the loops that exist are narrow.
 
 | Loop | Where | What it bounds |
 |---|---|---|
+| Model demand retention, hourly | `coordinator/api/profiler_fleet.go` (`pruneTelemetryOnce` → `PruneModelDemand`) | Compact request projections and hourly aggregates expire after `ModelDemandRetention = 31 * 24 * time.Hour`. PostgreSQL bounds each table's deletes by the requested batch size, using short transactions with 2 s lock timeouts; the partial cutoff hour is preserved and committed progress survives an error. Detailed ledger retention is unchanged. |
 | Profiler retention sweep, hourly | `coordinator/api/profiler_fleet.go` (`StartProfilerLoops` → `PruneTelemetry`) | `request_outcomes` by receipt time, plus `request_profiles` and `fleet_snapshots` older than their retention windows ([telemetry-inventory](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres)), in batches; runs even when the profiler is off. |
 | Memory-store pruner, every 15 minutes | `coordinator/cmd/coordinator/main.go` (`memory_store_pruner`, `MemoryStore.Prune`) | Append-only history slices to `DefaultPruneMaxEntries` (100 000); memory store only. |
 | Session reconciliation, once at boot | `coordinator/cmd/coordinator/main.go` (`CloseOpenProviderSessions`) | Closes `provider_sessions` rows whose last heartbeat is more than 3 minutes old, so a blue-green cutover does not truncate live sessions. |

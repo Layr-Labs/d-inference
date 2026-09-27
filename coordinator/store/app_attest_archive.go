@@ -14,6 +14,22 @@ type AppAttestArchiveStore interface {
 	CompleteAppAttestEvidence(context.Context, string, AppAttestDecision) (string, error)
 }
 
+// AppAttestDiagnosticStore reads only provider lifecycle context, never proof
+// bodies. It is optional: lookup failures must not affect proof acceptance.
+type AppAttestDiagnosticStore interface {
+	GetAppAttestAssertionDiagnostics(context.Context, string) (*AppAttestAssertionDiagnostics, error)
+}
+
+// Bound the key-index scan even when a key has a long history of failed proofs.
+// No verified assertion in this window means the diagnostic baseline is unknown.
+const AppAttestDiagnosticLookback = 100
+
+// Keep members raw so a malformed optional timestamp cannot erase its valid peer.
+type AppAttestAssertionDiagnostics struct {
+	BootTime         json.RawMessage `json:"boot_time"`
+	ProcessStartedAt json.RawMessage `json:"process_started_at"`
+}
+
 type AppAttestEvidence struct {
 	ID         string
 	SessionID  string

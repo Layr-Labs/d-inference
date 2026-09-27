@@ -14,6 +14,16 @@ import MLXVLM
 import ProviderCoreFoundation
 
 enum ModelContainerLoading {
+    static func loadServingContainer(from directory: URL, modelID: String? = nil) async throws -> ProviderModelContainer {
+        let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
+        let base = try JSONDecoder().decode(BaseConfiguration.self, from: data)
+        if base.modelType == "diffusion_gemma" {
+            return .diffusion(try await DiffusionGemmaModelFactory.shared.loadContainer(
+                from: directory, using: LocalTokenizerLoader()))
+        }
+        return .autoregressive(try await loadContainer(from: directory, modelID: modelID))
+    }
+
     enum FactorySelection: Equatable {
         case text
         case vision

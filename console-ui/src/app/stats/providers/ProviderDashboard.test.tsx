@@ -44,7 +44,7 @@ describe("Provider directory", () => {
 
   it("does not present missing routing verdicts as routing eligibility", () => {
     render(<ProviderDashboard providers={[provider(1, { routable: undefined, runtime_verified: true, last_challenge_verified: new Date().toISOString() })]} />);
-    expect(screen.getByText("Currently verified")).toBeInTheDocument();
+    expect(screen.getByText("Verified at snapshot")).toBeInTheDocument();
     expect(screen.getByText("Not reported")).toBeInTheDocument();
     expect(screen.queryByText("Routing eligible")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: FIRST_PROVIDER_BUTTON }));

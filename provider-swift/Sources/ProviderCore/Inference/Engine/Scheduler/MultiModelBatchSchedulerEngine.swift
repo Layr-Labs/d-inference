@@ -84,6 +84,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Authenticated remote or configured local prefix-cache scope. Maps to
     /// `CBv2Request.cacheSalt` for both cache tiers.
     private let cacheScope: String
+    /// Trusted single-key local-application namespace, used only by native
+    /// diffusion. Remote requests never fall back to this scope.
+    private let nativeLocalCacheScope: String?
     /// False only for remote requests from a legacy/malformed coordinator
     /// that did not provide an authenticated outer cache scope.
     private let cacheEnabled: Bool
@@ -146,6 +149,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.defaultMaxTokens = defaultMaxTokens
         self.templateControls = templateControls
         self.cacheScope = cacheScope
+        self.nativeLocalCacheScope = nil
         self.cacheEnabled = cacheEnabled
         self.engineV2Logprobs = engineV2Logprobs
         self.engineV2Sampling = engineV2Sampling
@@ -175,7 +179,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerResolution,
         availableModels: @escaping @Sendable () async -> [String],
         defaultMaxTokens: Int = 4096,
-        templateControls: ChatTemplateControls = .init()
+        templateControls: ChatTemplateControls = .init(),
+        nativeLocalCacheScope: String? = nil
     ) {
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
@@ -187,6 +192,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.defaultMaxTokens = defaultMaxTokens
         self.templateControls = templateControls
         self.cacheScope = ""
+        self.nativeLocalCacheScope = nativeLocalCacheScope
         self.cacheEnabled = true
         // The --local path serves SSE frames inside the upstream router, so
         // there is no provider seam to decorate frames with logprobs on this
@@ -247,6 +253,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let modelType: String?
         let releaseBox: OneShotRelease
         let container: ModelContainer?
+        let diffusionContainer: DiffusionGemmaContainer?
         let isVLM: Bool
         let engineV2Bridge: EngineV2Bridge?
         let visionGate: VisionMemoryGate?
@@ -257,6 +264,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             modelType = acquired.modelType
             releaseBox = acquired.releaseToken
             container = acquired.container
+            diffusionContainer = acquired.diffusionContainer
             isVLM = acquired.isVLM
             engineV2Bridge = acquired.engineV2Bridge
             visionGate = acquired.visionGate
@@ -274,15 +282,20 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await reserveModel(modelId)
             releaseBox = OneShotRelease(release: releaseModel, modelId: modelId)
             container = entry.container
+            diffusionContainer = entry.diffusionContainer
             isVLM = entry.isVLM
             engineV2Bridge = entry.engineV2Bridge
             visionGate = entry.visionGate
             try await checkFirstContentDeadline(releasing: releaseBox)
         }
 
+        let requestCacheScope = diffusionContainer != nil && cacheScope.isEmpty
+            ? (nativeLocalCacheScope ?? cacheScope) : cacheScope
         let prepared: ToolChoicePromptPolicy.Prepared
         do {
             try checkFirstContentDeadline()
+            try DiffusionGemmaReasoningControl.validate(
+                request: request, controls: templateControls, modelType: modelType)
             prepared = try ToolChoicePromptPolicy.prepare(
                 request,
                 modelType: modelType,
@@ -300,7 +313,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         var nativeMediaTools = false
         do {
             try checkFirstContentDeadline()
-            if isVLM, let container, MediaIngest.hasMedia(request) {
+            if let diffusionContainer, MediaIngest.hasMedia(request) {
+                nativeMediaTools = await diffusionContainer.perform { $0.processor != nil }
+            } else if isVLM, let container, MediaIngest.hasMedia(request) {
                 nativeMediaTools = await container.perform { ctx in
                     ctx.model is MLXVLM.Qwen4Exp || ctx.model is MLXVLM.PrismHadamardQwen35
                 }
@@ -327,7 +342,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // A VLM slot's bridge owns the exact same text tower used by direct VLM
         // forwards, but media must first run the wrapper's vision tower and
         // splice its embeddings; token-only preparation would discard media.
-        if isVLM, let container, MediaIngest.hasMedia(request) {
+        if MediaIngest.hasMedia(request), (isVLM && container != nil) || diffusionContainer != nil {
             try await checkFirstContentDeadline(releasing: releaseBox)
             var visionRequest = request
             visionRequest.tools = prepared.tools
@@ -430,8 +445,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     try checkFirstContentDeadline()
                     profile?.mark(.promptPrepStart)
                     let visionPrepStart = SuspendingClock.now
-                    let visionPrepared = try await plumbing.prepare(
-                        container, visionRequest, templateControls)
+                    let visionPrepared: EngineV2VisionPrefill.PreparedSubmission
+                    if let diffusionContainer {
+                        visionPrepared = try await EngineV2VisionPrefill.prepareDiffusion(container: diffusionContainer,
+                            request: visionRequest, templateControls: templateControls)
+                    } else if let container {
+                        visionPrepared = try await plumbing.prepare(container, visionRequest, templateControls)
+                    } else {
+                        throw EngineV2VisionPrefillError.unsupportedVLM("missing typed model owner")
+                    }
                     if let profile {
                         // Media prompt prep = decode + vision tower; one lock.
                         let visionPrepUs = RequestProfileBuilder.microseconds(
@@ -451,7 +473,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // owns the preparation peak. Bind cache lookup to actual
                     // native features/positions, never a filename or URL.
                     let mediaPrefixIdentity: CBv2HybridPrefixIdentity?
-                    if nativeMediaTools, Qwen4SupportPolicy.isOwnedModelID(modelId), cacheEnabled,
+                    if diffusionContainer != nil, cacheEnabled {
+                        mediaPrefixIdentity = try visionPrepared.hybridPrefixIdentity()
+                    } else if nativeMediaTools, Qwen4SupportPolicy.isOwnedModelID(modelId), cacheEnabled,
                        await bridge.ssdHybridCheckpointStore != nil {
                         mediaPrefixIdentity = try visionPrepared.hybridPrefixIdentity(
                             canonicalQwen4TextTail: true)
@@ -486,7 +510,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             logitBias: engineV2Sampling?.logitBias,
                             seed: engineV2Sampling?.seed),
                         requestId: visionRequestId,
-                        cacheScope: cacheScope,
+                        cacheScope: requestCacheScope,
                         cacheEnabled: cacheEnabled,
                         logprobsChannel: engineV2Logprobs?.channel,
                         // Media requests are prefix-cache-excluded engine-
@@ -530,7 +554,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 tokenizer.inner.decode(tokenIds: Array(visionPrepared.promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                                        skipSpecialTokens: false)) ?? "<think></think>") : nil,
                         preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
-                            .init(modelId: modelId, modelType: modelType))
+                            .init(modelId: modelId, modelType: modelType)),
+                        nativeGemmaChannels: diffusionContainer != nil && modelType == "diffusion_gemma",
+                        nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
+                            || DiffusionGemmaReasoningControl.enabled(for: visionRequest, controls: templateControls)
                     )
                 } catch {
                     // Every failed media construction releases the same reservations
@@ -704,7 +731,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt
                     // (TB-007/T-041 — LIVE as of v0.7.5 when PrefixCachePolicy
                     // funds the cache).
-                    cacheScope: cacheScope,
+                    cacheScope: requestCacheScope,
                     cacheEnabled: cacheEnabled,
                     logprobsChannel: engineV2Logprobs?.channel,
                     usageSignal: requestUsage,
@@ -746,7 +773,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                            skipSpecialTokens: false)) ?? "<think></think>") : nil,
             preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
-                .init(modelId: modelId, modelType: modelType))
+                .init(modelId: modelId, modelType: modelType)),
+            nativeGemmaChannels: modelType == "diffusion_gemma",
+            nativeGemmaReasoningEnabled: modelType != "diffusion_gemma"
+                || DiffusionGemmaReasoningControl.enabled(for: request, controls: templateControls)
         )
     }
 
@@ -780,7 +810,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         usageSignal: EngineV2RequestUsageSignal,
         reasoningPrefix: String? = nil,
         nativeReasoningPrefix: String? = nil,
-        preserveInnerReasoningSpans: Bool = false
+        preserveInnerReasoningSpans: Bool = false,
+        nativeGemmaChannels: Bool = false,
+        nativeGemmaReasoningEnabled: Bool = true
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -798,7 +830,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             usageSignal: usageSignal,
             reasoningPrefix: reasoningPrefix,
             nativeReasoningPrefix: nativeReasoningPrefix,
-            preserveInnerReasoningSpans: preserveInnerReasoningSpans)
+            preserveInnerReasoningSpans: preserveInnerReasoningSpans,
+            nativeGemmaChannels: nativeGemmaChannels,
+            nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled)
         do {
             try checkFirstContentDeadline()
             return stream
@@ -824,7 +858,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         usageSignal: EngineV2RequestUsageSignal,
         reasoningPrefix: String? = nil,
         nativeReasoningPrefix: String? = nil,
-        preserveInnerReasoningSpans: Bool = false
+        preserveInnerReasoningSpans: Bool = false,
+        nativeGemmaChannels: Bool = false,
+        nativeGemmaReasoningEnabled: Bool = true
     ) -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         let disconnect = LocalRequestCancellation.current?.register {
             Task { await cancelUpstream() }
@@ -845,7 +881,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 var failedTerminal: MultiModelBatchSchedulerEngineError?
                 var router = NativeToolStreamRouter(handler: toolHandler,
                     requiresToolCall: prepared.requiresToolCall, nativePrefix: nativeReasoningPrefix,
-                    preserveInnerReasoningSpans: preserveInnerReasoningSpans)
+                    preserveInnerReasoningSpans: preserveInnerReasoningSpans,
+                    nativeGemmaChannels: nativeGemmaChannels,
+                    nativeGemmaReasoningEnabled: nativeGemmaReasoningEnabled)
                 startedAt = Date()
 
                 // Restore the prompt-side reasoning state in the downstream

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-26 · commit `b1aac01b5`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -681,7 +681,8 @@ from `coordinator/`, using a disposable local `DATABASE_URL` for the store
 contracts (the test harness truncates tables). Add `-race` for concurrency checks.
 Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
 The private admin queries have PostgreSQL coverage in
-`admin-ui/src/lib/queries/app-attest.test.ts`.
+`admin-ui/src/lib/queries/app-attest.test.ts` and
+`admin-ui/src/lib/queries/app-attest-diagnostics.test.ts`.
 
 After the optimized provider is packaged with its resources, run
 `Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all four markers:
@@ -715,3 +716,14 @@ Provider Tests also runs `python3 scripts/test-profile-inventory-auth.py` on mac
 ## Promotion payload helper
 
 `python3 scripts/model-token-promotion.py --help` prepares a model-specific, calendar-day grant payload without making API calls. It requires Python with `zoneinfo` and timezone data. The [promotion runbook](../operations/model-token-promotions.md) covers review and approved application; the [test guide](test.md) covers calendar and settlement validation.
+
+## Source-matched test libraries
+
+After `swift build --build-tests`, run `scripts/stage-test-metallib.sh` with the
+package's `swift build --show-bin-path` directory. The helper builds or verifies
+the matching MLX library and stages it beside each test executable and in the
+nested resource bundle used by native checkpoint identity tests. `make provider-test`
+and the provider/nested CI jobs invoke this helper. A missing test runner or
+failed source verification is an error; an existing library is always replaced.
+See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
+opt-in encrypted transport gate.

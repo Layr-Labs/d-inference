@@ -162,11 +162,13 @@ extension Start {
     ) async throws {
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
+        let launchManaged = ProcessIdentity.current().map { LaunchAgent.launchSnapshot()?.process == $0 } ?? false
+        let usePinnedSelection = Self.usesPinnedModelSelection(configPath: snapshot.configPath, launchManaged: launchManaged)
         let selectedModels = advertisedModels(
             from: snapshot.models,
             config: config,
-            modelOverrides: model,
-            includeDisabled: all,
+            modelOverrides: usePinnedSelection ? [] : model,
+            includeDisabled: usePinnedSelection ? false : all,
             runtimeCapabilities: runtimeCapabilities)
 
         guard !selectedModels.isEmpty else {
@@ -178,6 +180,9 @@ extension Start {
         try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
+        // Only the lock holder is the serving process: record its start
+        // (previous_exit / start_reason) before any in-place update exec.
+        ProviderProcessRun.begin()
 
         let (models, modelHashes, modelHashFingerprints) = attachWeightHashes(to: selectedModels)
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
@@ -294,12 +299,15 @@ extension Start {
             runtimeCapabilities: runtimeCapabilities,
             modelHashes: modelHashes,
             modelHashFingerprints: modelHashFingerprints,
-            localEndpoint: localEndpointConfig
+            localEndpoint: localEndpointConfig,
+            configPath: snapshot.configPath
         )
 
         do {
             if let schedule {
-                try await runScheduled(loopConfig: loopConfig, schedule: schedule)
+                try await runScheduled(
+                    loopConfig: loopConfig, schedule: schedule,
+                    configFileExists: snapshot.configFileExists)
             } else {
                 let loop = try ProviderLoop(config: loopConfig)
                 try await runProviderLoopWithFanLease(loop)
@@ -313,6 +321,7 @@ extension Start {
             throw error
         }
 
+        ProviderProcessRun.finish()
         await TelemetryClient.shared.shutdown()
     }
 
@@ -371,8 +380,10 @@ extension Start {
 
     private func runScheduled(
         loopConfig: ProviderLoopConfig,
-        schedule: Schedule
+        schedule: Schedule,
+        configFileExists: Bool
     ) async throws {
+        var selection = ScheduledWindowSelection(startup: loopConfig, configFileExists: configFileExists)
         while !Task.isCancelled {
             await installIdleScheduleTerminationHandler()
             if await ProviderTermination.shared.terminationRequested {
@@ -386,17 +397,23 @@ extension Start {
                 continue
             }
 
-            let activeFor = schedule.durationUntilInactive() ?? 3600
-            print("Availability window active for \(formatDuration(activeFor)).")
-
-            let loop = try ProviderLoop(config: loopConfig)
+            let windowStart = Date()
+            let windowEnd = windowStart.addingTimeInterval(schedule.durationUntilInactive(from: windowStart) ?? 3600)
+            let windowConfig = try selection.nextWindowConfiguration()
+            // Selection validation may hash several large models. Keep the
+            // original window end rather than starting a full timer afterward.
+            guard schedule.isActiveNow(), windowEnd.timeIntervalSinceNow > 0 else { continue }
+            let loop = try ProviderLoop(config: windowConfig)
+            let remaining = windowEnd.timeIntervalSinceNow
+            guard schedule.isActiveNow(), remaining > 0 else { continue }
+            print("Availability window active for \(formatDuration(remaining)).")
             try await withThrowingTaskGroup(of: ScheduledLoopResult.self) { group in
                 group.addTask {
                     try await runProviderLoopWithFanLease(loop)
                     return .loopEnded
                 }
                 group.addTask {
-                    try await Task.sleep(nanoseconds: sleepNanoseconds(for: activeFor))
+                    try await Task.sleep(nanoseconds: sleepNanoseconds(for: windowEnd.timeIntervalSinceNow))
                     return .windowClosed
                 }
 
@@ -411,11 +428,12 @@ extension Start {
                     return
                 }
             }
+            if await loop.hasPersistedModelSwitch { selection.notePersistedSwitch() }
         }
     }
 
     private func sleepNanoseconds(for interval: TimeInterval) -> UInt64 {
-        let seconds = max(1.0, min(interval, Double(UInt64.max) / 1_000_000_000))
+        let seconds = max(0.0, min(interval, Double(UInt64.max) / 1_000_000_000))
         return UInt64(seconds * 1_000_000_000)
     }
 
@@ -423,14 +441,23 @@ extension Start {
         await ProviderTermination.shared.install {
             // CLI drains already disarmed recovery. A late old-process signal
             // must not stop a watchdog newly armed by the replacement CLI.
-            if await !loop.lifecycleIsCommandDriven() { try? WatchdogAgent.stop() }
+            let commandDriven = await loop.lifecycleIsCommandDriven()
+            if !commandDriven { try? WatchdogAgent.stop() }
             // Preserve configured login startup for ordinary OS termination;
             // only explicit CLI stop/restart disables it persistently.
-            return await loop.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds)
+            let drained = await loop.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds)
+            // AppKit may terminate as soon as this returns true; record the
+            // clean exit here rather than only after `run()` unwinds.
+            if drained {
+                if await loop.lifecycleIsCommandDriven() { ProviderProcessRun.noteLifecycleCommand() }
+                ProviderProcessRun.finish()
+            }
+            return drained
         }
         try await withFanActivityLease(providerVersion: ProviderCore.version) {
             try await loop.run()
         }
+        if await loop.lifecycleIsCommandDriven() { ProviderProcessRun.noteLifecycleCommand() }
     }
 
 }

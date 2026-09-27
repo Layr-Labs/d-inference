@@ -80,6 +80,9 @@ func makeLocalInferenceApplication(
     // shared model registry, response store, or metrics identity.
     let responseStore = InMemoryResponseStore()
     let metrics = ServerMetrics()
+    // One authenticated local application, not a request-controlled identity
+    // or a credential-derived value. Existing model cache scopes are unchanged.
+    let nativeCacheScope = "local-native-" + UUID().uuidString
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService = {
         controls in
         let engine = MultiModelBatchSchedulerEngine(
@@ -87,7 +90,8 @@ func makeLocalInferenceApplication(
             tokenizerProvider: tokenizerProvider,
             availableModels: availableModels,
             defaultMaxTokens: defaultMaxTokens,
-            templateControls: controls
+            templateControls: controls,
+            nativeLocalCacheScope: nativeCacheScope
         )
         return MLXOpenAIService(
             engine: engine, responseStore: responseStore, metrics: metrics)

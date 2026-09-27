@@ -305,8 +305,8 @@ extension ProviderLoop {
     ///
     /// Post-registration retirement (the gate timed out, so the coordinator
     /// client is already live and the initial `register` carried this model):
-    /// registration is the only wire mechanism that communicates a REMOVAL
-    /// from the advertised set (`models_update` is additive), so mirror the
+    /// this automatic retirement path communicates removal by registration
+    /// (`models_update` is additive; operator switches use `models_replace`), so mirror the
     /// hard-swap drop (`dropAdvertisedBuild`) — remove it from the client's
     /// advertised store — and force a reconnect so a fresh `register`
     /// announces the shrunken set. Pre-registration (the common case:
@@ -420,6 +420,7 @@ extension ProviderLoop {
         let tokenizer = slot.tokenizer
         let modelType = slot.modelType
         let slotContainer = slot.container
+        let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
         let slotEngineV2 = slot.engineV2
         let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
@@ -437,7 +438,7 @@ extension ProviderLoop {
             registryProvider: { @Sendable in
                 [modelId: .init(
                     tokenizer: tokenizer, modelType: modelType,
-                    container: slotContainer, isVLM: slotIsVLM,
+                    container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
                     engineV2Bridge: slotEngineV2,
                     visionGate: slotVisionGate)]
             },

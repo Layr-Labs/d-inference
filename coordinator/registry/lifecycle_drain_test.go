@@ -13,7 +13,7 @@ func TestLifecycleDrainFencesHeldReservationUntilDisconnect(t *testing.T) {
 	if r.ReserveProvider(drainStateTestModel, pr) != p {
 		t.Fatal("reservation failed")
 	}
-	if !r.CommitProviderDrain(p) {
+	if r.CommitProviderDrain(p, "stop") == 0 {
 		t.Fatal("drain not committed")
 	}
 	// A delayed pre-drain idle heartbeat and a missed heartbeat TTL cannot
@@ -45,7 +45,7 @@ func TestLifecycleDrainFencesHeldReservationUntilDisconnect(t *testing.T) {
 		t.Fatal("cold load planner selected draining provider")
 	}
 	r.Disconnect(p.ID)
-	if r.CommitProviderDrain(p) {
+	if r.CommitProviderDrain(p, "stale") != 0 {
 		t.Fatal("stale connection committed a drain")
 	}
 	registerDrainStateProvider(t, r, p.ID, 100)

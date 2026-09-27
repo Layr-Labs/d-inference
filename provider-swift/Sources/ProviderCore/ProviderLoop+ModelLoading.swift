@@ -500,10 +500,8 @@ extension ProviderLoop {
             // Target-only sizing snapshot. After assistant load/bind, the slot
             // factory replaces its auxiliary component with the bytes actually
             // retained before final re-slicing and installation.
-            let targetSizing = try await SlotSizingSnapshot.build(
-                container: newcomer.borrow(),
-                modelPath: modelPath,
-                fallbackDefaultMaxTokens: Self.schedulerDefaultMaxTokens)
+            let targetSizing = try await newcomer.borrowModel().sizing(
+                modelPath: modelPath, defaultMaxTokens: Self.schedulerDefaultMaxTokens)
 
             // Weights are resident now (reflected in MLX active/cache), so hand
             // off from the pending-load reservation to the live mlxUsed view —
@@ -553,14 +551,8 @@ extension ProviderLoop {
                 throw InferenceError.modelLoadFailed(message)
             }
 
-            let tokenizer: TokenizerHandle = try await newcomer.borrow().perform { ctx in
-                TokenizerHandle(
-                    ctx.tokenizer,
-                    toolConstraintContractVerified:
-                        Gemma4ToolConstraintContract.isVerified(
-                            modelType: modelInfo.modelType,
-                            modelDirectory: modelPath))
-            }
+            let tokenizer = try await newcomer.borrowModel().tokenizerHandle(
+                modelType: modelInfo.modelType, directory: modelPath)
 
             // ONE ENGINE (v0.7.5): re-slice co-resident KV grants (shrink
             // existing engines to fair shares) and build this model's CBv2
@@ -713,7 +705,7 @@ extension ProviderLoop {
                 + Double(loadElapsed.components.attoseconds) / 1e15
             await engineV2Bridge.recordModelLoadTime(ms: Int64(max(0, loadMs.rounded())))
 
-            guard let installContainer = newcomer.container else {
+            guard let installContainer = newcomer.modelContainer else {
                 // Unreachable (the box is drained only on failure paths) —
                 // defensive so a wiring bug can never leak the re-slice gate
                 // and wedge every future load.
@@ -725,7 +717,7 @@ extension ProviderLoop {
             }
             modelSlots[modelId] = ModelSlot(
                 engineBundle: engineBundle,
-                container: installContainer,
+                modelContainer: installContainer,
                 tokenizer: tokenizer,
                 sizing: sizing,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
@@ -1286,13 +1278,13 @@ extension ProviderLoop {
             errorReason: .modelLoad)
     }
 
-    private func loadModelContainer(from directory: URL, modelID: String) async throws -> MLXLMCommon.ModelContainer {
+    private func loadModelContainer(from directory: URL, modelID: String) async throws -> ProviderModelContainer {
         // Vision-language models (config declares `vision_config`) load via
         // VLMModelFactory so image/video requests can run the container's
         // prepare/generate vision path. Their text path still works through the
         // batched engine since VLMModel refines LanguageModel. Shared with the
         // standalone server via `ModelContainerLoading`.
-        try await ModelContainerLoading.loadContainer(from: directory, modelID: modelID)
+        try await ModelContainerLoading.loadServingContainer(from: directory, modelID: modelID)
     }
 
     /// A model is a vision-language model when its `config.json` declares a

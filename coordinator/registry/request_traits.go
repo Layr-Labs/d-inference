@@ -26,6 +26,9 @@ type RequestTraits struct {
 	// from the prompt plus post-generation rejection, neither of which needs
 	// an enforcing sampler.
 	RequiresToolConstraint bool
+	// RequiresNativeMediaTools is derived from forced choice with media or
+	// media-bearing tool results. It survives aliases, queues and retries.
+	RequiresNativeMediaTools bool
 	// Responses output policy, carried with the request so lifecycle snapshots
 	// echo what was actually enforced instead of hardcoded auto/parallel=true.
 	// ToolChoiceName is populated only for exact named mode.
@@ -215,6 +218,9 @@ func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t 
 		return false
 	}
 	if t.RequiresToolConstraint && !providerSupportsToolConstraintLocked(p, model) {
+		return false
+	}
+	if t.RequiresNativeMediaTools && !providerSupportsNativeMediaToolsLocked(p, model) {
 		return false
 	}
 	// Render-broken: applies to ALL requests for the model.

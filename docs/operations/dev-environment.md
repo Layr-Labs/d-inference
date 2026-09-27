@@ -1,13 +1,16 @@
 # Dev environment
 
-> Last updated: 2026-09-16 · commit `b080f1a1a`
+> Last updated: 2026-09-26 · commit `6dc1835a9`
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
-`sepolia-ai`): a GCE VM running the same coordinator container as production,
-auto-deployed by Cloud Build on every push to `master`, plus a dev console on
-Vercel, a dev R2 bucket, and a small Mac fleet. Dev exists so coordinator,
-provider bundle, console, MDM enrollment, and the release pipeline can be
-exercised end-to-end without touching production. Nothing here deploys to
+`darkbloom-dev`): a GCE VM running the same coordinator container as production,
+plus a dev console on Vercel, a dev R2 bucket, and a small Mac fleet. Cloud
+Build deploys the VM on each push to `master` once the trigger in step 6
+exists; that trigger does not exist yet
+([#1067](https://github.com/Layr-Labs/d-inference/issues/1067)). The previous
+dev project, `sepolia-ai`, is retired. Dev exists so coordinator, provider
+bundle, console, MDM enrollment, and the release pipeline can be exercised
+end-to-end without touching production. Nothing here deploys to
 production (`darkbloom-mainnet`); that is
 [coordinator-deploy.md](coordinator-deploy.md).
 
@@ -20,7 +23,7 @@ production (`darkbloom-mainnet`); that is
 
 ## Prerequisites
 
-- `gcloud` authenticated against `sepolia-ai` with rights to Compute, Cloud
+- `gcloud` authenticated against `darkbloom-dev` with rights to Compute, Cloud
   Build, Artifact Registry, Secret Manager, and Cloud SQL.
 - `mise install` locally (for `scripts/smoke-dev.sh`, `jq`, `gh`).
 - A dev Privy app, a dev Stripe account, and a Cloudflare R2 bucket
@@ -33,7 +36,7 @@ production (`darkbloom-mainnet`); that is
 | Component | Where | Identifier |
 |---|---|---|
 | Coordinator | GCE VM `d-inference-dev`, zone `us-central1-a`, `e2-small` (default in [`deploy/gcp/bootstrap.sh`](../../deploy/gcp/bootstrap.sh)), Ubuntu + Docker + systemd | `https://api.dev.darkbloom.xyz` (static IP `d-inference-dev-ip`) |
-| Image | Artifact Registry `us-central1-docker.pkg.dev/sepolia-ai/coordinator/coordinator:<SHORT_SHA>` (+ `:latest`), built by [`deploy/gcp/cloudbuild.yaml`](../../deploy/gcp/cloudbuild.yaml) with `BUILD_VERSION=dev`, `BUILD_COMMIT=$COMMIT_SHA` | `/health` reports `version: "dev"` and the full `build_commit` |
+| Image | Artifact Registry `us-central1-docker.pkg.dev/darkbloom-dev/coordinator/coordinator:<SHORT_SHA>` (+ `:latest`), built by [`deploy/gcp/cloudbuild.yaml`](../../deploy/gcp/cloudbuild.yaml) with `BUILD_VERSION=dev`, `BUILD_COMMIT=$COMMIT_SHA` | `/health` reports `version: "dev"` and the full `build_commit` |
 | Container | `d-inference-coordinator`, `--network host`, `--env-file /etc/d-inference/env`, bind mount `/mnt/disks/userdata`; run by systemd unit `d-inference-coordinator.service` via `/usr/local/bin/d-inference-run.sh`, which reads the tag from VM metadata `DINF_IMAGE_TAG` (default `latest`) and `docker pull`s on every start | [`deploy/gcp/vm-startup.sh`](../../deploy/gcp/vm-startup.sh) |
 | Persistent disk | `d-inference-dev-data` mounted at `/mnt/disks/userdata` (MicroMDM BoltDB, prompt artifacts) — same path as prod so `start.sh` is unchanged | |
 | Database | Cloud SQL Postgres 16 `d-inference-dev-db` (`db-f1-micro`), reached via `cloud-sql-proxy.service` on `127.0.0.1:5432` | `EIGENINFERENCE_DATABASE_URL` |
@@ -64,7 +67,7 @@ the data disk, the static IP, and the VM with
 ### 2. Populate secrets
 
 ```bash
-echo -n '<value>' | gcloud secrets versions add <secret-name> --data-file=- --project=sepolia-ai
+echo -n '<value>' | gcloud secrets versions add <secret-name> --data-file=- --project=darkbloom-dev
 ```
 
 | Secret | Value |
@@ -97,7 +100,7 @@ console.dev.darkbloom.xyz  CNAME  <target Vercel shows after step 5>
 ### 4. First coordinator deploy
 
 ```bash
-gcloud builds submit --config=deploy/gcp/cloudbuild.yaml --project=sepolia-ai
+gcloud builds submit --config=deploy/gcp/cloudbuild.yaml --project=darkbloom-dev
 ```
 
 The build tags `:$SHORT_SHA` and `:latest`, pushes both, then the `deploy`
@@ -141,9 +144,9 @@ with no approval step.
 - **Non-secret value** (`EIGENINFERENCE_MIN_TRUST`, `EIGENINFERENCE_ADMIN_EMAILS`,
   `EIGENINFERENCE_REFERRAL_SHARE_PCT`, `EIGENINFERENCE_BASE_URL`, …): these are
   literal lines in **both** `deploy/gcp/refresh-env.sh` and
-  `deploy/gcp/vm-startup.sh` (the boot path). Edit both, merge, and let Cloud
-  Build redeploy. There is no `--set-env-vars`; the env file is the only
-  source.
+  `deploy/gcp/vm-startup.sh` (the boot path). Edit both, merge, then redeploy
+  with step 4's `gcloud builds submit` until the step 6 trigger exists. There is
+  no `--set-env-vars`; the env file is the only source.
 - Variables are read once at process start; a restart is always required.
 
 ### 8. Dev provider release
@@ -180,8 +183,8 @@ scripts/smoke-dev.sh                              # /health, /v1/stats, /v1/mode
 API_KEY=<dev api key> scripts/smoke-dev.sh        # + an authenticated chat completion
 curl -fsS https://api.dev.darkbloom.xyz/health | jq .            # version "dev", build_commit = deployed SHA
 curl -fsS https://api.dev.darkbloom.xyz/v1/releases/latest | jq .
-gcloud builds list --project=sepolia-ai --limit=5
-gcloud compute ssh d-inference-dev --zone=us-central1-a --project=sepolia-ai --tunnel-through-iap -- \
+gcloud builds list --project=darkbloom-dev --limit=5
+gcloud compute ssh d-inference-dev --zone=us-central1-a --project=darkbloom-dev --tunnel-through-iap -- \
   'sudo systemctl status d-inference-coordinator --no-pager; sudo docker logs --tail 50 d-inference-coordinator'
 ```
 
@@ -191,13 +194,14 @@ gcloud compute ssh d-inference-dev --zone=us-central1-a --project=sepolia-ai --t
 at an older one and restart (~1 minute):
 
 ```bash
-gcloud compute instances add-metadata d-inference-dev --zone=us-central1-a --project=sepolia-ai \
+gcloud compute instances add-metadata d-inference-dev --zone=us-central1-a --project=darkbloom-dev \
   --metadata=DINF_IMAGE_TAG=<older-short-sha>
-gcloud compute ssh d-inference-dev --zone=us-central1-a --project=sepolia-ai --tunnel-through-iap -- \
+gcloud compute ssh d-inference-dev --zone=us-central1-a --project=darkbloom-dev --tunnel-through-iap -- \
   'sudo systemctl restart d-inference-coordinator'
 ```
 
-The next `master` push will move `DINF_IMAGE_TAG` forward again.
+Once the step 6 trigger exists, the next `master` push moves `DINF_IMAGE_TAG`
+forward again. Until then, the next `gcloud builds submit` does.
 
 **Provider bundle** — deactivate the release on the dev coordinator
 (`DELETE /v1/admin/releases`, or `scripts/admin.sh releases deactivate <version>`)
@@ -208,9 +212,9 @@ version; see [`provider-release.md`](provider-release.md) ("Rollback").
 **Full teardown** (destroys dev state; secrets survive unless deleted):
 
 ```bash
-gcloud compute instances delete d-inference-dev --zone=us-central1-a --project=sepolia-ai --quiet
-gcloud compute disks delete d-inference-dev-data --zone=us-central1-a --project=sepolia-ai --quiet
-gcloud sql instances delete d-inference-dev-db --project=sepolia-ai --quiet
+gcloud compute instances delete d-inference-dev --zone=us-central1-a --project=darkbloom-dev --quiet
+gcloud compute disks delete d-inference-dev-data --zone=us-central1-a --project=darkbloom-dev --quiet
+gcloud sql instances delete d-inference-dev-db --project=darkbloom-dev --quiet
 ```
 
 ## What dev does not cover

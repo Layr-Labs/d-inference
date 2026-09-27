@@ -33,7 +33,7 @@ func TestRearmOnHeartbeatTokenArrivalTriggersChallenge(t *testing.T) {
 	}})
 
 	// A heartbeat now carries the token that arrived after registration.
-	srv.maybeRearmCodeAttest(context.Background(), "p1", provider, &protocol.HeartbeatMessage{
+	srv.maybeRearmCodeAttest(t.Context(), "p1", provider, &protocol.HeartbeatMessage{
 		Type:            protocol.TypeHeartbeat,
 		Status:          "idle",
 		APNsDeviceToken: "late-tok",
@@ -72,13 +72,13 @@ func TestHeartbeatTokenAloneNeverGrantsAttestation(t *testing.T) {
 		return nil
 	}})
 
-	srv.maybeRearmCodeAttest(context.Background(), "p1", provider, &protocol.HeartbeatMessage{
+	srv.maybeRearmCodeAttest(t.Context(), "p1", provider, &protocol.HeartbeatMessage{
 		Type:            protocol.TypeHeartbeat,
 		Status:          "idle",
 		APNsDeviceToken: "tok",
 	})
 
-	// Let the re-arm loop run to exhaustion (maxAttempts pushes, no reply).
+	// Let the re-arm loop spend its fast attempts (maxAttempts pushes, no reply).
 	waitForCond(2*time.Second, func() bool { return atomic.LoadInt32(&pushes) >= 2 })
 	if provider.GetCodeAttested() {
 		t.Fatal("a heartbeat token without a verified round-trip must NEVER attest (fail-closed)")
@@ -136,7 +136,7 @@ func TestRearmChangedTokenForcesRealChallengeNoReuseBypass(t *testing.T) {
 
 	// Phase 2: the APNs token changes in a heartbeat.
 	atomic.StoreInt32(&complete, 0)
-	srv.maybeRearmCodeAttest(context.Background(), "p1", p, &protocol.HeartbeatMessage{
+	srv.maybeRearmCodeAttest(t.Context(), "p1", p, &protocol.HeartbeatMessage{
 		Type:            protocol.TypeHeartbeat,
 		Status:          "idle",
 		APNsDeviceToken: "tok2",
@@ -202,7 +202,7 @@ func TestRearmChangedTokenDeletesPersistedReuse(t *testing.T) {
 	srv.SeedCodeAttestCache(context.Background())
 
 	// Token rotation in a heartbeat.
-	srv.maybeRearmCodeAttest(context.Background(), "p1", p, &protocol.HeartbeatMessage{
+	srv.maybeRearmCodeAttest(t.Context(), "p1", p, &protocol.HeartbeatMessage{
 		Type:            protocol.TypeHeartbeat,
 		Status:          "idle",
 		APNsDeviceToken: "tok2",
@@ -260,7 +260,7 @@ func TestRearmChangedTokenKicksImmediateOrdinaryChallenge(t *testing.T) {
 	}
 
 	// Steady state: an unchanged token must not kick.
-	srv.maybeRearmCodeAttest(context.Background(), "kick-provider", p, &protocol.HeartbeatMessage{
+	srv.maybeRearmCodeAttest(t.Context(), "kick-provider", p, &protocol.HeartbeatMessage{
 		Type: protocol.TypeHeartbeat, Status: "idle", APNsDeviceToken: "tok1",
 	})
 	select {
@@ -270,7 +270,7 @@ func TestRearmChangedTokenKicksImmediateOrdinaryChallenge(t *testing.T) {
 	}
 
 	// Rotation: evidence is cleared AND the ordinary challenge loop is kicked.
-	srv.maybeRearmCodeAttest(context.Background(), "kick-provider", p, &protocol.HeartbeatMessage{
+	srv.maybeRearmCodeAttest(t.Context(), "kick-provider", p, &protocol.HeartbeatMessage{
 		Type: protocol.TypeHeartbeat, Status: "idle", APNsDeviceToken: "tok2",
 	})
 	if _, ok := p.ApplicationEvidenceSnapshot(); ok {
@@ -291,7 +291,7 @@ func TestRearmChangedTokenKicksImmediateOrdinaryChallenge(t *testing.T) {
 	late.AttestationResult = &attestation.VerificationResult{Valid: true, PublicKey: sePubB64}
 	late.APNsDeviceToken = ""
 	late.Mu().Unlock()
-	srv.maybeRearmCodeAttest(context.Background(), "late-provider", late, &protocol.HeartbeatMessage{
+	srv.maybeRearmCodeAttest(t.Context(), "late-provider", late, &protocol.HeartbeatMessage{
 		Type: protocol.TypeHeartbeat, Status: "idle", APNsDeviceToken: "late-tok",
 	})
 	select {

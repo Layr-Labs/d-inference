@@ -83,6 +83,7 @@ public enum EngineV2SupportedModels {
     public static func isSupported(modelType: String?) -> Bool {
         guard let raw = normalized(modelType) else { return false }
         if raw == "gpt_oss" { return true }
+        if raw == "diffusion_gemma" { return true }
         if raw == "qwen3_5" || raw == "qwen3_5_moe" || raw == "prism_hadamard_qwen35" { return true }
         if raw == "qwen3_vl_moe" { return true }
         if raw == "qwen4_exp" || raw == "qwen4_exp_text" { return true }

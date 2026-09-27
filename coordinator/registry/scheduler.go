@@ -3035,7 +3035,7 @@ func (r *Registry) drainModelQueuePass(queue *RequestQueue, model, reason string
 		decision.QueueDepth = req.DepthAtEnqueue
 		decision.DrainTrigger = reason
 		if provider == nil {
-			if req.Pending.Traits.RequiresToolConstraint &&
+			if (req.Pending.Traits.RequiresToolConstraint || req.Pending.Traits.RequiresNativeMediaTools) &&
 				!r.hasToolConstraintProviderForPending(model, req.Pending) {
 				req.DrainTrigger = reason
 				req.Decision = decision

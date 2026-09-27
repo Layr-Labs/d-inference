@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-21 · commit `12599b420`
+> Last updated: 2026-09-27 · commit `e8d00933d`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -13,8 +13,8 @@ eligible providers.
 
 ## Provider lifecycle drain boundary
 
-`provider_drain` permanently fences a live connection until disconnect, unlike
-the existing TTL-bounded update heartbeat. `authorizeInferenceHandoff` in
+`provider_drain` fences a live connection until disconnect or an explicit,
+validated model replacement; heartbeat TTL expiry cannot reopen it. `authorizeInferenceHandoff` in
 `coordinator/registry/inference_authorization.go` rechecks the drain after writer
 queueing and reservation: direct, queued, cold, retry and hedge reservations
 cannot send a new inference frame across the boundary. A late reservation gets
@@ -30,8 +30,51 @@ writes are drained. See [the terminal barrier](../reference/protocol-messages.md
 for the asynchronous settlement boundary. Existing draining-capacity preflight
 semantics (transient 429/capacity, not structural absence) remain unchanged.
 
+`darkbloom switch` resumes the same provider session through `models_replace`
+(`coordinator/registry/provider_models_replace.go`, `ReplaceProviderModels`).
+The latest drain must be settled, and its generation must match both completion
+and the control-writer handoff even if a provider reuses a request ID. One
+connection-bound acknowledgement worker coalesces the latest barrier rather than
+dropping it when prior settlement is slow. It waits for pre-barrier reservations
+to leave the writer/pending set and for terminal billing before acknowledgement
+(`providerReadLoop` in `coordinator/api/provider.go`).
+
+A validation-only request checks the complete model set without changing routing.
+A committed replacement updates model indexes and stale residency/cache evidence
+but keeps the fence until its acknowledgement is written successfully and the
+provider confirms that local admission has reopened for that replacement and
+an accepted `idle`/`serving` heartbeat supplies its refreshed `BackendCapacity`
+at or after the `capacity_seq` named in `models_replace_ready`.
+Ack failure, missing readiness, or stale/draining capacity never dispatches
+queued work. The readiness frame is matched to the current session, replacement
+and drain; its sequence was stamped after local admission opened. Either
+readiness or that heartbeat may arrive first. Only after both does
+the coordinator force desired-model reconciliation and dispatch queued work.
+The provider restores prefetching before it sends readiness, so the refreshed
+`desired_models` snapshot can be processed even if it arrives before the final
+receipt. Snapshots received while prefetching was unavailable remain deferred.
+It sends `models_replace_resumed` after those steps. The provider reports a
+successful switch only when that receipt matches the current connection,
+replacement, drain and capacity sequence; a missing receipt leaves the outcome
+unconfirmed even if routing already resumed.
+Removed model IDs remain queued for cleanup across a failed receipt and another
+same-session drain, until routing resumes or disconnect.
+Invalid selections leave inventory and drain unchanged. See
+[the replacement contract](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready--models_replace_resumed).
+
 
 ## Context
+
+Forced tool choice with media, and media-bearing tool results even with
+`tool_choice: none`, carry `RequestTraits.RequiresNativeMediaTools`. The shared
+eligibility gate requires the selected model's explicit `native_media_tools`
+advertisement, vision support and existing tool-constraint protocol. This trait
+survives alias resolution, queued requests, retries and final reservation;
+ordinary media or text-only tools do not acquire it. A model update or disconnect
+immediately removes eligibility. Code: `coordinator/api/native_media_tools.go`
+(`requestHasMediaToolResults`), `coordinator/registry/native_media_tools.go`
+(`providerSupportsNativeMediaToolsLocked`) and
+`coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`).
 
 The fleet is heterogeneous consumer Apple-silicon hardware that comes and
 goes. Any single provider may be cold for a model, thermally throttled,
@@ -655,30 +698,20 @@ of a live gate is never pruned.
 `site:`, via `SetGateWaitObserver`) records a recorder's `gate.mu`
 acquisition wait when it exceeds `gateWaitReportThreshold = time.Millisecond`.
 
-### Reputation
+### Provider operational history
 
-`Reputation.Score` (`coordinator/registry/reputation.go`) is
+`Reputation` (`coordinator/registry/reputation.go`) retains job success/failure
+counts, accumulated uptime, attestation challenge counts, and the
+prefill-adjusted first-content latency EWMA (`RecordLatency`,
+`ttftEWMAAlpha = 0.2`). These values are persisted and exposed as raw metrics
+in the owner provider API. There is no composite reputation score.
 
-```text
-score = 0.4 × jobRate + 0.3 × uptimeRate + 0.2 × challengeRate + 0.1 × responseTimeFactor
-```
-
-- `jobRate` = `SuccessfulJobs / TotalJobs` (`0.5` with no jobs).
-- `uptimeRate` = `TotalUptime / 24h`, floored at `0.5`, capped at `1.0`.
-- `challengeRate` = passed / (passed + failed) (`0.5` with no challenges).
-- `responseTimeFactor` = `1.0` at ≤ 1 000 ms average, `0.0` at ≥ 10 000 ms,
-  linear between (`0.5` with no data). The average is an EWMA of
-  prefill-adjusted first-content latency, `ttftEWMAAlpha = 0.2`
-  (`RecordLatency`).
-
-A provider with no history scores `0.5`. The score is exposed on the
-provider-facing `/me` endpoints (`coordinator/api/me_handlers.go`) and
-persisted; **it is not a term in the routing cost** — `buildCandidateInto`
-never reads it. The header comment in `reputation.go` still says the score
-factors into routing; the code does not. Reputation inputs do reach routing
-indirectly: `RecordChallengeFailure` feeds `challenge_stale`, and the latency
-EWMA is fed only by non-cache, non-hedge first-content samples
-(`coordinator/api/dispatch.go`).
+The dashboard presents job counts; low historical success rate is an
+informational warning, not a reduced-routing-priority signal
+(`console-ui/src/app/providers/warnings.ts`, `computeWarnings`). Routing uses
+the cost function and live gates described above, not these historical
+counters. Attestation failures still update their separate live trust state
+through `RecordChallengeFailure`.
 
 ### `Retry-After` derivation
 
@@ -808,7 +841,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Budget clamp | `coordinator/registry/budget_clamp.go` — `recordBudgetClampLocked`, `releaseBudgetClampsOnHeartbeat` |
 | Capacity-rate penalty and cooldown | `coordinator/registry/capacity_rate.go`, `coordinator/registry/capacity_cooldown.go` |
 | Breakers and ejection | `coordinator/registry/error_cooldown.go`, `coordinator/registry/provider_breaker.go`, `coordinator/registry/health_ejection.go` |
-| Reputation | `coordinator/registry/reputation.go` — `Score`, `RecordLatency` |
+| Provider operational history | `coordinator/registry/reputation.go` — `Reputation`, `RecordLatency` |
 | TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/settlement.go` |
 | Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |
 | Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |

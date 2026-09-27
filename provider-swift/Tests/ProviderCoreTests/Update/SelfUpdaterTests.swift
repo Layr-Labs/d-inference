@@ -655,6 +655,67 @@ struct SelfUpdaterTests {
         return (app, executable, helper)
     }
 
+    /// A staged app skeleton for the paged-marker check. The real `darkbloom`
+    /// product always carries the paged capability string, so the signed
+    /// runtime fixture cannot reach the pre-paged branch; this one can.
+    private func makePagedMarkerFixture(
+        root: URL,
+        pagedCode: Bool,
+        marker: String?
+    ) throws -> (app: URL, executable: URL) {
+        let app = root.appendingPathComponent("Darkbloom.app")
+        let executable = app.appendingPathComponent("Contents/MacOS/darkbloom")
+        try FileManager.default.createDirectory(
+            at: executable.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        let body = pagedCode
+            ? "binary \(PagedRuntimeCapabilityVerifier.binaryCapability) body"
+            : "binary without the paged runtime"
+        try Data(body.utf8).write(to: executable)
+        if let marker {
+            let markerURL = app.appendingPathComponent(
+                PackagedRuntimeSmoke.pagedCapabilityRelativePath)
+            try FileManager.default.createDirectory(
+                at: markerURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            try Data(marker.utf8).write(to: markerURL)
+        }
+        return (app, executable)
+    }
+
+    private func pagedMarkerFailure(pagedCode: Bool, marker: String?) throws -> String? {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("paged-marker-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (app, executable) = try makePagedMarkerFixture(
+            root: root, pagedCode: pagedCode, marker: marker)
+        do {
+            try PagedRuntimeCapabilityVerifier.verifyMarker(app: app, executable: executable)
+            return nil
+        } catch UpdateError.replaceFailed(let reason) {
+            return reason
+        }
+    }
+
+    @Test("a pre-paged artifact (no paged code, no marker) is refused")
+    func prePagedArtifactIsRefused() throws {
+        // This state used to return silently so v0.7.5/v0.7.7 artifacts stayed
+        // installable; the throw is what refuses them now.
+        let reason = try pagedMarkerFailure(pagedCode: false, marker: nil)
+        #expect(reason?.contains("predates the paged runtime") == true)
+    }
+
+    @Test("paged code and the signed marker must agree")
+    func pagedMarkerParityIsEnforced() throws {
+        #expect(try pagedMarkerFailure(pagedCode: true, marker: nil)
+            == "paged-capable artifact is missing its signed capability marker")
+        #expect(try pagedMarkerFailure(pagedCode: false, marker: "1\n")
+            == "artifact advertises paged capability without paged runtime code")
+        #expect(try pagedMarkerFailure(pagedCode: true, marker: "0\n")
+            == "paged runtime capability marker is invalid")
+        #expect(try pagedMarkerFailure(pagedCode: true, marker: "1\n") == nil)
+    }
+
     @Test("staging extracts and verifies WITHOUT touching the live layout")
     func stagingDoesNotTouchLiveLayout() throws {
         let root = FileManager.default.temporaryDirectory

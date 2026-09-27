@@ -1032,30 +1032,10 @@ public struct SelfUpdater: Sendable {
             executable: executable,
             signaturePolicy: signaturePolicy
         )
-        let marker = app.appendingPathComponent(
-            PackagedRuntimeSmoke.pagedCapabilityRelativePath)
-        let markerPresent = fileManager.fileExists(atPath: marker.path)
-        let binary = try Data(contentsOf: executable, options: [.mappedIfSafe])
-        let pagedCodePresent = binary.range(
-            of: Data("engine_v2_kv_backend".utf8)) != nil
-
-        guard markerPresent == pagedCodePresent else {
-            throw UpdateError.replaceFailed(
-                pagedCodePresent
-                    ? "paged-capable artifact is missing its signed capability marker"
-                    : "artifact advertises paged capability without paged runtime code")
-        }
-        guard markerPresent else {
-            throw UpdateError.replaceFailed(
-                "artifact predates the paged runtime; pre-paged releases are no longer installable")
-        }
-        guard
-            let markerValue = try? String(contentsOf: marker, encoding: .utf8),
-            markerValue.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
-        else {
-            throw UpdateError.replaceFailed(
-                "paged runtime capability marker is invalid")
-        }
+        try PagedRuntimeCapabilityVerifier.verifyMarker(
+            app: app,
+            executable: executable,
+            fileManager: fileManager)
 
         let resourceRoot = app.appendingPathComponent(
             "Contents/Resources",

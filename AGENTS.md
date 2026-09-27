@@ -237,9 +237,10 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
   - `provider-swift/Sources/ProviderCore/Telemetry/` (Swift mirror),
   - `console-ui/src/lib/telemetry-types.ts` (TS mirror).
   Symmetry tests in each language pin enum casing and optional-field omission.
-  Field allowlist additions need parallel updates in
-  `coordinator/api/telemetry_handlers.go`,
-  `provider-swift/Sources/ProviderCore/Telemetry/`, and the TS set above.
+  There is no server-side field allowlist: the coordinator ingests no client
+  telemetry, and the privacy backstop is that no ingestion route exists plus
+  the fixed operational keys each coordinator emitter call site passes. Never
+  add prompt or completion fields to an emitter call or a heartbeat.
 - If you change provider bundle semantics, keep the bundle steps in `.github/workflows/release-swift.yml`, `scripts/install.sh`, and `LatestProviderVersion` in sync.
 - If you change install paths or process invocation, update both the CLI and install flow.
 - Device linking changes often span both coordinator device auth endpoints and the provider `login` / `logout` commands.

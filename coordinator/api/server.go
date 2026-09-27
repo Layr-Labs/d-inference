@@ -2821,11 +2821,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/credit", s.requireAuth(s.handleAdminCredit))
 	s.mux.HandleFunc("POST /v1/admin/reward", s.requireAuth(s.handleAdminReward))
 
-	// Retain the client-telemetry route for mixed-version compatibility. The
-	// handler returns 410 before reading a request body; coordinator-owned
-	// operational telemetry remains separate.
-	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
-
 	// Explicit provider log reports
 	s.mux.HandleFunc("POST /v1/provider/log-report", s.requireAuth(s.handleUploadLogReport))
 	s.mux.HandleFunc("GET /v1/admin/log-reports/{id}", s.requireAuth(s.handleGetLogReport))

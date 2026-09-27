@@ -59,10 +59,6 @@ const (
 	KindCustom       TelemetryKind = "custom"
 )
 
-// TelemetrySourceCustom is returned when a source value can't be classified
-// into a known bucket but we still want to keep the event.
-const TelemetrySourceCustomValue TelemetrySource = "custom"
-
 // KnownKinds returns the set of supported kind values for validation.
 func KnownKinds() map[TelemetryKind]struct{} {
 	return map[TelemetryKind]struct{}{

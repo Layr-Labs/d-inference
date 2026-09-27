@@ -63,7 +63,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 |---|---|
 | [storage.md](storage.md) | Coordinator persistence: Postgres tables and migrations, memory store, retention jobs |
 | [billing.md](billing.md) | Pricing, reservations, ledger, Stripe deposits and Connect payouts, referrals, base rewards |
-| [telemetry.md](telemetry.md) | What telemetry exists, Go/Swift/TS symmetry, ingestion allowlist, Datadog |
+| [telemetry.md](telemetry.md) | What telemetry exists, Go/Swift/TS symmetry, retired client ingestion, Datadog |
 | [request-outcome-observability.md](request-outcome-observability.md) | Closed outcome taxonomy across client, provider, and billing dimensions |
 | [system-profiler.md](system-profiler.md) | Per-attempt request profiles and fleet snapshots: schema, clocks, validation |
 

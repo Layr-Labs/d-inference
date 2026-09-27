@@ -80,8 +80,8 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     /// Current (v2) label. Keys here use
     /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so background
     /// challenge signing works while the screen is locked. (The retired v1
-    /// label used `WhenUnlockedThisDeviceOnly`; its one-time migration was
-    /// removed in v0.9.10 and a leftover v1 item is simply never read.)
+    /// label used `WhenUnlockedThisDeviceOnly`; its one-time migration
+    /// has been removed, and a leftover v1 item is simply never read.)
     public static let defaultLabel = "io.darkbloom.provider.attestation-signing.v2"
 
     /// Raw P-256 public key (64 bytes: X || Y, without the 0x04 prefix).

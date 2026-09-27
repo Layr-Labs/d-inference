@@ -1,9 +1,9 @@
 /// Telemetry wire types -- mirror of
 /// `coordinator/protocol/telemetry.go`.
 ///
-/// JSON shapes MUST match the Go definitions. Source, Severity, and Kind raw
-/// values are the exact strings the coordinator expects. Any mismatch silently
-/// coerces to "custom" server-side, which breaks filtering.
+/// JSON shapes MUST match the Go definitions: Source, Severity, and Kind raw
+/// values are the exact strings the Go side uses, pinned by the symmetry tests
+/// in both languages.
 
 import Foundation
 

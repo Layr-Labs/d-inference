@@ -14,7 +14,6 @@ func TestPruneCapsSlicesAtMaxEntries(t *testing.T) {
 		s.usage = append(s.usage, UsageRecord{RequestID: "r", PromptTokens: i})
 		s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{ID: int64(i)})
 		s.providerEarnings = append(s.providerEarnings, ProviderEarning{ID: int64(i)})
-		s.providerPayouts = append(s.providerPayouts, ProviderPayout{ID: int64(i)})
 		s.payments = append(s.payments, PaymentRecord{TxHash: "t"})
 	}
 
@@ -28,9 +27,6 @@ func TestPruneCapsSlicesAtMaxEntries(t *testing.T) {
 	}
 	if got := len(s.providerEarnings); got != maxEntries {
 		t.Errorf("providerEarnings len = %d, want %d", got, maxEntries)
-	}
-	if got := len(s.providerPayouts); got != maxEntries {
-		t.Errorf("providerPayouts len = %d, want %d", got, maxEntries)
 	}
 	if got := len(s.payments); got != maxEntries {
 		t.Errorf("payments len = %d, want %d", got, maxEntries)

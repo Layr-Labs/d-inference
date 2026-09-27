@@ -210,7 +210,6 @@ the financial rate limiter ([Constants](#constants)).
 |---|---|---|
 | `GET /v1/payments/balance` | requireAuth | `coordinator/api/consumer.go` (`handleBalance`) → `BalanceResponse` |
 | `GET /v1/payments/usage` | requireAuth | `coordinator/api/consumer.go` (`handleUsage`) → `UsageResponse` |
-| `GET /v1/provider/earnings` | none; identifies by `?wallet=` / `X-Provider-Wallet` (legacy) | `coordinator/api/consumer.go` (`handleProviderEarnings`) |
 | `GET /v1/provider/account-earnings` | requireAuth | `coordinator/api/billing_handlers.go` (`handleAccountEarnings`) |
 | `GET /v1/me/summary` | requirePrivyAuth | `coordinator/api/me_handlers.go` (`handleMySummary`) |
 | `POST /v1/keys`, `PATCH /v1/keys/{id}` | requirePrivyAuth + financial | `coordinator/api/apikey_handlers.go` (`handleCreateAPIKey`, `handleUpdateAPIKey`) |

@@ -119,10 +119,6 @@ type MemoryStore struct {
 	providerEarnings    []ProviderEarning
 	providerEarningsSeq int64 // auto-increment ID
 
-	// Provider payouts (wallet-based)
-	providerPayouts   []ProviderPayout
-	providerPayoutSeq int64 // auto-increment ID
-
 	// Releases (provider binary versioning)
 	releases map[string]*Release // "version:platform" → Release
 
@@ -220,7 +216,6 @@ func NewMemory(scfg Config) *MemoryStore {
 		inviteRedemptions:             make(map[string][]InviteRedemption),
 		accountRedemptions:            make(map[string]map[string]bool),
 		providerEarnings:              make([]ProviderEarning, 0),
-		providerPayouts:               make([]ProviderPayout, 0),
 		releases:                      make(map[string]*Release),
 		providerRecords:               make(map[string]*ProviderRecord),
 		reputationRecords:             make(map[string]*ReputationRecord),
@@ -283,9 +278,6 @@ func (s *MemoryStore) Prune(maxEntries int) {
 	}
 	if n := len(s.providerEarnings); n > maxEntries {
 		s.providerEarnings = append([]ProviderEarning(nil), s.providerEarnings[n-maxEntries:]...)
-	}
-	if n := len(s.providerPayouts); n > maxEntries {
-		s.providerPayouts = append([]ProviderPayout(nil), s.providerPayouts[n-maxEntries:]...)
 	}
 	if n := len(s.providerSessions); n > maxEntries {
 		s.providerSessions = append([]ProviderSession(nil), s.providerSessions[n-maxEntries:]...)
@@ -2773,54 +2765,6 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (ProviderEarni
 	return summary, nil
 }
 
-// RecordProviderPayout stores a payout record for a provider wallet.
-func (s *MemoryStore) RecordProviderPayout(payout *ProviderPayout) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.providerPayoutSeq++
-	cp := *payout
-	cp.ID = s.providerPayoutSeq
-	if cp.Timestamp.IsZero() {
-		cp.Timestamp = time.Now()
-	}
-	s.providerPayouts = append(s.providerPayouts, cp)
-	return nil
-}
-
-// ListProviderPayouts returns all provider payout records in creation order.
-func (s *MemoryStore) ListProviderPayouts() ([]ProviderPayout, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if len(s.providerPayouts) == 0 {
-		return []ProviderPayout{}, nil
-	}
-
-	out := make([]ProviderPayout, len(s.providerPayouts))
-	copy(out, s.providerPayouts)
-	return out, nil
-}
-
-// SettleProviderPayout marks a provider payout as settled.
-func (s *MemoryStore) SettleProviderPayout(id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for i := range s.providerPayouts {
-		if s.providerPayouts[i].ID != id {
-			continue
-		}
-		if s.providerPayouts[i].Settled {
-			return fmt.Errorf("provider payout %d already settled", id)
-		}
-		s.providerPayouts[i].Settled = true
-		return nil
-	}
-
-	return fmt.Errorf("provider payout %d not found", id)
-}
-
 // CreditProviderAccount atomically credits a linked provider account and records
 // the corresponding per-node earning.
 func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
@@ -2860,32 +2804,6 @@ func (s *MemoryStore) creditProviderAccountLocked(earning *ProviderEarning) erro
 	s.providerEarningsSeq++
 	cp.ID = s.providerEarningsSeq
 	s.providerEarnings = append(s.providerEarnings, cp)
-	return nil
-}
-
-// CreditProviderWallet atomically credits an unlinked provider wallet and
-// records the corresponding payout history row.
-func (s *MemoryStore) CreditProviderWallet(payout *ProviderPayout) error {
-	if payout == nil {
-		return errors.New("provider payout is required")
-	}
-	if payout.ProviderAddress == "" {
-		return errors.New("provider payout address is required")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	cp := *payout
-	if cp.Timestamp.IsZero() {
-		cp.Timestamp = time.Now()
-	}
-
-	s.creditLocked(cp.ProviderAddress, cp.AmountMicroUSD, LedgerPayout, cp.JobID, cp.Timestamp)
-	s.withdrawable[cp.ProviderAddress] += cp.AmountMicroUSD
-	s.providerPayoutSeq++
-	cp.ID = s.providerPayoutSeq
-	s.providerPayouts = append(s.providerPayouts, cp)
 	return nil
 }
 

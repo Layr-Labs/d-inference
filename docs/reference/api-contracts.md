@@ -218,7 +218,6 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/payments/usage` | `handleUsage` (`coordinator/api/consumer.go`) | `key` | — | `UsageResponse` `{usage: [...]}`; recent history only ([retention](pricing-model.md#constants)) |
 | GET | `/v1/billing/wallet/balance` | `handleWalletBalance` (`coordinator/api/billing_handlers.go`) | `key` | — | Wallet view of the ledger balance |
 | GET | `/v1/billing/methods` | `handleBillingMethods` (`coordinator/api/billing_handlers.go`) | `—` | — | Which top-up methods are enabled |
-| GET | `/v1/provider/earnings` | `handleProviderEarnings` (`coordinator/api/consumer.go`) | `—` | — | Legacy lookup by `?wallet=` query or `X-Provider-Wallet` header; `ProviderEarningsResponse` |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
 | GET | `/v1/me/token-promotions` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | — | Account-scoped grants and eligible offers |
 | POST | `/v1/me/token-promotions/claim` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | `fin` | Claim a capped grant; [campaign procedure](../operations/model-token-promotions.md) |
@@ -515,7 +514,6 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | `X-Darkbloom-Metadata-Details` | `applyMetadataDetailsRequest` (`coordinator/api/response_metadata.go`) | Requests the extended `metadata` object (`timing`, `location`) on chat completions; `?metadata=details` does the same |
 | `X-Darkbloom-Route: self` / `prefer` | `resolveSelfRoutePolicy` (`coordinator/api/self_route.go`) | `self` restricts dispatch to the account's own machines; `prefer` tries them first and falls back to the fleet; see [`../provider/self-route.md`](../provider/self-route.md) |
 | `X-Darkbloom-Publishing-Key` | `requirePublishingAPIKey` | Publishing credential for `/v1/admin/models/*` |
-| `X-Provider-Wallet` | `handleProviderEarnings` | Wallet address for the legacy earnings lookup (fallback when `?wallet=` is absent) |
 | `Stripe-Signature` | `handleStripeWebhook`, `handleStripeConnectWebhook` | Stripe webhook signature |
 | `X-Webhook-Token` | `HandleMDMWebhook` | MDM webhook secret (or `?token=`) |
 | `Origin` | `corsMiddleware` | Allowed origins default to `https://console.darkbloom.dev` plus localhost dev ports unless `EIGENINFERENCE_CONSOLE_URL` overrides |

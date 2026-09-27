@@ -3918,74 +3918,6 @@ func (s *PostgresStore) GetAccountEarningsSummary(accountID string) (ProviderEar
 	return summary, nil
 }
 
-// RecordProviderPayout stores a payout record for a provider wallet.
-func (s *PostgresStore) RecordProviderPayout(payout *ProviderPayout) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_payouts (provider_address, amount_micro_usd, model, job_id, settled, created_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
-		payout.ProviderAddress, payout.AmountMicroUSD, payout.Model, payout.JobID, payout.Settled, nullableCreatedAt(payout.Timestamp),
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert provider payout: %w", err)
-	}
-
-	return nil
-}
-
-// ListProviderPayouts returns all provider payout records in creation order.
-func (s *PostgresStore) ListProviderPayouts() ([]ProviderPayout, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, provider_address, amount_micro_usd, model, job_id, settled, created_at
-		 FROM provider_payouts
-		 ORDER BY id ASC`,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: query provider payouts: %w", err)
-	}
-	defer rows.Close()
-
-	var results []ProviderPayout
-	for rows.Next() {
-		var payout ProviderPayout
-		if err := rows.Scan(&payout.ID, &payout.ProviderAddress, &payout.AmountMicroUSD, &payout.Model, &payout.JobID, &payout.Settled, &payout.Timestamp); err != nil {
-			continue
-		}
-		results = append(results, payout)
-	}
-	if results == nil {
-		return []ProviderPayout{}, nil
-	}
-
-	return results, nil
-}
-
-// SettleProviderPayout marks a provider payout as settled.
-func (s *PostgresStore) SettleProviderPayout(id int64) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE provider_payouts
-		 SET settled = TRUE
-		 WHERE id = $1 AND settled = FALSE`,
-		id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: settle provider payout: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("provider payout %d not found or already settled", id)
-	}
-
-	return nil
-}
-
 // CreditProviderAccount atomically credits a linked provider account and records
 // the corresponding per-node earning.
 //
@@ -4004,46 +3936,6 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	defer cancel()
 
 	return creditProviderAccount(ctx, s.pool, earning)
-}
-
-// CreditProviderWallet atomically credits an unlinked provider wallet and
-// records the corresponding payout history row.
-func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
-	if payout == nil {
-		return errors.New("provider payout is required")
-	}
-	if payout.ProviderAddress == "" {
-		return errors.New("provider payout address is required")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if err := creditWithdrawableBalance(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
-		return err
-	}
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO provider_payouts (provider_address, amount_micro_usd, model, job_id, settled, created_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
-		payout.ProviderAddress,
-		payout.AmountMicroUSD,
-		payout.Model,
-		payout.JobID,
-		payout.Settled,
-		nullableCreatedAt(payout.Timestamp),
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert provider payout: %w", err)
-	}
-
-	return tx.Commit(ctx)
 }
 
 // --- Provider Fleet Persistence ---

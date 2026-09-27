@@ -2659,9 +2659,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/payments/balance", s.requireAuth(s.handleBalance))
 	s.mux.HandleFunc("GET /v1/payments/usage", s.requireAuth(s.handleUsage))
 
-	// Provider earnings — no API key auth (providers identify by provider address).
-	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)
-
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 
 	// Account-scoped provider dashboard.

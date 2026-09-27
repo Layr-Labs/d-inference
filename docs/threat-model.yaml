@@ -2001,17 +2001,24 @@ threats:
     stride: Information_Disclosure
     title: Provider earnings enumerable by wallet address without authentication
     description: >
-      The legacy /v1/provider/earnings endpoint returns balance and payment history
-      by wallet address with no authentication. Any party who knows or can guess
-      a provider's wallet address can retrieve their earnings history.
+      The legacy /v1/provider/earnings endpoint returned balance, ledger and
+      payout history for any `?wallet=` value with no authentication, and the
+      value it accepted was an account ID, so anyone holding an account UUID
+      could read that account's balance and ledger. Resolved 2026-09-27: the
+      endpoint and the Solana-era wallet payout chain behind it were removed.
+      Earnings are now served only by authenticated account-scoped endpoints
+      (GET /v1/provider/account-earnings, GET /v1/me/*).
     adversaries: [ADV-002, ADV-003]
     affected_assets: [A-009]
     affected_files:
-      - coordinator/api/consumer.go
+      - coordinator/api/server.go
+      - coordinator/api/billing_handlers.go
     mitigations:
-      - description: Endpoint is unauthenticated by design for legacy reasons.
-        status: open
-    open_findings: [SEC-030]
+      - description: >
+          The unauthenticated /v1/provider/earnings route, its handler, and the
+          wallet payout store methods were deleted; the route now returns 404.
+        status: implemented
+    open_findings: []
     severity: low
     detection_hint: >
       Changes to earnings or balance endpoints should require account authentication

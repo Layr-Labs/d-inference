@@ -856,19 +856,6 @@ type AccountEarningsWindows struct {
 	Last7dJobs      int64 `json:"last_7d_jobs"`
 }
 
-// ProviderPayout records a provider payout event. This is separate from
-// account-linked provider earnings because some providers are paid directly
-// without being linked to a Privy account.
-type ProviderPayout struct {
-	ID              int64     `json:"id"`
-	ProviderAddress string    `json:"provider_address"`
-	AmountMicroUSD  int64     `json:"amount_micro_usd"`
-	Model           string    `json:"model"`
-	JobID           string    `json:"job_id"`
-	Timestamp       time.Time `json:"timestamp"`
-	Settled         bool      `json:"settled"`
-}
-
 // BillingSession tracks an in-progress payment via any method (Stripe).
 type BillingSession struct {
 	ID             string     `json:"id"`

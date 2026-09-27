@@ -563,22 +563,9 @@ type ProviderEarningsStore interface {
 	// included), matching the dashboard header's historical semantics.
 	AccountEarningsWindows(accountID string, now time.Time) (AccountEarningsWindows, error)
 
-	// RecordProviderPayout stores a payout record for a provider wallet.
-	RecordProviderPayout(payout *ProviderPayout) error
-
-	// ListProviderPayouts returns all provider payout records in creation order.
-	ListProviderPayouts() ([]ProviderPayout, error)
-
-	// SettleProviderPayout marks a provider payout as settled.
-	SettleProviderPayout(id int64) error
-
 	// CreditProviderAccount atomically credits a linked provider account and
 	// records the corresponding per-node earning.
 	CreditProviderAccount(earning *ProviderEarning) error
-
-	// CreditProviderWallet atomically credits an unlinked provider wallet and
-	// records the corresponding payout history row.
-	CreditProviderWallet(payout *ProviderPayout) error
 
 	// --- Base Rewards (provider earnings floor) ---
 

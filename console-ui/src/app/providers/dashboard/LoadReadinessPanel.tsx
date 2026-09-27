@@ -21,7 +21,7 @@ export function LoadReadinessPanel({ provider, heartbeatTimeoutSeconds }: {
         const cannotPreload = model.shortfallGb > 0;
         const cannotLoad = !model.busyServing && cannotPreload && model.canLoadAfterEviction === false;
         let label = "Fits now";
-        if (model.busyServing && cannotPreload) label = "Busy serving";
+        if (model.busyServing && cannotPreload) label = "Temporarily busy";
         else if (cannotLoad) label = "Cannot cold-load now";
         else if (cannotPreload) label = "Preload blocked";
         return (
@@ -49,7 +49,7 @@ export function LoadReadinessPanel({ provider, heartbeatTimeoutSeconds }: {
               </p>
             )}
             {model.busyServing && cannotPreload && (
-              <p className="mt-1 text-text-secondary">Another request is active. Recheck this load budget when the Mac is idle.</p>
+              <p className="mt-1 text-text-secondary">A request or model reload is active. Recheck this load budget when the Mac is idle.</p>
             )}
             {cannotPreload && model.canLoadAfterEviction && (
               <p className="mt-1 text-text-secondary">A request may load it after evicting idle models; startup preload keeps existing slots resident.</p>

@@ -200,7 +200,8 @@ enum DoctorRunner {
                     } == true,
                     evictionAwareWeightGb: hasLiveLoadPair ? liveLoadBudget?.freeForLoadGb : nil,
                     loadHeadroomGb: hasLiveLoadPair ? liveLoadBudget?.loadHeadroomGb : nil,
-                    busyServing: loadSnapshotFresh && state?.inferenceActive == true))
+                    busyServing: loadSnapshotFresh &&
+                        (state?.inferenceActive == true || state?.capacity?.loadTransitionActive == true)))
             } else if !alternatives.isEmpty {
                 // No specific/known target; check the largest local model fits.
                 if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {

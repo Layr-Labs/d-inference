@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import { makeProvider } from "./testFixtures";
 import { coldModelReadiness } from "./load-readiness";
 import { LoadReadinessPanel } from "./LoadReadinessPanel";
+import { ModelsStrip } from "./ModelsStrip";
 import { computeWarnings } from "../warnings";
 import { resolveFix } from "./fixes";
 
@@ -58,6 +59,8 @@ describe("owner model load readiness", () => {
     }
     const staleWarm = makeProvider({ ...cold, warm_models: [cold.models[0].id], current_model: cold.models[0].id });
     expect(coldModelReadiness(staleWarm)).toHaveLength(1);
+    render(<ModelsStrip provider={staleWarm} />);
+    expect(screen.queryByText("Loaded")).toBeNull();
   });
 
   it("separates a no-eviction preload skip from a request that can evict idle slots", () => {
@@ -90,7 +93,7 @@ describe("owner model load readiness", () => {
     expect(coldModelReadiness(busy)[0].busyServing).toBe(true);
     expect(computeWarnings(busy, ctx).some((warning) => warning.id === "model_load_memory")).toBe(false);
     render(<LoadReadinessPanel provider={busy} heartbeatTimeoutSeconds={90} />);
-    expect(screen.getByText("Busy serving")).toBeInTheDocument();
+    expect(screen.getByText("Temporarily busy")).toBeInTheDocument();
     expect(screen.getByText(/Recheck this load budget when the Mac is idle/)).toBeInTheDocument();
   });
 
@@ -115,5 +118,25 @@ describe("owner model load readiness", () => {
     });
     expect(coldModelReadiness(ownerOnly)).toEqual([]);
     expect(computeWarnings(ownerOnly, ctx).some((warning) => warning.id === "model_load_memory")).toBe(false);
+
+    const mixed = makeProvider({ ...cold,
+      models: [...cold.models, { id: "owner-only", estimated_memory_gb: 18.2 }],
+      capacity_model_ids: [cold.models[0].id],
+    });
+    expect(coldModelReadiness(mixed)).toHaveLength(1);
+    expect(computeWarnings(mixed, ctx).find((warning) => warning.id === "model_load_memory")?.severity)
+      .toBe("blocking");
+  });
+
+  it("withholds a memory failure while a model slot is reloading", () => {
+    const reloading = makeProvider({ ...cold,
+      backend_capacity: { ...cap, slots: [{ model: cold.models[0].id,
+        state: "reloading", num_running: 0, num_waiting: 0,
+        active_tokens: 0, max_tokens_potential: 1000 }] },
+    });
+    expect(coldModelReadiness(reloading)[0].busyServing).toBe(true);
+    expect(computeWarnings(reloading, ctx).some((warning) => warning.id === "model_load_memory")).toBe(false);
+    render(<LoadReadinessPanel provider={reloading} heartbeatTimeoutSeconds={90} />);
+    expect(screen.getByText("Temporarily busy")).toBeInTheDocument();
   });
 });

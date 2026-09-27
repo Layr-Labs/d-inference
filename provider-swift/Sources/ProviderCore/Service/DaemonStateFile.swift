@@ -127,15 +127,19 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var loadHeadroomGb: Double?
         /// Eviction-aware model-weight allowance for request-time cold loads.
         public var freeForLoadGb: Double?
+        /// A backend slot is transitioning, so current load memory is not a
+        /// stable idle verdict. Nil for older daemon snapshots.
+        public var loadTransitionActive: Bool?
         public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil,
                     loadUsableGb: Double? = nil, loadHeadroomGb: Double? = nil,
-                    freeForLoadGb: Double? = nil) {
+                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil) {
             self.totalMemoryGb = totalMemoryGb
             self.gpuMemoryActiveGb = gpuMemoryActiveGb
             self.gpuMemoryCacheGb = gpuMemoryCacheGb
             self.loadUsableGb = loadUsableGb
             self.loadHeadroomGb = loadHeadroomGb
             self.freeForLoadGb = freeForLoadGb
+            self.loadTransitionActive = loadTransitionActive
         }
     }
 

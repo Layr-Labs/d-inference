@@ -35,7 +35,7 @@ func coldModelLoadBlocked(p *myProvider) bool {
 	// Once capacity exists, its slots supersede heartbeat warm/current fields.
 	resident := make(map[string]bool, len(p.BackendCapacity.Slots))
 	for _, slot := range p.BackendCapacity.Slots {
-		if slot.State == "running" || slot.NumRunning > 0 {
+		if slot.State == "running" || slot.State == "reloading" || slot.NumRunning > 0 {
 			return false // today's shortage may clear when this request ends
 		}
 		if slot.State == "idle" {

@@ -228,7 +228,12 @@ export function computeWarnings(
     (model) => !model.busyServing && model.shortfallGb > 0 && model.canLoadAfterEviction === false);
   if (blockedLoads.length > 0) {
     const first = blockedLoads[0];
-    const allModelsBlocked = blockedLoads.length === p.models.length;
+    const accepted = new Set(p.capacity_model_ids ?? []);
+    const blockedIDs = new Set(blockedLoads.map((model) => model.model));
+    const anyResident = (p.backend_capacity?.slots ?? []).some(
+      (slot) => slot.state === "idle" || slot.state === "running");
+    const allModelsBlocked = accepted.size > 0 && !anyResident &&
+      [...accepted].every((id) => blockedIDs.has(id));
     out.push({
       id: "model_load_memory",
       severity: allModelsBlocked ? "blocking" : "degrading",

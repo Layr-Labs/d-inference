@@ -33,6 +33,11 @@ func TestColdModelLoadBlockedUsesLiveNoEvictionBudget(t *testing.T) {
 		t.Fatal("active work makes cold-load memory verdict temporary")
 	}
 	p.BackendCapacity.Slots = nil
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{Model: "qwen", State: "reloading"}}
+	if coldModelLoadBlocked(p) {
+		t.Fatal("reloading slot makes memory verdict temporary")
+	}
+	p.BackendCapacity.Slots = nil
 	if !coldModelLoadBlocked(p) {
 		t.Fatal("24.7 GB requirement must be blocked by 14.3 GB usable")
 	}

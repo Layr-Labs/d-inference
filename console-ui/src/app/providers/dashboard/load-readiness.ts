@@ -38,7 +38,7 @@ export function coldModelReadiness(
     if (slot.state === "idle" || slot.state === "running") resident.add(slot.model);
   }
   const busyServing = provider.pending_requests > 0 ||
-    cap.slots.some((slot) => slot.state === "running" || slot.num_running > 0);
+    cap.slots.some((slot) => slot.state === "running" || slot.state === "reloading" || slot.num_running > 0);
 
   return provider.models.flatMap((model) => {
     const estimatedGb = model.estimated_memory_gb;

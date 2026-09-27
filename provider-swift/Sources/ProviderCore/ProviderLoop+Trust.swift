@@ -65,7 +65,8 @@ extension ProviderLoop {
                     loadUsableGb: $0.loadUsableGb,
                     loadHeadroomGb: $0.loadHeadroomGb,
                     freeForLoadGb: $0.freeForLoadGb,
-                    loadTransitionActive: $0.slots.contains { $0.state == "reloading" })
+                    loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
+                        || $0.slots.contains { $0.state == "reloading" })
             },
             lastModelLoadError: lastModelLoadError,
             // Joined at WRITE time, not at sample time: a refused explicit

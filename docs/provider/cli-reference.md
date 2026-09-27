@@ -586,7 +586,7 @@ Output includes:
   minimum-KV serving reserve, required total and no-eviction shortfall. When
   request-time eviction still cannot fit the model, the cold-load shortfall
   (the amount to free) is shown separately. Older or stale snapshots and
-  snapshots taken during active inference or a model reload withhold a
+  snapshots taken during active inference, a model load or a reload withhold a
   definitive verdict.
   `always ready`
   retains loaded models but does not override the memory load gate.

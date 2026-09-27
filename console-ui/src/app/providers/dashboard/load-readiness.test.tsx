@@ -94,7 +94,24 @@ describe("owner model load readiness", () => {
     expect(computeWarnings(busy, ctx).some((warning) => warning.id === "model_load_memory")).toBe(false);
     render(<LoadReadinessPanel provider={busy} heartbeatTimeoutSeconds={90} />);
     expect(screen.getByText("Temporarily busy")).toBeInTheDocument();
-    expect(screen.getByText(/Recheck this load budget when the Mac is idle/)).toBeInTheDocument();
+    expect(screen.getByText(/A request, model load, or reload is active/)).toBeInTheDocument();
+  });
+
+  it("withholds a memory failure while a startup load has no slot yet", () => {
+    const loading = makeProvider({ ...cold,
+      backend_capacity: { ...cap, load_transition_active: true, slots: [] },
+    });
+    expect(coldModelReadiness(loading)[0].busyServing).toBe(true);
+    expect(computeWarnings(loading, ctx).some((warning) => warning.id === "model_load_memory")).toBe(false);
+    render(<LoadReadinessPanel provider={loading} heartbeatTimeoutSeconds={90} />);
+    expect(screen.getByText("Temporarily busy")).toBeInTheDocument();
+  });
+
+  it("recommends a request retry independent of preload configuration", () => {
+    render(<LoadReadinessPanel provider={cold} heartbeatTimeoutSeconds={90} />);
+    expect(screen.getByText(/then retry a request for this model/)).toBeInTheDocument();
+    expect(computeWarnings(cold, ctx).find((warning) => warning.id === "model_load_memory")?.detail)
+      .toContain("then retry a request for this model");
   });
 
   it("uses the eviction-aware gap for the remedy", () => {

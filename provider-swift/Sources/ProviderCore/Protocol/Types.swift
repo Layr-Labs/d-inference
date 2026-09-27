@@ -858,6 +858,10 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     /// The serving set's resolved activation plus minimum-KV allowance.
     /// A model needs estimated_memory_gb + this amount of loadUsableGb.
     public var loadHeadroomGb: Double?
+    /// A model load or related load-gate transition is still in flight. Its
+    /// memory reservation can make a cold-load snapshot look temporarily short.
+    /// Absent on older providers.
+    public var loadTransitionActive: Bool?
     /// Optional so coordinators and tooling can distinguish providers with the
     /// reclaimer instrumentation from older providers whose counters are unknown.
     public var mlxCacheReclaimer: MLXCacheReclaimerTelemetry?
@@ -883,6 +887,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         case freeForLoadGb = "free_for_load_gb"
         case loadUsableGb = "load_usable_gb"
         case loadHeadroomGb = "load_headroom_gb"
+        case loadTransitionActive = "load_transition_active"
         case mlxCacheReclaimer = "mlx_cache_reclaimer"
         case capacitySeq = "capacity_seq"
         case telemetry
@@ -898,6 +903,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         freeForLoadGb: Double = 0,
         loadUsableGb: Double? = nil,
         loadHeadroomGb: Double? = nil,
+        loadTransitionActive: Bool? = nil,
         mlxCacheReclaimer: MLXCacheReclaimerTelemetry? = nil,
         capacitySeq: UInt64 = 0,
         telemetry: CapacityTelemetry? = nil,
@@ -911,6 +917,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.freeForLoadGb = freeForLoadGb
         self.loadUsableGb = loadUsableGb
         self.loadHeadroomGb = loadHeadroomGb
+        self.loadTransitionActive = loadTransitionActive
         self.mlxCacheReclaimer = mlxCacheReclaimer
         self.capacitySeq = capacitySeq
         self.telemetry = telemetry
@@ -929,6 +936,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.freeForLoadGb = try c.decodeIfPresent(Double.self, forKey: .freeForLoadGb) ?? 0
         self.loadUsableGb = try c.decodeIfPresent(Double.self, forKey: .loadUsableGb)
         self.loadHeadroomGb = try c.decodeIfPresent(Double.self, forKey: .loadHeadroomGb)
+        self.loadTransitionActive = try c.decodeIfPresent(Bool.self, forKey: .loadTransitionActive)
         self.mlxCacheReclaimer = try c.decodeIfPresent(
             MLXCacheReclaimerTelemetry.self, forKey: .mlxCacheReclaimer)
         self.telemetry = try c.decodeIfPresent(CapacityTelemetry.self, forKey: .telemetry)
@@ -949,6 +957,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         try c.encode(freeForLoadGb, forKey: .freeForLoadGb)
         try c.encodeIfPresent(loadUsableGb, forKey: .loadUsableGb)
         try c.encodeIfPresent(loadHeadroomGb, forKey: .loadHeadroomGb)
+        try c.encodeIfPresent(loadTransitionActive, forKey: .loadTransitionActive)
         try c.encodeIfPresent(mlxCacheReclaimer, forKey: .mlxCacheReclaimer)
         if capacitySeq != 0 {
             try c.encode(capacitySeq, forKey: .capacitySeq)

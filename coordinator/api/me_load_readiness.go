@@ -15,7 +15,8 @@ func coldModelLoadBlocked(p *myProvider) bool {
 		p.BackendCapacity.LoadUsableGB == nil || p.BackendCapacity.LoadHeadroomGB == nil ||
 		p.BackendCapacity.FreeForLoadGB == nil || p.LastHeartbeat == nil ||
 		p.CapacityModelIDs == nil ||
-		p.PendingRequests > 0 {
+		p.PendingRequests > 0 ||
+		(p.BackendCapacity.LoadTransitionActive != nil && *p.BackendCapacity.LoadTransitionActive) {
 		return false
 	}
 	age := time.Since(*p.LastHeartbeat)

@@ -490,13 +490,18 @@ owner-only response also carries optional `backend_capacity.load_usable_gb`
 `backend_capacity.load_headroom_gb` (activation plus minimum-KV reserve for
 the current serving set), each model's `estimated_memory_gb`, and
 `capacity_model_ids`: the catalog/capability-accepted subset to which the
-canonicalized heartbeat slots and memory sample apply. My Macs
-shows `estimated_memory_gb + load_headroom_gb` against `load_usable_gb` for
+canonicalized heartbeat slots and memory sample apply. The response also carries
+optional `backend_capacity.load_transition_active`, which marks
+an in-flight model load or load-gate update before a slot exists. The provider
+emits a capacity heartbeat when this transition changes. My Macs and the
+coordinator attention count defer memory failures while it is active.
+My Macs shows `estimated_memory_gb + load_headroom_gb` against `load_usable_gb` for
 cold accepted models. Owner-only/off-catalog models remain in `models` but
 are not assigned a load verdict from a different canonical inventory.
 Missing fields from older providers mean unknown, never zero or
-"fits"; a stale heartbeat, active request or reloading slot also withholds a definitive
-cold-load failure. The coordinator does not route from these owner diagnostics.
+"fits"; a stale heartbeat, active request, in-flight load or reloading slot
+also withholds a definitive cold-load failure. The coordinator does not route
+from these owner diagnostics.
 The existing `free_for_load_gb` remains the routing input and may credit
 eviction of idle slots, so it is not interchangeable with the no-eviction
 preload budget. The

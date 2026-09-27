@@ -49,7 +49,7 @@ export function LoadReadinessPanel({ provider, heartbeatTimeoutSeconds }: {
               </p>
             )}
             {model.busyServing && cannotPreload && (
-              <p className="mt-1 text-text-secondary">A request or model reload is active. Recheck this load budget when the Mac is idle.</p>
+              <p className="mt-1 text-text-secondary">A request, model load, or reload is active. Recheck this load budget when the Mac is idle.</p>
             )}
             {cannotPreload && model.canLoadAfterEviction && (
               <p className="mt-1 text-text-secondary">A request may load it after evicting idle models; startup preload keeps existing slots resident.</p>
@@ -62,7 +62,7 @@ export function LoadReadinessPanel({ provider, heartbeatTimeoutSeconds }: {
           Physical RAM is not the live load budget. Free at least{" "}
           {Math.max(...blocked.map((model) => model.coldLoadShortfallGb ?? 0)).toFixed(1)} GB
           {" "}of usable memory with margin, confirm with{" "}
-          <code className="font-mono">darkbloom doctor</code>, then restart to retry the load.
+          <code className="font-mono">darkbloom doctor</code>, then retry a request for this model.
         </p>
       )}
     </section>

@@ -242,7 +242,7 @@ export function computeWarnings(
         + `${first.usableGb.toFixed(1)} GB usable without eviction. `
         + `Even after idle eviction the cold load is ${first.coldLoadShortfallGb?.toFixed(1)} GB short. `
         + `${blockedLoads.length > 1 ? `${blockedLoads.length - 1} more model(s) are blocked. ` : ""}`
-        + "The hardware RAM figure is not live free memory. Free memory, run `darkbloom doctor`, then restart to retry the load.",
+        + "The hardware RAM figure is not live free memory. Free memory, run `darkbloom doctor`, then retry a request for this model.",
     });
   }
 

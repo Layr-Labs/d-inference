@@ -88,6 +88,8 @@ export interface MyBackendCapacity {
   load_usable_gb?: number;
   /** Current serving-set activation and minimum-KV allowance. */
   load_headroom_gb?: number;
+  /** Pending model load or related gate transition; defer memory verdicts. */
+  load_transition_active?: boolean;
 }
 
 export interface MyReputation {

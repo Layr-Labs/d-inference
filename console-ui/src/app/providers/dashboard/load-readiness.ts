@@ -37,7 +37,7 @@ export function coldModelReadiness(
   for (const slot of cap.slots) {
     if (slot.state === "idle" || slot.state === "running") resident.add(slot.model);
   }
-  const busyServing = provider.pending_requests > 0 ||
+  const busyServing = provider.pending_requests > 0 || cap.load_transition_active === true ||
     cap.slots.some((slot) => slot.state === "running" || slot.state === "reloading" || slot.num_running > 0);
 
   return provider.models.flatMap((model) => {

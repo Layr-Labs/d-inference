@@ -38,6 +38,12 @@ func TestColdModelLoadBlockedUsesLiveNoEvictionBudget(t *testing.T) {
 		t.Fatal("reloading slot makes memory verdict temporary")
 	}
 	p.BackendCapacity.Slots = nil
+	loading := true
+	p.BackendCapacity.LoadTransitionActive = &loading
+	if coldModelLoadBlocked(p) {
+		t.Fatal("in-flight load without a slot makes memory verdict temporary")
+	}
+	loading = false
 	if !coldModelLoadBlocked(p) {
 		t.Fatal("24.7 GB requirement must be blocked by 14.3 GB usable")
 	}

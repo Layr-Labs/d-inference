@@ -7,6 +7,29 @@ import (
 	"testing"
 )
 
+func TestBackendCapacityLoadTransitionRoundTrip(t *testing.T) {
+	loading := true
+	capacity := BackendCapacity{Slots: []BackendSlotCapacity{}, LoadTransitionActive: &loading}
+	raw, err := json.Marshal(capacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded BackendCapacity
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.LoadTransitionActive == nil || !*decoded.LoadTransitionActive {
+		t.Fatalf("in-flight load lost in capacity round trip: %s", raw)
+	}
+	legacy, err := json.Marshal(BackendCapacity{Slots: []BackendSlotCapacity{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(legacy, []byte(`"load_transition_active"`)) {
+		t.Fatalf("legacy capacity must omit transition field: %s", legacy)
+	}
+}
+
 func TestBackendSlotCapacityMaxConcurrencyRoundTrip(t *testing.T) {
 	msg := HeartbeatMessage{
 		Type:   TypeHeartbeat,

@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-27 · commit `83f3332c1`
+> Last updated: 2026-09-27 · commit `12b6b7901`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -262,7 +262,7 @@ sudo sed -i 's/^EIGENINFERENCE_MIN_PROVIDER_VERSION=.*/EIGENINFERENCE_MIN_PROVID
 sudo grep -Fx 'EIGENINFERENCE_MIN_PROVIDER_VERSION=0.9.5' /etc/d-inference/env
 ```
 
-After the swap, `coordinator.min_provider_version_set{min_version:0.9.5}`
+After the swap, `d_inference.coordinator.min_provider_version_set{min_version:0.9.5}`
 confirms the running floor.
 
 Record the current container's immutable image and persist the rollback state

@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-27 · commit `83f3332c1`
+> Last updated: 2026-09-27 · commit `12b6b7901`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -144,8 +144,8 @@ after v0.9.10. The schema slice now creates `balances` with
   `usage_totals` row is missing.
 
 A failed boot writes no marker and no counter for the data it refused, so the
-remedy in the error (boot a coordinator built from v0.9.10 or earlier once,
-then this build) still runs the real backfill. Databases that ran the
+remedy in the error (boot a coordinator built from v0.9.10, the last release
+that runs them, once; then this build) still runs the real backfill. Databases that ran the
 backfills keep their markers and their now-unused scratch tables
 (`earnings_summary_backfill_pending`, `usage_totals_backfill_state`).
 
@@ -307,7 +307,7 @@ KV blocks under a per-model key, not tokens.
 | Symptom | Cause | Where to look |
 |---|---|---|
 | Coordinator exits 1 at boot with `store: run migrations` | A DDL statement failed (permissions, a hand-edited schema, or a `CREATE INDEX` waiting on a lock) | The logged statement; `pg_stat_activity` for blockers. |
-| Boot fails with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | The database has billing, usage or earnings history but never ran a backfill retired after v0.9.10 | Boot a coordinator built from v0.9.10 or earlier against it once, then redeploy (`checkRetiredBackfills`). |
+| Boot fails with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | The database has billing, usage or earnings history but never ran a backfill retired after v0.9.10 | Boot a coordinator built from v0.9.10 (the last release that runs them) against it once, then redeploy (`checkRetiredBackfills`). |
 | Boot fails with an actionable `provider_earnings` duplicate message | Rows share a non-empty `job_id`, so the unique index cannot be built | Run `dedupe_provider_earnings.sql` offline, then redeploy. |
 | `EIGENINFERENCE_DATABASE_URL is required in production` | No DSN and no memory-store opt-in | The environment file; see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md). |
 | Billing or key state gone after a restart | The process ran on the memory store | Startup log line `using in-memory store`. |

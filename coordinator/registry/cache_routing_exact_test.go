@@ -96,8 +96,9 @@ func preparedTestCacheMetadata(pr *PendingRequest) protocol.InferenceRequestMess
 	if owner == nil {
 		return protocol.InferenceRequestMessage{}
 	}
+	repeated := owner.repeatedPrefixTokens
 	return protocol.InferenceRequestMessage{CacheReceiptNonce: owner.nonce, CacheScope: owner.scope,
-		PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: owner.boundaryMode}
+		PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: owner.boundaryMode, CacheRepeatedPrefixTokens: &repeated}
 }
 
 func TestExactRoutingHintRevalidatesCapabilityBeforeDiscount(t *testing.T) {

@@ -34,6 +34,9 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
     let diskBudget: SSDDiskBudget
     let rateLimiter: SSDWriteRateLimiter
     let writeDemand: SSDCheckpointDemand
+    /// Coordinator repeat-demand hints for in-flight receipts; see
+    /// `SSDHybridCheckpointStore+DemandAdmission.swift`.
+    let donationDemandHints = SSDCheckpointDemandHints()
     let donationRecorder: any PrefixCacheDonationRecording
     let index = SSDBlockIndex()
     let lock = NSLock()
@@ -145,6 +148,9 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
             stageReservations.removeValue(forKey: requestID)
             return (stages.removeValue(forKey: requestID), access)
         }
+        // The engine delivers the terminal after complete-checkpoint
+        // publication, so the write gate has already consulted this hint.
+        donationDemandHints.discard(requestID)
         access?.cancel()
         staged?.close()
     }
@@ -155,6 +161,7 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
             authenticatedReceipts.removeValue(forKey: requestID)
             return (stages.removeValue(forKey: requestID), stageReservations.removeValue(forKey: requestID), access)
         }
+        donationDemandHints.discard(requestID)
         access?.cancel()
         stage?.close()
         await reservation?.waitForRefund()
@@ -177,6 +184,7 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
             return (retiring, accesses)
         }
         guard let retiring else { return }
+        donationDemandHints.removeAll()
         for access in retiring.reads { access.cancel() }
         pipeline.shutdown()
         for stage in retiring.stages { stage.close() }

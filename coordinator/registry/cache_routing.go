@@ -13,15 +13,23 @@ const (
 	CacheRoutingOff = "off"
 	CacheRoutingOn  = "on"
 
-	defaultCacheRoutingTTL                = 10 * time.Minute
-	defaultCacheRoutingMaxHolders         = 4
-	defaultCacheRoutingActivationPct      = 100.0
-	defaultCacheRoutingMaxPlanQPS         = 0.0
-	maxCacheRoutingPlanQPS                = 1_000_000.0
-	cacheRoutingAttemptTTL                = 2 * time.Minute
-	cacheRoutingInFlightAttemptTTL        = 2 * time.Hour
-	cacheRoutingSweepInterval             = 30 * time.Second
-	cacheRoutingMaxEntries                = 10_000
+	defaultCacheRoutingTTL           = 10 * time.Minute
+	defaultCacheRoutingMaxHolders    = 4
+	defaultCacheRoutingActivationPct = 100.0
+	defaultCacheRoutingMaxPlanQPS    = 0.0
+	maxCacheRoutingPlanQPS           = 1_000_000.0
+	cacheRoutingAttemptTTL           = 2 * time.Minute
+	cacheRoutingInFlightAttemptTTL   = 2 * time.Hour
+	cacheRoutingSweepInterval        = 30 * time.Second
+	cacheRoutingMaxEntries           = 10_000
+	// cacheDemandMaxEntries sizes the observed-demand index for the routing TTL
+	// at fleet rate, not for the holder cap: each plan records ~5 geometric
+	// boundary keys, so ~35 plans/s is ~170 entries/s and 10,000 entries turned
+	// over in about a minute against a 10-minute TTL. 300 entries/s × 600 s =
+	// 180,000; 250,000 leaves headroom. Each entry is a 43-byte base64url HMAC
+	// key (48 B), a list.Element (48 B), a boxed cacheDemandEntry (48 B) and a
+	// map slot (~37 B), about 180 B, so a full index is roughly 45 MB.
+	cacheDemandMaxEntries                 = 250_000
 	cacheRoutingMaxAttempts               = 50_000
 	cacheRoutingMaxReceiptTokens          = 1_000_000
 	cacheRoutingMaxStageMs                = 10 * 60 * 1000.0
@@ -318,7 +326,7 @@ func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTrac
 	}
 	return &cacheRoutingTracker{
 		generation: &cacheRoutingGeneration{},
-		demand:     newCacheDemandTracker(cacheRoutingMaxEntries, ttl),
+		demand:     newCacheDemandTracker(cacheDemandMaxEntries, ttl),
 		ttl:        ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts,
 		holders: make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
 		holderOrderByRef: make(map[cacheHolderRef]*cacheHolderOrderEntry), attemptOrderByNonce: make(map[string]*cacheAttemptOrderEntry),

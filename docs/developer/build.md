@@ -247,8 +247,6 @@ lease used after launch. See the [test procedure](test.md#connected-coordinatorp
 
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
-The [provider config cleanup tests](test.md#provider-config-cleanup) run with
-temporary home directories and need no provider build or model.
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator

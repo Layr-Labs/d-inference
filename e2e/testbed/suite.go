@@ -112,16 +112,6 @@ type Provider struct {
 	cmd    *os.Process
 	cancel context.CancelFunc
 	done   chan struct{}
-
-	// generatedConfig holds the provider TOML this instance wrote into
-	// StateDir. Every provider gets one so auto-update and auto-restart stay off;
-	// KV-backend / concurrency keys remain optional within it.
-	generatedConfig string
-	// canonicalConfigExisted records whether ~/.config/darkbloom/provider.toml
-	// was present at launch. The provider copies a --config file there when it
-	// is missing; Stop undoes that copy so a testbed TOML never becomes the
-	// machine's default config.
-	canonicalConfigExisted bool
 }
 
 func NewSuite(cfg SuiteConfig) *Suite {

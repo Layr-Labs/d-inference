@@ -649,19 +649,6 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
 
-#### Provider config cleanup
-
-The CPU-only `e2e/testbed/provider_config_cleanup_test.go` tests retain a fixed
-unstamped legacy fixture. Current configs come from `BuildProviderTOML`, which
-still writes a `config_version = 3` line the provider now ignores. The provider
-no longer rewrites a config on start, so pre-existing files must remain
-byte-identical; an owned file created during a test must be removed after
-shutdown.
-
-```bash
-go test ./e2e/testbed -run '^TestCleanup' -count=1
-```
-
 #### Coordinator startup and reconnect recovery
 
 `TestSupervisorRestartsChildAndBecomesReady` allows a five-second helper startup

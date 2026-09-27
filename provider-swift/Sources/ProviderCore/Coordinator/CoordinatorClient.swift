@@ -37,6 +37,9 @@ public actor CoordinatorClient {
     /// one AsyncStream across reconnects silently kills outbound delivery.
     internal let outboundRouter = OutboundRouter()
     internal var drainAcknowledgements: [String: AsyncStream<Bool>.Continuation] = [:]
+    internal var acknowledgedSwitchDrain: String?
+    internal var modelReplacement: PendingModelReplacement?
+    internal var modelReadiness: PendingModelReadiness?
 
     /// Inference-chunk fast path. `chunkBatcher` owns the dedicated serial queue
     /// + coalescing; `chunkSender` is the nonisolated, Sendable handle the
@@ -221,6 +224,7 @@ public actor CoordinatorClient {
 
     public func shutdown() {
         failDrainBarriers()
+        failModelReplacements()
         shutdownFlag.request()
         closeCurrentConnection()
         eventContinuation?.finish()

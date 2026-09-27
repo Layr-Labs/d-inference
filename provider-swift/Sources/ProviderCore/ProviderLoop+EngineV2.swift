@@ -183,10 +183,11 @@ extension ProviderLoop {
     /// PROSPECTIVE set (an advertise-only raise preflight); nil reads live.
     private func fleetKVBudgetBytes(
         extraWeightBytes: Int,
-        activationReserveBytes: UInt64? = nil
+        activationReserveBytes: UInt64? = nil,
+        excludingModelIDs: Set<String> = []
     ) -> UInt64 {
         var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
-        for (_, slot) in modelSlots {
+        for (id, slot) in modelSlots where !excludingModelIDs.contains(id) {
             let (sum, overflow) = totalWeights
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
@@ -214,14 +215,17 @@ extension ProviderLoop {
     /// (as the load path does across its own preflight-through-install),
     /// so the slot set cannot move between this check and the re-slice
     /// that follows a passed preflight.
-    internal func reserveRaiseKeepsSurvivorsServiceable(reserveBytes: UInt64) async -> Bool {
-        let survivors = await existingSlotGrants(excludingModelId: "")
+    internal func reserveRaiseKeepsSurvivorsServiceable(
+        reserveBytes: UInt64, excludingModelIDs: Set<String> = []
+    ) async -> Bool {
+        let survivors = await existingSlotGrants(excludingModelId: "", excludingModelIDs: excludingModelIDs)
         guard !survivors.isEmpty else { return true }
         let targets = EngineV2KVSizing.resliceGrants(
             existing: survivors.map(\.slot),
             newcomer: nil,
             fleetKVBudgetBytes: fleetKVBudgetBytes(
-                extraWeightBytes: 0, activationReserveBytes: reserveBytes))
+                extraWeightBytes: 0, activationReserveBytes: reserveBytes,
+                excludingModelIDs: excludingModelIDs))
         return EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, fixedCarveBytes: [:])
     }
 
@@ -233,10 +237,13 @@ extension ProviderLoop {
     /// load. Paged physical claims are tracked separately by
     /// `slotKVBytesClaim()` for fleet accounting and never shrink when this
     /// logical target is re-sliced.
-    private func existingSlotGrants(excludingModelId: String) async -> [ExistingSlotGrant] {
+    private func existingSlotGrants(
+        excludingModelId: String, excludingModelIDs: Set<String> = []
+    ) async -> [ExistingSlotGrant] {
         var existing: [ExistingSlotGrant] = []
         for (slotModelId, slot) in modelSlots
-        where slotModelId != excludingModelId && !modelsUnloading.contains(slotModelId) {
+        where slotModelId != excludingModelId && !modelsUnloading.contains(slotModelId)
+            && !excludingModelIDs.contains(slotModelId) {
             let currentGrant = await slot.engineV2.resliceAdmissionBytesClaim()
             existing.append(
                 ExistingSlotGrant(

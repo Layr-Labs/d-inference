@@ -235,7 +235,7 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
 	var terminalWork providerCompletionBarrier
-	drainAcks := make(chan struct{}, 2)
+	var drainAcks providerDrainAcker
 	var appAttestShadow *attestservice.Session
 	tracker := newChallengeTracker()
 	var schedulerSEKey string
@@ -631,31 +631,23 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid drain barrier")
 				return
 			}
-			// This read loop has processed all preceding terminal/usage frames.
-			// Mark before acknowledging, so reservations waiting in the writer
-			// fail their final eligibility check while control traffic continues.
-			s.registry.CommitProviderDrain(provider)
-			select {
-			case drainAcks <- struct{}{}:
-			default:
-				continue
+			if !drainAcks.offer(loopCtx, s, provider, &terminalWork, barrier.RequestID) {
+				return
 			}
-			pending := terminalWork.snapshot()
-			ack, _ := json.Marshal(protocol.ProviderDrainMessage{Type: protocol.TypeProviderDrainAck, RequestID: barrier.RequestID})
-			// Keep reading required control traffic while async billing settles.
-			saferun.Go(s.logger, "providerDrainAck", func() {
-				defer func() { <-drainAcks }()
-				for _, done := range pending {
-					select {
-					case <-done:
-					case <-loopCtx.Done():
-						return
-					}
-				}
-				ackCtx, cancel := context.WithTimeout(loopCtx, 10*time.Second)
-				defer cancel()
-				_ = provider.WriteTextControl(ackCtx, ack)
-			})
+
+		case protocol.TypeModelsReplace:
+			if provider == nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before models_replace")
+				return
+			}
+			s.handleModelsReplace(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceMessage))
+
+		case protocol.TypeModelsReplaceReady:
+			if provider == nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before models_replace_ready")
+				return
+			}
+			s.handleModelsReplaceReady(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceReadyMessage))
 
 		case protocol.TypeHeartbeat:
 			if provider == nil {
@@ -706,7 +698,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
-			s.applyProviderHeartbeat(providerID, provider, hbMsg)
+			if s.applyProviderHeartbeat(providerID, provider, hbMsg) {
+				s.handleModelsReplaceHeartbeat(loopCtx, provider)
+			}
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)
@@ -754,7 +748,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeInferenceError:
 			errMsg := msg.Payload.(*protocol.InferenceErrorMessage)
+			var terminalDone func()
+			if drainAcks.latest != nil && s.registry.ProviderDraining(providerID) {
+				terminalDone = terminalWork.begin()
+			}
 			s.handleInferenceError(providerID, provider, errMsg)
+			if terminalDone != nil {
+				terminalDone()
+			}
 
 		case protocol.TypePrefixCacheLookup:
 			lookupMsg := msg.Payload.(*protocol.PrefixCacheLookupMessage)

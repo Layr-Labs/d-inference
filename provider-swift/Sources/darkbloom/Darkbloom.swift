@@ -28,6 +28,7 @@ struct Darkbloom: AsyncParsableCommand {
         version: ProviderCore.version,
         subcommands: [
             Start.self,
+            Switch.self,
             Stop.self,
             Restart.self,
             Status.self,

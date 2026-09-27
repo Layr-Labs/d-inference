@@ -303,6 +303,16 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 			return false
 		}
 		delete(r.providers, id)
+		p.drainCommitted = false
+		p.drainReady = false
+		p.drainReplacementPending = false
+		p.drainReplacementAcked = false
+		p.drainReplacementReadySeq = 0
+		p.drainReplacementAppliedSeq = 0
+		p.drainReplacementID = ""
+		p.lastResumedModelReplacement = protocol.ModelsReplaceResumedMessage{}
+		p.drainRemovedModels = nil
+		p.drainRequestID = ""
 		p.appAttestAuthorization = AppAttestServingAuthorization{}
 		// Clear any pending model load entries for this provider.
 		for key := range r.pendingModelLoads {
@@ -399,6 +409,7 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 		}
 	}
 	p.pendingReqs = make(map[string]*PendingRequest)
+	p.settleDrainPendingLocked()
 	p.mu.Unlock()
 	for _, pr := range pending {
 		if pr != nil {

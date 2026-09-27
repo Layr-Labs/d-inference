@@ -257,6 +257,7 @@ extension ProviderLoop {
 
                 case .disconnected:
                     clearConnectionAuthorization()
+                    modelSwitchTask?.cancel()
                     cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
@@ -320,16 +321,7 @@ extension ProviderLoop {
                     }
 
                 case .desiredModels(let entries):
-                    if isDraining {
-                        // Keep only the latest push (desired state is
-                        // declarative). A successful restart makes it moot —
-                        // registration receives fresh desired state — but an
-                        // aborted restart replays it via resumeServingAfterUpdate.
-                        deferredDesiredModels = entries
-                        logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
-                    } else {
-                        await reconcileDesiredModels(entries, send: send)
-                    }
+                    await handleDesiredModels(entries, send: send)
 
                 case .trustStatus(let trustLevel, let status, let reason, let authorization):
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason,
@@ -346,6 +338,7 @@ extension ProviderLoop {
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        await cancelModelSwitchAndWait()
         // Quote path mirror (routing v2): a shutting-down provider quotes
         // `slot_state` rejections for the brief window the socket stays up.
         state.refusingNewWork = true

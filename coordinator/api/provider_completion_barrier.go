@@ -2,9 +2,9 @@ package api
 
 import "sync"
 
-// Billing completion runs off the socket reader. Snapshot its outstanding
-// workers at a drain frame without blocking heartbeats/challenges or waiting on
-// workers started after that frame. No request content or identifiers are kept.
+// Billing completion runs off the socket reader. Drain settlement snapshots its
+// outstanding workers after reservations clear, then rechecks after each batch
+// so terminal ingress during that wait is included. No request content is kept.
 type providerCompletionBarrier struct {
 	mu      sync.Mutex
 	pending map[chan struct{}]struct{}

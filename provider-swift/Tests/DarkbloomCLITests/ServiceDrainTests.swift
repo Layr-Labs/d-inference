@@ -118,8 +118,8 @@ struct ServiceDrainTests {
 }
 
 
-@Suite("Lifecycle recovery rollback")
-struct LifecycleRecoveryRollbackTests {
+@Suite("Lifecycle recovery publication")
+struct LifecycleRecoveryPublicationTests {
     @Test func failedPublicationRestoresPriorRecovery() {
         struct Failure: Error {}
         var calls: [String] = []

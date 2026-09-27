@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-27 · commit `f99e56eb0`
+> Last updated: 2026-09-27 · commit `219df8d38`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -168,51 +168,10 @@ second ordinary coordinator container. Rerun the blocked-query/lock checks and
 verify current serving health after preparation; success is not approval to
 swap.
 
-The earnings-summary migration captures missing-key history once, commits a
-resumable plan, then adds each pending delta and removes it in a short transaction.
-Its repeatable-read snapshot is pinned before the attempted-plan marker commits,
-so settlement during marker creation cannot hide missing historical totals.
-Initial planning uses one additional short-lived database connection for that
-marker, even with a single-connection pool; budget for it before preparation.
-A failed or uncertain marker write aborts preparation.
-Existing `CreditProviderAccount` and `SettleProviderFloorDraw` writers can continue:
-their atomic earning/summary updates coexist with the captured deltas without a
-new writer-lock protocol. Quiesce any old record-only/import writer that lacks
-atomic summary updates. Already inconsistent counters at plan time need explicit
-reconciliation; this migration preserves existing totals rather than guessing.
-The final marker makes subsequent startup avoid the historical scan. If the attempt marker committed but the
-initial planning transaction fails, that marker makes subsequent
-startup fail closed rather than silently replan against newly created partial
-counters. Follow the recovery procedure below; a committed plan's per-key
-progress instead resumes automatically. New
-provider-recovery indexes are built concurrently and checked for validity. An
+New provider-recovery indexes are built concurrently and checked for validity. An
 interrupted build that leaves an invalid index fails closed with its index name;
 repair it under a separate approved operation. Ordinary startup still applies
 schema checks, and this preparation does not prove a five-second handoff.
-
-#### Recover an incomplete initial earnings-summary plan
-
-This recovery is an explicit production database/traffic operation and needs
-operator approval. A failed initial plan intentionally blocks readiness.
-
-1. Quiesce all earnings/summary writers and preserve the failure evidence,
-   `schema_migrations`, `earnings_summary`, `provider_earnings`, and
-   `earnings_summary_backfill_pending` in the team's normal backup process.
-2. Determine whether `prepare_earnings_summary_backfill_v1` committed. If it did,
-   retain the plan and pending rows and rerun the candidate migration command;
-   committed per-key updates are already protected from double application.
-3. If only `attempt_earnings_summary_backfill_v1` exists, diagnose the failed
-   snapshot and reconcile affected account/provider totals against authoritative
-   earning/ledger history and retained pre-migration evidence. Preserve money
-   while excluding base rewards from inference counts/tokens. History retention
-   can make a blind recomputation incorrect; insufficient evidence requires a
-   vetted backup or a separately reviewed accounting repair.
-4. Only after that reconciliation, with writers still quiesced, verify that no
-   final/ready-plan marker or pending plan rows exist. An approved operator may
-   reset the attempted-plan marker and rerun preparation. Do not merely delete
-   that marker while serving, and never discard committed pending deltas.
-5. Verify the final marker, empty pending queue and reconciled totals before
-   resuming writers or proceeding with the separately approved swap.
 
 ### 3. Refresh the env file and capture rollback inputs
 
@@ -348,10 +307,10 @@ psql "$PROD_DB_URL" -c "select date_trunc('minute', created_at) m,
 ## Rollback
 
 Roll back only to the image and env captured in step 3. Never start a
-coordinator older than the `backfill_withdrawable_balance_v1` migration
-(`coordinator/store/postgres_withdrawable_migration.go`): pre-marker binaries
-re-run the historical balance backfill on every start, which is not
-financially safe — for those cases roll **forward** with a patched image.
+coordinator built before the `backfill_withdrawable_balance_v1` marker existed
+(`ac3d934a9`, #557): those binaries re-run the historical balance backfill on
+every start, which is not financially safe — for those cases roll **forward**
+with a patched image.
 
 ```bash
 ROLLBACK_STATE=/var/lib/darkbloom-deploy/rollback-state

@@ -298,10 +298,14 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			memo TEXT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		// withdrawable_micro_usd trails updated_at: existing databases gained
+		// it through the retired backfill_withdrawable_balance_v1 migration,
+		// which added it with this exact definition and physical position.
 		`CREATE TABLE IF NOT EXISTS balances (
 			account_id TEXT PRIMARY KEY,
 			balance_micro_usd BIGINT NOT NULL DEFAULT 0,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			withdrawable_micro_usd BIGINT NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS ledger_entries (
 			id BIGSERIAL PRIMARY KEY,
@@ -676,8 +680,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			PRIMARY KEY (key, key_type)
 		)`,
 
-		earningsSummaryBackfillPendingDDL,
-
 		// Provider payouts — wallet-based payout history for unlinked providers
 		`CREATE TABLE IF NOT EXISTS provider_payouts (
 			id BIGSERIAL PRIMARY KEY,
@@ -744,6 +746,11 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
 			total_completion_tokens BIGINT NOT NULL DEFAULT 0
 		)`,
+		// RecordUsage only UPDATEs the single counter row, so it must exist.
+		// A fresh database has no usage yet, so zero is exact; existing
+		// databases already hold the row (the retired backfill_usage_totals_v1
+		// migration created it from their usage history).
+		`INSERT INTO usage_totals (id) VALUES (1) ON CONFLICT (id) DO NOTHING`,
 
 		// Partial index for UsageLocationBuckets — only rows with a
 		// non-null request_location are ever queried.
@@ -1192,18 +1199,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		}
 	}
 
-	if err := s.migrateEarningsSummary(ctx); err != nil {
-		return err
-	}
 	if err := s.ensureProviderRestoreIndexes(ctx); err != nil {
-		return err
-	}
-
-	if err := s.migrateUsageTotals(ctx); err != nil {
-		return err
-	}
-
-	if err := s.migrateWithdrawableBalance(ctx); err != nil {
 		return err
 	}
 

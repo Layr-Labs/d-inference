@@ -728,3 +728,45 @@ func TestPostgresCreateStripeWithdrawalWithDebit(t *testing.T) {
 		t.Errorf("duplicate attempt leaked a debit: balance = %d", bal)
 	}
 }
+
+// TestFreshDatabaseSchemaServesWithdrawableAndUsageTotals boots NewPostgres on
+// an empty database and exercises the two things the retired one-shot
+// backfills used to provide there: the balances.withdrawable_micro_usd column
+// and the single usage_totals counter row that RecordUsage only UPDATEs.
+// Without the row, usage is silently never counted.
+func TestFreshDatabaseSchemaServesWithdrawableAndUsageTotals(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	databaseURL := newThrowawayTestDatabase(t)
+	s, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("NewPostgres on an empty database: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.CreditWithdrawable("fresh-acct", 700, LedgerPayout, "fresh-ref"); err != nil {
+		t.Fatalf("CreditWithdrawable: %v", err)
+	}
+	if got := s.GetWithdrawableBalance("fresh-acct"); got != 700 {
+		t.Fatalf("withdrawable balance = %d, want 700", got)
+	}
+
+	s.RecordUsage("prov", "consumer", "model", 11, 13)
+	totals, err := s.UsageTotals()
+	if err != nil {
+		t.Fatalf("UsageTotals: %v", err)
+	}
+	if totals.Requests != 1 || totals.PromptTokens != 11 || totals.CompletionTokens != 13 {
+		t.Fatalf("usage totals = %+v, want 1 request / 11 prompt / 13 completion", totals)
+	}
+
+	// A second boot on the same database is a no-op for both.
+	again, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("second NewPostgres: %v", err)
+	}
+	defer again.Close()
+	if totals, err := again.UsageTotals(); err != nil || totals.Requests != 1 {
+		t.Fatalf("usage totals after reboot = %+v, %v; want the counter preserved", totals, err)
+	}
+}

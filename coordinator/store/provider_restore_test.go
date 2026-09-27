@@ -61,7 +61,7 @@ func TestProviderRestoreSelectsLatestPriorIdentity(t *testing.T) {
 }
 
 func TestListProviderRecordsRejectsPartialScan(t *testing.T) {
-	databaseURL := newWithdrawableTestDatabase(t)
+	databaseURL := newThrowawayTestDatabase(t)
 	s, err := NewPostgres(context.Background(), Config{DatabaseURL: databaseURL})
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestListProviderRecordsRejectsPartialScan(t *testing.T) {
 
 func TestProviderAndReputationPublicationIsAtomic(t *testing.T) {
 	ctx := context.Background()
-	s, err := NewPostgres(ctx, Config{DatabaseURL: newWithdrawableTestDatabase(t)})
+	s, err := NewPostgres(ctx, Config{DatabaseURL: newThrowawayTestDatabase(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

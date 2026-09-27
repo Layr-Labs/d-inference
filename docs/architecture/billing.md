@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-27 · commit `1e4f506f2`
+> Last updated: 2026-09-27 · commit `219df8d38`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -36,8 +36,7 @@ The remaining epoch allocation commits as one transaction in `coordinator/paymen
   `RoleService`) marks wholesale partners.
 - **Two balance columns.** `balances.balance_micro_usd` is spendable;
   `balances.withdrawable_micro_usd` is the earned subset that Stripe
-  may pay out (`coordinator/store/postgres.go` DDL and
-  `coordinator/store/postgres_withdrawable_migration.go`).
+  may pay out (`coordinator/store/postgres.go` DDL).
 
 ## Mechanism
 

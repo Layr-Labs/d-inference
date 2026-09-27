@@ -39,6 +39,7 @@ describe("format/currency", () => {
     expect(formatUsdMicro(0)).toBe("$0.00");
     expect(formatUsdMicro(5)).toBe("$0.000005");
     expect(formatUsdMicro(2_500_000)).toBe("$2.50");
+    expect(formatUsdMicro(1_234_560_000)).toBe("$1,234.56");
   });
 });
 
@@ -65,6 +66,7 @@ describe("format/number", () => {
     expect(clampPct(150)).toBe(100);
     expect(clampPct(-5)).toBe(0);
     expect(clampPct(Infinity)).toBe(100);
+    expect(clampPct(NaN)).toBe(0);
     expect(pct(0.5)).toBe("50%");
     expect(pct(2)).toBe("100%");
   });

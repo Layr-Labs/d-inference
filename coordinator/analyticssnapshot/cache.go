@@ -54,6 +54,10 @@ func (c *Cache) Load(path string, now time.Time) error {
 	if c.snapshot != nil && (s.AsOf.Before(c.snapshot.AsOf) || s.SourceCompleteThrough.Before(c.snapshot.SourceCompleteThrough)) {
 		return errors.New("analytics snapshot regressed")
 	}
+	if c.snapshot != nil && s.Generation != c.snapshot.Generation &&
+		s.AsOf.Equal(c.snapshot.AsOf) && s.SourceCompleteThrough.Equal(c.snapshot.SourceCompleteThrough) {
+		return errors.New("new analytics generation must advance a source cutoff")
+	}
 	c.snapshot = s
 	c.checksum = checksum
 	return nil

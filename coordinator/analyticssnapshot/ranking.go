@@ -42,6 +42,11 @@ func validateWindow(w Window) error {
 			return err
 		}
 	}
+	// A full ranking must contain the same provider cohort for every metric.
+	// For larger cohorts, different top-200 sets are legitimate.
+	if expected == w.Totals.ActiveAccounts && int64(len(common)) != expected {
+		return errors.New("complete analytics rankings disagree on provider cohort")
+	}
 	return nil
 }
 

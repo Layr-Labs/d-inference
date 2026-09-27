@@ -241,8 +241,8 @@ func TestConfigureCacheRoutingWarnsAboveSizingTTL(t *testing.T) {
 			if warned != tc.warn {
 				t.Fatalf("warned=%v want %v: %s", warned, tc.warn, logs.String())
 			}
-			if tc.warn && (!strings.Contains(logs.String(), "sized_for=30m0s") ||
-				!strings.Contains(logs.String(), "demand_entries=600000")) {
+			if tc.warn && (!strings.Contains(logs.String(), "sized_for="+cacheRoutingSizingTTL.String()) ||
+				!strings.Contains(logs.String(), fmt.Sprintf("demand_entries=%d", cacheDemandMaxEntries))) {
 				t.Fatalf("warning lacks the sizing facts: %s", logs.String())
 			}
 			if want := tc.ttl; want != 0 && r.CacheRoutingConfigSnapshot().TTL != want {

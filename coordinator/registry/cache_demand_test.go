@@ -165,19 +165,20 @@ func TestCacheDemandCapIsIndependentOfHolderCaps(t *testing.T) {
 	if tracker.maxEntries != cacheRoutingMaxEntries || tracker.maxAttempts != cacheRoutingMaxAttempts {
 		t.Fatalf("holder caps changed: entries=%d attempts=%d", tracker.maxEntries, tracker.maxAttempts)
 	}
-	if cacheDemandMaxEntries != 600_000 || cacheDemandMaxEntries < 300*int(cacheRoutingSizingTTL/time.Second) {
-		t.Fatalf("demand cap %d does not hold %s at 300 entries/s", cacheDemandMaxEntries, cacheRoutingSizingTTL)
+	if cacheDemandMaxEntries != 1_000_000 {
+		t.Fatalf("demand cap %d changed; TestCacheDemandCapCoversMeasuredPlanMix holds its sizing", cacheDemandMaxEntries)
 	}
 }
 
 // The demand index shares the routing TTL, which the operator is raising
-// toward the 30 minutes providers keep cache files. A boundary planned 29
-// minutes ago must still read as repeated at 300 entries/s; the former
-// 250,000-entry cap turned over in under 14 minutes and reported it novel,
-// which tells the provider not to write it.
-func TestCacheDemandRetainsBoundaryFor29MinutesAt300PerSecond(t *testing.T) {
-	const fillRatePerSecond, fillMinutes = 300, 29
-	const formerCap = 250_000
+// toward the 30 minutes providers keep cache files. 60 plans/s record 424
+// entries/s on the 1,024-token stride. A boundary planned 29 minutes ago must
+// still read as repeated at 450 entries/s; the former 600,000-entry cap
+// turned over in under 23 minutes and reported it novel, which tells the
+// provider not to write it.
+func TestCacheDemandRetainsBoundaryFor29MinutesAtSizingRate(t *testing.T) {
+	const fillRatePerSecond, fillMinutes = 450, 29
+	const formerCap = 600_000
 	target := []cacheDemandBoundary{{"repeated", 1024}}
 	start := time.Unix(1_700_000_000, 0)
 	for _, tc := range []struct {

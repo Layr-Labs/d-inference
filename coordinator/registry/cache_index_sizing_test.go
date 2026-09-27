@@ -357,9 +357,7 @@ func TestCacheIndexCapsCoverSizingTTL(t *testing.T) {
 	if cacheRoutingMaxEntries < 4*30*seconds {
 		t.Fatalf("holder cap %d lacks 4x headroom over 30 holders/s for %s", cacheRoutingMaxEntries, cacheRoutingSizingTTL)
 	}
-	if cacheDemandMaxEntries < 300*seconds {
-		t.Fatalf("demand cap %d does not hold %s at 300 entries/s", cacheDemandMaxEntries, cacheRoutingSizingTTL)
-	}
+	// The demand cap's sizing is held by TestCacheDemandCapCoversMeasuredPlanMix.
 	tracker := newCacheRoutingTracker(cacheRoutingSizingTTL, defaultCacheRoutingMaxHolders)
 	if tracker.maxEntries != cacheRoutingMaxEntries || tracker.demand.limit != cacheDemandMaxEntries ||
 		tracker.demand.ttl != cacheRoutingSizingTTL {

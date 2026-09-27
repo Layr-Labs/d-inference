@@ -2,8 +2,12 @@ package registry
 
 import (
 	"container/list"
+	"slices"
 	"sync"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Demand is advisory, never cache evidence. Only keyed, tenant/build-scoped
@@ -87,18 +91,54 @@ func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.
 	return longest, affinity
 }
 
+const (
+	// cacheDemandStrideTokens spaces the observed boundaries. The provider
+	// engine keeps a checkpoint at every multiple of 1,024 tokens and none
+	// below its 1,024-token floor (minEffectiveTokens), and it uses the
+	// observed repeat to choose the checkpoint at or below it. A boundary
+	// between two multiples, or below the first, names a prefix that can be
+	// neither written nor restored.
+	cacheDemandStrideTokens = 4 * int(promptcontract.BlockSize)
+	// cacheDemandMaxStrideBoundaries bounds one plan's stride observations.
+	// A prompt longer than 64 × 1,024 tokens keeps its deepest 64: those are
+	// the ones worth restoring, and its shallow prefix is what shorter plans
+	// observe.
+	cacheDemandMaxStrideBoundaries = 64
+)
+
+// cacheDemandAnchors selects what a plan observes: its deepest
+// cacheDemandMaxStrideBoundaries boundaries on the 1,024-token stride and
+// its final boundary, which need not be on the stride. The result is at most
+// cacheDemandMaxStrideBoundaries + 1 anchors, shallowest first. Selection is
+// by token count, so it does not depend on the plan listing every block.
+func cacheDemandAnchors(boundaries []protocol.PrefixCacheAnchor) []protocol.PrefixCacheAnchor {
+	last := len(boundaries) - 1
+	selected := make([]protocol.PrefixCacheAnchor, 0,
+		min(len(boundaries), cacheDemandMaxStrideBoundaries+1))
+	strides := 0
+	for i := last; i >= 0 && strides < cacheDemandMaxStrideBoundaries; i-- {
+		onStride := boundaries[i].TokenCount%cacheDemandStrideTokens == 0
+		if onStride {
+			strides++
+		}
+		if onStride || i == last {
+			selected = append(selected, boundaries[i])
+		}
+	}
+	slices.Reverse(selected)
+	return selected
+}
+
 func (t *cacheRoutingTracker) observeCacheDemand(plan *CachePlan, routeKey []byte, now time.Time) {
 	if t == nil || plan == nil || plan.generation != t.generation || t.generation.revoked.Load() || !plan.present() {
 		return
 	}
-	// Geometric anchors plus the final endpoint bound work and metadata to
-	// O(log(prompt length)). Full holder lookup still checks EVERY boundary.
-	boundaries := make([]cacheDemandBoundary, 0, 16)
-	for i, anchor := range plan.Boundaries {
-		n := i + 1
-		if n&(n-1) != 0 && n != len(plan.Boundaries) {
-			continue
-		}
+	// The same anchors are read and then recorded, so one plan costs at most
+	// cacheDemandMaxStrideBoundaries + 1 = 65 keyed digests and index entries
+	// whatever its length. Full holder lookup still checks EVERY boundary.
+	anchors := cacheDemandAnchors(plan.Boundaries)
+	boundaries := make([]cacheDemandBoundary, 0, len(anchors))
+	for _, anchor := range anchors {
 		key := cacheBoundaryKey(routeKey, *plan, anchor)
 		if key != "" {
 			boundaries = append(boundaries, cacheDemandBoundary{key, anchor.TokenCount})

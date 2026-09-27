@@ -41,16 +41,18 @@ const (
 	// about 280 MiB and 54,000 holders about 60 MiB.
 	cacheRoutingMaxEntries = 250_000
 	// cacheDemandMaxEntries sizes the observed-demand index for the routing TTL
-	// at fleet rate, not for the holder cap: each plan records ~5 geometric
-	// boundary keys, so ~35 plans/s is ~170 entries/s. The index expires on the
-	// routing TTL, so it is sized for cacheRoutingSizingTTL: 300 entries/s ×
-	// 1,800 s = 540,000; 600,000 leaves headroom. An index that turns over
-	// before the TTL reports a repeated prefix as novel, and the provider then
-	// skips writing it. Measured (BenchmarkCacheDemandMemory, settled heap):
-	// 191 B per entry, which is the 43-byte base64url HMAC key, a list.Element,
-	// a boxed cacheDemandEntry and a map slot, so a full index is about
-	// 110 MiB.
-	cacheDemandMaxEntries                 = 600_000
+	// at fleet rate, not for the holder cap. A plan records its boundaries on
+	// the 1,024-token stride and its final one (cacheDemandAnchors). Measured
+	// over the production prompt lengths with every prompt distinct
+	// (TestCacheDemandCapCoversMeasuredPlanMix): 7.07 entries per plan for
+	// gpt-oss-20b and 3.82 for gemma. The index expires on the routing TTL, so
+	// it is sized for cacheRoutingSizingTTL: 60 plans/s × 7.07 × 1,800 s =
+	// 763,000; 1,000,000 leaves 1.3× headroom. An index that turns over before
+	// the TTL reports a repeated prefix as novel, and the provider then skips
+	// writing it. Measured (BenchmarkCacheDemandMemory, settled heap): 200 B
+	// per entry, which is the 43-byte base64url HMAC key, a list.Element, a
+	// boxed cacheDemandEntry and a map slot, so a full index is about 191 MiB.
+	cacheDemandMaxEntries                 = 1_000_000
 	cacheRoutingMaxAttempts               = 50_000
 	cacheRoutingMaxReceiptTokens          = 1_000_000
 	cacheRoutingMaxStageMs                = 10 * 60 * 1000.0

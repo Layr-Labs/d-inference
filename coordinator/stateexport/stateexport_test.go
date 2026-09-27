@@ -89,11 +89,8 @@ func buildExportRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 
-	mustWrite(t, filepath.Join(root, "step-ca", "config", "ca.json"), `{"authority":{}}`)
-	mustWrite(t, filepath.Join(root, "step-ca", "secrets", "password"), "eigeninference-step-ca")
-	mustWrite(t, filepath.Join(root, "step-ca", "certs", "root_ca.crt"), "ROOT-CERT")
-	mustWrite(t, filepath.Join(root, "step-ca", "certs", "intermediate_ca.crt"), "INT-CERT")
-	mustWrite(t, filepath.Join(root, "step-ca", "certs", "intermediate_ca_key"), "INT-KEY")
+	mustWrite(t, filepath.Join(root, "coordinator", "trust-reuse-hard-untrust.v1.jsonl"), `{"revoked":true}`)
+	mustWrite(t, filepath.Join(root, "prompt-contracts", "artifact", "manifest.json"), `{}`)
 
 	mustWrite(t, filepath.Join(root, "micromdm", "push.crt"), "PUSH-CERT")
 	mustWrite(t, filepath.Join(root, "micromdm", "push.key"), "PUSH-KEY")
@@ -102,7 +99,7 @@ func buildExportRoot(t *testing.T) string {
 	makeBolt(t, filepath.Join(root, "micromdm", "micromdm.db"))
 
 	// Log files that MUST be excluded.
-	mustWrite(t, filepath.Join(root, "step-ca.log"), "step log")
+	mustWrite(t, filepath.Join(root, "coordinator.log"), "coordinator log")
 	mustWrite(t, filepath.Join(root, "micromdm", "micromdm.log"), "mdm log")
 
 	return root
@@ -135,11 +132,8 @@ func TestArchiveWritesExpectedTree(t *testing.T) {
 	files := unzipToMap(t, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
 
 	wantPresent := []string{
-		"step-ca/config/ca.json",
-		"step-ca/secrets/password",
-		"step-ca/certs/root_ca.crt",
-		"step-ca/certs/intermediate_ca.crt",
-		"step-ca/certs/intermediate_ca_key",
+		"coordinator/trust-reuse-hard-untrust.v1.jsonl",
+		"prompt-contracts/artifact/manifest.json",
 		"micromdm/push.crt",
 		"micromdm/push.key",
 		"micromdm/config",
@@ -152,7 +146,7 @@ func TestArchiveWritesExpectedTree(t *testing.T) {
 		}
 	}
 
-	wantAbsent := []string{"step-ca.log", "micromdm/micromdm.log"}
+	wantAbsent := []string{"coordinator.log", "micromdm/micromdm.log"}
 	for _, name := range wantAbsent {
 		if _, ok := files[name]; ok {
 			t.Errorf("expected %q to be EXCLUDED, but present", name)
@@ -224,16 +218,16 @@ func TestArchiveEmptyRootErrors(t *testing.T) {
 // TestArchiveMicromdmDirWithoutItsDB_DAR70 is the regression for the Codex PR
 // finding: the fail-loud "micromdm present but no DB" guard must scope to a *.db
 // INSIDE the micromdm dir, not the global snapshot count. A stray db elsewhere
-// under the root (e.g. step-ca/) must not mask a missing MicroMDM database and
+// under the root (e.g. coordinator/) must not mask a missing MicroMDM database and
 // let Stage succeed — that would ship a 200 archive without the MDM device DB.
 func TestArchiveMicromdmDirWithoutItsDB_DAR70(t *testing.T) {
 	root := t.TempDir()
 	// micromdm dir exists but has NO *.db (only a regular file).
 	mustWrite(t, filepath.Join(root, "micromdm", "config"), "CONFIG")
 	// A stray bolt db elsewhere that WILL be snapshotted (global db count > 0).
-	// mustWrite first so step-ca/ exists before bolt.Open (makeBolt doesn't mkdir).
-	mustWrite(t, filepath.Join(root, "step-ca", "ca.json"), "{}")
-	makeBolt(t, filepath.Join(root, "step-ca", "stray.db"))
+	// mustWrite first so coordinator/ exists before bolt.Open (makeBolt doesn't mkdir).
+	mustWrite(t, filepath.Join(root, "coordinator", "state.json"), "{}")
+	makeBolt(t, filepath.Join(root, "coordinator", "stray.db"))
 
 	_, err := archiveRoot(t, NewArchiver(), root, io.Discard)
 	if err == nil {
@@ -268,7 +262,7 @@ func TestArchiveSymlinkedRoot(t *testing.T) {
 // TestArchiveMultipleDBs: every *.db under the root must be snapshotted.
 func TestArchiveMultipleDBs(t *testing.T) {
 	root := buildExportRoot(t)
-	makeBolt(t, filepath.Join(root, "step-ca", "extra.db"))
+	makeBolt(t, filepath.Join(root, "coordinator", "extra.db"))
 	makeBolt(t, filepath.Join(root, "another.db"))
 
 	var buf bytes.Buffer
@@ -280,7 +274,7 @@ func TestArchiveMultipleDBs(t *testing.T) {
 		t.Fatalf("expected >1 snapshotted db, got %d", res.SnapshottedDBs)
 	}
 	files := unzipToMap(t, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
-	for _, name := range []string{"micromdm/micromdm.db", "step-ca/extra.db", "another.db"} {
+	for _, name := range []string{"micromdm/micromdm.db", "coordinator/extra.db", "another.db"} {
 		if _, ok := files[name]; !ok {
 			t.Errorf("expected %q in archive, missing", name)
 		}

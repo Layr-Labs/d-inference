@@ -34,7 +34,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 │                     warm-pool controller, two-lane provider WS writer (provider_writer.go),
 │                     routingsim/ (trace-driven routing simulation harness)
 ├── saferun/          panic-safe goroutine runners
-├── stateexport/      consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)
+├── stateexport/      consistent encrypted archive of MicroMDM and other /data state (migration)
 ├── store/            in-memory or Postgres persistence
 ├── telemetry/        telemetry event emitter (process logs + Datadog forwarding)
 ├── datadog/          Datadog APM / DogStatsD / Logs API client

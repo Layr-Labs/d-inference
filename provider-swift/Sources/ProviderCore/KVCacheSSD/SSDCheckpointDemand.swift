@@ -42,8 +42,9 @@ final class SSDCheckpointDemand: @unchecked Sendable {
 /// forwarded as `cache_repeated_prefix_tokens`. It is a token count only; it
 /// carries no key, hash, boundary or prompt-derived identifier.
 public struct SSDCheckpointDonationDemand: Sendable, Equatable {
-    /// Longest geometric block boundary another plan shared within the
-    /// coordinator's routing TTL; 0 when none did.
+    /// Deepest boundary another plan shared within the coordinator's routing
+    /// TTL, among the multiples of 1,024 tokens and final boundaries the
+    /// coordinator observes; 0 when none did.
     public let repeatedPrefixTokens: Int
 
     public init(repeatedPrefixTokens: Int) {

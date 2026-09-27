@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-26 · commit `e81dee198`
+> Last updated: 2026-09-27 · commit `329312fff`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -266,7 +266,7 @@ Evidence is removed or made unreachable on:
 - verified miss or corruption for the attempted boundaries;
 - a valid hit at a shorter boundary than one recorded for that provider: its
   deeper holders for that prompt, in that tier;
-- holder expiry or deterministic cap eviction;
+- holder expiry, or cap eviction of the holder that expires first;
 - routing transition to `off`.
 
 A capability mode change invalidates that model's existing holders and attempts even if its epoch string
@@ -308,8 +308,23 @@ write-behind can finish later. Attempt and holder maps are memory-only. Each
 exact-content/tier bucket retains at most four machines by default, across all
 provider epochs ([`EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS`](../reference/configuration.md#routing-admission-and-ttft),
 `defaultCacheRoutingMaxHolders`). Holder entries also have a bounded lifetime
-([`EIGENINFERENCE_CACHE_ROUTING_TTL`](../reference/configuration.md#routing-admission-and-ttft), `defaultCacheRoutingTTL`), and
-heap-evicted. V1 receipt
+([`EIGENINFERENCE_CACHE_ROUTING_TTL`](../reference/configuration.md#routing-admission-and-ttft), `defaultCacheRoutingTTL`)
+and a global cap of `cacheRoutingMaxEntries = 250_000`, sized for 30 holder
+creations per second over 30 minutes (54,000) with more than 4× headroom. A
+holder measures 1,020 to 1,164 B, so a full index is about 280 MiB. Holders and
+attempts are each kept in a min-heap ordered by expiry. The sweep runs at most
+every 30 seconds under the tracker lock, pops expired heads, and removes at most
+`cacheRoutingMaxSweepRemovals = 1_024` holders and 1,024 attempts per pass; a
+pass that leaves expired entries behind continues on the next tracker operation
+(`coordinator/registry/cache_sweep.go`). An expired holder that has not been
+swept is never returned (`activeHolderLocked`). At the global cap the holder
+that expires first is evicted; at the per-bucket limit the oldest update is.
+Either eviction counts as `ttl` when its victim had already expired, so
+`capacity_eviction` counts only live evidence. Disconnects and capability or
+model changes visit only that provider's holders and attempts
+(`coordinator/registry/cache_provider_index.go`). A configured TTL above 30
+minutes is accepted and logged as a warning at startup, because providers keep
+their files for at most 30 minutes and the indexes are sized for that window. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
 
@@ -554,13 +569,44 @@ identifier as a metric tag (`PendingRequest` in
 
 ### Observed demand and soft prefix affinity
 
-After a successful exact plan, `cache_demand.go` remembers keyed, tenant/build/
-contract-scoped demand at geometric block boundaries and the final boundary.
-The volatile index is capped at `cacheDemandMaxEntries = 250_000` entries with
-the routing TTL (`coordinator/registry/cache_routing.go`): the cap is sized for
-about 300 entries/s over the 10-minute TTL and is roughly 45 MB when full. It is
-separate from the 10,000-entry holder cap (`cacheRoutingMaxEntries`); sharing
-that cap previously turned the index over in about a minute. TTL expiry is
+After a successful exact plan, `cache_demand.go` remembers keyed,
+tenant/build/contract-scoped demand at the boundaries a plan observes
+(`cacheDemandAnchors`): its deepest 64 boundaries on the 1,024-token stride
+(`cacheDemandStrideTokens`, `cacheDemandMaxStrideBoundaries`), its final
+boundary wherever it falls, and, for a plan longer than that 64-stride window,
+the power-of-two multiples of 1,024 below the window (1,024, 2,048, 4,096 …, at
+most `cacheDemandMaxLadderBoundaries = 10`). The stride matches the two
+provider consumers of the reported repeat: the engine keeps the 1,024-aligned
+checkpoint at or below it (`CBv2Request.prefixCheckpointTargetTokens`, set by
+the provider bridge from `RemotePrefixCacheContext.repeatedPrefixTokens`), and
+`SSDCheckpointDemand.admitsWrite` gates the write on the repeat reaching
+`minEffectiveTokens` (1,024). Two prompts sharing 7,000 tokens report 6,144; two
+100,000-token prompts sharing an 8,192-token system prompt report 8,192 through
+the ladder. A plan reads and records at most `cacheDemandMaxPlanBoundaries = 75`
+boundaries whatever its length (65 up to 65,536 tokens, 71 under 131,072). A
+plan that extends an earlier one reports that plan's final boundary when it lies
+on the stride and the stride boundary below it otherwise; a prefix shorter than
+1,024 tokens repeats only between plans that end on the same boundary.
+
+`RepeatedPrefixTokens` is the deepest boundary another plan shared. The
+affinity key is instead the deepest shared boundary that is a power-of-two
+multiple of 1,024 tokens, falling back to the deepest shared boundary when none
+is, so a growing conversation keeps one affinity winner until its shared prefix
+doubles (`cacheDemandAffinityRung`).
+
+The volatile index is capped at `cacheDemandMaxEntries = 1_000_000` entries
+with the routing TTL (`coordinator/registry/cache_routing.go`). Distinct prompts
+at production lengths record 7.11 entries per plan for gpt-oss-20b and 3.85 for
+gemma (`TestCacheDemandCapCoversMeasuredPlanMix`), so 60 plans/s over the 30
+minutes the indexes are sized for (`cacheRoutingSizingTTL`) is about 768,000
+entries; the cap leaves 1.3× headroom and is about 191 MiB when full, at 200 B
+per entry. It is separate from the 250,000-entry holder cap
+(`cacheRoutingMaxEntries`). `/v1/cache/status` reports the index under
+`lifecycle.demand_entries` and `lifecycle.demand_cap_evictions` (gauges
+`exact_cache_demand_entries`, `exact_cache_demand_cap_evictions`; Datadog
+`exact_cache.demand_entries`, `exact_cache.demand_cap_evictions`); cap evictions
+count entries removed inside their TTL, and a growing count means repeated
+prefixes are being reported as novel. TTL expiry is
 bounded to `cacheDemandMaxExpiryPerObserve = 1_024` head entries per `observe`
 (`coordinator/registry/cache_demand.go`), so a stale index cannot stall
 planning; a still-present stale entry is validated against its own timestamp
@@ -741,7 +787,7 @@ back are operator procedures, kept in the runbook
 | Media requests never earn a discount | `HasMedia` requests are excluded by design | No participating plan is produced |
 | A capability stops participating after a hit | Prompt-proof mismatch fenced that exact capability for a bounded, escalating window (60 s, doubling per consecutive mismatch, capped at 10 min) | Request continues without preference; participation resumes when the window lifts or the capability changes (`coordinator/registry/cache_proof_fence.go`) |
 | One provider loses all holders for a model | The model root was rebuilt at load (binding drift) and its cache epoch changed, the model was unloaded (`capability_change`), or the provider predates the per-file eviction change and still rotates on eviction | Invalidates that provider/model evidence; other machines holding the same prefix remain eligible |
-| Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, TTL, cap eviction | Removal counted under one of the seven `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
+| Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, a hit below a recorded boundary, TTL, cap eviction | Removal counted under one of the eight `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
 | `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `maxPrefixCacheStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `sanitizePrefixCacheStatuses` drops the optional snapshot; routing capability is never weakened (`coordinator/registry/cache_snapshot.go`) |
 | A cached provider loses to a cold one | Residual prefill, full staging, age, queue or hardware costs outweigh its benefit; or an explicit limit clips it | Minimum adjusted service cost wins; there is no hard affinity |
 
@@ -765,7 +811,7 @@ and `coordinator/api/cache_model_telemetry.go`.
 
 | Concern | File / symbol |
 |---|---|
-| Mode, TTL, holder cap, discount bounds, removal reasons | `coordinator/registry/cache_routing.go` — `CacheRoutingOff`, `CacheRoutingOn`, `newCacheRoutingTracker`, `CacheRoutingLifecycleStatus` |
+| Mode, TTL, holder cap, discount bounds, removal reasons | `coordinator/registry/cache_routing.go` — `CacheRoutingOff`, `CacheRoutingOn`, `newCacheRoutingTracker`, `CacheRoutingLifecycleStatus`; `coordinator/registry/cache_sweep.go` — bounded expiry; `coordinator/registry/cache_provider_index.go` — per-provider holder and attempt index; `coordinator/registry/cache_routing_sizing.go` — `warnCacheRoutingTTL` |
 | Configuration and validation | `coordinator/registry/config.go` — `CacheRoutingConfig`, `Check`; `coordinator/registry/cache_routing.go` — `ConfigureCacheRouting` |
 | Optional artifact membership | `coordinator/registry/cache_artifact_allowlist.go` — exact tuple parsing, validation and immutable membership; unset unrestricted, `[]` denied |
 | Activation cohort and plan QPS | `coordinator/registry/cache_activation.go` — `cacheActivationGate`, `CacheRoutingActivationStatus` |

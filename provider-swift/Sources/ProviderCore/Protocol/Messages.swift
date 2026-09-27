@@ -1555,9 +1555,9 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var cacheScope: String?
         public var prefixCacheProtocol: Int?
         public var cacheReceiptBoundaryMode: String?
-        /// Coordinator-observed fleet-wide repeat demand: the longest geometric
-        /// block boundary another plan shared within the routing TTL, 0 when
-        /// none did. An integer count only, never a key, hash or boundary.
+        /// Coordinator-observed fleet-wide repeat demand: the deepest boundary
+        /// another plan shared within the routing TTL (multiples of 1,024
+        /// tokens and final boundaries), 0 when none did. An integer count only, never a key, hash or boundary.
         /// Nil means an older coordinator (or no granted scope); 0 is a real
         /// value, so it is NOT normalised away like `firstContentBudgetMs`.
         public var cacheRepeatedPrefixTokens: Int?

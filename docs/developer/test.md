@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-26 · commit `0fbdb5127`
+> Last updated: 2026-09-27 · commit `329312fff`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1875,7 +1875,7 @@ coordinator-provisioned artifacts. What the vectors protect is explained in
 
 The pinned inventory contains seven artifacts: the five release models and two
 additional Gemma variants. All 18 shared cases run against every artifact,
-producing 126 token-array and scoped-hash comparisons. The common corpus uses
+producing 154 token-array and scoped-hash comparisons. The common corpus uses
 histories and reasoning settings accepted by each family; family-specific argument and
 Harmony regressions remain in the provider's focused test suites.
 

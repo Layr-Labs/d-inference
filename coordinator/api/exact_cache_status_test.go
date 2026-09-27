@@ -165,6 +165,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_holder_added",
 		"exact_cache_holder_removed{reason=ttl}",
 		"exact_cache_holder_removed{reason=capability_change}",
+		"exact_cache_holder_removed{reason=shorter_hit}",
 		"exact_cache_donation_outcome{outcome=donated}",
 		"exact_cache_donation_outcome{outcome=write_queue_full}",
 		"exact_cache_fence{event=applied}",

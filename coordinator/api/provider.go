@@ -481,7 +481,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// runtime assets such as mlx.metallib under template_hashes.
 			if s.knownRuntimeManifest != nil {
 				runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
-					regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
+					regMsg.Backend, regMsg.TemplateHashes)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
 				provider.RuntimeManifestChecked = runtimeOK
@@ -492,8 +492,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.RuntimeCapabilities = nil
 					provider.FreshCodeAttested = false
 				}
-				provider.PythonHash = regMsg.PythonHash
-				provider.RuntimeHash = regMsg.RuntimeHash
 				provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
 				provider.Mu().Unlock()
 
@@ -520,8 +518,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				} else {
 					s.logger.Info("provider runtime integrity verified",
 						"provider_id", providerID,
-						"python_hash", regMsg.PythonHash,
-						"runtime_hash", regMsg.RuntimeHash,
 					)
 				}
 			} else {
@@ -1274,20 +1270,13 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		// tampering or the provider is signing a different canonical
 		// payload than this code expects.
 		statusInput := attestation.StatusCanonicalInput{
-			Nonce:     pc.nonce,
-			Timestamp: pc.timestamp,
-			// Legacy fleet compat only: old providers (< v0.6.31) sign
-			// hypervisor_active into the canonical status, so it must be
-			// carried into the reconstruction when reported. New providers
-			// omit it (nil). See attestation.StatusCanonicalInput.
-			HypervisorActive:  resp.HypervisorActive,
+			Nonce:             pc.nonce,
+			Timestamp:         pc.timestamp,
 			RDMADisabled:      resp.RDMADisabled,
 			SIPEnabled:        resp.SIPEnabled,
 			SecureBootEnabled: resp.SecureBootEnabled,
 			BinaryHash:        resp.BinaryHash,
 			ActiveModelHash:   resp.ActiveModelHash,
-			PythonHash:        resp.PythonHash,
-			RuntimeHash:       resp.RuntimeHash,
 			TemplateHashes:    resp.TemplateHashes,
 			ModelHashes:       resp.ModelHashes,
 		}
@@ -1330,8 +1319,6 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				"status_sig_len", len(resp.StatusSignature),
 				"binary_hash_len", len(resp.BinaryHash),
 				"active_model_hash_len", len(resp.ActiveModelHash),
-				"python_hash_len", len(resp.PythonHash),
-				"runtime_hash_len", len(resp.RuntimeHash),
 				"template_hashes_count", len(resp.TemplateHashes),
 				"model_hashes_count", len(resp.ModelHashes),
 			)
@@ -1770,18 +1757,15 @@ func (s *Server) applyChallengeRuntimePolicy(
 	var mismatches []protocol.RuntimeMismatch
 	if policyActive {
 		runtimeOK, mismatches = s.verifyRuntimeHashesForBackend(
-			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
+			provider.Backend, resp.TemplateHashes)
 	}
 
 	provider.Mu().Lock()
-	runtimeIdentityChanged :=
-		resp.PythonHash != provider.PythonHash ||
-			resp.RuntimeHash != provider.RuntimeHash ||
-			!maps.EqualFunc(
-				resp.TemplateHashes,
-				provider.TemplateHashes,
-				strings.EqualFold,
-			)
+	runtimeIdentityChanged := !maps.EqualFunc(
+		resp.TemplateHashes,
+		provider.TemplateHashes,
+		strings.EqualFold,
+	)
 
 	provider.RuntimeVerified = policyActive && runtimeOK
 	provider.RuntimeManifestChecked = policyActive && runtimeOK
@@ -1795,8 +1779,6 @@ func (s *Server) applyChallengeRuntimePolicy(
 	if runtimeIdentityChanged {
 		provider.FreshCodeAttested = false
 	}
-	provider.PythonHash = resp.PythonHash
-	provider.RuntimeHash = resp.RuntimeHash
 	provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
 	provider.Mu().Unlock()
 	return policyActive, runtimeOK, mismatches

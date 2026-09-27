@@ -1724,11 +1724,8 @@ threats:
           No hardware memory isolation exists for inference memory. Hypervisor
           Stage 2 page-table isolation was never implemented; the
           hypervisor_active attestation field was a hardcoded-false stub and is
-          retired from every trust decision. The coordinator still decodes it when
-          a provider sends it (AttestationResponseMessage.HypervisorActive) and
-          includes it in the status canonical only in that case
-          (attestation.go BuildStatusCanonical), so legacy signed payloads keep
-          verifying; current providers do not send it.
+          retired: the coordinator no longer decodes it or includes it in the
+          status canonical (attestation.go BuildStatusCanonical).
         status: open
     open_findings: []
     severity: medium

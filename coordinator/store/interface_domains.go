@@ -683,9 +683,6 @@ type ProviderStore interface {
 	// UpdateProviderChallenge persists challenge verification state.
 	UpdateProviderChallenge(ctx context.Context, id string, lastVerified time.Time, failedCount int) error
 
-	// UpdateProviderRuntime persists runtime integrity verification state.
-	UpdateProviderRuntime(ctx context.Context, id string, verified bool, pythonHash, runtimeHash string) error
-
 	// DeleteProvidersBySerial removes every persisted provider record sharing the
 	// given stable identity (serial, or a session id when serial is empty),
 	// scoped to ownerAccountID, plus their provider_reputation rows. usage,

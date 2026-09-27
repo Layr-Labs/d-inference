@@ -130,7 +130,7 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 	provider := reg.Register("signed-runtime", nil, regMsg)
 	srv.verifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
 	runtimeOK, mismatches := srv.verifyRuntimeHashesForBackend(
-		regMsg.Backend, "", "", regMsg.TemplateHashes)
+		regMsg.Backend, regMsg.TemplateHashes)
 	if !runtimeOK {
 		t.Fatalf("runtime manifest rejected valid metallib: %v", mismatches)
 	}

@@ -99,9 +99,7 @@ func TestChallengeResponseSuccess(t *testing.T) {
 }
 
 // TestChallengeResponseAllowsRDMAEnabled verifies RDMA-enabled providers pass
-// the challenge under the registered-buffer RDMA policy. The response also
-// carries the retired hypervisor_active field the way a legacy (< v0.6.31)
-// provider still sends it — the coordinator must tolerate it on the wire.
+// the challenge under the registered-buffer RDMA policy.
 func TestChallengeResponseAllowsRDMAEnabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
@@ -157,7 +155,6 @@ func TestChallengeResponseAllowsRDMAEnabled(t *testing.T) {
 		var challenge protocol.AttestationChallengeMessage
 		json.Unmarshal(data, &challenge)
 		rdmaDisabled := false
-		hypervisorActive := false // legacy (< v0.6.31) providers still send this retired field
 		sipEnabled := true
 		secureBootEnabled := true
 		response := protocol.AttestationResponseMessage{
@@ -166,7 +163,6 @@ func TestChallengeResponseAllowsRDMAEnabled(t *testing.T) {
 			Signature:         testChallengeSignature(challenge.Nonce, challenge.Timestamp, pubKey),
 			PublicKey:         pubKey,
 			RDMADisabled:      &rdmaDisabled,
-			HypervisorActive:  &hypervisorActive,
 			SIPEnabled:        &sipEnabled,
 			SecureBootEnabled: &secureBootEnabled,
 		}

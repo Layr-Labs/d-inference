@@ -261,27 +261,18 @@ type RegisterMessage struct {
 	APNsEnvironment string `json:"apns_environment,omitempty"`  // "production" | "development" (selects the APNs host)
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
-	PythonHash          string               `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (MLX-Swift)
-	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash (incl. mlx_metallib)
 	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
 }
 
 // PrivacyCapabilities describes the provider's privacy invariants at registration time.
-//
-// Note: legacy providers (< v0.6.31) also send a `hypervisor_active` key here.
-// The concept is retired (Darkbloom never uses hypervisors — it was a
-// hardcoded-false stub) and is intentionally not modeled; encoding/json drops
-// unknown fields, so old providers remain wire-compatible.
 type PrivacyCapabilities struct {
-	TextBackendInprocess    bool `json:"text_backend_inprocess"`
-	TextProxyDisabled       bool `json:"text_proxy_disabled"`
-	PythonRuntimeLocked     bool `json:"python_runtime_locked"`
-	DangerousModulesBlocked bool `json:"dangerous_modules_blocked"`
-	SIPEnabled              bool `json:"sip_enabled"`
-	AntiDebugEnabled        bool `json:"anti_debug_enabled"`
-	CoreDumpsDisabled       bool `json:"core_dumps_disabled"`
-	EnvScrubbed             bool `json:"env_scrubbed"`
+	TextBackendInprocess bool `json:"text_backend_inprocess"`
+	TextProxyDisabled    bool `json:"text_proxy_disabled"`
+	SIPEnabled           bool `json:"sip_enabled"`
+	AntiDebugEnabled     bool `json:"anti_debug_enabled"`
+	CoreDumpsDisabled    bool `json:"core_dumps_disabled"`
+	EnvScrubbed          bool `json:"env_scrubbed"`
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
@@ -927,17 +918,11 @@ type CodeAttestationResumeChallenge struct {
 // which case the status fields are treated as advisory (not a basis for
 // trust upgrades).
 type AttestationResponseMessage struct {
-	Type            string `json:"type"`
-	Nonce           string `json:"nonce"`                      // echoed back from the challenge
-	Signature       string `json:"signature"`                  // base64-encoded signature of nonce+timestamp
-	StatusSignature string `json:"status_signature,omitempty"` // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
-	PublicKey       string `json:"public_key"`                 // base64-encoded public key
-	// HypervisorActive — legacy fleet compat only: old providers (< v0.6.31)
-	// sign hypervisor_active into the canonical status (see
-	// attestation.BuildStatusCanonical), so this field must keep decoding for
-	// their StatusSignature to verify. The concept is retired — new providers
-	// omit it. Remove once the fleet floor passes v0.6.31.
-	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`
+	Type              string `json:"type"`
+	Nonce             string `json:"nonce"`                         // echoed back from the challenge
+	Signature         string `json:"signature"`                     // base64-encoded signature of nonce+timestamp
+	StatusSignature   string `json:"status_signature,omitempty"`    // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
+	PublicKey         string `json:"public_key"`                    // base64-encoded public key
 	RDMADisabled      *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = disabled, false = enabled)
 	SIPEnabled        *bool  `json:"sip_enabled,omitempty"`         // fresh SIP status at challenge time
 	SecureBootEnabled *bool  `json:"secure_boot_enabled,omitempty"` // fresh Secure Boot status
@@ -945,9 +930,7 @@ type AttestationResponseMessage struct {
 	ActiveModelHash   string `json:"active_model_hash,omitempty"`   // SHA-256 weight fingerprint of loaded model
 
 	// Runtime integrity hashes — fresh values reported at challenge time.
-	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (MLX-Swift)
-	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash (incl. mlx_metallib)
 	ModelHashes    map[string]string `json:"model_hashes,omitempty"`    // model_id -> SHA-256 weight hash (all active models)
 }
 

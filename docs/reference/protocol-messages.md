@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-27 · commit `e8d00933d`
+> Last updated: 2026-09-27 · commit `3ca0bffd8`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -162,9 +162,8 @@ connection, first.
 | `tool_constraint_models` | `[]string` | `[String]?` | opt | concrete model IDs the provider enforces |
 | `apns_device_token` | `string` | `String?` | opt | hex APNs token for the `E_K(nonce)` code-identity push |
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
-| `python_hash`, `runtime_hash` | `string` | `String?` | opt | SHA-256 |
-| `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256; Swift omits when empty |
-| `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities); providers `< v0.6.31` also send `hypervisor_active` inside it, which Go drops |
+| `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
+| `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities) |
 | `wallet_address` | — | `String?` | Swift only | legacy key; Go has no field and drops it |
 
 A verified registration whose durable state cannot be recovered after bounded
@@ -221,9 +220,8 @@ existing catalog/measurement policy. See [offloaded-weight admission](../archite
 
 #### `privacy_capabilities`
 
-Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Eight required
-booleans: `text_backend_inprocess`, `text_proxy_disabled`,
-`python_runtime_locked`, `dangerous_modules_blocked`, `sip_enabled`,
+Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Six required
+booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
 `anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`.
 
 #### Prefix-cache objects
@@ -522,9 +520,8 @@ Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
 | `signature` | `string` | `String` | req | base64 SE signature over nonce + timestamp (liveness) |
 | `status_signature` | `string` | `String?` | opt | v0.3.11+; signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, `coordinator/attestation/`); absent ⇒ status fields are advisory only |
 | `public_key` | `string` | `String` | req | base64 |
-| `hypervisor_active` | `*bool` | — | legacy | `< v0.6.31` providers only; Swift omits it; Go keeps decoding it so their status signature verifies |
 | `rdma_disabled`, `sip_enabled`, `secure_boot_enabled` | `*bool` | `Bool?` | opt | fresh posture at challenge time |
-| `binary_hash`, `active_model_hash`, `python_hash`, `runtime_hash` | `string` | `String?` | opt | SHA-256 |
+| `binary_hash`, `active_model_hash` | `string` | `String?` | opt | SHA-256 |
 | `template_hashes`, `model_hashes` | `map[string]string` | `[String: String]` | opt | Swift omits when empty |
 
 ### `code_attestation_response`

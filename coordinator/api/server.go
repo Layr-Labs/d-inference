@@ -177,8 +177,6 @@ type approvedReleasePolicy struct {
 	Backend        string
 	BinaryHash     string
 	MetallibHash   string
-	PythonHash     string
-	RuntimeHash    string
 	TemplateHashes map[string]string
 }
 
@@ -2046,14 +2044,6 @@ func (s *Server) SyncRuntimeManifest() error {
 		if !r.Active {
 			continue
 		}
-		if r.PythonHash != "" {
-			manifest.PythonHashes[r.PythonHash] = true
-			hasAny = true
-		}
-		if r.RuntimeHash != "" {
-			manifest.RuntimeHashes[r.RuntimeHash] = true
-			hasAny = true
-		}
 		if manifest.addTemplateHashPairs(r.TemplateHashes) {
 			hasAny = true
 		}
@@ -2074,8 +2064,6 @@ func (s *Server) SyncRuntimeManifest() error {
 	if hasAny {
 		s.knownRuntimeManifest = manifest
 		s.logger.Info("runtime manifest synced from releases",
-			"python_hashes", len(manifest.PythonHashes),
-			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),
 			"template_hash_sets", manifest.templateHashSetSizes(),
 		)
@@ -2110,14 +2098,6 @@ func (s *Server) SyncRuntimeManifest() error {
 func (s *Server) convergeRuntimeManifestWithCommittedRelease(release *store.Release, cause error) {
 	merged := s.knownRuntimeManifest.clone()
 	contributed := false
-	if release.PythonHash != "" {
-		merged.PythonHashes[release.PythonHash] = true
-		contributed = true
-	}
-	if release.RuntimeHash != "" {
-		merged.RuntimeHashes[release.RuntimeHash] = true
-		contributed = true
-	}
 	if merged.addTemplateHashPairs(release.TemplateHashes) {
 		contributed = true
 	}
@@ -2160,14 +2140,6 @@ func (s *Server) convergeRuntimeManifestWithCommittedDeactivation(version, platf
 	if snapshot := s.releaseTrustPolicy.Load(); snapshot != nil {
 		for _, policies := range snapshot.ByBinaryHash {
 			for _, policy := range policies {
-				if policy.PythonHash != "" {
-					merged.PythonHashes[policy.PythonHash] = true
-					hasAny = true
-				}
-				if policy.RuntimeHash != "" {
-					merged.RuntimeHashes[policy.RuntimeHash] = true
-					hasAny = true
-				}
 				for name, hash := range policy.TemplateHashes {
 					if merged.AddTemplateHash(name, hash) {
 						hasAny = true
@@ -2212,8 +2184,6 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		}
 
 		provider.Mu().Lock()
-		pythonHash := provider.PythonHash
-		runtimeHash := provider.RuntimeHash
 		templateHashes := registry.CloneStringMap(provider.TemplateHashes)
 		version := provider.Version
 		backend := provider.Backend
@@ -2234,12 +2204,7 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		} else if s.belowMinProviderVersion(version) {
 			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", providerVersionMetricTag(version)})
 		} else {
-			runtimeOK, _ := s.verifyRuntimeHashesForBackend(
-				backend,
-				pythonHash,
-				runtimeHash,
-				templateHashes,
-			)
+			runtimeOK, _ := s.verifyRuntimeHashesForBackend(backend, templateHashes)
 			provider.RuntimeVerified = runtimeOK
 			provider.RuntimeManifestChecked = runtimeOK
 			provider.MetallibVerified = runtimeOK &&
@@ -2281,16 +2246,12 @@ func runtimeManifestApprovesMetallib(
 // previous release the moment the next one was registered (2026-09-03).
 // Deactivating a release is the mechanism that removes its values.
 type RuntimeManifest struct {
-	PythonHashes   map[string]bool            `json:"python_hashes"`   // set of accepted Python runtime hashes
-	RuntimeHashes  map[string]bool            `json:"runtime_hashes"`  // set of accepted inference runtime hashes
 	TemplateHashes map[string]map[string]bool `json:"template_hashes"` // template_name -> set of accepted hashes
 }
 
 // NewRuntimeManifest returns an empty manifest with every set allocated.
 func NewRuntimeManifest() *RuntimeManifest {
 	return &RuntimeManifest{
-		PythonHashes:   make(map[string]bool),
-		RuntimeHashes:  make(map[string]bool),
 		TemplateHashes: make(map[string]map[string]bool),
 	}
 }
@@ -2336,12 +2297,6 @@ func (m *RuntimeManifest) clone() *RuntimeManifest {
 	out := NewRuntimeManifest()
 	if m == nil {
 		return out
-	}
-	for hash := range m.PythonHashes {
-		out.PythonHashes[hash] = true
-	}
-	for hash := range m.RuntimeHashes {
-		out.RuntimeHashes[hash] = true
 	}
 	for name, accepted := range m.TemplateHashes {
 		for hash := range accepted {
@@ -2425,13 +2380,13 @@ func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 	s.knownRuntimeManifest = m
 }
 
-func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
+func (s *Server) verifyRuntimeHashesForBackend(backend string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
 	if s.knownRuntimeManifest == nil {
 		return true, nil
 	}
 
-	// Only mlx-swift backends are supported. Non-Swift backends (legacy
-	// Python/inprocess-mlx) are deprecated and immediately rejected.
+	// Only the Swift (mlx-swift) backend is supported; any other backend is
+	// rejected outright.
 	if !registry.BackendUsesSwiftRuntime(backend) {
 		return false, []protocol.RuntimeMismatch{{
 			Component: "backend",
@@ -2451,39 +2406,15 @@ func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash 
 		scopedReportedTemplates["mlx_metallib"] = got
 	}
 
-	return s.verifyRuntimeHashesAgainstManifest(scoped, pythonHash, runtimeHash, scopedReportedTemplates)
+	return s.verifyRuntimeHashesAgainstManifest(scoped, scopedReportedTemplates)
 }
 
-func (s *Server) verifyRuntimeHashesAgainstManifest(manifest *RuntimeManifest, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
+func (s *Server) verifyRuntimeHashesAgainstManifest(manifest *RuntimeManifest, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
 	if manifest == nil {
 		return true, nil
 	}
 
 	var mismatches []protocol.RuntimeMismatch
-
-	requireOneOf := func(component, got string, accepted map[string]bool) {
-		if len(accepted) == 0 {
-			return
-		}
-		if got == "" {
-			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: component,
-				Expected:  "reported hash matching one of known-good values",
-				Got:       "(missing)",
-			})
-			return
-		}
-		if !accepted[got] {
-			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: component,
-				Expected:  "one of known-good hashes",
-				Got:       got,
-			})
-		}
-	}
-
-	requireOneOf("python", pythonHash, manifest.PythonHashes)
-	requireOneOf("runtime", runtimeHash, manifest.RuntimeHashes)
 
 	if len(manifest.TemplateHashes) > 0 {
 		// Each template name maps to the SET of hashes accepted across every
@@ -2544,8 +2475,6 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 		}
 		resp = map[string]any{
 			"configured":      true,
-			"python_hashes":   s.knownRuntimeManifest.PythonHashes,
-			"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
 			"template_hashes": templates,
 		}
 	}

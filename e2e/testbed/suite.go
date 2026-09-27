@@ -557,8 +557,6 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 		}
 		p.PrivacyCapabilities.TextBackendInprocess = true
 		p.PrivacyCapabilities.TextProxyDisabled = true
-		p.PrivacyCapabilities.PythonRuntimeLocked = true
-		p.PrivacyCapabilities.DangerousModulesBlocked = true
 		p.PrivacyCapabilities.AntiDebugEnabled = true
 		p.PrivacyCapabilities.CoreDumpsDisabled = true
 		p.PrivacyCapabilities.EnvScrubbed = true

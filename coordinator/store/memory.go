@@ -3261,20 +3261,6 @@ func (s *MemoryStore) UpdateProviderChallenge(_ context.Context, id string, last
 	return nil
 }
 
-func (s *MemoryStore) UpdateProviderRuntime(_ context.Context, id string, verified bool, pythonHash, runtimeHash string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	p, ok := s.providerRecords[id]
-	if !ok {
-		return fmt.Errorf("provider %q not found", id)
-	}
-	p.RuntimeVerified = verified
-	p.PythonHash = pythonHash
-	p.RuntimeHash = runtimeHash
-	return nil
-}
-
 // --- Provider Reputation Persistence ---
 
 func (s *MemoryStore) UpsertReputation(_ context.Context, providerID string, rep ReputationRecord) error {

@@ -45,29 +45,23 @@ import (
 // and Swift's JSONEncoder with .sortedKeys uses alphabetical order.
 // Keeping them aligned ensures both produce identical JSON.
 type AttestationBlob struct {
-	AuthenticatedRootEnabled bool   `json:"authenticatedRootEnabled"`
-	BinaryHash               string `json:"binaryHash,omitempty"`
-	ChipFamily               string `json:"chipFamily,omitempty"`
-	ChipName                 string `json:"chipName"`
-	EncryptionPublicKey      string `json:"encryptionPublicKey,omitempty"`
-	HardwareModel            string `json:"hardwareModel"`
-	// HypervisorActive — legacy fleet compat only: old providers (< v0.6.31)
-	// include this hardcoded-false field in their SIGNED blob JSON, so it must
-	// keep decoding (non-nil) for marshalSortedJSON to reconstruct the exact
-	// signed bytes. New providers omit it (nil). Remove once the fleet floor
-	// passes v0.6.31.
-	HypervisorActive       *bool    `json:"hypervisorActive,omitempty"`
-	MetallibHash           string   `json:"metallibHash,omitempty"`
-	OSVersion              string   `json:"osVersion"`
-	PublicKey              string   `json:"publicKey"`
-	RDMADisabled           bool     `json:"rdmaDisabled"`
-	RuntimeCapabilities    []string `json:"runtimeCapabilities,omitempty"`
-	SecureBootEnabled      bool     `json:"secureBootEnabled"`
-	SecureEnclaveAvailable bool     `json:"secureEnclaveAvailable"`
-	SerialNumber           string   `json:"serialNumber,omitempty"`
-	SIPEnabled             bool     `json:"sipEnabled"`
-	SystemVolumeHash       string   `json:"systemVolumeHash,omitempty"`
-	Timestamp              string   `json:"timestamp"`
+	AuthenticatedRootEnabled bool     `json:"authenticatedRootEnabled"`
+	BinaryHash               string   `json:"binaryHash,omitempty"`
+	ChipFamily               string   `json:"chipFamily,omitempty"`
+	ChipName                 string   `json:"chipName"`
+	EncryptionPublicKey      string   `json:"encryptionPublicKey,omitempty"`
+	HardwareModel            string   `json:"hardwareModel"`
+	MetallibHash             string   `json:"metallibHash,omitempty"`
+	OSVersion                string   `json:"osVersion"`
+	PublicKey                string   `json:"publicKey"`
+	RDMADisabled             bool     `json:"rdmaDisabled"`
+	RuntimeCapabilities      []string `json:"runtimeCapabilities,omitempty"`
+	SecureBootEnabled        bool     `json:"secureBootEnabled"`
+	SecureEnclaveAvailable   bool     `json:"secureEnclaveAvailable"`
+	SerialNumber             string   `json:"serialNumber,omitempty"`
+	SIPEnabled               bool     `json:"sipEnabled"`
+	SystemVolumeHash         string   `json:"systemVolumeHash,omitempty"`
+	Timestamp                string   `json:"timestamp"`
 }
 
 // SignedAttestation is a signed attestation blob with a base64-encoded
@@ -338,12 +332,6 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 	if blob.MetallibHash != "" {
 		m["metallibHash"] = blob.MetallibHash
 	}
-	// Legacy fleet compat (< v0.6.31): old providers include the retired
-	// hypervisorActive field in the signed blob — reproduce it EXACTLY when
-	// present so their signatures keep verifying; new providers omit it.
-	if blob.HypervisorActive != nil {
-		m["hypervisorActive"] = *blob.HypervisorActive
-	}
 	if blob.SerialNumber != "" {
 		m["serialNumber"] = blob.SerialNumber
 	}
@@ -371,20 +359,13 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 // strip a sip_enabled=true claim and have it look like the provider
 // just didn't report it. Both sides must follow the same convention.
 type StatusCanonicalInput struct {
-	Nonce     string
-	Timestamp string
-	// HypervisorActive — legacy fleet compat only: old providers (< v0.6.31)
-	// sign hypervisor_active into the canonical status. The concept is
-	// retired — new providers omit it. Remove once the fleet floor passes
-	// v0.6.31.
-	HypervisorActive  *bool
+	Nonce             string
+	Timestamp         string
 	RDMADisabled      *bool
 	SIPEnabled        *bool
 	SecureBootEnabled *bool
 	BinaryHash        string
 	ActiveModelHash   string
-	PythonHash        string
-	RuntimeHash       string
 	TemplateHashes    map[string]string
 	GrpcBinaryHash    string
 	ModelHashes       map[string]string
@@ -414,12 +395,6 @@ func BuildStatusCanonical(in StatusCanonicalInput) ([]byte, error) {
 		"nonce":     in.Nonce,
 		"timestamp": in.Timestamp,
 	}
-	// Legacy fleet compat only: old providers (< v0.6.31) sign
-	// hypervisor_active into the canonical status. The concept is retired —
-	// new providers omit it. Remove once the fleet floor passes v0.6.31.
-	if in.HypervisorActive != nil {
-		m["hypervisor_active"] = *in.HypervisorActive
-	}
 	if in.RDMADisabled != nil {
 		m["rdma_disabled"] = *in.RDMADisabled
 	}
@@ -434,12 +409,6 @@ func BuildStatusCanonical(in StatusCanonicalInput) ([]byte, error) {
 	}
 	if in.ActiveModelHash != "" {
 		m["active_model_hash"] = in.ActiveModelHash
-	}
-	if in.PythonHash != "" {
-		m["python_hash"] = in.PythonHash
-	}
-	if in.RuntimeHash != "" {
-		m["runtime_hash"] = in.RuntimeHash
 	}
 	if len(in.TemplateHashes) > 0 {
 		m["template_hashes"] = in.TemplateHashes
@@ -507,7 +476,7 @@ var ErrStatusSignatureMissing = fmt.Errorf("status_signature missing — status 
 // Security note (signature scope, 2026-04-16):
 // The signed payload currently covers ONLY (nonce + timestamp). The status
 // fields the provider reports in AttestationResponseMessage — SIPEnabled,
-// SecureBootEnabled, RDMADisabled, BinaryHash, PythonHash, RuntimeHash,
+// SecureBootEnabled, RDMADisabled, BinaryHash,
 // TemplateHashes, ActiveModelHash — are NOT included in the signature. A
 // provider with a valid SE key (e.g. a compromised device) can therefore
 // echo a correct signature while lying about its current security posture

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-27 · commit `f99e56eb0`
+> Last updated: 2026-09-27 · commit `d621f9772`
 
 The complete public HTTP surface of the coordinator, derived from the 117 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -13,6 +13,19 @@ provider downloads; the admin registration accepts the same object. See the
 Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
+
+## Provider-bound caller fields
+
+The coordinator accepts top-level `user` and generic `metadata` on the four
+inference endpoints but removes them from provider-bound bodies before encryption.
+The shared `parseInferencePrelude` calls `stripProviderCallerIdentity`
+(`coordinator/api/inference_preprocess.go`, `coordinator/api/provider_body_privacy.go`),
+so direct dispatch, queueing, retries and endpoint/model rewrites use the same
+minimized body. Nested messages, tool arguments, schema properties and media are
+unchanged. `metadata_details` remains the separate coordinator response-metadata
+opt-in. Authentication, billing ownership and cache scopes remain context-derived.
+This is field minimization, not anonymity; see the
+[privacy boundary](../architecture/security/encryption.md#provider-bound-field-minimization).
 
 ## Graceful provider lifecycle
 

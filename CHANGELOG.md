@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Remove caller-supplied top-level `user` and generic `metadata` from provider-bound inference bodies across direct, queued and retried requests. Preserve nested content, inference controls, coordinator response metadata, authenticated account ownership and cache controls; this does not anonymize prompt content.
+
 ## Release candidate v0.9.10 — live switching and App Attest recovery (not shipped; 2026-09-27)
 
 - Align `ProviderCore.version` and the coordinator display fallback at 0.9.10. Upgrade the coordinator before publishing the separately qualified signed provider; the source bump does not advance the registered latest release.

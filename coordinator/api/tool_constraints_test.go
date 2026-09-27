@@ -49,7 +49,7 @@ func TestInferencePreludeNormalizesSingleStopForSwiftProtocol(t *testing.T) {
 		http.MethodPost,
 		"/v1/chat/completions",
 		strings.NewReader(
-			`{"model":"m","messages":[{"role":"user","content":"x"}],"stop":"END","metadata":{"exact":9007199254740993,"decimal":0.10000000000000001}}`))
+			`{"model":"m","messages":[{"role":"user","content":"x"}],"stop":"END","extension":{"exact":9007199254740993,"decimal":0.10000000000000001},"metadata":{"tag":"synthetic-caller"}}`))
 	response := httptest.NewRecorder()
 	prelude, ok := srv.parseInferencePrelude(response, request)
 	if !ok {
@@ -67,6 +67,9 @@ func TestInferencePreludeNormalizesSingleStopForSwiftProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	stops, ok := forwarded["stop"].([]any)
+	if _, exists := forwarded["metadata"]; exists {
+		t.Error("caller metadata remained in the provider body")
+	}
 	if !ok || len(stops) != 1 || stops[0] != "END" {
 		t.Fatalf("forwarded stop = %#v", forwarded["stop"])
 	}

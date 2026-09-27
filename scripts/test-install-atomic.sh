@@ -337,6 +337,34 @@ printf 'diverged\n' \
 DIVERGED="$ROOT/diverged.tar.gz"
 tar czf "$DIVERGED" -C "$DIVERGED_ROOT" .
 
+# A flat-only bundle (the pre-.app release layout): the bin/ verifier copies
+# survive, so their hash checks pass and the missing Darkbloom.app is the only
+# reason left to refuse it.
+FLAT_ONLY_ROOT="$ROOT/flat-only"
+mkdir -p "$FLAT_ONLY_ROOT"
+tar xzf "$VALID" -C "$FLAT_ONLY_ROOT"
+rm -rf "$FLAT_ONLY_ROOT/Darkbloom.app"
+FLAT_ONLY="$ROOT/flat-only.tar.gz"
+tar czf "$FLAT_ONLY" -C "$FLAT_ONLY_ROOT" .
+
+assert_flat_only_rejected() {
+    local install_dir=$1
+    local log="$ROOT/flat-only-$RANDOM.log"
+    local status=0
+    run_install "$FLAT_ONLY" "$install_dir" >"$log" 2>&1 || status=$?
+    if [ "$status" -eq 0 ]; then
+        echo "flat-only bundle (no Darkbloom.app) unexpectedly installed" >&2
+        exit 1
+    fi
+    grep -q 'Release bundle has no Darkbloom.app; flat-only bundles are no longer installable.' "$log" || {
+        echo "flat-only bundle was refused for the wrong reason:" >&2
+        cat "$log" >&2
+        exit 1
+    }
+    test -f "$install_dir/Darkbloom.app/sentinel"
+    test ! -e "$install_dir/bin/darkbloom"
+}
+
 INSTALL="$ROOT/install"
 mkdir -p "$INSTALL/Darkbloom.app"
 printf 'old\n' > "$INSTALL/Darkbloom.app/sentinel"
@@ -358,6 +386,7 @@ if run_install "$DIVERGED" "$INSTALL"; then
     exit 1
 fi
 test -f "$INSTALL/Darkbloom.app/sentinel"
+assert_flat_only_rejected "$INSTALL"
 
 run_install "$VALID" "$INSTALL"
 test ! -f "$INSTALL/Darkbloom.app/sentinel"
@@ -418,6 +447,7 @@ if run_install "$DIVERGED" "$COORD_INSTALL"; then
     exit 1
 fi
 test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
+assert_flat_only_rejected "$COORD_INSTALL"
 run_install "$VALID" "$COORD_INSTALL"
 test ! -f "$COORD_INSTALL/Darkbloom.app/sentinel"
 test -x "$COORD_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"

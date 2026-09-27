@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-26 · commit `c60610bb1`
+> Last updated: 2026-09-26 · commit `279224c5d`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -276,9 +276,15 @@ measurement ([source and test evidence](../reports/evidence/2026-09-05-ssd-check
 Holder removals are counted under one of seven reasons
 (`coordinator/registry/cache_routing.go`): `ttl`, `disconnect`,
 `epoch_change`, `capability_change`, `proof_mismatch`, `miss_invalidation`,
-`capacity_eviction`. SSD capacity eviction rotates its durable epoch. Resident LRU eviction does not
-rotate the whole slot epoch: its remaining checkpoints stay useful, and stale
-advisory evidence expires or is removed by the next exact miss. Slot unload,
+`capacity_eviction`. Neither tier rotates its epoch on eviction. SSD budget
+eviction, TTL expiry and corrupt-file removal are per-file: the provider keeps
+its epoch and capability, its remaining checkpoints stay routable, and a stale
+holder is removed by the next exact miss on that provider (`miss_invalidation`)
+or by TTL. The SSD epoch changes only when the provider rebuilds the whole
+model root at initialization (weight hash, prompt contract, block-hash version,
+block size, layout epoch or key fingerprint drift), so `epoch_change` means a
+whole-root rebuild, not capacity pressure. Providers older than this change
+still rotate on eviction. Slot unload,
 replacement, shutdown, and connection changes invalidate resident evidence.
 There is no targeted resident-eviction wire message in this extension.
 
@@ -719,7 +725,7 @@ back are operator procedures, kept in the runbook
 | Requests dispatch but no plan participates (`plan_failed`, `plan_empty` counters climb) | Sidecar timeout, crash, malformed output, unavailable artifacts or dynamic-time templates | Non-participating plan; cold routing; sidecar supervision in [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) |
 | Media requests never earn a discount | `HasMedia` requests are excluded by design | No participating plan is produced |
 | A capability stops participating after a hit | Prompt-proof mismatch fenced that exact capability for a bounded, escalating window (60 s, doubling per consecutive mismatch, capped at 10 min) | Request continues without preference; participation resumes when the window lifts or the capability changes (`coordinator/registry/cache_proof_fence.go`) |
-| One provider loses all holders for a model | Its SSD capacity eviction rotated the model's cache epoch | Invalidates that provider/model evidence; other machines holding the same prefix remain eligible |
+| One provider loses all holders for a model | The model root was rebuilt at load (binding drift) and its cache epoch changed, the model was unloaded (`capability_change`), or the provider predates the per-file eviction change and still rotates on eviction | Invalidates that provider/model evidence; other machines holding the same prefix remain eligible |
 | Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, TTL, cap eviction | Removal counted under one of the seven `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
 | `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `maxPrefixCacheStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `sanitizePrefixCacheStatuses` drops the optional snapshot; routing capability is never weakened (`coordinator/registry/cache_snapshot.go`) |
 | A cached provider loses to a cold one | Residual prefill, full staging, age, queue or hardware costs outweigh its benefit; or an explicit limit clips it | Minimum adjusted service cost wins; there is no hard affinity |

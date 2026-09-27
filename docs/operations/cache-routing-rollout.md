@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-26 · commit `937a75d1a`
+> Last updated: 2026-09-26 · commit `279224c5d`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -266,16 +266,25 @@ cap, one bound per restart, and observe between steps.
    quarter. If `.sidecar.overloads` climbs instead, return to step 1 with a
    higher concurrency before retrying.
 
-3. **Holder lifetime.** With eviction no longer rotating epochs and the
-   provider SSD TTL raised, the coordinator TTL can follow:
+3. **Holder lifetime.** Providers keep a cache file for 30 minutes after its
+   last use (`SSDPrefixCachePolicy.defaultTTLSeconds = 1800`, the limit signed
+   off in `docs/threat-model.yaml` T-041) and no longer rotate their epoch on
+   eviction. Keep the coordinator's holder TTL just inside that window so a
+   holder never outlives its file:
 
    ```bash
-   sudo sed -i -E 's/^EIGENINFERENCE_CACHE_ROUTING_TTL=.*/EIGENINFERENCE_CACHE_ROUTING_TTL=30m/' /etc/d-inference/env
+   sudo sed -i -E 's/^EIGENINFERENCE_CACHE_ROUTING_TTL=.*/EIGENINFERENCE_CACHE_ROUTING_TTL=25m/' /etc/d-inference/env
    ```
 
-   Restart. `.holders` should rise well above the previous ~800 and
-   `holder_removed.epoch_change` should stay near zero; `holder_removed.ttl`
-   becomes the dominant removal reason, which is the healthy state.
+   Restart. Do this only after the fleet's majority runs the provider release
+   that carries the 30-minute TTL; against older providers (15 minutes) leave
+   the holder TTL at `10m`. The holder and observed-demand indexes are sized
+   for this window (`cacheRoutingMaxEntries`, `cacheDemandMaxEntries`,
+   `coordinator/registry/cache_routing.go`). `.holders` should rise well above
+   the previous ~1,000, `holder_removed.epoch_change` should fall toward zero
+   as providers upgrade, `holder_removed.capacity_eviction` should stay flat,
+   and `holder_removed.ttl` becomes the dominant removal reason, which is the
+   healthy state.
 
 4. **Append the two tuples.** Both were derived on 2026-09-26 from the active
    registry versions (`nvidia-nemotron-3.5-lightning` `2026-09-09-r1`,

@@ -63,7 +63,7 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		limit = l
 	}
 
-	updatedAt := time.Now().UTC()
+	var updatedAt time.Time
 	var rows []store.LeaderboardRow
 	archived := s.analyticsSnapshotPath != ""
 	if archived {

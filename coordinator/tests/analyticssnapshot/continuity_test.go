@@ -68,3 +68,29 @@ func TestNewGenerationMustAdvanceSourceCutoffs(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerationReuseCannotRewriteAnEarlierIdentity(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 30, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "snapshot.json")
+	var cache Cache
+	for i, generation := range []string{"first", "second", "first"} {
+		s := fixture(now)
+		s.Generation = generation
+		s.AsOf = s.AsOf.Add(time.Duration(i) * time.Second)
+		s.SourceCompleteThrough = s.AsOf
+		if err := os.WriteFile(path, data(t, s), 0600); err != nil {
+			t.Fatal(err)
+		}
+		err := cache.Load(path, now)
+		if i < 2 && err != nil {
+			t.Fatal(err)
+		}
+		if i == 2 && err == nil {
+			t.Fatal("accepted rewritten earlier generation with advanced cutoffs")
+		}
+	}
+	got, ok := cache.Get(now)
+	if !ok || got.Generation != "second" || len(cache.checksums) != 2 {
+		t.Fatal("reused generation altered accepted history")
+	}
+}

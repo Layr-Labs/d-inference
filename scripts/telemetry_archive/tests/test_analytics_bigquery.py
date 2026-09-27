@@ -1,5 +1,6 @@
 """Optional SELECT-only BigQuery semantic tests; no datasets or tables are created."""
 
+import json
 import os
 from decimal import Decimal
 
@@ -128,3 +129,59 @@ def test_empty_window_is_distinct_from_query_failure(bq):
     assert run(bq, "leaderboard", as_of="2026-01-01T00:00:00Z") == []
     (row,) = run(bq, "network-totals", as_of="2026-01-01T00:00:00Z")
     assert set(row.values()) == {0}
+
+
+def test_reader_groups_duplicate_file_coverage_before_returning_rows(bq):
+    from telemetry_archive.publish import reader_sql
+
+    version = "a" * 16
+    sql = reader_sql("archive-test", "telemetry_history", "request_outcomes", version)
+    sql = sql.replace(f"`archive-test.telemetry_history.request_outcomes_files_{version}`", "raw")
+    sql = sql.replace(f"`archive-test.telemetry_history.catalog_{version}`", "coverage")
+    fixture = """WITH raw AS (
+      SELECT 'one' AS source_id, 'hash' AS row_sha256, '{}' AS row_json,
+        TIMESTAMP('2026-09-01') AS source_time, 'gs://test/data' AS _FILE_NAME
+    ), coverage AS (
+      SELECT 'request_outcomes' AS table_name, 'gs://test/data' AS source_uri,
+        TIMESTAMP('2026-09-02') AS observed_at
+      UNION ALL SELECT 'request_outcomes', 'gs://test/data', TIMESTAMP('2026-09-03')
+      UNION ALL SELECT 'inference_routes', 'gs://test/data', TIMESTAMP('2026-09-04')
+    ) """
+    config = bigquery.QueryJobConfig(maximum_bytes_billed=10 * 1024**2)
+    rows = list(bq.query(fixture + sql, job_config=config).result(timeout=120))
+    assert len(rows) == 1 and rows[0]["source_id"] == "one"
+    assert rows[0]["archive_observed_at"] == utc("2026-09-03T00:00:00Z")
+
+
+@pytest.mark.parametrize("amount", [-(2**63), 2**63 - 1])
+def test_reader_preserves_int64_extremes_from_row_json(bq, amount):
+    from telemetry_archive.publish import reader_sql
+
+    version = "a" * 16
+    sql = reader_sql("archive-test", "accounting_history", "provider_earnings", version)
+    sql = sql.replace(f"`archive-test.accounting_history.provider_earnings_files_{version}`", "raw")
+    sql = sql.replace(f"`archive-test.accounting_history.catalog_{version}`", "coverage")
+    fixture = """WITH raw AS (
+      SELECT '1' AS source_id, 'hash' AS row_sha256, @payload AS row_json,
+        TIMESTAMP('2026-09-01') AS source_time, 'gs://test/data' AS _FILE_NAME
+    ), coverage AS (
+      SELECT 'provider_earnings' AS table_name, 'gs://test/data' AS source_uri,
+        TIMESTAMP('2026-09-02') AS observed_at
+    ) """
+    payload = json.dumps(
+        {
+            "id": 1,
+            "account_id": "a",
+            "model": "work",
+            "amount_micro_usd": amount,
+            "prompt_tokens": 2**31 - 1,
+            "completion_tokens": 2**31 - 1,
+        }
+    )
+    config = bigquery.QueryJobConfig(
+        maximum_bytes_billed=10 * 1024**2,
+        query_parameters=[bigquery.ScalarQueryParameter("payload", "STRING", payload)],
+    )
+    (row,) = bq.query(fixture + sql, job_config=config).result(timeout=120)
+    assert row["amount_micro_usd"] == amount
+    assert row["prompt_tokens"] + row["completion_tokens"] == 2**32 - 2

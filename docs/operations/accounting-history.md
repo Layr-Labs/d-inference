@@ -1,6 +1,6 @@
 # Queryable accounting history
 
-> Last updated: 2026-09-27 · commit `a7a672cf1`
+> Last updated: 2026-09-27 · commit `7eaf8b148`
 
 Preserve complete accounting-history snapshots in private Cloud Storage and
 query them through BigQuery. This copy-only phase does not change billing,
@@ -115,7 +115,11 @@ and catalog generation form the cloud evidence; local tests and CI are separate.
 
 Version 2 ID plans/receipts coexist with existing version 1 time snapshots;
 the Parquet envelope is unchanged. `archive_coverage.id_start` and `id_end`
-describe source ID coverage. Time-window fields are null for ID captures;
+describe source ID coverage. Coverage-format 2 preserves separate plan/ID-window
+rows even when empty ranges share one data file; manifests and storage totals
+use unique files. Existing file-only catalogs require checkpoint republishing
+after an approved worker upgrade, as described in [telemetry history](telemetry-history.md).
+Time-window fields are null for ID captures;
 backdated timestamps are valid. Never report these ID spans as complete time ranges.
 
 Only a verified `complete=true` summary and matching catalogs establish that

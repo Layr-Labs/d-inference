@@ -16,7 +16,7 @@ from . import cloud
 from .accounting import query_projections
 from .artifact import json_bytes
 from .backfill_plan import validate_plan
-from .catalog import merge_files, verified_entries
+from .catalog import merge_coverage, merge_files, verified_entries
 from .journal import read_json
 from .model import TABLES, ArchiveError
 from .objects import archive_bucket, put_verified
@@ -55,8 +55,11 @@ def reader_sql(project, dataset, table, version):
     extra = ", " + ", ".join(projections) if projections else ""
     return f"""SELECT r.*, c.observed_at AS archive_observed_at{extra}
 FROM `{prefix}.{table}_files_{version}` r
-JOIN `{prefix}.catalog_{version}` c ON r._FILE_NAME = c.source_uri
-WHERE c.table_name = '{table}'
+JOIN (
+  SELECT source_uri, MAX(observed_at) AS observed_at
+  FROM `{prefix}.catalog_{version}` WHERE table_name = '{table}'
+  GROUP BY source_uri
+) c ON r._FILE_NAME = c.source_uri
 QUALIFY ROW_NUMBER() OVER (
   PARTITION BY r.source_id ORDER BY c.observed_at DESC, r.row_sha256 DESC
 ) = 1"""
@@ -106,17 +109,24 @@ def publish(args):
             if current is None or str(current.generation) != entry["generation"]:
                 raise ArchiveError("existing catalog object was replaced or removed")
             entries.append(entry)
-    entries = merge_files(entries)
+    entries = merge_coverage(entries)
+    file_entries = merge_files(entries)
     if not entries:
         raise ArchiveError("no verified windows are ready to publish")
-    digest = hashlib.sha256(json_bytes(entries)).hexdigest()
+    # Domain-separate window coverage from the older file-only catalogs, even
+    # when a particular publication happens to have one file per window.
+    digest = hashlib.sha256(json_bytes({"coverage_format": 2, "entries": entries})).hexdigest()
     version = digest[:16]
     catalog_id = f"{args.project}.{args.dataset}.catalog_{version}"
     catalog = bigquery.Table(catalog_id, schema=CATALOG_SCHEMA)
     catalog.description = "Verified archive catalog sha256=" + digest
+    catalog.labels = {"archive_coverage": "plan_windows_v2"}
     client.create_table(catalog, exists_ok=True)
     existing = client.get_table(catalog_id)
-    if existing.description != catalog.description:
+    if (
+        existing.description != catalog.description
+        or (existing.labels or {}).get("archive_coverage") != "plan_windows_v2"
+    ):
         raise ArchiveError("existing catalog identity mismatch")
     if not existing.num_rows:
         client.load_table_from_json(
@@ -131,7 +141,8 @@ def publish(args):
     published = []
     with tempfile.TemporaryDirectory(prefix="archive-catalog-") as scratch:
         for table in TABLES:
-            files = [r for r in entries if r["table_name"] == table]
+            table_windows = [r for r in entries if r["table_name"] == table]
+            files = [r for r in file_entries if r["table_name"] == table]
             if not files:
                 continue
             path = Path(scratch) / f"{table}.txt"
@@ -161,7 +172,8 @@ def publish(args):
             published.append(
                 {
                     "table": table,
-                    "verified_windows": len(files),
+                    "verified_windows": len(table_windows),
+                    "data_files": len(files),
                     "snapshot_rows": sum(r["row_count"] for r in files),
                 }
             )
@@ -170,6 +182,7 @@ def publish(args):
     )
     return {
         "catalog_version": version,
+        "coverage_format": 2,
         "tables": published,
         "copy_only": True,
         "retention_eligible": False,

@@ -8,8 +8,8 @@ import "time"
 // than the TTL every entry is stale at once, and removing up to
 // cacheRoutingMaxEntries of them in one pass would stall routing. A sweep that
 // leaves expired entries behind sets sweepBacklog, so the following tracker
-// operations keep draining instead of waiting for the next interval. At a full index one
-// budget of holders measured 0.7 ms mean and 1.3 ms at most
+// operations keep draining instead of waiting for the next interval. At a
+// full index one budget of holders measured 0.7 ms mean and 1.3 ms at most
 // (BenchmarkCacheSweepMassExpiry); 4,096 measured 3 ms and up to 7.6 ms.
 // Correctness never depends on the sweep: activeHolderLocked and
 // activeAttemptLocked check every entry against its own expiry, so a stale

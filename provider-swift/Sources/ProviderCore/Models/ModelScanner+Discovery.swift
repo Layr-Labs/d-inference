@@ -62,8 +62,12 @@ extension ModelScanner {
         let fm = FileManager.default
         let entries: [URL]
         do {
+            // #260: contentsOfDirectory(at:) throws ENOTDIR when the cache
+            // root's final path component is itself a symlink (e.g.
+            // ~/.cache/huggingface/hub -> /Volumes/.../huggingface-hub).
+            // Resolve the root first; child symlinks still list as before.
             entries = try fm.contentsOfDirectory(
-                at: cacheDir,
+                at: cacheDir.resolvingSymlinksInPath(),
                 includingPropertiesForKeys: [.isDirectoryKey],
                 options: [.skipsHiddenFiles]
             )

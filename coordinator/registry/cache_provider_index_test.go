@@ -146,6 +146,13 @@ func TestCacheProviderIndexIsClearedOnReconfigure(t *testing.T) {
 	}
 	retired := h.r.cacheRouting
 	assertCacheIndexInvariants(t, retired, "before reconfigure")
+	// The demand index is the largest allocation a tracker owns; a prepared
+	// attempt can keep the retired tracker reachable, so retirement must drop it.
+	demandPlan := h.plan(7)
+	retired.observeCacheDemand(&demandPlan, h.r.cacheRouteKeys.route, h.clock.Now())
+	if entries, _ := retired.demand.stats(); entries == 0 {
+		t.Fatal("demand index should hold the observed boundaries before reconfigure")
+	}
 	if err := h.r.ConfigureCacheRouting(CacheRoutingConfig{
 		Mode: CacheRoutingOn, ActivationPct: 100, TTL: 25 * time.Minute,
 		MasterKey: base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
@@ -160,6 +167,9 @@ func TestCacheProviderIndexIsClearedOnReconfigure(t *testing.T) {
 	retired.mu.Unlock()
 	if !cleared {
 		t.Fatal("retired tracker kept index state")
+	}
+	if entries, _ := retired.demand.stats(); entries != 0 {
+		t.Fatalf("retired tracker kept %d demand entries", entries)
 	}
 	retired.disconnect(h.provider.ID, cacheHolderRemovalDisconnect)
 	retired.invalidateProviderModel(h.provider.ID, "model", cacheHolderRemovalCapabilityChange)

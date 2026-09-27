@@ -19,7 +19,7 @@ Production ran exact prefix-cache routing at 100% and measured a 1.4–5.2% hit 
 - Prefer a proven cache holder inside the existing 3-second near-tie band instead of collapsing the band whenever a cache credit exists. New selection path `cache_credit` and opportunity reason `selected_near_tie`.
 - Bound the proof fence to 60 seconds, doubling per consecutive mismatch to a 10-minute maximum, and drop only the mismatched prompt's holders. Previously a mismatch fenced the capability until the provider's epoch changed and dropped every holder for the model.
 - Drop a provider's deeper holders when it proves a hit at a shorter boundary (`shorter_hit`).
-- Size the holder index (250,000) and observed-demand index (600,000) for a 30-minute window and expire holders from an expiry-ordered heap in bounded passes.
+- Size the holder index (250,000) and observed-demand index (1,000,000) for a 30-minute window and expire holders from an expiry-ordered heap in bounded passes.
 - Forward observed repeat demand to providers as `cache_repeated_prefix_tokens`.
 
 ### Prompt sidecar

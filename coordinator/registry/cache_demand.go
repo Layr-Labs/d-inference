@@ -117,6 +117,17 @@ func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.
 
 // stats reports the entries held, including expired ones the bounded sweep
 // has not reached, and the cap evictions so far.
+// clear drops every entry. A retired tracker (ConfigureCacheRouting replaced
+// it) can stay reachable through a prepared attempt's owner until that request
+// finishes; without this the retired generation would pin up to
+// cacheDemandMaxEntries entries. observe already refuses a revoked generation.
+func (d *cacheDemandTracker) clear() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.order.Init()
+	d.entries = make(map[string]*list.Element)
+}
+
 func (d *cacheDemandTracker) stats() (entries int, capEvictions uint64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

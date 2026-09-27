@@ -1,4 +1,5 @@
 import Foundation
+@_spi(Benchmarking) import MLXLMCommon
 import ProviderCoreFoundation
 import Testing
 @testable import ProviderCore
@@ -81,6 +82,78 @@ struct GPTOSSCheckpointRestartLiveTests {
                 + "sameText=\(restored.text == cold.text) "
                 + "restored=\(restored.answer.debugDescription) cold=\(cold.answer.debugDescription) "
                 + "changed=\(changed.answer.debugDescription) offChanged=\(coldChanged.answer.debugDescription)")
+            await fixture.close()
+        } catch {
+            await fixture.close()
+            throw error
+        }
+    }
+
+    /// The donor starts alone (one 2,048-token solo stripe), then a second
+    /// request arrives and the rest of its prompt prefills in 512-token
+    /// company chunks. The uniform-cap rule disarmed at that cap change and
+    /// left only the 2,048 boundary; the historical rule keeps every 1,024
+    /// multiple, so a repeat restores the deepest one below the prompt end.
+    @Test("a donor that prefills under batching still leaves checkpoints deep into its prompt",
+          .timeLimit(.minutes(10)),
+          .enabled(if: LiveInferenceFixtures.liveTestsEnabled
+            && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GPTOSS_CHECKPOINT_RESTART"] == "1"))
+    func batchedDonorRestoresDeepBoundary() async throws {
+        let fixture = try await GPTOSSCheckpointRestartFixture()
+        do {
+            let donorStore = try fixture.makeStore()
+            let donorBridge = try fixture.makeBridge(store: donorStore, maxConcurrentRequests: 2)
+            let engine = try #require(await donorBridge.engine as? EngineV2)
+            let before = try engine.beginForwardShapeObservation()
+            let donorTask = Task {
+                try await run(fixture, bridge: donorBridge, tokens: fixture.prompts.donor,
+                              scope: "tenant-a", id: "batched-donor", expectedMarker: "ALDER-427")
+            }
+            // Let the donor's first solo stripe launch before company arrives.
+            let deadline = ContinuousClock.now + .seconds(60)
+            while engine.stepCount < 1 {
+                try #require(ContinuousClock.now < deadline, "donor never launched its first step")
+                try await taskSleep(.milliseconds(5))
+            }
+            let companyTask = Task {
+                try await run(fixture, bridge: donorBridge, tokens: fixture.prompts.changedPrefix,
+                              scope: "tenant-b", id: "company", expectedMarker: "CEDAR-682")
+            }
+            let donor = try await donorTask.value
+            let company = try await companyTask.value
+            #expect(donor.hitTokens == 0 && company.hitTokens == 0)
+            try await requireIdle(donorBridge)
+            let delta = engine.forwardShapeSnapshot().delta(since: before)
+            let prefillWidths = Set(delta.entries.filter {
+                $0.axes.kind == .target && $0.axes.phase == .prefill && $0.completedCalls > 0
+            }.map(\.axes.sequenceWidth))
+            print("[gptoss-batched-donor] prefillWidths=\(prefillWidths.sorted())")
+            #expect(prefillWidths.contains(2048) && prefillWidths.contains(512),
+                    "the donor must have prefilled under both the solo stripe and company chunks")
+            await donorStore.waitForWritesForTesting()
+            let positions = try fixture.persistedManifests()
+                .filter { $0.cacheSalt == "tenant-a" && fixture.prompts.donor.starts(with: $0.prefixTokens) }
+                .map(\.position).sorted()
+            print("[gptoss-batched-donor] prompt=\(fixture.prompts.donor.count) positions=\(positions)")
+            let deepest = try #require(positions.max())
+            #expect(deepest >= 5_120, "the donor must keep a boundary past the solo stripe")
+            #expect(positions.contains(2048) && positions.contains { $0 % 2048 != 0 },
+                    "boundaries from both chunk geometries must survive")
+            #expect(positions.allSatisfy { $0 % 1024 == 0 })
+            await donorBridge.shutdown()
+            await donorStore.closeAndWait()
+
+            let restoredStore = try fixture.makeStore()
+            let restoredBridge = try fixture.makeBridge(store: restoredStore)
+            let repeated = try await run(fixture, bridge: restoredBridge, tokens: fixture.prompts.donor,
+                                         scope: "tenant-a", id: "repeat", expectedMarker: "ALDER-427")
+            #expect(repeated.hitTokens == deepest && repeated.hitTokens >= 5_120,
+                    "a repeat must restore the deepest retained boundary")
+            try await requireIdle(restoredBridge)
+            print("[gptoss-batched-donor] repeatHit=\(repeated.hitTokens) deepest=\(deepest) "
+                + "sameText=\(repeated.text == donor.text) warmTTFT=\(repeated.ttft) coldTTFT=\(donor.ttft)")
+            await restoredBridge.shutdown()
+            await restoredStore.closeAndWait()
             await fixture.close()
         } catch {
             await fixture.close()

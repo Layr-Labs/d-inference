@@ -10,7 +10,7 @@ import Testing
 /// Exact catalog weights and production paged assembly. Only the cache root and
 /// installation key are test-owned; this proves engine reconstruction, not
 /// keychain recovery or a provider-process restart.
-final class GPTOSSCheckpointRestartFixture {
+final class GPTOSSCheckpointRestartFixture: @unchecked Sendable {
     static let modelID = "gpt-oss-20b"
     static let upstreamModelID = "mlx-community/gpt-oss-20b-MXFP4-Q8"
     static let modelHash = "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512"
@@ -172,8 +172,9 @@ final class GPTOSSCheckpointRestartFixture {
             let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(try #require(manifestBytes))
             #expect(manifest.identity == identity)
             #expect(manifest.backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
-            #expect(manifest.cacheSalt == "tenant-a")
-            #expect(prompts.donor.starts(with: manifest.prefixTokens))
+            #expect(manifest.cacheSalt == "tenant-a" || manifest.cacheSalt == "tenant-b")
+            #expect(prompts.donor.starts(with: manifest.prefixTokens)
+                || prompts.changedPrefix.starts(with: manifest.prefixTokens))
             let layers = try #require(manifest.attentionLayers)
             #expect(layers.count == model.cbv2LayerKinds.count)
             #expect(layers.contains { $0.window == 128 })

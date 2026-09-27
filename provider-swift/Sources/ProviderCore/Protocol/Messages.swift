@@ -644,7 +644,11 @@ public enum ProviderMessage: Sendable, Equatable {
             self.cacheSeq = cacheSeq
             self.outcome = outcome
             self.tier = tier
-            self.readyAnchors = Array(readyAnchors.prefix(tier == .memory ? 16 : 2))
+            // Explicit checkpoint receipts carry every durable boundary the
+            // donor kept (K historical checkpoints, up to the coordinator's
+            // 16-anchor limit). The sequencer emits at most the prompt and
+            // final anchors for a non-checkpoint SSD receipt.
+            self.readyAnchors = Array(readyAnchors.prefix(16))
             self.requiredRecomputeTokens = requiredRecomputeTokens
             self.expectedPrefillTokensSaved = expectedPrefillTokensSaved
             self.stageMs = stageMs

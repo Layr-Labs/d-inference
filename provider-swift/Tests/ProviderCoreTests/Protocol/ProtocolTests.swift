@@ -170,7 +170,16 @@ import Testing
     else {
         throw TestFailure.unexpectedMessage
     }
-    #expect(decodedReady.readyAnchors == [prompt, continuation])
+    // An SSD checkpoint receipt keeps every retained boundary, deepest included.
+    #expect(decodedReady.readyAnchors == [prompt, continuation, excess])
+    let many = (1 ... 17).map { PrefixCacheAnchor(chainHash: String(repeating: "c", count: 64), tokenCount: UInt64($0 * 1024)) }
+    let capped = ProviderMessage.PrefixCacheReadyV2(
+        requestId: "request", cacheReceiptNonce: "nonce", modelId: "model",
+        modelAggregateHash: String(repeating: "a", count: 64),
+        promptContractId: String(repeating: "b", count: 64),
+        cacheEpoch: "11111111-1111-1111-1111-111111111111", cacheSeq: 3, tier: .ssd,
+        readyAnchors: many, requiredRecomputeTokens: 0, expectedPrefillTokensSaved: 16 * 1024, stageMs: 2)
+    #expect(capped.readyAnchors == Array(many.prefix(16)), "the coordinator accepts at most 16 anchors")
 }
 
 @Test func registerEncodingUsesSnakeCaseAndPreservesRawAttestation() throws {

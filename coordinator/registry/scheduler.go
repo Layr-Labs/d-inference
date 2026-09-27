@@ -1363,7 +1363,7 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 	scan.nearTieSize = clampInt32(nearTieSize)
 	scan.path = path
 	scan.promoteWinnerTop(winner)
-	r.logRoutingDecision(model, pr, winner, scan.candidateCount)
+	r.logRoutingDecision(model, pr, winner, scan.candidateCount, scan.path)
 	return winner, scan
 }
 
@@ -1464,7 +1464,7 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 // logRoutingDecision emits a structured debug-level record of the
 // winning candidate and its cost breakdown. Cheap when the level is
 // disabled, since slog short-circuits before formatting.
-func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *routingCandidate, candidates int) {
+func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *routingCandidate, candidates int, path SelectionPath) {
 	if r.logger == nil || winner == nil {
 		return
 	}
@@ -1486,6 +1486,7 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 		"backlog_ms", bd.BacklogMs,
 		"this_req_ms", bd.ThisReqMs,
 		"health_ms", bd.HealthMs,
+		"selection_path", path.String(),
 		"cache_tier", winner.cacheTier,
 		"cache_discount_ms", bd.CacheDiscountMs,
 		"cache_estimated_ttft_saved_ms", winner.cacheEstimatedTTFTSavedMs,

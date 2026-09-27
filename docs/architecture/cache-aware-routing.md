@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-27 · commit `d20d3993f`
+> Last updated: 2026-09-27 · commit `32ae565bd`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -440,7 +440,9 @@ prefill-work bound. `CacheDiscountMs` records the final score credit;
 `CacheEstimatedTTFTSavedMs` records age-weighted prefill savings minus the full
 stage cost, before optional clipping and long-prompt weighting. A negative
 saving and its `CacheTier` appear on `RoutingDecision` and in the debug
-`routing_decision` fields `cache_estimated_ttft_saved_ms` and `cache_tier`.
+`routing_decision` fields `cache_estimated_ttft_saved_ms` and `cache_tier`; the same
+record carries `selection_path`, so a `cache_credit` win is readable from the
+debug log as well as from the profiler.
 No-hint requests have an empty tier and zero estimated saving. The existing
 `exact_cache_estimated_ttft_saved_ms` histogram remains **positive benefit
 only**: `PendingRequest.CacheSelectionSelected` and its savings fields are set

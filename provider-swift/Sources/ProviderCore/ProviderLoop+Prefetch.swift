@@ -583,12 +583,16 @@ extension ProviderLoop {
     }
 
     internal func handleDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
-        if isDraining {
+        if isDraining || prefetchCoordinator == nil {
             // Declarative state: keep only the latest snapshot until a switch
-            // resumes or an update aborts. A reconnect gets a fresh snapshot.
+            // restores prefetching or an update aborts. A reconnect gets a
+            // fresh snapshot. Never consume it with an absent subsystem.
             deferredDesiredModels = entries
-            logger.info("Deferring desired_models during serving drain (\(entries.count) entr(ies))")
+            logger.info("Deferring desired_models until prefetch is ready (\(entries.count) entr(ies))")
         } else {
+            // A newly delivered snapshot supersedes anything deferred while
+            // the prefetch subsystem was unavailable during the switch.
+            deferredDesiredModels = nil
             await reconcileDesiredModels(entries, send: send)
         }
     }

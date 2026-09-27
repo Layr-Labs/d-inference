@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-26 · commit `8a1b36f70`
+> Last updated: 2026-09-27 · commit `e8d00933d`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -614,8 +614,10 @@ coordinator sends a fresh `desired_models` snapshot
 for the replaced inventory, bypassing its prior-snapshot deduplication, then
 reconciles queues including requests for removed models. It then sends
 `models_replace_resumed` on the same connection. The provider reports switch
-success only after receiving the matching receipt. If that receipt is lost or
-the connection drops, the result is unconfirmed even though routing may have
+success only after receiving the matching receipt. Before sending readiness,
+the provider restores its prefetch subsystem; a desired snapshot received in
+the brief restoration gap is deferred and a newer snapshot supersedes it.
+If the receipt is lost or the connection drops, the result is unconfirmed even though routing may have
 resumed; retrying the same readiness frame on that connection resends the
 receipt without repeating the routing transition. A newer drain invalidates
 that retry. A drain remains reusable

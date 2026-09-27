@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-26 · commit `8a1b36f70`
+> Last updated: 2026-09-27 · commit `e8d00933d`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -37,7 +37,7 @@ time; they are not network control endpoints or serving credentials.
 | `backend.enabled_models` | `[]` means all eligible local models; a successful `switch` pins its complete nonempty selection | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`) |
 | launchd-managed `start --foreground --model` | Explicitly pinned `enabled_models` overrides stale baked arguments, including restart and watchdog recovery | `provider-swift/Sources/darkbloom/StartCommand.swift` (`usesPinnedModelSelection`); `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runForeground`) |
 | direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runForeground`) |
-| later scheduled serving windows | Keep the initial foreground selection until a live switch or saved `enabled_models` change; then resolve an empty list to all eligible local models, validating and hashing the selected set before each window | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runScheduled`) |
+| later scheduled serving windows | Keep the initial foreground selection until a live switch or saved `enabled_models` change; then resolve an empty list to all eligible local models, validating and hashing the selected set before each window. Hashing consumes the original window duration; an expired window does not start serving | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runScheduled`) |
 
 `start` saves its selected models under the lifecycle lease before disabling
 recovery or draining/stopping the current daemon; persistence failure leaves it

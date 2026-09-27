@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `8a1b36f70`
+> Last updated: 2026-09-27 · commit `e8d00933d`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -177,7 +177,8 @@ Sources: `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`),
 (`ProviderModelSelection.stageReplacement`, `ProviderModelSelection.restore`).
 After provider readiness, the coordinator refreshes desired alias builds
 for the current inventory; the provider preserves snapshots received during the
-commit wait and resumes convergence after reopening admission.
+commit wait. It restores prefetching before sending readiness, so the refreshed
+snapshot can converge even if it arrives before the routing receipt.
 The provider publishes refreshed capacity immediately after reopening local
 admission; the ready frame names that heartbeat's `capacity_seq`. The coordinator
 waits for the matching sequence and ready frame before routing queued work.
@@ -187,8 +188,10 @@ Scheduled serving keeps the initial foreground selection, including manual
 on disk. Each later window reads that selection from the same resolved config path.
 An empty saved list selects all eligible local models found for that window;
 explicit IDs select only those models. The provider validates and hashes the
-result before reopening; an invalid selection fails
-instead of reverting to startup models. Other provider settings, runtime
+result before reopening; an invalid selection fails instead of reverting to
+startup models. The scheduled loop keeps the original window end while hashing
+and skips startup if that window has closed. A late start serves only for the
+remaining window time. Other provider settings, runtime
 identity/capabilities and local endpoint options remain frozen for the process
 (`ScheduledWindowSelection` in `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift`;
 `Start.runScheduled` in `provider-swift/Sources/darkbloom/StartCommand+Modes.swift`).

@@ -171,6 +171,10 @@ extension ProviderLoop {
                 }
                 return false
             }
+            // The coordinator can send a refreshed desired_models snapshot
+            // before its routing receipt. Restore prefetch before sending
+            // readiness so that snapshot never fails without a retry.
+            prefetchCoordinator = makePrefetchCoordinator()
             do {
                 try await client.confirmModelReplacementReady(
                     requestID: requestID, drainID: drainID, capacitySeq: capacitySeq,
@@ -183,8 +187,8 @@ extension ProviderLoop {
             guard servingDrain.owner == nil, !isShuttingDown, !Task.isCancelled else { return false }
         } else {
             await coordinatorClient?.sendEventHeartbeat()
+            prefetchCoordinator = makePrefetchCoordinator()
         }
-        prefetchCoordinator = makePrefetchCoordinator()
         if let entries = deferredDesiredModels, let send = outboundSend {
             deferredDesiredModels = nil
             await reconcileDesiredModels(entries, send: send)

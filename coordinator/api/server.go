@@ -161,14 +161,6 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // coordinators advertise the same floor as the Swift binary they expect.
 var LatestProviderVersion = "0.9.10"
 
-// minProviderVersionForDesiredModels is the first provider version whose Swift
-// runtime understands the desired_models message. The coordinator must NOT send
-// desired_models to any provider below this version (or on a non-Swift backend):
-// a pre-feature provider's strict decoder throws on unknown message types and
-// would disconnect. KEEP THIS IN SYNC with the release that ships Swift
-// desired_models support (ProviderCore.version at that cut).
-const minProviderVersionForDesiredModels = "0.5.17"
-
 // latestReleasedVersion returns the highest active release version from
 // the store, falling back to the hardcoded LatestProviderVersion when
 // no release record exists.
@@ -921,9 +913,9 @@ func (s *Server) handleRuntimeCapabilitiesPromoted(providerID string) {
 		return
 	}
 	provider.Mu().Lock()
-	backend, version := provider.Backend, provider.Version
+	backend := provider.Backend
 	provider.Mu().Unlock()
-	if !s.providerSupportsDesiredModels(backend, version) {
+	if !s.providerSupportsDesiredModels(backend) {
 		return
 	}
 	entries := s.registry.DesiredModelsForProvider(providerID)

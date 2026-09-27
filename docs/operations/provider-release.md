@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-27 · commit `f99e56eb0`
+> Last updated: 2026-09-27 · commit `5d0dd2674`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -306,9 +306,7 @@ The provider and coordinator versions must be identical strings:
 (`check-release-version.sh v0.9.10`) and an optional reported string from a
 built binary (`darkbloom 0.9.10` or `0.9.10`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
-push. Do not touch `minProviderVersionForDesiredModels` (`"0.5.17"`, same file)
-for a routine release; it is the floor for desired-model fan-out, not the
-current version.
+push.
 
 ### 2. Write the changelog entry
 

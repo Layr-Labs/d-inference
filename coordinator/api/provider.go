@@ -570,9 +570,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// reconnects (same process, prefetch state intact) after the alias it
 			// was converging to was deleted/repointed must learn that nothing is
 			// desired anymore, or its in-flight prefetch would hard-swap anyway.
-			// Gated on Swift backend + feature version: a pre-feature provider's
-			// strict decoder throws on unknown types.
-			if s.providerSupportsDesiredModels(regMsg.Backend, regMsg.Version) {
+			// Gated on the Swift backend, the only runtime that understands it.
+			if s.providerSupportsDesiredModels(regMsg.Backend) {
 				if err := s.registry.SendDesiredModels(providerID, s.registry.DesiredModelsForProvider(providerID)); err != nil {
 					s.logger.Warn("failed to send desired_models after register",
 						"provider_id", providerID, "error", err)

@@ -95,7 +95,8 @@ func TestStreamingE2E(t *testing.T) {
 					conn.Write(ctx, websocket.MessageText, respData)
 					continue
 				}
-				if msgType == protocol.TypeRuntimeStatus || msgType == protocol.TypeTrustStatus {
+				if msgType == protocol.TypeRuntimeStatus || msgType == protocol.TypeTrustStatus ||
+					msgType == protocol.TypeDesiredModels {
 					continue
 				}
 			}
@@ -238,6 +239,9 @@ func TestNonStreamingE2E(t *testing.T) {
 					conn.Write(ctx, websocket.MessageText, respData)
 					continue
 				}
+				if raw["type"] == protocol.TypeDesiredModels {
+					continue
+				}
 			}
 			json.Unmarshal(data, &inferReq)
 			break
@@ -356,6 +360,9 @@ func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.
 				conn1.Write(ctx, websocket.MessageText, makeValidChallengeResponse(data, pubKey1))
 				continue
 			}
+			if raw["type"] == protocol.TypeDesiredModels {
+				continue
+			}
 			var inferReq protocol.InferenceRequestMessage
 			if err := json.Unmarshal(data, &inferReq); err != nil {
 				t.Errorf("first provider unmarshal inference: %v", err)
@@ -432,6 +439,9 @@ func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.
 			var raw map[string]any
 			if err := json.Unmarshal(data, &raw); err == nil && raw["type"] == protocol.TypeAttestationChallenge {
 				conn2.Write(ctx, websocket.MessageText, makeValidChallengeResponse(data, pubKey2))
+				continue
+			}
+			if raw["type"] == protocol.TypeDesiredModels {
 				continue
 			}
 			var inferReq protocol.InferenceRequestMessage

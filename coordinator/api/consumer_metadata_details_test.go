@@ -462,7 +462,8 @@ func serveOneChatCompletion(t *testing.T, ctx context.Context, conn *websocket.C
 				conn.Write(ctx, websocket.MessageText, respData)
 				continue
 			}
-			if msgType == protocol.TypeRuntimeStatus || msgType == protocol.TypeTrustStatus {
+			if msgType == protocol.TypeRuntimeStatus || msgType == protocol.TypeTrustStatus ||
+				msgType == protocol.TypeDesiredModels {
 				continue
 			}
 		}

@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-27 · commit `6930d1674`
+> Last updated: 2026-09-27 · commit `5d0dd2674`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -420,7 +420,7 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | Failure | Effect | Code |
 |---|---|---|
 | No attestation blob | `none`; connected in Open Mode; `untrusted` when a binary-hash policy is configured | `coordinator/api/provider.go` (`verifyProviderAttestation`) |
-| Blob timestamp outside ±`RegistrationAttestationMaxAge` (providers ≥ `minProviderVersionForReconnectAttestation`, [Layer 1](#layer-1--secure-enclave-registration-blob)) | `untrusted` ("attestation replay rejected") | `coordinator/api/provider.go` |
+| Blob timestamp outside ±`RegistrationAttestationMaxAge` ([Layer 1](#layer-1--secure-enclave-registration-blob)) | `untrusted` ("attestation replay rejected") | `coordinator/api/provider.go` |
 | `register.public_key` ≠ blob `encryptionPublicKey` | Invalid attestation; `untrusted` under a policy; never private-text routable | `coordinator/api/provider.go` |
 | Challenge unanswered within `ChallengeResponseTimeout` | Transient failure; `MaxFailedChallenges` consecutive → `MarkUntrustedTransient` (recoverable); `MaxConsecutiveChallengeTimeoutsBeforeReconnect` → WebSocket closed ([Layer 2](#layer-2--periodic-challenge)) | `coordinator/api/provider.go` (`handleTransientChallengeFailure`) |
 | Nonce / signature / status-signature failure | Hard failure: unroutable at once; `MaxFailedChallenges` consecutive → `untrusted` | `coordinator/api/provider.go` (`handleChallengeFailure`) |

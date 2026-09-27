@@ -24,7 +24,7 @@ func registerBuildsProvider(srv *Server, id string, builds ...string) *registry.
 		Hardware:                protocol.Hardware{MemoryGB: 64, MemoryAvailableGB: 60},
 		Models:                  models,
 		Backend:                 registry.BackendMLXSwift,
-		Version:                 minProviderVersionForDesiredModels,
+		Version:                 "0.9.9",
 		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities: &protocol.PrivacyCapabilities{
@@ -39,7 +39,7 @@ func registerBuildsProvider(srv *Server, id string, builds ...string) *registry.
 		},
 	})
 	p.Mu().Lock()
-	p.Version = minProviderVersionForDesiredModels
+	p.Version = "0.9.9"
 	p.TrustLevel = registry.TrustHardware
 	p.RuntimeVerified = true
 	p.RuntimeManifestChecked = true

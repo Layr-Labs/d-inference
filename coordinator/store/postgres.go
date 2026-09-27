@@ -153,8 +153,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		globalPayoutSchema,
 		// schema_migrations records one-time data migrations that must run at most
 		// once rather than on every boot. Idempotent DDL (CREATE/ALTER ... IF [NOT]
-		// EXISTS) does not need this; it exists to gate destructive one-shot DML
-		// cleanups (see the model_prices cleanup below) behind a marker id.
+		// EXISTS) does not need this; it gates destructive one-shot DML scrubs
+		// (the cache-affinity and log-report serial scrubs) behind a marker id,
+		// and keeps the markers checkRetiredBackfills requires.
 		`CREATE TABLE IF NOT EXISTS schema_migrations (
 			id TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -704,11 +705,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
 			total_completion_tokens BIGINT NOT NULL DEFAULT 0
 		)`,
-		// RecordUsage only UPDATEs the single counter row, so it must exist.
-		// A fresh database has no usage yet, so zero is exact; existing
-		// databases already hold the row (the retired backfill_usage_totals_v1
-		// migration created it from their usage history).
-		`INSERT INTO usage_totals (id) VALUES (1) ON CONFLICT (id) DO NOTHING`,
+		// The single counter row is seeded after this loop, by
+		// checkRetiredBackfills, and only while usage is empty.
 
 		// Partial index for UsageLocationBuckets — only rows with a
 		// non-null request_location are ever queried.
@@ -1155,6 +1153,13 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("migration statement %d failed: %w", i, err)
 		}
+	}
+
+	retiredStarted := time.Now()
+	retiredErr := s.checkRetiredBackfills(ctx)
+	logStartupMigration("retired_backfills", retiredStarted, retiredErr)
+	if retiredErr != nil {
+		return retiredErr
 	}
 
 	if err := s.ensureProviderRestoreIndexes(ctx); err != nil {
@@ -1976,8 +1981,10 @@ func (s *PostgresStore) UsageCountSince(since time.Time) (int64, error) {
 // UsageTotals returns aggregated lifetime totals from the materialized
 // usage_totals counter row. This is a single PK lookup — O(1) regardless
 // of how many rows exist in the usage table. A statement that cannot complete
-// is reported as an error, never as zero totals; a database with no counter
-// row yet (before the usage_totals migration) genuinely has zero totals.
+// is reported as an error, never as zero totals. Boot guarantees the row
+// (checkRetiredBackfills seeds it on an empty usage table and refuses to
+// start without it), so the no-row case reads as zero only if the row is
+// deleted while the coordinator runs.
 func (s *PostgresStore) UsageTotals() (UsageTotals, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

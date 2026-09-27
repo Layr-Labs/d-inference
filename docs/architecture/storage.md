@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-27 · commit `83f3332c1`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -114,6 +114,7 @@ schema. `PostgresStore.migrate` (`coordinator/store/postgres.go`) executes an
 ordered slice of idempotent statements — `CREATE TABLE IF NOT EXISTS`,
 `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DROP TABLE IF EXISTS`
 for retired tables — on every start, followed by
+`checkRetiredBackfills` (`postgres_retired_backfills.go`),
 `ensureProviderRestoreIndexes` (`postgres_startup.go`) and
 `ensureProviderEarningsJobIndex`. One-shot *data* migrations are gated by a row
 in `schema_migrations` so they run at most once. Two SQL files under
@@ -130,13 +131,25 @@ coordinator`.
 The one-shot backfills that derived `earnings_summary`, `usage_totals` and
 `balances.withdrawable_micro_usd` from history (markers
 `backfill_earnings_summary_v1`, `backfill_usage_totals_v1`,
-`backfill_withdrawable_balance_v1`) have run in production and are retired. The
-schema slice now creates `balances` with `withdrawable_micro_usd` and seeds the
-single `usage_totals` row (`INSERT … ON CONFLICT (id) DO NOTHING`), which is all
-a fresh database needs; databases that ran the backfills keep their markers and
-their now-unused scratch tables (`earnings_summary_backfill_pending`,
-`usage_totals_backfill_state`). The Solana-era cleanups are retired the same
-way: the wallet-keyed price delete (marker `cleanup_wallet_model_prices_v1`,
+`backfill_withdrawable_balance_v1`) have run in production and are retired
+after v0.9.10. The schema slice now creates `balances` with
+`withdrawable_micro_usd`. `checkRetiredBackfills` then guards the boot:
+
+- it fails if `balances.withdrawable_micro_usd` is missing;
+- it records each marker whose source table (`balances`, `usage`,
+  `provider_earnings`) is empty, because with no history the current schema is
+  already exact, and v0.9.10 recorded the same markers on an empty database;
+- it seeds the single `usage_totals` row only while `usage` is empty;
+- it fails if a source table holds rows but its marker is missing, or if the
+  `usage_totals` row is missing.
+
+A failed boot writes no marker and no counter for the data it refused, so the
+remedy in the error (boot a coordinator built from v0.9.10 or earlier once,
+then this build) still runs the real backfill. Databases that ran the
+backfills keep their markers and their now-unused scratch tables
+(`earnings_summary_backfill_pending`, `usage_totals_backfill_state`).
+
+The Solana-era cleanups are retired the same way: the wallet-keyed price delete (marker `cleanup_wallet_model_prices_v1`,
 which on a fresh database ran before `users` existed and so fired on the second
 boot) and the one-time column drops `billing_sessions.chain`,
 `users.solana_wallet_address`, `users.solana_wallet_id` and
@@ -185,7 +198,7 @@ flowchart LR
   A[ReadAppConfig] --> B{DATABASE_URL set?}
   B -- yes --> C[pgxpool connect + Ping]
   C --> D[migrate: idempotent DDL slice]
-  D --> E[one-shot data migrations\ngated by schema_migrations]
+  D --> E[one-shot data migrations\ngated by schema_migrations;\nretired-backfill guard]
   E --> F[ensureProviderEarningsJobIndex\nCONCURRENTLY, fast-path if present]
   F --> G[SeedKey admin key]
   B -- no, ALLOW_MEMORY_STORE=true --> H[NewMemory + 15 min pruner]
@@ -202,7 +215,7 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Identity and access | `api_keys`, `users`, `device_codes`, `provider_tokens`, `publishing_api_keys`, `invite_codes`, `invite_redemptions` | Keys are stored as hashes with a display prefix; `users` carries the Stripe Connect fields. |
 | Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `stripe_withdrawals`, `global_payout_recipients`, `global_payout_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. Semantics in [`billing.md`](billing.md). |
 | Public model demand | `model_demand_requests`, `model_demand_hourly`, `model_demand_collection` | One compact projection per scoped coordinator UUID, hourly counters updated atomically by trigger, and a persistent collection epoch; `coordinator/store/model_demand_migration.go`, `coordinator/store/postgres_model_demand.go`. |
-| Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter seeded by the schema slice and incremented by `RecordUsage`. |
+| Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter seeded at boot by `checkRetiredBackfills` and incremented by `RecordUsage`. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
 | Bookkeeping | `schema_migrations` | Completion markers for one-shot data migrations. |
@@ -294,6 +307,7 @@ KV blocks under a per-model key, not tokens.
 | Symptom | Cause | Where to look |
 |---|---|---|
 | Coordinator exits 1 at boot with `store: run migrations` | A DDL statement failed (permissions, a hand-edited schema, or a `CREATE INDEX` waiting on a lock) | The logged statement; `pg_stat_activity` for blockers. |
+| Boot fails with `database holds data that retired backfills never processed` or `balances.withdrawable_micro_usd is missing` | The database has billing, usage or earnings history but never ran a backfill retired after v0.9.10 | Boot a coordinator built from v0.9.10 or earlier against it once, then redeploy (`checkRetiredBackfills`). |
 | Boot fails with an actionable `provider_earnings` duplicate message | Rows share a non-empty `job_id`, so the unique index cannot be built | Run `dedupe_provider_earnings.sql` offline, then redeploy. |
 | `EIGENINFERENCE_DATABASE_URL is required in production` | No DSN and no memory-store opt-in | The environment file; see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md). |
 | Billing or key state gone after a restart | The process ran on the memory store | Startup log line `using in-memory store`. |
@@ -308,7 +322,7 @@ KV blocks under a per-model key, not tokens.
 |---|---|
 | Interface and record types | `coordinator/store/interface.go`, `coordinator/store/interface_domains.go` |
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/cmd/coordinator/main.go` |
-| Postgres pool, schema, one-shot migrations | `coordinator/store/postgres.go`, `coordinator/store/postgres_log_report_privacy.go` |
+| Postgres pool, schema, one-shot migrations | `coordinator/store/postgres.go`, `coordinator/store/postgres_log_report_privacy.go`, `coordinator/store/postgres_retired_backfills.go` |
 | Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`); `coordinator/store/postgres_row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres_model_registry.go`, `coordinator/store/postgres_base_rewards.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/route_telemetry.go`, `coordinator/store/usage_time_series.go`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory.go`, `coordinator/store/memory_base_rewards.go` |

@@ -2902,30 +2902,18 @@ func (r *Registry) DrainQueuedRequestsForModelWithReason(model, reason string) {
 	r.drainQueuedRequestsForModelsWithReason([]string{model}, reason)
 }
 
-// DrainQueuedRequestsForProvider attempts to assign queued requests for every
-// model a provider serves. Called when a provider becomes newly eligible for
-// routing (e.g. it just passed APNs code-identity attestation) so queued
-// demand is satisfied immediately instead of waiting for the next heartbeat.
-func (r *Registry) DrainQueuedRequestsForProvider(p *Provider) {
-	r.DrainQueuedRequestsForProviderWithReason(p, DrainTriggerUnknown)
-}
-
-// DrainQueuedRequestsForProviderWithReason is DrainQueuedRequestsForProvider
-// with the bounded drain trigger the api layer knows at its call site (e.g.
-// DrainTriggerChallenge after an attestation pass). Unknown values fold to
-// DrainTriggerUnknown.
+// DrainQueuedRequestsForProviderWithReason attempts to assign queued requests
+// for every model a provider serves. Called when a provider becomes newly
+// eligible for routing (e.g. it just passed APNs code-identity attestation) so
+// queued demand is satisfied immediately instead of waiting for the next
+// heartbeat. reason is the bounded drain trigger the api layer knows at its
+// call site (e.g. DrainTriggerChallenge after an attestation pass); unknown
+// values fold to DrainTriggerUnknown.
 func (r *Registry) DrainQueuedRequestsForProviderWithReason(p *Provider, reason string) {
 	if p == nil {
 		return
 	}
 	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), reason)
-}
-
-// drainQueuedRequestsForModels is the legacy entry point (reason "unknown");
-// callers should migrate to drainQueuedRequestsForModelsWithReason so the
-// queued request's routing record names what unblocked it.
-func (r *Registry) drainQueuedRequestsForModels(models []string) {
-	r.drainQueuedRequestsForModelsWithReason(models, DrainTriggerUnknown)
 }
 
 // drainQueuedRequestsForModelsWithReason drains the per-model queues for

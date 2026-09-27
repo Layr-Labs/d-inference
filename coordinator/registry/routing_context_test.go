@@ -714,8 +714,8 @@ func TestDrainRecordsQueueContextAndTrigger(t *testing.T) {
 		t.Fatalf("second enqueue context = %d/%d, want 1/1", second.EnqueuePosition, second.DepthAtEnqueue)
 	}
 
-	// Legacy / un-migrated entry points fold to "unknown"; the exported
-	// WithReason variants carry the api layer's bounded label through.
+	// The reason-less entry point folds to "unknown"; the exported WithReason
+	// variants carry the api layer's bounded label through.
 	drainVia := func(name string, drain func(r *Registry)) string {
 		t.Helper()
 		reg := New(testLogger())
@@ -729,9 +729,6 @@ func TestDrainRecordsQueueContextAndTrigger(t *testing.T) {
 		}
 		drain(reg)
 		return req.DrainTrigger
-	}
-	if got := drainVia("legacy", func(r *Registry) { r.drainQueuedRequestsForModels([]string{ctxModel}) }); got != DrainTriggerUnknown {
-		t.Fatalf("legacy drain trigger = %q, want unknown", got)
 	}
 	if got := drainVia("exported", func(r *Registry) { r.DrainQueuedRequestsForModel(ctxModel) }); got != DrainTriggerUnknown {
 		t.Fatalf("DrainQueuedRequestsForModel trigger = %q, want unknown", got)

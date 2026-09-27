@@ -1,11 +1,20 @@
 version: "1.0"
 created: "2026-05-14"
+# Optional App Attest diagnostic boundary re-checked 2026-09-26 against cf5982227:
+# the added TB-002 paragraph covers diagnostic metadata only; it does not
+# re-verify the older threat entries or change the serving-trust assumptions.
 # Partially re-verified 2026-09-03 against commit 5d400cf75: A-001, A-003, T-003
 # and T-011 were corrected to the shipped design (the coordinator is a plaintext
 # endpoint on every request; the provider X25519 key is per-process and never on
 # disk) — see docs/architecture/security/encryption.md and identity-binding.md.
 # Every other entry still reflects the 2026-05-14 review and has not been
 # re-verified.
+# Public attestation roster privacy re-checked 2026-09-22 against 736911a19:
+# the 0.9.9 candidate excludes private-only rows before shared caching. Public
+# legacy SE keys still link public sessions; this is not an identifier-free API.
+# App Attest account/machine/credential IDs also enter operational logs and
+# configured Datadog, while raw evidence remains in the private archive.
+# See docs/reports/2026-09-22-app-attest-recovery.md for scope and residuals.
 # SSD disk policy re-checked 2026-09-08 against PR #866 (base 4be02331e):
 # default available-disk/2 without a fixed ceiling, 20 GiB unknown-space
 # budget fallback, and a fixed 20 GiB pre-write reserve including the pending
@@ -29,7 +38,73 @@ created: "2026-05-14"
 # prospective mismatches against registration. The app also binds its existing
 # verification public key, preventing substitution of model/runtime signature
 # credentials during the later trust transition. Reward rules are unchanged.
+# MDM-optional authorization added 2026-09-15: explicit serving opt-in consumes
+# qualified protocol3 evidence; it never sets legacy MDA/APNs flags. Fresh
+# connection/endpoint/policy-bound permission is checked at every final dispatch.
+# Receipt/revocation polling has a 30s ceiling from query start, and failed reads
+# never extend it; local admin revocation fences before acknowledgement. Shared
+# machine settlement prevents duplicate base floors while preserving old ledger
+# records. App Attest still does not certify physical uniqueness or RAM, prove
+# computation correctness, or move inference into the Secure Enclave. Final
+# signed-artifact and physical SIP/boot-security transition qualification remain
+# required before enabling serving or scoped Darkbloom profile removal.
+# Interactive profile inventory during MDM removal retains the foreground
+# terminal group for native sudo prompting and reads only the fixed profiles
+# command; background jobs and denial withhold guidance and cannot grant
+# serving authorization.
+# Durable build qualification added 2026-09-20: an independently authenticated
+# operator approves the exact signed binary, full CodeDirectory, bundle/runtime,
+# source and CI provenance. CI release keys cannot grant approval. Publication
+# Apple's signed 20-byte CandidateCDHash must uniquely bind to that same
+# approved full 32-byte hash across all durable rows, including revocations;
+# it cannot use a reported hash or environment-only bootstrap as approval.
+# atomically checks the approval under the revocation row lock; stale cached
+# authorization cannot extend beyond a 30s qualification snapshot or survive a
+# local qualification-generation change. Revocation tombstones override legacy
+# env mappings and persist across restarts. Signed physical-Mac qualification
+# remains an operator evidence requirement, never inferred from a CI green check.
+# Verification presentation added 2026-09-20 (base 76a8f03d): public method
+# verdicts expose only states/times; no raw certificate/receipt or credential
+# identifiers. Inference captures the winning verdict at final dispatch; live
+# UI bounds cached verdict age and expiry. Neither generic attested nor OS
+# reports establish App Attest; machine-inventory counts do not prove physical
+# uniqueness. Owner compatibility fields and public geography use the same
+# locked authorization observation as their diagnostic verdicts, avoiding
+# mixed states during revocation or connection replacement. This changes
+# presentation, not serving or revocation policy.
+# Enrollment recovery and snapshot presentation reviewed 2026-09-22:
+# uncertain/failed one-time Apple enrollment keys retire under persistent
+# generation budgets; only serverUnavailable permits same-key enrollment retry.
+# Persisted retry hashes are enrollment-only; the original server transaction
+# must validate and a fresh current-endpoint assertion is still required.
+# Accepted assertion credentials do not rotate on generic API errors. Native
+# diagnostic domain buckets and signed numeric codes are untrusted metadata;
+# arbitrary strings/userInfo and raw Apple evidence are not published.
+# If a completed Apple generateKey callback reports failure without a usable ID,
+# a persisted one-minute cooldown may retry within the normal single-provider
+# shared generation budget, which bounds internally created but inaccessible
+# keys. Busy, timeout, cancellation and crash-before-return remain uncertain
+# and keep the one-hour key cooldown; no accepted key rotates
+# merely because a later assertion reports a generic Apple failure.
+# First-grant recovery may reassert after 1m/5m/10m while an initial receipt is
+# unverified or lacks a risk metric. Receipt renewal remains independent;
+# every serving grant still needs a fresh verified risk receipt, new assertion,
+# qualified build, nonrevoked key and current connection binding.
+# Authenticated macOS attestation CDhash extensions without ED are parsed only
+# after chain/nonce/exact-ACL verification; the follow-up also accepts only a
+# fully signed, measured Developer ID assertion with the same ED-clear shape.
+# Arbitrary unflagged assertion tails still fail.
+# Expired enrollment transactions reject their proof but permit bounded recovery;
+# binding mismatches are checked first and remain terminal.
+# Network stats describe source snapshots; owner controls and all dispatch paths
+# retain live expiry/revocation. Historical display is never authorization.
 methodology: STRIDE
+# Apple API recovery reviewed 2026-09-21: generic apple_error is an unknown
+# exchange outcome retried with bounded backoff. Retry does not authorize,
+# extend an existing grant, erase credentials, or weaken verified denial gates.
+# Initial App Attest risk-receipt recovery reviewed 2026-09-22: bounded fresh
+# assertion retries run while a verified enrollment receipt lacks its risk
+# metric. Missing evidence never becomes an authorization or extends a lease.
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
   platform. Covers production only. Dev environment, nation-state adversaries, and
@@ -314,6 +389,22 @@ trust_boundaries:
       covered by a separate status_signature over a canonical JSON payload. For providers
       that omit status_signature, negative reports (SIP=false) are still acted on
       immediately, but positive reports are treated as advisory only.
+
+      Optional App Attest ready/proof diagnostics (process and boot history,
+      signing preflight, local SIP/root observations, key/push history and native
+      error chains) are untrusted context, excluded from AppAttestShadowHash and
+      the provider clientHash. A provider may forge or omit them. The coordinator
+      strips invalid optional members independently; they do not grant, extend,
+      revoke or fence serving authorization and are distinct from verified status
+      evidence. Private diagnostic events/archives and admin views must not be
+      treated as consumer verification. Local marker files and doctor verdicts
+      are also not trust evidence. Operator-initiated reports retain OS log
+      redaction and bounded, closed-pattern device-wide DeviceCheck observations;
+      those observations cannot be attributed to this provider's key. No new
+      consumer trust claim or attestation-policy exception follows from this data.
+      Code: coordinator/protocol/app_attest_deep_diagnostic.go,
+      coordinator/appattest/service/ready_diagnostics.go; contract:
+      docs/reference/app-attest-shadow.md, docs/consumer/verification.md.
     current_limitations:
       - "No pre-authentication rate limiting or per-IP connection caps before WebSocket
         upgrade. Any client can open arbitrary connections and attempt registration
@@ -800,7 +891,8 @@ trust_boundaries:
         (nonce, timestamp) pair, though in practice base64 nonces (44 chars) and RFC3339
         timestamps are statistically non-overlapping."
       - "MDA freshness code is sha256(SE_public_key_bytes). The SE public key remains
-        visible in the privacy-redacted GET /v1/providers/attestation status response.
+        visible for public connections in GET /v1/providers/attestation and can link
+        successive sessions. Private-only providers are excluded before shared caching.
         An attacker can pre-compute the expected freshness code for any known provider."
       - "No OCSP or CRL checks on the Apple Enterprise Attestation Root CA chain. A
         compromised or revoked Apple intermediate CA certificate would be accepted by the
@@ -1709,7 +1801,7 @@ threats:
       (bound 1,536) therefore skips never-adoptable sub-~2.5k donations
       (pure wear savings); gemma-4 (bound 25,600) caches exactly its
       >26.6k long-context tail — at-rest exposure UNCHANGED IN KIND
-      (same HMAC names, same 15-min TTL, same crypto), merely extended to
+      (same HMAC names, same sliding TTL — 30 minutes since 2026-09-26 — same crypto), merely extended to
       gemma's long-context traffic. SSD construction can be disabled by the
       single DARKBLOOM_PREFIX_CACHE kill switch or an unavailable KEK; when
       active, individual donations
@@ -1726,8 +1818,10 @@ threats:
             observer cannot test a guessed prefix against anything. The
             long-open HMAC mitigation ships IMPLEMENTED with the tier that
             re-opened it.
-        (b) The at-rest window is bounded by a 15-MINUTE sliding TTL
-            (DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS can only shorten it;
+        (b) The at-rest window is bounded by a 30-MINUTE sliding TTL
+            (raised from 15 minutes on 2026-09-26 by operator decision, the
+            SEC-035 re-acceptance recorded in detection_hint below;
+            DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS can only shorten it;
             sliding on hit; opportunistic sweep on write + periodic task);
             a default box-wide LRU disk budget of half the currently available
             disk space, with no fixed ceiling, unlinks oldest-by-last-hit.
@@ -1762,8 +1856,8 @@ threats:
       SEC-035 (leak #1, the in-process TTFT oracle) is UNCHANGED IN KIND
       and stays the accepted risk — with one extension for this sign-off:
       durability extends the oracle across restarts/idle-unloads within
-      the 15-minute TTL window (a co-tenant can probe whether a prefix was
-      cached earlier the same quarter-hour). Cache scope is coordinator-authored
+      the 30-minute TTL window (a co-tenant can probe whether a prefix was
+      cached earlier the same half-hour). Cache scope is coordinator-authored
       from authenticated account, model build, and prompt-contract identity;
       callers cannot choose or override it.
     adversaries: [ADV-002]
@@ -1809,7 +1903,7 @@ threats:
           outside that scope. Caller prompt_cache_key/user values are ignored.
         status: implemented
       - description: >
-          SSD tier at-rest window bound: 15-minute sliding TTL (env can only
+          SSD tier at-rest window bound: 30-minute sliding TTL (env can only
           shorten), default available-disk/2 box-wide LRU disk budget without
           a fixed ceiling (20 GiB fallback when unavailable;
           DARKBLOOM_PREFIX_CACHE_DISK_GB overrides), a fixed 20 GiB pre-write
@@ -1841,7 +1935,7 @@ threats:
           closes cross-account reuse, per-donation gating caches only adoptable
           long prefixes, and DARKBLOOM_PREFIX_CACHE=0 survives restarts. The
           residual same-account in-process TTFT oracle can extend across
-          restarts within the 15-minute TTL, as accepted in the description.
+          restarts within the 30-minute TTL, as accepted in the description.
         status: open
       - description: >
           Per-deployment gating by trust level (e.g. force-off for shared/untrusted
@@ -1867,7 +1961,7 @@ threats:
       the SSD tier is default-on with a PER-DONATION gate: adoption bound +
       benefit floor in SSDPrefixCache.donate; loosening it widens the
       at-rest surface), to the TTL or disk-budget
-      policy (SSDPrefixCachePolicy.ttlSeconds 15-min max,
+      policy (SSDPrefixCachePolicy.ttlSeconds, 30-min max since 2026-09-26,
       PrefixCachePolicy.ssdDiskBudgetBytes), to the NAME DERIVATION
       (SSDLookupKeys: HKDF info string, HMAC domain tag, salt length-prefix,
       tag truncation), to the DBK3 metadata fields or AAD construction
@@ -1880,8 +1974,16 @@ threats:
       Also still: coordinator-authenticated scope derivation
       (coordinator/registry/cache_route_keys.go), cacheScope →
       CBv2Request.cacheSalt plumbing, and EngineV2Factory production SSD
-      construction. Raising the TTL past 15 minutes or weakening authenticated
-      account isolation needs a fresh SEC-035 sign-off.
+      construction. Raising the TTL past 30 minutes or weakening authenticated
+      account isolation needs a fresh SEC-035 sign-off. Sign-off history:
+      15 minutes at the tier's introduction; 30 minutes on 2026-09-26
+      (operator decision, SSDPrefixCachePolicy.defaultTTLSeconds =
+      maxTTLSeconds = 1800, so the environment override still only
+      shortens). The same change set stops per-file eviction, TTL expiry
+      and corrupt-file removal from rotating the cache epoch; the epoch is
+      a coordinator routing-evidence generation, not an at-rest purge
+      primitive, so that leaves the mitigations above unchanged (the KEK
+      wipe and per-file AES-GCM authentication are untouched).
 
   # ── TB-008: Coordinator → Payments ───────────────────────────
 

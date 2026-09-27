@@ -70,11 +70,18 @@ func stripProviderChatMetadata(chunk string) string {
 	return sanitizeStreamJSONEvents(chunk, stripProviderChatMetadataJSON)
 }
 
-func newChatCompletionExtrasEvent(pr *registry.PendingRequest) map[string]any {
+func newChatCompletionExtrasEvent(pr *registry.PendingRequest, identities ...chatStreamIdentity) map[string]any {
+	id, created := "chatcmpl-"+pr.RequestID, time.Now().Unix()
+	if len(identities) > 0 && identities[0].id != "" {
+		id = identities[0].id
+		if identities[0].created != nil {
+			created = *identities[0].created
+		}
+	}
 	return map[string]any{
-		"id":      "chatcmpl-" + pr.RequestID,
+		"id":      id,
 		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
+		"created": created,
 		"model":   consumerModel(pr),
 		"choices": []any{},
 	}
@@ -88,9 +95,10 @@ func (s *Server) writeChatStreamTerminalError(
 	pr *registry.PendingRequest,
 	errorType string,
 	message string,
+	identities ...chatStreamIdentity,
 ) {
 	if hasChatCompletionMetadata(pr) {
-		event := newChatCompletionExtrasEvent(pr)
+		event := newChatCompletionExtrasEvent(pr, identities...)
 		attachChatCompletionMetadata(event, pr)
 		if metadataEvent, err := json.Marshal(event); err == nil {
 			fmt.Fprintf(w, "data: %s\n\n", metadataEvent)

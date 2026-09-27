@@ -466,16 +466,7 @@ enum ToolConstraintSchemaCompiler {
         _ object: [String: SchemaJSONValue],
         path: String
     ) throws -> (String, Bool) {
-        guard let value = object["type"] else {
-            if object["properties"] != nil || object["additionalProperties"] != nil {
-                return ("object", false)
-            }
-            if object["items"] != nil {
-                return ("array", false)
-            }
-            return ("string", false)
-        }
-        if value == .null {
+        guard let value = object["type"], value != .null else {
             if object["properties"] != nil || object["additionalProperties"] != nil {
                 return ("object", false)
             }

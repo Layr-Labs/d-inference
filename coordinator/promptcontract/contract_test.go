@@ -96,6 +96,9 @@ func TestSharedContractVectors(t *testing.T) {
 		Vectors []struct {
 			Artifacts                []Artifact `json:"artifacts"`
 			ExpectedPromptContractID string     `json:"expected_prompt_contract_id"`
+			LegacyV3PromptContractID string     `json:"legacy_v3_prompt_contract_id"`
+			LegacyV4PromptContractID string     `json:"legacy_v4_prompt_contract_id"`
+			LegacyV5PromptContractID string     `json:"legacy_v5_prompt_contract_id"`
 		} `json:"vectors"`
 	}
 	encoded, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "prompt-contract", "v1", "contract_vectors.json"))
@@ -112,6 +115,22 @@ func TestSharedContractVectors(t *testing.T) {
 		}
 		if actual != fixture.ExpectedPromptContractID {
 			t.Fatalf("shared contract vector mismatch: %s != %s", actual, fixture.ExpectedPromptContractID)
+		}
+		if fixture.LegacyV3PromptContractID == "" || actual == fixture.LegacyV3PromptContractID {
+			t.Fatal("parallel instruction semantics reused the legacy v3 contract")
+		}
+		if fixture.LegacyV4PromptContractID == "" || actual == fixture.LegacyV4PromptContractID {
+			t.Fatal("native Qwen4 tool prompt semantics reused the legacy v4 contract")
+		}
+		if fixture.LegacyV5PromptContractID == "" || actual == fixture.LegacyV5PromptContractID {
+			t.Fatal("registered Qwen4 ID semantics reused the legacy v5 contract")
+		}
+		for _, version := range []string{"darkbloom-request-normalization-v3", "darkbloom-request-normalization-v4", "darkbloom-request-normalization-v5"} {
+			legacy := CurrentVersions()
+			legacy.Normalization = version
+			if _, err := ContractID(fixture.Artifacts, legacy); !errors.Is(err, ErrInvalidVersions) {
+				t.Fatalf("legacy contract accepted: %v", err)
+			}
 		}
 	}
 }

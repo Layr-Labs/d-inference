@@ -181,6 +181,31 @@ func pipelineBoundsInFlightPayloads() async {
 }
 
 @Test
+func pipelineShutdownDrainReleasesLastPayload() async {
+    // Exercise the handoff repeatedly: pending reaches zero before the
+    // consumer loop releases its last payload. A shutdown drain must join
+    // that task, not just observe the pending counter.
+    for _ in 0..<10_000 {
+        let counter = LiveCounter()
+        let entered = Latch()
+        let release = Latch()
+        let pipeline = BoundedSingleConsumerPipeline<TrackedPayload>(capacity: 1) { _ in
+            await entered.release()
+            await release.wait()
+        }
+        #expect(pipeline.submit(TrackedPayload(counter)))
+        await entered.wait()
+        pipeline.shutdown()
+        await release.release()
+        await pipeline.waitUntilDrained()
+        #expect(counter.snapshot.live == 0, "shutdown drain returned before payload release")
+        // Repeated shutdown/drain remains safe, including an empty queue.
+        pipeline.shutdown()
+        await pipeline.waitUntilDrained()
+    }
+}
+
+@Test
 func pipelineDropsBufferedPayloadsOnShutdown() async {
     // `shutdown()` calls `finish()` + `cancel()`. `finish()` alone still
     // lets the stream deliver already-buffered payloads, and an AsyncStream

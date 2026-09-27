@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-21 · commit `ce809b792`
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -29,7 +29,7 @@ per-hop encryption so that each party sees only what its role needs
 | Prompt-contract sidecar | `coordinator/promptsidecar/` (Rust) | Beside the coordinator | Token-boundary planning for prefix-cache routing; failure-isolated |
 | Console | `console-ui/` (Next.js 16 / React 19) | Vercel, `console.darkbloom.dev` | Sign-in, API keys, balance, usage, chat, provider dashboard |
 | Admin UI | `admin-ui/` (Next.js) | Internal | Read-only operator dashboard over the Postgres read replica |
-| Landing | `landing/` (static) | `darkbloom.dev` | Marketing site |
+| Landing | `landing/` (Next.js) | `darkbloom.dev` | Marketing site |
 | E2E harness | `e2e/` | CI and developer machines | Full-stack integration and benchmark runs |
 | MLX forks | `libs/mlx`, `libs/mlx-swift`, `libs/mlx-swift-lm` (submodules) | Compiled into the provider | The inference engine, pinned by commit |
 

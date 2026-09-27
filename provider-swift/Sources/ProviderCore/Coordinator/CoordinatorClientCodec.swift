@@ -137,6 +137,7 @@ public enum CoordinatorClientCodec {
 
     public static func providerMessage(for outbound: OutboundMessage) -> ProviderMessage {
         switch outbound {
+        case .drainBarrier(let id): return .drainBarrier(id)
         case .inferenceAccepted(let requestId):
             return .inferenceAccepted(ProviderMessage.InferenceAccepted(requestId: requestId))
 
@@ -194,7 +195,7 @@ public enum CoordinatorClientCodec {
         case .appAttestShadow(let payload):
             return .appAttestShadow(payload)
 
-        case .codeAttestationResponse(let nonce, let signature):
+        case .codeAttestationResponse(let nonce, let signature, _):
             return .codeAttestationResponse(ProviderMessage.CodeAttestationResponse(
                 nonce: nonce,
                 signature: signature
@@ -221,6 +222,16 @@ public enum CoordinatorClientCodec {
                 models: models,
                 toolConstraintProtocol: 1,
                 toolConstraintModels: toolConstraintModelIDs(models)))
+
+        case .modelsReplace(let requestId, let drainID, let models, let validateOnly):
+            return .modelsReplace(ProviderMessage.ModelsReplace(
+                requestId: requestId, drainRequestId: drainID, models: models,
+                validateOnly: validateOnly,
+                toolConstraintProtocol: 1,
+                toolConstraintModels: toolConstraintModelIDs(models)))
+
+        case .modelsReplaceReady(let requestId, let drainID, let capacitySeq):
+            return .modelsReplaceReady(.init(requestId: requestId, drainRequestId: drainID, capacitySeq: capacitySeq))
 
         case .prefixCacheLookup(
             let requestId, let nonce, let outcome, let tier,

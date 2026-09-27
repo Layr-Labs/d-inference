@@ -45,6 +45,10 @@ enum EngineV2Translation {
     /// * `multimodal` (v0.7.5) carries the precomputed vision-prefill spans
     ///   + embeddings for image requests (`EngineV2VisionPrefill`); nil for
     ///   text requests keeps the engine's text path byte-identical.
+    /// * `prefixCheckpointTargetTokens` is the coordinator's repeated-prefix
+    ///   length (`cache_repeated_prefix_tokens`): nil without a hint, 0 for a
+    ///   fleet-novel prompt. The engine keeps the historical checkpoint at
+    ///   the stride boundary at or below it as the donor's fork target.
     static func cbv2Request(
         id: CBv2RequestID,
         promptTokens: [Int],
@@ -54,7 +58,8 @@ enum EngineV2Translation {
         cacheScope: String = "",
         cacheEnabled: Bool = true,
         multimodal: CBv2MultimodalInput? = nil,
-        tokenConstraint: (any CBv2TokenConstraint)? = nil
+        tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        prefixCheckpointTargetTokens: Int? = nil
     ) -> CBv2Request {
         CBv2Request(
             id: id,
@@ -67,7 +72,8 @@ enum EngineV2Translation {
             cacheSalt: cacheScope.isEmpty ? nil : cacheScope,
             prefixCacheEnabled: cacheEnabled,
             multimodal: multimodal,
-            tokenConstraint: tokenConstraint
+            tokenConstraint: tokenConstraint,
+            prefixCheckpointTargetTokens: cacheEnabled ? prefixCheckpointTargetTokens : nil
         )
     }
 

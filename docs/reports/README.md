@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-16 · commit `0f7b1e611`
+> Last updated: 2026-09-27 · commit `a0b81c7e6`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,13 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Prefix cache hit rate: production analysis and levers](2026-09-26-prefix-cache-hit-rate-analysis.md) — 1.4–5.2% per-model hit rates with cache routing on at 100%; per-file epoch rotation, write churn, checkpoint geometry, credit-vs-load selection and the 40 QPS plan cap ranked as levers.
+- [App Attest post-swap authorization failures](2026-09-22-app-attest-postswap-grants.md) — signed assertion framing, archive-gap recovery, and the distinction between prospective policy and an active grant.
+- [App Attest recovery and snapshot investigation](2026-09-22-app-attest-recovery.md) — authenticated macOS framing, failed enrollment recovery, false-zero UI reproduction and distinct unresolved native assertion failures.
+
+- [Bonsai 2 lossless performance and API stability](2026-09-18-bonsai2-lossless-performance.md) — matched M3 Ultra/M5 Max prefill, decode and memory measurements, exactness/lifecycle evidence and preserved quality/release limits.
+- [Qwen 3.8 Next native API and cache qualification](2026-09-15-qwen38-native-api-qualification.md) — synchronized native tool prompts, response/accounting fixes, final local API/cache regressions and preserved multirow/quality limits.
+- [Qwen 3.8 Next performance and stability update](2026-09-15-qwen38-performance-stability.md) — qualified opt-in speed/cache work and native tool framing, with distinct checkpoint results and open quality/release gates.
 - [Security reports](security/README.md) — focused security reviews, including the macOS 27 App Attest enforcement gaps that remain after enforcement is enabled.
 - [Qwen3.8 Flash-Next R2 publication](2026-09-16-qwen38-r2-chunk-publication.md) — immutable chunk package, checksum verification, observed CDN cache hit and native inference dependency.
 - [App Attest 0.9.4 recovery qualification](2026-09-14-app-attest-recovery-validation.md) — recovery/identity tests, real Apple renewal format and current qualification limits.

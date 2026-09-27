@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-14 · commit `4676eedbe`
+> Last updated: 2026-09-15 · commit `2a843bb2c`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -71,6 +71,7 @@
 - [`reference/telemetry-inventory.md`](reference/telemetry-inventory.md): every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file.
 - [`reference/pricing-model.md`](reference/pricing-model.md): micro-USD units, price resolution, formulas, every billing constant (the single home for money constants), routes, service accounts.
 - [`reference/model-registry-format.md`](reference/model-registry-format.md): manifest schema, registration payload, alias format.
+- [`reference/qwen4-next-support.md`](reference/qwen4-next-support.md): native Flash-Next private identity, serving/state policy and explicitly incomplete qualification.
 - [`reference/ssd-kv-cache.md`](reference/ssd-kv-cache.md): DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status vocabularies.
 - [`glossary.md`](glossary.md): canonical terms and the page that owns each.
 

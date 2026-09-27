@@ -61,7 +61,10 @@ func (s *MemoryStore) SettleProviderFloorDraw(_ context.Context, draw *ProviderF
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.settleProviderFloorDrawLocked(draw)
+}
 
+func (s *MemoryStore) settleProviderFloorDrawLocked(draw *ProviderFloorDraw) (bool, error) {
 	key := floorDrawKey(draw.ProviderKey, draw.EpochID)
 	if _, exists := s.floorDrawKeys[key]; exists {
 		return false, nil // already settled this epoch
@@ -159,10 +162,4 @@ func sessionLess(a, b ProviderSession) bool {
 		return a.SerialNumber < b.SerialNumber
 	}
 	return a.ConnectedAt.Before(b.ConnectedAt)
-}
-
-// WithEpochSettlementLock runs fn directly: the memory store is single-process,
-// so there is no cross-instance contention to guard against.
-func (s *MemoryStore) WithEpochSettlementLock(_ context.Context, _ string, fn func() error) error {
-	return fn()
 }

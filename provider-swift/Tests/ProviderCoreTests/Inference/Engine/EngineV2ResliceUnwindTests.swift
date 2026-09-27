@@ -188,6 +188,46 @@ struct EngineV2ResliceUnwindTests {
         return (bridgeA, engineA)
     }
 
+    @Test("standalone eviction releases the container before survivor grants regrow")
+    func standaloneEvictionReleasesContainerBeforeRegrow() async {
+        let server = StandaloneServer()
+        await server.setV2TestHooksForTesting(.init(
+            physicalMemoryBytes: unwindPhysicalBytes,
+            makeEngine: { _, capacity in UnwindProbeEngine(kvBytesCapacity: capacity) }))
+        let victim = makeInertStubBridge(modelId: Self.gemmaId)
+        let weakVictim: WeakContainerRef
+        do {
+            let container = makeUnwindStubContainer()
+            weakVictim = WeakContainerRef(container)
+            await server.installSlotForTesting(
+                modelId: Self.gemmaId, bridge: victim.bridge, container: container,
+                tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+                sizing: sizing(weightsGiB: 15, kvRate: 20_480))
+        }
+        let trail = AlivenessTrail()
+        let survivorEngine = UnwindProbeEngine(kvBytesCapacity: 1, onUpdate: { bytes in
+            trail.record(bytes: bytes, alive: weakVictim.isAlive)
+        })
+        let survivor = EngineV2Bridge(
+            engine: survivorEngine, modelId: Self.gptossId,
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [])
+        await server.installSlotForTesting(
+            modelId: Self.gptossId, bridge: survivor,
+            container: makeUnwindStubContainer(),
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            sizing: sizing(weightsGiB: 12, kvRate: 24_576))
+        // Keep the survivor ineligible for eviction while it receives regrowth.
+        await server.reserveSlot(Self.gptossId)
+        #expect(weakVictim.isAlive)
+        #expect(await server.evictLRUIdleSlotForTesting())
+        #expect(!weakVictim.isAlive)
+        #expect(!trail.entries.isEmpty)
+        #expect(trail.entries.allSatisfy { !$0.newcomerAlive })
+        #expect(victim.engine.shutdownCalls == 1)
+        await server.releaseSlot(Self.gptossId)
+        await survivor.shutdown()
+    }
+
     @Test("build failure: B's weights are dead BEFORE A's grant is restored; Σ ≤ true budget throughout")
     func buildFailureReleasesWeightsBeforeRestore() async throws {
         struct BFailure: Error {}

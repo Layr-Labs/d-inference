@@ -1,15 +1,40 @@
 # Provider inference engine
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-21 · commit `b581bfd21`
 
 How a chat-completion request is served inside the `darkbloom` provider
-process in v0.9.1: one in-process engine (`mlx-swift-lm`
+process: one in-process engine (`mlx-swift-lm`
 ContinuousBatchingV2, "CBv2"), one `EngineV2Bridge` per resident model, no
 legacy engine and no subprocess. For the memory model see
 [`hardware-support.md`](hardware-support.md); for KV/prefix caching see
 [`prefix-cache.md`](prefix-cache.md).
+The [native block adapter](native-block-inference.md) reuses this bridge boundary
+for committed diffusion output and explicit native-container slot ownership.
+
+Native DiffusionGemma also retains image/video assets on tool-result turns.
+`EngineV2VisionPrefill.prepareDiffusionUserInput` validates tool history and
+orders typed results by their actual call IDs before media decoding, using
+`Gemma4TurnStructure.orderTypedToolResults`. `MediaIngest.buildUserInput` keeps
+decoded assets and symbolic template parts aligned in that order. System and
+assistant media remain unsupported; legacy model ingestion is unchanged. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2DiffusionVisionPrefill.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/Gemma4TurnStructure.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`.
 
 ## Context
+
+The `prism_hadamard_qwen35` adapter reuses the native dense Qwen text backbone
+and retains its vision wrapper. The SDK validates signed-Hadamard metadata and
+packed weights before returning the model. Packed scales and embeddings are
+FP16, but the published FP32 normalizers promote native KV and recurrent
+convolution state to FP32; checkpoint declarations preserve that actual dtype.
+Packed recurrent prefill retains a compact convolution carry rather than an
+alias of the complete chunk allocation; the SDK copies those state bits without
+changing the recurrence or other model families.
+`EngineV2SupportedModels.bonsai2ModelID` selects paged KV automatically;
+MTP remains unsupported because the checkpoint has no assistant tensors.
+See `libs/mlx-swift-lm/docs/bonsai2.md` for the checkpoint contract and current
+qualification scope. This implementation does not activate a catalog entry.
 
 Every advertised model is served through CBv2; a `model_type` without a CBv2
 adapter is dropped from the advertised set at scan time and never loads
@@ -22,8 +47,8 @@ adapter is dropped from the advertised set at scan time and never loads
 |---|---|---|
 | `ProviderLoop` / `StandaloneServer` | Coordinator WebSocket and local HTTP ingress; model load/unload; heartbeat | `provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 | `MultiModelBatchSchedulerEngine` | Implements the upstream `MLXServerEngine` contract: OpenAI translation, chat-template render, tool-parser and tool-choice resolution, model acquire, dispatch by `request.model` | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
-| `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, and `+PrefixCache` |
-| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` |
+| `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, `+PrefixCache`, and `+PrefixCacheTelemetry`; `EngineV2RequestUsageSignal` owns per-request terminal and cache outcome reconciliation |
+| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
@@ -419,9 +444,11 @@ records tiny-model correctness and remaining release gates.
 | `gpt_oss` | GPT-OSS | Harmony tool format; loaded paged historical complete checkpoints [default on for exact `gpt-oss-20b`](prefix-cache.md#kv-layouts); contiguous fallback serves cold; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
 | `gemma4` | Gemma 4 VLM wrapper | Served through its text tower + vision prefill; historical complete SSD is text-only and requires the loaded paged capability |
 | `gemma4_text` | Gemma 4 text target | Assistant checkpoints share the prefix; never advertised |
+| `diffusion_gemma` | Native DiffusionGemma wrapper | Committed-block generation with native image/video-frame processing; see the [native adapter and qualification boundaries](native-block-inference.md) |
 | `qwen3_5` | Dense Qwen 3.5/3.8, recurrent state | Embedded MTP head; complete streamed SSD checkpoints on native contiguous or segmented paged KV; explicit paging requires observed native types; resident bank is opt-in |
 | `qwen3_5_moe` | Qwen 3.5/3.6 MoE, recurrent state | Same complete-checkpoint and segmented-native paging gates as dense Qwen |
 | `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; `cbv2Capabilities` all `false` (no prefix reuse, paged, compiled decode, packed prefill or MTP) |
+| `qwen4_exp`, `qwen4_exp_text` | Native Flash-Next candidate | Native QSA/GDN/HC/MoE with SSD PLE, retained embedded MTP, qualified image/video processing and identity-bound complete prefix state. Exact identity, capability limits and qualification are in the [support reference](../reference/qwen4-next-support.md) |
 | `nemotron_h` | Nemotron 3.5 Lightning | Advertisement is limited to `EngineV2SupportedModels.isNemotron35ListingModelID`, not every checkpoint sharing this type. Native Mamba/MoE/attention target; `nemotron35LightningModelID` is target-only and `nemotron35LightningMTPModelID` retains the embedded head. Listing eligibility is not registry publication or performance qualification |
 
 Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
@@ -429,8 +456,56 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `quantize_config.json` `bits`; else `nil`
 (`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`,
 `detectQuantization`). KV quantization was retired in v0.8.0. Memory sizing
-(the `1.2` padded estimate and the load gate) is in
+(native Qwen4's validated loading envelope, fallback padding and the load gate) is in
 [`hardware-support.md`](hardware-support.md).
+
+### Native Flash-Next ownership and admission
+
+Native Qwen4 bounds assistant catch-up to2048tokens by default and initializes
+an unprimed head from the trusted carry consistently across cold and restored
+target histories. Already-primed caches are preserved. Eligible singleton sparse requests read only selected paged KV rows,
+binding up to17 segments per pass, with the existing ordered attention math.
+The exact switches, explicit zero rollback and numerical/ownership tests live
+in `libs/mlx-swift-lm/docs/qwen4/qualification.md`. Target weights, native
+architecture and the target's prefill chunk policy remain unchanged; assistant
+proposals and their cost must be qualified separately from committed outputs.
+
+`ModelContainerLoading.factorySelection` selects the native VLM factory for the
+canonical Qwen4 artifact with validated vision geometry and explicit
+`language_model_only=false`; text-only declarations retain the native text factory.
+Both preserve the checkpoint config. The model owns its PLE
+directory lease; `CheckpointWeightLoadFiltering` removes learned-table and
+unserved vision arrays before evaluation. Failed load and normal unload release
+the same owned external resources
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/ModelContainerLoading.swift`,
+`loadContainer`, `releaseExternalResources`). The shared
+`ModelMediaPolicy.advertisesMedia` keeps scanner/template/loader media policy
+consistent (`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`).
+
+The registry and legacy serving IDs share exact native policies through
+`provider-swift/Sources/ProviderCoreFoundation/Qwen4ModelIdentity.swift`.
+HF source/download identifiers are not substituted for the registry ID, and
+the developer-only model-path override remains limited to the legacy ID.
+
+The slot factory passes native context (or an explicitly lower operator limit)
+into the bridge; the generic bridge does not impose a second Qwen-sized cap
+on this or other model families. Coordinator admission owns SLA policy, while
+provider context and physical-memory checks remain mandatory.
+`EngineV2Bridge.submitTokenized` checks prompt plus the translated output
+reservation with overflow-safe arithmetic before cache probes or tickets.
+`advertisedContextExceeded` stays a content-free client error through both
+submission overloads and the shared HTTP mapper; cache hits cannot bypass it.
+The [candidate reference](../reference/qwen4-next-support.md) owns the
+identity, configuration and qualification boundary.
+
+Local Chat/Responses cache usage is request-owned in
+`MultiModelBatchSchedulerEngine.streamChatCompletion`; forwarding waits for the
+engine's accounting rather than borrowing another request's signal. The local
+connection cancellation registration reaches the owned upstream row and is
+removed when forwarding ends (`makeEventStream`;
+`provider-swift/Sources/ProviderCore/Server/LocalRequestCancellation.swift`).
+The close callback observes complete connection closure. Legal half-close and
+real cache-enabled cancellation/readmission remain runtime qualification gates.
 
 ### Coordinator-serving native channels
 
@@ -473,6 +548,7 @@ or change consumer/OpenRouter routing.
 | `token_budget_exhausted: … shared KV budget has no headroom` | Two failed `GlobalKVCacheBudget` reservations | `EngineV2Bridge+Submission.swift` |
 | `PreContentDeadlineFailure.deadlineUnreachable` | First-content budget spent before submit or during prefill projection | `CoordinatorClientTypes.swift`, `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+Admission.swift` |
 | Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s | `EngineLoopV2.swift` |
+| `advertisedContextExceeded` (400) | Candidate prompt plus resolved output reservation is invalid, overflowing or above its context limit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |
@@ -503,7 +579,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
 | Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |
 | Sampling translation | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`samplingParams`) |
-| Slot construction | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` |
+| Slot construction | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | Scheduler config, backend prep | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`productionSchedulerConfig`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
 | Model adaptation and assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift` (`ProductionModelAdapter`, `directServingModel`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` (`assembleProductionBuild`) |
 | Refusal taxonomy, retired env knobs | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift` (`EngineV2RefusalReason`) |

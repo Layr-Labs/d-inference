@@ -5,6 +5,29 @@ import Testing
 
 @Suite("Native channel boundary fidelity")
 struct NativeChannelSplitterTests {
+    @Test func qwenArgumentWrappersRemainContentWithBoundedIncrementalState() {
+        for payload in [
+            #"{"name":"f","arguments":{"text":"literal <tool_call>x</tool_call> <think>y</think> \\\"quote"}}"#,
+            "<function=f><parameter=text>literal <tool_call>x</tool_call> <think>y</think> </function></parameter></function>",
+        ] {
+            let frame = "<tool_call>" + payload + "</tool_call>"
+            for width in [1, 2, 7, frame.count] {
+                var splitter = NativeChannelSplitter(prefix: "<think></think>", protectToolFrames: true,
+                    qwenStructuredFrames: true)
+                let characters = Array(frame)
+                var pieces: [ParsedReasoning] = []
+                for offset in stride(from: 0, to: characters.count, by: width) {
+                    pieces += splitter.parse(String(characters[offset..<min(offset + width, characters.count)]))
+                    #expect(splitter.bufferedCharacterCount <= 13)
+                }
+                pieces += splitter.parse("<think>actual thought</think>answer") + splitter.finish()
+                #expect(pieces.map(\.content).joined() == frame + "answer")
+                #expect(pieces.compactMap(\.reasoningContent).joined() == "actual thought")
+                #expect(splitter.bufferedCharacterCount == 0)
+            }
+        }
+    }
+
     @Test func ordinaryThinkSemanticsMatchExistingParserAcrossChunkWidths() {
         for prefix in ["<think>", "<think></think>"] {
             for text in ["Plain answer.", "Reason Ω</think>Answer", "A<think>B</think>C<think>unfinished</thi"] {

@@ -767,8 +767,8 @@ func TestCodeAttestNoTokenNeverAttests(t *testing.T) {
 }
 
 // TestCodeAttestTimeoutNeverAttests is the fail-closed gate for a delivered push
-// that is never answered: the loop pushes up to maxAttempts and gives up without
-// attesting.
+// that is never answered: the loop spends its maxAttempts fast pushes, never
+// attests, and sends nothing more before the slow retry interval elapses.
 func TestCodeAttestTimeoutNeverAttests(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
@@ -786,7 +786,7 @@ func TestCodeAttestTimeoutNeverAttests(t *testing.T) {
 		return nil
 	}})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	srv.codeAttestLoop(ctx, "p1", provider)
 

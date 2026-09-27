@@ -89,7 +89,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     /// funnel stays the single authority on which models it will *resolve*;
     /// this set only decides which ones `auto` is willing to *ask about*.
     static let automaticEmbeddedModelTypes: Set<String> = [
-        "qwen3_5", "qwen3_5_moe", "nemotron_h",
+        "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h",
     ]
 
     private static func isAutomaticGemmaTarget(modelType: String?, modelID: String?) -> Bool {
@@ -139,6 +139,8 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
 public struct BackendSettings: Sendable, Equatable, Codable {
     public var port: UInt16
     public var model: String?
+    /// Explicitly selected HuggingFace hub directory; unset preserves the legacy home cache.
+    public var modelCacheDirectory: String?
     /// Which models to advertise to the network. If empty, all downloaded models
     /// are advertised. If set, only these models are offered.
     public var enabledModels: [String]
@@ -196,17 +198,17 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// under `[backend]`, TOML table of model id → "auto" | "paged" |
     /// "contiguous"). Missing ids use `engineV2KVBackend`.
     public var engineV2KVBackendByModel: [String: String]
-    /// Startup model preload (default true). On boot the provider loads the
-    /// `preload_models` set (or, when that is empty, the models it was serving
-    /// before the last restart — see `LoadedModelsStore`) BEFORE registering
-    /// with the coordinator, so a release restart never advertises models it
-    /// hasn't warmed. `startup_preload = false` restores the old
-    /// register-immediately behavior.
+    /// Startup model preload (default true) for coordinator and standalone
+    /// serving. An explicit `preload_models` list takes precedence; otherwise
+    /// previously loaded models go first, then the selected models. The
+    /// coordinator path preloads before registration, bounded by the timeout
+    /// below. The standalone path preloads before its HTTP listener starts.
+    /// `startup_preload = false` disables the startup load in either mode.
     public var startupPreload: Bool
-    /// Models to preload at startup, in this order. Empty (default) means
-    /// "the models that were loaded before the last restart" (persisted set,
-    /// loaded biggest-first). Ids not in the advertised model set are skipped
-    /// with a warning. Set `preload_models = ["..."]` under `[backend]`.
+    /// Models to preload at startup, in this order. Empty (default) uses the
+    /// selected serving set, prioritizing previously loaded models on the
+    /// coordinator path. Ids outside the selected set are skipped with a
+    /// warning. Set `preload_models = ["..."]` under `[backend]`.
     public var preloadModels: [String]
     /// Upper bound (seconds) the provider defers coordinator registration while
     /// the startup preload runs. If the preload finishes sooner, it registers
@@ -215,14 +217,17 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// the remaining loads finish in the background. Default 120s covers a
     /// ~26 GB weight load + engine warmup with margin.
     public var startupPreloadTimeoutSecs: UInt64
-    /// After each startup preload, run a 1-token greedy decode through the real
-    /// serving path through the model's EngineV2 bridge so
+    /// Coordinator-connected startup only: after each preload, run a 1-token
+    /// greedy decode through the model's EngineV2 bridge so
     /// Metal JIT, compiled buckets, and the chat-template render are warm
     /// before the first routed request. Default true. Failure is fail-open
     /// (WARN telemetry, model stays advertised) unless
-    /// `startup_selftest_fail_closed = true`.
+    /// `startup_selftest_fail_closed = true`. Standalone `--local` preloads
+    /// weights and the engine but does not run a synthetic decode; its first
+    /// request may still pay Metal JIT or compiled-bucket warmup.
     public var startupSelftest: Bool
-    /// When true, a model whose startup self-test decode fails is unloaded and
+    /// Coordinator-connected startup only: when true, a model whose startup
+    /// self-test decode fails is unloaded and
     /// dropped from the advertised set for this run (fail-closed). Default
     /// false: availability beats perfection — a self-test failure may be
     /// transient and the model can still serve via the lazy-load path.
@@ -282,6 +287,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public init(
         port: UInt16 = 8100,
         model: String? = nil,
+        modelCacheDirectory: String? = nil,
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60,
         maxModelSlots: UInt64 = 3,
@@ -301,6 +307,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     ) {
         self.port = port
         self.model = model
+        self.modelCacheDirectory = modelCacheDirectory
         self.enabledModels = enabledModels
         self.idleTimeoutMins = idleTimeoutMins
         self.maxModelSlots = maxModelSlots
@@ -321,6 +328,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     enum CodingKeys: String, CodingKey {
         case port
         case model
+        case modelCacheDirectory = "model_cache_directory"
         case enabledModels = "enabled_models"
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
@@ -355,6 +363,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.port = try container.decodeIfPresent(UInt16.self, forKey: .port) ?? 8100
         self.model = try container.decodeIfPresent(String.self, forKey: .model)
+        self.modelCacheDirectory = try container.decodeIfPresent(String.self, forKey: .modelCacheDirectory)
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
@@ -400,6 +409,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(port, forKey: .port)
         try container.encodeIfPresent(model, forKey: .model)
+        try container.encodeIfPresent(modelCacheDirectory, forKey: .modelCacheDirectory)
         try container.encode(enabledModels, forKey: .enabledModels)
         try container.encode(idleTimeoutMins, forKey: .idleTimeoutMins)
         try container.encode(maxModelSlots, forKey: .maxModelSlots)
@@ -627,11 +637,21 @@ public enum ConfigManager: Sendable {
     /// If none of those files exist yet, we return path #1 so first-time
     /// `save()` writes to the canonical location.
     public static func defaultConfigPath() throws -> URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first
+        return defaultConfigPath(home: FileManager.default.homeDirectoryForCurrentUser, appSupport: appSupport)
+    }
 
+    /// The same resolution for another account's home, such as the invoking
+    /// user of `sudo darkbloom report`.
+    public static func defaultConfigPath(home: URL) -> URL {
+        defaultConfigPath(home: home, appSupport: home
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Application Support"))
+    }
+
+    private static func defaultConfigPath(home: URL, appSupport: URL?) -> URL {
         let xdgNew = home
             .appendingPathComponent(".config")
             .appendingPathComponent("darkbloom")

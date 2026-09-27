@@ -5,6 +5,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 extension EngineV2Factory {
     public static let soloPrefillStripeKey = "DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE"
@@ -70,7 +71,8 @@ extension EngineV2Factory {
         environment: [String: String]
     ) -> CBv2SchedulerConfig {
         var config = CBv2SchedulerConfig(
-            maxConcurrentRequests: max(1, maxConcurrentRequests))
+            maxConcurrentRequests: nativeConcurrentRequestLimit(
+                requested: maxConcurrentRequests, model: model, environment: environment))
         config.soloPrefillStripeTokens = Self.soloPrefillStripeTokens(
             abovePlainChunk: config.prefillChunkSize,
             model: model,
@@ -78,6 +80,51 @@ extension EngineV2Factory {
         config.maxConcurrentPartialPrefills =
             Self.maxConcurrentPartialPrefills(environment: environment)
         return config
+    }
+
+    static let qwen4BatchedQSAEnvKey = "DARKBLOOM_QWEN4_BATCHED_QSA"
+
+    /// Install the serving policy on the exact target before backend probes
+    /// and admission. Prepared models may have been constructed under a
+    /// different process environment than this provider's injected policy.
+    static func configureNativeQwen4Batching(
+        model: any LanguageModel, environment: [String: String]
+    ) throws {
+        guard let target = model as? any CBv2Qwen4BatchCapabilityConfiguring else { return }
+        let enabled = environment[qwen4BatchedQSAEnvKey] == "1"
+        do {
+            try target.cbv2InstallQwen4BatchedAttention(enabled: enabled)
+        } catch {
+            throw CBv2KVError.backendIneligible(reason: "Qwen4 batching policy is already sealed for this target")
+        }
+        guard target.cbv2Qwen4BatchedAttentionEnabled == enabled else {
+            throw CBv2KVError.backendIneligible(reason: "Qwen4 batching capability could not be installed")
+        }
+    }
+
+    static func nativeConcurrentRequestLimit(
+        requested: Int,
+        model: (any LanguageModel)?,
+        environment: [String: String]
+    ) -> Int {
+        let qwen4 = model is Qwen4ExpModel || model is Qwen4ExpTextModel || model is MLXVLM.Qwen4Exp
+        guard qwen4 else { return max(1, requested) }
+        let installedLimit = (model as? any CBv2Qwen4BatchCapabilityConfiguring)?
+            .cbv2Qwen4MaximumBatchRows ?? 1
+        return environment[qwen4BatchedQSAEnvKey] == "1" ? min(max(1, requested), installedLimit) : 1
+    }
+
+    /// Qwen4 remains single-row unless the native batched-QSA candidate is
+    /// explicitly enabled. The provider's outer 1...8 policy still bounds the
+    /// requested cap; enabling this candidate does not qualify concurrent serving.
+    static func nativeConcurrentRequestLimit(
+        requested: Int,
+        qwen4: Bool,
+        environment: [String: String]
+    ) -> Int {
+        guard qwen4 else { return max(1, requested) }
+        return environment[qwen4BatchedQSAEnvKey] == "1"
+            ? min(max(1, requested), CBv2Qwen4BatchPolicy.maximumCandidateRows) : 1
     }
 
     static let pagedPoolDTypeEnvKey = "DARKBLOOM_CBV2_PAGED_KV_DTYPE"

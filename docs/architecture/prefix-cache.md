@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-27 · commit `d20d3993f`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -41,7 +41,7 @@ SSD snapshots survive beyond a request without retaining their KV in resident me
 | Prefix-reuse backend | `.contiguousUnquantized` | `.pagedFP16` |
 
 The default setting remains `"auto"`. In the candidate, it prefers paged only
-for these exact fleet model IDs, not family names, aliases or substrings:
+for these exact fleet/private-candidate identities, not family names, aliases or substrings:
 
 - `qwen3.5-35b-a3b`
 - `qwen3.6-35b-a3b-vl-mtp-mxfp8`
@@ -51,6 +51,10 @@ for these exact fleet model IDs, not family names, aliases or substrings:
 - `nvidia-nemotron-3.5-lightning`
 - `EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp`
 - `mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit` (target-only artifact)
+- `ternary-bonsai-2-27b`
+- `EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit`
+- `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit`
+- The [owned Flash-Next candidate](../reference/qwen4-next-support.md#identity-and-serving-policy)
 
 Every other ID, including unlisted Qwen artifacts, Gemma 8-bit and unknown
 models, resolves contiguous under `auto`. Per-model configuration still overrides
@@ -95,7 +99,7 @@ record completed validation. Final sustained, connected-serving, quality and
 production-key restart checks remain subject to the
 [acceptance criteria](../design/release-090-acceptance.md).
 This selection change is not a release or deployment claim. SSD prefix reuse
-defaults on for the exact Qwen and Nemotron Lightning IDs above,
+defaults on for the exact Qwen, Nemotron Lightning and Bonsai 2 IDs above,
 `gemma-4-26b-qat-4bit` and `gpt-oss-20b`.
 GPT-OSS 20B and Gemma QAT use the paged historical-attention complete checkpoint.
 Gemma automatic MTP resolves its catalog assistant through `SpecDecArtifactFunnel`, and a
@@ -107,6 +111,42 @@ local/connected load hashing and benchmark expectations use the model-scoped
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`.
 Resident retention remains off unless explicitly enabled through the separate
 memory flag (`PrefixCachePolicy.isMemoryEnabled`).
+
+### Bonsai complete state
+
+Bonsai uses the existing complete-checkpoint path to restore attention KV and
+recurrent state together. `EngineV2SupportedModels.isBonsai2ListingModelID`
+selects the three exact MLX identities above for default SSD eligibility; the
+GGUF repository, marketplace slug and near-matching names remain outside this
+default. `PrefixCachePolicy.requiresLoadHashBracket` requires fresh hashes around
+standalone weight loading, while the connected provider preserves its hash
+publication lifecycle. The loaded model, storage identity and verified hashes
+still gate cache construction in `EngineV2SlotFactory`.
+
+`BonsaiEncryptedCheckpointLiveTests` exercises an encrypted full checkpoint
+with a fixture key and real weights; it does not establish signed Keychain
+persistence or hosted routing readiness. Use the
+[Bonsai rollout procedure](../operations/cache-routing-rollout.md#add-bonsai-to-an-existing-routing-cohort)
+to qualify the final signed artifact and add its exact coordinator tuple.
+
+### Flash-Next complete state
+
+Native Flash-Next uses the complete-checkpoint path, not an attention-only
+prefix claim. The codec retains target KV, QSA index/positions, GDN/PLE state
+and the embedded assistant's compatible history. The engine adopts
+request-owned state and preserves capture/import reservations and rollback
+frontiers (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointQwen4.swift`).
+`EngineV2SlotFactory` and `PrefixCachePolicy+LoadHash.swift` require loaded
+capabilities, the resolved storage identity and a verified load hash before
+constructing reusable SSD state. Source default-on eligibility is not evidence
+that a store became ready or a request restored it.
+
+Learned PLE table mappings are immutable model weights and stay active when
+request prefix caching is disabled. Complete SSD cache ON, actual file reads,
+hot/suffix reuse, signed persistent restart, isolation and cancellation still
+need evidence on the final candidate tuple. Paged resident ordinary-prefix
+eligibility must not be inferred from the complete SSD codec. See the
+[candidate state and validation reference](../reference/qwen4-next-support.md#state-and-resource-ownership).
 
 The production paged factory binds its empty segmented pool to the shared
 process memory owner before constructing the engine. Its native admission owns
@@ -123,7 +163,10 @@ records factory and ownership tests, with exact-model and release gates still op
 SSD snapshots and coordinator routing proofs are hashed in whole blocks of
 `CBv2BlockHasher.defaultBlockSize = 256`
 tokens (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/BlockHasher.swift`),
-mirrored by `PrefixCachePolicy.blockSize`. The coordinator's promptsidecar computes the same chain
+mirrored by `PrefixCachePolicy.blockSize`. Every multiple of 1,024 tokens is
+therefore a block boundary, which is why historical checkpoints are captured
+on that stride; `acceptsCheckpoint` still enforces the 1,024-token floor and
+block alignment on the provider. The coordinator's promptsidecar computes the same chain
 (`darkbloom-block-chain-v1`, `PromptContractIdentity.blockHashVersion`) so it
 can predict which provider holds a prefix — see
 [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md).
@@ -340,10 +383,79 @@ model family does not bypass that gate
 ### Streamed complete checkpoints
 
 A natural `stop`/`length` donor exports its actual complete prompt checkpoints,
-one per file. Qwen includes attention KV, recurrent state and normalized typed
+one per file. A remote donor writes them only on evidence of demand: the
+coordinator's `cache_repeated_prefix_tokens` at or above the effective-token
+floor, or a prior local sighting of the tag; fleet-novel checkpoints settle
+`skipped_novel` without touching disk. Older coordinators and local serving
+write unconditionally (`SSDCheckpointDemand.admitsWrite`; policy in the
+[SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)). Qwen includes attention KV, recurrent state and normalized typed
 MTP history. Historical attention includes exact owning full rows and the
 window contents at the captured boundary, preserving borrower relationships.
-Capture retains the first and latest reusable endpoints. Window copies finish
+Capture geometry differs by layout. Recurrent (Qwen) checkpoints exist only
+where every range below them was one uniform, aligned chunk, and the capture
+retains the first and latest of those. Historical-attention checkpoints (GPT-OSS,
+Gemma 4) depend on no chunk geometry: a checkpoint at `p` is the owning full rows
+`[0, p)` plus each sliding owner's `[p−W, p)`, so the engine can capture at any
+multiple of 1,024 tokens
+(`CBv2RecurrentCheckpointGeometry.historicalCheckpointStrideTokens`) that a
+computed range covers, whatever chunk size produced the range and including
+positions strictly inside it while the sliding ring still holds the window (the
+ring keeps `max(W + 8, 2,048)` tokens behind the frontier; an evicted window is
+refused, never copied stale). Packed rows, preemption and media still disarm
+capture for the rest of the prompt.
+
+A historical donor retains at most three of those boundaries
+(`CBv2HistoricalCheckpointRetention`,
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HistoricalCheckpointRetention.swift`):
+the **first** (1,024), the **fork target**
+`floor_1024(cache_repeated_prefix_tokens)` when the coordinator sent a hint and
+that boundary lies above the first, and the **rolling latest**. The coordinator
+observes demand at every 1,024-token boundary and at the prompt end, so a
+target can be any 1,024 multiple. A target within one stride of the final
+latest is dropped at publication. Without a hint (older coordinator, local
+serving) or with a fleet-novel hint of 0 the donor retains first and latest
+only. Only boundaries that retention will keep are copied. An adopter that
+restored at `M` captures only above `M`: no first, and a target only when the
+hint names one above `M`. The hint reaches the engine as
+`CBv2Request.prefixCheckpointTargetTokens`, set by the provider bridge from
+`RemotePrefixCacheContext.repeatedPrefixTokens`.
+
+Staged windows are transient reservations on the same admission ledger that
+request chunks reserve against, so they are bounded twice, both read from the
+slot's capacity at the moment of use because a slot can be re-sliced at
+runtime. Across ALL donors of a slot they may hold at most 1/8 of capacity
+(`CBv2HistoricalStagingCap`): a boundary that would exceed it is not captured.
+A finished donor's checkpoints keep counting while its files are written, until
+the publication batch closes, so donors finishing together cannot lift new
+donors' staging above the cap. Within one donor the claim order is rolling
+latest, then fork target, then first, and a donor gives up its own first, then
+its target, for a higher claim; a donor at the cap can always roll its latest,
+because the replacement does not raise the total. Donors do not displace each
+other: the cap is first come, first kept. Per donor, over 1/16 of capacity the
+same order applies: the first is given up, then the fork target, and the
+rolling latest is always kept; without a target that leaves the first/latest
+pair. A preempted donor's staged windows and retention state are dropped with
+its KV. On these segmented paged slots a request prepays its whole sequence at
+its first assignment, so staged pressure delays or refuses admission of the
+next request rather than preempting a running one; the cap keeps the worst case
+below the previous first-plus-latest rule from five concurrent donors up and on
+every slot under about 10 GB.
+
+| Model | Window per checkpoint | Full rows per 1,024 tokens | File at 6,144 tokens |
+|---|---:|---:|---:|
+| gpt-oss-20b (K/V float32 on 23 of 24 layers) | 6.03 MB | 50.33 MB (49,152 B per token) | 308.0 MB |
+| gemma-4-26b-qat-4bit | 209.7 MB | 20.97 MB | 335.5 MB |
+
+Four concurrent Gemma 4 donors stage at most 0.43 GB on a 4 GB slot, 0.87 GB
+on 8 GB, 1.95 GB on 16 GB and 2.60 GB on 32 GB (retention binds first there),
+with a transient of about one extra window while a donor rolls its latest.
+
+Publication is deepest first, then target, then first, one file at a time.
+Historical manifests record `chunkSize = 1024` as position alignment only; the
+adopter resumes at `p` under ordinary chunk sizing (solo stripe, first-token
+projection) but stays out of rectangular packed prefill
+(`CBv2PrefixReusePlan.excludesPackedPrefill`). The recurrent capture path has no
+slot-wide cap. Window copies finish
 before successor writes and remain owned until their captured stream drains.
 The encrypted manifest binds exact input token IDs, scope, checkpoint position,
 codec/layout and tensor descriptors. DBK3 writes bounded tensor segments into
@@ -372,7 +484,9 @@ single-use imported handle carries ownership until its array aliases retire;
 paged adoption replaces the temporary stage with the full request promise,
 settles measured backing and retains auxiliary state separately. Cancellation,
 rejection and shutdown release staged state. Missing,
-corrupt, changed-epoch or incompatible state falls back cold. Complete hits
+corrupt, changed-epoch or incompatible state falls back cold. Eviction, TTL
+expiry and corrupt-file removal keep the model's cache epoch and its advertised
+capability; only a whole-root rebuild at initialization mints a new epoch. Complete hits
 save their actual checkpoint position with zero replay; an absent shorter
 recurrent checkpoint is never inferred from a longer one
 (`SSDHybridCheckpointStore+Read.swift`, `SSDCheckpointStageReservation.swift`,

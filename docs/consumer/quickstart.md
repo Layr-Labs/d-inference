@@ -1,11 +1,13 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-13 · commit `f7a3ef1fd`
+> Last updated: 2026-09-26 · commit `76b44a972`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
 ## Prerequisites
 
+- For `/v1/responses`, put a system prompt in the string `instructions` field. The coordinator places it before `input` and includes it in admission estimates; see the [Responses contract](../reference/api-contracts.md#responses-api).
+- Forced media tools and image/video tool results require a model/provider with native media-tool support. Preserve the actual returned tool-call IDs when sending results; an ordinary vision capability alone is insufficient. See the [tool and vision rules](../reference/api-contracts.md).
 - An email address. Email is the only console login method (`loginMethods: ["email"]`, `console-ui/src/components/app-providers/PrivyRealProvider.tsx`); there is no wallet or social login. The Privy account it creates is what your API keys, balance and usage attach to.
 - Credit on the account. A chat completion reserves its worst-case cost before dispatch and is refused with a 402 when the balance cannot cover it; deposit first with [`billing.md`](billing.md).
 - `curl` and `jq` for the shell steps; Python with the `openai` or `anthropic` package for the SDK steps.
@@ -110,6 +112,12 @@ Requests land on `POST /v1/messages` (`handleAnthropicMessages`, `coordinator/ap
 
 ## Verify
 
+For a vision-capable model, Responses requests may use ordered inline
+`input_image` parts or canonical `video_url` parts, including in tool outputs.
+Use `data:` URIs; remote media and uploaded file IDs are not supported on this
+endpoint. See the [Responses request contract](../reference/api-contracts.md#responses-api)
+for supported forms and the distinct cache-planning boundary.
+
 - Step 3 returned 200 with a non-empty `data` array.
 - The step 4 response is a `chat.completion` object whose `model` echoes the alias you sent, whose `usage` is populated, and which carries an `X-Provider-Id` header.
 - `GET /v1/payments/usage` with the same bearer lists the request and its `cost_micro_usd` ([`billing.md`](billing.md#3-read-your-balance-and-usage)).
@@ -117,13 +125,35 @@ Requests land on `POST /v1/messages` (`handleAnthropicMessages`, `coordinator/ap
 To display network activity, read `GET /v1/stats`, `GET /v1/network/totals`,
 or `GET /v1/network/series`. If one returns 503 `service_unavailable`, keep
 your last displayed value and retry later; do not replace it with zero.
-Successful empty windows are valid data. The [public stats contract](../reference/api-contracts.md#public-stats-and-health-5)
+Successful empty windows are valid data.
+
+The Stats page also shows **Model demand & fulfillment**. Select 24 hours,
+7 days or 30 days, sort by published request volume or capacity rejections, and
+expand a model to inspect outcomes. Use the demand-history controls to select
+a model and chart published requests, capacity rejections, timeouts, service
+errors or completion rate. Hover, tap or use arrow keys for exact published
+counts; expand the interval table or download its CSV for analysis. Hatched
+intervals contain no publishable hours, not measured zeros, and CSV exports leave
+their counts blank. Larger display intervals can include only some of their hours.
+`GET /v1/network/model-demand?window=24h` exposes the
+same aggregates. Only UTC hours meeting the per-model request and consumer
+privacy floors contribute to summaries or charts; these are not complete window
+totals. Counts cover recorded public requests reaching routing admission;
+private routes, account-limit failures and invalid requests are excluded.
+Internal retries do not add requests, but client retries do. The page labels
+partial history and best-effort recording. An empty result does not establish
+zero demand. Data is delayed by at least one hour. A 429 count overlaps outcomes
+and is not itself a capacity rejection count.
+The [public stats contract](../reference/api-contracts.md#public-stats-and-health-5)
 defines refresh intervals, maximum cached staleness, and window aliases.
 
 ## Troubleshooting
 
+Direct accounts do not have the upstream first-content SLA. Allow enough time for model loading and prefill in your client timeout. Queue, inference-stall and cancellation limits still apply. Accounts explicitly selected by the operator, such as OpenRouter, retain their configured first-content budget and model exceptions. See [timeouts](../reference/api-contracts.md) and [SLA configuration](../reference/configuration.md#routing-admission-and-ttft).
+
 | Response | Cause | Fix |
 |---|---|---|
+| 400 `invalid_request_error` naming an output-token field | A negative or malformed `max_tokens`, `max_completion_tokens` or `max_output_tokens` | Use a positive integer bound or omit it for the coordinator default; null and zero retain default-bound behavior ([request contract](../reference/api-contracts.md#inference-4)) |
 | 401 `authentication_error` | `Authorization: Bearer` header missing, or the key is unknown, disabled, expired or revoked | Re-export the key; create or rotate one in the console ([`authentication.md`](authentication.md)) |
 | 402 | Balance or key budget cannot cover the worst-case reservation ([payment-required taxonomy](../architecture/billing.md#payment-required-responses)) | Deposit, or lower `max_tokens` ([`billing.md`](billing.md)) |
 | 403 `model_not_allowed` | The key was created with an `allowed_models` list that excludes this model | Pick an id from the list, or `PATCH` the key ([`authentication.md`](authentication.md)) |

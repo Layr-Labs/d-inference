@@ -11,7 +11,7 @@
 # mounts a persistent disk at /mnt/disks/userdata (same path as EigenCloud).
 #
 # Prereqs:
-#   - `gcloud` authenticated, project sepolia-ai selected (or pass PROJECT)
+#   - `gcloud` authenticated, project darkbloom-dev selected (or pass PROJECT)
 #   - Billing enabled on the project
 #   - Owner/Editor on the project (for initial bootstrap only; downgrade after)
 #
@@ -27,7 +27,7 @@
 
 set -euo pipefail
 
-PROJECT="${PROJECT:-sepolia-ai}"
+PROJECT="${PROJECT:-darkbloom-dev}"
 REGION="${REGION:-us-central1}"
 ZONE="${ZONE:-us-central1-a}"
 INSTANCE="${INSTANCE:-d-inference-dev}"

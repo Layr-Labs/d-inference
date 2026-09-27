@@ -1,6 +1,6 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-16 · commit `b564e5828`
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK
@@ -74,7 +74,14 @@ fleet traffic whose scheduler is told which machine may serve it.
 5. In the console, the chat "Use my machine" toggle sends `prefer`
    (`console-ui/src/lib/chat/stream.ts`, forwarded upstream by
    `console-ui/src/app/api/chat/route.ts`); free-only routing there is the
-   per-key `self_route_only` ceiling.
+   per-key `self_route_only` ceiling. Creating a My Machine only key in the
+   API console adopts it as this browser's chat key when none is tracked
+   (logout, chat `401`, and untracked auto-provision drop a leftover
+   `darkbloom_console_key_id` so a stale id cannot block that adopt);
+   `POST /v1/auth/keys` (console auto-provision) also inherits
+   `self_route_only` when every active key on the account is already
+   machine-only, so it cannot mint an unrestricted "use everything" key
+   beside a machine-only one.
 
 ## What the coordinator relaxes — and what it does not
 

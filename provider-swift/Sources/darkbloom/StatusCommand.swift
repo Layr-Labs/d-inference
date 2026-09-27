@@ -105,8 +105,20 @@ struct Status: AsyncParsableCommand {
             state: state,
             now: now,
             heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
+        if let status = state.modelSwitch {
+            let stale = state.isStale(now: now) ? " (stale)" : ""
+            print("Model switch: \(status.outcome.rawValue)\(stale); \(status.remaining) unfinished request(s)")
+            if let requestID = status.requestID { print("  Request: \(requestID)") }
+            if let message = status.message { print("  \(message)") }
+            print("  Selection: \(status.models.joined(separator: ", "))")
+        }
 
-        if let trust = state.trust {
+        let authorization = state.currentProviderAuthorization(
+            coordinatorURL: config.coordinator.url, now: now)
+        if let authorization {
+            print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, now: now))")
+            if !authorization.machineID.isEmpty { print("Machine ID: \(authorization.machineID)") }
+        } else if let trust = state.trust {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
             print("Trust: \(trust.trustLevel) / \(trust.status)")
             print("  → \(advice.message)")
@@ -116,11 +128,11 @@ struct Status: AsyncParsableCommand {
         }
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
-        if let line = Self.notLoadedLine(
+        for line in Self.notLoadedLines(
             advertised: state.advertisedModels,
             warmModels: state.warmModels,
             currentModel: state.currentModel,
-            idleTimeoutMins: config.backend.idleTimeoutMins)
+            startupPreloadPendingModels: state.startupPreloadPendingModels)
         {
             print(line)
         }
@@ -191,26 +203,30 @@ struct Status: AsyncParsableCommand {
             + "out of date"
     }
 
-    /// Advertised models with no resident engine right now. Under an idle
-    /// policy that is the expected steady state between bursts ("reload on
-    /// demand"), so it is reported as information, not as a fault; under
-    /// "always ready" the same gap means the model has simply not been asked
-    /// for since start. nil when every advertised model is warm (or the daemon
-    /// predates `advertisedModels`).
-    static func notLoadedLine(
+    /// Separate models still queued for startup preload from those that will
+    /// load on a request. The latter include idle-unloaded, skipped and failed
+    /// preloads; `Last model-load error` below supplies a known failure cause.
+    static func notLoadedLines(
         advertised: [String]?,
         warmModels: [String],
         currentModel: String?,
-        idleTimeoutMins: UInt64
-    ) -> String? {
-        guard let advertised else { return nil }
+        startupPreloadPendingModels: [String]?
+    ) -> [String] {
+        guard let advertised else { return [] }
         var resident = Set(warmModels)
         if let currentModel, !currentModel.isEmpty { resident.insert(currentModel) }
         let notLoaded = advertised.filter { !resident.contains($0) }
-        guard !notLoaded.isEmpty else { return nil }
-        let why = idleTimeoutMins == IdleUnloadPolicy.alwaysReadyMinutes
-            ? "loads on first request" : "unloaded when idle; reloads on demand"
-        return "Not loaded (\(why)): \(notLoaded.joined(separator: ", "))"
+        let pending = Set(startupPreloadPendingModels ?? [])
+        let preloading = notLoaded.filter { pending.contains($0) }
+        let onRequest = notLoaded.filter { !pending.contains($0) }
+        var lines: [String] = []
+        if !preloading.isEmpty {
+            lines.append("Startup preload pending: \(preloading.joined(separator: ", "))")
+        }
+        if !onRequest.isEmpty {
+            lines.append("Not loaded (loads on request): \(onRequest.joined(separator: ", "))")
+        }
+        return lines
     }
 
     private func formatUptime(_ seconds: Double) -> String {

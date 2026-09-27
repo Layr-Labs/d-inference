@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@Suite("Live test metallib source selection")
+@Suite("Live test build resource selection")
 struct LiveInferenceMetallibSourceTests {
     private func temporaryRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
@@ -15,13 +15,13 @@ struct LiveInferenceMetallibSourceTests {
         try Data("fixture-only".utf8).write(to: url)
     }
 
-    @Test("custom scratch accepts only the staged source beside its active configuration", arguments: ["debug", "release"])
+    @Test("custom scratch accepts only the staged source beside its active configuration", arguments: ["debug", "release", "Debug", "Release"])
     func customScratch(configuration: String) throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let build = root.appendingPathComponent("release-build/arm64-apple-macosx")
         let bundle = build.appendingPathComponent("\(configuration)/ProviderPackageTests.xctest")
-        let other = configuration == "debug" ? "release" : "debug"
+        let other = ["debug": "release", "release": "debug", "Debug": "Release", "Release": "Debug"][configuration]!
         try stage(bundle.appendingPathComponent("Contents/MacOS/mlx.metallib"))
         try stage(build.appendingPathComponent("\(other)/mlx.metallib"))
         #expect(LiveInferenceFixtures.findSourceMetallib(testBundleURL: bundle) == nil,
@@ -56,5 +56,59 @@ struct LiveInferenceMetallibSourceTests {
         let bundle = root.appendingPathComponent("custom-scratch/optimized/ProviderPackageTests.xctest")
         try stage(bundle.deletingLastPathComponent().appendingPathComponent("mlx.metallib"))
         #expect(LiveInferenceFixtures.findSourceMetallib(testBundleURL: bundle) == nil)
+        #expect(throws: (any Error).self) {
+            try LiveInferenceFixtures.buildProduct("mlx.metallib", testBundleURL: bundle)
+        }
+    }
+
+    @Test("child products use only the active configuration", arguments: ["debug", "release", "Debug", "Release"])
+    func childBuildProducts(configuration: String) throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let build = root.appendingPathComponent("custom-scratch/arm64-apple-macosx")
+        let bundle = build.appendingPathComponent("\(configuration)/ProviderPackageTests.xctest")
+        let other = ["debug": "release", "release": "debug", "Debug": "Release", "Release": "Debug"][configuration]!
+        try stage(build.appendingPathComponent("\(other)/darkbloom"))
+        #expect(throws: (any Error).self) {
+            try LiveInferenceFixtures.buildProduct("darkbloom", testBundleURL: bundle)
+        }
+        let active = bundle.deletingLastPathComponent().appendingPathComponent("darkbloom")
+        try stage(active)
+        #expect(try LiveInferenceFixtures.buildProduct("darkbloom", testBundleURL: bundle) == active)
+        let resource = bundle.deletingLastPathComponent().appendingPathComponent("Runtime.bundle", isDirectory: true)
+        try FileManager.default.createDirectory(at: resource, withIntermediateDirectories: true)
+        #expect(try LiveInferenceFixtures.buildProduct("Runtime.bundle", testBundleURL: bundle) == resource)
+    }
+
+    @Test("product names cannot escape the active configuration")
+    func invalidProductName() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bundle = root.appendingPathComponent("scratch/release/ProviderPackageTests.xctest")
+        try stage(root.appendingPathComponent("scratch/debug/darkbloom"))
+        try stage(root.appendingPathComponent("scratch/release/nested/darkbloom"))
+        let absolute = root.appendingPathComponent("absolute-product")
+        try stage(absolute)
+        for name in ["", ".", "..", "../debug/darkbloom", "nested/darkbloom", absolute.path] {
+            #expect(throws: (any Error).self) {
+                try LiveInferenceFixtures.buildProduct(name, testBundleURL: bundle)
+            }
+        }
+    }
+
+    @Test("SwiftBuild and unknown configurations never borrow native debug artifacts", arguments: ["Debug", "Release", "optimized"])
+    func swiftBuildDoesNotBorrowLowercasePeers(configuration: String) throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let build = root.appendingPathComponent(".build")
+        let bundle = build.appendingPathComponent("out/Products/\(configuration)/ProviderCoreTests.xctest")
+        for peer in ["debug", "release"] {
+            try stage(build.appendingPathComponent("\(peer)/mlx.metallib"))
+            try stage(build.appendingPathComponent("\(peer)/darkbloom"))
+        }
+        #expect(LiveInferenceFixtures.findSourceMetallib(testBundleURL: bundle) == nil)
+        #expect(throws: (any Error).self) {
+            try LiveInferenceFixtures.buildProduct("darkbloom", testBundleURL: bundle)
+        }
     }
 }

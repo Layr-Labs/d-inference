@@ -8,6 +8,7 @@
 ///   - ModelDownloader+HTTP.swift       low-level file fetch/stream/hash/publish
 
 import Foundation
+import ProviderCoreFoundation
 
 // MARK: - Downloader
 
@@ -28,6 +29,10 @@ public struct ModelDownloader: Sendable {
     internal let catalogClient: ModelCatalogClient?
     internal let concurrency: Int
     internal let runtimeCapabilities: Set<ProviderRuntimeCapability>
+    // Injectable for deterministic low-disk integration tests.
+    internal var capacityCheck: @Sendable (URL, Int64) throws -> Void = {
+        try ModelDownloader.ensureAvailableCapacity(at: $0, requiredBytes: $1)
+    }
 
     public init(
         r2CDNURL: String? = nil,
@@ -57,7 +62,8 @@ public struct ModelDownloader: Sendable {
     ///   4. `model.safetensors.index.json` + each shard listed inside
     ///
     /// On success, the model is laid out under
-    /// `~/.cache/huggingface/hub/models--{org}--{name}/snapshots/local/`
+    /// `{hf-cache}/models--{org}--{name}/snapshots/local/` (see
+    /// `cacheModelDirectory(for:)` for how the cache root is resolved)
     /// with a `refs/main` pointer so `ModelScanner` discovers it the next
     /// time `darkbloom status` runs.
     public func download(
@@ -73,12 +79,7 @@ public struct ModelDownloader: Sendable {
                 ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
         }
         if model.r2Prefix != nil, model.aggregateSHA256 != nil {
-            let manifest: ModelManifest
-            if let catalogClient {
-                manifest = try await catalogClient.fetchManifest(modelID: model.id)
-            } else {
-                manifest = try await fetchManifestFromCDN(model: model)
-            }
+            let manifest = try await resolveManifest(model: model)
             try await downloadManifestModel(model: model, manifest: manifest, onProgress: onProgress)
             return
         }
@@ -98,11 +99,11 @@ public struct ModelDownloader: Sendable {
 
     // MARK: - Internals
 
+    /// Where a downloaded model is written.
+    ///
+    /// Discovery, hashing, removal, and downloads share one cache resolver.
     public static func cacheModelDirectory(for modelID: String) -> URL {
-        let safe = modelID.replacingOccurrences(of: "/", with: "--")
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
-            .appendingPathComponent("models--\(safe)", isDirectory: true)
+        ModelScanner.cacheModelDirectory(for: modelID)
     }
 
     static func cacheSnapshotDirectory(for modelID: String) -> URL {

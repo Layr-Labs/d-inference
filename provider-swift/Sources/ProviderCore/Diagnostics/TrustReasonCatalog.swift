@@ -16,7 +16,10 @@ import Foundation
 public enum TrustReasonCatalog {
     /// Maps a trust update to operator advice. `level`/`status` give context
     /// (e.g. self_signed/online means "online but not earning").
-    public static func advice(level: String, status: String, reason: String) -> DiagnosticAdvice {
+    public static func advice(
+        level: String, status: String, reason: String,
+        macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    ) -> DiagnosticAdvice {
         // Prefix-matched reasons (they carry a variable error suffix).
         if reason.hasPrefix("signature verification failed") {
             return DiagnosticAdvice(
@@ -36,6 +39,11 @@ public enum TrustReasonCatalog {
         // so this build gives friendly advice against an older coordinator.
         case "SE attestation verified, awaiting MDM verification",
              "SE attestation verified, awaiting MDM/ACME upgrade":
+            if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
+                return DiagnosticAdvice(
+                    message: "Secure Enclave verification passed; this legacy trust message does not confirm App Attest serving authorization.",
+                    fix: ProviderOnboardingPolicy.appAttestGuidance)
+            }
             return DiagnosticAdvice(
                 message: "verified by Secure Enclave, but NOT yet hardware-trusted. You're ONLINE but receive NO traffic until the coordinator's MDM verification completes (this network requires hardware trust).",
                 fix: "run `darkbloom enroll`, then wait ~5 min for MDM verification.")

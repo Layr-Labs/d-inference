@@ -68,6 +68,31 @@ enum LiveInferenceFixtures {
         return .missing(modelID)
     }
 
+    // MARK: Matching build products
+
+    // Native SwiftPM and SwiftBuild use different case spellings. Preserve the
+    // actual directory spelling; recognizing it must never select a peer build.
+    private static let buildConfigurations = ["debug", "release", "Debug", "Release"]
+
+    static func buildProduct(_ name: String) throws -> URL {
+        try buildProduct(name, testBundleURL: Bundle(for: BundleSentinel.self).bundleURL)
+    }
+
+    /// Bind child executables/resources to the running test configuration,
+    /// including custom scratch paths. Never borrow a stale debug/release peer.
+    static func buildProduct(_ name: String, testBundleURL: URL) throws -> URL {
+        let directory = testBundleURL.deletingLastPathComponent()
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"),
+            testBundleURL.pathExtension == "xctest",
+            buildConfigurations.contains(directory.lastPathComponent)
+        else { throw CocoaError(.fileNoSuchFile) }
+        let product = directory.appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath: product.path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return product
+    }
+
     // MARK: Metallib bootstrap
 
     /// MLX (the C++ runtime) looks for `mlx.metallib` next to the binary
@@ -163,22 +188,16 @@ enum LiveInferenceFixtures {
     static func findSourceMetallib(testBundleURL: URL) -> URL? {
         let fm = FileManager.default
         let configurationDirectory = testBundleURL.deletingLastPathComponent()
-        if ["debug", "release"].contains(configurationDirectory.lastPathComponent) {
-            let staged = configurationDirectory.appendingPathComponent("mlx.metallib")
-            if fm.fileExists(atPath: staged.path) { return staged }
-        }
+        let configuration = configurationDirectory.lastPathComponent
+        guard testBundleURL.pathExtension == "xctest",
+              buildConfigurations.contains(configuration) else { return nil }
+        let staged = configurationDirectory.appendingPathComponent("mlx.metallib")
+        if fm.fileExists(atPath: staged.path) { return staged }
 
         // Preserve the canonical `.build` helper drop sites for standard
-        // SwiftPM layouts, using only the running bundle's configuration.
-        let components = testBundleURL.pathComponents
-        let configuration: String
-        if let buildIndex = components.lastIndex(of: ".build"),
-           let activeConfiguration = components[components.index(after: buildIndex)...]
-            .first(where: { $0 == "debug" || $0 == "release" }) {
-            configuration = activeConfiguration
-        } else {
-            configuration = "debug"
-        }
+        // SwiftPM layouts only. SwiftBuild's uppercase Products directory must
+        // not borrow a lowercased native-build peer when its own source is absent.
+        guard configuration == "debug" || configuration == "release" else { return nil }
 
         var cursor = testBundleURL
         for _ in 0..<12 {

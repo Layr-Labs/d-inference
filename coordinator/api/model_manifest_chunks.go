@@ -10,14 +10,14 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// Requirements follow the active transport as well as operator metadata.
-// Registering another (unchunked) version must not remove the protection from
-// an active chunked version before that replacement is promoted.
+// Transport requirements follow only the active version's files. Registration
+// also updates model-level metadata before promotion, so its transport flag may
+// describe a staged candidate instead. Preserve unrelated operator requirements.
 func modelTransportCapabilities(rec *store.ModelRegistryRecord) []string {
-	capabilities := append([]string{}, rec.RequiredProviderCapabilities...)
-	for _, capability := range capabilities {
-		if capability == registry.ProviderCapabilityR2Chunks {
-			return capabilities
+	capabilities := make([]string, 0, len(rec.RequiredProviderCapabilities)+1)
+	for _, capability := range rec.RequiredProviderCapabilities {
+		if capability != registry.ProviderCapabilityR2Chunks {
+			capabilities = append(capabilities, capability)
 		}
 	}
 	for _, file := range rec.Files {

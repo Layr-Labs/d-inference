@@ -22,6 +22,7 @@ func (s *Server) publishReleaseTrustPolicy(snapshot *releaseTrustPolicySnapshot)
 		func(evidence registry.ApplicationEvidence) bool {
 			return releaseEvidenceStillApproved(snapshot, evidence)
 		})
+	s.registry.SetAppAttestServingPolicy(s.appAttestShadow.ServingEnabled && s.appAttestShadow.Environment == "production", snapshot.Generation)
 	for _, providerID := range needChallenge {
 		if provider := s.registry.GetProvider(providerID); provider != nil {
 			provider.RequestImmediateChallenge()

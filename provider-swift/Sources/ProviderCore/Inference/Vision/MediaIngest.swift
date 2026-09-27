@@ -232,13 +232,23 @@ public enum MediaIngest {
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls = .init(),
+        tools: [ToolSpec]? = nil,
+        preserveTemplateFields: Bool = false,
+        modelType: String? = nil,
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
         maxImagesPerRequest: Int = Self.maxImagesPerRequest,
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
+        let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: request, controls: templateControls, modelType: modelType, hasMedia: true)
+        if preserveTemplateFields {
+            try Qwen4SupportPolicy.validateReasoningContext(
+                modelID: request.model, modelType: modelType, additionalContext: additionalContext)
+        }
         var chatMessages: [Chat.Message] = []
+        let retainToolMedia = preserveTemplateFields && modelType == "diffusion_gemma"
         var totalPixels = 0
         var totalVideoPixels = 0
         var imageCount = 0
@@ -261,21 +271,48 @@ public enum MediaIngest {
             case .assistant:
                 chatMessages.append(.assistant(text))
             case .tool:
-                chatMessages.append(.tool(text))
+                chatMessages.append(.init(role: .tool, content: text,
+                    images: retainToolMedia ? images : [], videos: retainToolMedia ? videos : []))
             }
+            if preserveTemplateFields {
+                chatMessages[chatMessages.count - 1].templateFields = message.templateMessageDict()
+            }
+        }
+        if preserveTemplateFields {
+            // Preserve the validated native Qwen4 request's interleaved order.
+            // Only symbolic placeholders enter the template; decoded media
+            // remains owned by UserInput, never rendered as URLs/base64 text.
+            let generator = Qwen3VLMessageGenerator()
+            let messages = zip(request.messages, chatMessages).map { original, decoded in
+                var message = generator.generate(messages: [decoded])[0]
+                if original.role == .user || (retainToolMedia && original.role == .tool),
+                    case .parts(let parts) = original.content {
+                    message["content"] = parts.compactMap { part -> [String: String]? in
+                        switch part {
+                        case .text(let text): return ["type": "text", "text": text]
+                        case .imageURL: return ["type": "image"]
+                        case .videoURL: return ["type": "video"]
+                        case .unsupported: return nil
+                        }
+                    }
+                }
+                return message
+            }
+            return UserInput(messages: messages,
+                images: chatMessages.flatMap(\.images), videos: chatMessages.flatMap(\.videos),
+                tools: tools, additionalContext: additionalContext)
         }
         return UserInput(
             chat: chatMessages,
-            additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
-                for: request,
-                controls: templateControls,
-                hasMedia: true))
+            tools: tools,
+            additionalContext: additionalContext)
     }
 
 
     /// Split a message's content into the concatenated text plus decoded
-    /// image/video media. Non-user roles drop media at the call site, but
-    /// we still decode here so a malformed inline payload fails loudly
+    /// image/video media. Unsupported roles drop media at the call site, but
+    /// the native Diffusion path also retains tool-result assets. We still
+    /// decode here so a malformed inline payload fails loudly
     /// rather than being silently ignored.
     private static func parts(
         from content: OpenAIMessageContent,

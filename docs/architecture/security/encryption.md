@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-20 · commit `76a8f03d9`
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -28,6 +28,23 @@ Primitive on all three hops: NaCl `box` (X25519 key agreement, XSalsa20-Poly1305
 authenticated encryption) from `golang.org/x/crypto/nacl/box` on the
 coordinator, `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` on
 the provider, `console-ui/src/lib/encryption.ts` in the console.
+
+Fresh sender keys do not provide forward secrecy against compromise of a
+recipient's private key. The provider's X25519 key lasts for its process
+lifetime; that key and the transmitted ephemeral public keys can decrypt
+recorded requests from the same lifetime
+(`provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `NodeKeyPair.generate`;
+`coordinator/internal/e2e/e2e.go`, `SessionKeys`).
+
+Hardened Runtime and debugger restrictions protect the provider process;
+they do not guarantee that every prompt, response or model buffer is zeroed
+after inference. The `secureZero` and `secureZeroData` helpers in
+`provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift` are not
+invoked by the inference path. Consumer-facing verification copy therefore
+describes process protections. Legacy device-certificate claims use the separate
+`mda_verified` proof described in [`attestation.md`](./attestation.md).
+[Qualified App Attest serving authorization](../../reference/provider-authorization.md)
+is an independent path and never implies legacy MDA/APNs verification.
 
 ## Mechanism
 

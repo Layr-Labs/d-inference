@@ -53,6 +53,7 @@ func (r *Registry) ListModels() []AggregateModel {
 	// and /v1/models (uncached, two ListModels calls per request) paid for it
 	// mostly as GC pressure rather than as the walk itself.
 	agg := make(map[string]*modelAgg, len(r.modelCatalog))
+	now := time.Now()
 	for _, p := range r.providers {
 		p.mu.Lock()
 		// Provider-level gates first, so an ineligible provider costs one lock
@@ -61,7 +62,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		// they must not appear in or inflate the public /v1/models aggregation.
 		if p.Status == StatusOffline || p.Status == StatusUntrusted ||
 			p.PrivateOnly ||
-			!r.trustMeetsMinimum(p.TrustLevel) ||
+			!r.providerTrustMeetsMinimumAtLocked(p, r.MinTrustLevel, now) ||
 			!r.providerSupportsPrivateTextLocked(p) {
 			p.mu.Unlock()
 			continue
@@ -143,8 +144,7 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 			p.Status != StatusUntrusted &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&
-			!p.LastChallengeVerified.IsZero() &&
-			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+			r.providerChallengeFreshAtLocked(p, now)
 		if !eligible {
 			p.mu.Unlock()
 			continue
@@ -224,10 +224,11 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 	defer r.mu.RUnlock()
 
 	seen := make(map[string]bool)
+	now := time.Now()
 	for _, p := range r.providers {
 		p.mu.Lock()
 		status := p.Status
-		trust := p.TrustLevel
+		trustAllowed := r.providerTrustMeetsMinimumAtLocked(p, r.MinTrustLevel, now)
 		privateReady := r.providerSupportsPrivateTextLocked(p)
 		var cc string
 		if p.Location != nil {
@@ -242,7 +243,7 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 		if status == StatusOffline || status == StatusUntrusted {
 			continue
 		}
-		if !r.trustMeetsMinimum(trust) || !privateReady {
+		if !trustAllowed || !privateReady {
 			continue
 		}
 		seen[cc] = true

@@ -162,10 +162,10 @@ struct GemmaToolCallLiveTests {
                 messages: dicts, tools: toolSpecs, additionalContext: nil)
         }
 
-        var text = ""
         // The bridge derives maxTokens/temperature from the request; the
         // prompt itself is the pre-templated token array above.
-        let stream = await bridge.submitTokenized(
+        let result = await collect(
+            from: bridge,
             promptTokens: promptTokens,
             request: ChatCompletionRequest(
                 model: LiveInferenceFixtures.gemmaModelID,
@@ -173,12 +173,9 @@ struct GemmaToolCallLiveTests {
                 temperature: 0.0,
                 max_tokens: 96
             ))
-        for await event in stream {
-            switch event {
-            case .chunk(let t): text += t
-            case .info, .error, .terminal: break
-            }
-        }
+        try #require(!result.didError, "tool generation failed: \(result.error ?? "")")
+        try #require(result.info != nil, "tool generation ended without completion usage")
+        let text = result.fullText
 
         print("\n=== issue #249: real Gemma generation (raw) ===\n\(text)\n===========================\n")
 

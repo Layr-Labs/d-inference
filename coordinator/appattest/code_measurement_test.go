@@ -18,7 +18,7 @@ func TestMacCodeMeasurementShapeAndUnknownAlgorithms(t *testing.T) {
 	}{
 		{"observed SDK27 SHA256", bytes.Repeat([]byte{1}, 32), []byte{2}, false, true},
 		{"unknown algorithm", bytes.Repeat([]byte{1}, 32), []byte{255}, false, false},
-		{"truncated CDHash", bytes.Repeat([]byte{1}, 20), []byte{2}, true, false},
+		{"Apple SHA256 CDHash prefix", bytes.Repeat([]byte{1}, 20), []byte{2}, false, false},
 		{"text hash", "hash", []byte{2}, true, false},
 		{"integer algorithm", bytes.Repeat([]byte{1}, 32), 2, true, false},
 		{"missing type", bytes.Repeat([]byte{1}, 32), nil, true, false},
@@ -45,6 +45,23 @@ func TestMacCodeMeasurementShapeAndUnknownAlgorithms(t *testing.T) {
 	}
 	if hash, algorithm, err := codeDirectoryMeasurement(nil); err != nil || hash != nil || algorithm != nil {
 		t.Fatal("legacy assertions must remain decodable")
+	}
+	type2, type1 := uint8(2), uint8(1)
+	for _, tc := range []struct {
+		name string
+		key  Key
+		want int
+	}{
+		{"Apple truncated SHA256", Key{CodeDirectoryHash: bytes.Repeat([]byte{1}, 20), CodeDirectoryType: &type2}, 20},
+		{"Apple full SHA256", Key{CodeDirectoryHash: bytes.Repeat([]byte{1}, 32), CodeDirectoryType: &type2}, 32},
+		{"SHA1 does not qualify", Key{CodeDirectoryHash: bytes.Repeat([]byte{1}, 20), CodeDirectoryType: &type1}, 0},
+		{"malformed size", Key{CodeDirectoryHash: bytes.Repeat([]byte{1}, 21), CodeDirectoryType: &type2}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := len(tc.key.CodeDirectorySHA256Candidate()); got != tc.want {
+				t.Fatalf("candidate length %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

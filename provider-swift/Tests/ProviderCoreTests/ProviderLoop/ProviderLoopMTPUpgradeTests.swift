@@ -172,7 +172,7 @@ private extension ProviderLoop {
             modelType: "gemma4", sizeBytes: 1, estimatedMemoryGb: 1)
         if let slot = modelSlots[upgradeModelID] {
             modelSlots[upgradeModelID] = ModelSlot(engineBundle: slot.engineBundle,
-                container: slot.container, tokenizer: slot.tokenizer,
+                modelContainer: slot.modelContainer, tokenizer: slot.tokenizer,
                 sizing: mtpFloorSizing(weightsGiB: 50),
                 cacheEligibleWeightHash: slot.cacheEligibleWeightHash,
                 isVLM: slot.isVLM, modelType: slot.modelType,

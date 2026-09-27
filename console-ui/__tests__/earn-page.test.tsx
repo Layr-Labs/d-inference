@@ -1,5 +1,4 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 import {
   CALCULATOR_MODELS,
@@ -27,15 +26,6 @@ vi.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({ ready: true, authenticated: true, login: vi.fn() }),
 }));
 vi.mock("@/lib/google-analytics", () => ({ trackEvent: vi.fn() }));
-
-const requireFromTest = createRequire(import.meta.url);
-const landingCore = requireFromTest("../../landing/earn-calculator-core.js") as {
-  HARDWARE_OPTIONS: typeof HARDWARE_OPTIONS;
-  MIN_PROVIDER_MEMORY_GB: number;
-  PROVIDER_HARDWARE_OPTIONS: typeof PROVIDER_HARDWARE_OPTIONS;
-  CALCULATOR_MODELS: typeof CALCULATOR_MODELS;
-  calculateCapacityRevenue: typeof calculateCapacityRevenue;
-};
 
 function selectMac(macType = MACBOOK_PRO, chip = M4_MAX, ram = 48) {
   fireEvent.change(screen.getByLabelText("Mac model"), { target: { value: macType } });
@@ -79,27 +69,8 @@ describe("earnings projection", () => {
     expect(estimate.outputPriceUSDPerMillion).toBe(0.7);
   });
 
-  it("keeps the console and homepage data mapping and projection identical", () => {
-    const hardware = HARDWARE_OPTIONS.find(
-      (option) => option.macType === MACBOOK_PRO && option.chip === M4_MAX,
-    )!;
-    expect(landingCore.CALCULATOR_MODELS).toEqual(CALCULATOR_MODELS);
-    expect(
-      landingCore.calculateCapacityRevenue(
-        landingCore.CALCULATOR_MODELS[0],
-        hardware,
-        48,
-        50,
-      ),
-    ).toEqual(
-      calculateCapacityRevenue(CALCULATOR_MODELS[0], hardware, 48, 50),
-    );
-  });
-
   it("keeps only supported provider families and includes the new profiles", () => {
-    expect(landingCore.HARDWARE_OPTIONS).toEqual(HARDWARE_OPTIONS);
-    expect(landingCore.MIN_PROVIDER_MEMORY_GB).toBe(MIN_PROVIDER_MEMORY_GB);
-    expect(landingCore.PROVIDER_HARDWARE_OPTIONS).toEqual(PROVIDER_HARDWARE_OPTIONS);
+    expect(MIN_PROVIDER_MEMORY_GB).toBe(48);
     expect(new Set(PROVIDER_HARDWARE_OPTIONS.map((option) => option.macType))).toEqual(
       new Set([MACBOOK_PRO, "Mac Mini", MAC_STUDIO, "Mac Pro"]),
     );

@@ -360,23 +360,16 @@ struct EngineV2PagedParityLiveTests {
         let bridge = try #require(await loop.slotBridgeForTesting(modelId: Self.gptossModelID))
         let servedKind = await bridge.kvBackendKind
         #expect(servedKind == .paged, "loop path must serve gpt-oss PAGED")
-        let out = await {
-            var text = ""
-            var error: String?
-            for await event in await bridge.submit(
+        let out = await collect(
+            await bridge.submit(
                 request: ChatCompletionRequest(
                     model: Self.gptossModelID,
                     messages: [ChatMessage(role: "user", content: "Say OK.")],
                     temperature: 0, max_tokens: 8),
-                requestId: "paged-loop-1")
-            {
-                if case .chunk(let c) = event { text += c }
-                if case .error(let e) = event { error = e }
-            }
-            return (text, error)
-        }()
-        #expect(out.1 == nil, "paged slot must serve after passing the guards: \(out.1 ?? "")")
-        #expect(!out.0.isEmpty)
+                requestId: "paged-loop-1"))
+        #expect(out.error == nil, "paged slot must serve after passing the guards: \(out.error ?? "")")
+        #expect(out.completion > 0, "paged slot must report completed generation")
+        #expect(!out.text.isEmpty)
         await loop.unloadModel(Self.gptossModelID)
     }
 
@@ -535,23 +528,16 @@ struct EngineV2PagedParityLiveTests {
         #expect(
             servedKind == .paged,
             "loop path must serve VLM gemma-4 PAGED — the span-mask veto is inert by construction")
-        let out = await {
-            var text = ""
-            var error: String?
-            for await event in await bridge.submit(
+        let out = await collect(
+            await bridge.submit(
                 request: ChatCompletionRequest(
                     model: Self.gemmaModelID,
                     messages: [ChatMessage(role: "user", content: "Say OK.")],
                     temperature: 0, max_tokens: 8),
-                requestId: "gemma-paged-loop-1")
-            {
-                if case .chunk(let c) = event { text += c }
-                if case .error(let e) = event { error = e }
-            }
-            return (text, error)
-        }()
-        #expect(out.1 == nil, "paged gemma slot must serve after passing the guards: \(out.1 ?? "")")
-        #expect(!out.0.isEmpty)
+                requestId: "gemma-paged-loop-1"))
+        #expect(out.error == nil, "paged gemma slot must serve after passing the guards: \(out.error ?? "")")
+        #expect(out.completion > 0, "paged gemma slot must report completed generation")
+        #expect(!out.text.isEmpty)
         await loop.unloadModel(Self.gemmaModelID)
     }
 }

@@ -123,12 +123,30 @@ public struct ModelBenchmark: Sendable {
         prompt: String = defaultPrompt,
         iterations: Int = defaultIterations,
         maxTokens: Int = defaultMaxTokens,
-        hardware: HardwareInfo
+        hardware: HardwareInfo,
+        kvBackend: String = "auto"
     ) async throws -> BenchmarkReport {
+        try validateArguments(iterations: iterations, maxTokens: maxTokens)
         let hardwareDesc = "\(hardware.chipName), \(hardware.memoryGb) GB RAM, \(hardware.gpuCores) GPU cores, \(hardware.memoryBandwidthGbs) GB/s"
 
         print("Loading model: \(modelID)")
         print("Path: \(modelDirectory.path)")
+
+        let modelType = try decodedModelType(
+            from: Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
+        if usesNativeBlockGeneration(modelType: modelType) {
+            let results = try await runNativeDiffusion(modelID: modelID, directory: modelDirectory,
+                prompt: prompt, iterations: iterations, maxTokens: maxTokens, backend: kvBackend)
+            return BenchmarkReport(modelID: modelID, modelPath: modelDirectory.path,
+                prompt: prompt, iterations: results, hardwareDescription: hardwareDesc)
+        }
+        if usesNativeGeneration(modelType: modelType) {
+            let results = try await runNativeQwen4(
+                modelID: modelID, modelDirectory: modelDirectory,
+                prompt: prompt, iterations: iterations, maxTokens: maxTokens)
+            return BenchmarkReport(modelID: modelID, modelPath: modelDirectory.path,
+                prompt: prompt, iterations: results, hardwareDescription: hardwareDesc)
+        }
 
         let container = try await LLMModelFactory.shared.loadContainer(
             from: modelDirectory,
@@ -212,7 +230,7 @@ public struct ModelBenchmark: Sendable {
                 if firstTokenTime == nil {
                     firstTokenTime = .now
                     let elapsed = firstTokenTime! - iterationStart
-                    prefillLatencyMs = Double(elapsed.components.attoseconds) / 1e15
+                    prefillLatencyMs = milliseconds(elapsed)
                 }
 
             case .info(let info):
@@ -229,7 +247,7 @@ public struct ModelBenchmark: Sendable {
         }
 
         let totalElapsed = ContinuousClock.now - iterationStart
-        let totalTimeMs = Double(totalElapsed.components.attoseconds) / 1e15
+        let totalTimeMs = milliseconds(totalElapsed)
 
         // Calculate decode TPS from the generation info's timing when available,
         // otherwise approximate from wall-clock

@@ -5,11 +5,15 @@ final class ModelDownloadURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var requests: [URLRequest] = []
     nonisolated(unsafe) static var failure: URLError.Code?
     nonisolated(unsafe) static var pathFailures: [String: URLError.Code] = [:]
+    private nonisolated(unsafe) static var heldRequests: [String: AsyncStream<Bool>.Continuation] = [:]
     private static let lock = NSLock()
 
-    static func reset(bodies: [String: Data], failure: URLError.Code? = nil, pathFailures: [String: URLError.Code] = [:]) {
+    static func reset(bodies: [String: Data], failure: URLError.Code? = nil,
+                      pathFailures: [String: URLError.Code] = [:],
+                      heldRequests: [String: AsyncStream<Bool>.Continuation] = [:]) {
         lock.lock(); defer { lock.unlock() }
         self.bodies = bodies; self.failure = failure; self.pathFailures = pathFailures; requests = []
+        self.heldRequests = heldRequests
     }
 
     static func captured() -> [URLRequest] {
@@ -24,7 +28,14 @@ final class ModelDownloadURLProtocol: URLProtocol, @unchecked Sendable {
         Self.requests.append(request)
         let body = Self.bodies[url.path] ?? Self.bodies[url.host!]
         let failure = Self.pathFailures[url.path] ?? (url.host == "huggingface.co" ? Self.failure : nil)
+        let held = Self.heldRequests[url.path]
         Self.lock.unlock()
+        if let held {
+            // Deliberately provide no response; URLSession must end the request
+            // when its owning Swift task is cancelled.
+            held.yield(true)
+            return
+        }
         if let failure {
             client?.urlProtocol(self, didFailWithError: URLError(failure))
             return

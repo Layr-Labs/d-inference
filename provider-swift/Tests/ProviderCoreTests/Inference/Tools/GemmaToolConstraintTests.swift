@@ -439,12 +439,15 @@ struct GemmaToolConstraintTests {
         }
     }
 
-    @Test("structural schemas infer object and array types like the coordinator")
-    func structuralTypeInferenceMatchesCoordinator() throws {
-        let parameters: MLXLMCommon.JSONValue = .object([
+    @Test("missing and null schema types use the same structural defaults", arguments: [false, true])
+    func structuralTypeInferenceMatchesCoordinator(explicitNull: Bool) throws {
+        func untyped(_ fields: [String: MLXLMCommon.JSONValue]) -> MLXLMCommon.JSONValue {
+            .object(explicitNull ? fields.merging(["type": .null]) { _, new in new } : fields)
+        }
+        let parameters = untyped([
             "properties": .object([
-                "values": .object([
-                    "items": .object(["type": .string("string")]),
+                "values": untyped([
+                    "items": untyped([:]),
                     "maxItems": .int(2),
                 ]),
             ]),
@@ -453,7 +456,18 @@ struct GemmaToolConstraintTests {
             choice: .mode(.required),
             tools: [tool(parameters: parameters)])
         let prepared = try ToolChoicePromptPolicy.prepare(inferred)
-        #expect(prepared.compiledTools?.count == 1)
+        let compiled = try #require(prepared.compiledTools?.first)
+        guard case .object(let properties, true, false) = compiled.parameters,
+            let property = properties.first,
+            case .array(let items, 0, let maxItems, false) = property.schema,
+            case .string(nil, false) = items
+        else {
+            Issue.record("expected a non-null object containing an array of free strings")
+            return
+        }
+        #expect(property.name == "values")
+        #expect(maxItems == 2)
+        #expect(!property.required)
     }
 
     @Test("unimplemented schema assertions never become prompt-only theater")

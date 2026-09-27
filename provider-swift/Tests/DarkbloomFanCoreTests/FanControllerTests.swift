@@ -433,21 +433,31 @@ struct FanControllerTests {
         #expect(!backend.operations.contains(.write("Ftst", [0])))
     }
 
-    @Test("permission denial never attempts the Ftst bypass")
-    func permissionFailureDoesNotUseFtst() async throws {
+    @Test("permission denial never attempts the Ftst bypass", arguments: [false, true])
+    func permissionFailureDoesNotUseFtst(duringMaintenance: Bool) async throws {
         let backend = makeFanBackend(fanCount: 1)
+        let controller = try makeController(backend: backend)
+        if duringMaintenance {
+            _ = try await controller.engage(speedPercent: 80)
+            backend.setUI8("F0Md", 3)
+            backend.resetOperations()
+        }
         backend.queue([.failBefore(.notPrivileged(
             operation: .writeBytes,
             key: "F0Md"
         ))], for: "F0Md")
-        let controller = try makeController(backend: backend)
-
         let error = await captureControllerError {
-            _ = try await controller.engage(speedPercent: 80)
+            if duringMaintenance {
+                _ = try await controller.maintain()
+            } else {
+                _ = try await controller.engage(speedPercent: 80)
+            }
         }
         #expect(error == .smc(.notPrivileged(operation: .writeBytes, key: "F0Md")))
         #expect(!backend.operations.contains(.write("Ftst", [1])))
         #expect(try backend.uint8("Ftst") == 0)
+        #expect(try backend.uint8("F0Md") == 0)
+        #expect(await controller.currentSession() == nil)
     }
 
     @Test("a mode write that mutates then throws is still rolled back")

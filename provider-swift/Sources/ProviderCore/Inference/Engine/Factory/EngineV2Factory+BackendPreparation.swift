@@ -14,6 +14,9 @@ extension EngineV2Factory {
         let fallbackReason: String?
         /// Shared with final assembly; pool sizing must match the engine's chunks.
         let schedulerConfig: CBv2SchedulerConfig
+        /// The resolved running-row cap also owns bridge admission accounting
+        /// and heartbeat capacity. Never advertise the pre-policy request.
+        var effectiveMaxConcurrentRequests: Int { schedulerConfig.maxConcurrentRequests }
         let pagedPoolDType: String?
         /// Immutable table read from the constructed pool for process admission.
         let pagedLayerDTypes: [DType]?
@@ -27,7 +30,8 @@ extension EngineV2Factory {
 
         private let lock = NSLock()
         private let modelIdentity: ObjectIdentifier
-        private let maxConcurrentRequests: Int
+        private let requestedMaxConcurrentRequests: Int
+        private let installedQwen4Batching: Bool?
         private var backend: CBv2KVBackend?
         private var caches: [any CBv2AttendingLayerCache]?
 
@@ -46,7 +50,9 @@ extension EngineV2Factory {
             hybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil
         ) {
             self.modelIdentity = ObjectIdentifier(model)
-            self.maxConcurrentRequests = max(1, maxConcurrentRequests)
+            self.requestedMaxConcurrentRequests = max(1, maxConcurrentRequests)
+            self.installedQwen4Batching = (model as? any CBv2Qwen4BatchCapabilityConfiguring)?
+                .cbv2Qwen4BatchedAttentionEnabled
             self.layerKinds = layerKinds
             self.modelCapabilities = modelCapabilities
             self.backend = backend
@@ -70,9 +76,14 @@ extension EngineV2Factory {
                     throw CBv2KVError.backendIneligible(
                         reason: "prepared backend model identity changed before assembly")
                 }
-                guard self.maxConcurrentRequests == max(1, maxConcurrentRequests) else {
+                guard requestedMaxConcurrentRequests == max(1, maxConcurrentRequests) else {
                     throw CBv2KVError.backendIneligible(
                         reason: "prepared backend concurrency changed before assembly")
+                }
+                guard installedQwen4Batching == (model as? any CBv2Qwen4BatchCapabilityConfiguring)?
+                    .cbv2Qwen4BatchedAttentionEnabled else {
+                    throw CBv2KVError.backendIneligible(
+                        reason: "prepared backend Qwen4 batching capability changed before assembly")
                 }
                 guard let backend, let caches else {
                     throw CBv2KVError.backendIneligible(
@@ -103,6 +114,7 @@ extension EngineV2Factory {
             throw EngineV2ProductionError.noKVHeadroom
         }
         let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity)
+        try configureNativeQwen4Batching(model: model, environment: environment)
 
         guard let adapter = ProductionModelAdapter(model: model) else {
             throw EngineV2ProductionError.unsupportedModel(

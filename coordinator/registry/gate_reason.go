@@ -115,6 +115,9 @@ const (
 	SelectionRandom
 	// Stable prefix affinity among otherwise equivalent ordinary candidates.
 	SelectionPrefixAffinity
+	// SelectionCacheCredit: several near-ties, at least one carrying a
+	// positive cache credit; the cheapest credited holder won.
+	SelectionCacheCredit
 	selectionPathCount
 )
 
@@ -125,6 +128,7 @@ var selectionPathNames = [selectionPathCount]string{
 	SelectionTiePending:     "tie_pending",
 	SelectionRandom:         "random",
 	SelectionPrefixAffinity: "prefix_affinity",
+	SelectionCacheCredit:    "cache_credit",
 }
 
 // String returns the snake_case name of the path.

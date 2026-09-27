@@ -16,6 +16,8 @@ import {
   type UpdateKeyBody,
 } from "@/lib/api";
 import { API_KEY_STORAGE, CONSOLE_KEY_ID_STORAGE } from "./constants";
+import { adoptCreatedKeyIfUntracked } from "./adoptConsoleKey";
+import { clearConsoleApiKey } from "@/lib/console-api-key";
 
 export interface UseApiKeys {
   authenticated: boolean;
@@ -31,8 +33,9 @@ export interface UseApiKeys {
   busyId: string | null;
   consoleKeyId: string | null;
   reload: () => Promise<void>;
-  /** Create a key. Returns the once-only secret, or null on error. */
-  createKey: (body: UpdateKeyBody) => Promise<CreatedKey | null>;
+  /** Create a key. Returns the once-only secret, or null on error.
+   *  adoptedConsole is true when this key was stored as the console key. */
+  createKey: (body: UpdateKeyBody) => Promise<{ created: CreatedKey; adoptedConsole: boolean } | null>;
   /** Update a key's limits/name/disabled. Returns true on success. */
   editKey: (id: string, body: UpdateKeyBody) => Promise<boolean>;
   /** Toggle a key's disabled state. */
@@ -165,7 +168,7 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
   );
 
   const createKey = useCallback(
-    async (body: UpdateKeyBody): Promise<CreatedKey | null> => {
+    async (body: UpdateKeyBody): Promise<{ created: CreatedKey; adoptedConsole: boolean } | null> => {
       const token = await requireToken();
       if (!token) return null;
       setSubmitting(true);
@@ -173,7 +176,8 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
         const created = await createApiKey(token, body);
         trackEvent("key_create", { has_limit: body.limit_usd != null });
         await fetchKeys(token);
-        return created;
+        const adoptedConsole = adoptCreatedKeyIfUntracked(created, token, pointConsoleKeyAt);
+        return { created, adoptedConsole };
       } catch (e) {
         addToast((e as Error).message, "error");
         return null;
@@ -181,7 +185,7 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
         setSubmitting(false);
       }
     },
-    [requireToken, fetchKeys, addToast],
+    [requireToken, fetchKeys, addToast, pointConsoleKeyAt],
   );
 
   const editKey = useCallback(
@@ -259,8 +263,7 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
         await deleteApiKey(token, key.id);
         trackEvent("key_delete");
         if (consoleKeyId === key.id && typeof window !== "undefined") {
-          localStorage.removeItem(API_KEY_STORAGE);
-          localStorage.removeItem(CONSOLE_KEY_ID_STORAGE);
+          clearConsoleApiKey();
           setConsoleKeyId(null);
           onConsoleKeyChange?.("");
           window.dispatchEvent(new Event("darkbloom-key-expired"));

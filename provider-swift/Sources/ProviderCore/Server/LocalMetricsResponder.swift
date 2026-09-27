@@ -36,10 +36,12 @@ import NIOCore
 public struct MTPSlotMetricsSample: Sendable {
     let model: String
     let snapshot: ProviderMTPStatusSnapshot
+    let posture: LocalServingPosture?
 
-    init(model: String, snapshot: ProviderMTPStatusSnapshot) {
+    init(model: String, snapshot: ProviderMTPStatusSnapshot, posture: LocalServingPosture? = nil) {
         self.model = model
         self.snapshot = snapshot
+        self.posture = posture
     }
 }
 
@@ -90,7 +92,7 @@ enum MTPPrometheusRenderer {
             guard let reason = sample.snapshot.fallbackReason?.rawValue else { return nil }
             return "mtp_inactive_reason{\(label(sample)),reason=\"\(escapeLabel(reason))\"} 1"
         }
-        return out
+        return out + LocalServingPostureRenderer.render(slots)
     }
 
     /// Joins the upstream exposition body and the rendered MTP block with

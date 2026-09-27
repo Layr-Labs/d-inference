@@ -108,6 +108,7 @@ type VerificationResult struct {
 	HardwareModel            string
 	ChipFamily               string
 	ChipName                 string
+	OSVersion                string // App-reported, signed metadata; not Apple-certified OS inventory.
 	SerialNumber             string
 	MetallibHash             string
 	SecureEnclaveAvailable   bool
@@ -143,6 +144,7 @@ func Verify(signed SignedAttestation) VerificationResult {
 		ChipFamily:               signed.Attestation.ChipFamily,
 		HardwareModel:            signed.Attestation.HardwareModel,
 		ChipName:                 signed.Attestation.ChipName,
+		OSVersion:                signed.Attestation.OSVersion,
 		SerialNumber:             signed.Attestation.SerialNumber,
 		MetallibHash:             signed.Attestation.MetallibHash,
 		SecureEnclaveAvailable:   signed.Attestation.SecureEnclaveAvailable,

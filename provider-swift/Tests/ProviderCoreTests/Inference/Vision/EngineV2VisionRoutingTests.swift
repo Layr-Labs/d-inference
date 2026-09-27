@@ -1045,8 +1045,9 @@ struct EngineV2VisionRoutingTests {
         #expect(outstanding == 0)
     }
 
-    @Test("construction failure REFUSES loudly: ERROR telemetry + 503, no legacy fallback")
-    func constructionFailureRefusesLoudly() async throws {
+    @Test("construction failure REFUSES loudly: ERROR telemetry + 503, no legacy fallback",
+          arguments: [false, true])
+    func constructionFailureRefusesLoudly(typedVisionFailure: Bool) async throws {
         struct PrepFailure: Error {}
         // Real budget behind the slot's gate so the vision reservation is
         // NOT a no-op: the refusal path must release it (a leak would shrink
@@ -1056,7 +1057,10 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in throw PrepFailure() },
+            prepare: { _, _, _ in
+                if typedVisionFailure { throw EngineV2VisionPrefillError.towerFault(stage: "test") }
+                throw PrepFailure()
+            },
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
@@ -1093,7 +1097,8 @@ struct EngineV2VisionRoutingTests {
         #expect(refusals.first?.fields?["multimodal"]?.description == "true")
         #expect(refusals.first?.fields?["media_kind"]?.description == "image")
         #expect(
-            refusals.first?.fields?["error_class"]?.description.contains("PrepFailure") == true)
+            refusals.first?.fields?["error_class"]?.description.contains(
+                typedVisionFailure ? "EngineV2VisionPrefillError" : "PrepFailure") == true)
         // No fallback WARN exists anymore.
         #expect(
             telemetry.events.allSatisfy {

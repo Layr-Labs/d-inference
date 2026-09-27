@@ -58,6 +58,7 @@ func TestGateReasonNamesComplete(t *testing.T) {
 	want := map[SelectionPath]string{
 		SelectionNone: "none", SelectionUniqueMin: "unique_min", SelectionTieQueue: "tie_queue",
 		SelectionTiePending: "tie_pending", SelectionRandom: "random", SelectionPrefixAffinity: "prefix_affinity",
+		SelectionCacheCredit: "cache_credit",
 	}
 	if len(want) != int(selectionPathCount) {
 		t.Fatalf("SelectionPath vocabulary has %d names, want %d", len(want), selectionPathCount)
@@ -399,24 +400,80 @@ func TestSelectRoutingCandidatePaths(t *testing.T) {
 		}
 	})
 	t.Run("cache_cost_minimum", func(t *testing.T) {
+		// The credited minimum keeps the cold peer inside the near-tie band
+		// (the band no longer collapses to zero) and wins through the credit.
 		a, b := mkCandidate("a", 1000, 0, 0, 0), mkCandidate("b", 900, 0, 0, 500)
+		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b})
+		if id(w) != "b" || id(ru) != "a" || n != 2 || path != SelectionCacheCredit {
+			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
+		}
+	})
+	t.Run("cache_equal_spread", func(t *testing.T) {
+		// Holders identical on every ranking term are spread uniformly, so a
+		// same-prefix burst does not converge on one holder and cascade into
+		// commit-time rescans. A rescan selects from the same equivalent set.
+		a, b := mkCandidate("a", 900, 0, 0, 500), mkCandidate("b", 900, 0, 0, 500)
+		seen := map[string]bool{}
+		for i := 0; i < 60; i++ {
+			w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b})
+			if (w != a && w != b) || (w == a && ru != b) || (w == b && ru != a) || n != 2 || path != SelectionCacheCredit {
+				t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
+			}
+			seen[id(w)] = true
+		}
+		if !seen["a"] || !seen["b"] {
+			t.Fatalf("equivalent credited holders were not spread: %v", seen)
+		}
+	})
+	t.Run("cache_credit_tie_breaks_before_spread", func(t *testing.T) {
+		// Equal cost and credit: the fresher evidence, then the lighter load,
+		// still decide before any random draw.
+		fresh, stale := mkCandidate("fresh", 900, 0, 0, 500), mkCandidate("stale", 900, 0, 0, 500)
+		fresh.cacheEvidenceWeight, stale.cacheEvidenceWeight = 1, .5
+		idle, busy := mkCandidate("idle", 900, 0, 0, 500), mkCandidate("busy", 900, 0, 1, 500)
+		for i := 0; i < 20; i++ {
+			if w, _, _, path := selectRoutingCandidate([]*routingCandidate{stale, fresh}); w != fresh || path != SelectionCacheCredit {
+				t.Fatalf("stale evidence won: %s %s", id(w), path)
+			}
+			if w, _, _, path := selectRoutingCandidate([]*routingCandidate{busy, idle}); w != idle || path != SelectionCacheCredit {
+				t.Fatalf("busier holder won: %s %s", id(w), path)
+			}
+		}
+	})
+	t.Run("cache_credit_beats_less_busy_cold_peer", func(t *testing.T) {
+		// A credited holder inside the band wins over a cold peer even when the
+		// cold peer would win today's least-busy spreading.
+		a, b := mkCandidate("a", 1200, 1, 1, 300), mkCandidate("b", 1000, 0, 0, 0)
+		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{b, a})
+		if id(w) != "a" || id(ru) != "b" || n != 2 || path != SelectionCacheCredit {
+			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
+		}
+	})
+	t.Run("cache_credit_beyond_band_loses", func(t *testing.T) {
+		a, b := mkCandidate("a", 4001, 0, 0, 300), mkCandidate("b", 1000, 1, 0, 0)
 		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b})
 		if id(w) != "b" || id(ru) != "a" || n != 1 || path != SelectionUniqueMin {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 		}
 	})
-	t.Run("cache_equal_random", func(t *testing.T) {
-		a, b := mkCandidate("a", 900, 0, 0, 500), mkCandidate("b", 900, 0, 0, 500)
-		_, _, _, path := selectRoutingCandidate([]*routingCandidate{a, b})
-		if path != SelectionRandom {
-			t.Fatalf("path = %s, want random", path)
-		}
-	})
-	t.Run("discounted_minimum_keeps_cost_preference", func(t *testing.T) {
-		a, b := mkCandidate("a", 500, 0, 0, 300), mkCandidate("b", 1000, 1, 0, 0)
+	t.Run("cache_credit_alone_in_band_is_unique_min", func(t *testing.T) {
+		a, b := mkCandidate("a", 500, 0, 0, 300), mkCandidate("b", 4000, 0, 0, 0)
 		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{b, a})
 		if id(w) != "a" || id(ru) != "b" || n != 1 || path != SelectionUniqueMin {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
+		}
+	})
+	t.Run("restore_penalty_never_enters_band", func(t *testing.T) {
+		// A restore penalty (negative estimated saving, no credit) competes on
+		// strict cost: it is not a near-tie of a cheaper, busier cold peer.
+		penalized := mkCandidate("penalized", 1040, 0, 0, 0)
+		penalized.cacheEstimatedTTFTSavedMs = -40
+		cold := mkCandidate("cold", 1020, 1, 1, 0)
+		for _, pool := range [][]*routingCandidate{{penalized, cold}, {cold, penalized}} {
+			w, ru, n, path := selectRoutingCandidate(pool)
+			if id(w) != "cold" || id(ru) != "penalized" || n != 1 || path != SelectionUniqueMin {
+				t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
+			}
 		}
 	})
 }

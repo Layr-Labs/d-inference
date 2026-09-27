@@ -99,15 +99,15 @@ public enum TemplateRenderCheck {
     /// Never throws and never traps: this runs inside the startup model
     /// scan for every cached model, so any unexpected condition degrades to
     /// a result, not a crash. Multimodal (content-parts) fixtures are only
-    /// rendered for vision models (`config.json` declares `vision_config`),
+    /// rendered for models with enabled serving-media capability,
     /// mirroring the runtime: `MessageGenerator`s only emit content-parts
     /// message shapes for VLM models, so judging a text-only template
     /// against parts it will never see would false-flag healthy models.
-    public static func renderOK(at snapshotDir: URL) -> Bool? {
+    public static func renderOK(at snapshotDir: URL, modelID: String? = nil) -> Bool? {
         let sources = templateSources(at: snapshotDir)
         guard !sources.isEmpty else { return nil }
 
-        let includeMultimodal = configDeclaresVision(at: snapshotDir)
+        let includeMultimodal = configDeclaresVision(at: snapshotDir, modelID: modelID)
         let fixtures = canonicalFixtures(includeMultimodal: includeMultimodal)
         let specialTokens = specialTokenContext(at: snapshotDir)
 
@@ -135,16 +135,15 @@ public enum TemplateRenderCheck {
         return true
     }
 
-    /// Whether `config.json` declares a vision tower (`vision_config`).
-    /// Mirrors `ModelScanner.configDeclaresVision` / `ProviderLoop.modelIsVLM`,
-    /// re-derived here so the Linux-buildable foundation target stays
-    /// dependency-free.
-    static func configDeclaresVision(at snapshotDir: URL) -> Bool {
+    /// Use the same serving-media policy as scanner/runtime admission. A
+    /// retained vision config alone does not authorize media fixtures for
+    /// a text-only model. The policy remains independent of MLX.
+    static func configDeclaresVision(at snapshotDir: URL, modelID: String? = nil) -> Bool {
         let configURL = snapshotDir.appendingPathComponent("config.json")
         guard let data = try? Data(contentsOf: configURL),
             let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return false }
-        return json["vision_config"] != nil
+        return ModelMediaPolicy.advertisesMedia(json, modelID: modelID)
     }
 
     // MARK: - Render context

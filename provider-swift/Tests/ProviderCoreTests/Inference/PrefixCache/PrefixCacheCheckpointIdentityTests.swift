@@ -16,13 +16,14 @@ struct PrefixCacheCheckpointIdentityTests {
         codec: String? = "qwen-test-v1",
         environment: [String: String] = [:],
         process: [String: String] = [:],
-        storage: CompleteCheckpointStorageIdentity? = nil
+        storage: CompleteCheckpointStorageIdentity? = nil,
+        native: [String: String] = [:]
     ) -> CBv2CompleteCheckpointIdentity? {
         PrefixCachePolicy.completeCheckpointIdentity(
             modelAggregateHash: model, promptContractID: prompt,
             binaryHash: binary, loadedMetallibHash: metallib, osVersion: os,
             mtpConfig: mtp, assistantCodecID: codec,
-            environment: environment, processEnvironment: process, storage: storage)
+            environment: environment, processEnvironment: process, storage: storage, additionalNumerics: native)
     }
 
     @Test("Missing or malformed verified identities fail cold")
@@ -68,7 +69,13 @@ struct PrefixCacheCheckpointIdentityTests {
         "DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY",
         "DARKBLOOM_GEMMA4_PREFILL_TAIL_MIN_CHUNK",
         "DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS",
+        "DARKBLOOM_DIFFUSION_KERNEL_PROFILE",
         "DARKBLOOM_QWEN_MTP_MAX_DRAFT",
+        "DARKBLOOM_QWEN4_BF16_HIDDEN",
+        "DARKBLOOM_QWEN4_PLE_SSD_OFFLOAD",
+        "DARKBLOOM_QWEN4_GATHER_QMM",
+        "DARKBLOOM_QWEN4_EXACT_ROUTER",
+        "DARKBLOOM_QWEN4_BATCHED_QSA",
         "DARKBLOOM_NEMOTRON35_MTP_CAPTURE_VERIFY",
         "DARKBLOOM_NEMOTRON35_MTP_KV_ONLY_HISTORY",
         "DARKBLOOM_NEMOTRON35_MTP_BATCHED_M1",
@@ -124,6 +131,17 @@ struct PrefixCacheCheckpointIdentityTests {
         #expect(identity(environment: ["MLX_TEST_A": "bc"]) != identity(environment: ["MLX_TEST_Ab": "c"]))
         #expect(identity(environment: ["LOG_LEVEL": "debug", "UNRELATED_SECRET": "never-hashed"]) == identity())
         #expect(identity(process: ["HOME": "/different/home"]) == identity())
+    }
+
+    @Test("Native layout and prefill geometry bind independent fingerprint fields")
+    func nativeContract() throws {
+        let fields = ["layout": CBv2CompleteCheckpointManifest.diffusionBlockLayout, "prefillChunkSize": "512"]
+        let base = try #require(identity(native: fields))
+        #expect(base != identity())
+        #expect(base == identity(native: Dictionary(uniqueKeysWithValues: fields.sorted { $0.key > $1.key })))
+        #expect(base != identity(native: ["layout": fields["layout"]!, "prefillChunkSize": "256"]))
+        #expect(base != identity(native: ["layout": "different", "prefillChunkSize": "512"]))
+        #expect(identity(native: ["os": "native"]) != identity(os: "native"), "Additional keys cannot overwrite common fields")
     }
 
     @Test("actual backend, precision and page geometry separate disk namespaces")

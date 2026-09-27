@@ -118,22 +118,7 @@ extension ModelDownloader {
         manifest: ModelManifest,
         onProgress: (@Sendable (ProgressEvent) -> Void)?
     ) async throws {
-        try Self.validateChunkedManifest(manifest)
-        guard manifest.modelID == model.id else {
-            throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
-        }
-        guard manifest.files.count == manifest.fileCount else {
-            throw ModelCatalogError.downloadFailed("manifest file_count \(manifest.fileCount) does not match files array")
-        }
-        guard !manifest.files.isEmpty else {
-            throw ModelCatalogError.downloadFailed("manifest contains no files")
-        }
-        if let aggregate = model.aggregateSHA256, aggregate != manifest.aggregateSHA256 {
-            throw ModelCatalogError.downloadFailed("catalog aggregate hash does not match manifest")
-        }
-        if let prefix = model.r2Prefix, prefix != manifest.r2Prefix {
-            throw ModelCatalogError.downloadFailed("catalog r2_prefix does not match manifest")
-        }
+        try Self.validate(manifest: manifest, for: model)
 
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
@@ -149,29 +134,14 @@ extension ModelDownloader {
             Self.localStagingDirName(r2Prefix: manifest.r2Prefix), isDirectory: true)
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
-        let jobs = try manifest.files.map { file -> (file: ManifestFile, destination: URL, url: String) in
-            let relativePath = try Self.validatedManifestRelativePath(file.path)
-            return (
-                file: file,
-                destination: stagingDir.appendingPathComponent(relativePath, isDirectory: false),
-                url: "\(r2CDNURL)/\(Self.escapeR2Path(manifest.r2Prefix))/\(Self.escapeR2Path(relativePath))"
-            )
-        }
+        let jobs = try manifestJobs(manifest, stagingDir: stagingDir)
 
         // Resume: skip files already staged + valid; only the not-yet-valid files
         // are enqueued below.
         let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
-        // The foreground per-file downloader now byte-resumes (streams to a stable
-        // `.part` and appends via HTTP `Range`), so credit any bytes already saved
-        // in each `.part`: a near-complete resume of a big shard must not be charged
-        // disk room equal to the whole shard.
-        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
-        try Self.ensureAvailableCapacity(
-            at: snapshotsDir,
-            requiredBytes: Self.remainingBytesToFetch(
-                sizes: jobs.map(\.file.sizeBytes), alreadyValid: alreadyValid, partBytes: partBytes
-            )
-        )
+        try capacityCheck(snapshotsDir, manifestCapacityRequired(
+            jobs: jobs, alreadyValid: alreadyValid,
+            huggingFaceArtifact: model.huggingFaceArtifact, concurrency: concurrency))
         let pending = zip(jobs, alreadyValid).filter { !$0.1 }.map(\.0)
 
         // FINISH-ON-RESTART: a prior run already staged every shard size+SHA-valid
@@ -242,13 +212,10 @@ extension ModelDownloader {
             renderTask.cancel()
             // One last render so the user sees where things stopped.
             renderer.render(progress.allProgress)
-            // Keep staging ONLY if it holds resumable content (a completed file or
-            // a `.part` prefix); otherwise remove the empty husk so a first-file
-            // failure doesn't leave a stray staging dir behind. (A promoted file is
-            // full-size + SHA-verified; size/SHA failures delete the `.part` first.)
+            // Keep completed files, HTTP prefixes and chunk transfers. A retry
+            // revalidates the chunk prefix before reusing any saved bytes.
             let hasResumable = jobs.contains {
-                fileSize($0.destination) == $0.file.sizeBytes
-                    || fileSize($0.destination.appendingPathExtension("part")) > 0
+                hasResumableContent(file: $0.file, destination: $0.destination)
             }
             if !hasResumable {
                 try? FileManager.default.removeItem(at: stagingDir)
@@ -259,32 +226,4 @@ extension ModelDownloader {
         try finalizeStagedManifest(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
         onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
     }
-
-    /// Verify the aggregate hash over the staged files, then publish the snapshot
-    /// (`snapshots/local` + `refs/main`) so `ModelScanner` discovers it. Shared by
-    /// the normal completion path and the finish-on-restart short-circuit.
-    ///
-    /// On an aggregate mismatch over internally-valid files (a poisoned manifest:
-    /// every per-file SHA passed but the claimed aggregate is wrong) staging is
-    /// cleared so a corrected manifest re-downloads cleanly — otherwise skip-valid
-    /// would re-fail the aggregate forever. Transient per-file/network failures
-    /// throw earlier and deliberately KEEP staging so the next attempt resumes.
-    private func finalizeStagedManifest(
-        model: CatalogModel,
-        manifest: ModelManifest,
-        jobs: [(file: ManifestFile, destination: URL, url: String)],
-        stagingDir: URL,
-        cacheDir: URL
-    ) throws {
-        let aggregate = WeightHasher.hashFilesWithRelativeKey(jobs.map { (file: $0.destination, sortKey: $0.file.path) })
-        guard aggregate == manifest.aggregateSHA256 else {
-            try? FileManager.default.removeItem(at: stagingDir)
-            throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
-        }
-        try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
-        try writeMainRef(for: model.id)
-        // Staging was consumed by publishStagedSnapshot; best-effort husk cleanup.
-        try? FileManager.default.removeItem(at: stagingDir)
-    }
-
 }

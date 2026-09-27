@@ -36,7 +36,7 @@ describe("Continuous network overview",()=>{
       });
     }));
     render(<StatsPage/>);
-    expect(await screen.findByText("Macs online")).toBeInTheDocument();
+    expect(await screen.findByText("Connections")).toBeInTheDocument();
     expect(screen.getByRole("status",{name:"Geography availability"})).toHaveTextContent("Request locations are temporarily unavailable");
     for (const name of ["Activity over time","Model capacity","The silicon behind the network"]) {
       expect(screen.getByRole("heading",{name})).toBeInTheDocument();
@@ -68,7 +68,7 @@ describe("Continuous network overview",()=>{
 
   it("presents geography, activity, model capacity and silicon together without navigation tabs",async()=>{
     render(<StatsPage/>);
-    expect(await screen.findByText("Macs online")).toBeInTheDocument();
+    expect(await screen.findByText("Connections")).toBeInTheDocument();
     expect(screen.getByText("Refreshes every 30 seconds")).toBeInTheDocument();
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
     for(const name of ["Network geography","Activity over time","Model capacity","The silicon behind the network"]){

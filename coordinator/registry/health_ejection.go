@@ -93,11 +93,14 @@ func healthEjectionEnabled() bool {
 // verifies, so an invalid result can carry another machine's serial — deriving
 // an identity from it would bind a hostile session's fault state under
 // "serial:<victim>" and deroute the legitimate machine when it reconnects.
-// Valid-gating (not MDA-gating) is deliberate: VerificationResult carries no
+// On legacy-only sessions, valid-gating (not MDA-gating) is deliberate: VerificationResult carries no
 // MDA/trust field — that state lives on Provider and is granted later by the
 // bounded MDM/MDA scheduler. A Valid-but-uncrosschecked serial cannot accumulate
 // served-fault state in production because routing requires hardware trust, and
 // every grant still cross-checks the attested serial/device identity.
+// MDM-optional sessions cannot rely on that later legacy gate: they require an
+// authenticated canonical machine first, or MDA-verified serial / account-scoped
+// SE-key fallback while canonical binding is pending.
 // The account fallback is safe on any result: AccountID is stamped from the
 // authenticated provider token at registration, never from the attestation blob.
 //
@@ -109,6 +112,24 @@ func healthEjectionEnabled() bool {
 // before calling — so every path reads these fields under p.mu without re-entrancy.
 func stableProviderIdentityLocked(p *Provider) string {
 	if p == nil {
+		return ""
+	}
+	if p.verifiedMachineID != "" && p.verifiedMachineAccount != "" && p.verifiedMachineAccount == p.AccountID {
+		return "machine:" + p.verifiedMachineAccount + ":" + p.verifiedMachineID
+	}
+	if p.requireVerifiedMachineIdentity {
+		if ar := p.AttestationResult; ar != nil && ar.Valid {
+			if p.TrustLevel == TrustHardware && p.MDAVerified && p.SEKeyBound && p.MDAResult != nil &&
+				p.MDAResult.DeviceSerial != "" && p.MDAResult.DeviceSerial == ar.SerialNumber {
+				return "serial:" + ar.SerialNumber
+			}
+			if p.AccountID != "" && ar.PublicKey != "" {
+				return "sekey:" + p.AccountID + ":" + ar.PublicKey
+			}
+		}
+		if p.AccountID != "" {
+			return "acct:" + p.AccountID
+		}
 		return ""
 	}
 	if ar := p.AttestationResult; ar != nil && ar.Valid {

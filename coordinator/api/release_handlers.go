@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -37,17 +38,21 @@ var (
 )
 
 type registerReleaseRequest struct {
-	Version        string `json:"version"`
-	Platform       string `json:"platform"`
-	Backend        string `json:"backend,omitempty"`
-	BinaryHash     string `json:"binary_hash"`
-	BundleHash     string `json:"bundle_hash"`
-	MetallibHash   string `json:"metallib_hash,omitempty"`
-	PythonHash     string `json:"python_hash,omitempty"`
-	RuntimeHash    string `json:"runtime_hash,omitempty"`
-	TemplateHashes string `json:"template_hashes,omitempty"`
-	URL            string `json:"url"`
-	Changelog      string `json:"changelog"`
+	RequireAppAttestQualification bool   `json:"require_app_attest_qualification,omitempty"`
+	CodeDirectoryHash             string `json:"code_directory_hash,omitempty"`
+	SourceCommit                  string `json:"source_commit,omitempty"`
+	CIRunID                       string `json:"ci_run_id,omitempty"`
+	Version                       string `json:"version"`
+	Platform                      string `json:"platform"`
+	Backend                       string `json:"backend,omitempty"`
+	BinaryHash                    string `json:"binary_hash"`
+	BundleHash                    string `json:"bundle_hash"`
+	MetallibHash                  string `json:"metallib_hash,omitempty"`
+	PythonHash                    string `json:"python_hash,omitempty"`
+	RuntimeHash                   string `json:"runtime_hash,omitempty"`
+	TemplateHashes                string `json:"template_hashes,omitempty"`
+	URL                           string `json:"url"`
+	Changelog                     string `json:"changelog"`
 }
 
 func (req registerReleaseRequest) toRelease() store.Release {
@@ -120,7 +125,16 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.SetRelease(&release); err != nil {
+	saveErr := s.persistReleaseForPublication(ctx, release, req)
+	if errors.Is(saveErr, errBuildQualificationUnavailable) {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("qualification_unavailable", "qualification refresh failed"))
+		return
+	}
+	if errors.Is(saveErr, store.ErrBuildNotQualified) || errors.Is(saveErr, store.ErrBuildConflict) {
+		writeJSON(w, http.StatusConflict, errorResponse("app_attest_qualification_required", "approve the exact signed artifact via /v1/admin/app-attest/builds, then retry publication: "+saveErr.Error()))
+		return
+	}
+	if err := saveErr; err != nil {
 		s.logger.Error("release: register failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to save release"))
 		return
@@ -238,7 +252,11 @@ func (s *Server) trustedReleaseArtifactURL(release *store.Release) (*url.URL, er
 		return nil, err
 	}
 	if !sameReleaseArtifactURL(release.URL, expectedURL) {
-		return nil, fmt.Errorf("url must match configured release artifact path")
+		immutable, err := expectedReleaseArtifactURL(s.r2CDNURL, release.Version, release.Platform, release.BundleHash)
+		if err != nil || !sameReleaseArtifactURL(release.URL, immutable) {
+			return nil, fmt.Errorf("url must match configured release artifact path")
+		}
+		expectedURL = immutable
 	}
 	parsed, err := url.Parse(expectedURL)
 	if err != nil {
@@ -247,7 +265,7 @@ func (s *Server) trustedReleaseArtifactURL(release *store.Release) (*url.URL, er
 	return parsed, nil
 }
 
-func expectedReleaseArtifactURL(baseURL, version, platform string) (string, error) {
+func expectedReleaseArtifactURL(baseURL, version, platform string, bundleHash ...string) (string, error) {
 	version = strings.TrimSpace(version)
 	platform = strings.TrimSpace(platform)
 	if !releaseVersionPattern.MatchString(version) {
@@ -273,7 +291,15 @@ func expectedReleaseArtifactURL(baseURL, version, platform string) (string, erro
 	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
 		return "", fmt.Errorf("configured R2 CDN URL must use https")
 	}
-	u.Path = path.Join(u.Path, "releases", "v"+version, "darkbloom-bundle-"+platform+".tar.gz")
+	u.Path = path.Join(u.Path, "releases", "v"+version)
+	if len(bundleHash) > 0 {
+		hash, err := normalizeSHA256Hex(bundleHash[0], "bundle_hash")
+		if err != nil {
+			return "", err
+		}
+		u.Path = path.Join(u.Path, "artifacts", hash)
+	}
+	u.Path = path.Join(u.Path, "darkbloom-bundle-"+platform+".tar.gz")
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String(), nil
@@ -472,6 +498,11 @@ func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
 
 	cacheKey := latestReleaseCacheKey(platform)
 	if cached, ok := s.readCache.Get(cacheKey); ok {
+		var release store.Release
+		if json.Unmarshal(cached, &release) != nil || !s.appAttestDownloadReady(&release) {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("release_not_ready", "release authorization is not ready"))
+			return
+		}
 		writeCachedJSON(w, cached)
 		return
 	}
@@ -482,6 +513,10 @@ func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.appAttestDownloadReady(release) {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("release_not_ready", "release authorization is not ready"))
+		return
+	}
 	body, err := json.Marshal(release)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode release"))

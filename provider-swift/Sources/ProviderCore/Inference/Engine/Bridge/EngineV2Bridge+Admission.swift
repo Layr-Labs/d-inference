@@ -221,9 +221,10 @@ extension EngineV2Bridge {
 
     func reserveSharedRequestBytes(
         budget: GlobalKVCacheBudget, requestID: String, tokenCount: Int,
+        nativeBytes: Int? = nil,
         profile: RequestProfileBuilder? = nil
     ) async -> Bool {
-        guard let total = requestReservationBytes(tokenCount: tokenCount), total > 0 else {
+        guard let total = nativeBytes ?? requestReservationBytes(tokenCount: tokenCount), total > 0 else {
             return false
         }
         // Profiler `kv_reserve_us`: the shared-budget actor hop (accumulates

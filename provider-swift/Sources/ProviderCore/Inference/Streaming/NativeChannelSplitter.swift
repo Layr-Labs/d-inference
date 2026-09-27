@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 import MLXLMServer
 
 /// Bounded native think-channel lexer. Tool frames are opaque argument data:
@@ -9,23 +10,58 @@ struct NativeChannelSplitter {
     private var state: State
     private var buffer = ""
     private let protectToolFrames: Bool
-    var bufferedCharacterCount: Int { buffer.count }
+    private let qwenStructuredFrames: Bool
+    private var toolScanner: Qwen35ToolFrameScanner?
+    private let preserveInnerReasoningSpans: Bool
+    private var innerReasoningDepth = 0
+    private(set) var reasoningNestingLimitExceeded = false
+    static let maximumInnerReasoningDepth = 32
+    var bufferedCharacterCount: Int { buffer.count + (toolScanner?.bufferedCharacterCount ?? 0) }
 
-    init(prefix: String, protectToolFrames: Bool) {
+    init(prefix: String, protectToolFrames: Bool, qwenStructuredFrames: Bool = false,
+         preserveInnerReasoningSpans: Bool = false) {
         state = prefix == "<think>" ? .reasoning : .content
         self.protectToolFrames = protectToolFrames
+        self.qwenStructuredFrames = qwenStructuredFrames
+        self.preserveInnerReasoningSpans = preserveInnerReasoningSpans
     }
 
     mutating func parse(_ text: String) -> [ParsedReasoning] {
+        guard !reasoningNestingLimitExceeded else { return [] }
         buffer += text
         return drain(final: false)
     }
 
-    mutating func finish() -> [ParsedReasoning] { drain(final: true) }
+    mutating func finish() -> [ParsedReasoning] {
+        guard !reasoningNestingLimitExceeded else { return [] }
+        let pieces = drain(final: true)
+        toolScanner = nil
+        return pieces
+    }
 
     private mutating func drain(final: Bool) -> [ParsedReasoning] {
         var result: [ParsedReasoning] = []
         while !buffer.isEmpty {
+            if var scanner = toolScanner {
+                var end: String.Index?
+                for index in buffer.unicodeScalars.indices {
+                    if scanner.consume(buffer.unicodeScalars[index]) {
+                        end = buffer.unicodeScalars.index(after: index)
+                        break
+                    }
+                }
+                if let end {
+                    append(String(buffer[..<end]), reasoning: false, to: &result)
+                    buffer.removeSubrange(buffer.startIndex..<end)
+                    toolScanner = nil
+                    state = .content
+                    continue
+                }
+                append(buffer, reasoning: false, to: &result)
+                buffer = ""
+                toolScanner = final ? nil : scanner
+                break
+            }
             let markers: [String]
             let reasoning: Bool
             switch state {
@@ -33,7 +69,7 @@ struct NativeChannelSplitter {
                 markers = protectToolFrames ? ["<think>", "<tool_call>", "<function="] : ["<think>"]
                 reasoning = false
             case .reasoning:
-                markers = ["</think>"]
+                markers = preserveInnerReasoningSpans ? ["<think>", "</think>"] : ["</think>"]
                 reasoning = true
             case .tool(let end):
                 markers = [end]
@@ -50,10 +86,28 @@ struct NativeChannelSplitter {
                     else {
                         append(marker, reasoning: false, to: &result)
                         state = .tool(end: marker == "<tool_call>" ? "</tool_call>" : "</function>")
+                        if qwenStructuredFrames && marker == "<tool_call>" {
+                            toolScanner = Qwen35ToolFrameScanner()
+                        }
                     }
                 case .reasoning:
-                    append(String(buffer[..<range.lowerBound]), reasoning: true, to: &result)
-                    state = .content
+                    if preserveInnerReasoningSpans && marker == "<think>" {
+                        // An explicit inner span never promotes its example tool
+                        // text to invocations. Preserve both literal delimiters.
+                        guard innerReasoningDepth < Self.maximumInnerReasoningDepth else {
+                            reasoningNestingLimitExceeded = true
+                            buffer = ""
+                            return result
+                        }
+                        innerReasoningDepth += 1
+                        append(String(buffer[..<range.upperBound]), reasoning: true, to: &result)
+                    } else if preserveInnerReasoningSpans && innerReasoningDepth > 0 {
+                        innerReasoningDepth -= 1
+                        append(String(buffer[..<range.upperBound]), reasoning: true, to: &result)
+                    } else {
+                        append(String(buffer[..<range.lowerBound]), reasoning: true, to: &result)
+                        state = .content
+                    }
                 case .tool:
                     append(String(buffer[..<range.upperBound]), reasoning: false, to: &result)
                     state = .content

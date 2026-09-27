@@ -188,7 +188,7 @@ extension ProviderLoop {
                 modelId: modelId,
                 isVLM: slot.isVLM,
                 modelDirectory: modelDirectory,
-                container: slot.container,
+                container: slot.modelContainer,
                 previousArtifact: slot.engineBundle.mtpArtifact,
                 previousStatus: slot.engineBundle.mtpStatus,
                 assistant: recoveryAssistant,
@@ -208,7 +208,7 @@ extension ProviderLoop {
                 modelType: slot.modelType,
                 isVLM: slot.isVLM,
                 modelDirectory: modelDirectory,
-                container: slot.container,
+                container: slot.modelContainer,
                 tokenizer: slot.tokenizer,
                 sizing: rebuiltSizing,
                 kvBytesCapacity: grant,
@@ -218,7 +218,7 @@ extension ProviderLoop {
             // The replacement bundle now owns the moved handle.
             recoveryAssistant = nil
             var newBridge = newBundle.bridge
-            // makeEngineV2BridgeForSlot re-registered `newBridge` in
+            // makeEngineV2BundleForSlot re-registered `newBridge` in
             // engineV2Runtime (replacing the old bridge's entry).
 
             MLX.Memory.clearCache()
@@ -255,7 +255,7 @@ extension ProviderLoop {
                     modelType: slot.modelType,
                     isVLM: slot.isVLM,
                     modelDirectory: modelDirectory,
-                    container: slot.container,
+                    container: slot.modelContainer,
                     tokenizer: slot.tokenizer,
                     sizing: rebuiltSizing,
                     kvBytesCapacity: grant,
@@ -305,7 +305,7 @@ extension ProviderLoop {
 
             modelSlots[modelId] = ModelSlot(
                 engineBundle: newBundle,
-                container: slot.container,
+                modelContainer: slot.modelContainer,
                 tokenizer: slot.tokenizer,
                 sizing: rebuiltSizing,
                 cacheEligibleWeightHash: slot.cacheEligibleWeightHash,

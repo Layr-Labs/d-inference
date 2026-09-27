@@ -10,7 +10,7 @@ enum ProviderPromptContractPipeline {
     ) throws -> [Int] {
         let request = try ProviderLoop.decodeOpenAIRequest(body)
         let templateControls = ProviderLoop.extractChatTemplateControls(from: body).resolvingPromptDate()
-        let prepared = try ToolChoicePromptPolicy.prepare(request)
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
         return try tokenize(
             prepared: prepared,
             request: request,
@@ -27,19 +27,24 @@ enum ProviderPromptContractPipeline {
         modelType: String?,
         templateControls: ChatTemplateControls
     ) throws -> [Int] {
+        try DiffusionGemmaReasoningControl.validate(
+            request: request, controls: templateControls, modelType: modelType)
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let tools = prepared.tools?.map { $0.toolSpec() }
         let context = ChatTemplateFixContext(
             modelId: request.model,
             modelType: modelType)
+        let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: request,
+            controls: templateControls,
+            modelType: modelType,
+            hasMedia: MediaIngest.hasMedia(request),
+            requiresToolCall: prepared.requiresToolCall)
+        try Qwen4SupportPolicy.validateReasoningContext(
+            modelID: request.model, modelType: modelType, additionalContext: additionalContext)
         return try tokenizer.applyChatTemplate(
             messages: ChatTemplateFixes.normalizeMessages(messages, context: context),
             tools: ChatTemplateFixes.normalizeTools(tools, context: context),
-            additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
-                for: request,
-                controls: templateControls,
-                modelType: modelType,
-                hasMedia: MediaIngest.hasMedia(request),
-                requiresToolCall: prepared.requiresToolCall))
+            additionalContext: additionalContext)
     }
 }

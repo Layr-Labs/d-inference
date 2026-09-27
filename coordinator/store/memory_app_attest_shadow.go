@@ -1,6 +1,9 @@
 package store
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 func (s *MemoryStore) GetAppAttestShadowKey(ctx context.Context, id string) (*AppAttestShadowKey, error) {
 	if err := ctx.Err(); err != nil {
@@ -27,6 +30,7 @@ func (s *MemoryStore) InsertAppAttestShadowKey(ctx context.Context, key AppAttes
 	if _, ok := s.appAttestShadowKeys[key.KeyID]; ok {
 		return false, nil
 	}
+	key.UpdatedAt = time.Now().UTC()
 	s.appAttestShadowKeys[key.KeyID] = *cloneAppAttestKey(key)
 	return true, nil
 }
@@ -42,6 +46,7 @@ func (s *MemoryStore) AdvanceAppAttestShadowCounter(ctx context.Context, id, own
 		return false, nil
 	}
 	k.Counter = counter
+	k.UpdatedAt = time.Now().UTC()
 	s.appAttestShadowKeys[id] = k
 	return true, nil
 }

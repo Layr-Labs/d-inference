@@ -1,4 +1,3 @@
-import Crypto
 import Foundation
 
 extension ModelDownloader {
@@ -58,21 +57,16 @@ extension ModelDownloader {
         }
         let output = try FileHandle(forUpdating: assembled)
         defer { try? output.close() }
-        var completed: Int64 = 0
-        var firstMissing = 0
-        for chunk in chunks {
-            try Task.checkCancellation()
-            guard try Self.hashChunkPrefix(output, size: chunk.sizeBytes) == chunk.sha256 else { break }
-            completed += chunk.sizeBytes
-            firstMissing += 1
-        }
+        let prefix = try Self.verifiedR2Prefix(output, chunks: chunks)
+        var completed = prefix.bytes
+        let firstMissing = prefix.count
         try output.truncate(atOffset: UInt64(completed))
         try output.seek(toOffset: UInt64(completed))
         onChunk?(completed)
 
         // Account for the temporary chunk as well as the remaining assembly.
-        let scratch = chunks.map(\.sizeBytes).max() ?? 0
-        try Self.ensureAvailableCapacity(at: directory, requiredBytes: job.file.sizeBytes - completed + scratch)
+        let scratch = chunks.dropFirst(firstMissing).map(\.sizeBytes).max() ?? 0
+        try capacityCheck(directory, job.file.sizeBytes - completed + scratch)
         for index in firstMissing..<chunks.count {
             try Task.checkCancellation()
             let chunk = chunks[index]
@@ -115,15 +109,4 @@ extension ModelDownloader {
         try fm.removeItem(at: directory)
     }
 
-    private static func hashChunkPrefix(_ handle: FileHandle, size: Int64) throws -> String? {
-        var remaining = size
-        var hash = SHA256()
-        while remaining > 0 {
-            try Task.checkCancellation()
-            guard let data = try handle.read(upToCount: Int(min(remaining, 1024 * 1024))), !data.isEmpty else { return nil }
-            hash.update(data: data)
-            remaining -= Int64(data.count)
-        }
-        return hash.finalize().map { String(format: "%02x", $0) }.joined()
-    }
 }

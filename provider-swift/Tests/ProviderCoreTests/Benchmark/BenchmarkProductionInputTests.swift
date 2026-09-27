@@ -8,6 +8,41 @@ import Testing
 
 @Suite("Benchmark production input contract")
 struct BenchmarkProductionInputTests {
+    @Test("native Qwen4 forced-tool prompts match generation, benchmark, billing and admission")
+    func nativeQwen4PromptAccounting() throws {
+        for thinking in ["false", "true"] {
+            let body = Data(#"""
+            {"model":"DarkBloom/Qwen3.8-Flash-Next-Q4-mtp","max_tokens":128,
+             "temperature":0,"reasoning":{"enabled":THINKING},"_darkbloom_prompt_date":"2026-09-05",
+             "messages":[{"role":"system","content":"Keep the original policy."},
+                         {"role":"user","content":"Call lookup with q equal to literal <think>data</think>."}],
+             "tools":[{"type":"function","function":{"name":"lookup","parameters":{
+               "type":"object","properties":{"q":{"type":"string"}},"required":["q"],"additionalProperties":false}}}],
+             "tool_choice":"required"}
+            """#.replacingOccurrences(of: "THINKING", with: thinking).utf8)
+            let tokenizer = BenchmarkInputTokenizer()
+            let request = try ProviderLoop.decodeOpenAIRequest(body)
+            let controls = ProviderLoop.extractChatTemplateControls(from: body).resolvingPromptDate()
+            let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: "qwen4_exp")
+            #expect(prepared.messages == request.messages)
+            let served = try ProviderPromptContractPipeline.tokenize(
+                prepared: prepared, request: request, tokenizer: tokenizer,
+                modelType: "qwen4_exp", templateControls: controls)
+            let production = try ProviderPromptContractPipeline.tokenizeProviderBody(
+                body, tokenizer: tokenizer, modelType: "qwen4_exp")
+            let benchmark = try EngineV2Factory.benchmarkPrompt(body: body, tokenizer: tokenizer,
+                modelType: "qwen4_exp", defaultDate: PromptRenderDate("2026-09-05")!)
+            let floor = ProviderLoop.promptTokenFloor(request: request,
+                tokenizer: TokenizerHandle(tokenizer), modelType: "qwen4_exp", templateControls: controls)
+            let envelope = ProviderLoop.admissionTokenEnvelope(request: request,
+                tokenizer: TokenizerHandle(tokenizer), modelType: "qwen4_exp", templateControls: controls)
+            #expect(served == production && served == benchmark.tokens)
+            #expect(floor == served.count)
+            #expect(envelope == Int64(served.count + 128))
+            #expect(!tokenizer.decode(tokenIds: served, skipSpecialTokens: false).contains("Your entire response must"))
+        }
+    }
+
     @Test("request-owned date and late GPT instructions use the HTTP normalization pipeline")
     func normalizedPrompt() throws {
         let body = Data(#"""

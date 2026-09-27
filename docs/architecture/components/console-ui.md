@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-13 · commit `f7a3ef1fd`
+> Last updated: 2026-09-21 · commit `ce809b792`
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -95,7 +95,7 @@ Credential column: **Privy (required)** = `privyAuth()` must be non-empty or the
 |---|---|---|---|---|
 | `/api/admin/base-rewards` | GET | `GET /v1/admin/base-rewards` | Privy (required) | No cache; no UI caller |
 | `/api/attestation` | GET | `GET /v1/providers/attestation` | none | `?summary=1` → `{count, last_verified}` of `trust_level === "hardware"` providers, `cacheControl(15, 60)`; full mode projects to the whitelisted `AttestationProvider` fields (`projectProvider`), uncached |
-| `/api/auth/keys` | POST | `POST /v1/auth/keys` (no body) | Privy (if present) | Used by `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`) to obtain the console's inference key |
+| `/api/auth/keys` | POST, DELETE | `POST`/`DELETE /v1/auth/keys` | Privy (if present) | Used by `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`) to obtain the console's inference key; DELETE drops a spare mint that lost a race with a user-created key |
 | `/api/chat` | POST | `POST /v1/chat/completions` | API key → Bearer | `runtime = "nodejs"`, `dynamic = "force-dynamic"`; forwards `X-Darkbloom-Route`; a body with `Content-Type: application/eigeninference-sealed+json` is forwarded byte-verbatim; streams the upstream body; copies `x-provider-attested`, `x-provider-trust-level`, `x-provider-secure-enclave`, `x-provider-mda-verified`, `x-provider-chip`, `x-provider-model`, `x-request-id`, `x-attestation-se-public-key`, `x-eigen-sealed`, `x-eigen-sealed-kid`; SSE gets `Cache-Control: no-cache, no-transform` |
 | `/api/device/approve` | POST | `POST /v1/device/approve` | Privy (required) | `passthrough` |
 | `/api/encryption-key` | GET | `GET /v1/encryption-key` | none | Upstream 503 → `503 {"error":"encryption_unavailable"}`; success gets `Cache-Control: public, max-age=300` |
@@ -149,7 +149,7 @@ The stats page renders a continuous overview without waiting for catalog or capa
 | Privy access token | `Authorization: Bearer <JWT>` (`managementHeaders`, `console-ui/src/lib/http/proxy-client.ts`); the Privy SDK's `privy-token` cookie is the fallback read by `privyAuth()` | Header verbatim | Keys, fleet, earnings, device approval, Stripe Connect, base-rewards admin |
 | Console API key | `x-api-key: sk-db-…` (`proxyHeaders`; value from localStorage `darkbloom_api_key`) | `Authorization: Bearer sk-db-…` | Chat, `/api/models` (keyed path), balance, usage, invite redeem |
 
-The console key is provisioned by `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`): on `authenticated`, it calls `getAccessToken()` and `POST /api/auth/keys` with the Privy Bearer, stores `api_key` under `darkbloom_api_key`, migrates the pre-rebrand `eigeninference_api_key`, coalesces concurrent callers into one in-flight promise, and arms a `PROVISION_FAILURE_COOLDOWN_MS` = `30_000` ms cooldown after a failed or keyless response. `apiKeyReady` gates sending in chat.
+The console key is provisioned by `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`): on `authenticated`, it calls `getAccessToken()` and `POST /api/auth/keys` with the Privy Bearer, stores `api_key` under `darkbloom_api_key` via `writeUntrackedConsoleApiKey` (`console-ui/src/lib/console-api-key.ts`), migrates the pre-rebrand `eigeninference_api_key`, coalesces concurrent callers into one in-flight promise, and arms a `PROVISION_FAILURE_COOLDOWN_MS` = `30_000` ms cooldown after a failed or keyless response. An untracked mint, logout, a chat `401`, and `darkbloom-key-expired` all drop `darkbloom_console_key_id` so a leftover tracked id cannot make a newly provisioned secret look like the user's chosen console key. If localStorage already holds a secret when the mint returns (the user created/adopted a named key while the request was in flight), the spare is `DELETE`d via `/api/auth/keys` and is not stored. Creating a named key (`useApiKeys.createKey`) adopts it as the console key when none is tracked — including when only an untracked auto-provisioned secret is present — and revokes that previous secret. `apiKeyReady` gates sending in chat. The coordinator's `POST /v1/auth/keys` inherits `self_route_only` when every active key on the account is already machine-only (`consoleKeyInheritsSelfRouteOnly`).
 
 ### Coordinator URL resolution
 
@@ -236,7 +236,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 7. **`/api/*` is outside the interceptor.** The `matcher` in `console-ui/src/proxy.ts` excludes `api/`.
 8. **No client telemetry leaves the page.** `emit` and `installGlobalHandlers` are empty (`console-ui/src/lib/telemetry.ts`); `POST` in `console-ui/src/app/api/telemetry/route.ts` returns `telemetry_ingest_disabled` unconditionally ([api-contracts](../../reference/api-contracts.md#telemetry-1)).
 9. **Persisted chat state carries no image bytes or live flags.** `partialize` in `console-ui/src/lib/store.ts` sets `images: undefined` and `streaming: false`.
-10. **Key provisioning is bounded.** One in-flight `POST /api/auth/keys` per tab (`provisionInFlight`) and a `PROVISION_FAILURE_COOLDOWN_MS` back-off after failure (`console-ui/src/hooks/useAuth.ts`).
+10. **Key provisioning is bounded and does not clobber a user-created key.** One in-flight `POST /api/auth/keys` per tab (`provisionInFlight`) and a `PROVISION_FAILURE_COOLDOWN_MS` back-off after failure (`console-ui/src/hooks/useAuth.ts`). A mint that loses a race with a stored secret is revoked (`DELETE /api/auth/keys`) rather than overwriting localStorage. Creating a named key adopts it when the console key is missing or untracked (`adoptCreatedKeyIfUntracked`, `console-ui/src/components/api-keys/adoptConsoleKey.ts`).
 
 ## Failure modes
 
@@ -283,22 +283,26 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 
 ## Landing (`landing/`)
 
-The marketing site is static HTML plus vanilla JavaScript with no build step and no `package.json`: `landing/index.html`, `landing/terms.html`, `landing/privacy.html`, `landing/earn-calculator-core.js`, `landing/earn-calculator.js`, `landing/network-stats.js`, `landing/earn-calculator-core.test.js`, plus `landing/fonts/` and `landing/assets/`.
+The Next.js site imported from eigen-homepages replaces the static landing page.
+Its source, content, media, fonts, and configuration live in `landing/`;
+it has its own npm lockfile and shares no build dependencies with the console.
+See the [marketing README](../../../landing/README.md).
 
-**Earn calculator.** `landing/earn-calculator-core.js` is a hand-maintained mirror of `console-ui/src/app/earn/calc.ts` (with `MIN_PROVIDER_MEMORY_GB` from `console-ui/src/app/earn/providerReadiness.ts`); the two must change together, and `landing/earn-calculator-core.test.js` (`node --test landing/earn-calculator-core.test.js`) pins the shared values. Both files hard-code: `DEFAULT_DUTY_CYCLE_PERCENT = 5`, `DECODE_BANDWIDTH_EFFICIENCY = 0.65`, `MONTH_SECONDS = 30 * 24 * 60 * 60`, `MIN_PROVIDER_MEMORY_GB = 48`, the `MAC_CONFIGS` table (Mac type, chip, `ramOptions`, `bandwidthGBs`), and `CALCULATOR_MODELS` — `qwen3.6-35b-a3b-mxfp8`, `gemma-4-26b-a4b-mxfp8`, `gpt-oss-20b-mxfp4`, each with `minRAMGB`, `sizeGB`, `activeParameterCount`, `bytesPerParameter`, and a pinned `outputPriceMicroUSDPerMillion` that is **not fetched from the coordinator** (live prices: [`../../reference/pricing-model.md`](../../reference/pricing-model.md)). `calculateCapacityRevenue(model, hardware, memoryGB, dutyCyclePercent)` returns `null` when `memoryGB < model.minRAMGB` (the model does not fit) and otherwise computes:
+The browser calls same-origin routes under `landing/src/app/api/`:
+`chat/route.ts` proxies coordinator inference and usage-ledger requests,
+`network/route.ts` combines console stats with coordinator earnings,
+`about/route.ts` loads fleet stats and the model catalog/pricing, and
+`provider-stories/route.ts` forwards validated submissions to a configured
+webhook. Credentials stay on the server. The network route retains a fixed
+fallback snapshot when upstream stats are unavailable; the chat route
+returns an unavailable response when its credential is absent.
 
-```text
-activeWeightGBPerToken = activeParameterCount × bytesPerParameter / 1e9
-decodeTokensPerSecond  = bandwidthGBs × DECODE_BANDWIDTH_EFFICIENCY / activeWeightGBPerToken
-activeSecondsPerMonth  = MONTH_SECONDS × dutyCyclePercent / 100
-outputTokensPerMonth   = decodeTokensPerSecond × activeSecondsPerMonth
-monthlyRevenueUSD      = outputTokensPerMonth / 1e6 × (outputPriceMicroUSDPerMillion / 1e6)
-annualRevenueUSD       = monthlyRevenueUSD × 12
-```
-
-It is a decode-bandwidth capacity estimate at the chosen duty cycle, not a forecast, and it excludes base rewards (`calc.ts` keeps `FLOOR_TIERS` only for the unmounted `BaseRewardsPanel`). `landing/earn-calculator.js` binds the `<select>` elements in `landing/index.html` to the core.
-
-**Network stats.** `landing/network-stats.js` reads `GET <coordinator>/v1/stats` (default `https://api.darkbloom.dev`, overridable with `?coord=<origin>`) and estimates fleet power from `POWER_TABLE` (`machineWatts`, `formatPower`). The `<script src="network-stats.js">` tag in `landing/index.html` is commented out — the HTML comment records that the `/v1/stats` CORS allowance is not yet deployed — so the live-network strip is not rendered; the console's `/stats` page, which goes through `/api/stats`, is the working equivalent.
+Deployment uses `landing` as the project root and requires a Next.js
+server for the API routes. `landing/next.config.ts` redirects `/index.html`,
+`/terms.html` and `/privacy.html` to the new routes. The terms and privacy
+text is preserved. The old homepage calculator is removed; the console
+calculator remains at `console-ui/src/app/earn/`. The original
+`landing/assets/cube-hero.png` stays in place for pinned vision fixtures.
 
 ## Visual reference
 

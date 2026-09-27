@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthContext } from "@/components/app-providers/PrivyClientProvider";
 import { trackEvent } from "@/lib/google-analytics";
 import { STORAGE_KEYS } from "@/lib/storage-keys";
+import { clearConsoleApiKey, writeUntrackedConsoleApiKey } from "@/lib/console-api-key";
+import { revokeLegacyApiKey } from "@/lib/api/keys";
 
 const API_KEY_STORAGE = STORAGE_KEYS.apiKey;
 const OLD_API_KEY_STORAGE = STORAGE_KEYS.legacyApiKey;
@@ -63,7 +65,15 @@ async function provisionConsoleKey(
       });
       const data = (await res.json().catch(() => ({}))) as { api_key?: string };
       if (res.ok && data.api_key) {
-        localStorage.setItem(API_KEY_STORAGE, data.api_key);
+        // The user may have created/adopted a named key (e.g. My Machine only)
+        // while this mint was in flight. Never clobber that secret with an
+        // auto-provisioned unrestricted key — drop the spare instead.
+        const adopted = localStorage.getItem(API_KEY_STORAGE);
+        if (adopted) {
+          revokeLegacyApiKey(token, data.api_key);
+          return adopted;
+        }
+        writeUntrackedConsoleApiKey(data.api_key);
         return data.api_key;
       }
       // Rate-limited / error / keyless response: arm the cooldown so a
@@ -105,7 +115,7 @@ export function useAuth() {
 
     const oldKey = localStorage.getItem(OLD_API_KEY_STORAGE);
     if (oldKey && !localStorage.getItem(API_KEY_STORAGE)) {
-      localStorage.setItem(API_KEY_STORAGE, oldKey);
+      writeUntrackedConsoleApiKey(oldKey);
       localStorage.removeItem(OLD_API_KEY_STORAGE);
     }
 
@@ -121,6 +131,9 @@ export function useAuth() {
   useEffect(() => {
     if (!authenticated) return;
     const handleExpired = () => {
+      // 401 / revoke drop the secret first. Also drop the leftover id so a
+      // newly minted untitled key cannot look like a tracked console key.
+      clearConsoleApiKey();
       setApiKeyReady(false);
       provisionApiKey();
     };
@@ -154,8 +167,7 @@ export function useAuth() {
 
   const logout = useCallback(async () => {
     if (typeof window !== "undefined") {
-      localStorage.removeItem(API_KEY_STORAGE);
-      localStorage.removeItem(OLD_API_KEY_STORAGE);
+      clearConsoleApiKey();
       localStorage.removeItem(COORD_URL_STORAGE);
     }
     // Drop any provision cooldown/in-flight so a re-login provisions promptly.

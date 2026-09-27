@@ -229,14 +229,9 @@ public enum KVBackendGuardStore {
 /// whatever reason) refresh `crashCount` but keep the ORIGINAL
 /// `trippedAt`, so the guard's reported age stays the age of the trip.
 ///
-/// TELEMETRY TRANSPORT: the event is built by `EngineHealthEvent.make`
-/// (the one engine-health builder) but pushed straight to the
-/// `TelemetryOverflowQueue` disk queue rather than through
-/// `TelemetryClient.shared` — the watchdog process never configures the
-/// client (an unconfigured client silently DROPS), and the daemon is
-/// down at trip time anyway. This is the panic hook's transport
-/// (`PanicHook.swift`): the guarded daemon this trip guarantees will
-/// boot drains the queue to the coordinator once it reconnects.
+/// The compatibility event hook remains injectable for ordering tests.
+/// Production trips enqueue telemetry through `TelemetryOverflowQueue`;
+/// the on-disk guard record and local recovery log also retain the live effect.
 public enum KVBackendCrashLoopGuard {
 
     /// A trip whose RECORD write already happened but whose remaining side
@@ -315,9 +310,8 @@ public enum KVBackendCrashLoopGuard {
             // trip event and the resulting degrade join on one value.
             kvBackend: nil,
             extra: ["reason": .string("crash_loop_guard")])
-        // Straight-to-disk events skip TelemetryClient's identity stamping;
-        // set the one field the fleet dashboard groups trips by — the
-        // GUARDED version (what was crash-looping), not the watchdog's.
+        // Preserve guarded-version attribution in both injected consumers and
+        // the production overflow queue.
         event.version = guardedVersion
         let stagedEvent = event
         let sink = emitTelemetry ?? { TelemetryOverflowQueue.shared.push($0) }

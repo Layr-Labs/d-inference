@@ -1,6 +1,7 @@
-/// Enrollment -- MDM device-attestation flow.
+/// Enrollment -- App Attest setup on macOS 27+, legacy MDM on older macOS.
 ///
-/// Flow:
+/// macOS 27+ returns App Attest guidance without network or profile operations.
+/// On older macOS:
 ///
 ///   1. POST an empty JSON object to `${coordinator}/v1/enroll`.
 ///   2. Coordinator returns a generic `.mobileconfig` profile.
@@ -36,25 +37,24 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
         case .managedByOtherMDM(let serverURL):
             return "This Mac is already managed by another MDM (server: \(serverURL)). "
                 + "macOS allows only one MDM enrollment per device, so Darkbloom "
-                + "enrollment is unavailable here. If that profile is yours to "
-                + "remove: System Settings → General → Device Management, then "
-                + "re-run `darkbloom enroll`."
+                + "enrollment is unavailable here. Keep your organization's profile installed. "
+                + "Upgrade to macOS 27 or later, start the current provider and check `darkbloom status` for "
+                + "coordinator-qualified App Attest serving."
         }
     }
 }
 
 // MARK: - Enrollment service
 
-public struct EnrollmentResult: Sendable {
-    public let profilePath: URL
-    public let alreadyEnrolled: Bool
+public enum EnrollmentResult: Sendable {
+    case appAttest
+    case mdm(profilePath: URL, alreadyEnrolled: Bool)
 }
 
-/// Drives the MDM enrollment flow against a coordinator.
+/// Chooses App Attest setup or drives legacy MDM enrollment.
 ///
 /// Stateless: callers pass the coordinator HTTP base URL. The service
-/// downloads the profile, saves it to a temp path, and (on macOS) opens
-/// System Settings.
+/// downloads a profile and opens System Settings only on older macOS.
 public struct EnrollmentService: Sendable {
 
     public init() {}
@@ -67,15 +67,22 @@ public struct EnrollmentService: Sendable {
     ///     The function will normalize a `wss://...` value via `coordinatorHTTPBase`.
     ///   - openSystemSettings: When true, opens the .mobileconfig and the
     ///     Profiles pane. Set to false in tests / non-interactive runs.
-    /// - Returns: Where the profile was written and whether enrollment was
-    ///   skipped because the device already had a profile.
+    ///   - macOSMajorVersion: Local OS major version; injectable for setup tests.
+    /// - Returns: App Attest guidance without downloading/opening a profile on
+    ///   macOS 27+, or the legacy profile and existing-enrollment state.
     public func enroll(
         coordinatorURL: String,
-        openSystemSettings: Bool = true
+        openSystemSettings: Bool = true,
+        macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
     ) async throws -> EnrollmentResult {
+        // OS version chooses onboarding, never trust. Unsupported/unqualified
+        // App Attest stays pending at the coordinator, without an MDM fallback.
+        if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
+            return .appAttest
+        }
         switch checkMDMEnrollment(coordinatorURL: coordinatorURL) {
         case .enrolledDarkbloom:
-            return EnrollmentResult(
+            return .mdm(
                 profilePath: URL(fileURLWithPath: "/dev/null"),
                 alreadyEnrolled: true
             )
@@ -131,7 +138,7 @@ public struct EnrollmentService: Sendable {
             ])
         }
 
-        return EnrollmentResult(
+        return .mdm(
             profilePath: profilePath,
             alreadyEnrolled: false
         )

@@ -116,6 +116,7 @@ public final class TokenizerHandle: @unchecked Sendable {
     let toolConstraintContractVerified: Bool
     private let toolConstraintLock = NSLock()
     private var gemmaVocabularies: [[Int]: GemmaTokenVocabulary] = [:]
+    private var qwen4FramingVocabularies: [[Int]: Qwen4ToolFramingVocabulary] = [:]
 
     public init(
         _ inner: any MLXLMCommon.Tokenizer,
@@ -138,6 +139,15 @@ public final class TokenizerHandle: @unchecked Sendable {
         let built = try GemmaTokenVocabulary(
             tokenizer: inner, stopTokenIDs: stopTokenIDs)
         gemmaVocabularies[key] = built
+        return built
+    }
+
+    func qwen4FramingVocabulary(stopTokenIDs: Set<Int>) throws -> Qwen4ToolFramingVocabulary {
+        toolConstraintLock.lock(); defer { toolConstraintLock.unlock() }
+        let key = stopTokenIDs.sorted()
+        if let cached = qwen4FramingVocabularies[key] { return cached }
+        let built = try Qwen4ToolFramingVocabulary(tokenizer: inner, stopTokenIDs: stopTokenIDs)
+        qwen4FramingVocabularies[key] = built
         return built
     }
 }

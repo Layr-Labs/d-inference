@@ -62,6 +62,7 @@ on:
 
 permissions:
   contents: write   # gh release create
+  actions: read     # download the unsigned artifact from this run
 
 env:
   DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
@@ -97,53 +98,101 @@ jobs:
           RELEASE_VALIDATION_ONLY: ${{ inputs.validation_only || false }}
         run: ./scripts/resolve-provider-release.sh
 
+  build-provider:
+    name: Build optimized SDK 27 provider
+    needs: resolve-env
+    runs-on: xcode-27-xlarge
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.input.outputs.artifact_name }}
+      build_sdk_version: ${{ steps.build.outputs.build-sdk-version }}
+      mlx_sha_short: ${{ steps.build.outputs.mlx-sha-short }}
+    env:
+      VERSION: ${{ needs.resolve-env.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - run: ./scripts/check-release-version.sh "$VERSION"
+      - uses: ./.github/actions/provider-release-build
+        id: build
+        with:
+          lane: release
+      - name: Bind unsigned bundle to this source and version
+        id: input
+        env:
+          BIN_DIR: ${{ steps.build.outputs.bin-dir }}
+          METALLIB: ${{ steps.build.outputs.metallib }}
+        run: |
+          set -euo pipefail
+          ./scripts/check-release-version.sh "$VERSION" "$("$BIN_DIR/$CLI_NAME" --version)"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/provider-signing-validation.py stage \
+            --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
+            --output "$RUNNER_TEMP/unsigned-provider" --version "$VERSION"
+          COPYFILE_DISABLE=1 tar czf "$RUNNER_TEMP/unsigned-provider.tar.gz" -C "$RUNNER_TEMP/unsigned-provider" .
+          echo "artifact_name=unsigned-provider-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Transfer only unsigned products and resources
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.input.outputs.artifact_name }}
+          path: ${{ runner.temp }}/unsigned-provider.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+
+  qualify-sdk:
+    name: Qualify provider with SDK 27
+    needs: resolve-env
+    runs-on: xcode-27-xlarge
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: ./.github/actions/provider-release-build
+        with:
+          lane: qualification
+
   build-and-release:
-    name: Build, sign, notarize, optionally publish
-    needs: [resolve-env]
+    name: Sign, notarize and retain exact artifact
+    needs: [resolve-env, build-provider, qualify-sdk]
     # App Attest's current code measurements require SDK 27. The ordinary
     # Blacksmith image is macOS 26.3 and cannot install Apple's SDK 27 tools.
     runs-on: xcode-27
     environment: ${{ needs.resolve-env.outputs.environment }}
     outputs:
       validation_artifact: ${{ steps.validation_identity.outputs.artifact_name }}
+      publication_artifact: ${{ steps.publication_identity.outputs.artifact_name }}
 
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
       ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
 
     steps:
-      - name: Resolve env-specific secrets
+      - name: Resolve release metadata URLs
         if: needs.resolve-env.outputs.publish == 'true'
         env:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
-          DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
-          PROD_R2_ACCESS_KEY_ID: ${{ secrets.PROD_R2_ACCESS_KEY_ID }}
-          DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
-          PROD_R2_SECRET_ACCESS_KEY: ${{ secrets.PROD_R2_SECRET_ACCESS_KEY }}
-          DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
-          PROD_R2_ENDPOINT: ${{ secrets.PROD_R2_ENDPOINT }}
-          DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
-          PROD_R2_BUCKET: ${{ secrets.PROD_R2_BUCKET }}
           DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
           PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
           DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
           PROD_COORDINATOR_URL: ${{ secrets.PROD_COORDINATOR_URL }}
-          DEV_RELEASE_KEY: ${{ secrets.DEV_RELEASE_KEY }}
-          PROD_RELEASE_KEY: ${{ secrets.PROD_RELEASE_KEY }}
           # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
           # to these when PROD_* is empty so we don't have to duplicate every
           # secret in the GitHub UI just to satisfy the new naming scheme.
-          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
           LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
           LEGACY_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
-          LEGACY_RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
         run: |
           set -euo pipefail
           PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
-          for key in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET R2_PUBLIC_URL COORDINATOR_URL RELEASE_KEY; do
+          for key in R2_PUBLIC_URL COORDINATOR_URL; do
             primary="${PREFIX}_${key}"
             legacy="LEGACY_${key}"
             outkey=$(echo "$key" | tr '[:upper:]' '[:lower:]')
@@ -170,31 +219,30 @@ jobs:
       - name: Validate release version integrity
         run: ./scripts/check-release-version.sh "$VERSION"
 
-      - name: Set up Go for prompt parity
-        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.4.0
-        with:
-          go-version: '1.25.0'
-
-      - name: Select SDK 27 provider toolchain
+      - name: Select SDK 27 signing toolchain
         run: ./scripts/prepare-provider-release-toolchain.sh
 
       - name: Ensure matching Metal compiler is available
         timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          if ! xcrun --sdk macosx metal --version; then
-            xcodebuild -downloadComponent MetalToolchain
-          fi
-          xcrun --sdk macosx metal --version
+        run: python3 scripts/prepare-metal-toolchain.py
 
-      - name: Show toolchain versions
+      - name: Fetch and verify this run's unsigned build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ARTIFACT: ${{ needs.build-provider.outputs.artifact_name }}
+          EXPECTED_SOURCE: ${{ github.sha }}
+          BUILD_SDK_VERSION: ${{ needs.build-provider.outputs.build_sdk_version }}
         run: |
           set -euo pipefail
-          go version
-          xcodebuild -version
-          swift --version
-          xcrun --sdk macosx --show-sdk-version
-          uname -a
+          test "$BUILD_SDK_VERSION" = "$PROVIDER_SDK_VERSION"
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "$EXPECTED_ARTIFACT" --dir "$RUNNER_TEMP/unsigned-download"
+          python3 scripts/provider-signing-validation.py unpack \
+            --archive "$RUNNER_TEMP/unsigned-download/unsigned-provider.tar.gz" \
+            --output "$RUNNER_TEMP/qualified-unsigned" \
+            --source-sha "$EXPECTED_SOURCE" --version "$VERSION"
+          echo "UNSIGNED_ROOT=$RUNNER_TEMP/qualified-unsigned" >> "$GITHUB_ENV"
+          echo "BUILD_SDK_VERSION=$BUILD_SDK_VERSION" >> "$GITHUB_ENV"
 
       - name: Import Developer ID certificate
         env:
@@ -217,163 +265,6 @@ jobs:
 
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           rm -f /tmp/cert.p12
-
-      - name: Install awscli (R2)
-        if: needs.resolve-env.outputs.publish == 'true'
-        run: |
-          if ! command -v aws >/dev/null 2>&1; then
-            brew install awscli >/dev/null 2>&1 || true
-          fi
-          aws --version
-
-      - name: Restore SwiftPM cache
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/org.swift.swiftpm
-            provider-swift/.build
-            libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
-          restore-keys: |
-            spm-v3-${{ runner.os }}-
-      - name: Discard metallibs restored by the generic SwiftPM cache
-        run: |
-          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
-            [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
-          done
-
-      - name: Verify production prompt parity
-        run: |
-          rustup toolchain install 1.88.0 --profile minimal
-          rustup override set 1.88.0
-          ./scripts/verify-prompt-parity.sh
-
-      # The root helper is the sole metallib builder. The Actions cache stores
-      # its private cache directory; the helper still runs on every release and
-      # authorizes the exact source/toolchain/deployment/JIT contract itself.
-      - name: Resolve source-matched metallib cache namespace
-        id: mlxkey
-        run: |
-          set -euo pipefail
-          MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
-          test -f "$MLX_SRC/mlx/version.h" || { echo "::error::mlx submodule not checked out at $MLX_SRC"; exit 1; }
-          SOURCE_STATUS=$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)
-          if [ -n "$SOURCE_STATUS" ]; then
-            echo "::error::release metallib source checkout is dirty"
-            printf '%s\n' "$SOURCE_STATUS"
-            exit 1
-          fi
-          MLX_SHA=$(git -C "$MLX_SRC" rev-parse HEAD)
-          HELPER_SHA=$(shasum -a 256 scripts/fetch-metallib.sh | cut -d' ' -f1)
-          SDK=$(xcrun --sdk macosx --show-sdk-version)
-          XCODE=$(xcodebuild -version | tr -cs '[:alnum:].' '-')
-          KEY="metallib-helper-v1-${MLX_SHA}-${HELPER_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff"
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
-          echo "mlx_sha_short=${MLX_SHA:0:12}" >> "$GITHUB_OUTPUT"
-          echo "Metallib cache namespace: $KEY"
-
-      - name: Restore source-matched metallib cache
-        id: metallib-cache
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: ${{ runner.temp }}/metallib-cache
-          key: ${{ steps.mlxkey.outputs.key }}
-
-      - name: Build source-matched mlx.metallib through root helper
-        id: metallib
-        env:
-          METALLIB_CACHE_DIR: ${{ runner.temp }}/metallib-cache
-        run: |
-          set -euo pipefail
-          command -v cmake >/dev/null 2>&1 || brew install cmake
-          MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
-          test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)"
-          ./scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
-          test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)" || {
-            echo "::error::metallib helper modified the release source checkout"
-            exit 1
-          }
-          MLIB="$RUNNER_TEMP/metallib/mlx.metallib"
-          test -s "$MLIB" || { echo "::error::metallib missing at $MLIB"; exit 1; }
-          echo "metallib=$MLIB" >> "$GITHUB_OUTPUT"
-
-      - name: Save source-matched metallib cache
-        if: steps.metallib-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: ${{ runner.temp }}/metallib-cache
-          key: ${{ steps.mlxkey.outputs.key }}
-
-      # ----------------------------------------------------------------------
-      # Build and test with the SDK required for Apple code measurements.
-      # ----------------------------------------------------------------------
-
-      - name: Build provider-swift (release)
-        working-directory: provider-swift
-        run: |
-          set -euo pipefail
-          # Swift's linker must receive the same SDK selected for compilation.
-          # In CLT 27 beta 6, --sdk alone can leave LC_BUILD_VERSION at the
-          # deployment target; SDKROOT preserves the actual linked SDK version.
-          export SDKROOT="$PROVIDER_SDKROOT"
-          echo "BUILD_SDK_VERSION=$PROVIDER_SDK_VERSION" >> "$GITHUB_ENV"
-          swift build -c release --product darkbloom
-          swift build -c release --product darkbloom-enclave
-          swift build -c release --product darkbloom-fan-helper
-          BIN_DIR=$(swift build -c release --show-bin-path)
-          test -x "$BIN_DIR/$CLI_NAME"
-          test -x "$BIN_DIR/$ENCLAVE_NAME"
-          test -x "$BIN_DIR/$FAN_HELPER_NAME"
-          echo "BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
-          ls -la "$BIN_DIR" | head -50
-          REPORTED=$("$BIN_DIR/$CLI_NAME" --version)
-          ../scripts/check-release-version.sh "$VERSION" "$REPORTED"
-
-      - name: Test provider with release SDK
-        working-directory: provider-swift
-        timeout-minutes: 35
-        env:
-          RELEASE_TEST_METALLIB: ${{ steps.metallib.outputs.metallib }}
-        run: |
-          set -euo pipefail
-          swift build --build-tests
-          TEST_BIN_DIR=$(swift build --show-bin-path)
-          cp "$RELEASE_TEST_METALLIB" "$TEST_BIN_DIR/mlx.metallib"
-          while IFS= read -r macos; do
-            cp "$RELEASE_TEST_METALLIB" "$macos/mlx.metallib"
-          done < <(find .build -type d -path '*.xctest/Contents/MacOS' -print)
-          python3 ../scripts/run-provider-test-watchdog.py \
-            --output-dir "$RUNNER_TEMP/provider-sdk-tests" \
-            --diagnostic-after-seconds 480 --timeout-seconds 900 \
-            -- ../scripts/run-provider-tests.sh
-
-      - name: Retain SDK test diagnostics
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: provider-sdk-test-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/provider-sdk-tests
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Save SwiftPM cache
-        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        if: always()
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/org.swift.swiftpm
-            provider-swift/.build
-            libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
-
-      # General PR CI also validates the existing developer toolchain. The
-      # release SDK suite above qualifies the compiler used for these binaries.
-
-      # ----------------------------------------------------------------------
-      # Stage the app, every SwiftPM runtime bundle, and flat verifier files.
-      # ----------------------------------------------------------------------
 
       - name: Embed provisioning profile
         env:
@@ -469,20 +360,9 @@ jobs:
           # Wrap the CLI in a minimal .app bundle so the provisioning profile
           # authorizes keychain-access-groups for the persistent SE key.
           APP="$STAGE/Darkbloom.app"
-          mkdir -p \
-            "$APP/Contents/MacOS" \
-            "$APP/Contents/Helpers" \
-            "$APP/Contents/Resources/darkbloom-runtime-capabilities"
-
-          cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/"
+          mkdir -p "$STAGE"
+          cp -R "$UNSIGNED_ROOT/Darkbloom.app" "$APP"
           printf '1\n' > "$APP/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
-          cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/"
-          cp "${{ steps.metallib.outputs.metallib }}" "$APP/Contents/MacOS/mlx.metallib"
-          install -m 0755 \
-            "$BIN_DIR/$FAN_HELPER_NAME" \
-            "$APP/Contents/Helpers/$FAN_HELPER_NAME"
-          printf '1\n' \
-            > "$APP/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
 
           cat > "$APP/Contents/Info.plist" << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -519,8 +399,7 @@ jobs:
           # mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal and future
           # dependency resource bundles.
           RESOURCE_MANIFEST=/tmp/darkbloom-swiftpm-resource-bundles.txt
-          scripts/stage-swiftpm-resource-bundles.sh \
-            "$BIN_DIR" "$APP" "$RESOURCE_MANIFEST"
+          cp "$UNSIGNED_ROOT/validation-inputs/resource-bundles.txt" "$RESOURCE_MANIFEST"
 
           # Package-real runtime gate. Before its first GPU access the staged
           # child decodes the retained Gemma config, proves authoritative
@@ -538,6 +417,8 @@ jobs:
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
+          printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
+            | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
 
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
@@ -813,6 +694,8 @@ jobs:
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
+          printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
+            | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
           REPORTED=$("$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
@@ -896,107 +779,218 @@ jobs:
           retention-days: 14
           compression-level: 0
 
-      - name: Upload bundle to R2
+      - name: Prepare signed release qualification evidence
+        id: publication_identity
+        if: needs.resolve-env.outputs.publish == 'true'
+        env:
+          R2_PUBLIC_URL: ${{ env.r2_public_url }}
+          COORDINATOR_URL: ${{ env.coordinator_url }}
+        run: |
+          set -euo pipefail
+          python3 scripts/provider-release-publication.py prepare \
+            --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz
+          echo "artifact_name=provider-publication-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Exact signed release awaiting qualification'
+            echo 'After the R2 staging job succeeds, review qualification-request.json and supply test evidence to POST /v1/admin/app-attest/builds.'
+            echo 'The release key cannot approve builds. Retry failed staging/publication jobs to reuse this artifact; qualification remains an independent operator step.'
+            echo 'Do not rerun signing: that changes the signed artifact.'
+            echo '```json'
+            cat "$RUNNER_TEMP/provider-publication/qualification-request.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain exact signed publication artifact
+        if: needs.resolve-env.outputs.publish == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.publication_identity.outputs.artifact_name }}
+          path: ${{ runner.temp }}/provider-publication/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+
+  stage-release:
+    name: Stage retained signed artifact in R2
+    needs: [resolve-env, build-and-release]
+    if: needs.resolve-env.outputs.publish == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VERSION: ${{ needs.resolve-env.outputs.version }}
+      ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Resolve env-specific secrets
+        if: needs.resolve-env.outputs.publish == 'true'
+        env:
+          ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+          DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
+          PROD_R2_ACCESS_KEY_ID: ${{ secrets.PROD_R2_ACCESS_KEY_ID }}
+          DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
+          PROD_R2_SECRET_ACCESS_KEY: ${{ secrets.PROD_R2_SECRET_ACCESS_KEY }}
+          DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
+          PROD_R2_ENDPOINT: ${{ secrets.PROD_R2_ENDPOINT }}
+          DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
+          PROD_R2_BUCKET: ${{ secrets.PROD_R2_BUCKET }}
+          DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
+          PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
+          # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
+          # to these when PROD_* is empty so we don't have to duplicate every
+          # secret in the GitHub UI just to satisfy the new naming scheme.
+          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
+          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: |
+          set -euo pipefail
+          PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
+          for key in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET R2_PUBLIC_URL; do
+            primary="${PREFIX}_${key}"
+            legacy="LEGACY_${key}"
+            outkey=$(echo "$key" | tr '[:upper:]' '[:lower:]')
+            value="${!primary:-}"
+            if [ -z "$value" ] && [ "$PREFIX" = "PROD" ]; then
+              value="${!legacy:-}"
+              if [ -n "$value" ]; then
+                echo "::notice::Using legacy unprefixed secret for ${key} (set PROD_${key} to silence this)"
+              fi
+            fi
+            if [ -z "$value" ]; then
+              echo "::error::No value resolved for ${PREFIX}_${key} (also tried LEGACY_${key})"
+              exit 1
+            fi
+            echo "${outkey}=${value}" >> "$GITHUB_ENV"
+          done
+
+      - name: Download this run's exact signed publication artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLICATION_ARTIFACT: ${{ needs.build-and-release.outputs.publication_artifact }}
+        run: |
+          set -euo pipefail
+          test -n "$PUBLICATION_ARTIFACT"
+          gh run download "$GITHUB_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
+      - name: Install publication tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/publication-tools"
+          "$RUNNER_TEMP/publication-tools/bin/pip" install awscli
+          echo "$RUNNER_TEMP/publication-tools/bin" >> "$GITHUB_PATH"
+      - name: Stage immutable bundle in R2
         if: needs.resolve-env.outputs.publish == 'true'
         env:
           AWS_ACCESS_KEY_ID: ${{ env.r2_access_key_id }}
           AWS_SECRET_ACCESS_KEY: ${{ env.r2_secret_access_key }}
           R2_ENDPOINT: ${{ env.r2_endpoint }}
           R2_BUCKET: ${{ env.r2_bucket }}
-        run: |
-          set -euo pipefail
-          PREFIX="s3://${R2_BUCKET}/releases/v${VERSION}"
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
-            "${PREFIX}/darkbloom-bundle-macos-arm64.tar.gz" \
-            --endpoint-url "$R2_ENDPOINT" --only-show-errors
+          R2_PUBLIC_URL: ${{ env.r2_public_url }}
+        run: python3 scripts/provider-release-publication.py stage --directory "$RUNNER_TEMP/provider-publication"
 
-          # Latest pointer for `install.sh` discovery. Publish under both
-          # the canonical `darkbloom-bundle` name and the legacy
-          # `eigeninference-bundle` name for backward compatibility with
-          # any caller that hardcoded the old filename.
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
-            "s3://${R2_BUCKET}/releases/latest/darkbloom-bundle-macos-arm64.tar.gz" \
-            --endpoint-url "$R2_ENDPOINT" --only-show-errors
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
-            "s3://${R2_BUCKET}/releases/latest/eigeninference-bundle-macos-arm64.tar.gz" \
-            --endpoint-url "$R2_ENDPOINT" --only-show-errors
-
-      - name: Register release with coordinator
+  publish-release:
+    name: Publish qualified signed release
+    needs: [resolve-env, build-and-release, stage-release]
+    if: needs.resolve-env.outputs.publish == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    concurrency:
+      group: provider-publication-${{ needs.resolve-env.outputs.environment }}
+      cancel-in-progress: false
+    env:
+      VERSION: ${{ needs.resolve-env.outputs.version }}
+      ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve env-specific secrets
         if: needs.resolve-env.outputs.publish == 'true'
         env:
-          COORDINATOR_URL: ${{ env.coordinator_url }}
-          RELEASE_KEY: ${{ env.release_key }}
-          R2_PUBLIC_URL: ${{ env.r2_public_url }}
+          ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+          DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
+          PROD_R2_ACCESS_KEY_ID: ${{ secrets.PROD_R2_ACCESS_KEY_ID }}
+          DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
+          PROD_R2_SECRET_ACCESS_KEY: ${{ secrets.PROD_R2_SECRET_ACCESS_KEY }}
+          DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
+          PROD_R2_ENDPOINT: ${{ secrets.PROD_R2_ENDPOINT }}
+          DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
+          PROD_R2_BUCKET: ${{ secrets.PROD_R2_BUCKET }}
+          DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
+          PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
+          DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
+          PROD_COORDINATOR_URL: ${{ secrets.PROD_COORDINATOR_URL }}
+          DEV_RELEASE_KEY: ${{ secrets.DEV_RELEASE_KEY }}
+          PROD_RELEASE_KEY: ${{ secrets.PROD_RELEASE_KEY }}
+          # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
+          # to these when PROD_* is empty so we don't have to duplicate every
+          # secret in the GitHub UI just to satisfy the new naming scheme.
+          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
+          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          LEGACY_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
+          LEGACY_RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
         run: |
           set -euo pipefail
-          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/darkbloom-bundle-macos-arm64.tar.gz"
+          PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
+          for key in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET R2_PUBLIC_URL COORDINATOR_URL RELEASE_KEY; do
+            primary="${PREFIX}_${key}"
+            legacy="LEGACY_${key}"
+            outkey=$(echo "$key" | tr '[:upper:]' '[:lower:]')
+            value="${!primary:-}"
+            if [ -z "$value" ] && [ "$PREFIX" = "PROD" ]; then
+              value="${!legacy:-}"
+              if [ -n "$value" ]; then
+                echo "::notice::Using legacy unprefixed secret for ${key} (set PROD_${key} to silence this)"
+              fi
+            fi
+            if [ -z "$value" ]; then
+              echo "::error::No value resolved for ${PREFIX}_${key} (also tried LEGACY_${key})"
+              exit 1
+            fi
+            echo "${outkey}=${value}" >> "$GITHUB_ENV"
+          done
 
-          TAG_MSG=$(git tag -l --format='%(contents:subject)%0a%(contents:body)' "$GITHUB_REF_NAME" 2>/dev/null || echo "")
-          if [ -z "$TAG_MSG" ] || [ "$TAG_MSG" = $'\n' ]; then
-            TAG_MSG="Release v${VERSION}"
-          fi
-
-          # The Swift provider does NOT expose python_hash / runtime_hash, and
-          # its only template fact is the mlx_metallib hash (metallib_hash
-          # below). Per-model-family template hashes were CI fabrications no
-          # provider could ever echo — registering them armed a coordinator
-          # gate that zeroed fleet routing (2026-08-31 incident). Register
-          # only facts the provider actually reports.
-          python3 - <<PY > /tmp/release-payload.json
-          import json, os
-          payload = {
-              "version":         os.environ["VERSION"],
-              "platform":        "macos-arm64",
-              "backend":         "mlx-swift",
-              "binary_hash":     os.environ["BINARY_HASH"],
-              "bundle_hash":     os.environ["BUNDLE_HASH"],
-              "metallib_hash":   os.environ["METALLIB_HASH"],
-              "url":             "${BUNDLE_URL}",
-              "changelog":       """${TAG_MSG}""".strip(),
-          }
-          print(json.dumps(payload))
-          PY
-          curl -fsSL -X POST "${COORDINATOR_URL}/v1/releases" \
-            -H "Authorization: Bearer ${RELEASE_KEY}" \
-            -H "Content-Type: application/json" \
-            -d @/tmp/release-payload.json
-          echo
-          echo "Release v${VERSION} registered with coordinator"
-
-      - name: Create GitHub Release
-        if: needs.resolve-env.outputs.publish == 'true' && needs.resolve-env.outputs.environment == 'prod' && github.ref_type == 'tag'
+      - name: Download this run's exact signed publication artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          PUBLICATION_ARTIFACT: ${{ needs.build-and-release.outputs.publication_artifact }}
         run: |
           set -euo pipefail
-          cat > /tmp/release-notes.md <<NOTES
-          ## Provider v${VERSION} (Swift CLI)
-
-          **Binary hash:**   \`${BINARY_HASH}\`
-          **CodeDirectory SHA-256:** \`${CODE_DIRECTORY_HASH}\`
-          **Bundle hash:**   \`${BUNDLE_HASH}\`
-          **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ steps.mlxkey.outputs.mlx_sha_short }}\`)
-          **Signed by:**     \`${DEVELOPER_ID}\`
-          **Notarized:**     yes
-          **Min macOS:**     ${MIN_MACOS}
-
-          ### Install
-
-          \`\`\`bash
-          curl -fsSL ${{ env.coordinator_url }}/install.sh | bash
-          \`\`\`
-
-          NOTES
-          gh release create "${{ github.ref_name }}" \
-            /tmp/darkbloom-bundle-macos-arm64.tar.gz \
-            --title "${{ github.ref_name }}" \
-            --notes-file /tmp/release-notes.md \
-            --generate-notes
-
-      - name: Cleanup keychain
-        if: always()
+          test -n "$PUBLICATION_ARTIFACT"
+          gh run download "$GITHUB_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
+      - name: Install publication tools
         run: |
-          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/publication-tools"
+          "$RUNNER_TEMP/publication-tools/bin/pip" install awscli
+          echo "$RUNNER_TEMP/publication-tools/bin" >> "$GITHUB_PATH"
+      - name: Register release with coordinator and publish aliases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ env.r2_access_key_id }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.r2_secret_access_key }}
+          R2_ENDPOINT: ${{ env.r2_endpoint }}
+          R2_BUCKET: ${{ env.r2_bucket }}
+          R2_PUBLIC_URL: ${{ env.r2_public_url }}
+          COORDINATOR_URL: ${{ env.coordinator_url }}
+          RELEASE_KEY: ${{ env.release_key }}
+        run: python3 scripts/provider-release-publication.py publish --directory "$RUNNER_TEMP/provider-publication"
 
   validate-older-macos:
     name: Signed SDK 27 artifact on older macOS
@@ -1038,6 +1032,6 @@ jobs:
           xcrun stapler validate "$APP"
           OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$OUTPUT"
-          for marker in app-attest-callback-runtime-smoke gemma-optimizations-runtime-smoke paged-kernel-runtime-smoke; do
+          for marker in app-attest-callback-runtime-smoke gemma-optimizations-runtime-smoke paged-kernel-runtime-smoke qwen4-metal-resources-runtime-smoke; do
             printf '%s\n' "$OUTPUT" | grep -Fqx "$marker: ok"
           done

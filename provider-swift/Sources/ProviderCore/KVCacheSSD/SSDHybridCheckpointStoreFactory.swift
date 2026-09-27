@@ -6,6 +6,7 @@ enum SSDHybridCheckpointStoreFactory {
     static func make(
         modelId: String, identity: CBv2CompleteCheckpointIdentity,
         backendLayout: String = CBv2CompleteCheckpointManifest.layout,
+        nativePrefillChunkSize: Int? = nil,
         kvBudget: GlobalKVCacheBudget?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil
@@ -17,7 +18,10 @@ enum SSDHybridCheckpointStoreFactory {
             backendLayout == CBv2CompleteCheckpointManifest.layout
                 || backendLayout == CBv2CompleteCheckpointManifest.pagedLayout
                 || backendLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                || backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
         else { return nil }
+        guard backendLayout != CBv2CompleteCheckpointManifest.diffusionBlockLayout
+            || (kvBudget != nil && (nativePrefillChunkSize ?? 0) > 0) else { return nil }
         do {
             try persistentTestNamespace?.validate(environment: environment)
         } catch { return nil }
@@ -49,6 +53,7 @@ enum SSDHybridCheckpointStoreFactory {
             }
             let cache = SSDHybridCheckpointStore(config: .init(
                 modelId: modelId, identity: identity, backendLayout: backendLayout,
+                nativePrefillChunkSize: nativePrefillChunkSize,
                 root: root, dedicatedRoot: wholeRoot,
                 epochStore: epoch, maxReadBytes: SSDPrefixCachePolicy.maxStageBytes(environment: environment),
                 maxStageMillis: SSDPrefixCachePolicy.maxStageMillis(environment: environment),

@@ -525,4 +525,24 @@ func TestCollectCapacityQuotesRefinesOnlyOnHighConfidence(t *testing.T) {
 	if _, delivered := run(protocol.CapacityConfidenceLow); delivered {
 		t.Fatal("low-confidence quote must never move the launch off the 50% ceiling")
 	}
+	deadline = 0
+	if _, delivered := run(protocol.CapacityConfidenceHigh); delivered {
+		t.Fatal("an exempt request must not acquire an immediate SLA-based hedge")
+	}
+}
+
+func TestFirstContentSLAExemptionPreservesCapacityProbes(t *testing.T) {
+	s := newTestServerForDispatch(t)
+	const model = "exempt-capacity-probe-model"
+	for i := 0; i < 3; i++ {
+		planWiringProvider(t, s.registry, fmt.Sprintf("exempt-probe-%d", i), model, int64(i)*400)
+	}
+	d := &dispatchState{s: s, model: model, plan: planWiringPlan(t, s.registry, model), timing: &registry.RequestTiming{ReceivedAt: time.Now()}, deadline: 0, speculativeAt: time.Second}
+	d.maybeProbePlanCandidates()
+	if !d.probesLaunched {
+		t.Fatal("account exemption disabled capacity probes")
+	}
+	if d.firstTokenExpired() || d.deadline != 0 {
+		t.Fatal("capacity probe reinstated SLA")
+	}
 }

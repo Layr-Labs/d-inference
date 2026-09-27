@@ -12,7 +12,7 @@ extension EngineV2Factory {
         model: any LanguageModel, isVLM: Bool
     ) throws -> any LanguageModel {
         guard isVLM else { return model }
-        if model is MLXVLM.Qwen3VL { return model }
+        if model is MLXVLM.Qwen3VL || model is MLXVLM.Qwen4Exp || model is MLXVLM.PrismHadamardQwen35 { return model }
         guard let gemma4 = model as? MLXVLM.Gemma4 else {
             throw EngineV2ProductionError.unsupportedModel(
                 String(describing: type(of: model)))
@@ -49,6 +49,10 @@ extension EngineV2Factory {
                 layerKinds = qwen.cbv2LayerKinds
                 modelCapabilities = qwen.cbv2Capabilities
                 newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
+            case let prism as MLXVLM.PrismHadamardQwen35:
+                layerKinds = prism.cbv2LayerKinds
+                modelCapabilities = prism.cbv2Capabilities
+                newCaches = { make in try prism.newCacheV2(makeLayerCache: make) }
             case let qwen as MLXVLM.Qwen3VL:
                 layerKinds = qwen.cbv2LayerKinds
                 modelCapabilities = qwen.cbv2Capabilities
@@ -57,6 +61,18 @@ extension EngineV2Factory {
                 layerKinds = nemotron.cbv2LayerKinds
                 modelCapabilities = nemotron.cbv2Capabilities
                 newCaches = { make in nemotron.newCacheV2(makeLayerCache: make) }
+            case let qwen as Qwen4ExpModel:
+                layerKinds = qwen.cbv2LayerKinds
+                modelCapabilities = qwen.cbv2Capabilities
+                newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
+            case let qwen as Qwen4ExpTextModel:
+                layerKinds = qwen.cbv2LayerKinds
+                modelCapabilities = qwen.cbv2Capabilities
+                newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
+            case let qwen as MLXVLM.Qwen4Exp:
+                layerKinds = qwen.cbv2LayerKinds
+                modelCapabilities = qwen.cbv2Capabilities
+                newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
             default:
                 return nil
             }

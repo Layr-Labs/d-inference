@@ -1,4 +1,4 @@
-export type ModelMaker = "openai" | "google" | "qwen" | "unknown";
+export type ModelMaker = "openai" | "google" | "qwen" | "nvidia" | "prismml" | "unknown";
 
 export interface ModelBrand {
   maker: ModelMaker;
@@ -31,6 +31,22 @@ export function modelBrand(modelId: string, family?: string): ModelBrand {
       makerLabel: "Qwen",
       logoSrc: "/brand/qwen-logo.png",
       logoAlt: "Qwen logo",
+    };
+  }
+  if (identity.includes("nemotron")) {
+    return {
+      maker: "nvidia",
+      makerLabel: "NVIDIA",
+      logoSrc: "/brand/nvidia.svg",
+      logoAlt: "NVIDIA logo",
+    };
+  }
+  if (identity.includes("bonsai") || identity.includes("prismml")) {
+    return {
+      maker: "prismml",
+      makerLabel: "PrismML",
+      logoSrc: "/brand/bonsai.svg",
+      logoAlt: "Bonsai by PrismML",
     };
   }
   warnUnbranded(modelId, family);

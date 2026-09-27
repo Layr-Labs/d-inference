@@ -24,21 +24,20 @@ struct AutoUpdate: AsyncParsableCommand {
     var action: String
 
     mutating func run() async throws {
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
-        let path = snapshot.configPath
-
+        Darkbloom.ensureLogging()
         switch action.lowercased() {
         case "status":
+            let snapshot = try loadRuntimeSnapshot(configPath: configOptions.config, migrateOnDisk: false)
             print("Auto-update is \(snapshot.config.provider.autoUpdate ? "ENABLED" : "DISABLED")")
             print("Config: \(describeConfigPath(snapshot))")
 
         case "enable", "on", "true":
-            try writeAutoUpdate(true, snapshot: snapshot, path: path)
+            try setAutoUpdate(true, configPath: configOptions.config)
             print("Auto-update ENABLED.")
             print("The provider will check for new signed releases at startup.")
 
         case "disable", "off", "false":
-            try writeAutoUpdate(false, snapshot: snapshot, path: path)
+            try setAutoUpdate(false, configPath: configOptions.config)
             print("Auto-update DISABLED.")
             print("Run 'darkbloom update' manually to install new releases.")
 
@@ -47,15 +46,17 @@ struct AutoUpdate: AsyncParsableCommand {
             throw ExitCode.failure
         }
     }
+}
 
-    private func writeAutoUpdate(
-        _ value: Bool,
-        snapshot: RuntimeSnapshot,
-        path: URL
-    ) throws {
-        var config = snapshot.config
-        if config.provider.autoUpdate == value && snapshot.configFileExists {
-            // Already in the desired state — no-op.
+/// Reload under the same sidecar lock as live model selection and the other
+/// config commands. A snapshot read before a switch cannot write old models
+/// over the switch's durable selection.
+func setAutoUpdate(_ value: Bool, configPath: String?) throws {
+    // Avoid a migration write before the sidecar lock. The selected path is
+    // reloaded by withMutableConfig after acquiring the switch's lock.
+    try withMutableConfig(configPath: configPath, migrateOnDisk: false) { path, config in
+        if config.provider.autoUpdate == value,
+           FileManager.default.fileExists(atPath: path.path) {
             return
         }
         config.provider.autoUpdate = value

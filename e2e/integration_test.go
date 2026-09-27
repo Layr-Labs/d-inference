@@ -1049,14 +1049,12 @@ func TestIntegration_E2EEncryptionCorrectness(t *testing.T) {
 	require.Greater(t, result.Usage.PromptTokens, 0, "prompt_tokens should be positive")
 	require.Greater(t, result.Usage.CompletionTokens, 0, "completion_tokens should be positive")
 
-	var printable int
-	for _, r := range content {
-		if r >= 32 && r < 127 {
-			printable++
-		}
-	}
-	printableRatio := float64(printable) / float64(len(content))
-	require.Greater(t, printableRatio, 0.8, "response should be mostly printable text (got %.0f%%), not encrypted binary", printableRatio*100)
+	// The fixture asks for one known arithmetic answer. An ASCII fraction
+	// rejects legitimate separator newlines ("\n\n4" is only 33% printable),
+	// yet accepts arbitrary printable ciphertext/base64. Check the actual
+	// plaintext answer instead; never trim or repair the engine's response.
+	require.True(t, expectedDecryptedArithmeticAnswer(content),
+		"decrypted response must contain exactly 4 apart from surrounding ASCII whitespace; got %q", content)
 
 	t.Logf("E2E encryption: content is valid decrypted text (%d chars, %d prompt / %d completion tokens)",
 		len(content), result.Usage.PromptTokens, result.Usage.CompletionTokens)

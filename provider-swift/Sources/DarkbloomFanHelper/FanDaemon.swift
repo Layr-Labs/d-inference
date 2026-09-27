@@ -30,8 +30,7 @@ actor FanDaemon {
 
     private var policy: FanPolicyStateMachine
     private var pollTask: Task<Void, Never>?
-    private var leaseSessionID: UUID?
-    private var leaseExpiresAt: TimeInterval = 0
+    private var providerLease: (sessionID: UUID, expiresAt: TimeInterval)?
     private var powerSuspended = false
     private var administrativelyDisabled = false
     private var mode: FanServiceMode
@@ -110,15 +109,13 @@ actor FanDaemon {
         guard providerVersion.utf8.count <= 64 else {
             return FanIPCReply(ok: false, message: "provider version is invalid")
         }
-        leaseSessionID = sessionID
-        leaseExpiresAt = uptime() + FanIPC.leaseDurationSeconds
+        providerLease = (sessionID, uptime() + FanIPC.leaseDurationSeconds)
         return FanIPCReply(ok: true)
     }
 
     func releaseLease(sessionID: UUID) async -> FanIPCReply {
-        if leaseSessionID == sessionID {
-            leaseSessionID = nil
-            leaseExpiresAt = 0
+        if providerLease?.sessionID == sessionID {
+            providerLease = nil
             let restored = await restoreAutomatic(reason: "provider lease released")
             return FanIPCReply(
                 ok: restored,
@@ -129,16 +126,14 @@ actor FanDaemon {
     }
 
     func sessionInvalidated(_ sessionID: UUID) async {
-        guard leaseSessionID == sessionID else { return }
-        leaseSessionID = nil
-        leaseExpiresAt = 0
+        guard providerLease?.sessionID == sessionID else { return }
+        providerLease = nil
         _ = await restoreAutomatic(reason: "provider XPC session ended")
     }
 
     func emergencyRestore() async -> FanIPCReply {
         administrativelyDisabled = true
-        leaseSessionID = nil
-        leaseExpiresAt = 0
+        providerLease = nil
         let restored = await restoreAutomatic(reason: "administrator requested Auto")
         return FanIPCReply(ok: restored, message: restored ? nil : lastError)
     }
@@ -155,16 +150,7 @@ actor FanDaemon {
             triggerTemperatureC: configuration.policy.triggerCelsius,
             releaseTemperatureC: configuration.policy.releaseCelsius,
             speedPercent: configuration.policy.speedPercent,
-            fans: fanReadings.map { reading in
-                FanServiceFanStatus(
-                    index: reading.capability.index,
-                    actualRPM: reading.actualRPM,
-                    targetRPM: reading.targetRPM,
-                    minimumRPM: reading.minimumRPM,
-                    maximumRPM: reading.maximumRPM,
-                    mode: describe(reading.mode)
-                )
-            },
+            fans: fanReadings.map { FanServiceFanStatus(reading: $0) },
             lastError: lastError
         )
     }
@@ -172,15 +158,13 @@ actor FanDaemon {
     func shutdown() async {
         pollTask?.cancel()
         pollTask = nil
-        leaseSessionID = nil
-        leaseExpiresAt = 0
+        providerLease = nil
         _ = await restoreAutomatic(reason: "fan helper shutting down")
     }
 
     func prepareForSleep() async {
         powerSuspended = true
-        leaseSessionID = nil
-        leaseExpiresAt = 0
+        providerLease = nil
         _ = await restoreAutomatic(reason: "system will sleep")
     }
 
@@ -188,13 +172,13 @@ actor FanDaemon {
         // A fresh provider renewal is required after wake. This prevents a
         // stale pre-sleep lease from reasserting manual mode on resumed hardware.
         powerSuspended = false
-        leaseSessionID = nil
-        leaseExpiresAt = 0
+        providerLease = nil
         mode = effectiveEnabled ? .waitingForProvider : .disabled
     }
 
     private var providerLeaseActive: Bool {
-        !powerSuspended && leaseSessionID != nil && uptime() < leaseExpiresAt
+        guard let providerLease else { return false }
+        return !powerSuspended && uptime() < providerLease.expiresAt
     }
 
     private var effectiveEnabled: Bool {
@@ -292,21 +276,14 @@ actor FanDaemon {
     }
 
     private func persistOwnership(_ session: FanControlSession) throws {
-        try FanDurableFile.writeJSON(
-            FanSessionJournal(
-                fanIndices: session.targetRPMByFan.keys.map { $0 },
-                ownsFtst: session.ownsFtst
-            ),
-            to: paths.sessionJournal,
-            permissions: 0o600,
-            owner: journalOwner
-        )
+        try recordOwnership(FanControlOwnership(
+            fanIndices: Array(session.targetRPMByFan.keys),
+            ownsFtst: session.ownsFtst
+        ))
     }
 
     private func restoreAutomatic(reason: String) async -> Bool {
-        guard await controller.isControlling
-            || FileManager.default.fileExists(atPath: paths.sessionJournal.path)
-        else {
+        guard await hasPossibleOwnership else {
             _ = policy.reset()
             if !providerLeaseActive {
                 mode = effectiveEnabled ? .waitingForProvider : .disabled
@@ -357,12 +334,4 @@ actor FanDaemon {
         }
     }
 
-    private func describe(_ mode: FanMode) -> String {
-        switch mode {
-        case .automatic: return "auto"
-        case .manual: return "manual"
-        case .system: return "system"
-        case .unknown(let value): return "unknown(\(value))"
-        }
-    }
 }

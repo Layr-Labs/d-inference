@@ -17,6 +17,7 @@ func buildResponsesUsage(promptTokens, completionTokens, reasoningTokens, cached
 		InputTokensDetail:  types.ResponsesUsageDetail{CachedTokens: int(cachedTokens)},
 		OutputTokens:       int(completionTokens),
 		OutputTokensDetail: types.ResponsesUsageDetail{ReasoningTokens: int(reasoningTokens)},
+		TotalTokens:        int(promptTokens) + int(completionTokens),
 	}
 }
 
@@ -39,8 +40,9 @@ func appendResponsesOutputItems(output []any, requestID string, msg extractedMes
 	index := len(output)
 	if msg.Reasoning != "" {
 		output = append(output, map[string]any{
-			"type": "reasoning",
-			"id":   responseItemID("rs", requestID, index),
+			"type":   "reasoning",
+			"id":     responseItemID("rs", requestID, index),
+			"status": "completed",
 			"summary": []map[string]any{{
 				"type": "summary_text",
 				"text": msg.Reasoning,

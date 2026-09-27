@@ -198,6 +198,13 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 			fmt.Sprintf("this API key is not permitted to use model %q", model), withParam("model")))
 		return inferencePrelude{}, false
 	}
+	// Reject an invalid caller budget before runtime defaults, alias lowering or
+	// reservation accounting can replace it with an executable positive bound.
+	if field := invalidOutputTokenField(parsed); field != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			field+" must be a non-negative integer", withParam(field)))
+		return inferencePrelude{}, false
+	}
 
 	// Own the template date before any model fallback or endpoint lowering.
 	// Always overwrite the reserved field; originalRawBody remains untouched.
@@ -304,7 +311,7 @@ func (s *Server) candidateProviderBody(
 		return nil, err
 	}
 	if isResponsesAPI {
-		return promptcontract.LowerProviderBody(promptcontract.EndpointResponses, candidateBody)
+		return promptcontract.LowerResponsesInferenceBody(candidateBody)
 	}
 	return candidateBody, nil
 }
@@ -320,33 +327,16 @@ func (s *Server) candidateProviderBody(
 // matched by ownerAccountID, not serials — those paths handle availability
 // themselves and must never be wrongly blocked).
 //
-// rejectResponsesMedia is the chat-completions-only guard: media via the
-// Responses API (`input` with no `messages`) is rejected outright because the
-// Responses→chat lowering does not carry image/video parts through. Generic
-// (completions/Anthropic) passes false.
-//
 // Returns handled=true when a terminal response was written (caller must return).
 func (s *Server) visionToolsFailFast(
 	w http.ResponseWriter,
 	model, publicModel string,
 	requiresVision, hasTools, requiresToolConstraint bool,
 	toolChoiceMode string,
-	rejectResponsesMedia bool,
 	policy selfRoutePolicy,
 	allowedProviderSerials []string,
 ) (handled bool) {
 	if requiresVision {
-		// The Responses API path lowers `input` to chat messages via
-		// responsesRequestToChatCompletions, which does NOT carry image/video parts
-		// through — so a media request there would be routed and then silently
-		// stripped (image-blind). Reject it cleanly until that conversion preserves
-		// media (tracked follow-up); the console uses /v1/chat/completions for images.
-		if rejectResponsesMedia {
-			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-				"image/video input via the Responses API is not supported yet; use /v1/chat/completions",
-				withParam("input")))
-			return true
-		}
 		// Constrain the capability check to the eligible provider set: a public
 		// vision-capable provider must not satisfy a request pinned to an
 		// allowlist whose members are all vision-blind. Self-route/prefer owned

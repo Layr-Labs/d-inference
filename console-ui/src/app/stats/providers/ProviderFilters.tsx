@@ -32,7 +32,7 @@ export function ProviderFilters({ filters, modelOptions, expanded, hasFilters, o
             <option value="all">Every model</option>{modelOptions.map((model) => <option key={model} value={model}>{shortProviderModel(model)}</option>)}
           </select></label>
           <label className="grid gap-2 text-xs text-text-tertiary">Trust<select value={filters.trust} onChange={(event) => onChange({ trust: event.target.value as ProviderTrustFilter })} aria-label="Filter by trust" className={SELECT_STYLE}>
-            <option value="all">All trust levels</option><option value="hardware">Hardware trust</option><option value="basic">Basic identity</option>
+            <option value="all">All verification states</option><option value="verified">Verified at snapshot</option><option value="app_attest">App Attest</option><option value="legacy">Legacy authorized</option><option value="dual">Both methods</option><option value="hardware">Legacy hardware evidence</option><option value="basic">Not verified at snapshot</option>
           </select></label>
           <label className="grid gap-2 text-xs text-text-tertiary">Sort by<select value={filters.sort} onChange={(event) => onChange({ sort: event.target.value as ProviderSortKey })} aria-label="Sort providers" className={SELECT_STYLE}>
             <option value="readiness">Readiness first</option><option value="hardware">Largest hardware</option><option value="requests">Most requests</option><option value="tokens">Most tokens</option><option value="chip">Chip name</option>

@@ -1,3 +1,4 @@
+import { ModelTokenPromotionsProvider } from "@/components/app-providers/ModelTokenPromotionsProvider";
 import type { Metadata } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/AppShell";
@@ -12,7 +13,7 @@ import { DatadogRUM } from "@/components/DatadogRUM";
 export const metadata: Metadata = {
   title: "Darkbloom — Private AI on Verified Macs",
   description:
-    "Private AI inference through hardware-attested Apple Silicon providers. Your prompts stay encrypted, your data stays yours.",
+    "Private AI inference through hardware-attested Apple Silicon providers. Encrypted connections. Verified providers.",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "any" },
@@ -47,9 +48,11 @@ export default function RootLayout({
         <DatadogRUM />
         <ThemeProvider>
           <PrivyClientProvider>
+            <ModelTokenPromotionsProvider>
             <VerificationModeProvider>
               <AppShell>{children}</AppShell>
             </VerificationModeProvider>
+          </ModelTokenPromotionsProvider>
           </PrivyClientProvider>
         </ThemeProvider>
       </body>

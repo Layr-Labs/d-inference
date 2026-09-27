@@ -14,7 +14,7 @@ import (
 )
 
 func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _ := testServerWithConfig(t, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
 	w := httptest.NewRecorder()
 	srv.writeServiceUnavailable(w, "gpt-oss-20b")
 
@@ -41,7 +41,7 @@ func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
 }
 
 func TestTTFTDeadlineExact(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _ := testServerWithConfig(t, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
 	tests := []struct {
 		model       string
 		inputTokens int
@@ -84,7 +84,7 @@ func TestFirstContentDeadlineIsServerOwned(t *testing.T) {
 }
 
 func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _ := testServerWithConfig(t, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
 	threshold := srv.FirstContentDeadline("slow-ttft-model", 0)
 	if threshold != 5*time.Second {
 		t.Fatalf("FirstContentDeadline(0) = %v, want 5s", threshold)
@@ -127,7 +127,7 @@ func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 }
 
 func TestTTFTAdmission429BelowOldTenSecondFloor(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _ := testServerWithConfig(t, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
 	srv.SetTTFTHardReject(true) // legacy hard 429-on-slow-estimate path (now opt-in)
 	model := "exact-ttft-floor-model"
 	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
@@ -153,7 +153,7 @@ func TestTTFTAdmission429BelowOldTenSecondFloor(t *testing.T) {
 }
 
 func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _ := testServerWithConfig(t, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
 	srv.SetTTFTHardReject(true) // legacy hard 429-on-slow-estimate path (now opt-in)
 	model := "route-slow-ttft-model"
 	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
@@ -229,7 +229,7 @@ func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
 // the TTFT shed, so asserting "not 429" pins the fix. (The request can't truly
 // stream over a nil test conn; it just must never be ttft-rejected.)
 func TestTTFTSoftGateDoesNotShedAtDispatch(t *testing.T) {
-	srv, _ := testServer(t) // default: soft gate (ttftHardReject=false)
+	srv, _ := testServerWithConfig(t, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}}) // default: soft gate (ttftHardReject=false)
 	model := "soft-serve-ttft-model"
 	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
 	p := registerBuildsProvider(srv, "slow-prefill-provider", model)
@@ -251,7 +251,7 @@ func TestTTFTSoftGateDoesNotShedAtDispatch(t *testing.T) {
 }
 
 func TestTTFTHardGateDoesNotRejectMediaOnTextOnlyEstimate(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _ := testServerWithConfig(t, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
 	srv.SetTTFTHardReject(true)
 	warmCfg := registry.ReadConfig().WarmPool
 	warmCfg.Enabled = true
@@ -295,7 +295,7 @@ func TestTTFTHardGateDoesNotRejectMediaOnTextOnlyEstimate(t *testing.T) {
 }
 
 func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _ := testServerWithConfig(t, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
 	publicModel := "public-ttft-alias"
 	desired := "desired-ttft-build"
 	previous := "previous-ttft-build"
@@ -369,7 +369,7 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 }
 
 func TestMaybeFallbackAliasTTFTSkipsRejectedPrevious(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _ := testServerWithConfig(t, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
 	publicModel := "public-ttft-shed-alias"
 	desired := "desired-ttft-shed-build"
 	previous := "previous-ttft-shed-build"
@@ -393,7 +393,7 @@ func TestMaybeFallbackAliasTTFTSkipsRejectedPrevious(t *testing.T) {
 }
 
 func TestMaybeFallbackAliasCapacitySkipsRejectedPrevious(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, _ := testServerWithConfig(t, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}})
 	publicModel := "public-capacity-shed-alias"
 	desired := "desired-capacity-shed-build"
 	previous := "previous-capacity-shed-build"

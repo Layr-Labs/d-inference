@@ -1185,7 +1185,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		// snapshotProviderIntoLockedEx applies every per-provider gate via the shared
 		// providerPassesRoutingGatesLocked, INCLUDING the shape-keyed
 		// inference-error cooldown and the trait gates (render-broken fences all
-		// shapes; the tools version floor fences tool requests). A failing
+		// shapes; tool-constraint and native-media gates fence their shapes). A failing
 		// provider is simply dropped here — the returned gate reason names WHICH
 		// gate dropped it for the profiler tally without changing the verdict.
 		// The snapshot is written straight into an arena slot (candidate_arena.go).
@@ -1411,9 +1411,10 @@ func providerVersion(p *Provider) string {
 // privacy/runtime/challenge gates as routing but deliberately ignores the
 // hardware-trust gate, which self-route relaxes for a caller's own machine.
 // traits/requiresVision mirror the dispatch-time gates
-// (providerEligibleForTraitsLocked, the vision gate): without them a tool call
-// to an owned box below the tools floor — or a media request to a text-only
-// build — would pass this preflight, queue for up to 120s, and die as
+// (providerEligibleForTraitsLocked, the vision gate): without them a
+// constrained tool call to an owned box that does not advertise the tool
+// constraint — or a media request to a text-only build — would pass this
+// preflight, queue for up to 120s, and die as
 // machine_busy instead of failing fast with the real cause. Callers asking the
 // base-shape question ("any owned box serves this model at all?") pass zero
 // traits and requiresVision=false. "Linked but offline" providers are not

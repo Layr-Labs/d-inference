@@ -12,17 +12,15 @@ import (
 type RequestTraits struct {
 	// HasTools is true when the request carries an OpenAI tools/functions
 	// schema. Tool schemas are rendered through the model's chat template on
-	// the provider, and old binaries crash on schema shapes they don't
-	// normalize (e.g. nullable/missing parameter types crashing Gemma's
-	// template with "upper filter requires string"). Tool-bearing requests are
-	// therefore gated by capabilityVersionFloors and by the per-model
-	// template_render_ok advertisement.
+	// the provider. It selects the "tools" inference-error cooldown shape
+	// (CooldownShape) and the tools fail-fast; the per-model
+	// template_render_ok gate fences every request shape, tools included.
 	HasTools bool
 	// RequiresToolConstraint is true for required/exact-named choices — the
 	// modes that compile a sampler grammar. These requests route only to
 	// providers that explicitly advertise the concrete model under
-	// tool-constraint protocol v1. Auto and none remain valid on the ordinary
-	// tools floor: auto is unconstrained, and none is honored by hiding tools
+	// tool-constraint protocol v1. Auto and none need no constraint
+	// advertisement: auto is unconstrained, and none is honored by hiding tools
 	// from the prompt plus post-generation rejection, neither of which needs
 	// an enforcing sampler.
 	RequiresToolConstraint bool
@@ -70,35 +68,14 @@ func (t RequestTraits) CooldownShape() string {
 	return "base"
 }
 
-// capabilityVersionFloors maps a request trait to the minimum provider binary
-// version able to serve it. Providers BELOW a floor — including providers that
-// report no version at all — are excluded from requests carrying that trait.
-//
-// "tools": 0.6.3 is the first version with provider-side tool-schema
-// normalization (#310); older binaries crash Gemma's chat template on OpenAI
-// tool schemas with nullable/missing types.
-var capabilityVersionFloors = map[string]string{
-	"tools": "0.6.3",
-}
-
-// toolChoiceNonePromptPolicyFloor is the minimum provider version that honors
-// tool_choice "none" on a request that DECLARES tools. Honoring `none` is
-// prompt-side: ToolChoicePromptPolicy hides the declared tools from the
-// rendered prompt and injects the no-tool instruction, and that policy first
-// shipped in provider v0.7.10 (#538). An older provider renders the tools
-// verbatim and can emit a tool call DESPITE the caller's explicit `none`; the
-// fleet-wide minimum version (prod 0.7.5) does not cover it. Tool-less `none`
-// requests need no floor: with nothing declared there is nothing to render.
-const toolChoiceNonePromptPolicyFloor = "0.7.10"
-
 // CompareVersions compares two dotted numeric versions, returning -1 when
 // a < b, 0 when equal, +1 when a > b. It is deliberately tolerant: a leading
 // "v"/"V" is stripped, segments compare numerically ("0.6.10" > "0.6.3"),
 // missing segments compare as 0 ("0.6" == "0.6.0"), and unparseable segments
 // compare as 0 ("garbage" == "0", "0.6.3-rc1" == "0.6.0"). An empty string
 // parses as no segments (all zeros), so it sits below any real floor;
-// providerMeetsTraitFloorsLocked additionally special-cases empty so a
-// non-reporting provider fails every floor even if one were ever set to 0.
+// version-floor callers (providerMeetsQwen4CatalogPolicyLocked) additionally
+// special-case empty so a non-reporting provider fails the floor.
 func CompareVersions(a, b string) int {
 	as := versionSegments(a)
 	bs := versionSegments(b)
@@ -127,9 +104,9 @@ func CompareVersions(a, b string) int {
 // versionSegments parses "v0.6.3" into [0 6 3]. Unparseable or negative
 // segments parse as 0. Results are memoized per distinct input string
 // (version_memo.go) — the fleet runs a handful of binary versions, and the
-// routing scan compares every provider's version against the capability
-// floors and the pooled-budget layout floor on every request — so the
-// returned slice is SHARED and must be treated as read-only.
+// routing scan compares a provider's version against the qwen4 catalog-policy
+// floor on every request for that model — so the returned slice is SHARED and
+// must be treated as read-only.
 func versionSegments(v string) []int {
 	return versionSegmentsMemo.getBounded(v, parseVersionSegments, versionSegmentsMemoizable)
 }
@@ -160,34 +137,11 @@ func parseVersionSegments(v string) []int {
 	return segs
 }
 
-// providerMeetsTraitFloorsLocked reports whether the provider's binary version
-// meets every capability version floor required by the request's traits. A
-// provider with an EMPTY version (old binaries that never report one) is below
-// any floor. Caller holds r.mu and p.mu — same discipline as
-// providerServesVisionModelLocked; p.Version is guarded by p.mu.
-func (r *Registry) providerMeetsTraitFloorsLocked(p *Provider, t RequestTraits) bool {
-	if t.HasTools {
-		if floor := capabilityVersionFloors["tools"]; floor != "" {
-			if p.Version == "" || CompareVersions(p.Version, floor) < 0 {
-				return false
-			}
-		}
-		if t.ToolChoiceMode == "none" {
-			if p.Version == "" ||
-				CompareVersions(p.Version, toolChoiceNonePromptPolicyFloor) < 0 {
-				return false
-			}
-		}
-	}
-	return true
-}
-
 // providerTemplateRenderBrokenLocked reports whether the provider's advertised
 // ModelInfo for model carries an EXPLICIT template_render_ok=false — the
-// 0.6.5+ provider self-checked the model's chat template against the canonical
-// tool/multimodal fixtures and the render crashed. nil means a pre-0.6.5
-// provider with no opinion (allowed; the version floor is the backstop there).
-// Caller holds p.mu (p.Models is guarded by p.mu).
+// provider self-checked the model's chat template against the canonical
+// tool/multimodal fixtures and the render crashed. nil means no opinion
+// (allowed). Caller holds p.mu (p.Models is guarded by p.mu).
 func providerTemplateRenderBrokenLocked(p *Provider, model string) bool {
 	for _, m := range p.Models {
 		if m.ID == model && m.TemplateRenderOK != nil && !*m.TemplateRenderOK {
@@ -197,17 +151,14 @@ func providerTemplateRenderBrokenLocked(p *Provider, model string) bool {
 	return false
 }
 
-// providerEligibleForTraitsLocked combines the capability version floors with
-// the per-model template_render_ok gate. Two distinct scopes:
-//
-//   - The template_render_ok=false gate fences EVERY request shape. A crashing
-//     chat template breaks plain text, tool, and multimodal requests alike for
-//     that (provider, model) pair — the verdict is about the model's template
-//     rendering, not about tools — so a render-broken build must never serve any
-//     request for the model, regardless of traits.
-//   - The capability version floors are trait-scoped: only a tool-bearing
-//     request is held to the tools floor; a plain request may still route to a
-//     below-floor binary.
+// providerEligibleForTraitsLocked applies the per-model registry-ID policy,
+// the request-shape capability gates (prefix-cache protocol floor, tool
+// constraint, native media tools), and the per-model template_render_ok gate.
+// The template_render_ok=false gate fences EVERY request shape: a crashing
+// chat template breaks plain text, tool, and multimodal requests alike for
+// that (provider, model) pair — the verdict is about the model's template
+// rendering, not about tools — so a render-broken build must never serve any
+// request for the model, regardless of traits.
 //
 // Caller holds r.mu and p.mu (same discipline as providerServesVisionModelLocked).
 func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t RequestTraits) bool {
@@ -224,26 +175,18 @@ func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t 
 		return false
 	}
 	// Render-broken: applies to ALL requests for the model.
-	if providerTemplateRenderBrokenLocked(p, model) {
-		return false
-	}
-	// Version floors: trait-scoped (tools-only today).
-	if !r.providerMeetsTraitFloorsLocked(p, t) {
-		return false
-	}
-	return true
+	return !providerTemplateRenderBrokenLocked(p, model)
 }
 
 // HasToolCapableProviderForModel reports whether any online, non-untrusted
 // provider could serve a tool-bearing request for the resolved model id:
-// it advertises a catalog-allowed build of the model AND passes the tools
-// trait gate (>= the tools version floor with no explicit
+// it advertises a catalog-allowed build of the model AND passes the trait
+// gates (providerEligibleForTraitsLocked — notably no explicit
 // template_render_ok=false for the model). The consumer uses it to fail a
 // tools request fast with the real cause when the model's whole pool is
-// trait-gated (e.g. a fleet still updating past 0.6.3) — without it the
-// request passes the trait-blind capacity preflight, queues for up to 120s,
-// and dies with a misleading capacity 429. Mirrors HasVisionProviderForModel,
-// including its r.mu/p.mu discipline.
+// trait-gated — without it the request passes the trait-blind capacity
+// preflight, queues for up to 120s, and dies with a misleading capacity 429.
+// Mirrors HasVisionProviderForModel, including its r.mu/p.mu discipline.
 //
 // When allowedSerials is non-empty the check is restricted to providers whose
 // attested serial is in the set, exactly as the routing path constrains the
@@ -257,11 +200,11 @@ func (r *Registry) HasToolCapableProviderForModel(model string, allowedSerials .
 }
 
 // HasToolCapableProviderForTraits is HasToolCapableProviderForModel with the
-// caller's full request traits, so trait-scoped floors beyond the plain tools
-// floor (today: the tool_choice "none" prompt-policy floor) participate in the
-// consumer's fail-fast. Without it a request whose WHOLE pool is below a
-// mode-specific floor would pass the trait-blind fail-fast, queue for up to
-// 120s, and die with a misleading capacity 429.
+// caller's full request traits, so every trait-scoped gate the dispatch path
+// applies (providerEligibleForTraitsLocked) participates in the consumer's
+// fail-fast. Without it a request whose WHOLE pool is trait-gated would pass
+// the trait-blind fail-fast, queue for up to 120s, and die with a misleading
+// capacity 429.
 func (r *Registry) HasToolCapableProviderForTraits(
 	model string, traits RequestTraits, allowedSerials ...string,
 ) bool {
@@ -270,8 +213,8 @@ func (r *Registry) HasToolCapableProviderForTraits(
 }
 
 // HasToolConstraintProviderForModel is the fail-fast companion for
-// none/required/named choices. Unlike the legacy tools version floor, this
-// requires an explicit protocol-v1 advertisement for the concrete model.
+// required/named choices. It requires an explicit protocol-v1 advertisement
+// for the concrete model.
 func (r *Registry) HasToolConstraintProviderForModel(
 	model string,
 	allowedSerials ...string,

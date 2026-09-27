@@ -9,9 +9,9 @@ import (
 // version_memo.go — memoized parsing of provider binary versions.
 //
 // The routing scan compares every provider's reported version against the
-// capability floors (providerMeetsTraitFloorsLocked) and the pooled-budget
-// layout floor (slotBudgetLayoutForVersion → CompareVersions) on every
-// request. Parsing a dotted version allocates (strings.Split + a segment
+// qwen4 catalog-policy floor (providerMeetsQwen4CatalogPolicyLocked) and the
+// pooled-budget layout floor (slotBudgetLayoutForVersion → CompareVersions) on
+// every request. Parsing a dotted version allocates (strings.Split + a segment
 // slice) — ~4% of the fleet-scale scan's allocation volume for what is, in
 // practice, a handful of distinct strings across the whole fleet. Each memo
 // below maps the RAW input string to its parsed result behind a copy-on-write

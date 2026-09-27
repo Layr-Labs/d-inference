@@ -67,7 +67,8 @@ struct SSDHybridCheckpointDuplicateTests {
         try replaceStoredCheckpoint(fault, fixture: fixture, store: store, position: position)
 
         #expect(try await fixture.donate(store, receipt: 21, position: position, chunkSize: 2048).isEmpty)
-        #expect(store.config.epochStore?.current != epoch)
+        // Removing one unreadable file keeps the model epoch.
+        #expect(store.config.epochStore?.current == epoch)
         #expect(store.stats().filesWritten == 1)
         #expect(store.stats().entries == 0)
         #expect(store.stats().corruptDropped == 1)

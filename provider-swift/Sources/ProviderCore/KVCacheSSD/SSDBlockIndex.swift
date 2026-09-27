@@ -14,6 +14,9 @@
 //
 // Eviction is `unlink` + index removal, oldest-by-last-hit first (LRU),
 // coordinated across models by `SSDDiskBudget` under one box-wide budget.
+// Eviction never rotates the model's cache epoch: the coordinator learns of
+// a removed file through an ordinary lookup miss, and every other file it
+// recorded for this provider stays valid evidence.
 
 import Foundation
 #if canImport(os)
@@ -185,8 +188,10 @@ protocol SSDEvictableStore: AnyObject, Sendable {
     /// Drop RAM-index entries whose files were removed by whole-root
     /// maintenance (including unloaded-model accounting).
     func reconcileExternalRemovals()
-    /// Bracket whole-root deletion through an active store so it owns the
-    /// replacement epoch and can resume advertising after the mutation.
+    /// Bracket whole-root deletion through an active store so the unlink and
+    /// the index reconciliation run under the store's own removal
+    /// serialization. The epoch is not rotated and the capability stays
+    /// advertised throughout.
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool
 }
 

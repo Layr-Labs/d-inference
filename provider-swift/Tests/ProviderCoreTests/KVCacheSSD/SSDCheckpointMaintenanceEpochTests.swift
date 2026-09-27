@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Complete checkpoint maintenance epoch", .serialized)
 struct SSDCheckpointMaintenanceEpochTests {
-    @Test("budget eviction leaves unrelated entries for the explicit reconciliation pass")
+    @Test("budget eviction leaves unrelated entries for the explicit reconciliation pass, and neither rotates")
     func budgetEvictionDoesNotReconcileWholeIndex() async throws {
         let f = try SSDHybridCheckpointTestFixture(tokenCount: 1025)
         defer { f.remove() }
@@ -24,6 +24,7 @@ struct SSDCheckpointMaintenanceEpochTests {
         // stale. Single-entry budget eviction must touch only its victims;
         // the explicit reconcile pass owns discovery of other missing files.
         try FileManager.default.removeItem(at: f.file(store, position: 1024))
+        let original = try #require(store.config.epochStore?.current)
         let limit = store.index.totalBytes - bytes[0] - bytes[1]
         #expect(budget.enforce(budgetBytes: limit) == 2)
         #expect(!store.index.contains(tag16: tags[0]))
@@ -31,14 +32,16 @@ struct SSDCheckpointMaintenanceEpochTests {
         #expect(store.index.contains(tag16: tags[2]))
         #expect(store.index.contains(tag16: tags[3]))
         #expect(store.index.totalBytes == limit)
-        let beforeReconcile = try #require(store.config.epochStore?.current)
+        // Two single-file evictions used to mint two epochs; the coordinator
+        // must keep its evidence for the untouched 768-token checkpoint.
+        #expect(store.config.epochStore?.current == original)
         budget.reconcileAll()
         #expect(store.index.count == 1)
         #expect(store.index.totalBytes == bytes[2])
-        let afterReconcile = try #require(store.config.epochStore?.current)
-        #expect(afterReconcile != beforeReconcile)
+        #expect(store.config.epochStore?.current == original)
         budget.reconcileAll()
-        #expect(store.config.epochStore?.current == afterReconcile)
+        #expect(store.config.epochStore?.current == original)
+        #expect(store.prefixCacheV2Capability()?.cacheEpoch == original)
         let result = await store.stage(requestID: .init(778), request: f.request(),
             reserveReadScratch: f.reserveReadScratch, makeImportPlan: f.plan)
         #expect(result.staged)
@@ -46,8 +49,8 @@ struct SSDCheckpointMaintenanceEpochTests {
         await store.closeAndWait()
     }
 
-    @Test("owned deletion reconciles once and a surviving checkpoint remains reusable")
-    func ownedDeletionReconcilesWithoutSecondEpoch() async throws {
+    @Test("owned deletion reconciles inside the barrier and a surviving checkpoint remains reusable")
+    func ownedDeletionReconcilesWithoutRotation() async throws {
         let f = try SSDHybridCheckpointTestFixture()
         defer { f.remove() }
         let budget = SSDDiskBudget()
@@ -64,11 +67,11 @@ struct SSDCheckpointMaintenanceEpochTests {
         }
         #expect(changed == true)
         #expect(removed)
-        let rotated = try #require(store.config.epochStore?.current)
-        #expect(rotated != original)
+        #expect(store.config.epochStore?.current == original)
+        #expect(store.prefixCacheV2Capability()?.cacheEpoch == original)
         #expect(store.index.count == 1)
         budget.reconcileAll()
-        #expect(store.config.epochStore?.current == rotated)
+        #expect(store.config.epochStore?.current == original)
         #expect(try Data(contentsOf: f.file(store, position: 256)) == survivor)
         let result = await store.stage(requestID: .init(777), request: f.request(),
             reserveReadScratch: f.reserveReadScratch, makeImportPlan: f.plan)

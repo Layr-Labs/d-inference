@@ -40,12 +40,21 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
     let donationRecorder: any PrefixCacheDonationRecording
     let index = SSDBlockIndex()
     let lock = NSLock()
+    /// Serializes per-file removals (budget eviction, TTL expiry, corrupt
+    /// drops, external reconciliation) with each other. Never held while
+    /// taking `lock` for anything but a state read; bodies do unlink + index
+    /// work only, so it nests safely inside `SSDDiskBudget`'s lock.
+    let removalLock = NSLock()
     let statsBox = SSDHybridCheckpointStatsBox()
     let activity = SSDCheckpointActivity()
     let fileCoordinator = SSDCheckpointFileCoordinator.shared
     let namespace = UUID().uuidString
     var closed = false
     var scanReady = false
+    /// Never set: per-file removals keep the epoch and the capability
+    /// published, and this store has no epoch-rotating change of its own.
+    /// Declared only because the write path's `cacheMaintenanceBusy` gate
+    /// still reads it; remove both together.
     var destructiveChange = false
     var stages: [CBv2RequestID: SSDCheckpointStage] = [:]
     var stageReservations: [CBv2RequestID: SSDCheckpointStageReservation] = [:]

@@ -83,47 +83,52 @@ func TestCacheDemandCapCoversMeasuredPlanMix(t *testing.T) {
 	}
 }
 
+// demandStridePlan lists only what a plan of that length observes: its
+// boundaries on the 1,024-token stride and its final one. Selection is by
+// token count (TestCacheDemandSelectionIgnoresListPosition), so it records
+// what the dense plan does at a quarter of the construction cost.
+func demandStridePlan(tracker *cacheRoutingTracker, promptTokens int, variant uint32) CachePlan {
+	dense := demandTestPlan(tracker, promptTokens, 0, variant)
+	dense.Boundaries = cacheDemandAnchors(dense.Boundaries)
+	return dense
+}
+
 // A plan observed 29 minutes ago still reports its repeat while the
-// production mix arrives at the sizing rate, every prompt distinct. The
-// former 600,000-entry cap had turned over by then.
+// production mix arrives at the sizing rate, every prompt distinct. The fill
+// records more than the former 600,000-entry cap held, which
+// TestCacheDemandRetainsBoundaryFor29MinutesAtSizingRate shows turning over.
 func TestCacheDemandRetainsPlanFor29MinutesAtSizingRate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("plans 104,400 prompts")
+	}
 	const fillMinutes, formerCap, targetTokens = 29, 600_000, 7_000
 	mix := demandPromptMixes[0]
 	key := []byte("0123456789abcdef0123456789abcdef")
-	sized := newCacheRoutingTracker(cacheRoutingSizingTTL, defaultCacheRoutingMaxHolders)
-	former := newCacheRoutingTracker(cacheRoutingSizingTTL, defaultCacheRoutingMaxHolders)
-	former.demand = newCacheDemandTracker(formerCap, cacheRoutingSizingTTL)
-	observe := func(tracker *cacheRoutingTracker, tokens, shared int, variant uint32, now time.Time) int {
-		plan := demandTestPlan(tracker, tokens, shared, variant)
-		tracker.observeCacheDemand(&plan, key, now)
-		return plan.RepeatedPrefixTokens
-	}
+	tracker := newCacheRoutingTracker(cacheRoutingSizingTTL, defaultCacheRoutingMaxHolders)
 	start := time.Unix(1_700_000_000, 0)
-	observe(sized, targetTokens, targetTokens, 0, start)
-	observe(former, targetTokens, targetTokens, 0, start)
+	target := demandTestPlan(tracker, targetTokens, targetTokens, 0)
+	tracker.observeCacheDemand(&target, key, start)
 	now := start
 	for i := 0; i < demandSizingPlansPerSecond*60*fillMinutes; i++ {
 		now = now.Add(time.Second / demandSizingPlansPerSecond)
 		// A low-discrepancy walk over the quantiles keeps every stretch of
 		// the fill representative of the mix.
 		_, q := math.Modf((float64(i) + 0.5) * 0.6180339887498949)
-		tokens := mix.promptTokensAt(q)
-		observe(sized, tokens, 0, uint32(i+1), now)
-		observe(former, tokens, 0, uint32(i+1), now)
+		plan := demandStridePlan(tracker, mix.promptTokensAt(q), uint32(i+1))
+		tracker.observeCacheDemand(&plan, key, now)
 	}
 	if age := now.Sub(start); age < 28*time.Minute+59*time.Second || age >= cacheRoutingSizingTTL {
 		t.Fatalf("fill covered %s, want just under %d minutes", age, fillMinutes)
 	}
-	recorded := len(sized.demand.entries)
+	recorded := len(tracker.demand.entries)
 	if recorded <= formerCap || recorded >= cacheDemandMaxEntries {
 		t.Fatalf("fill recorded %d entries; the test needs more than %d and fewer than %d",
 			recorded, formerCap, cacheDemandMaxEntries)
 	}
-	if got := observe(sized, targetTokens, targetTokens, 0, now); got != 6_912 {
+	again := demandTestPlan(tracker, targetTokens, targetTokens, 0)
+	tracker.observeCacheDemand(&again, key, now)
+	if again.RepeatedPrefixTokens != 6_912 || again.affinityKey == "" {
 		t.Fatalf("plan observed %s earlier reported %d, want its final boundary 6,912 (index holds %d entries)",
-			now.Sub(start), got, recorded)
-	}
-	if got := observe(former, targetTokens, targetTokens, 0, now); got != 0 {
-		t.Fatalf("a %d-entry index retained the plan: %d", formerCap, got)
+			now.Sub(start), again.RepeatedPrefixTokens, recorded)
 	}
 }

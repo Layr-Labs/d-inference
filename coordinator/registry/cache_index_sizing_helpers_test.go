@@ -14,9 +14,7 @@ import (
 )
 
 // cacheSizingHarness builds exact-cache holders through the production
-// receipt path (prepare → lookup → ready) of a real registry. Receipts are
-// round-tripped through JSON first, so every holder owns freshly allocated
-// strings exactly as a decoded provider frame does.
+// receipt path (prepare → lookup → ready) of a real registry.
 type cacheSizingHarness struct {
 	tb         testing.TB
 	r          *Registry
@@ -27,6 +25,25 @@ type cacheSizingHarness struct {
 	// forgetAttempts drops each attempt at once instead of leaving it
 	// terminal, isolating holder memory from attempt memory.
 	forgetAttempts bool
+	// decodedReceipts round-trips every receipt through JSON, so each holder
+	// owns freshly allocated strings exactly as a decoded provider frame
+	// does. Memory measurements need it; behavior does not depend on it.
+	decodedReceipts bool
+}
+
+func (h *cacheSizingHarness) frame(lookup *protocol.PrefixCacheLookupV2Message, ready *protocol.PrefixCacheReadyV2Message) (
+	*protocol.PrefixCacheLookupV2Message, *protocol.PrefixCacheReadyV2Message,
+) {
+	if !h.decodedReceipts {
+		return lookup, ready
+	}
+	if lookup != nil {
+		lookup = wireCopy(h.tb, lookup)
+	}
+	if ready != nil {
+		ready = wireCopy(h.tb, ready)
+	}
+	return lookup, ready
 }
 
 func newCacheSizingHarness(tb testing.TB, ttl time.Duration) *cacheSizingHarness {
@@ -93,14 +110,16 @@ func (h *cacheSizingHarness) receipt(index int, hit bool) CachePlan {
 		lookup.Outcome, lookup.MatchedAnchor = "hit", &anchor
 		lookup.ExpectedPrefillTokensSaved, lookup.StageMs = anchor.TokenCount, 120
 	}
-	if result := h.r.ApplyPrefixCacheLookupV2Result(h.provider.ID, wireCopy(h.tb, lookup)); !result.Accepted {
+	lookup, _ = h.frame(lookup, nil)
+	if result := h.r.ApplyPrefixCacheLookupV2Result(h.provider.ID, lookup); !result.Accepted {
 		h.tb.Fatalf("lookup %s rejected: %s", id, result.Reason)
 	}
 	if !hit {
 		h.seq++
 		ready := testV2Ready(nonce, h.capability, anchor, h.seq)
 		ready.RequestID = id
-		if result := h.r.ApplyPrefixCacheReadyV2Result(h.provider.ID, wireCopy(h.tb, ready)); !result.Accepted {
+		_, ready = h.frame(nil, ready)
+		if result := h.r.ApplyPrefixCacheReadyV2Result(h.provider.ID, ready); !result.Accepted {
 			h.tb.Fatalf("ready %s rejected: %s", id, result.Reason)
 		}
 	}

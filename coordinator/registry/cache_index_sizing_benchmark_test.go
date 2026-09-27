@@ -20,7 +20,7 @@ func BenchmarkCacheHolderMemory(b *testing.B) {
 		b.Run(fmt.Sprintf("%s/holders=%d", kind, cacheRoutingMaxEntries), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				h := newCacheSizingHarness(b, cacheRoutingSizingTTL)
-				h.forgetAttempts = true
+				h.forgetAttempts, h.decodedReceipts = true, true
 				before := settledHeapBytes()
 				for index := 0; index < cacheRoutingMaxEntries; index++ {
 					h.receipt(index, kind == "hit")

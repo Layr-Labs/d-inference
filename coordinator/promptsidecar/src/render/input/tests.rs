@@ -152,13 +152,34 @@ fn nested_tool_schema_canonical_collision_fails_without_rewriting() {
 }
 
 #[test]
-fn distinct_decomposed_keys_and_unrelated_maps_stay_eligible() {
+fn composed_keys_and_decomposed_values_stay_eligible() {
     let body = json!({"tools":[{"parameters":{"properties":{
-        "e\u{300}":{},"e\u{302}":{},"é":{},"êx":{},"e":{}}}}],
-        "first":{"é":1},"second":{"e\u{301}":2},"strings":["é","e\u{301}"]});
+        "è":{},"ê":{},"é":{},"êx":{},"e":{},"日本":{},"가":{}}}}],
+        "first":{"é":1},"second":{"é":2},"strings":["é","e\u{301}"]});
     let original = body.clone();
     validate_request_input(&body).unwrap();
     assert_eq!(body, original);
+}
+
+#[test]
+fn decomposed_keys_are_cold_even_without_a_colliding_sibling() {
+    // Swift `String <` orders NFC scalars: "e\u{301}" sorts after "f" on the
+    // provider and before it bytewise, so the rendered member order differs.
+    for body in [
+        json!({"tools":[{"type":"function","function":{"name":"f","parameters":{
+            "type":"object","properties":{"e\u{301}":{"type":"string"},"f":{"type":"string"}}}}}]}),
+        json!({"second":{"e\u{301}":2}}),
+        json!({"\u{1100}\u{1161}":1}),
+        json!({"messages":[{"tool_calls":[{"function":{"name":"f",
+            "arguments":"{\"e\\u0301\":1,\"f\":2}"}}]}]}),
+    ] {
+        let original = body.clone();
+        assert!(matches!(
+            validate_request_input(&body),
+            Err(RenderError::UnsupportedInput)
+        ));
+        assert_eq!(body, original);
+    }
 }
 
 #[test]
@@ -203,5 +224,8 @@ fn encoded_tool_arguments_are_checked_before_null_sanitation() {
     // JSON maps merely because their bytes happen to resemble JSON.
     validate_request_input(&json!({"messages":[{"content":encoded}]})).unwrap();
     validate_request_input(&json!({"messages":[{"tool_calls":[{"function":{"name":"f","arguments":"not { JSON é"}}]}]})).unwrap();
-    validate_request_input(&json!({"messages":[{"tool_calls":[{"function":{"name":"f","arguments":r#"{"e\u0300":null,"e\u0302":1}"#}}]}]})).unwrap();
+    validate_request_input(&json!({"messages":[{"tool_calls":[{"function":{"name":"f","arguments":r#"{"\u00e8":null,"\u00ea":1}"#}}]}]})).unwrap();
+    // Distinct decomposed keys do not collide, yet Swift orders them by their
+    // composed scalars: the rendered argument order is not the byte order.
+    assert!(validate_request_input(&json!({"messages":[{"tool_calls":[{"function":{"name":"f","arguments":r#"{"e\u0300":null,"e\u0302":1}"#}}]}]})).is_err());
 }

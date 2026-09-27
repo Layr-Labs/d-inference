@@ -14,10 +14,13 @@ func TestCacheServiceCostPenaltyLogIsSigned(t *testing.T) {
 	applyServiceHint(r, c, hint)
 	var output bytes.Buffer
 	r.logger = slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	r.logRoutingDecision("model", &PendingRequest{RequestID: "repeat"}, c, 1)
+	r.logRoutingDecision("model", &PendingRequest{RequestID: "repeat"}, c, 1, SelectionUniqueMin)
 	var record map[string]any
 	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
 		t.Fatal(err)
+	}
+	if record["selection_path"] != SelectionUniqueMin.String() {
+		t.Fatalf("selection_path = %v", record["selection_path"])
 	}
 	if record["cache_tier"] != "ssd" || record["cache_estimated_ttft_saved_ms"] != float64(-904) ||
 		record["cache_discount_ms"] != float64(0) || record["this_req_ms"] != float64(12904) {

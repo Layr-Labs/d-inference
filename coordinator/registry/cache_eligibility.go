@@ -57,6 +57,10 @@ var (
 		"write_io_failed",
 		"existing_cache_unreadable",
 		"cache_entry_evicted",
+		// The provider declined a complete-checkpoint write because neither the
+		// coordinator's cache_repeated_prefix_tokens nor its local tag history
+		// showed repeat demand. No bytes or write budget were spent.
+		"skipped_novel",
 	}
 )
 

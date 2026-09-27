@@ -34,16 +34,28 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
     let diskBudget: SSDDiskBudget
     let rateLimiter: SSDWriteRateLimiter
     let writeDemand: SSDCheckpointDemand
+    /// Coordinator repeat-demand hints for in-flight receipts; see
+    /// `SSDHybridCheckpointStore+DemandAdmission.swift`.
+    let donationDemandHints = SSDCheckpointDemandHints()
     let donationRecorder: any PrefixCacheDonationRecording
     let index = SSDBlockIndex()
     let lock = NSLock()
+    /// Serializes per-file removals (budget eviction, TTL expiry, corrupt
+    /// drops, external reconciliation) with each other. Never held while
+    /// taking `lock` for anything but a state read; bodies do unlink + index
+    /// work only, so it nests safely inside `SSDDiskBudget`'s lock.
+    let removalLock = NSLock()
+    #if DEBUG
+    /// Test-only: runs after a fresh checkpoint file is published and before
+    /// it is indexed, to reproduce a maintenance removal in that window.
+    var afterPublishBeforeIndexForTesting: (@Sendable () -> Void)?
+    #endif
     let statsBox = SSDHybridCheckpointStatsBox()
     let activity = SSDCheckpointActivity()
     let fileCoordinator = SSDCheckpointFileCoordinator.shared
     let namespace = UUID().uuidString
     var closed = false
     var scanReady = false
-    var destructiveChange = false
     var stages: [CBv2RequestID: SSDCheckpointStage] = [:]
     var stageReservations: [CBv2RequestID: SSDCheckpointStageReservation] = [:]
     var reading: [CBv2RequestID: SSDCheckpointFileCoordinator.Access] = [:]
@@ -145,10 +157,17 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
             stageReservations.removeValue(forKey: requestID)
             return (stages.removeValue(forKey: requestID), access)
         }
+        // The engine delivers the terminal after complete-checkpoint
+        // publication, so the write gate has already consulted this hint.
+        donationDemandHints.discard(requestID)
         access?.cancel()
         staged?.close()
     }
 
+    /// Retires a staged read. The request itself continues: the bridge
+    /// abandons staging and then retries the same receipt cold, and its
+    /// completion still consults the demand hint, so the hint stays until
+    /// `completeStaging` (terminal) or an explicit `discardDonationDemand`.
     func abandonStaging(requestID: CBv2RequestID) async {
         let (stage, reservation, access) = lock.withLock {
             let access = reading.removeValue(forKey: requestID)
@@ -177,6 +196,7 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
             return (retiring, accesses)
         }
         guard let retiring else { return }
+        donationDemandHints.removeAll()
         for access in retiring.reads { access.cancel() }
         pipeline.shutdown()
         for stage in retiring.stages { stage.close() }

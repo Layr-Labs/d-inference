@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-20 · commit `76a8f03d`
+> Last updated: 2026-09-26 · commit `c60610bb1`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, the field allowlist, and the tests
@@ -28,6 +28,9 @@ Cache donation outcomes also use the separate typed heartbeat protocol:
 reason and a cumulative count. Complete-checkpoint providers distinguish host
 memory refusal, epoch invalidation, maintenance contention, insufficient disk
 space, unsafe roots, write I/O failure, unreadable existing files and eviction.
+`skipped_novel` identifies a complete checkpoint declined before any write
+budget was charged because neither the coordinator's
+`cache_repeated_prefix_tokens` nor local tag history showed repeat demand.
 `write_priority_limited` identifies exhaustion of the novel-checkpoint write
 share; `write_rate_limited` identifies exhaustion of the total write budget.
 See the [SSD write policy](ssd-kv-cache.md#size-and-eviction-rules) for admission

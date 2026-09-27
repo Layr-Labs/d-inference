@@ -66,13 +66,14 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
                    maxWriteBytesPerDay: Int = 1 << 30,
                    diskBudgetBytes: @escaping @Sendable () -> Int = { 1 << 30 },
                    donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
+                   keyFingerprint: String = "fixture-key",
                    writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) throws -> SSDHybridCheckpointStore {
         let epochStore: SSDCacheEpochStore? = epoch ? try .init(root: modelRoot, binding: .init(
             modelId: "fixture-model", modelAggregateHash: identity.modelAggregateHash,
             promptContractId: identity.promptContractID, blockHashVersion: CBv2BlockHasher.version,
             blockSize: PrefixCachePolicy.blockSize, layoutEpoch: SSDHybridCheckpointEnvelope.layoutEpoch(
                 identity: identity, backendLayout: backendLayout),
-            keyFingerprint: "fixture-key")) : nil
+            keyFingerprint: keyFingerprint)) : nil
         let store = SSDHybridCheckpointStore(config: .init(modelId: "fixture-model", identity: identity,
             backendLayout: backendLayout,
             root: modelRoot, dedicatedRoot: root, epochStore: epochStore, maxReadBytes: readCap,

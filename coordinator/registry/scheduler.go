@@ -228,6 +228,9 @@ type routingCandidate struct {
 	capacityRejectRate        float64
 	cacheTier                 string
 	cacheEstimatedTTFTSavedMs float64
+	// cacheEvidenceWeight is the age weight of the credited holder evidence,
+	// captured with the hint so near-tie ranking and reservation agree.
+	cacheEvidenceWeight float64
 	// calibrationRatio is the TTFT calibration ratio this candidate was
 	// scored with (recorded on the RoutingDecision for the profiler).
 	calibrationRatio float64
@@ -613,7 +616,7 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	pr.CacheOpportunity = CacheOpportunity{}
 	if wantHints {
 		pr.cacheRoutingHints, pr.CacheOpportunity = r.cacheRoutingHintsWithObservation(
-			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, time.Now())
+			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, cacheTracker.now())
 	}
 	pr.CacheSelectionMode = ""
 	pr.CacheSelectionTier = ""
@@ -769,6 +772,7 @@ func (r *Registry) commitProviderReservation(
 		snapshot.totalPending != selected.snapshot.totalPending ||
 		candidate.effectiveQueue != selected.effectiveQueue ||
 		candidate.costMs != selected.costMs ||
+		candidate.breakdown.CacheDiscountMs != selected.breakdown.CacheDiscountMs ||
 		candidate.cacheAffinityEligible != selected.cacheAffinityEligible {
 		return nil, nil, reservationNeedsRescan, RoutingDecision{}
 	}
@@ -1351,11 +1355,15 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 	}
 	winner, runnerUp, nearTieSize, path := selectRoutingCandidateWithAffinity(scan.pool, affinity)
 	pr.CacheOpportunity.AffinityApplied = path == SelectionPrefixAffinity
+	// The runner-up is the pool minimum whenever the winner is not; a credited
+	// winner that costs more than it won only through the near-tie preference.
+	pr.CacheOpportunity.CreditWonNearTie = path == SelectionCacheCredit &&
+		runnerUp != nil && winner.costMs > runnerUp.costMs
 	scan.runnerUp = candidateSummaryOf(runnerUp)
 	scan.nearTieSize = clampInt32(nearTieSize)
 	scan.path = path
 	scan.promoteWinnerTop(winner)
-	r.logRoutingDecision(model, pr, winner, scan.candidateCount)
+	r.logRoutingDecision(model, pr, winner, scan.candidateCount, scan.path)
 	return winner, scan
 }
 
@@ -1456,7 +1464,7 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 // logRoutingDecision emits a structured debug-level record of the
 // winning candidate and its cost breakdown. Cheap when the level is
 // disabled, since slog short-circuits before formatting.
-func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *routingCandidate, candidates int) {
+func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *routingCandidate, candidates int, path SelectionPath) {
 	if r.logger == nil || winner == nil {
 		return
 	}
@@ -1478,6 +1486,7 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 		"backlog_ms", bd.BacklogMs,
 		"this_req_ms", bd.ThisReqMs,
 		"health_ms", bd.HealthMs,
+		"selection_path", path.String(),
 		"cache_tier", winner.cacheTier,
 		"cache_discount_ms", bd.CacheDiscountMs,
 		"cache_estimated_ttft_saved_ms", winner.cacheEstimatedTTFTSavedMs,

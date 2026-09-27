@@ -68,6 +68,7 @@ func (r *Registry) applyCacheHintLocked(hint cacheRoutingHint, model string, can
 			credit = min(credit, candidate.costMs*(*r.cacheRoutingMaxCostFraction))
 		}
 		candidate.breakdown.CacheDiscountMs = credit
+		candidate.cacheEvidenceWeight = hint.EvidenceWeight
 		delta = -credit
 	} else if delta > 0 {
 		// Like the long-prompt blocking penalty, excess restore time belongs

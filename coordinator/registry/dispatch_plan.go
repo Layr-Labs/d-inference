@@ -473,6 +473,15 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 			p.Status = StatusServing
 		}
 		p.mu.Unlock()
+		// A plan entry is priced and admitted cold: no cache hint is applied,
+		// so the primary scan's cache selection must not describe this
+		// alternate at its terminal. Participation (CacheSelectionMode) and the
+		// scan's opportunity counts describe the request and remain.
+		pr.CacheSelectionTier = ""
+		pr.CacheSelectionDiscountMs = 0
+		pr.CacheSelectionEstimatedTTFTSavedMs = 0
+		pr.CacheSelectionSelected = false
+		pr.CacheOpportunity.CreditWonNearTie = false
 
 		if !slotStateModelLoaded(candidate.snapshot.slotState) {
 			r.RecordWarmPoolColdDispatch(model)

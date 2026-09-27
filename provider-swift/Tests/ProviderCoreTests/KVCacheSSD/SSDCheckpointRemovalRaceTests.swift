@@ -219,4 +219,76 @@ struct SSDCheckpointRemovalRaceTests {
         await stale.closeAndWait()
         await healthy.closeAndWait()
     }
+
+    @Test("a disowned, unclosed store cannot stop whole-root TTL expiry under its root")
+    func disownedStoreDoesNotBlockExpiry() async throws {
+        let f = try SSDHybridCheckpointTestFixture()
+        defer { f.remove() }
+        // The maintainer finds active stores through the shared budget.
+        let stale = try f.makeStore(diskBudget: .shared)
+        defer { stale.close() }
+        #expect(try await f.donate(stale) == [256])
+        let file = f.file(stale)
+        let checkpoint = try Data(contentsOf: file)
+
+        // A different-binding successor wipes the root and disowns `stale`,
+        // which stays registered until its owner closes it.
+        let successor = try SSDCacheEpochStore(root: f.modelRoot, binding: .init(
+            modelId: "fixture-model", modelAggregateHash: f.identity.modelAggregateHash,
+            promptContractId: f.identity.promptContractID, blockHashVersion: CBv2BlockHasher.version,
+            blockSize: PrefixCachePolicy.blockSize, layoutEpoch: SSDHybridCheckpointEnvelope.layoutEpoch(
+                identity: f.identity, backendLayout: f.backendLayout),
+            keyFingerprint: "rotated-key"))
+        let epoch = try #require(successor.current)
+        #expect(!stale.ownsEvictionRoot)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+
+        // A checkpoint written under the root after the takeover, now past
+        // its TTL. The only registered store for the root would refuse.
+        try checkpoint.write(to: file)
+        let result = SSDWholeRootMaintainer().maintain(
+            root: f.root, ttlSeconds: 1,
+            nowSeconds: Int64(Date().timeIntervalSince1970) + 7_200, budgetBytes: Int.max)
+        #expect(result.ttlExpired == 1)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        // Expiry is a per-file removal: the successor's epoch is untouched.
+        #expect(successor.current == epoch)
+        SSDDiskBudget.shared.reconcileAll()
+        #expect(stale.index.count == 0)
+        await stale.closeAndWait()
+    }
+
+    @Test("whole-root maintenance runs under the store that owns the root, never a disowned one")
+    func ownerPreferredOverDisowned() async throws {
+        let f = try SSDHybridCheckpointTestFixture()
+        defer { f.remove() }
+        let disk = SSDDiskBudget()
+        let stale = try f.makeStore(diskBudget: disk)
+        defer { stale.close() }
+        #expect(try await f.donate(stale) == [256])
+        // Same root, different epoch binding: the rebuild wipes and takes it.
+        let owner = try f.makeStore(diskBudget: disk, keyFingerprint: "rotated-key")
+        defer { owner.close() }
+        #expect(!stale.ownsEvictionRoot)
+        #expect(owner.ownsEvictionRoot)
+        #expect(try await f.donate(owner, receipt: 11) == [256])
+        let file = f.file(owner)
+
+        var unlinked = false
+        let ran = disk.performActiveDestructiveChange(root: f.modelRoot) {
+            unlinked = SSDBlockStore.removeItemIfSafe(at: file, under: f.root)
+        }
+        #expect(ran == true)
+        #expect(unlinked)
+        #expect(owner.index.count == 0, "reconciled inside the owner's barrier")
+
+        // With the owner gone only the disowned store is registered: the
+        // budget declines without running the body, so the caller falls
+        // through to the unloaded-root path.
+        await owner.closeAndWait()
+        var bodyRan = false
+        #expect(disk.performActiveDestructiveChange(root: f.modelRoot) { bodyRan = true } == nil)
+        #expect(!bodyRan)
+        await stale.closeAndWait()
+    }
 }

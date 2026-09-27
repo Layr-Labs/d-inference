@@ -179,6 +179,10 @@ final class SSDBlockIndex: @unchecked Sendable {
 /// (unlink + index removal).
 protocol SSDEvictableStore: AnyObject, Sendable {
     var evictionRoot: URL { get }
+    /// False once the store is closed or a different-binding successor has
+    /// taken its root. It then refuses every file removal, so whole-root
+    /// maintenance must not pick it to bracket one.
+    var ownsEvictionRoot: Bool { get }
     var diskBytesOnDisk: Int { get }
     /// lastAccess of the store's LRU entry, or nil when empty.
     func oldestEntryAccess() -> Int64?
@@ -226,14 +230,25 @@ final class SSDDiskBudget: @unchecked Sendable {
         }
     }
 
-    /// Returns nil when no active store owns this model root.
+    /// Runs `body` under a registered store that still owns this model root
+    /// and returns true. Returns nil, without running `body`, when none does:
+    /// either no store is registered for the root, or every one that is has
+    /// been disowned or closed and would refuse. The caller then takes the
+    /// unloaded-root path, so a lingering disowned store cannot stop TTL
+    /// expiry and budget eviction under its root.
     func performActiveDestructiveChange(root: URL, _ body: () -> Void) -> Bool? {
         let key = root.standardizedFileURL.resolvingSymlinksInPath().path
         return lock.withLock {
-            guard let store = stores.values.first(where: {
+            let owners = stores.values.filter {
                 $0.evictionRoot.standardizedFileURL.resolvingSymlinksInPath().path == key
-            }) else { return nil }
-            return store.performExternalDestructiveChange(body)
+                    && $0.ownsEvictionRoot
+            }
+            // A store refuses without running the body, so an owner that was
+            // disowned since the filter simply yields to the next one.
+            for store in owners where store.performExternalDestructiveChange(body) {
+                return true
+            }
+            return nil
         }
     }
 

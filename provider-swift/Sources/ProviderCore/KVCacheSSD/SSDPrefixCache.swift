@@ -1744,6 +1744,11 @@ public final class SSDPrefixCache:
 
     var evictionRoot: URL { config.root }
 
+    var ownsEvictionRoot: Bool {
+        lock.withLock { !closed }
+            && (config.epochStore == nil || config.epochStore?.current != nil)
+    }
+
     var diskBytesOnDisk: Int { index.totalBytes }
 
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
@@ -2013,9 +2018,7 @@ public final class SSDPrefixCache:
     /// (`SSDCacheEpochStore.removeStaleBlock`).
     private func performIndexedRemoval<T>(_ body: () -> T) -> T? {
         removalLock.withLock {
-            guard lock.withLock({ !closed }),
-                config.epochStore == nil || config.epochStore?.current != nil
-            else { return nil }
+            guard ownsEvictionRoot else { return nil }
             return body()
         }
     }

@@ -51,11 +51,6 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
     let namespace = UUID().uuidString
     var closed = false
     var scanReady = false
-    /// Never set: per-file removals keep the epoch and the capability
-    /// published, and this store has no epoch-rotating change of its own.
-    /// Declared only because the write path's `cacheMaintenanceBusy` gate
-    /// still reads it; remove both together.
-    var destructiveChange = false
     var stages: [CBv2RequestID: SSDCheckpointStage] = [:]
     var stageReservations: [CBv2RequestID: SSDCheckpointStageReservation] = [:]
     var reading: [CBv2RequestID: SSDCheckpointFileCoordinator.Access] = [:]

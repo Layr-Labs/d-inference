@@ -167,7 +167,6 @@ extension SSDHybridCheckpointStore {
         }
         let refusal: PrefixCacheDonationOutcome? = lock.withLock {
             guard !closed else { return .cacheClosed }
-            guard !destructiveChange else { return .cacheMaintenanceBusy }
             guard !writing.contains(short) else { return .alreadyQueued }
             guard writing.count < 2 else { return .writeQueueFull }
             writing.insert(short)
@@ -264,8 +263,9 @@ extension SSDHybridCheckpointStore {
             } else if isClosed {
                 result.outcome = .cacheClosed
             } else if !index.contains(tag16: short) {
-                // Removing this endpoint also rotates its epoch. Report the
-                // concrete removal before its resulting epoch invalidation.
+                // Maintenance removed this endpoint after it was written. The
+                // epoch is unchanged, so report the removal itself; the failed
+                // gate above already withheld its ready endpoint.
                 result.outcome = .cacheEntryEvicted
             } else if !epochMatches(job.epoch) {
                 result.outcome = .cacheEpochChanged
@@ -290,9 +290,9 @@ extension SSDHybridCheckpointStore {
                 result.outcome = Self.freshWriteFailureOutcome(error)
                 // Atomic creation did not publish an index entry or receipt.
                 // Do not call removeCorrupt: there is no advertised file to
-                // revoke, and rotating the epoch would discard unrelated valid
-                // checkpoints and invalidate other queued donations. A later
-                // donation may retry after the transient condition clears.
+                // revoke or index entry to drop, and a transient write
+                // failure is not corruption. A later donation may retry
+                // after the condition clears.
             }
         }
     }

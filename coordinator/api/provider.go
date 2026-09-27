@@ -64,13 +64,6 @@ const (
 	// windows equal while that shared validator uses a symmetric bound.
 	RegistrationAttestationMaxFutureSkew = RegistrationAttestationMaxAge
 
-	// minProviderVersionForReconnectAttestation is the first provider release
-	// that rebuilds and re-signs its registration attestation on every
-	// reconnect. The same release introduced signed protected-runtime claims;
-	// older providers retain challenge-based liveness but cannot receive
-	// effective protected capabilities.
-	minProviderVersionForReconnectAttestation = "0.8.15"
-
 	// MaxConsecutiveChallengeTimeoutsBeforeReconnect is the number of consecutive
 	// transient challenge timeouts (no response within ChallengeResponseTimeout)
 	// after which the coordinator force-closes the provider's WebSocket so it must
@@ -3136,10 +3129,9 @@ func (s *Server) verifyProviderAttestation(ctx context.Context, providerID strin
 		return nil
 	}
 
-	enforceReconnectFreshness := regMsg.Version != "" &&
-		!semverLess(regMsg.Version, minProviderVersionForReconnectAttestation)
-	if enforceReconnectFreshness &&
-		!attestation.CheckTimestamp(result, RegistrationAttestationMaxAge) {
+	// Providers rebuild and re-sign their registration attestation on every
+	// reconnect, so a stale timestamp is a replay of an old signed claim.
+	if !attestation.CheckTimestamp(result, RegistrationAttestationMaxAge) {
 		result.Valid = false
 		result.Error = "attestation timestamp outside freshness window"
 		provider.SetAttestationResult(&result)
@@ -3147,18 +3139,6 @@ func (s *Server) verifyProviderAttestation(ctx context.Context, providerID strin
 		s.logger.Warn("provider registration attestation replay rejected",
 			"provider_id", providerID)
 		return nil
-	}
-
-	if !enforceReconnectFreshness {
-		// Pre-0.8.15 providers reuse their signed registration blob across
-		// reconnects. Preserve that legacy identity proof, but discard the
-		// protected-runtime fields before storing it so no later trust or
-		// challenge transition can promote apple_m5/mlx_nax from a replayable
-		// claim. Their periodic nonce challenges remain the liveness proof.
-		result.ChipFamily = ""
-		result.RuntimeCapabilities = nil
-		result.MetallibHash = ""
-		provider.SetAttestationResult(&result)
 	}
 
 	// Bind the WebSocket X25519 key used for E2E text encryption to the

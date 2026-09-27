@@ -44,8 +44,8 @@ struct Qwen35CheckpointRetentionLiveTests {
             #expect(kept.positions == [2_048, 4_096, 8_192],
                     "first chunk end, floor(5,120 / 2,048) x 2,048, deepest")
             #expect(donorStore.stats().filesWritten == 3)
-            #expect(donorStore.stats().recurrentCaptureDisarmedChunkChange == 0,
-                    "a solo donor's ragged tail is a geometry disarm, not a cap change")
+            #expect(donorStore.stats().recurrentCaptureDisarmedPacked == 0,
+                    "a solo donor's ragged tail is a geometry disarm, not a packed one")
             print("[qwen35-retention] modelHash=\(fixture.modelHash) prompt=\(donorTokens.count) hint=5120 "
                 + "positions=\(kept.positions) tensorBytes=\(kept.bytes) "
                 + "filesWritten=\(donorStore.stats().filesWritten) bytesWritten=\(donorStore.stats().bytesWritten) "
@@ -213,8 +213,8 @@ struct Qwen35CheckpointRetentionLiveTests {
                     "every aligned range end is a boundary")
             let firstStripeEnd = records.first { $0.cap == stripe }?.range.upperBound ?? .max
             #expect(captured.contains { $0 > firstStripeEnd }, "boundaries continue past the chunk switch: \(captured)")
-            #expect(store.stats().recurrentCaptureDisarmedChunkChange == 0,
-                    "the disarm instrument reports zero for this schedule")
+            #expect(store.stats().recurrentCaptureDisarmedPacked == 0,
+                    "no donor range ran packed in this schedule")
             let kept = try fixture.positions(scope: "tenant-a", prefixOf: donorTokens)
             let deepest = try #require(captured.max())
             #expect(kept.positions.last == deepest, "the deepest captured boundary is published: \(kept.positions)")
@@ -225,7 +225,7 @@ struct Qwen35CheckpointRetentionLiveTests {
                 .filter { $0.cacheSalt == "tenant-a" }.sorted { $0.position < $1.position }.map(\.chunkSize)
             print("[qwen35-company-leaves] prompt=\(donorTokens.count) widths=\(widths) captured=\(captured) "
                 + "positions=\(kept.positions) tensorBytes=\(kept.bytes) chunkSizes=\(chunkSizes) "
-                + "disarmed=\(store.stats().recurrentCaptureDisarmedChunkChange) filesWritten=\(store.stats().filesWritten) "
+                + "disarmed=\(store.stats().recurrentCaptureDisarmedPacked) filesWritten=\(store.stats().filesWritten) "
                 + "mtp=\(fixture.mtpActive) companionChunks=\(companionChunks)")
             await bridge.shutdown()
             await store.closeAndWait()
@@ -355,10 +355,10 @@ struct Qwen35CheckpointRetentionLiveTests {
             #expect(Set(records.map(\.cap)).contains(512), "the mixed donor prefilled in plain chunks under company")
             #expect(!records.contains { $0.outcome == "disarm" })
             #expect(captured.contains { $0 > firstStripeEnd }, "boundaries continue past the switch: \(captured)")
-            #expect(mixedStore.stats().recurrentCaptureDisarmedChunkChange == 0)
+            #expect(mixedStore.stats().recurrentCaptureDisarmedPacked == 0)
             let mixedKept = try fixture.positions(scope: "tenant-b", prefixOf: donorTokens)
             print("[qwen36-moe-mixed] widths=\(widths) captured=\(captured) positions=\(mixedKept.positions) "
-                + "tensorBytes=\(mixedKept.bytes) disarmed=\(mixedStore.stats().recurrentCaptureDisarmedChunkChange) "
+                + "tensorBytes=\(mixedKept.bytes) disarmed=\(mixedStore.stats().recurrentCaptureDisarmedPacked) "
                 + "answer=\(mixed.answer.debugDescription)")
             await mixedBridge.shutdown()
             await mixedStore.closeAndWait()

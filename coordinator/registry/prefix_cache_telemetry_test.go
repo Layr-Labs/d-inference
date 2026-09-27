@@ -15,8 +15,8 @@ func TestPrefixCacheTelemetryBoundsAndSnapshotOwnership(t *testing.T) {
 	disarmed := uint64(math.MaxUint64)
 	input := &protocol.PrefixCacheTelemetry{Kind: "complete_checkpoint", Generation: 1, SampleSeq: 1,
 		Entries: math.MaxUint64, DiskBytes: math.MaxUint64, WrittenBytesTotal: math.MaxUint64, TTLExpiredTotal: &ttl,
-		RecurrentCaptureDisarmedChunkChangeTotal: &disarmed,
-		IO:                                       &protocol.PrefixCacheIOTelemetry{ReadBytesTotal: math.MaxUint64, StagingPeakBytes: math.MaxUint64}}
+		RecurrentCaptureDisarmedPackedTotal: &disarmed,
+		IO:                                  &protocol.PrefixCacheIOTelemetry{ReadBytesTotal: math.MaxUint64, StagingPeakBytes: math.MaxUint64}}
 	hb := &protocol.HeartbeatMessage{BackendCapacity: &protocol.BackendCapacity{
 		Slots:                  []protocol.BackendSlotCapacity{{Model: msg.Models[0].ID, PrefixCache: input}, {Model: "private-unregistered", PrefixCache: input}},
 		PrefixCacheMaintenance: &protocol.PrefixCacheMaintenanceTelemetry{TTLExpiredTotal: math.MaxUint64}}}
@@ -31,8 +31,8 @@ func TestPrefixCacheTelemetryBoundsAndSnapshotOwnership(t *testing.T) {
 	if stats.DiskBytes != maxCapacitySampleGaugeBytes || stats.WrittenBytesTotal != maxCapacitySampleValue || *stats.TTLExpiredTotal != maxCapacitySampleValue || stats.IO.StagingPeakBytes != maxCapacitySampleGaugeBytes {
 		t.Fatalf("bounds: %+v %+v", stats, stats.IO)
 	}
-	if stats.RecurrentCaptureDisarmedChunkChangeTotal == nil || *stats.RecurrentCaptureDisarmedChunkChangeTotal != maxCapacitySampleValue {
-		t.Fatalf("recurrent disarm counter bounds: %+v", stats.RecurrentCaptureDisarmedChunkChangeTotal)
+	if stats.RecurrentCaptureDisarmedPackedTotal == nil || *stats.RecurrentCaptureDisarmedPackedTotal != maxCapacitySampleValue {
+		t.Fatalf("recurrent disarm counter bounds: %+v", stats.RecurrentCaptureDisarmedPackedTotal)
 	}
 	if input.DiskBytes != math.MaxUint64 || ttl != math.MaxUint64 || disarmed != math.MaxUint64 {
 		t.Fatal("clamp mutated decoder-owned values")
@@ -50,8 +50,8 @@ func TestPrefixCacheTelemetryBoundsAndSnapshotOwnership(t *testing.T) {
 		}
 	}
 	attentionDisarmed := uint64(3)
-	attention := clampPrefixCacheTelemetry(&protocol.PrefixCacheTelemetry{Kind: "attention_blocks", Generation: 1, SampleSeq: 1, IO: &protocol.PrefixCacheIOTelemetry{ReadBytesTotal: 100}, RecurrentCaptureDisarmedChunkChangeTotal: &attentionDisarmed})
-	if attention.IO != nil || attention.RecurrentCaptureDisarmedChunkChangeTotal != nil {
+	attention := clampPrefixCacheTelemetry(&protocol.PrefixCacheTelemetry{Kind: "attention_blocks", Generation: 1, SampleSeq: 1, IO: &protocol.PrefixCacheIOTelemetry{ReadBytesTotal: 100}, RecurrentCaptureDisarmedPackedTotal: &attentionDisarmed})
+	if attention.IO != nil || attention.RecurrentCaptureDisarmedPackedTotal != nil {
 		t.Fatal("unproduced attention read metrics were accepted")
 	}
 	reg.Heartbeat(p.ID, &protocol.HeartbeatMessage{})

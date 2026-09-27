@@ -32,8 +32,8 @@ func TestPrefixCacheTelemetryFlowsThroughAcceptedHeartbeat(t *testing.T) {
 		disarmed := bytes / 10
 		return &protocol.PrefixCacheTelemetry{Kind: "complete_checkpoint", Generation: generation, SampleSeq: seq,
 			SampleAgeMS: age, Entries: 2, DiskBytes: 4096, WrittenBytesTotal: bytes,
-			RecurrentCaptureDisarmedChunkChangeTotal: &disarmed,
-			IO:                                       &protocol.PrefixCacheIOTelemetry{ReadBytesTotal: bytes * 2, StageUSTotal: bytes * 3}}
+			RecurrentCaptureDisarmedPackedTotal: &disarmed,
+			IO:                                  &protocol.PrefixCacheIOTelemetry{ReadBytesTotal: bytes * 2, StageUSTotal: bytes * 3}}
 	}
 	expect := func(packets []string, wants ...string) {
 		t.Helper()
@@ -61,21 +61,21 @@ func TestPrefixCacheTelemetryFlowsThroughAcceptedHeartbeat(t *testing.T) {
 	second := apply(sample(1, 2, 0, 20), 3)
 	expect(second, "prefix_cache.written_bytes:10|c", "prefix_cache.read_bytes:20|c",
 		"prefix_cache.stage_duration_us:30|c", "prefix_cache.sweep.ttl_expired:2|c",
-		"prefix_cache.recurrent_capture_disarmed_chunk_change:1|c")
+		"prefix_cache.recurrent_capture_disarmed_packed:1|c")
 	// An older provider without the counter contributes no delta, and
 	// its later appearance seeds a baseline rather than a count.
 	legacy := sample(1, 3, 0, 30)
-	legacy.RecurrentCaptureDisarmedChunkChangeTotal = nil
+	legacy.RecurrentCaptureDisarmedPackedTotal = nil
 	withoutCounter := apply(legacy, 3)
 	expect(withoutCounter, "prefix_cache.written_bytes:10|c")
-	if hasMetric(withoutCounter, "recurrent_capture_disarmed_chunk_change") {
+	if hasMetric(withoutCounter, "recurrent_capture_disarmed_packed") {
 		t.Fatalf("absent counter emitted a delta: %v", withoutCounter)
 	}
 	reappeared := apply(sample(1, 4, 0, 40), 3)
-	if hasMetric(reappeared, "recurrent_capture_disarmed_chunk_change") {
+	if hasMetric(reappeared, "recurrent_capture_disarmed_packed") {
 		t.Fatalf("reappearing counter emitted a delta without a baseline: %v", reappeared)
 	}
-	expect(apply(sample(1, 5, 0, 60), 3), "prefix_cache.recurrent_capture_disarmed_chunk_change:2|c")
+	expect(apply(sample(1, 5, 0, 60), 3), "prefix_cache.recurrent_capture_disarmed_packed:2|c")
 	if hasMetric(second, "stage_duration_us:30|h") {
 		t.Fatal("cumulative duration was emitted as latency sample")
 	}

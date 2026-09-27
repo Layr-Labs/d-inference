@@ -18,12 +18,12 @@ type PrefixCacheTelemetry struct {
 	CorruptDropsTotal  uint64  `json:"corrupt_drops_total"`
 	EvictionsTotal     uint64  `json:"evictions_total"`
 	TTLExpiredTotal    *uint64 `json:"ttl_expired_total,omitempty"`
-	// RecurrentCaptureDisarmedChunkChangeTotal counts, once per request, the
-	// recurrent donors whose checkpoint capture stopped because the prefill
-	// chunk cap changed mid-prompt. Complete-checkpoint caches only; absent
-	// from attention-block caches and older providers.
-	RecurrentCaptureDisarmedChunkChangeTotal *uint64                 `json:"recurrent_capture_disarmed_chunk_change_total,omitempty"`
-	IO                                       *PrefixCacheIOTelemetry `json:"io,omitempty"`
+	// RecurrentCaptureDisarmedPackedTotal counts, once per request, the
+	// recurrent donors whose checkpoint capture stopped because one of their
+	// prompt ranges ran in a packed prefill cohort. Complete-checkpoint caches
+	// only; absent from attention-block caches and older providers.
+	RecurrentCaptureDisarmedPackedTotal *uint64                 `json:"recurrent_capture_disarmed_packed_total,omitempty"`
+	IO                                  *PrefixCacheIOTelemetry `json:"io,omitempty"`
 }
 
 type PrefixCacheIOTelemetry struct {
@@ -51,9 +51,9 @@ func (s *PrefixCacheTelemetry) Clone() *PrefixCacheTelemetry {
 		value := *s.TTLExpiredTotal
 		copy.TTLExpiredTotal = &value
 	}
-	if s.RecurrentCaptureDisarmedChunkChangeTotal != nil {
-		value := *s.RecurrentCaptureDisarmedChunkChangeTotal
-		copy.RecurrentCaptureDisarmedChunkChangeTotal = &value
+	if s.RecurrentCaptureDisarmedPackedTotal != nil {
+		value := *s.RecurrentCaptureDisarmedPackedTotal
+		copy.RecurrentCaptureDisarmedPackedTotal = &value
 	}
 	if s.IO != nil {
 		value := *s.IO

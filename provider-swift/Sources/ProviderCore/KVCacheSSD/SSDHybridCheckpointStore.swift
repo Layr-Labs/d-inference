@@ -137,9 +137,10 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
         return staged
     }
 
-    /// Engine queue, once per request. The position is a token offset only.
-    public func recordRecurrentCaptureDisarmed(chunkSizeChangedAt position: Int) {
-        statsBox.update { $0.recurrentCaptureDisarmedChunkChange += 1 }
+    /// Engine queue, once per request: a packed range disarmed a recurrent
+    /// donor's capture. The position is a token offset only.
+    public func recordRecurrentCaptureDisarmed(packedAt position: Int) {
+        statsBox.update { $0.recurrentCaptureDisarmedPacked += 1 }
     }
 
     public func acceptsCheckpoint(position: Int, packedBytes: Int) -> Bool {

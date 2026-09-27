@@ -24,12 +24,12 @@ public struct SSDHybridCheckpointStats: Sendable {
     /// Successful removals by the active-store disk-budget enforcer.
     /// Whole-root sweep removals are reported separately, process-wide.
     public var evictions = 0
-    /// Recurrent donors whose capture stopped because the prefill chunk cap
-    /// changed mid-prompt (`CBv2RecurrentCheckpointGeometry.DisarmReason
-    /// .chunkSizeChanged`), once per request. Sizes what relaxing the
-    /// uniform-chunk rule would recover; packing, preemption and media
-    /// disarms are not counted.
-    public var recurrentCaptureDisarmedChunkChange = 0
+    /// Recurrent donors whose capture stopped because one of their prompt
+    /// ranges ran in a packed prefill cohort (`CBv2RecurrentCheckpointGeometry
+    /// .DisarmReason.packed`), once per request. Sizes what packing costs the
+    /// durable cache; geometry (non-contiguous, overrun), preemption and
+    /// media disarms are not counted.
+    public var recurrentCaptureDisarmedPacked = 0
     public var entries = 0
     public var bytesOnDisk = 0
     /// Cumulative wall time in write jobs, including authentication/maintenance.

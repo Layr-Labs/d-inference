@@ -23,15 +23,15 @@ public struct PrefixCacheTelemetry: Codable, Sendable, Equatable {
     public var evictionsTotal: UInt64 = 0
     public var ttlExpiredTotal: UInt64?
     /// Complete-checkpoint stores only: recurrent donors whose capture was
-    /// disarmed by a mid-prompt chunk-cap change, once per request. Absent
-    /// on attention-block caches and from older providers.
-    public var recurrentCaptureDisarmedChunkChangeTotal: UInt64?
+    /// disarmed by a packed prefill cohort, once per request. Absent on
+    /// attention-block caches and from older providers.
+    public var recurrentCaptureDisarmedPackedTotal: UInt64?
     public var io: PrefixCacheIOTelemetry?
 
     enum CodingKeys: String, CodingKey {
         case kind, io
         case ttlExpiredTotal = "ttl_expired_total"
-        case recurrentCaptureDisarmedChunkChangeTotal = "recurrent_capture_disarmed_chunk_change_total"
+        case recurrentCaptureDisarmedPackedTotal = "recurrent_capture_disarmed_packed_total"
         case generation = "generation"
         case sampleSeq = "sample_seq"
         case sampleAgeMs = "sample_age_ms"

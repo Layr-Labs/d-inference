@@ -272,10 +272,18 @@ lifts a fence only when the advertised capability changes; there is no time or
 count bound, and `disablePrefixCacheV2Model` also drops every holder for that
 provider/model. One mismatch therefore discards ~36 later proofs on average.
 `prompt_mismatch.detail` is dominated by `same_length_hash` (gpt-oss 68,089,
-Gemma 44,410, Qwens 36,279) with `provider_longer` on gpt-oss at 17,693: same
-token count, different chain, which points at a tokenization or template
-divergence between the sidecar and the provider on a specific prompt shape.
-This report does not identify that shape.
+Gemma 44,410, Qwens 36,279) with `provider_longer` on gpt-oss at 17,693. The
+compared anchor is the last complete 256-token boundary, not the token count
+(`plan.Boundaries[len-1]`, `coordinator/registry/cache_receipts_v2.go`;
+`(N-1)/256` blocks in `coordinator/promptsidecar/src/planner.rs`), so a
+divergence of k tokens shows as `provider_longer`/`provider_shorter` only about
+k/256 of the time and otherwise as `same_length_hash`, or not at all when it
+falls in the final partial block. The detail therefore points at a
+tokenization or template divergence between the sidecar and the provider on
+specific prompt shapes; the follow-up investigation on this branch identified
+five sidecar-side classes (tool-call argument key order, integral doubles,
+extra `function` keys, Harmony channel framing in assistant history,
+`output_text` parts) and three provider-side tokenizer classes.
 
 These fence numbers have to be reconciled with the rotation finding above. A
 fence lifts as soon as the capability changes, and the epoch is the field that

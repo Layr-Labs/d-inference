@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-27 · commit `329312fff`
+> Last updated: 2026-09-27 · commit `d20d3993f`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -368,8 +368,14 @@ and time-to-first-token gates remain mandatory
 executable endpoint to `applyCacheHintLocked`
 (`coordinator/registry/cache_service_cost.go`). The hint is priced with the
 candidate's own `resolvePrefillTPS` rate, exactly as its baseline prefill cost is.
-The provider currently chooses its longest locally usable endpoint; no request
+The provider chooses its longest locally usable endpoint at lookup; no request
 field steers a shorter checkpoint, even if its recorded stage cost is lower.
+`cache_repeated_prefix_tokens` instead steers which endpoints a historical
+donor creates (the 1,024-aligned boundary at or below it, beside the first and
+the deepest). A ready receipt carries every durable boundary a donor published,
+up to 16 anchors, keeping the deepest sixteen when there are more; a donor on a
+slot whose staged windows are at the cap may prove fewer anchors, or only its
+latest.
 Complete-checkpoint SSD takes precedence over resident memory. A complete SSD
 capability without a matching durable proof receives no memory fallback credit.
 Other dual-tier advertisements have no negotiated selector and receive no credit;

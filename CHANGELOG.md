@@ -162,6 +162,34 @@
 - Add coordinator-derived authorization diagnostics and `darkbloom unenroll --keep-serving`. Require fresh removal readiness, preserve local identity/account data and identify only Darkbloom's enrollment profile before guiding the user through System Settings; company management is retained.
 - Keep serving/removal disabled by default and retain explicit signed-artifact/security-transition qualification before activation. DeviceCheck's separate two-bit API is not required.
 
+## Unreleased — prefix cache hit rate
+
+Production ran exact prefix-cache routing at 100% and measured a 1.4–5.2% hit rate per model. See the [analysis](docs/reports/2026-09-26-prefix-cache-hit-rate-analysis.md) and the [rollout procedure](docs/operations/cache-routing-rollout.md). Coordinator and provider changes are independent on the wire: an older provider ignores the new request field, and an older coordinator leaves providers on their previous donation behavior.
+
+### Provider
+
+- Keep the SSD cache epoch across budget eviction, TTL expiry and corrupt-file removal. Only a whole-root rebuild at load mints a new epoch, so the coordinator no longer forgets a provider's remaining checkpoints each time one file is removed.
+- Raise the SSD prefix-cache TTL from 15 to 30 minutes (default equals maximum; the environment override can only shorten it). Recorded as the SEC-035 re-acceptance in the threat model.
+- Write a complete checkpoint only on evidence of demand: the coordinator's `cache_repeated_prefix_tokens` at or above the 1,024-token floor, or a prior local sighting. Fleet-novel checkpoints report `skipped_novel` and touch neither disk nor the write budget. The first request for a prefix is served cold and not written, the second is written, the third can hit.
+- Capture GPT-OSS 20B and Gemma QAT checkpoints at every 1,024-token boundary regardless of prefill chunk size, including inside a solo stripe, and retain at most three per donor: the first boundary, the boundary at the observed shared-prefix length, and the deepest. Qwen capture is unchanged.
+- Report a file that disappeared under a reader as an absent miss rather than corruption; let expiry proceed when a root's only registered store has lost ownership.
+
+### Coordinator
+
+- Prefer a proven cache holder inside the existing 3-second near-tie band instead of collapsing the band whenever a cache credit exists. New selection path `cache_credit` and opportunity reason `selected_near_tie`.
+- Bound the proof fence to 60 seconds, doubling per consecutive mismatch to a 10-minute maximum, and drop only the mismatched prompt's holders. Previously a mismatch fenced the capability until the provider's epoch changed and dropped every holder for the model.
+- Drop a provider's deeper holders when it proves a hit at a shorter boundary (`shorter_hit`).
+- Size the holder index (250,000) and observed-demand index (600,000) for a 30-minute window and expire holders from an expiry-ordered heap in bounded passes.
+- Forward observed repeat demand to providers as `cache_repeated_prefix_tokens`.
+
+### Prompt sidecar
+
+- Mirror five provider prompt transformations that caused proof mismatches: tool-call argument key order, integral doubles in arguments, extra keys in tool `function` objects, Harmony channel framing in assistant history, and `output_text` content parts. Prompt-contract IDs are unchanged. Decline to plan for decomposed Unicode object keys and for Harmony control tokens that share a grapheme with a neighbour.
+
+### Operations
+
+- Rollout procedure for sidecar capacity, plan QPS, holder TTL and the Nemotron Lightning and Bonsai 2 allowlist tuples. The sanitized production env reference now matches the live cache-routing values.
+
 ## Unreleased — model token promotions
 
 - List Bonsai first in the chat model dropdown. Show its “Free” badge only after a confirmed claim for that exact model with available tokens; hide it while grant status is unknown, on lookup errors, or when the allowance is exhausted or fully reserved.

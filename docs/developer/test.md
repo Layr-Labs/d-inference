@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-27 · commit `329312fff`
+> Last updated: 2026-09-27 · commit `d20d3993f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1998,7 +1998,11 @@ DARKBLOOM_LIVE_MLX_GPTOSS_MODEL_DIRECTORY=/absolute/verified-gpt-oss-20b \
 ```
 
 `provider-swift/Tests/ProviderCoreTests/Inference/Live/GPTOSS/GPTOSSCheckpointRestartLiveTests.swift`
-(`sameKeyNewEngineRestoresBranchedPrompt`) donates a complete encrypted historical
+(`sameKeyNewEngineRestoresBranchedPrompt`; the same file also gates
+`batchedDonorRestoresDeepBoundary`, whose donor starts solo and gains decode
+company and must restore at least 5,120 of about 6,400 tokens,
+`growingConversationRestoresDeepest`, and `forkedPromptRestoresHintedBoundary`,
+which restores the boundary a coordinator hint named) donates a complete encrypted historical
 checkpoint, shuts down the engine/store, reconstructs both and requests a branched
 prompt first. It requires disk reads, exact checkpoint-boundary hit accounting,
 expected answer markers, tenant and changed-prefix misses, cache-off controls,

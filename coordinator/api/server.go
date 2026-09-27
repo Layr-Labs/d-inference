@@ -2028,8 +2028,8 @@ func (s *Server) SyncRuntimeManifest() error {
 	// env var. It is NOT auto-derived from the latest release — pushing a new release
 	// should not instantly knock all existing providers offline.
 
-	// Every hash — python, runtime, AND each template name including
-	// mlx_metallib — is unioned into a SET across ALL active releases.
+	// Every template hash, including mlx_metallib, is unioned into a SET
+	// across ALL active releases.
 	// Releases overlap in production for the whole self-update window
 	// (providers poll for updates every 30 minutes), so the manifest must
 	// accept the runtime facts of every release a connected provider may

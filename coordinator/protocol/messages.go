@@ -913,10 +913,10 @@ type CodeAttestationResumeChallenge struct {
 // trivially forgeable if used in isolation.
 //
 // StatusSignature (added in v0.3.11) covers a canonical JSON of nonce +
-// timestamp + all status fields, sealing them against tampering. New
-// providers send both signatures; old providers send only Signature, in
-// which case the status fields are treated as advisory (not a basis for
-// trust upgrades).
+// timestamp + all status fields, sealing them against tampering. Providers
+// send both signatures. For a provider with an attested key, a response
+// without StatusSignature fails the challenge (verifyChallengeResponse in
+// api/provider.go).
 type AttestationResponseMessage struct {
 	Type              string `json:"type"`
 	Nonce             string `json:"nonce"`                         // echoed back from the challenge

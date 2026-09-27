@@ -1233,7 +1233,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 
 	// Verify the signature cryptographically using the provider's Secure
 	// Enclave P-256 public key. The provider signs SHA-256(nonce + timestamp)
-	// with its SE key via eigeninference-enclave CLI.
+	// with its SE key.
 	if resp.Signature == "" {
 		s.handleChallengeFailure(providerID, "empty signature")
 		return

@@ -3,15 +3,12 @@ name: Release Provider Bundle (Swift)
 # CLI-only Swift release pipeline.
 #
 # Builds and ships:
-#   - bin/darkbloom          (provider CLI)
-#   - bin/darkbloom-enclave  (Secure Enclave attestation/sign helper)
-#   - bin/mlx.metallib       (compiled Metal kernels for the matching MLX)
+#   - Darkbloom.app          (signed, notarized app; the only installed artifact)
 #   - Darkbloom.app/Contents/Helpers/darkbloom-fan-helper (dormant opt-in root helper)
 #   - Darkbloom.app/Contents/Resources/*.bundle (SwiftPM resources)
-#
-# install.sh creates a backward-compatibility symlink from the legacy
-# `eigeninference-enclave` name to `darkbloom-enclave` for existing
-# installations that referenced the old binary name.
+#   - bin/darkbloom, bin/darkbloom-enclave, bin/mlx.metallib: regular-file
+#     copies of the app's CLI, Secure Enclave helper and Metal kernels. Release
+#     hashes are computed from them; installers verify them, then install the app.
 #
 # No SwiftUI app, no DMG, and no Python runtime — this is a pure Swift CLI
 # build. The legacy `release.yml` was deleted alongside `app/` once we
@@ -521,9 +518,10 @@ jobs:
           fi
           echo "Entitlement verification passed: $EXPECTED_ACCESS_GROUP authorized via embedded provisioning profile"
 
-          # Flat layout alongside the .app bundle. Coordinator's release
-          # artifact verifier (release_handlers.go:413) requires bin/darkbloom
-          # to be a regular file — symlinks fail the tar.TypeReg check.
+          # Regular-file copies alongside the .app bundle. The coordinator's
+          # release artifact verifier (release_handlers.go, verifyReleaseArtifact)
+          # requires bin/darkbloom to be a regular file — symlinks fail the
+          # tar.TypeReg check.
           mkdir -p "$STAGE/bin"
           cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
           cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"

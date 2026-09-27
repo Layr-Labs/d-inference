@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-27 · commit `f6f1bf4fd`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -228,7 +228,7 @@ Items with no env knob:
 | # | Item | Note |
 |---|---|---|
 | 0.2 | Evict the wedged `gpt-oss` session (28.6 % of first dispatches, 0 served) | There is no admin endpoint that disconnects a provider session. Identify the session with the utilization-research query, then use the operator's existing channel to the provider (restart/reconnect). A durable "narrow wedge skip" is a separate code change. Human-only. |
-| 0.4 | `deploy/environments/prod.env` says `EIGENINFERENCE_TTFT_HARD_REJECT=true`; the live container runs `false`. `CLAUDE.md` still says the prod database is AWS RDS; it is Cloud SQL PG 17. | Hygiene: fix the sanitized copy to match the live env and the doc to match the infrastructure. No prod mutation. |
+| 0.4 | `deploy/environments/prod.env` says `EIGENINFERENCE_TTFT_HARD_REJECT=true`; the live container runs `false`. The former root `CLAUDE.md` said the prod database is AWS RDS; it is Cloud SQL PG 17 (that file has since been removed in favor of `AGENTS.md`). | Hygiene: fix the sanitized copy to match the live env and the doc to match the infrastructure. No prod mutation. |
 | 0.6 | Orphaned Cloud SQL instance `d-inference-prod` (PG 16, RUNNABLE, idle) | Confirm nothing references it (`gcloud sql instances describe d-inference-prod --project darkbloom-mainnet`, then check every env file and Secret Manager DSN for its connection name), then `gcloud sql instances patch d-inference-prod --activation-policy NEVER` before any delete. Human-only. |
 
 ## Before / after

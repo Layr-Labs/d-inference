@@ -140,6 +140,13 @@ make provider-test            # cd provider-swift && swift test
 make provider                 # build + test
 ```
 
+The Swift package depends on the `libs/mlx-swift` and `libs/mlx-swift-lm`
+submodules. `scripts/fetch-metallib.sh` (and the release workflow) build
+`mlx.metallib` from the MLX source nested inside mlx-swift
+(`libs/mlx-swift/Source/Cmlx/mlx`, the tree the Cmlx target compiles against),
+not from the top-level `libs/mlx` submodule; bumping `libs/mlx` alone changes no
+provider bytes.
+
 ### Console UI (Next.js 16)
 ```bash
 make ui-install               # npm install
@@ -163,6 +170,32 @@ make build                    # build all components
 make all                      # test + build everything
 make clean                    # remove built artifacts
 ```
+
+### Testing rules
+
+Every new feature or non-trivial change ships with tests, and every bug fix
+ships with a regression test that fails without the fix.
+
+- Prefer live-isolated tests over mocks: a real in-process HTTP server
+  (`httptest.NewServer(srv.Handler())`), a real in-memory store, or a throwaway
+  Postgres database. Do not mock the thing under test; mocked tests have passed
+  while the real migration failed.
+- Never point tests at production (no live coordinator, prod DB, real Privy
+  tenants or real credentials).
+- When a `store.Store` method has memory and Postgres implementations, cover
+  both.
+- Frontend pages and forms get at least a vitest for validation and state.
+
+## Releases
+
+Never create a release unless explicitly asked. A release bumps
+`ProviderCore.version` (`provider-swift/Sources/ProviderCore/ProviderCore.swift`)
+and `LatestProviderVersion` (`coordinator/api/server.go`) together
+(`scripts/check-release-version.sh` enforces this), then tags the merged master
+commit with an annotated `vX.Y.Z` tag. `.github/workflows/release-swift.yml`
+runs on `vX.Y.Z` tags (plus legacy `vX.Y.Z-swift[.N]`); dev publication uses
+`workflow_dispatch`, and every requested version must equal the checked-in
+constants.
 
 ## Deploying
 
@@ -214,6 +247,8 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 
 ## Common Pitfalls
 
+- `.external/` is reserved for local external checkouts and must never be committed.
+- Attestation minimum-requirement checks (Secure Enclave, SIP, Secure Boot) run sequentially and each overwrites `result.Error`, so the last failure wins. `AuthenticatedRootEnabled` (ARV) is informational only: logged, not enforced.
 - `coordinator/coordinator` may exist locally as a build artifact (it is gitignored, not tracked). Do not model changes from it, and never commit binaries or other built artifacts.
 - CI release workflow must compute binary SHA-256 hashes AFTER code signing, not before. Providers verify hashes of the signed binary.
 - Model scan uses fast discovery (no hashing) at startup (`ModelScanner`). Weight hashing is on-demand via `WeightHasher.computeHash(for:)` only for models that need attestation/verification. Don't add hashing back to the scan path.

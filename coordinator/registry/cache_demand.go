@@ -27,6 +27,15 @@ type cacheDemandBoundary struct {
 	tokens int
 }
 
+// cacheDemandMaxExpiryPerObserve bounds the synchronous TTL sweep that runs
+// under d.mu on the plan path. After a lull longer than the TTL the whole index
+// (up to cacheDemandMaxEntries) is stale; draining it in one locked pass would
+// stall planning, so each observe expires at most this many head entries and
+// later calls finish the job. Correctness never depends on the sweep: every
+// match is validated against its own timestamp, so a stale entry that is still
+// present cannot match, and the entry cap still evicts from the same head.
+const cacheDemandMaxExpiryPerObserve = 1_024
+
 func newCacheDemandTracker(limit int, ttl time.Duration) *cacheDemandTracker {
 	return &cacheDemandTracker{limit: max(1, limit), ttl: ttl, entries: make(map[string]*list.Element)}
 }
@@ -34,8 +43,9 @@ func newCacheDemandTracker(limit int, ttl time.Duration) *cacheDemandTracker {
 func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.Time) (int, string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for first := d.order.Front(); first != nil; first = d.order.Front() {
-		if now.Sub(first.Value.(cacheDemandEntry).seen) < d.ttl {
+	for expired := 0; expired < cacheDemandMaxExpiryPerObserve; expired++ {
+		first := d.order.Front()
+		if first == nil || now.Sub(first.Value.(cacheDemandEntry).seen) < d.ttl {
 			break
 		}
 		delete(d.entries, first.Value.(cacheDemandEntry).key)

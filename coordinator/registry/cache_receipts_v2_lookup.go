@@ -78,7 +78,7 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 		return mismatchCacheReceipt(CacheReceiptIdentityMismatch)
 	}
 	if attempt.ExpectedPrompt != msg.PromptAnchor {
-		result := mismatchCacheReceipt(CacheReceiptPromptMismatch)
+		result := mismatchCacheReceiptForPlan(CacheReceiptPromptMismatch, attempt.Plan)
 		result.PromptMismatch = CachePromptHashMismatch
 		if msg.PromptAnchor.TokenCount < attempt.ExpectedPrompt.TokenCount {
 			result.PromptMismatch = CachePromptShorter
@@ -89,11 +89,12 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 	}
 	if msg.MatchedAnchor != nil &&
 		attempt.ExpectedBoundaries[msg.MatchedAnchor.TokenCount] != msg.MatchedAnchor.ChainHash {
-		return mismatchCacheReceipt(CacheReceiptMatchedMismatch)
+		return mismatchCacheReceiptForPlan(CacheReceiptMatchedMismatch, attempt.Plan)
 	}
 	if !t.acceptV2SequenceLocked(providerID, capability, msg.Tier, msg.CacheSeq) {
 		return rejectCacheReceipt(CacheReceiptSequence)
 	}
+	t.resetProofStrikesLocked(providerID, msg.ModelID, msg.Tier, capability, now)
 	if msg.Tier == "memory" {
 		attempt.MemoryLookupSeen = true
 	} else {

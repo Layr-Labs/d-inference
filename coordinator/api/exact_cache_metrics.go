@@ -245,6 +245,21 @@ func (s *Server) registerExactCacheGauges() {
 			return float64(s.Lifecycle.DonationOutcomes[outcome])
 		}), MetricLabel{"outcome", outcome})
 	}
+	for _, fence := range []struct {
+		name  string
+		value func(registry.CacheRoutingLifecycleStatus) uint64
+	}{
+		{name: "applied", value: func(s registry.CacheRoutingLifecycleStatus) uint64 { return s.FencesApplied }},
+		{name: "expired", value: func(s registry.CacheRoutingLifecycleStatus) uint64 { return s.FencesExpired }},
+	} {
+		fence := fence
+		s.metrics.RegisterGaugeLabels("exact_cache_fence", gauge(func(s ExactCacheStatus) float64 {
+			return float64(fence.value(s.Lifecycle))
+		}), MetricLabel{"event", fence.name})
+	}
+	s.metrics.RegisterGauge("exact_cache_fenced_capabilities", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Lifecycle.FencedCapabilities)
+	}))
 }
 
 func (s *Server) exactCacheGaugeSnapshot() ExactCacheStatus {
@@ -347,6 +362,9 @@ func (s *Server) emitExactCacheDDGauges() {
 		s.ddGauge("exact_cache.donation_outcome", float64(status.Lifecycle.DonationOutcomes[outcome]),
 			[]string{"outcome:" + outcome})
 	}
+	s.ddGauge("exact_cache.fence", float64(status.Lifecycle.FencesApplied), []string{"event:applied"})
+	s.ddGauge("exact_cache.fence", float64(status.Lifecycle.FencesExpired), []string{"event:expired"})
+	s.ddGauge("exact_cache.fenced_capabilities", float64(status.Lifecycle.FencedCapabilities), nil)
 }
 
 func boolGauge(value bool) float64 {

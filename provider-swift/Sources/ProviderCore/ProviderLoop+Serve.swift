@@ -267,7 +267,7 @@ extension ProviderLoop {
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
-                    let cacheReceiptBoundaryMode,
+                    let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
                     let profile
@@ -280,6 +280,7 @@ extension ProviderLoop {
                         authenticatedCacheScope: cacheScope,
                         prefixCacheProtocol: prefixCacheProtocol,
                         cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+                        cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
                         toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                         firstContentDeadline: firstContentDeadline,
                         receivedAt: receivedAt,

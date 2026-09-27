@@ -151,12 +151,19 @@ extension SSDHybridCheckpointStore {
         let tag = lookupKeys.checkpointTag(chainHash: digest, cacheSalt: cacheSalt ?? "")
         let short = Data(tag.prefix(16))
         let repeated = writeDemand.observe(short, now: config.nowSeconds())
-        // Novel writes use a 90% sub-budget, leaving capacity for known
-        // repeat demand. Durable duplicates consume no write budget. The writer
-        // rechecks after queueing, since this admission is advisory.
-        if !index.contains(tag16: short),
-            let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: repeated)) {
-            return .refused(refusal)
+        if !index.contains(tag16: short) {
+            // Demand gate first: a fleet-novel checkpoint is skipped before any
+            // budget is charged (`SSDHybridCheckpointStore+DemandAdmission`).
+            // The tag was recorded above, so a local second sighting qualifies.
+            if let refusal = demandRefusal(requestID: requestID, localRepeat: repeated) {
+                return .refused(refusal)
+            }
+            // Novel writes use a 90% sub-budget, leaving capacity for known
+            // repeat demand. Durable duplicates consume no write budget. The
+            // writer rechecks after queueing, since this admission is advisory.
+            if let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: repeated)) {
+                return .refused(refusal)
+            }
         }
         let refusal: PrefixCacheDonationOutcome? = lock.withLock {
             guard !closed else { return .cacheClosed }

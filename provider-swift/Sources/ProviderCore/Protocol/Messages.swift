@@ -96,6 +96,10 @@ public enum PrefixCacheDonationOutcome: String, Codable, Sendable, Equatable, Ca
     case writeIOFailed = "write_io_failed"
     case existingCacheUnreadable = "existing_cache_unreadable"
     case cacheEntryEvicted = "cache_entry_evicted"
+    /// The store declined a complete-checkpoint write because neither the
+    /// coordinator's `cache_repeated_prefix_tokens` nor the local tag history
+    /// showed repeat demand. No bytes and no write budget were spent.
+    case skippedNovel = "skipped_novel"
 }
 
 public struct PrefixCacheDonationOutcomeCount: Codable, Sendable, Equatable {
@@ -1555,6 +1559,12 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var cacheScope: String?
         public var prefixCacheProtocol: Int?
         public var cacheReceiptBoundaryMode: String?
+        /// Coordinator-observed fleet-wide repeat demand: the longest geometric
+        /// block boundary another plan shared within the routing TTL, 0 when
+        /// none did. An integer count only, never a key, hash or boundary.
+        /// Nil means an older coordinator (or no granted scope); 0 is a real
+        /// value, so it is NOT normalised away like `firstContentBudgetMs`.
+        public var cacheRepeatedPrefixTokens: Int?
         public var toolSchemaMetadataProtocol: Int?
 
         public init(
@@ -1566,6 +1576,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             cacheScope: String? = nil,
             prefixCacheProtocol: Int? = nil,
             cacheReceiptBoundaryMode: String? = nil,
+            cacheRepeatedPrefixTokens: Int? = nil,
             toolSchemaMetadataProtocol: Int? = nil
         ) {
             self.requestId = requestId
@@ -1576,6 +1587,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.cacheScope = cacheScope
             self.prefixCacheProtocol = prefixCacheProtocol
             self.cacheReceiptBoundaryMode = cacheReceiptBoundaryMode
+            self.cacheRepeatedPrefixTokens = cacheRepeatedPrefixTokens.map { max(0, $0) }
             self.toolSchemaMetadataProtocol = toolSchemaMetadataProtocol
         }
     }
@@ -1752,6 +1764,7 @@ extension CoordinatorMessage: Codable {
         case cacheScope = "cache_scope"
         case prefixCacheProtocol = "prefix_cache_protocol"
         case cacheReceiptBoundaryMode = "cache_receipt_boundary_mode"
+        case cacheRepeatedPrefixTokens = "cache_repeated_prefix_tokens"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
@@ -1797,6 +1810,7 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.cacheScope, forKey: .cacheScope)
             try container.encodeIfPresent(r.prefixCacheProtocol, forKey: .prefixCacheProtocol)
             try container.encodeIfPresent(r.cacheReceiptBoundaryMode, forKey: .cacheReceiptBoundaryMode)
+            try container.encodeIfPresent(r.cacheRepeatedPrefixTokens, forKey: .cacheRepeatedPrefixTokens)
             try container.encodeIfPresent(
                 r.toolSchemaMetadataProtocol,
                 forKey: .toolSchemaMetadataProtocol)
@@ -1892,6 +1906,8 @@ extension CoordinatorMessage: Codable {
                     Int.self, forKey: .prefixCacheProtocol),
                 cacheReceiptBoundaryMode: try container.decodeIfPresent(
                     String.self, forKey: .cacheReceiptBoundaryMode),
+                cacheRepeatedPrefixTokens: try container.decodeIfPresent(
+                    Int.self, forKey: .cacheRepeatedPrefixTokens),
                 toolSchemaMetadataProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .toolSchemaMetadataProtocol)
             ))

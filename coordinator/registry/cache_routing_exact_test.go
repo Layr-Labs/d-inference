@@ -44,11 +44,18 @@ func exactTestCapability(epoch string) protocol.PrefixCacheV2Capability {
 
 func exactTestRegistry(t *testing.T) (*Registry, *Provider, protocol.PrefixCacheV2Capability) {
 	t.Helper()
+	return exactTestRegistryWithTTL(t, time.Minute)
+}
+
+// exactTestRegistryWithTTL lets fence tests advance a fake clock past the
+// 60 s base window without also TTL-expiring the holders under test.
+func exactTestRegistryWithTTL(t *testing.T, ttl time.Duration) (*Registry, *Provider, protocol.PrefixCacheV2Capability) {
+	t.Helper()
 	r := New(testLogger())
 	err := r.ConfigureCacheRouting(CacheRoutingConfig{
 		Mode:            CacheRoutingOn,
 		ActivationPct:   100,
-		TTL:             time.Minute,
+		TTL:             ttl,
 		MaxHolders:      8,
 		MaxDiscountMs:   f64(1_000),
 		MaxCostFraction: f64(.35),
@@ -89,8 +96,9 @@ func preparedTestCacheMetadata(pr *PendingRequest) protocol.InferenceRequestMess
 	if owner == nil {
 		return protocol.InferenceRequestMessage{}
 	}
+	repeated := owner.repeatedPrefixTokens
 	return protocol.InferenceRequestMessage{CacheReceiptNonce: owner.nonce, CacheScope: owner.scope,
-		PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: owner.boundaryMode}
+		PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: owner.boundaryMode, CacheRepeatedPrefixTokens: &repeated}
 }
 
 func TestExactRoutingHintRevalidatesCapabilityBeforeDiscount(t *testing.T) {
@@ -134,11 +142,11 @@ func TestExactRoutingHintRevalidatesCapabilityBeforeDiscount(t *testing.T) {
 	if !rotatedHint.currentForProvider(provider, "model") {
 		t.Fatal("rotated capability did not admit a fresh hint")
 	}
-	r.disablePrefixCacheV2Model(provider.ID, "model", "ssd", provider, r.cacheRouting, rotated)
+	r.disablePrefixCacheV2Model(provider.ID, "model", "ssd", provider, r.cacheRouting, rotated, CachePlan{}, nil)
 	if rotatedHint.currentForProvider(provider, "model") {
 		t.Fatal("pre-quarantine hint survived a proof failure")
 	}
-	if !r.cacheRouting.capabilityRejected(provider.ID, "model", "ssd", rotated) {
+	if !r.cacheRouting.capabilityRejected(provider.ID, "model", "ssd", rotated, time.Now()) {
 		t.Fatal("proof failure did not quarantine the advertised capability")
 	}
 }

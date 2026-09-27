@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-20 · commit `a26b1107b`
+> Last updated: 2026-09-26 · commit `937a75d1a`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -227,6 +227,90 @@ activation example above is not a reset procedure.
    disables caching for all its models. Apply it to the actual daemon
    environment; restarting an existing LaunchAgent does not import shell
    changes. See [provider environment propagation](../reference/configuration.md#where-values-are-set).
+
+### Widen the plan gate and add Nemotron Lightning and Bonsai 2
+
+Use this after the 2026-09 hit-rate fix set is deployed (bounded proof fence,
+per-file eviction without epoch rotation, in-window holder preference,
+demand-gated donation; see the
+[analysis report](../reports/2026-09-26-prefix-cache-hit-rate-analysis.md)).
+Production at that point ran `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=40`
+against roughly 50 evaluations per second, so 27.7% of requests were dispatched
+with no cache scope, and the sidecar already reported overloads at
+`EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONCURRENCY=8`. Raise capacity before the
+cap, one bound per restart, and observe between steps.
+
+1. **Sidecar capacity first.** Double planner concurrency and give the child
+   memory headroom (RSS was 781 MB of the 1,024 MB limit):
+
+   ```bash
+   sudo cp -p /etc/d-inference/env "/etc/d-inference/env.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+   sudo sed -i -E \
+     -e 's/^EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONCURRENCY=.*/EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONCURRENCY=16/' \
+     -e 's/^EIGENINFERENCE_PROMPT_SIDECAR_MEMORY_LIMIT_MIB=.*/EIGENINFERENCE_PROMPT_SIDECAR_MEMORY_LIMIT_MIB=2048/' \
+     /etc/d-inference/env
+   ```
+
+   Restart per [`coordinator-deploy.md`](coordinator-deploy.md). Watch
+   `.sidecar.overloads`, `.sidecar.planner.plans.at_capacity` and
+   `.sidecar.rss_bytes` stay flat over an hour before the next step.
+
+2. **Plan QPS.** Raise the cap above the observed evaluation rate:
+
+   ```bash
+   sudo sed -i -E 's/^EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=.*/EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=120/' /etc/d-inference/env
+   ```
+
+   Restart. `.activation.rate_limited` should stop growing and the
+   `unreported` share of `routing.cache_model.usage` should fall by roughly a
+   quarter. If `.sidecar.overloads` climbs instead, return to step 1 with a
+   higher concurrency before retrying.
+
+3. **Holder lifetime.** With eviction no longer rotating epochs and the
+   provider SSD TTL raised, the coordinator TTL can follow:
+
+   ```bash
+   sudo sed -i -E 's/^EIGENINFERENCE_CACHE_ROUTING_TTL=.*/EIGENINFERENCE_CACHE_ROUTING_TTL=30m/' /etc/d-inference/env
+   ```
+
+   Restart. `.holders` should rise well above the previous ~800 and
+   `holder_removed.epoch_change` should stay near zero; `holder_removed.ttl`
+   becomes the dominant removal reason, which is the healthy state.
+
+4. **Append the two tuples.** Both were derived on 2026-09-26 from the active
+   registry versions (`nvidia-nemotron-3.5-lightning` `2026-09-09-r1`,
+   `ternary-bonsai-2-27b` `2026-09-17-r1`) with the coordinator's own
+   `promptcontract.ContractID` over the manifest's tokenizer/template/config
+   files; the same derivation reproduces the live `gpt-oss-20b` tuple exactly.
+   Re-derive if either model's active version changes. Append, never replace:
+
+   ```bash
+   sudo python3 - <<'PY'
+   import json, re
+   p = "/etc/d-inference/env"
+   src = open(p).read()
+   m = re.search(r"^EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS=(.*)$", src, re.M)
+   cur = json.loads(m.group(1))
+   add = [
+     {"model_id": "nvidia-nemotron-3.5-lightning",
+      "model_aggregate_sha256": "be622ff6ae88533eb31ce984ddc95e5edc3bc52de1767536f2058151383d891a",
+      "prompt_contract_id": "6a80df579e0d7c3b1db40d766831c1b0f75efd6864c6ee521d49557b9c7353b8"},
+     {"model_id": "ternary-bonsai-2-27b",
+      "model_aggregate_sha256": "ea1e901e4946c0ba9ad70c78517548808b353db6b3a13e87a8fa20468d81244c",
+      "prompt_contract_id": "ce88a818490c1dcee6f5dac3b53f13ffe56e3f3ab91728626e9985b31a7d38e5"},
+   ]
+   have = {(t["model_id"], t["model_aggregate_sha256"], t["prompt_contract_id"]) for t in cur}
+   cur += [t for t in add if (t["model_id"], t["model_aggregate_sha256"], t["prompt_contract_id"]) not in have]
+   out = src[:m.start(1)] + json.dumps(cur, separators=(",", ":")) + src[m.end(1):]
+   open(p, "w").write(out)
+   print(len(cur), "tuples")
+   PY
+   sudo grep -c '"model_id"' /etc/d-inference/env
+   ```
+
+   Restart and confirm `artifact_allowlist.count` is 7. Bonsai's median prompt
+   is about 126 tokens, so expect few Bonsai hits until the checkpoint floor
+   drops; Nemotron has 83% of prompts above 1,024 tokens.
 
 ## Verification
 

@@ -15,7 +15,7 @@ func TestCacheRetiredTrackerCannotRepopulateOrQuarantineReplacement(t *testing.T
 	if err := r.ConfigureCacheRouting(generationTestConfig(CacheRoutingOn)); err != nil {
 		t.Fatal(err)
 	}
-	r.disablePrefixCacheV2Model(p.ID, "model", "ssd", p, old, capability)
+	r.disablePrefixCacheV2Model(p.ID, "model", "ssd", p, old, capability, CachePlan{}, nil)
 	if _, ok := r.currentPrefixCacheV2Capability(p.ID, "model", "ssd"); !ok {
 		t.Fatal("retired mismatch quarantined replacement generation")
 	}
@@ -44,7 +44,7 @@ func TestCacheRetiredTrackerCannotRepopulateOrQuarantineReplacement(t *testing.T
 	p.PrefixCacheV2Models["model"] = rotated
 	p.prefixCacheRevision++
 	p.mu.Unlock()
-	r.disablePrefixCacheV2Model(p.ID, "model", "ssd", p, r.cacheRouting, capability)
+	r.disablePrefixCacheV2Model(p.ID, "model", "ssd", p, r.cacheRouting, capability, CachePlan{}, nil)
 	if current, ok := r.currentPrefixCacheV2Capability(p.ID, "model", "ssd"); !ok || current != rotated {
 		t.Fatal("old mismatch quarantined new capability epoch")
 	}
@@ -64,7 +64,7 @@ func TestCacheQuarantineSerializesIdenticalConnectionReplacement(t *testing.T) {
 	}()
 	quarantined := make(chan struct{})
 	go func() {
-		r.disablePrefixCacheV2Model(old.ID, "model", "ssd", old, tracker, capability)
+		r.disablePrefixCacheV2Model(old.ID, "model", "ssd", old, tracker, capability, CachePlan{}, nil)
 		close(quarantined)
 	}()
 	deadline := time.Now().Add(time.Second)
@@ -97,11 +97,11 @@ func TestCacheQuarantineSerializesIdenticalConnectionReplacement(t *testing.T) {
 	if got, ok := r.currentPrefixCacheV2Capability(old.ID, "model", "ssd"); !ok || got != capability {
 		t.Fatal("old mismatch poisoned the replacement connection")
 	}
-	r.disablePrefixCacheV2Model(old.ID, "model", "ssd", old, tracker, capability)
+	r.disablePrefixCacheV2Model(old.ID, "model", "ssd", old, tracker, capability, CachePlan{}, nil)
 	if _, ok := r.currentPrefixCacheV2Capability(old.ID, "model", "ssd"); !ok {
 		t.Fatal("late old callback poisoned the replacement connection")
 	}
-	r.disablePrefixCacheV2Model(old.ID, "model", "ssd", replacement, tracker, capability)
+	r.disablePrefixCacheV2Model(old.ID, "model", "ssd", replacement, tracker, capability, CachePlan{}, nil)
 	if _, ok := r.currentPrefixCacheV2Capability(old.ID, "model", "ssd"); ok {
 		t.Fatal("current-connection mismatch no longer quarantines")
 	}

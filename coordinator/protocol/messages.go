@@ -705,7 +705,9 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
-// InferenceRequestBody is the body sent inside an InferenceRequest.
+// InferenceRequestBody is the minimal OpenAI-shaped view of a decrypted
+// request body (InferenceRequestMessage.EncryptedBody). It is not a wire
+// field of its own; tests decode the plaintext into it.
 type InferenceRequestBody struct {
 	Model       string        `json:"model"`
 	Messages    []ChatMessage `json:"messages"`
@@ -718,15 +720,13 @@ type InferenceRequestBody struct {
 	Endpoint string `json:"endpoint,omitempty"`
 }
 
-// InferenceRequestMessage tells a provider to run inference.
-// When E2E encryption is enabled, Body is empty and EncryptedBody contains
-// the NaCl Box encrypted request. Only the provider's hardened process can
-// decrypt it using its X25519 private key.
+// InferenceRequestMessage tells a provider to run inference. EncryptedBody
+// carries the NaCl Box encrypted request; only the provider's hardened process
+// can decrypt it using its X25519 private key. There is no plaintext body.
 type InferenceRequestMessage struct {
-	Type      string               `json:"type"`
-	RequestID string               `json:"request_id"`
-	Body      InferenceRequestBody `json:"body,omitempty"`
-	// E2E encrypted request body (set when provider has a public key)
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	// E2E encrypted request body.
 	EncryptedBody *EncryptedPayload `json:"encrypted_body,omitempty"`
 	// FirstContentBudgetMS is the positive time remaining for this dispatch
 	// attempt to produce its first content-bearing chunk. Zero preserves the

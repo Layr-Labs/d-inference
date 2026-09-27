@@ -26,6 +26,9 @@ tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "s
 # Renderer-v3 eligibility must detect Swift canonical-equivalent object keys.
 # Tokenizers' older alignment helper uses Unicode9 and is not sufficient here.
 unicode-normalization = "=0.1.25"
+# Harmony framing is stripped only when every control token is a whole
+# extended grapheme cluster, as Foundation and Swift Character search require.
+unicode-segmentation = "=1.13.3"
 
 [dev-dependencies]
 proptest = "1.11.0"

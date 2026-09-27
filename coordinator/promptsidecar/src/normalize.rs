@@ -37,12 +37,6 @@ pub fn normalize(
         .ok_or(NormalizeError::MissingModel)?
         .to_owned();
 
-    // Foundation dictionaries carry no order and `Jinja.Value(any:)` sorts
-    // every object it bridges with Swift `String <` (Unicode scalar order,
-    // which is UTF-8 byte order). The coordinator also serializes provider
-    // bodies with sorted keys, so wire order is never load-bearing for a
-    // template loop such as Harmony's `properties.items()`.
-    let mut body = sorted_object_keys(body);
     normalize_tool_parameter_types(&mut body);
     normalize_legacy_function_calls(&mut body)?;
     let mut messages = template_messages(&body)?;
@@ -108,6 +102,19 @@ pub fn normalize(
         .and_then(Value::as_str)
         .filter(|value| crate::request_date::valid_date(value))
         .map(str::to_owned);
+
+    // Foundation dictionaries carry no order and `Jinja.Value(any:)` sorts
+    // every object it bridges with Swift `String <`, which for the NFC keys
+    // `validate_request_input` admits is UTF-8 byte order. Sort exactly once,
+    // after every step above that can insert or rebuild members, so template
+    // loops such as Harmony's `properties.items()` and Qwen's
+    // `arguments|items` never observe wire or insertion order.
+    let messages = messages
+        .into_iter()
+        .map(sorted_value_keys)
+        .collect::<Vec<_>>();
+    let tools = tools.map(|tools| tools.into_iter().map(sorted_value_keys).collect::<Vec<_>>());
+    let additional_context = sorted_object_keys(additional_context);
 
     let mut normalized_body = Map::new();
     normalized_body.insert("model".into(), Value::String(model_id.clone()));
@@ -252,7 +259,7 @@ fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeE
             let assistant = role == "assistant";
             let content = message_text(input.get("content"))?;
             let content = if assistant {
-                strip_harmony_channel_framing(&content)
+                strip_harmony_channel_framing(&content)?
             } else {
                 content
             };
@@ -262,7 +269,7 @@ fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeE
                     None | Some(Value::Null) => {}
                     Some(Value::String(value)) => {
                         let value = if assistant && key == "reasoning_content" {
-                            strip_harmony_channel_framing(value)
+                            strip_harmony_channel_framing(value)?
                         } else {
                             value.clone()
                         };
@@ -394,11 +401,19 @@ fn provider_bridged_value(value: Value) -> Value {
     }
 }
 
-/// Exact mirror of ProviderCoreFoundation `stripHarmonyChannelFraming`.
-/// Strings without a channel token are returned unchanged; otherwise only the
-/// text after the last final-channel marker survives, cut at the first
-/// terminator, with any remaining control tokens removed.
-fn strip_harmony_channel_framing(text: &str) -> String {
+/// Mirror of ProviderCoreFoundation `stripHarmonyChannelFraming`. Strings
+/// without a channel token are returned unchanged; otherwise only the text
+/// after the last final-channel marker survives, cut at the first terminator,
+/// with any remaining control tokens removed.
+///
+/// The provider searches with Foundation and Swift `Character` semantics, not
+/// bytes: a control token whose first or last character shares a grapheme
+/// cluster with a neighbour (a combining mark, ZWJ, variation selector, emoji
+/// modifier or spacing mark after `>`, a prepended format character before
+/// `<`) is not a token to `contains`/`range(of:)`, and `replacingOccurrences`
+/// does not even agree with those two on every extender. Every such input is
+/// refused so the request plans cold instead of guessing the provider's text.
+fn strip_harmony_channel_framing(text: &str) -> Result<String, NormalizeError> {
     const CHANNEL: &str = "<|channel|>";
     const FINAL_MARKER: &str = "<|channel|>final<|message|>";
     const TERMINATORS: [&str; 3] = ["<|end|>", "<|return|>", "<|call|>"];
@@ -410,8 +425,12 @@ fn strip_harmony_channel_framing(text: &str) -> String {
         "<|message|>",
         CHANNEL,
     ];
+    // Character matches are a subset of byte matches for these ASCII tokens.
     if !text.contains(CHANNEL) {
-        return text.to_owned();
+        return Ok(text.to_owned());
+    }
+    for token in CONTROL {
+        require_whole_grapheme_tokens(text, token)?;
     }
     let mut answer = match text.rfind(FINAL_MARKER) {
         Some(index) => {
@@ -425,10 +444,37 @@ fn strip_harmony_channel_framing(text: &str) -> String {
     };
     if CONTROL.iter().any(|token| answer.contains(token)) {
         for token in CONTROL {
+            // An earlier removal can splice a new token next to an extender.
+            require_whole_grapheme_tokens(&answer, token)?;
             answer = answer.replace(token, "");
         }
     }
-    answer
+    Ok(answer)
+}
+
+/// Refuse any byte occurrence of `token` that is not delimited by extended
+/// grapheme cluster boundaries, or that is followed by a character Foundation
+/// treats as composing with its predecessor.
+fn require_whole_grapheme_tokens(text: &str, token: &str) -> Result<(), NormalizeError> {
+    use unicode_normalization::char::{canonical_combining_class, is_combining_mark};
+    use unicode_segmentation::GraphemeCursor;
+
+    let boundary = |offset: usize| {
+        GraphemeCursor::new(offset, text.len(), true)
+            .is_boundary(text, 0)
+            .unwrap_or(false)
+    };
+    for (start, matched) in text.match_indices(token) {
+        let end = start + matched.len();
+        let composing_follower = text[end..]
+            .chars()
+            .next()
+            .is_some_and(|next| is_combining_mark(next) || canonical_combining_class(next) != 0);
+        if !boundary(start) || !boundary(end) || composing_follower {
+            return Err(NormalizeError::InvalidMessages);
+        }
+    }
+    Ok(())
 }
 
 fn message_text(content: Option<&Value>) -> Result<String, NormalizeError> {
@@ -1541,30 +1587,22 @@ mod tests {
             .clone();
         assert_eq!(
             function.keys().cloned().collect::<Vec<_>>(),
-            ["name", "description", "parameters"]
+            ["description", "name", "parameters"]
         );
     }
 
     #[test]
     fn assistant_harmony_framing_is_stripped_for_every_model() {
         let framed = "<|channel|>analysis<|message|>hidden<|end|><|start|>assistant<|channel|>final<|message|>Answer.<|end|>";
-        assert_eq!(strip_harmony_channel_framing(framed), "Answer.");
-        assert_eq!(
-            strip_harmony_channel_framing("<|channel|>final<|message|>Plain"),
-            "Plain"
-        );
-        assert_eq!(
-            strip_harmony_channel_framing("<|channel|>analysis<|message|>only<|end|>"),
-            ""
-        );
-        assert_eq!(
-            strip_harmony_channel_framing("<|channel|>final<|message|>a<|start|>b"),
-            "ab"
-        );
-        assert_eq!(
-            strip_harmony_channel_framing("no framing <|end|> here"),
-            "no framing <|end|> here"
-        );
+        let strip = |text: &str| strip_harmony_channel_framing(text).unwrap();
+        assert_eq!(strip(framed), "Answer.");
+        assert_eq!(strip("<|channel|>final<|message|>Plain"), "Plain");
+        assert_eq!(strip("<|channel|>analysis<|message|>only<|end|>"), "");
+        assert_eq!(strip("<|channel|>final<|message|>a<|start|>b"), "ab");
+        assert_eq!(strip("no framing <|end|> here"), "no framing <|end|> here");
+        // Ordinary non-ASCII text next to a token is a separate grapheme.
+        assert_eq!(strip("<|channel|>final<|message|>你好<|end|>"), "你好");
+        assert_eq!(strip("é<|channel|>final<|message|>été"), "été");
         let body = json!({
             "model":"m",
             "messages":[
@@ -1580,6 +1618,127 @@ mod tests {
         assert_eq!(normalized.messages[1]["content"], "Answer.");
         assert_eq!(normalized.messages[1]["reasoning_content"], "");
         assert_eq!(normalized.messages[2]["content"], framed);
+    }
+
+    #[test]
+    fn harmony_tokens_sharing_a_grapheme_with_a_neighbour_are_cold() {
+        // Measured against Foundation on the provider toolchain: `contains`
+        // and `range(of:)` reject every one of these, and
+        // `replacingOccurrences` disagrees with them on ZWJ, SARA AM, the
+        // Devanagari vowel sign and the prepended format character.
+        for extender in [
+            "\u{301}",   // combining acute (Mn)
+            "\u{200d}",  // zero width joiner
+            "\u{200c}",  // zero width non-joiner
+            "\u{fe0f}",  // variation selector
+            "\u{1f3fd}", // emoji modifier
+            "\u{ff9e}",  // halfwidth voiced sound mark (Lm, Grapheme_Extend)
+            "\u{e33}",   // Thai SARA AM (Lo, SpacingMark)
+            "\u{93e}",   // Devanagari vowel sign AA (Mc)
+        ] {
+            for text in [
+                format!("<|channel|>{extender}final<|message|>x"),
+                format!("<|channel|>final<|message|>{extender}x"),
+                format!("<|channel|>final<|message|>x<|end|>{extender}"),
+                format!("<|channel|>final<|message|>x<|start|>{extender}y"),
+            ] {
+                assert!(
+                    strip_harmony_channel_framing(&text).is_err(),
+                    "planned {text:?}"
+                );
+            }
+        }
+        // A prepended format character captures the token's first character.
+        assert!(strip_harmony_channel_framing("\u{600}<|channel|>final<|message|>x").is_err());
+        // Removing one token can splice another next to an extender; the
+        // provider's replacement would then leave it in place.
+        assert!(
+            strip_harmony_channel_framing(
+                "<|channel|>final<|message|>a<|mess<|start|>age|>\u{301}b"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            strip_harmony_channel_framing("<|channel|>final<|message|>a<|mess<|start|>age|>b")
+                .unwrap(),
+            "ab"
+        );
+        let body = json!({
+            "model":"m",
+            "messages":[
+                {"role":"user","content":"q"},
+                {"role":"assistant","content":"<|channel|>\u{301}final<|message|>x"}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(matches!(
+            normalize(body, None),
+            Err(NormalizeError::InvalidMessages)
+        ));
+        // The same text in a user turn is never stripped and stays eligible.
+        let body = json!({
+            "model":"m",
+            "messages":[{"role":"user","content":"<|channel|>\u{301}final<|message|>x"}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(normalize(body, None).is_ok());
+    }
+
+    #[test]
+    fn members_inserted_by_normalization_are_sorted_with_the_rest() {
+        let body = json!({
+            "model":"m",
+            "messages":[
+                {"role":"assistant","content":null,
+                 "function_call":{"name":"f","arguments":"{\"b\":1,\"a\":2}"}},
+                {"role":"function","name":"f","content":"ok"}
+            ],
+            "tools":[{"type":"function","function":{"name":"f","description":"d",
+                "parameters":{"type":"object","properties":{
+                    "choice":{"x-note":"n","enum":["a","b"]}}}}}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body, None).unwrap();
+        fn assert_sorted(value: &Value, path: &str) {
+            match value {
+                Value::Object(object) => {
+                    let keys = object.keys().map(String::as_bytes).collect::<Vec<_>>();
+                    assert!(keys.windows(2).all(|pair| pair[0] < pair[1]), "{path}");
+                    for (key, value) in object {
+                        assert_sorted(value, &format!("{path}/{key}"));
+                    }
+                }
+                Value::Array(values) => {
+                    for (index, value) in values.iter().enumerate() {
+                        assert_sorted(value, &format!("{path}[{index}]"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (index, message) in normalized.messages.iter().enumerate() {
+            assert_sorted(message, &format!("messages[{index}]"));
+        }
+        let tools = normalized.tools.as_ref().unwrap();
+        assert_sorted(&tools[0], "tools[0]");
+        let choice = &tools[0]["function"]["parameters"]["properties"]["choice"];
+        assert_eq!(
+            choice
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["enum", "type", "x-note"]
+        );
+        assert_sorted(&normalized.body["messages"], "body/messages");
+        assert_sorted(&normalized.body["tools"], "body/tools");
     }
 
     #[test]

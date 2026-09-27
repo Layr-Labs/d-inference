@@ -167,6 +167,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_holder_removed{reason=capability_change}",
 		"exact_cache_donation_outcome{outcome=donated}",
 		"exact_cache_donation_outcome{outcome=write_queue_full}",
+		"exact_cache_donation_outcome{outcome=skipped_novel}",
 	} {
 		if _, ok := gauges[key]; !ok {
 			t.Fatalf("missing exact-cache gauge %q", key)

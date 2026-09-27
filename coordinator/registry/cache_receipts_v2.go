@@ -86,7 +86,8 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 		ExpectedBoundaries: boundaries,
 	}
 	owner := &cacheAttemptOwner{tracker: tracker, generation: plan.generation,
-		nonce: nonce, scope: plan.CacheScope}
+		nonce: nonce, scope: plan.CacheScope,
+		repeatedPrefixTokens: max(0, plan.RepeatedPrefixTokens)}
 	if capable {
 		owner.boundaryMode = capability.ReadyBoundaryMode
 	}

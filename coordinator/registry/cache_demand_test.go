@@ -118,3 +118,53 @@ func TestCacheDemandOutOfOrderTimestampsCannotReviveExpiredPrefixes(t *testing.T
 		t.Fatal("expired entry hidden behind a newer entry was treated as repeat demand")
 	}
 }
+
+// A boundary planned nine minutes ago must still be found while other plans
+// arrive at fleet rate. Before the dedicated cap the demand index shared the
+// 10,000-entry holder cap and turned over in about a minute against the
+// 10-minute TTL, so nearly every real repeat looked novel.
+func TestCacheDemandRetainsBoundaryForTTLAtFleetRate(t *testing.T) {
+	const fillRatePerSecond, fillMinutes = 200, 9
+	fill := func(d *cacheDemandTracker, start time.Time) time.Time {
+		step := time.Second / fillRatePerSecond
+		now := start
+		for i := 0; i < fillRatePerSecond*60*fillMinutes; i++ {
+			now = now.Add(step)
+			d.observe([]cacheDemandBoundary{{fmt.Sprintf("other/%d", i), 256}}, now)
+		}
+		return now
+	}
+	start := time.Unix(1_700_000_000, 0)
+	target := []cacheDemandBoundary{{"repeated", 1024}}
+
+	sized := newCacheDemandTracker(cacheDemandMaxEntries, defaultCacheRoutingTTL)
+	sized.observe(target, start)
+	now := fill(sized, start)
+	if got, key := sized.observe(target, now); got != 1024 || key != "repeated" {
+		t.Fatalf("boundary observed %s earlier at %d/s was lost: repeat=%d key=%q",
+			now.Sub(start), fillRatePerSecond, got, key)
+	}
+	if len(sized.entries) > cacheDemandMaxEntries || sized.order.Len() != len(sized.entries) {
+		t.Fatalf("demand index exceeded its cap: %d entries", len(sized.entries))
+	}
+
+	holderSized := newCacheDemandTracker(cacheRoutingMaxEntries, defaultCacheRoutingTTL)
+	holderSized.observe(target, start)
+	now = fill(holderSized, start)
+	if got, _ := holderSized.observe(target, now); got != 0 {
+		t.Fatalf("holder-sized index unexpectedly retained the boundary: %d", got)
+	}
+}
+
+func TestCacheDemandCapIsIndependentOfHolderCaps(t *testing.T) {
+	tracker := newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders)
+	if tracker.demand.limit != cacheDemandMaxEntries {
+		t.Fatalf("demand cap=%d, want %d", tracker.demand.limit, cacheDemandMaxEntries)
+	}
+	if tracker.maxEntries != cacheRoutingMaxEntries || tracker.maxAttempts != cacheRoutingMaxAttempts {
+		t.Fatalf("holder caps changed: entries=%d attempts=%d", tracker.maxEntries, tracker.maxAttempts)
+	}
+	if cacheDemandMaxEntries < 300*int(defaultCacheRoutingTTL/time.Second) {
+		t.Fatalf("demand cap %d does not hold %s at 300 entries/s", cacheDemandMaxEntries, defaultCacheRoutingTTL)
+	}
+}

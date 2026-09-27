@@ -18,13 +18,16 @@ const (
 )
 
 type cacheAttemptOwner struct {
-	tracker       *cacheRoutingTracker
-	generation    *cacheRoutingGeneration
-	nonce         string
-	scope         string
-	boundaryMode  string
-	revoked       atomic.Bool
-	dispatchState atomic.Uint32
+	tracker      *cacheRoutingTracker
+	generation   *cacheRoutingGeneration
+	nonce        string
+	scope        string
+	boundaryMode string
+	// repeatedPrefixTokens is the plan's advisory fleet-wide repeat count,
+	// forwarded to the provider only while the scope is granted.
+	repeatedPrefixTokens int
+	revoked              atomic.Bool
+	dispatchState        atomic.Uint32
 }
 
 // CacheAttemptSnapshot captures immutable receipt metadata for a queued frame.
@@ -45,6 +48,7 @@ func (pr *PendingRequest) CacheAttemptSnapshot() CacheAttemptSnapshot {
 func (snapshot CacheAttemptSnapshot) ApplyTo(message *protocol.InferenceRequestMessage) {
 	message.CacheReceiptNonce, message.CacheScope = "", ""
 	message.PrefixCacheProtocol, message.CacheReceiptBoundaryMode = 0, ""
+	message.CacheRepeatedPrefixTokens = nil
 	owner := snapshot.owner
 	if owner == nil {
 		return
@@ -56,6 +60,10 @@ func (snapshot CacheAttemptSnapshot) ApplyTo(message *protocol.InferenceRequestM
 	owner.dispatchState.Store(cacheDispatchAccepted)
 	message.CacheReceiptNonce, message.CacheScope = owner.nonce, owner.scope
 	message.PrefixCacheProtocol, message.CacheReceiptBoundaryMode = 2, owner.boundaryMode
+	// A fresh copy: the frame must not alias owner memory, and 0 is a real
+	// value (novel fleet-wide), distinct from the absent legacy field.
+	repeated := owner.repeatedPrefixTokens
+	message.CacheRepeatedPrefixTokens = &repeated
 }
 
 // beginCachePreparation also invalidates an earlier preparation ticket. Tracker

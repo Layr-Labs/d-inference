@@ -274,7 +274,7 @@ describe("computeWarnings", () => {
 
   it("flags no payout configured (info)", () => {
     const warnings = computeWarnings(
-      baseProvider({ account_id: "", wallet_address: undefined }),
+      baseProvider({ account_id: "" }),
       ctx
     );
     expect(warnings.find((w) => w.id === "no_payout")?.severity).toBe("info");

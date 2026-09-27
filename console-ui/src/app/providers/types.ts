@@ -154,8 +154,6 @@ export interface MyProvider {
   lifetime_requests_served: number;
   lifetime_tokens_generated: number;
 
-  wallet_address?: string;
-
   registered_at?: string;
   last_seen?: string;
 }
@@ -180,7 +178,6 @@ export interface MyFleetCounts {
 
 export interface MySummaryResponse {
   account_id: string;
-  wallet_address?: string;
   available_balance_micro_usd: number;
   withdrawable_balance_micro_usd?: number;
   payout_ready?: boolean;

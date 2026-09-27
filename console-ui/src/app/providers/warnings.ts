@@ -281,7 +281,6 @@ export function computeWarnings(
   }
   if (
     !p.account_id &&
-    !p.wallet_address &&
     p.status !== "offline" &&
     p.status !== "never_seen"
   ) {
@@ -290,7 +289,7 @@ export function computeWarnings(
       severity: "info",
       title: "No payout method configured",
       detail:
-        "This machine has no account link and no wallet address. Earnings cannot be claimed. Run `darkbloom login` to link to your account.",
+        "This machine is not linked to an account. Earnings cannot be claimed. Run `darkbloom login` to link to your account.",
     });
   }
 

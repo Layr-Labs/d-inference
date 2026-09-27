@@ -47,7 +47,7 @@ function LoginContent() {
         </button>
 
         <p className="mt-4 text-xs text-text-tertiary">
-          Sign in with email, wallet, or social account
+          Sign in with email
         </p>
 
         <p className="mt-12 text-xs font-mono text-text-tertiary tracking-wide">

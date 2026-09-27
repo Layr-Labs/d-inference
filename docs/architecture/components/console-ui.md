@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-27 · commit `1c9fe2509`
+> Last updated: 2026-09-27 · commit `d0c1edfa8`
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -25,7 +25,7 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 |---|---|---|---|
 | `/` | `page.tsx` | Server redirect to `/providers` | Public |
 | `/chat` | `chat/page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `authenticated && apiKeyReady` (`useAuth`) |
-| `/login` | `login/page.tsx` | Legacy Privy login page (redirects to `?next=` once authenticated) | **Unreachable** — `console-ui/src/proxy.ts` redirects `/login` to `/`; its copy ("email, wallet, or social") is stale |
+| `/login` | `login/page.tsx` | Legacy Privy login page (redirects to `?next=` once authenticated) | **Unreachable** — `console-ui/src/proxy.ts` redirects `/login` to `/` |
 | `/link` | `link/page.tsx`, `link/DeviceLinkForm.tsx` | RFC 8628 device-code approval for `darkbloom login`: `POST /api/device/approve` with `Authorization: Bearer <Privy token>` | Privy |
 | `/settings` | `settings/page.tsx`, `settings/useConsoleSettings.ts` | Theme, API example URL (`darkbloom_api_example_url`), health check via `/api/health`, and encrypt-to-coordinator toggle | None |
 | `/models` | `models/page.tsx` | Catalog and pricing table from `/api/models` and `/api/pricing` (`console-ui/src/lib/api/models.ts`, `console-ui/src/lib/api/pricing.ts`) | Public; `x-api-key` sent when cached, which switches `/api/models` to the keyed `/v1/models` path |

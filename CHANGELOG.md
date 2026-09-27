@@ -6,6 +6,14 @@
 - Remove the Python-era wire fields: `python_hash`/`runtime_hash` (registration, attestation response, signed status), `hypervisor_active`, and the `python_runtime_locked`/`dangerous_modules_blocked` privacy flags. Providers that still send them keep working. `POST /v1/releases` now rejects `python_hash`/`runtime_hash`; `/v1/runtime/manifest` and `/v1/me` no longer return them.
 - Drop compatibility paths for providers below the new floor: the pre-0.6.7 vision penalty strip and the `desired_models` version gate. The tool-call 503 no longer cites a provider version.
 
+### Provider
+
+- `provider.toml`: the retired boolean `[backend] mtp` key is ignored with a startup warning (use `mtp_mode`; an old explicit `mtp = true` now means `auto`), `config_version` is ignored and no longer written, and loading a config never rewrites it (no stamp migration, no coordinator-URL rewrite, no copy from legacy locations). Only `~/.config/darkbloom/provider.toml` or `--config` is read.
+- Self-update and `install.sh` install only signed `Darkbloom.app` bundles: flat-only and pre-paged artifacts are refused, and the `eigeninference-enclave` alias is no longer created. `install.sh` no longer migrates `~/.dginf`/`~/.eigeninference`.
+- Model downloads fail closed for a catalog entry without a verified manifest (`r2_prefix` + `aggregate_sha256`).
+- Removed: `darkbloom-enclave wallet-address`; Rust-era credential, launchd-label and Secure Enclave v1 key fallbacks; the provider's App Attest shadow protocols 1 and 2 (protocol 3 only).
+- The bare `runtime-smoke` self-bootstrap for pre-0.8.10 updaters is gone: an updater from 0.7.8–0.8.9 fails the packaged smoke and needs an `install.sh` reinstall.
+
 ## Release candidate v0.9.10 — live switching and App Attest recovery (not shipped; 2026-09-27)
 
 - Align `ProviderCore.version` and the coordinator display fallback at 0.9.10. Upgrade the coordinator before publishing the separately qualified signed provider; the source bump does not advance the registered latest release.

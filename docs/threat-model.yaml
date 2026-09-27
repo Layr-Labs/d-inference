@@ -1392,7 +1392,7 @@ threats:
     adversaries: [ADV-001]
     affected_assets: []
     affected_files:
-      - provider-swift/Sources/ProviderCore/InferenceFoundation/LocalMLXModelFoundation.swift
+      - provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift
     mitigations:
       - description: Model load failure reported to coordinator; provider marked unavailable and re-queued.
         status: implemented

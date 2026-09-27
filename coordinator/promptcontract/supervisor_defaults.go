@@ -70,10 +70,10 @@ func applySupervisorDefaults(config *SupervisorConfig) {
 		config.MaxBodyBytes = DefaultMaxRequestBytes
 	}
 	if config.MaxConcurrency <= 0 {
-		config.MaxConcurrency = 4
+		config.MaxConcurrency = DefaultMaxConcurrency
 	}
 	if config.MaxConnections <= 0 {
-		config.MaxConnections = 64
+		config.MaxConnections = DefaultMaxConnections
 	}
 	if config.MaxLoadedContracts <= 0 {
 		config.MaxLoadedContracts = 8

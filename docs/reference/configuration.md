@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-27 · commit `4ad3034df`
+> Last updated: 2026-09-27 · commit `d621f9772`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -364,7 +364,7 @@ Prompt sidecar (`coordinator/promptcontract/config.go`, `ReadSupervisorConfig`; 
 | `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MIN_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MAX_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_WINDOW_MS`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MAX_IN_WINDOW`, `EIGENINFERENCE_PROMPT_SIDECAR_RESTART_COOLDOWN_MS` | ms, ms, ms, integer, ms | `100`, `5000`, `60000`, `3`, `30000` | `coordinator/promptcontract/config.go` | Crash-loop backoff and circuit breaker. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_STDERR_MAX_BYTES` | bytes 1024–1048576 | `16384` | `coordinator/promptcontract/config.go` | Sidecar stderr retained per incarnation. |
 | `EIGENINFERENCE_PROMPT_SIDECAR_MAX_BODY_BYTES`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_TOKENS` | bytes, tokens | `4194304` (`DefaultMaxRequestBytes`), `1048576` (`DefaultMaxTokens`) | `coordinator/promptcontract/config.go`; `coordinator/promptcontract/client.go` | Request-body and rendered-token ceilings handed to the sidecar. |
-| `EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONCURRENCY`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONNECTIONS`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_LOADED_CONTRACTS` | integers | `4`, `64`, `8` | `coordinator/promptcontract/config.go` | Sidecar-side concurrency, connection and loaded-contract limits. |
+| `EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONCURRENCY`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONNECTIONS`, `EIGENINFERENCE_PROMPT_SIDECAR_MAX_LOADED_CONTRACTS` | integers; normalized total connections must be at least `5` when enabled | `4`, `64`, `8` | `coordinator/promptcontract/config.go` (`SupervisorConfig.Check`), `coordinator/promptcontract/client.go` (`NewClient`) | Worker concurrency, total sidecar connections and loaded-contract limits. Planning uses the minimum of worker capacity, the pending-call bound and total connections minus the four reserved connections (`2` health and `2` control). Client waiting remains within the existing plan timeout and fixed pending count/byte bounds; see [sidecar admission](../architecture/prompt-contract-sidecar.md#process-and-lifecycle). |
 | `EIGENINFERENCE_PROMPT_SIDECAR_MEMORY_LIMIT_MIB` | MiB ≥ 256 | `1024` | `coordinator/promptcontract/config.go` | Memory ceiling applied to the sidecar process. |
 
 Media fetch (`coordinator/mediafetch/config.go`, `ConfigFromEnv`; a set-but-unparseable value is recorded and fails startup in `Check`, so a mistyped kill switch cannot silently keep fetching):

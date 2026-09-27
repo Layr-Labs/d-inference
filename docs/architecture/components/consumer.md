@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-11 · commit `5e41029dd`
+> Last updated: 2026-09-26 · commit `3e9dcf6b4`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline: it speaks OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and legacy Completions to clients and turns each request into one provider job through a single pipeline in `handleChatCompletions` (`coordinator/api/consumer.go`), with an endpoint-specific lowering step before it and a re-shaping step after it. This page is for engineers changing or debugging that pipeline: it explains what "compatible" means concretely, walks the stages, and lists the invariants and failure modes that follow. The exact routes, headers, and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 
@@ -38,7 +38,7 @@ Stages in the order `handleChatCompletions` runs them. Each stage either advance
 | 9 | Reserve balance for the worst-case cost | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`) | 402 (`error.type` and `code` per [`billing.md`](../billing.md#payment-required-responses)) |
 | 10 | Fetch remote media (billed as media, after the reservation) | `resolveRemoteMedia` | 400 |
 | 11 | Capacity admission: can any eligible provider take this prompt now? | `runInferenceAdmission` | 429, 503, 413 `payload_too_large` |
-| 12 | Plan: cache-aware route plan for the prompt | `planCacheRoute` (`coordinator/api/prompt_artifacts.go`); see [`../cache-aware-routing.md`](../cache-aware-routing.md) | — |
+| 12 | Plan: cache-aware route plan for the prompt | `planCacheRoute` (`coordinator/api/cache_planning.go`); see [`../cache-aware-routing.md`](../cache-aware-routing.md) | — |
 | 13 | Dispatch: select a provider from the scheduler plan, encrypt, send, wait for first content, race a speculative backup, fail over, commit | `dispatchState.run` → `dispatchPrimary`, `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover`, `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`); selection through `registry.Queue`, scoring in [`../routing.md`](../routing.md); payload encryption with `e2e.GenerateSessionKeys` / `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`), model in [`../security/encryption.md`](../security/encryption.md) | 429 on capacity or first-content deadline, 502/503/504 `provider_error`, 503 `model_unavailable` (`preContentTerminal`, `coordinator/api/dispatch_terminal_write.go`; exhausted branch of `dispatchState.run`) |
 | 14 | Relay: stream or assemble the provider's chunks | `handleStreamingResponseWithFirstChunkAndError`, `handleResponsesStreamingResponseWithFirstChunk` (`coordinator/api/consumer_stream.go`); `handleNonStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_response.go`) | Terminal SSE `error` event (status already 200) |
 | 15 | Settle: charge the account from provider-reported usage, record usage, credit the provider | `handleCompleteAt` (`coordinator/api/provider.go`): `claimSettlement`, `ledger.Charge`, `store.RecordUsageFullWithPublicModel`, `store.CreditProviderAccount`; rules in [`../billing.md`](../billing.md) | — |

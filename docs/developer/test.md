@@ -22,6 +22,29 @@ capability-generation and accepted-write cutoff regressions. Byte refusal must
 remain nil-error cold inference, with no cache metadata or calibration exclusion.
 These are logical state/ownership tests, not physical-memory measurements,
 native SSD hit-rate benchmarks or hosted certification.
+`TestPlanningClientTracksConfiguredWorkers`, `TestPlanAdmission*`,
+`TestPlannerBurstWaitsForWorkersWithoutBlockingHealth` and
+`TestQueuedPlanCancellationNeverReachesSidecar` check configured capacity,
+bounded pending bytes/counts, exact 40-request bursts, health/control isolation,
+cancellation, deadlines and recovery. Run `go test -race ./promptcontract ./registry`
+from `coordinator`. `TestDiagnosticFortyQPSPlanningCeiling` retains the unchanged
+registry rate ceiling as a diagnostic, not an SSD hit-rate benchmark.
+
+Run `TestPlanningConnectionBudget`,
+`TestControlReconnectsDuringPlanningSaturation` and
+`TestReviewControlTrafficAtConfiguredWorkerCapacity` to cover lifetime connection
+headroom, nondefault worker/connection limits, fresh and reconnected health/control
+traffic under saturation, invalid-budget refusal and admission refunds. These
+use the actual Go HTTP transports and a synthetic Unix listener mirroring the
+Rust connection semaphore; they do not replace the real-sidecar opt-in below.
+
+`TestPlannerRealSidecarAdmission` is an additional CPU-only opt-in: set
+`DARKBLOOM_TEST_PROMPT_SIDECAR` to a source-bound local release binary and
+`DARKBLOOM_TEST_PROMPT_CONTRACTS` to verified Bonsai/Qwen4 contract directories,
+then run `go test ./promptcontract -run TestPlannerRealSidecarAdmission -count=1 -v`.
+It checks 720 plans against warm exact references through 64K tokens with the
+unchanged one-second timeout. It does not load model weights or measure SSD hits.
+See [the diagnostic report](../reports/2026-09-24-cache-planner-admission.md) for evidence and limits.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
 and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`
@@ -802,6 +825,104 @@ localhost WebSockets (`coordinator/api/provider_restore_retry_test.go`,
 `coordinator/registry/provider_restore_routing_test.go`); they do not reconnect production providers.
 
 ### 3. Prompt-contract sidecar (Rust)
+
+#### Per-contract readiness and real Go/Rust pairing
+
+The Go `TestPreload*` unit tests cover healthy members beside unrelated pending
+or failed artifacts, strict partial reports, fresh runtime readiness, retry
+backoff, exact verified-set changes, catalog/child generation fences and public
+controller close. Run them under the race detector from the repository root:
+
+```bash
+go test -race ./coordinator/promptcontract -run '^TestPreload' -count=1
+```
+
+`TestPreloadRealSidecarRuntimeAndMixedVersions` and
+`TestPreloadRealSidecarGenerationAndCanceledResponseDrain` are opt-in real Unix
+HTTP tests in `coordinator/promptcontract/preload_real_sidecar_test.go`. Without
+explicit actual binary bindings they skip; unit-test success is not their
+execution evidence. They provision tiny hash-verified local tokenizer fixtures,
+run real supervised Rust children, and use actual preload/health/ready/metrics/
+plan responses. Only artifact downloads are fixture-local. A held control call
+or response does not fabricate readiness.
+
+Before running the real pairing, bind each candidate and legacy **service**
+executable to its compiler-artifact and source receipt. The artifact must be the
+`promptsidecar` bin target, not a libtest executable; a role environment label
+or different executable hashes alone does not prove version provenance. Provide:
+
+| Variable | Binding |
+| --- | --- |
+| `DARKBLOOM_TEST_PROMPT_SIDECAR` / `DARKBLOOM_TEST_PROMPT_SIDECAR_SHA256` | Canonical absolute candidate service path and exact SHA-256 |
+| `DARKBLOOM_TEST_PROMPT_SIDECAR_LEGACY` / `DARKBLOOM_TEST_PROMPT_SIDECAR_LEGACY_SHA256` | Independently source-bound legacy service path and exact SHA-256 |
+| `DARKBLOOM_TEST_PROMPT_GO_VERSION` | `candidate` or `legacy`, matching the actual compiled Go source/overlay receipt |
+| `DARKBLOOM_PLANNING_TEST_UDS_PARENT` | Existing allocated canonical short private directory; the fixture owns a child leaf |
+
+Run both Go versions with the same compatible test file and preserve exact
+source/overlay provenance, binary hashes, starts/terminals and fixture inventory.
+Use a sanitized environment and an outer deadline/owned-process-group cleanup;
+Darwin does not supply the Linux parent-death guarantee. The fixture itself
+checks binary hashes before/after use, closes its real children and checks
+socket disappearance. No production credentials, signing, downloads, provider
+service or model weights are required.
+
+```bash
+go test -race ./coordinator/promptcontract -run '^TestPreloadRealSidecar' -count=1 -timeout=3m
+```
+
+The pairing distinguishes strict degraded reports from usable runtime subsets,
+checks old/new role behavior, catalog replacement and actual child restart.
+Its held-response cancellation case proves that Go cannot publish a canceled
+real response after Rust loaded it; it does **not** prove cancellation of a
+blocking Rust loader. That ownership gate belongs to the Rust tests below.
+
+`TestCachePlanningRealSidecarHealthyMemberHTTP`
+(`coordinator/api/cache_planning_partial_real_test.go`) extends the existing API
+fixture with a real Rust service and an encrypted synthetic provider. Its two
+subtests, `failed_tokenizer` and `pending_artifact`, each exercise healthy A and
+unready B through four endpoints in streaming and non-streaming modes: 32 HTTP
+cells, not 32 separate Go test cases. The default synthetic-sidecar fixture is
+unchanged when this opt-in is not selected.
+
+Bind the candidate service and actual Go source as above, setting
+`DARKBLOOM_TEST_PROMPT_SIDECAR`, `DARKBLOOM_TEST_PROMPT_SIDECAR_SHA256`,
+`DARKBLOOM_TEST_PROMPT_GO_VERSION=candidate` and
+`DARKBLOOM_PLANNING_TEST_UDS_PARENT`. This gate needs no legacy service binding.
+An absent candidate binary skips it; preserve explicit no-skip execution evidence.
+From the repository root, with the same sanitized environment and outer owned
+process cleanup described above:
+
+```bash
+go test ./coordinator/api -run '^TestCachePlanningRealSidecarHealthyMemberHTTP$' -count=1 -timeout=3m
+go test -race ./coordinator/api -run '^TestCachePlanningRealSidecarHealthyMemberHTTP$' -count=1 -timeout=3m
+```
+
+The test compares actual Rust plan counters before and after each request,
+requires one encrypted correlated dispatch, unique V2 attempt nonces for A and
+cold dispatch metadata for B, and checks consumer content/terminals and owner
+drain. Each condition has a 40-second request context; the real fixture has a
+45-second lifecycle/download bound and retains the existing two-second planning
+timeout. The outer three-minute test watchdog is not a serving-budget increase.
+Synthetic provider output and usage do not establish model quality, native KV
+adoption, cache hits, billing accuracy or end-to-end performance.
+
+Rust's library `planner::readiness::tests` and `planner::readiness_tests` cover
+operation-drop/panic, generation and poison fences, exclusive replacement,
+post-permit membership, and cancellation while waiting or running blocking
+loads. `tests/per_contract_readiness.rs` covers partial/all-failed replacement,
+removed-but-cached members, invalid requests, capacity and explicit managed
+startup. Keep the existing
+`preload_failure_gates_plans_until_active_set_recovers` planner fixture. Use
+the normal all-target gate below; filtered runs must prove their exact named
+tests executed, not merely compile or return zero selected tests.
+
+These are tokenizer/readiness and ownership gates, not native KV adoption,
+hosted routing, performance or release certification. Original request
+deadlines, source/authentication checks and configured capacities remain in
+force. A catalog exceeding the configured distinct-contract capacity is still
+rejected; this slice does not implement an overflow selection policy.
+
+#### Rust component checks
 
 ```bash
 make prompt-sidecar-format   # cargo fmt --all -- --check

@@ -77,6 +77,8 @@ func NewSupervisor(config SupervisorConfig) *Supervisor {
 	return &Supervisor{
 		config: config,
 		client: NewClient(ClientConfig{
+			MaxConcurrency:  config.MaxConcurrency,
+			MaxConnections:  config.MaxConnections,
 			SocketPath:      config.SocketPath,
 			RequestTimeout:  config.RequestTimeout,
 			HealthTimeout:   config.HealthTimeout,

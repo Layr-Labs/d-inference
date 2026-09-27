@@ -2387,8 +2387,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		modelMaxContext = rec.MaxContextLength
 	}
 	profileDBCall(rp, registryReadStart2)
-	cachePlan := s.planCacheRoute(
-		r.Context(), consumerKey, model, providerBody, requiresVision)
+	cachePlan := s.planCacheRoute(r.Context(), cachePlanningInput{
+		Account: consumerKey, Model: model, Body: providerBody, HasMedia: requiresVision,
+		ReceivedAt: timingReceivedAt(timing), FirstContentBudget: deadline,
+	})
 	rp.Mark(registry.StampReqPlanDone)
 	if rp != nil {
 		rp.Model, rp.PublicModel, rp.Stream = model, publicModel, stream
@@ -2984,19 +2986,20 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if preflightHandled {
 		return
 	}
-	cachePlan := registry.CachePlan{}
 	// Response framing is determined by the caller-facing endpoint, never by
 	// whether its request shape could be lowered for cache participation.
 	consumerEndpoint, requestedStopSequences := genericResponseMetadata(endpoint, parsed)
-	if loweringErr == nil {
-		cachePlan = s.planCacheRoute(
-			r.Context(), consumerKey, model, inferenceBody, requiresVision)
-	} else {
+	if loweringErr != nil {
 		// Endpoint lowering is a cache-routing eligibility boundary, not a new
 		// inference rejection. Preserve the existing generic endpoint behavior
 		// for unsupported shapes while declining cache participation.
 		inferenceBody = endpointBody
 	}
+	cachePlan := s.planCacheRoute(r.Context(), cachePlanningInput{
+		Account: consumerKey, Model: model, Body: inferenceBody, HasMedia: requiresVision,
+		LoweringFailed: loweringErr != nil,
+		ReceivedAt:     timingReceivedAt(timing), FirstContentBudget: genericDeadline,
+	})
 
 	// Generic endpoints use the same dispatch state machine as chat. This keeps
 	// queue deadlines, speculative failover, pre-content boilerplate handling,

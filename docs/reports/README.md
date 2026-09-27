@@ -1,6 +1,8 @@
 # Reports — dated records
 
-> Last updated: 2026-09-23 · commit `cb9418cad`
+> Last updated: 2026-09-26 · commit `3e9dcf6b4`
+
+- [Cache planning admission](2026-09-24-cache-planner-admission.md) — reproduced admission loss, bounded client repair and exactness/lifecycle qualification.
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none

@@ -37,8 +37,8 @@ func ReadSupervisorConfig() SupervisorConfig {
 		RestartCooldown:        time.Duration(env.EnvInt(prefix+"_RESTART_COOLDOWN_MS", 30000)) * time.Millisecond,
 		StderrMaxBytes:         env.EnvInt(prefix+"_STDERR_MAX_BYTES", 16<<10),
 		MaxBodyBytes:           env.EnvInt(prefix+"_MAX_BODY_BYTES", DefaultMaxRequestBytes),
-		MaxConcurrency:         env.EnvInt(prefix+"_MAX_CONCURRENCY", 4),
-		MaxConnections:         env.EnvInt(prefix+"_MAX_CONNECTIONS", 64),
+		MaxConcurrency:         env.EnvInt(prefix+"_MAX_CONCURRENCY", DefaultMaxConcurrency),
+		MaxConnections:         env.EnvInt(prefix+"_MAX_CONNECTIONS", DefaultMaxConnections),
 		MaxLoadedContracts:     env.EnvInt(prefix+"_MAX_LOADED_CONTRACTS", 8),
 		MaxTokens:              env.EnvInt(prefix+"_MAX_TOKENS", DefaultMaxTokens),
 		MemoryLimitMiB:         env.EnvInt(prefix+"_MEMORY_LIMIT_MIB", 1024),
@@ -81,7 +81,7 @@ func (c SupervisorConfig) Check() error {
 		c.StderrMaxBytes < 1024 || c.StderrMaxBytes > 1<<20 ||
 		c.MaxBodyBytes <= 0 ||
 		c.MaxConcurrency <= 0 ||
-		c.MaxConnections <= 0 ||
+		c.MaxConnections <= reservedControlConnections ||
 		c.MaxLoadedContracts <= 0 ||
 		c.MaxTokens <= 0 ||
 		c.MemoryLimitMiB < 256 {

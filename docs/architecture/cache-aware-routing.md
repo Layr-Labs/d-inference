@@ -72,14 +72,36 @@ The coordinator calls the local prompt-contract sidecar
 [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md)) only after alias
 resolution, tool normalization, endpoint lowering, output-bound injection, and
 construction of the final provider-bound body (`planCacheRoute`,
-`coordinator/api/prompt_artifacts.go`). The sidecar returns the prompt contract
+`coordinator/api/cache_planning.go`). The sidecar returns the prompt contract
 identity, exact token count, and complete block-chain boundaries. It never
 returns or logs the normalized prompt, tokens, or hashes outside the local
 response contract.
 
 Sidecar timeout, crash, malformed output, unavailable artifacts, and dynamic-time
-templates return a non-participating plan. The request still dispatches.
+templates return a non-participating plan. Ordinary inference continues subject
+to its existing admission and remaining request budget.
 Requests carrying media (`HasMedia`) never produce a participating plan.
+
+Planning uses a child context capped at the original request receipt time plus
+the already-selected first-content budget. It does not restart that clock after
+alias fallback, replace the inference context, or carry the child's deferred
+cancellation into dispatch (`planCacheRoute`, `coordinator/api/cache_planning.go`;
+`firstTokenWriteContext`, `coordinator/api/first_token_clock.go`). Zero/exempt
+budgets and a missing receipt timestamp add no artificial deadline. An earlier
+parent deadline or the client's own timeout still wins. An exhausted request
+uses the existing dispatch deadline outcome; optional cache work grants no
+extra service time.
+
+Each post-preflight planning decision is counted once, including unsupported
+generic lowering and dependency/artifact/preload refusals. This broader metric
+does not change legacy Registry outcomes, sampling/QPS precedence or public
+status fields. In particular, ready media still reaches the Registry's existing
+`ineligible` decision. Artifact and preload checks are scoped to the resolved
+model and its exact contract: unrelated pending or failed artifacts do not close
+an acknowledged healthy member. Current catalog/child/verified-set identity
+and actual runtime readiness still gate participation; see
+[per-contract readiness](prompt-contract-sidecar.md#process-and-lifecycle).
+See [the metric populations](../reference/telemetry-inventory.md#optional-cache-planning-decisions).
 
 An optional exact-artifact list runs before the cohort, QPS gate and sidecar
 plan. `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` matches the resolved model
@@ -108,6 +130,16 @@ participation; they never reject, delay, or otherwise change ordinary
 inference.
 
 ### Identity and isolation
+
+After those unchanged rollout gates, planning admission waits within its
+existing deadline instead of oversubscribing the sidecar's worker pool.
+Count/byte bounds and explicit server-connection headroom for independent
+health/control pools are enforced by `NewClient`,
+`planAdmission` and `Client.Plan` (`coordinator/promptcontract/plan_admission.go`,
+`coordinator/promptcontract/client.go`); see
+[the sidecar mechanism](prompt-contract-sidecar.md#process-and-lifecycle).
+Successful planning is an opportunity for reuse, not proof that a provider
+actually adopted an SSD checkpoint.
 
 One cache plan contains:
 
@@ -637,16 +669,18 @@ back are operator procedures, kept in the runbook
 
 ## Invariants
 
-1. **Routing `off` runs none of the machinery, and applying `off` clears all
-   in-memory evidence** — `ConfigureCacheRouting` installs a fresh, empty
+1. **Routing `off` prevents sidecar planning, new cache participation and
+   cache-based selection; API planning-decision telemetry remains active.**
+   Applying `off` clears in-memory routing evidence: `ConfigureCacheRouting` installs a fresh, empty
    holder/attempt tracker on every application
    (`coordinator/registry/cache_routing.go`).
-2. **Cache routing never rejects, delays or otherwise changes ordinary
-   inference.** The activation cohort and the plan-QPS bucket only decline
+2. **Cache planning is optional and cannot extend the original service budget.**
+   Planning can consume bounded pre-dispatch time. The activation cohort and the plan-QPS bucket only decline
    participation (`cacheActivationGate`,
    `coordinator/registry/cache_activation.go`); a sidecar failure or a media
-   request yields a non-participating plan and the request still dispatches
-   (`planCacheRoute`, `coordinator/api/prompt_artifacts.go`).
+   request yields a non-participating plan; ordinary admission and the remaining
+   original deadline still decide whether dispatch is possible
+   (`planCacheRoute`, `coordinator/api/cache_planning.go`).
 3. **Only exact text-token prefix proofs from protocol-v2 providers affect
    selection**; V1 receipt frames stay decodable but cannot mutate routing
    evidence (`coordinator/registry/cache_receipts.go`).
@@ -718,7 +752,7 @@ and `coordinator/api/cache_model_telemetry.go`.
 | Receipts, v2 proof acceptance and quarantine, legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `rejectCapability` |
 | Status vocabularies and sanitization | `coordinator/registry/cache_eligibility.go`, `coordinator/registry/cache_status.go`, `coordinator/registry/cache_snapshot.go` |
 | Discount in the cost model | `coordinator/registry/scheduler.go` — `applyCacheRoutingCost`, `SelectionCacheTiebreak` |
-| Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/api/consumer.go` — `bodyForCacheAttempt` |
+| Plan construction and sealed body | `coordinator/api/cache_planning.go` — `planCacheRoute`; `coordinator/api/consumer.go` — `bodyForCacheAttempt` |
 | Status endpoint and gauges | `coordinator/api/exact_cache_status.go`, `coordinator/api/exact_cache_metrics.go` |
 | Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/api/settlement.go` — `observeTTFTCalibration`; `coordinator/api/dispatch.go` |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |

@@ -50,7 +50,7 @@ func TestCacheSnapshotOtherModelCannotClearProofFence(t *testing.T) {
 	if !r.ApplyPrefixCacheReadyV2(p.ID, ready) {
 		t.Fatal("initial donation rejected")
 	}
-	r.disablePrefixCacheV2Model(p.ID, a.ModelID, "ssd", p, r.cacheRouting, a)
+	r.disablePrefixCacheV2Model(p.ID, a.ModelID, "ssd", p, r.cacheRouting, a, CachePlan{}, nil)
 	lifecycle := r.CacheRoutingLifecycleStatus()
 	if lifecycle.HolderRemoved[string(cacheHolderRemovalProofMismatch)] != 1 || lifecycle.HolderRemoved[string(cacheHolderRemovalCapabilityChange)] != 0 {
 		t.Fatalf("proof rejection misclassified as capability churn: %+v", lifecycle.HolderRemoved)
@@ -66,7 +66,7 @@ func TestCacheSnapshotOtherModelCannotClearProofFence(t *testing.T) {
 
 func TestCacheSnapshotProtocolToggleCannotClearProofFence(t *testing.T) {
 	r, p, a, b := cacheTwoModelFixture(t)
-	r.disablePrefixCacheV2Model(p.ID, a.ModelID, "ssd", p, r.cacheRouting, a)
+	r.disablePrefixCacheV2Model(p.ID, a.ModelID, "ssd", p, r.cacheRouting, a, CachePlan{}, nil)
 	if err := r.UpdatePrefixCacheCapabilities(p.ID, 1, nil); err != nil {
 		t.Fatal(err)
 	}

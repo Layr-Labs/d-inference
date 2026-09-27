@@ -81,15 +81,16 @@ func (t *cacheRoutingTracker) applyReadyV2Decision(
 		}
 		for _, anchor := range msg.ReadyAnchors {
 			if attempt.ExpectedBoundaries[anchor.TokenCount] != anchor.ChainHash {
-				return mismatchCacheReceipt(CacheReceiptReadyMismatch)
+				return mismatchCacheReceiptForPlan(CacheReceiptReadyMismatch, attempt.Plan)
 			}
 		}
 	} else if msg.ReadyAnchors[0] != attempt.ExpectedPrompt {
-		return mismatchCacheReceipt(CacheReceiptReadyMismatch)
+		return mismatchCacheReceiptForPlan(CacheReceiptReadyMismatch, attempt.Plan)
 	}
 	if !t.acceptV2SequenceLocked(providerID, capability, msg.Tier, msg.CacheSeq) {
 		return rejectCacheReceipt(CacheReceiptSequence)
 	}
+	t.resetProofStrikesLocked(providerID, msg.ModelID, msg.Tier, capability, now)
 	if msg.Tier == "memory" {
 		attempt.MemoryLastReadyAnchor = final
 	} else {

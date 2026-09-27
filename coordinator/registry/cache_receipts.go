@@ -135,9 +135,13 @@ func (t *cacheRoutingTracker) invalidateProviderEvidence(providerID string, reas
 			delete(t.v2Sequences, key)
 		}
 	}
-	for key := range t.rejectedV2 {
-		if !preserveFences && key.ProviderID == providerID {
-			delete(t.rejectedV2, key)
+	if preserveFences {
+		return
+	}
+	now := t.now()
+	for key, fence := range t.rejectedV2 {
+		if key.ProviderID == providerID {
+			t.forgetFenceLocked(key, fence, now)
 		}
 	}
 }
@@ -305,6 +309,7 @@ func (t *cacheRoutingTracker) sweepLocked(now time.Time) {
 			t.removeAttemptLocked(nonce)
 		}
 	}
+	t.sweepFencesLocked(now)
 }
 
 func (t *cacheRoutingTracker) sweepIfDueLocked(now time.Time) {

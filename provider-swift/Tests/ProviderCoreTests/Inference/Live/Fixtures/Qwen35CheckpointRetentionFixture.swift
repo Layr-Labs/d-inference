@@ -11,14 +11,21 @@ import Testing
 /// recurrent complete-checkpoint store. Only the cache root, the installation
 /// key and the solo stripe are test-owned: the stripe is pinned to 2,048
 /// tokens (dense Qwen defaults to 4,096) so a prompt under 10k tokens has
-/// several chunk ends to retain. The catalog `-mtp` artifact is served
-/// without its embedded MTP head: retention is independent of speculation,
-/// and the checkpoint then carries no assistant history.
+/// several chunk ends to retain. The catalog `-mtp` artifact's embedded MTP
+/// head is served through the production inline assistant when it loads, so
+/// checkpoints carry MTP history as in production; `mtpActive` says so.
 final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
     static let modelID = "EigenLabs/Qwen3.5-9B-MLX-4bit-mtp"
+    /// The MoE sibling for the partition sanity run: 35B-A3B, 40 layers,
+    /// 256 experts, no embedded MTP head.
+    static let moeModelID = "EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8"
     static let stripeTokens = 2_048
+    let modelID: String
+    let modelType: String
     let container: ModelContainer
     let model: Qwen35Model
+    let assistant: Qwen35InlineMTPAssistant?
+    var mtpActive: Bool { assistant != nil }
     let tokenizer: TokenizerHandle
     let eos: Set<Int>
     let extraEOSTokens: [String]
@@ -99,19 +106,22 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
         return (tokens, Self.sharedPrefix(tokens, prompts.donor))
     }
 
-    init() async throws {
+    init(modelID: String = Qwen35CheckpointRetentionFixture.modelID,
+         memoryBudgetBytes: Int = 32 << 30) async throws {
+        self.modelID = modelID
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
         }
-        guard case .found(let directory) = LiveInferenceFixtures.locate(Self.modelID) else {
-            throw LiveFixtureSkip.modelNotInCache(Self.modelID)
+        guard case .found(let directory) = LiveInferenceFixtures.locate(modelID) else {
+            throw LiveFixtureSkip.modelNotInCache(modelID)
         }
-        modelHash = try #require(WeightHasher.computeHash(snapshotDir: directory, modelID: Self.modelID))
+        modelType = LiveInferenceFixtures.modelTypeFromConfig(directory: directory) ?? "qwen3_5"
+        modelHash = try #require(WeightHasher.computeHash(snapshotDir: directory, modelID: modelID))
         identity = CBv2CompleteCheckpointIdentity(
             modelAggregateHash: modelHash, promptContractID: "qwen35-checkpoint-retention-live-v1",
             buildID: "gated-live-test", numericsFingerprint: "paged-default-test-v1")
-        LiveInferenceFixtures.applyMemoryBudget(maxBytes: 32 << 30)
-        container = try await ModelContainerLoading.loadContainer(from: directory, modelID: Self.modelID)
+        LiveInferenceFixtures.applyMemoryBudget(maxBytes: memoryBudgetBytes)
+        container = try await ModelContainerLoading.loadContainer(from: directory, modelID: modelID)
         let snapshot = await container.perform { context in
             EngineV2ModelSnapshot(model: context.model, eosTokenIds: context.configuration.eosTokenIds,
                                  extraEOSTokens: context.configuration.extraEOSTokens.sorted())
@@ -122,12 +132,18 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
         let extraction = try EngineV2VLMTextExtraction.extractTextModel(
             from: snapshot.model, modelDirectory: directory)
         model = try #require(extraction.servingModel as? Qwen35Model,
-                             "the artifact must serve as the dense Qwen3.5 text target")
+                             "the artifact must serve as a Qwen3.5-family text target (dense or MoE)")
         try #require(model.cbv2Capabilities.supportsRecurrentCheckpointReuse)
+        do {
+            assistant = try Qwen35InlineMTPAssistant.load(from: directory, target: model)
+        } catch {
+            print("[qwen35-retention] embedded MTP assistant not loaded, serving MTP-off: \(error)")
+            assistant = nil
+        }
         let resolvedTokenizer = await container.perform { TokenizerHandle($0.tokenizer) }
         tokenizer = resolvedTokenizer
         eos = ModelEOSPolicy.effectiveEOSTokenIds(
-            modelId: Self.modelID, modelType: "qwen3_5", base: snapshot.eosTokenIds,
+            modelId: modelID, modelType: modelType, base: snapshot.eosTokenIds,
             tokenToId: { resolvedTokenizer.inner.convertTokenToId($0) })
         extraEOSTokens = snapshot.extraEOSTokens
         prompts = try Self.makePrompts(resolvedTokenizer)
@@ -162,19 +178,19 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
     func makeStore() throws -> SSDHybridCheckpointStore {
         let layout = CBv2CompleteCheckpointManifest.pagedLayout
         let name = SSDHybridCheckpointStoreFactory.namespace(
-            modelId: Self.modelID, identity: identity, backendLayout: layout)
+            modelId: modelID, identity: identity, backendLayout: layout)
         let modelRoot = root.appendingPathComponent(name)
         try SSDBlockStore.prepareModelRoot(dedicatedRoot: root, modelRoot: modelRoot)
         let fingerprint = Data(HMAC<SHA256>.authenticationCode(
             for: Data("darkbloom-cache-epoch-key-binding-v1".utf8), using: key)).hexString
         let epoch = try SSDCacheEpochStore(root: modelRoot, binding: .init(
-            modelId: Self.modelID, modelAggregateHash: identity.modelAggregateHash,
+            modelId: modelID, modelAggregateHash: identity.modelAggregateHash,
             promptContractId: identity.promptContractID, blockHashVersion: CBv2BlockHasher.version,
             blockSize: PrefixCachePolicy.blockSize,
             layoutEpoch: SSDHybridCheckpointEnvelope.layoutEpoch(identity: identity, backendLayout: layout),
             keyFingerprint: fingerprint))
         let store = SSDHybridCheckpointStore(config: .init(
-            modelId: Self.modelID, identity: identity, backendLayout: layout,
+            modelId: modelID, identity: identity, backendLayout: layout,
             root: modelRoot, dedicatedRoot: root, epochStore: epoch,
             maxReadBytes: SSDPrefixCachePolicy.maxStageBytes(environment: [:]),
             maxStageMillis: SSDPrefixCachePolicy.maxStageMillis(environment: [:]),
@@ -195,9 +211,12 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
         // `.auto` maps catalog IDs to paged; this dev artifact is not listed,
         // so select the native paged backend production uses for the family.
         let build = try EngineV2Factory.makeProductionBuild(
-            model: model, modelID: Self.modelID, tokenizer: tokenizer.inner,
+            model: model, modelID: modelID, tokenizer: tokenizer.inner,
             kvBytesCapacity: 16 << 30, maxConcurrentRequests: maxConcurrentRequests,
-            completePrefixCache: store, kvBackend: .paged, environment: environment)
+            completePrefixCache: store, mtpDrafter: assistant,
+            mtpConfig: assistant == nil ? CBv2MTPConfig() : .init(
+                enabled: true, maxDraftTokens: CBv2MTPConfig.testedMaxDraftTokens, verificationMode: .rectangular),
+            kvBackend: .paged, environment: environment)
         try #require(build.kvBackendKind == .paged && build.kvBackendFallbackReason == nil,
                      "dense Qwen3.5 serving must resolve to native paged KV without fallback")
         if store != nil {
@@ -206,12 +225,60 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
                          "the store layout must be the codec's")
             try #require(engine.loopForTesting.scheduler.config.soloPrefillStripeTokens == Self.stripeTokens)
         }
-        let bridge = EngineV2Bridge(engine: build.engine, modelId: Self.modelID,
+        let bridge = EngineV2Bridge(engine: build.engine, modelId: modelID,
             tokenizer: tokenizer, eosTokenIds: eos, extraEOSTokens: extraEOSTokens,
             maxConcurrentRequests: maxConcurrentRequests, fixedRequestBytes: build.fixedRequestBytes,
             ssdHybridCheckpointStore: store, kvBackendKind: .paged)
         bridges.append(bridge)
         return bridge
+    }
+
+    /// A short question that decodes long at temperature 0, to keep a
+    /// decode row alive beside a prefilling donor.
+    func companionPrompt() throws -> [Int] {
+        try tokenize([["role": "user", "content":
+            "Write a long, detailed essay about the history of harbours, one paragraph per century, "
+            + "from antiquity to the present day. Do not stop early."]])
+    }
+
+    /// Geometry records the engine's capture pass saw for `promptLength`
+    /// tokens of one request: (range, planned cap, outcome).
+    final class GeometryTrace: @unchecked Sendable {
+        struct Record { let range: Range<Int>; let cap: Int; let outcome: String }
+        private let lock = NSLock()
+        private var records: [UInt64: [Record]] = [:]
+        func append(_ id: UInt64, range: Range<Int>, cap: Int, outcome: String) {
+            lock.lock(); records[id, default: []].append(.init(range: range, cap: cap, outcome: outcome)); lock.unlock()
+        }
+        func records(promptLength: Int) -> [Record] {
+            lock.lock(); defer { lock.unlock() }
+            // The donor is the request whose records reach that many tokens.
+            return records.values.first { $0.contains { $0.range.upperBound == promptLength } }?
+                .filter { $0.range.upperBound <= promptLength } ?? []
+        }
+    }
+
+    /// Install the engine's geometry observer on a bridge's engine.
+    func observeGeometry(_ bridge: EngineV2Bridge) async throws -> GeometryTrace {
+        let engine = try #require(await bridge.engine as? EngineV2)
+        let trace = GeometryTrace()
+        engine.loopForTesting.onEngineQueueSync {
+            engine.loopForTesting.recurrentGeometryObserverForTesting = { id, range, cap, _, phase, outcome in
+                guard phase == "record" else { return }
+                trace.append(id.raw, range: range, cap: cap ?? -1, outcome: outcome)
+            }
+        }
+        return trace
+    }
+
+    /// Computed prompt tokens of the running request with `promptLength`
+    /// prompt tokens, or nil while it is not running.
+    func computedTokens(_ bridge: EngineV2Bridge, promptLength: Int) async throws -> Int? {
+        let engine = try #require(await bridge.engine as? EngineV2)
+        return engine.loopForTesting.onEngineQueueSync {
+            engine.loopForTesting.scheduler.running
+                .first { $0.request.promptTokens.count == promptLength }?.numComputedTokens
+        }
     }
 
     /// Authenticate every encrypted segment, retaining only the small manifest.
@@ -230,8 +297,8 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
             #expect(manifest.identity == identity)
             #expect(manifest.backendLayout == CBv2CompleteCheckpointManifest.pagedLayout)
             #expect(manifest.cacheSalt?.hasPrefix("tenant-") == true)
-            #expect(manifest.position % Self.stripeTokens == 0 && manifest.chunkSize == Self.stripeTokens,
-                    "recurrent manifests carry the uniform chunk that produced them")
+            #expect(manifest.position % PrefixCachePolicy.blockSize == 0 && manifest.chunkSize > 0,
+                    "recurrent boundaries sit on the block-hash stride; chunkSize is the chunk that ended there")
             return manifest
         }
     }

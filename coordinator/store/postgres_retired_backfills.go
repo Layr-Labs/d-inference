@@ -39,8 +39,9 @@ const retiredBackfillRemedy = "boot a coordinator built from v0.9.10 or earlier 
 // and every earning write maintains earnings_summary. v0.9.10 recorded the
 // same markers on an empty database, so either binary boots afterwards. A
 // table that holds rows without its marker belongs to a database that skipped
-// the backfill. Serving it would fail balance writes (no withdrawable column)
-// or undercount lifetime totals, so boot fails here instead.
+// the backfill. Serving it would leave withdrawable balances, lifetime usage
+// totals or earnings summaries short of their history (and without the
+// column, every balance write fails), so boot fails here instead.
 //
 // The usage counter row is seeded under the same empty-table condition. On a
 // database with usage history it must come from backfill_usage_totals_v1:

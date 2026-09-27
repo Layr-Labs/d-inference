@@ -550,7 +550,7 @@ struct CoordinatorIntegrationTests {
 
         await TelemetryClient.shared.shutdown()
         try await Task.sleep(for: .milliseconds(100))
-        #expect(mock.snapshot().telemetryBatches.isEmpty)
+        #expect(mock.snapshot().telemetryPosts.isEmpty)
     }
 
     // MARK: 7. UpdateBanner -- silent on same version

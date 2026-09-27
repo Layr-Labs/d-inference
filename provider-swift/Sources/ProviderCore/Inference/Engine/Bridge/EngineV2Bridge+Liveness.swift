@@ -62,7 +62,7 @@ extension EngineV2Bridge {
 
     /// Emit one self-restart lifecycle event, shaped like the legacy wedge
     /// telemetry (`engine_health`, operational counters only — the same
-    /// allowlisted field set as the step-wedge transitions), with the
+    /// field set as the step-wedge transitions), with the
     /// recovery-specific `operation` and optional `duration_ms`.
     func emitSelfRestartTelemetry(
         operation: String,

@@ -856,9 +856,7 @@ struct EngineV2ReslicingWiringTests {
         // with every delta, so share-of-pool is derivable and the overflow
         // magnitude survives — a clamped ratio would read 1.0 for both of
         // these and lose exactly the number co-residency is diagnosed by.
-        // The allowlist filter is applied at the producer, so an unmirrored
-        // key would vanish silently; asserting the values back is what
-        // proves all three cleared it.
+        // Asserting the values back is what proves all three are emitted.
         #expect(clamps.allSatisfy {
             $0.fields?["pool_bytes"]?.description == String(poolA)
         })

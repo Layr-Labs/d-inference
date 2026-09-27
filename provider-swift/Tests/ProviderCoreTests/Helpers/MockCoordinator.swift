@@ -51,7 +51,9 @@ public struct CapturedMessages: Sendable {
     public var prefixCacheLookupsV2: [ProviderMessage.PrefixCacheLookupV2] = []
     public var prefixCacheReadyV2: [ProviderMessage.PrefixCacheReadyV2] = []
     public var capacityQuotes: [ProviderMessage.CapacityQuote] = []
-    public var telemetryBatches: [TelemetryBatch] = []
+    /// Raw bodies POSTed to the retired `/v1/telemetry/events` route. The
+    /// provider never sends telemetry; this only catches a regression.
+    public var telemetryPosts: [Data] = []
 
     public init() {}
 }
@@ -64,8 +66,8 @@ public enum MockEvent: Sendable {
     case wsConnected
     /// A wire message was received from the provider.
     case providerMessage(ProviderMessage)
-    /// A telemetry batch was POSTed to `/v1/telemetry/events`.
-    case telemetryBatchReceived(TelemetryBatch)
+    /// Something was POSTed to the retired `/v1/telemetry/events` route.
+    case telemetryPosted(Data)
     /// The active WebSocket connection ended (cleanly or otherwise).
     case wsClosed
 }
@@ -590,7 +592,7 @@ public final class MockCoordinator: @unchecked Sendable {
             }
         }
 
-        // ----- HTTP: /v1/telemetry/events -----
+        // ----- HTTP: /v1/telemetry/events (retired; regression trap) -----
         router.post("/v1/telemetry/events") { [weak self] request, _ -> Response in
             guard let self else {
                 return MockCoordinator.makeJSONResponse(
@@ -606,19 +608,11 @@ public final class MockCoordinator: @unchecked Sendable {
                     status: .badRequest
                 )
             }
+            // Record every body, whatever its shape: any POST here is a
+            // privacy regression.
             let body = Data(buffer: buffer)
-            do {
-                let batch = try JSONDecoder().decode(TelemetryBatch.self, from: body)
-                self.lock.withLock { self.captured.telemetryBatches.append(batch) }
-                self.eventContinuation.yield(.telemetryBatchReceived(batch))
-            } catch {
-                // Treat malformed payloads as a 400 so tests can detect drift
-                // in the telemetry wire format.
-                return MockCoordinator.makeJSONResponse(
-                    body: ["error": "decode failed: \(error)"],
-                    status: .badRequest
-                )
-            }
+            self.lock.withLock { self.captured.telemetryPosts.append(body) }
+            self.eventContinuation.yield(.telemetryPosted(body))
             return MockCoordinator.makeJSONResponse(body: ["accepted": true])
         }
 

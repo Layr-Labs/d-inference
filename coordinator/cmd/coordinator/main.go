@@ -249,12 +249,13 @@ func main() {
 	//     Secret Manager, never commit). When set, geo lookups use the unmetered
 	//     https://pro.ip-api.com endpoint; unset falls back to the free, 45 req/min
 	//     http://ip-api.com endpoint (graceful, so dev without a key still works).
-	// Remote media resolution (mediafetch) is read and validated as part of
-	// AppConfig; hand the validated value to the server instead of letting
-	// NewServer re-read the environment.
+	// Remote media resolution (mediafetch) and inference-receipt signing are
+	// read and validated as part of AppConfig; hand the validated values to the
+	// server instead of letting NewServer re-read the environment.
 	serverCfg := cfg.ServerConfig
 	serverCfg.DurableTrustReuse = cfg.StoreConfig.DatabaseURL != ""
 	serverCfg.MediaFetch = &cfg.MediaFetchCfg
+	serverCfg.InferenceReceipts = &cfg.Receipts
 	// LIVE first-content deadline base — distinct from the shadow evaluator's
 	// base below. Validate and bind it to this Server instance before startup;
 	// production sets 9000ms, while an unset/invalid value keeps the intentional

@@ -1,11 +1,3 @@
-// Package receipts creates and verifies signed, deterministic inference receipts.
-//
-// CanonicalJSON's version 1 accepts exactly one top-level JSON object, rejects
-// duplicate decoded keys in objects at every depth, and preserves json.Number
-// lexemes. It emits compact encoding/json output with sorted map keys and
-// encoding/json's default string escaping. It rejects raw inputs over 16 MiB
-// and nested arrays or objects deeper than 256 levels, counting the root
-// object as level 1.
 package receipts
 
 import (
@@ -35,8 +27,13 @@ const (
 	maxFinishReasonBytes = 128
 	maxKeyIDBytes        = 128
 
-	// receiptDomain is deliberately fixed and versioned. Its NUL terminator
-	// prevents another protocol's printable prefix from sharing this domain.
+	// receiptDomain prefixes both the receipt hash and the signed message, so a
+	// signature over a receipt can never be replayed as a signature for some
+	// other structure signed by the same key (or vice versa). It is fixed and
+	// versioned: a v2 payload gets a new domain rather than a new meaning for
+	// the old one. The NUL terminator ends the domain unambiguously, so no other
+	// protocol's printable prefix (for example "darkbloom:inference-receipt:v10")
+	// can share it.
 	receiptDomain = "darkbloom:inference-receipt:v1\x00"
 )
 
@@ -151,7 +148,9 @@ func (s *Signer) Sign(payload Payload) (Envelope, error) {
 }
 
 // Verify validates the receipt payload, digest, canonical encodings, and
-// Ed25519 signature against publicKey.
+// Ed25519 signature against publicKey. Non-canonical hash and signature
+// encodings are rejected rather than normalized, so each receipt has exactly
+// one byte representation and a receipt hash identifies one envelope.
 func Verify(envelope Envelope, publicKey ed25519.PublicKey) error {
 	if len(publicKey) != ed25519.PublicKeySize {
 		return errors.New("invalid receipt public key")
@@ -202,6 +201,11 @@ func payloadDigest(payloadJSON []byte) [sha256.Size]byte {
 	return sha256.Sum256(preimage)
 }
 
+// signaturePreimage binds the key ID into the signed message. The key ID sits
+// outside the hashed payload, so signing it as well leaves no envelope field
+// unauthenticated: a relabelled key_id fails verification even when the same
+// key material is published under two IDs during a rotation. The 4-byte length
+// prefix keeps the (keyID, digest) split unambiguous for any key ID.
 func signaturePreimage(keyID string, digest []byte) []byte {
 	preimage := make([]byte, len(receiptDomain)+4+len(keyID)+len(digest))
 	copy(preimage, receiptDomain)

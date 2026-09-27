@@ -1,6 +1,6 @@
 # How to request and verify an inference receipt
 
-> Last updated: 2026-09-27 · commit `d3e3c3a62`
+> Last updated: 2026-09-27 · commit `d24ffe80f`
 
 This how-to documents the opt-in request contract, public lookup, and independent verification of request, provider-request, and assistant-text commitments. A receipt records a trusted-network event; it does not prove that the answer is correct or acceptable for your task.
 
@@ -73,7 +73,7 @@ Treat the issuer as configuration, not as an arbitrary URL supplied by an untrus
 curl "https://api.darkbloom.dev/v1/inference-receipts/keys"
 ```
 
-The key-set response contains `issuer` and `keys`, each with `key_id`, `algorithm: "Ed25519"`, and a standard-base64 Ed25519 `public_key`. Require its issuer to match the configured issuer and receipt payload, select the key whose ID equals the envelope's `key_id`, and verify the envelope signature and receipt hash. The API issuer is derived from configured `EIGENINFERENCE_BASE_URL`; it defaults to `https://api.darkbloom.dev` when unset or invalid (`inferenceReceiptIssuer`, `coordinator/api/inference_receipts.go`).
+The key-set response contains `issuer` and `keys`, each with `key_id`, `algorithm: "Ed25519"`, and a standard-base64 Ed25519 `public_key`. Require its issuer to match the configured issuer and receipt payload, select the key whose ID equals the envelope's `key_id`, and verify the envelope signature and receipt hash. The API issuer is derived from configured `EIGENINFERENCE_BASE_URL`; it defaults to `https://api.darkbloom.dev` when unset or invalid (`inferenceReceiptOrigin`, `coordinator/api/inference_receipt_issuer.go`).
 
 Then recompute and compare the commitments in `receipt.payload`:
 
@@ -100,7 +100,7 @@ The signed payload also identifies `job_id`, the submitted `nonce`, `caller_ref`
 | Result | Cause | Fix |
 |---|---|---|
 | 400 `invalid_request_error` | Missing/mismatched opt-in headers, a non-canonical nonce, unsupported endpoint/body, or request JSON that cannot be canonicalized | Send both headers, generate a new 32-byte nonce, and use the supported request shape |
-| 503 `receipt_unavailable` | Disabled/invalid signing configuration, storage unavailability, or nonce reuse | Check coordinator receipt-key configuration and storage health; use a fresh nonce for each retry |
+| 503 `receipt_unavailable` | Receipts are not enabled on this coordinator, receipt storage is unavailable, or the nonce was already used | Use a fresh nonce for each retry; if every request fails this way, the coordinator does not offer receipts |
 | 502 `receipt_unavailable` | Inference completed, but response extraction, signing, or receipt persistence failed | The response is deliberately withheld as a successful receipt-backed result; submit a new request with a fresh nonce if retrying |
 | 202 `pending` remains visible | The job has not reached a terminal receipt state | Poll the job path; coordinator maintenance marks pending records older than 24 hours as `interrupted` |
 | 404 `not_found` | Job/hash is unknown or its lookup window expired | Check the saved response header values and the 90-day lookup window |

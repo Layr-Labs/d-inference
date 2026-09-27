@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	"github.com/eigeninference/d-inference/coordinator/receipts"
 )
 
 // ServerConfig holds coordinator HTTP server and URL configuration applied
@@ -41,13 +42,10 @@ type ServerConfig struct {
 	// bare ServerConfig{} literals used by tests working unchanged. main.go
 	// threads the AppConfig-validated value in.
 	MediaFetch *mediafetch.Config
-	// Inference receipts are opt-in. The signing secret and retained public-key
-	// ring are read from deployment configuration; requests fail closed when the
-	// feature is enabled without valid key material.
-	InferenceReceiptsEnabled       bool
-	InferenceReceiptKeyID          string
-	InferenceReceiptSigningKey     string
-	InferenceReceiptPublicKeysJSON string
+	// InferenceReceipts is the validated receipt-signing configuration
+	// (config.AppConfig reads and checks it; nil = receipts disabled). main.go
+	// threads it in so NewServer never re-reads the signing secret.
+	InferenceReceipts *receipts.Config
 }
 
 const (
@@ -102,10 +100,6 @@ func ReadServerConfig() ServerConfig {
 			MinUptimeFrac:  env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_MIN_UPTIME", 0.90),
 			AccountCapFrac: env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_ACCOUNT_CAP", 0), // 0 = per-machine (no per-account cap)
 		},
-		InferenceReceiptsEnabled:       env.EnvBool(env.EnvPrefix+"_INFERENCE_RECEIPTS_ENABLED", false),
-		InferenceReceiptKeyID:          os.Getenv(env.EnvPrefix + "_INFERENCE_RECEIPT_SIGNING_KEY_ID"),
-		InferenceReceiptSigningKey:     os.Getenv(env.EnvPrefix + "_INFERENCE_RECEIPT_SIGNING_KEY"),
-		InferenceReceiptPublicKeysJSON: os.Getenv(env.EnvPrefix + "_INFERENCE_RECEIPT_PUBLIC_KEYS"),
 	}
 }
 

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-27 · commit `d3e3c3a62`
+> Last updated: 2026-09-27 · commit `d24ffe80f`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -92,14 +92,14 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 
 ### Inference receipt signing
 
-Inference receipts are disabled unless explicitly enabled. Keep the signing secret private; publish historical public keys while their receipts can still be looked up. The issuer is derived from `EIGENINFERENCE_BASE_URL` (default `https://api.darkbloom.dev`); verifiers fetch the public-key set from that issuer's `/v1/inference-receipts/keys` route (`configureInferenceReceipts`, `coordinator/api/inference_receipts.go`).
+Inference receipts are disabled unless explicitly enabled. Keep the signing secret private; publish historical public keys while their receipts can still be looked up. The issuer is derived from `EIGENINFERENCE_BASE_URL` (default `https://api.darkbloom.dev`); verifiers fetch the public-key set from that issuer's `/v1/inference-receipts/keys` route (`inferenceReceiptOrigin`, `coordinator/api/inference_receipt_issuer.go`). When receipts are enabled, `AppConfig.Check` fails coordinator startup if any key variable below is missing or invalid; error messages name the variable, never the secret (`Config.Check`, `coordinator/receipts/config.go`; `coordinator/config/app_config.go`).
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_INFERENCE_RECEIPTS_ENABLED` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/inference_receipts.go` (`configureInferenceReceipts`) | Enables receipt signing and lookup only when active key ID and key material validate. |
-| `EIGENINFERENCE_INFERENCE_RECEIPT_SIGNING_KEY_ID` | non-empty key ID, at most 128 UTF-8 bytes | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/receipts/receipts.go` (`validateKeyID`) | ID of the active Ed25519 signing key; included in signed envelopes and public-key lookup. |
-| `EIGENINFERENCE_INFERENCE_RECEIPT_SIGNING_KEY` | standard-base64 32-byte seed or 64-byte Ed25519 private key (secret) | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/receipts/receipts.go` (`NewSignerFromBytes`) | Private key used to sign new receipts; invalid or absent material leaves the feature unavailable when enabled. |
-| `EIGENINFERENCE_INFERENCE_RECEIPT_PUBLIC_KEYS` | JSON object mapping key IDs to standard-base64 32-byte Ed25519 public keys | unset (active key only) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/inference_receipts.go` (`configureInferenceReceipts`) | Retains historical verification keys and publishes them at `/v1/inference-receipts/keys`; a configured active ID must match its signing key. |
+| `EIGENINFERENCE_INFERENCE_RECEIPTS_ENABLED` | bool | `false` | `coordinator/receipts/config.go` (`ReadConfig`, `Config.Check`) | Enables receipt signing and the key route. A set but unparseable value fails startup rather than silently disabling receipts. |
+| `EIGENINFERENCE_INFERENCE_RECEIPT_SIGNING_KEY_ID` | non-empty key ID, at most 128 UTF-8 bytes | unset | `coordinator/receipts/config.go` (`ReadConfig`, `Config.Check`); `coordinator/receipts/receipts.go` (`validateKeyID`) | ID of the active Ed25519 signing key; included in signed envelopes and public-key lookup. |
+| `EIGENINFERENCE_INFERENCE_RECEIPT_SIGNING_KEY` | standard-base64 32-byte seed or 64-byte Ed25519 private key (secret) | unset | `coordinator/receipts/config.go` (`ReadConfig`, `Config.Check`); `coordinator/receipts/receipts.go` (`NewSignerFromBytes`) | Private key used to sign new receipts; required when enabled. |
+| `EIGENINFERENCE_INFERENCE_RECEIPT_PUBLIC_KEYS` | JSON object mapping key IDs to standard-base64 32-byte Ed25519 public keys | unset (active key only) | `coordinator/receipts/config.go` (`Config.KeyRing`) | Retains historical verification keys and publishes them at `/v1/inference-receipts/keys`; a configured active ID must match its signing key. |
 
 ### Database, store and persistent disk
 

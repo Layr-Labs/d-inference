@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased — inference receipts
+## Unreleased
+
+### Inference receipts
 
 - Add opt-in, nonce-bound Ed25519 inference receipts for non-streaming plain-text `/v1/chat/completions`, with public job, receipt-hash and signing-key lookup routes. See [inference receipts](docs/consumer/inference-receipts.md).
+- Receipts are off by default (`EIGENINFERENCE_INFERENCE_RECEIPTS_ENABLED`). When enabled, missing or invalid signing keys fail coordinator startup instead of silently disabling receipts. Operators can watch `inference_receipt.request`, `inference_receipt.finalize` and `inference_receipt.lookup` counters.
 
 ## Release candidate v0.9.10 — live switching and App Attest recovery (not shipped; 2026-09-27)
 

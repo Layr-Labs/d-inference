@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-27 · commit `d3e3c3a62`
+> Last updated: 2026-09-27 · commit `d24ffe80f`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -49,10 +49,10 @@ Keychain. Nothing prompt-derived is stored on either side.
 
 ### The store interface
 
-`Store` (`coordinator/store/interface.go`) is the union of fourteen embedded
+`Store` (`coordinator/store/interface.go`) is the union of thirteen embedded
 domain interfaces. Most are declared in `coordinator/store/interface_domains.go`;
 `RequestOutcomeStore` lives in `coordinator/store/request_outcomes.go`. Callers
-depend on the narrow slice they need; both implementations satisfy all fourteen.
+depend on the narrow slice they need; both implementations satisfy all thirteen.
 
 | Sub-interface | Owns |
 |---|---|
@@ -67,7 +67,6 @@ depend on the narrow slice they need; both implementations satisfy all fourteen.
 | `UserStore` | Privy-linked consumer accounts, role, platform-fee override and Stripe Connect payout fields. |
 | `DeviceAuthStore` | The RFC 8628-style device-code flow and the long-lived provider tokens it mints. |
 | `InviteStore` | Invite codes and redemptions. |
-| `InferenceReceiptStore` | Durable job state and completed signed inference-receipt envelopes; lifecycle and privacy are explained in [inference receipts](inference-receipts.md). |
 | `ProviderEarningsStore` | Per-node earnings, payouts and the base-rewards settlement rows. |
 | `ProviderStore` | Provider records and sessions, reputation, the APNs code-identity and trust-reuse caches, verification jobs and log reports. |
 
@@ -77,6 +76,11 @@ it through `store.As[store.ModelDemandStore]`, which unwraps decorators. It owns
 compact, revision-aware public demand projections and hourly
 per-model/consumer/outcome counters retained for 31 days; PostgreSQL aggregate
 reads use bounded read-only transactions.
+
+`InferenceReceiptStore` (`coordinator/store/inference_receipts.go`) is likewise
+optional and discovered through `store.As`. Both backends implement it. It
+owns durable receipt job state and completed signed envelopes; lifecycle and
+privacy are explained in [inference receipts](inference-receipts.md).
 
 Telemetry *events* are not in the store at all: `TelemetryEventRecord` goes to
 Datadog only (see [`telemetry.md`](telemetry.md)).
@@ -344,7 +348,7 @@ KV blocks under a per-model key, not tokens.
 | Postgres pool, schema, one-shot migrations | `coordinator/store/postgres.go`, `coordinator/store/postgres_usage_totals_migration.go`, `coordinator/store/postgres_withdrawable_migration.go`, `coordinator/store/postgres_log_report_privacy.go` |
 | Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`, `GetProviderBySerial`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`, `UsageRecordsSince`); `coordinator/store/postgres_row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres_model_registry.go`, `coordinator/store/postgres_base_rewards.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/route_telemetry.go`, `coordinator/store/usage_time_series.go`, `coordinator/store/apikey.go` |
-| Inference receipt contract and backends | `coordinator/store/interface_domains.go` (`InferenceReceiptStore`), `coordinator/store/postgres_inference_receipts.go`, `coordinator/store/memory_inference_receipts.go` |
+| Inference receipt contract and backends | `coordinator/store/inference_receipts.go` (`InferenceReceiptStore`), `coordinator/store/postgres_inference_receipts.go`, `coordinator/store/memory_inference_receipts.go` |
 | Memory backend | `coordinator/store/memory.go`, `coordinator/store/memory_base_rewards.go` |
 | Manual SQL | `coordinator/store/migrations/` |
 | Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/api/trust_reuse_journal.go`, [`../operations/state-export.md`](../operations/state-export.md) |

@@ -17,9 +17,11 @@ const (
 
 // StartInferenceReceiptMaintenance recovers old pending receipts and removes
 // expired rows. It runs once at startup and then hourly, and exits when ctx is
-// cancelled.
+// cancelled. It runs whenever the store has the receipt capability, even with
+// receipts disabled, so rows written before the feature was switched off still
+// expire on schedule.
 func (s *Server) StartInferenceReceiptMaintenance(ctx context.Context) {
-	if s.store == nil {
+	if _, ok := s.inferenceReceiptStore(); !ok {
 		return
 	}
 	saferun.Go(s.logger, "inference_receipts.maintenance", func() {
@@ -41,8 +43,13 @@ func (s *Server) runInferenceReceiptMaintenance(ctx context.Context, interval ti
 	}
 }
 
+// maintainInferenceReceiptsOnce interrupts pending rows older than
+// inferenceReceiptPendingStaleAfter — far beyond any request deadline, so only
+// rows orphaned by a coordinator restart mid-request — and then prunes expired
+// rows. Both loops drain in bounded batches under one overall timeout.
 func (s *Server) maintainInferenceReceiptsOnce(ctx context.Context, now time.Time) {
-	if s.store == nil {
+	receiptStore, ok := s.inferenceReceiptStore()
+	if !ok {
 		return
 	}
 	maintenanceCtx, cancel := context.WithTimeout(ctx, inferenceReceiptMaintenanceTimeout)
@@ -50,7 +57,7 @@ func (s *Server) maintainInferenceReceiptsOnce(ctx context.Context, now time.Tim
 
 	var interrupted int
 	for {
-		count, err := s.store.InterruptStaleInferenceReceipts(
+		count, err := receiptStore.InterruptStaleInferenceReceipts(
 			maintenanceCtx,
 			now.Add(-inferenceReceiptPendingStaleAfter),
 			now,
@@ -71,7 +78,7 @@ func (s *Server) maintainInferenceReceiptsOnce(ctx context.Context, now time.Tim
 
 	var deleted int
 	for {
-		count, err := s.store.PruneInferenceReceipts(maintenanceCtx, now, inferenceReceiptMaintenanceBatch)
+		count, err := receiptStore.PruneInferenceReceipts(maintenanceCtx, now, inferenceReceiptMaintenanceBatch)
 		if err != nil {
 			s.logger.Error("inference receipt expiry pruning failed", "error", err)
 			break

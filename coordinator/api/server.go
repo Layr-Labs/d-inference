@@ -50,7 +50,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
-	"github.com/eigeninference/d-inference/coordinator/receipts"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -224,11 +223,7 @@ type Server struct {
 	mdmSchedulerConfig            MDMSchedulerConfig
 	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
 	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
-	inferenceReceiptEnabled       bool
-	inferenceReceiptSigner        *receipts.Signer
-	inferenceReceiptPublicKeys    map[string][]byte
-	inferenceReceiptIssuer        string
-	inferenceReceiptRetention     time.Duration
+	inferenceReceipts             *receiptIssuer      // opt-in signed inference receipts (nil = disabled)
 	promptArtifacts               *promptcontract.Provisioner
 	promptContract                *promptcontract.Client
 	promptSupervisor              *promptcontract.Supervisor
@@ -857,7 +852,12 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		firstContentSLAEmails:    firstContentSLAEmails,
 		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
-	s.configureInferenceReceipts(cfg)
+	if issuer, err := newReceiptIssuer(cfg.InferenceReceipts, cfg.BaseURL); err != nil {
+		// AppConfig.Check fails the boot first; this guards direct NewServer use.
+		logger.Error("inference receipts disabled: invalid configuration", "error", err)
+	} else {
+		s.inferenceReceipts = issuer
+	}
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
 		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
 			"requested", os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"),

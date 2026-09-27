@@ -1894,11 +1894,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	receiptRequest, receiptErr := s.newInferenceReceiptRequest(
 		r, parsed, prelude.originalRawBody, r.URL.Path, isResponsesAPI)
 	if receiptErr != nil {
-		if errors.Is(receiptErr, errInferenceReceiptUnavailable) {
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("receipt_unavailable", "inference receipts are unavailable"))
-		} else {
-			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", receiptErr.Error()))
-		}
+		s.rejectInferenceReceiptRequest(w, receiptErr)
 		return
 	}
 	// Tool-constraint validation must judge the PRE-normalization tools (a
@@ -2450,7 +2446,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		excludeProviders: make(map[string]struct{}),
 	}
 	if receiptRequest != nil {
-		if err := s.createPendingInferenceReceipt(r.Context(), receiptRequest); err != nil {
+		if err := s.reserveInferenceReceipt(r.Context(), receiptRequest); err != nil {
 			refundReservation()
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("receipt_unavailable", "could not reserve an inference receipt"))
 			return
@@ -2723,14 +2719,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	if hasReceiptRequest(r) {
+		// Receipts cover chat completions only; validation still runs so a
+		// disabled feature reports 503 rather than a misleading 400.
 		_, receiptErr := s.newInferenceReceiptRequest(r, parsed, originalRawBody, endpoint, false)
-		if errors.Is(receiptErr, errInferenceReceiptUnavailable) {
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("receipt_unavailable", "inference receipts are unavailable"))
-		} else if receiptErr != nil {
-			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", receiptErr.Error()))
-		} else {
-			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "receipts currently support chat completions only"))
+		if receiptErr == nil {
+			receiptErr = errors.New("receipts currently support chat completions only")
 		}
+		s.rejectInferenceReceiptRequest(w, receiptErr)
 		return
 	}
 	model := prelude.model

@@ -11,7 +11,7 @@ import (
 )
 
 func TestInferenceReceiptTransitionsAndIdempotence(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -91,7 +91,7 @@ func TestInferenceReceiptTransitionsAndIdempotence(t *testing.T) {
 }
 
 func TestInferenceReceiptDefensiveCopiesAndHashLookup(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -153,7 +153,7 @@ func TestInferenceReceiptDefensiveCopiesAndHashLookup(t *testing.T) {
 }
 
 func TestInferenceReceiptHashLookupHidesExpiredCompletedReceipts(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			rec := completedReceipt(uniqueID("receipt-expired-hash"), uniqueID("receipt-expired-hash-value"), now.Add(-time.Hour), now.Add(-time.Minute))
@@ -168,7 +168,7 @@ func TestInferenceReceiptHashLookupHidesExpiredCompletedReceipts(t *testing.T) {
 }
 
 func TestCompleteInferenceReceiptMissingJobReturnsNotFound(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			_, err := st.CompleteInferenceReceipt(context.Background(), uniqueID("receipt-missing"), "hash-missing", []byte("envelope"), now, now.Add(time.Hour))
@@ -180,7 +180,7 @@ func TestCompleteInferenceReceiptMissingJobReturnsNotFound(t *testing.T) {
 }
 
 func TestInferenceReceiptNonceIsGloballySingleUseAndImmutable(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -206,7 +206,7 @@ func TestInferenceReceiptNonceIsGloballySingleUseAndImmutable(t *testing.T) {
 }
 
 func TestCompleteInferenceReceiptConcurrentTransitionIsSingleWinner(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -249,7 +249,7 @@ func TestCompleteInferenceReceiptConcurrentTransitionIsSingleWinner(t *testing.T
 }
 
 func TestInterruptStaleInferenceReceiptsOldestFirstAndBoundaryInclusive(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -314,7 +314,7 @@ func TestInterruptStaleInferenceReceiptsOldestFirstAndBoundaryInclusive(t *testi
 }
 
 func TestInterruptStaleInferenceReceiptsRejectsTimestampBeforeCreation(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -337,7 +337,7 @@ func TestInterruptStaleInferenceReceiptsRejectsTimestampBeforeCreation(t *testin
 }
 
 func TestInterruptStaleInferenceReceiptsConcurrentBatchIsSingleTransition(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -382,61 +382,8 @@ func TestInterruptStaleInferenceReceiptsConcurrentBatchIsSingleTransition(t *tes
 	}
 }
 
-func TestPostgresInferenceReceiptNonceMigrationUpgradesExistingTable(t *testing.T) {
-	s := testPostgresStore(t)
-	ctx := context.Background()
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `DROP TABLE inference_receipts`); err != nil {
-		t.Fatalf("drop inference_receipts: %v", err)
-	}
-	if _, err := tx.Exec(ctx, `CREATE TABLE inference_receipts (
-		job_id TEXT PRIMARY KEY,
-		receipt_hash TEXT,
-		state TEXT NOT NULL,
-		envelope BYTEA,
-		created_at TIMESTAMPTZ NOT NULL,
-		updated_at TIMESTAMPTZ NOT NULL,
-		expires_at TIMESTAMPTZ NOT NULL
-	)`); err != nil {
-		t.Fatalf("create legacy inference_receipts: %v", err)
-	}
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	legacyJobID := uniqueID("receipt-legacy-no-nonce")
-	if _, err := tx.Exec(ctx, `INSERT INTO inference_receipts(job_id, state, created_at, updated_at, expires_at)
-		VALUES ($1, 'pending', $2, $2, $3)`, legacyJobID, now, now.Add(time.Hour)); err != nil {
-		t.Fatalf("insert legacy receipt: %v", err)
-	}
-	if _, err := tx.Exec(ctx, inferenceReceiptTableDDL); err != nil {
-		t.Fatalf("apply nonce migration: %v", err)
-	}
-	if _, err := tx.Exec(ctx, inferenceReceiptTableDDL); err != nil {
-		t.Fatalf("repeat nonce migration: %v", err)
-	}
-	var nonce string
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(nonce, '') FROM inference_receipts WHERE job_id = $1`, legacyJobID).Scan(&nonce); err != nil {
-		t.Fatalf("read legacy row after migration: %v", err)
-	}
-	if nonce != "" {
-		t.Fatalf("legacy nonce = %q, want empty nullable value", nonce)
-	}
-	var hasNonceColumn bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (
-		SELECT 1 FROM information_schema.columns
-		WHERE table_schema = current_schema() AND table_name = 'inference_receipts' AND column_name = 'nonce'
-	)`).Scan(&hasNonceColumn); err != nil {
-		t.Fatalf("check nonce column: %v", err)
-	}
-	if !hasNonceColumn {
-		t.Fatal("nonce column was not added to existing inference_receipts table")
-	}
-}
-
 func TestInferenceReceiptRejectsTransitionTimestampsBeforeCreation(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -471,7 +418,7 @@ func TestInferenceReceiptRejectsTransitionTimestampsBeforeCreation(t *testing.T)
 }
 
 func TestPruneInferenceReceiptsOnlyExpiredTerminalRowsAndHonorsLimit(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -519,7 +466,7 @@ func TestPruneInferenceReceiptsOnlyExpiredTerminalRowsAndHonorsLimit(t *testing.
 }
 
 func TestPruneInferenceReceiptsDeletesExpiredPendingRows(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -545,7 +492,7 @@ func TestPruneInferenceReceiptsDeletesExpiredPendingRows(t *testing.T) {
 }
 
 func TestInferenceReceiptRejectsInvalidInput(t *testing.T) {
-	for name, st := range storeBackends(t) {
+	for name, st := range inferenceReceiptBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC()
@@ -687,4 +634,19 @@ func uniqueReceiptNonce() string {
 	seed := uniqueID("receipt-nonce")
 	value := sha256.Sum256([]byte(seed))
 	return base64.RawURLEncoding.EncodeToString(value[:])
+}
+
+// inferenceReceiptBackends returns every configured backend through the
+// optional receipt capability, the same way the API discovers it.
+func inferenceReceiptBackends(t *testing.T) map[string]InferenceReceiptStore {
+	t.Helper()
+	backends := make(map[string]InferenceReceiptStore)
+	for name, st := range storeBackends(t) {
+		receipts, ok := As[InferenceReceiptStore](st)
+		if !ok {
+			t.Fatalf("%s store does not implement InferenceReceiptStore", name)
+		}
+		backends[name] = receipts
+	}
+	return backends
 }

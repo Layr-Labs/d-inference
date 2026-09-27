@@ -240,32 +240,6 @@ type TelemetryStore interface {
 	PruneTelemetry(ctx context.Context, profilesBefore, snapshotsBefore time.Time, batch int) (deleted int, err error)
 }
 
-// InferenceReceiptStore persists the lifecycle and immutable evidence envelope
-// for an inference job receipt.
-type InferenceReceiptStore interface {
-	// CreateInferenceReceipt stores a new receipt row. Receipt content is
-	// immutable after creation except for the pending-to-terminal transitions.
-	CreateInferenceReceipt(context.Context, InferenceReceiptRecord) error
-	// CompleteInferenceReceipt atomically completes a pending job and returns
-	// true only when this call made the transition. Repeated or conflicting
-	// completions never overwrite an existing terminal record.
-	CompleteInferenceReceipt(context.Context, string, string, []byte, time.Time, time.Time) (bool, error)
-	// SetInferenceReceiptState moves a pending receipt to failed or interrupted;
-	// terminal records are never downgraded.
-	SetInferenceReceiptState(context.Context, string, string, time.Time) error
-	// GetInferenceReceiptByJobID returns the row for its job ID.
-	GetInferenceReceiptByJobID(context.Context, string) (InferenceReceiptRecord, error)
-	// GetInferenceReceiptByHash returns only completed receipts.
-	GetInferenceReceiptByHash(context.Context, string) (InferenceReceiptRecord, error)
-	// InterruptStaleInferenceReceipts changes up to limit pending receipts created
-	// at or before staleBefore to interrupted, oldest first. The transition time
-	// must not precede any receipt's creation time.
-	InterruptStaleInferenceReceipts(context.Context, time.Time, time.Time, int) (int, error)
-	// PruneInferenceReceipts removes up to limit rows whose expiry is at or
-	// before before, including expired pending rows.
-	PruneInferenceReceipts(context.Context, time.Time, int) (int, error)
-}
-
 // LedgerStore is the double-entry balance ledger (all amounts in micro-USD).
 type LedgerStore interface {
 	// GetBalance returns the current balance in micro-USD for an account.

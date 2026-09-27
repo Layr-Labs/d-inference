@@ -12,7 +12,11 @@ import (
 
 var _ InferenceReceiptStore = (*PostgresStore)(nil)
 
-const inferenceReceiptTableDDL = `CREATE TABLE IF NOT EXISTS inference_receipts (
+// The receipts table is created empty on first boot, so the plain CREATE INDEX
+// statements never lock a populated table; any future index on it must be
+// built CONCURRENTLY outside the migrate loop.
+const (
+	inferenceReceiptsTableDDL = `CREATE TABLE IF NOT EXISTS inference_receipts (
 	job_id TEXT PRIMARY KEY CHECK (job_id <> ''),
 	nonce TEXT NOT NULL,
 	receipt_hash TEXT,
@@ -25,12 +29,12 @@ const inferenceReceiptTableDDL = `CREATE TABLE IF NOT EXISTS inference_receipts 
 		(state = 'completed' AND receipt_hash IS NOT NULL AND receipt_hash <> '' AND envelope IS NOT NULL AND octet_length(envelope) > 0)
 		OR (state <> 'completed' AND receipt_hash IS NULL AND envelope IS NULL)
 	)
-);
-ALTER TABLE inference_receipts ADD COLUMN IF NOT EXISTS nonce TEXT;
-CREATE INDEX IF NOT EXISTS idx_inference_receipts_expires ON inference_receipts(expires_at);
-CREATE INDEX IF NOT EXISTS idx_inference_receipts_pending_created ON inference_receipts(created_at, job_id) WHERE state = 'pending';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_inference_receipts_hash ON inference_receipts(receipt_hash) WHERE receipt_hash IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_inference_receipts_nonce ON inference_receipts(nonce)`
+)`
+	inferenceReceiptsExpiresIndexDDL = `CREATE INDEX IF NOT EXISTS idx_inference_receipts_expires ON inference_receipts(expires_at)`
+	inferenceReceiptsPendingIndexDDL = `CREATE INDEX IF NOT EXISTS idx_inference_receipts_pending_created ON inference_receipts(created_at, job_id) WHERE state = 'pending'`
+	inferenceReceiptsHashIndexDDL    = `CREATE UNIQUE INDEX IF NOT EXISTS idx_inference_receipts_hash ON inference_receipts(receipt_hash) WHERE receipt_hash IS NOT NULL`
+	inferenceReceiptsNonceIndexDDL   = `CREATE UNIQUE INDEX IF NOT EXISTS idx_inference_receipts_nonce ON inference_receipts(nonce)`
+)
 
 func (s *PostgresStore) CreateInferenceReceipt(ctx context.Context, rec InferenceReceiptRecord) error {
 	if err := ctx.Err(); err != nil {
@@ -67,6 +71,8 @@ func (s *PostgresStore) CompleteInferenceReceipt(ctx context.Context, jobID, rec
 		return false, err
 	}
 	defer tx.Rollback(ctx)
+	// The row lock serializes attempts racing to complete the same job; the
+	// loser sees a terminal state and returns false without writing.
 	var state string
 	var createdAt time.Time
 	if err := tx.QueryRow(ctx, `SELECT state, created_at FROM inference_receipts WHERE job_id = $1 FOR UPDATE`, jobID).Scan(&state, &createdAt); err != nil {
@@ -243,7 +249,7 @@ func (s *PostgresStore) PruneInferenceReceipts(ctx context.Context, before time.
 	return int(tag.RowsAffected()), nil
 }
 
-const inferenceReceiptSelect = `SELECT job_id, COALESCE(nonce, ''), COALESCE(receipt_hash, ''), state,
+const inferenceReceiptSelect = `SELECT job_id, nonce, COALESCE(receipt_hash, ''), state,
 	COALESCE(envelope, ''::bytea), created_at, updated_at, expires_at FROM inference_receipts`
 
 func scanInferenceReceipt(row pgx.Row) (InferenceReceiptRecord, error) {

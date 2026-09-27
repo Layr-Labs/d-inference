@@ -21,6 +21,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
+	"github.com/eigeninference/d-inference/coordinator/receipts"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -45,6 +46,7 @@ type AppConfig struct {
 	DatadogConfig   datadog.Config
 	MediaFetchCfg   mediafetch.Config
 	PromptSidecar   promptcontract.SupervisorConfig
+	Receipts        receipts.Config
 	AdminKey        string
 	AdminEmails     []string
 	ReleaseKey      string
@@ -67,6 +69,7 @@ func (c AppConfig) Check() error {
 		{"datadog", c.DatadogConfig.Check},
 		{"media_fetch", c.MediaFetchCfg.Check},
 		{"prompt_sidecar", c.PromptSidecar.Check},
+		{"inference_receipts", c.Receipts.Check},
 	}
 	for _, component := range checks {
 		if err := component.check(); err != nil {
@@ -95,6 +98,7 @@ func ReadAppConfig() AppConfig {
 		DatadogConfig:   datadog.ConfigFromEnv(),
 		MediaFetchCfg:   mediafetch.ConfigFromEnv(),
 		PromptSidecar:   promptcontract.ReadSupervisorConfig(),
+		Receipts:        receipts.ReadConfig(),
 		AdminKey:        env.EnvOr(EnvPrefix+"_ADMIN_KEY", ""),
 		AdminEmails:     api.ParseCommaList(env.EnvOr(EnvPrefix+"_ADMIN_EMAILS", "")),
 		ReleaseKey:      env.EnvOr(EnvPrefix+"_RELEASE_KEY", ""),

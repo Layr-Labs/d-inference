@@ -293,11 +293,21 @@ final class SSDCacheEpochStore: @unchecked Sendable {
                 includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
                 options: [.skipsHiddenFiles])
             for file in files where file.pathExtension == SSDBlockStore.fileExtension {
-                guard SSDBlockStore.removeItemIfSafe(at: file, under: root) else {
-                    throw SSDBlockStoreError.ioFailure(
-                        "failed to remove stale block during epoch rotation")
-                }
+                try removeStaleBlock(at: file, under: root)
             }
+        }
+    }
+
+    /// Per-file removals do not hold `recordLock`, so a superseded instance
+    /// that passed its ownership check can unlink a listed block before this
+    /// wipe reaches it. A block that is already gone is what the wipe wants;
+    /// one that is still present but cannot be removed (or was replaced by a
+    /// link, device or directory) still fails the rebuild.
+    static func removeStaleBlock(at file: URL, under root: URL) throws {
+        if SSDBlockStore.removeItemIfSafe(at: file, under: root) { return }
+        guard SSDNoFollowIO.regularFileStatus(at: file) == .missing else {
+            throw SSDBlockStoreError.ioFailure(
+                "failed to remove stale block during epoch rotation")
         }
     }
 

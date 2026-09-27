@@ -1270,6 +1270,188 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(cache.prefixCacheV2Capability() == nil)
         #expect(cache.evictOldestEntry() == 0)
         #expect(cache.index.count == 8, "a disowned cache must not mutate the root")
+        // Index-only reconciliation still runs, so the disowned cache stops
+        // reporting bytes the successor's wipe already removed.
+        #expect(cache.diskBytesOnDisk > 0)
+        cache.reconcileExternalRemovals()
+        #expect(cache.index.count == 0)
+        #expect(cache.diskBytesOnDisk == 0)
+    }
+
+    private func blockFile(dir: URL, kek: SymmetricKey, tokens: [Int], block: Int) -> URL {
+        let chain = CBv2BlockHasher(
+            blockSize: fixtureBlockSize, promptContractID: "test-prompt-contract"
+        ).chainHashes(tokens: tokens)
+        return SSDBlockStore.fileURL(
+            root: dir,
+            tag16Hex: SSDLookupKeys.hex(
+                SSDLookupKeys(kek: kek).tag16(chainHash: chain[block], cacheSalt: "")))
+    }
+
+    @Test("a block unlinked behind the index shortens the run as absence, not corruption")
+    func unlinkedBlockShortensWithoutCorruption() async throws {
+        let dir = tempDir("absent-mid-run")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureBinding())
+        let epoch = try #require(epochStore.current)
+        let cache = makeCache(dir: dir, kek: kek, clock: ClockBox(10_000), epochStore: epochStore)
+        defer { cache.close() }
+        let tokens = Array(0 ..< tokenCount)
+        donateFixture(cache, tokens: tokens)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        await cache.waitForWritesForTesting()
+
+        try FileManager.default.removeItem(
+            at: blockFile(dir: dir, kek: kek, tokens: tokens, block: 4))
+        #expect(cache.index.count == 8)
+        let staged = await cache.stage(
+            requestID: "r-short", promptTokens: tokens + [1], cacheScope: "")
+        #expect(staged.disposition == .staged(
+            matchedTokens: 4 * fixtureBlockSize,
+            expectedPrefillTokensSaved: 4 * fixtureBlockSize,
+            shortenedByCorruption: false))
+        cache.completeStaging(requestID: "r-short")
+        #expect(cache.stats().corruptDropped == 0)
+        #expect(cache.index.count == 7)
+        #expect(epochStore.current == epoch)
+    }
+
+    @Test("a leading block unlinked behind the index is an absent miss, not corruption")
+    func unlinkedLeadingBlockIsAbsentMiss() async throws {
+        let dir = tempDir("absent-leading")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureBinding())
+        let epoch = try #require(epochStore.current)
+        let cache = makeCache(dir: dir, kek: kek, clock: ClockBox(10_000), epochStore: epochStore)
+        defer { cache.close() }
+        let tokens = Array(0 ..< tokenCount)
+        donateFixture(cache, tokens: tokens)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        await cache.waitForWritesForTesting()
+
+        try FileManager.default.removeItem(
+            at: blockFile(dir: dir, kek: kek, tokens: tokens, block: 0))
+        let missed = await cache.stage(
+            requestID: "r-absent", promptTokens: tokens + [1], cacheScope: "")
+        #expect(missed.disposition == .missAbsent)
+        #expect(cache.stats().corruptDropped == 0)
+        #expect(cache.index.count == 7)
+        #expect(epochStore.current == epoch)
+        #expect(dbk3Files(under: dir).count == 7, "no surviving block was deleted")
+    }
+
+    @Test("concurrent readers and eviction never report corruption or rotate the epoch")
+    func concurrentReadersAndEviction() async throws {
+        let dir = tempDir("reader-vs-eviction")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureBinding())
+        let epoch = try #require(epochStore.current)
+        let clock = ClockBox(10_000)
+        let cache = makeCache(
+            dir: dir, kek: SymmetricKey(size: .bits256), clock: clock, epochStore: epochStore)
+        defer { cache.close() }
+        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        let capability = try await waitForCapability(cache)
+        let prompts = [Array(0 ..< tokenCount), Array(9000 ..< (9000 + tokenCount))]
+
+        for round in 0 ..< 6 {
+            for (offset, tokens) in prompts.enumerated() {
+                donateFixture(cache, tokens: tokens, seed: Float(offset + 1))
+                #expect(await waitForIndexCount(cache, atLeast: 8 * (offset + 1)))
+                clock.advance(1)
+            }
+            await cache.waitForWritesForTesting()
+            let seen = await withTaskGroup(of: [SSDPrefixCacheStageDisposition].self) { group in
+                for reader in 0 ..< 3 {
+                    group.addTask {
+                        var dispositions: [SSDPrefixCacheStageDisposition] = []
+                        for attempt in 0 ..< 4 {
+                            let id = "r-\(round)-\(reader)-\(attempt)"
+                            let result = await cache.stage(
+                                requestID: id,
+                                promptTokens: prompts[(reader + attempt) % 2] + [1],
+                                cacheScope: "")
+                            dispositions.append(result.disposition)
+                            cache.completeStaging(requestID: id)
+                        }
+                        return dispositions
+                    }
+                }
+                group.addTask {
+                    var passes = 0
+                    while cache.index.count > 0, passes < 1_000 {
+                        _ = cache.evictOldestEntry()
+                        passes += 1
+                        await Task.yield()
+                    }
+                    return []
+                }
+                var all: [SSDPrefixCacheStageDisposition] = []
+                for await dispositions in group { all += dispositions }
+                return all
+            }
+            #expect(seen.count == 12)
+            #expect(!seen.contains(.missCorrupt))
+            #expect(cache.index.count == 0)
+            #expect(dbk3Files(under: dir).isEmpty)
+        }
+        #expect(cache.stats().corruptDropped == 0)
+        #expect(cache.stats().evictions == 6 * 16)
+        #expect(epochStore.current == epoch)
+        #expect(cache.prefixCacheV2Capability() == capability)
+    }
+
+    @Test("a crash between unlink and index update reconciles from disk on restart without a new epoch")
+    func crashMidRemovalReconcilesOnRestart() async throws {
+        let dir = tempDir("crash-mid-removal")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let binding = fixtureBinding()
+        let clock = ClockBox(10_000)
+        let firstEpochStore = try SSDCacheEpochStore(root: dir, binding: binding)
+        let epoch = try #require(firstEpochStore.current)
+        let first = makeCache(dir: dir, kek: kek, clock: clock, epochStore: firstEpochStore)
+        first.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        _ = try await waitForCapability(first)
+        #expect(first.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch) == 1)
+        let old = Array(0 ..< tokenCount)
+        let fresh = Array(9000 ..< (9000 + tokenCount))
+        donateFixture(first, tokens: old, seed: 1.0)
+        #expect(await waitForIndexCount(first, atLeast: 8))
+        donateFixture(first, tokens: fresh, seed: 2.0)
+        #expect(await waitForIndexCount(first, atLeast: 16))
+        await first.waitForWritesForTesting()
+
+        // Simulate the crash mid-sweep: the older prefix's files are gone,
+        // the RAM index never learned, and the process dies.
+        for block in 0 ..< 8 {
+            try FileManager.default.removeItem(
+                at: blockFile(dir: dir, kek: kek, tokens: old, block: block))
+        }
+        #expect(first.index.count == 16)
+        await first.closeAndWait()
+
+        let restartedEpochStore = try SSDCacheEpochStore(root: dir, binding: binding)
+        #expect(restartedEpochStore.current == epoch)
+        let restarted = makeCache(dir: dir, kek: kek, clock: clock, epochStore: restartedEpochStore)
+        defer { restarted.close() }
+        restarted.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        let capability = try await waitForCapability(restarted)
+        #expect(capability.cacheEpoch == epoch)
+        #expect(restarted.index.count == 8)
+        #expect(restarted.index.totalBytes == dbk3Files(under: dir).reduce(0) {
+            $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        })
+        #expect(restarted.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch) == 2)
+        #expect((await restarted.stage(
+            requestID: "r-fresh", promptTokens: fresh + [1], cacheScope: "")).staged)
+        restarted.completeStaging(requestID: "r-fresh")
+        let missed = await restarted.stage(
+            requestID: "r-old", promptTokens: old + [1], cacheScope: "")
+        #expect(missed.disposition == .missAbsent)
+        #expect(restarted.stats().corruptDropped == 0)
     }
 
     @Test("reconciliation drops a symlink-replaced indexed file without following it")

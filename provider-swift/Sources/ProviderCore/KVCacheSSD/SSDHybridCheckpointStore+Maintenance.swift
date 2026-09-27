@@ -29,7 +29,19 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             return SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular
         }
         guard !removed.isEmpty else { return }
-        _ = performIndexedRemoval { removed.forEach { _ = self.index.remove(tag16: $0) } }
+        performIndexReconciliation { removed.forEach { _ = self.index.remove(tag16: $0) } }
+    }
+
+    /// Forget one entry whose file a reader found already gone. Index-only,
+    /// and rechecked under the removal lock so a checkpoint rewritten at the
+    /// same tag since the failed read keeps its entry.
+    func forgetMissing(_ tag: Data) {
+        performIndexReconciliation {
+            let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: tag.hexString)
+            guard SSDBlockStore.indexedBlockFileStatus(at: url, under: self.config.root) != .regular
+            else { return }
+            _ = self.index.remove(tag16: tag)
+        }
     }
 
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool {
@@ -48,8 +60,16 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     /// stays advertised. Every other checkpoint remains reusable and the
     /// coordinator forgets the removed one through an ordinary lookup miss
     /// (`miss_invalidation`); a stale holder costs one cold serve, never a
-    /// fence. Refused once closed or once this store no longer owns its
-    /// epoch, so a superseded instance cannot unlink a successor's files.
+    /// fence.
+    ///
+    /// Refused once closed, or once a different-binding successor has taken
+    /// the root (its rebuild publishes a new epoch, so `current` is nil
+    /// here). A same-binding successor republishes the same epoch, so an
+    /// instance it supersedes is stopped only by `close()`. The check is
+    /// also not atomic with a successor's rebuild, which runs under the epoch
+    /// store's record lock rather than this one: a body that already passed
+    /// can unlink during that wipe, which the wipe tolerates
+    /// (`SSDCacheEpochStore.removeStaleBlock`).
     private func performIndexedRemoval<T>(_ body: () -> T) -> T? {
         removalLock.withLock {
             guard lock.withLock({ !closed }),
@@ -57,6 +77,14 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             else { return nil }
             return body()
         }
+    }
+
+    /// Index-only reconciliation touches no files, so it runs even after
+    /// this store lost its epoch: a disowned but still registered store must
+    /// stop reporting bytes that a successor's wipe already removed, or the
+    /// box-wide budget over-evicts healthy stores until it closes.
+    private func performIndexReconciliation(_ body: () -> Void) {
+        removalLock.withLock(body)
     }
 
     private func dropIndexEntriesWithoutFiles() {

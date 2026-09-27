@@ -200,6 +200,10 @@ struct SSDEpochContinuityTests {
         #expect(store.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch) == nil)
         #expect(store.evictOldestEntry() == 0)
         #expect(store.index.count == 1, "a disowned store must not mutate the root")
+        // Index-only reconciliation still runs for a disowned store.
+        store.reconcileExternalRemovals()
+        #expect(store.index.count == 0)
+        #expect(store.diskBytesOnDisk == 0)
         await store.closeAndWait()
     }
 }

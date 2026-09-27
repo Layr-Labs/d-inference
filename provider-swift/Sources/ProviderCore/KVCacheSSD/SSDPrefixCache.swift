@@ -1361,6 +1361,7 @@ public final class SSDPrefixCache:
 
         var builder: SSDNativePrefixBuilder?
         var shortenedByCorruption = false
+        var shortenedByAbsence = false
         for i in 0..<k {
             let url = SSDBlockStore.fileURL(
                 root: config.root, tag16Hex: SSDLookupKeys.hex(tags16[i]))
@@ -1405,6 +1406,14 @@ public final class SSDPrefixCache:
                 await releaseReservation(reservationKey)
                 return finish(.skippedCapacity)
             } catch {
+                if SSDBlockStore.isAbsentBlockFailure(error, at: url, under: config.root) {
+                    // Evicted or expired between the index probe and the
+                    // read: nothing on disk was unreadable. Forget the entry
+                    // and keep whatever leading run was already read.
+                    forgetMissing(tags16[i])
+                    shortenedByAbsence = true
+                    break
+                }
                 statsBox.add(corruptDropped: 1)
                 _ = performIndexedRemoval {
                     _ = SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
@@ -1425,7 +1434,8 @@ public final class SSDPrefixCache:
         guard usableBlocks > 0, effective >= config.minEffectiveTokens else {
             builder?.close()
             await releaseReservation(reservationKey)
-            return finish(shortenedByCorruption ? .missCorrupt : .skippedCost)
+            if shortenedByCorruption { return finish(.missCorrupt) }
+            return finish(shortenedByAbsence ? .missAbsent : .skippedCost)
         }
         // A shorter prefix cannot keep views of the original allocation while
         // charging only its logical size. Reserve the rare compact-copy peak
@@ -1644,6 +1654,11 @@ public final class SSDPrefixCache:
             } catch is SSDNativePrefixBuilder.Failure {
                 return nil
             } catch {
+                if SSDBlockStore.isAbsentBlockFailure(error, at: url, under: config.root) {
+                    // An evicted sidecar is a replay fallback, not corruption.
+                    forgetMissing(tag16)
+                    return nil
+                }
                 statsBox.add(corruptDropped: 1)
                 _ = performIndexedRemoval {
                     _ = SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
@@ -1772,10 +1787,23 @@ public final class SSDPrefixCache:
         guard hasSafeRoot else { return }
         let removed = externallyRemovedTags()
         guard !removed.isEmpty else { return }
-        _ = performIndexedRemoval {
+        performIndexReconciliation {
             for tag16 in removed {
                 index.remove(tag16: tag16)
             }
+        }
+    }
+
+    /// Forget one entry whose file a reader found already gone. Index-only,
+    /// and rechecked under the removal lock so a block rewritten at the same
+    /// tag since the failed read keeps its entry.
+    private func forgetMissing(_ tag16: Data) {
+        performIndexReconciliation {
+            let url = SSDBlockStore.fileURL(
+                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+            guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular
+            else { return }
+            index.remove(tag16: tag16)
         }
     }
 
@@ -1974,8 +2002,15 @@ public final class SSDPrefixCache:
     /// stays advertised: every other block remains reusable, and the
     /// coordinator forgets a removed one through an ordinary lookup miss
     /// (`miss_invalidation`), which costs one cold serve and never a fence.
-    /// Refused once closed or once this cache no longer owns its epoch, so a
-    /// superseded instance cannot unlink a successor's files at the same tag.
+    ///
+    /// Refused once closed, or once a different-binding successor has taken
+    /// the root (its rebuild publishes a new epoch, so `current` is nil
+    /// here). A same-binding successor republishes the same epoch, so an
+    /// instance it supersedes is stopped only by `close()`. The check is
+    /// also not atomic with a successor's rebuild, which runs under the epoch
+    /// store's record lock rather than this one: a body that already passed
+    /// can unlink during that wipe, which the wipe tolerates
+    /// (`SSDCacheEpochStore.removeStaleBlock`).
     private func performIndexedRemoval<T>(_ body: () -> T) -> T? {
         removalLock.withLock {
             guard lock.withLock({ !closed }),
@@ -1983,6 +2018,14 @@ public final class SSDPrefixCache:
             else { return nil }
             return body()
         }
+    }
+
+    /// Index-only reconciliation touches no files, so it runs even after
+    /// this cache lost its epoch: a disowned but still registered cache must
+    /// stop reporting bytes that a successor's wipe already removed, or the
+    /// box-wide budget over-evicts healthy stores until it closes.
+    private func performIndexReconciliation(_ body: () -> Void) {
+        removalLock.withLock(body)
     }
 
     private func cacheEpochMatches(_ expected: String?) -> Bool {

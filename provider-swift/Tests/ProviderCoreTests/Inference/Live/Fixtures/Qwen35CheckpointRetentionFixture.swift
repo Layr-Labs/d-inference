@@ -148,10 +148,15 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
                                  "the artifact must serve as a Qwen3.5-family text target (dense or MoE)")
         }
         try #require(model.cbv2Capabilities.supportsRecurrentCheckpointReuse)
-        do {
+        // An artifact that declares an embedded MTP head (`mtplx_mtp` in
+        // config.json, as the default `-mtp` catalog build does) must load
+        // it: a silent fallback would turn the MTP-history capture and
+        // restore this suite claims into an MTP-off run. Only an artifact
+        // without a declared head serves MTP-off.
+        if Self.declaresEmbeddedMTPHead(directory: directory) {
             assistant = try Qwen35InlineMTPAssistant.load(from: directory, target: model)
-        } catch {
-            print("[qwen35-retention] embedded MTP assistant not loaded, serving MTP-off: \(error)")
+        } else {
+            print("[qwen35-retention] \(modelID) declares no embedded MTP head, serving MTP-off")
             assistant = nil
         }
         let resolvedTokenizer = await container.perform { TokenizerHandle($0.tokenizer) }
@@ -164,6 +169,15 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
         root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("qwen35-checkpoint-retention-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    /// Whether config.json carries the `mtplx_mtp` block the inline assistant
+    /// loads from. Unreadable config counts as no head.
+    static func declaresEmbeddedMTPHead(directory: URL) -> Bool {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("config.json")),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return root["mtplx_mtp"] != nil
     }
 
     private static func makePrompts(_ tokenizer: TokenizerHandle) throws -> Prompts {

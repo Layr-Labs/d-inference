@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-27 · commit `d5135d366`
+> Last updated: 2026-09-27 · commit `414594d09`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -395,8 +395,9 @@ write unconditionally (`SSDCheckpointDemand.admitsWrite`; policy in the
 MTP history. Historical attention includes exact owning full rows and the
 window contents at the captured boundary, preserving borrower relationships.
 Capture is chunk-agnostic for both layouts. Recurrent (Qwen, Nemotron,
-Bonsai) checkpoints exist at every contiguous computed-range end inside the
-prompt that is a multiple of 256 tokens
+Bonsai) checkpoints exist at every contiguous computed-range end strictly
+inside the prompt (the prompt end itself is never a boundary: export needs a
+token after the checkpoint) that is a multiple of 256 tokens
 (`CBv2RecurrentCheckpointGeometry.recurrentCheckpointStrideTokens`, the
 block-hash size) and query-block aligned, or, equivalently in production, the
 end of a full chunk of its own cap (the clause that keeps files written under

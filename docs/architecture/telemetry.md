@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-26 · commit `c60610bb1`
+> Last updated: 2026-09-27 · commit `414594d09`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -108,10 +108,19 @@ capture time; capacity refresh attaches it as `slots[].prefix_cache` with an
 updated age. Whole-root maintenance contributes three process counters through
 `ProviderLoop+Capacity.swift`, including removals from unloaded models. The
 [wire reference](../reference/protocol-messages.md#slotsprefix_cache) defines the
-fields; no free-form client event transport is used.
+fields; no free-form client event transport is used. One counter originates in
+the engine rather than the store: when a packed prefill cohort disarms a
+recurrent donor's checkpoint capture, `EngineLoopV2` reports it once per
+request through `CBv2CompletePrefixCache.recordRecurrentCaptureDisarmed(packedAt:)`,
+`SSDHybridCheckpointStore` counts it in its stats, and the snapshot carries it
+as `recurrent_capture_disarmed_packed_total` (complete-checkpoint stores only).
 
 `applyProviderHeartbeat` feeds only registry-accepted snapshots to
-`recordPrefixCacheTelemetry` (`coordinator/api/provider_prefix_cache_telemetry.go`).
+`recordPrefixCacheTelemetry` (`coordinator/api/provider_prefix_cache_telemetry.go`),
+which emits the store-lifetime counters as positive deltas
+(`provider.prefix_cache.recurrent_capture_disarmed_packed` among them; a
+provider that omits the optional field contributes no delta and seeds a
+baseline when the field first appears).
 The existing live slot snapshot is the entire counter baseline: a new cache
 generation seeds it, removal or missing telemetry clears it, and disconnect
 ends the provider lifetime. Repeated sample sequences cannot contribute another

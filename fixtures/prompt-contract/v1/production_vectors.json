@@ -8,6 +8,168 @@
       "cache_routing_eligible": true,
       "cases": [
         {
+          "id": "assistant_output_text_part",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize the plan."
+              },
+              {
+                "role": "assistant",
+                "content": ""
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
+            "prompt_token_count": 76,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            248045,
+            8678,
+            198,
+            24342,
+            286,
+            4879,
+            369,
+            716,
+            310,
+            830,
+            11553,
+            13,
+            5044,
+            1683,
+            15060,
+            1472,
+            279,
+            3274,
+            11,
+            9307,
+            1328,
+            30800,
+            11,
+            2814,
+            47675,
+            25605,
+            11,
+            321,
+            60445,
+            55404,
+            11,
+            27224,
+            11,
+            321,
+            30246,
+            303,
+            279,
+            1534,
+            4087,
+            13,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            8917,
+            5437,
+            537,
+            279,
+            3019,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            271,
+            248069,
+            271,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            37657,
+            2923,
+            1330,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
+        {
           "id": "endpoint_chat_completions",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -7166,6 +7328,1158 @@
           ]
         },
         {
+          "id": "tool_call_arguments_bridge",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": {
+                        "path": "/tmp/report.txt",
+                        "content": "line one\nline two",
+                        "append": false,
+                        "retries": 2.0,
+                        "timeout": 1000.0,
+                        "ratio": 0.5,
+                        "meta": {
+                          "z": 1.0,
+                          "a": [
+                            3.0
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "written",
+                "tool_call_id": "call_w"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
+            "prompt_token_count": 463,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "7da080c9a11f44765e93d74f8c127ed843aac5ee1e0628f67407991cf5e1dc41"
+              }
+            ],
+            "last_complete_block_hash": "7da080c9a11f44765e93d74f8c127ed843aac5ee1e0628f67407991cf5e1dc41"
+          },
+          "token_ids": [
+            248045,
+            8678,
+            198,
+            24342,
+            286,
+            4879,
+            369,
+            716,
+            310,
+            830,
+            11553,
+            13,
+            5044,
+            1683,
+            15060,
+            1472,
+            279,
+            3274,
+            11,
+            9307,
+            1328,
+            30800,
+            11,
+            2814,
+            47675,
+            25605,
+            11,
+            321,
+            60445,
+            55404,
+            11,
+            27224,
+            11,
+            321,
+            30246,
+            303,
+            279,
+            1534,
+            4087,
+            13,
+            271,
+            2,
+            13455,
+            271,
+            2523,
+            599,
+            2528,
+            310,
+            279,
+            2614,
+            5568,
+            25,
+            271,
+            27,
+            15449,
+            29,
+            198,
+            4754,
+            1628,
+            21624,
+            4532,
+            3147,
+            7734,
+            264,
+            999,
+            2129,
+            591,
+            3147,
+            4775,
+            2378,
+            2129,
+            13390,
+            21624,
+            12811,
+            21624,
+            4928,
+            21624,
+            4532,
+            3147,
+            23130,
+            2129,
+            1267,
+            3147,
+            5925,
+            56658,
+            1733,
+            21624,
+            4532,
+            3147,
+            2674,
+            2129,
+            1267,
+            3147,
+            889,
+            56658,
+            2267,
+            21624,
+            4532,
+            3147,
+            1757,
+            2129,
+            1267,
+            3147,
+            889,
+            29958,
+            1288,
+            6081,
+            35580,
+            2267,
+            2129,
+            1733,
+            66550,
+            1267,
+            3147,
+            1640,
+            29958,
+            1288,
+            1267,
+            3147,
+            1628,
+            8934,
+            198,
+            510,
+            15449,
+            29,
+            271,
+            2592,
+            488,
+            4992,
+            310,
+            1562,
+            264,
+            709,
+            25835,
+            9559,
+            303,
+            279,
+            2614,
+            3443,
+            440,
+            5486,
+            19900,
+            25,
+            271,
+            248058,
+            198,
+            27,
+            1628,
+            28,
+            8422,
+            8901,
+            1224,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            16,
+            29,
+            198,
+            927,
+            62,
+            16,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            17,
+            29,
+            198,
+            1919,
+            369,
+            279,
+            869,
+            364,
+            279,
+            2018,
+            5555,
+            198,
+            8761,
+            628,
+            9111,
+            198,
+            34493,
+            4965,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            510,
+            1628,
+            29,
+            198,
+            248059,
+            271,
+            27,
+            95328,
+            29,
+            198,
+            92065,
+            25,
+            198,
+            12,
+            5534,
+            6526,
+            26834,
+            1732,
+            279,
+            5024,
+            3443,
+            25,
+            449,
+            8906,
+            361,
+            1628,
+            28,
+            1076,
+            1419,
+            1628,
+            29,
+            2424,
+            1902,
+            381,
+            23283,
+            2785,
+            220,
+            248058,
+            248059,
+            11535,
+            9212,
+            198,
+            12,
+            12296,
+            4868,
+            26834,
+            381,
+            5024,
+            198,
+            12,
+            1394,
+            1189,
+            3300,
+            9801,
+            31626,
+            364,
+            678,
+            709,
+            1562,
+            303,
+            5629,
+            3992,
+            54588,
+            279,
+            709,
+            1562,
+            11,
+            694,
+            4045,
+            1238,
+            198,
+            12,
+            1368,
+            1017,
+            369,
+            874,
+            709,
+            1562,
+            2420,
+            11,
+            4087,
+            279,
+            3296,
+            1040,
+            4472,
+            440,
+            678,
+            1428,
+            6337,
+            321,
+            635,
+            524,
+            3184,
+            279,
+            1156,
+            883,
+            709,
+            6526,
+            198,
+            510,
+            95328,
+            29,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            7734,
+            279,
+            999,
+            11,
+            1179,
+            7440,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            271,
+            248069,
+            271,
+            248058,
+            198,
+            27,
+            1628,
+            28,
+            4775,
+            2378,
+            29,
+            198,
+            27,
+            15704,
+            79114,
+            29,
+            198,
+            55101,
+            60283,
+            3778,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            1733,
+            29,
+            198,
+            1021,
+            799,
+            198,
+            1021,
+            1330,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            4928,
+            29,
+            198,
+            3721,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            47980,
+            4395,
+            29,
+            198,
+            17,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            13745,
+            29,
+            198,
+            16,
+            15,
+            15,
+            15,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            30101,
+            6069,
+            29,
+            198,
+            15,
+            13,
+            20,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            5317,
+            29,
+            198,
+            4754,
+            64,
+            8631,
+            18,
+            27573,
+            89,
+            763,
+            16,
+            92,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            510,
+            1628,
+            29,
+            198,
+            248059,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            248066,
+            198,
+            24755,
+            198,
+            248067,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            46348,
+            30,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
+        {
+          "id": "tool_function_extra_keys",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
+            "prompt_token_count": 322,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "c37655b302c6b00215fa26c86217bb72e5b767d510f9bebc1fa7a9f97d419061"
+              }
+            ],
+            "last_complete_block_hash": "c37655b302c6b00215fa26c86217bb72e5b767d510f9bebc1fa7a9f97d419061"
+          },
+          "token_ids": [
+            248045,
+            8678,
+            198,
+            24342,
+            286,
+            4879,
+            369,
+            716,
+            310,
+            830,
+            11553,
+            13,
+            5044,
+            1683,
+            15060,
+            1472,
+            279,
+            3274,
+            11,
+            9307,
+            1328,
+            30800,
+            11,
+            2814,
+            47675,
+            25605,
+            11,
+            321,
+            60445,
+            55404,
+            11,
+            27224,
+            11,
+            321,
+            30246,
+            303,
+            279,
+            1534,
+            4087,
+            13,
+            271,
+            2,
+            13455,
+            271,
+            2523,
+            599,
+            2528,
+            310,
+            279,
+            2614,
+            5568,
+            25,
+            271,
+            27,
+            15449,
+            29,
+            198,
+            4754,
+            1628,
+            21624,
+            4532,
+            3147,
+            7734,
+            264,
+            999,
+            2129,
+            49927,
+            35580,
+            4586,
+            5008,
+            4586,
+            64,
+            66550,
+            591,
+            3147,
+            4775,
+            2378,
+            2129,
+            13390,
+            21624,
+            34325,
+            7654,
+            763,
+            3721,
+            1288,
+            12811,
+            21624,
+            2267,
+            21624,
+            1267,
+            3147,
+            889,
+            29958,
+            1288,
+            6081,
+            35580,
+            2267,
+            66550,
+            1267,
+            3147,
+            1640,
+            56658,
+            2246,
+            21624,
+            12811,
+            21624,
+            9363,
+            21624,
+            1267,
+            3147,
+            11326,
+            29958,
+            1288,
+            1267,
+            3147,
+            1640,
+            56658,
+            6418,
+            763,
+            1802,
+            49471,
+            1267,
+            3147,
+            1628,
+            8934,
+            198,
+            510,
+            15449,
+            29,
+            271,
+            2592,
+            488,
+            4992,
+            310,
+            1562,
+            264,
+            709,
+            25835,
+            9559,
+            303,
+            279,
+            2614,
+            3443,
+            440,
+            5486,
+            19900,
+            25,
+            271,
+            248058,
+            198,
+            27,
+            1628,
+            28,
+            8422,
+            8901,
+            1224,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            16,
+            29,
+            198,
+            927,
+            62,
+            16,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            17,
+            29,
+            198,
+            1919,
+            369,
+            279,
+            869,
+            364,
+            279,
+            2018,
+            5555,
+            198,
+            8761,
+            628,
+            9111,
+            198,
+            34493,
+            4965,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            510,
+            1628,
+            29,
+            198,
+            248059,
+            271,
+            27,
+            95328,
+            29,
+            198,
+            92065,
+            25,
+            198,
+            12,
+            5534,
+            6526,
+            26834,
+            1732,
+            279,
+            5024,
+            3443,
+            25,
+            449,
+            8906,
+            361,
+            1628,
+            28,
+            1076,
+            1419,
+            1628,
+            29,
+            2424,
+            1902,
+            381,
+            23283,
+            2785,
+            220,
+            248058,
+            248059,
+            11535,
+            9212,
+            198,
+            12,
+            12296,
+            4868,
+            26834,
+            381,
+            5024,
+            198,
+            12,
+            1394,
+            1189,
+            3300,
+            9801,
+            31626,
+            364,
+            678,
+            709,
+            1562,
+            303,
+            5629,
+            3992,
+            54588,
+            279,
+            709,
+            1562,
+            11,
+            694,
+            4045,
+            1238,
+            198,
+            12,
+            1368,
+            1017,
+            369,
+            874,
+            709,
+            1562,
+            2420,
+            11,
+            4087,
+            279,
+            3296,
+            1040,
+            4472,
+            440,
+            678,
+            1428,
+            6337,
+            321,
+            635,
+            524,
+            3184,
+            279,
+            1156,
+            883,
+            709,
+            6526,
+            198,
+            510,
+            95328,
+            29,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            7734,
+            264,
+            999,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
+        {
           "id": "tools",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -7878,6 +9192,124 @@
       "cache_routing_eligible": true,
       "cases": [
         {
+          "id": "assistant_output_text_part",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize the plan."
+              },
+              {
+                "role": "assistant",
+                "content": ""
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
+            "prompt_token_count": 32,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            2364,
+            107,
+            160773,
+            969,
+            506,
+            2731,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            61728,
+            2918,
+            1156,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
           "id": "endpoint_chat_completions",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -14247,6 +15679,628 @@
             236772,
             69648,
             2744,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
+          "id": "tool_call_arguments_bridge",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": {
+                        "path": "/tmp/report.txt",
+                        "content": "line one\nline two",
+                        "append": false,
+                        "retries": 2.0,
+                        "timeout": 1000.0,
+                        "ratio": 0.5,
+                        "meta": {
+                          "z": 1.0,
+                          "a": [
+                            3.0
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "written",
+                "tool_call_id": "call_w"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "description": "Write a file",
+                  "name": "write_file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
+            "prompt_token_count": 197,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            46,
+            163688,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            7777,
+            236787,
+            52,
+            6974,
+            496,
+            2129,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            3770,
+            29616,
+            7777,
+            236787,
+            52,
+            45252,
+            52,
+            236764,
+            2084,
+            236787,
+            52,
+            166264,
+            1536,
+            52,
+            1263,
+            3955,
+            29616,
+            7777,
+            236787,
+            52,
+            4795,
+            52,
+            236764,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            1263,
+            2337,
+            29616,
+            7777,
+            236787,
+            52,
+            3360,
+            52,
+            236764,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            2337,
+            52,
+            236764,
+            52,
+            3955,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            6974,
+            506,
+            2129,
+            236764,
+            1299,
+            9128,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            48,
+            6639,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            3770,
+            236787,
+            4530,
+            236764,
+            3955,
+            236787,
+            52,
+            1257,
+            886,
+            107,
+            1257,
+            1156,
+            52,
+            236764,
+            7655,
+            29616,
+            236746,
+            24845,
+            236800,
+            236761,
+            236771,
+            1604,
+            236802,
+            236787,
+            236770,
+            236761,
+            236771,
+            1263,
+            2337,
+            236787,
+            52,
+            236786,
+            11935,
+            236786,
+            15443,
+            236761,
+            7090,
+            52,
+            236764,
+            28350,
+            236787,
+            236771,
+            236761,
+            236810,
+            236764,
+            4243,
+            2302,
+            236787,
+            236778,
+            236761,
+            236771,
+            236764,
+            30447,
+            236787,
+            236770,
+            236771,
+            236771,
+            236771,
+            236761,
+            236771,
+            236783,
+            49,
+            50,
+            6275,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            2394,
+            236787,
+            52,
+            25217,
+            52,
+            236783,
+            51,
+            105,
+            2364,
+            107,
+            129647,
+            236881,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
+          "id": "tool_function_extra_keys",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "examples": [
+                    "/tmp/a"
+                  ],
+                  "name": "write_file",
+                  "strict": true,
+                  "description": "Write a file",
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                      "path"
+                    ]
+                  }
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
+            "prompt_token_count": 70,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            46,
+            163688,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            7777,
+            236787,
+            52,
+            6974,
+            496,
+            2129,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            2337,
+            29616,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            2337,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1263,
+            6275,
+            29616,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            6974,
+            496,
+            2129,
             236761,
             106,
             107,
@@ -14732,6 +16786,124 @@
       "cache_routing_eligible": true,
       "cases": [
         {
+          "id": "assistant_output_text_part",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize the plan."
+              },
+              {
+                "role": "assistant",
+                "content": ""
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
+            "prompt_token_count": 32,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            2364,
+            107,
+            160773,
+            969,
+            506,
+            2731,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            61728,
+            2918,
+            1156,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
           "id": "endpoint_chat_completions",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -21114,6 +23286,628 @@
           ]
         },
         {
+          "id": "tool_call_arguments_bridge",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": {
+                        "path": "/tmp/report.txt",
+                        "content": "line one\nline two",
+                        "append": false,
+                        "retries": 2.0,
+                        "timeout": 1000.0,
+                        "ratio": 0.5,
+                        "meta": {
+                          "z": 1.0,
+                          "a": [
+                            3.0
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "written",
+                "tool_call_id": "call_w"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "description": "Write a file",
+                  "name": "write_file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
+            "prompt_token_count": 197,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            46,
+            163688,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            7777,
+            236787,
+            52,
+            6974,
+            496,
+            2129,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            3770,
+            29616,
+            7777,
+            236787,
+            52,
+            45252,
+            52,
+            236764,
+            2084,
+            236787,
+            52,
+            166264,
+            1536,
+            52,
+            1263,
+            3955,
+            29616,
+            7777,
+            236787,
+            52,
+            4795,
+            52,
+            236764,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            1263,
+            2337,
+            29616,
+            7777,
+            236787,
+            52,
+            3360,
+            52,
+            236764,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            2337,
+            52,
+            236764,
+            52,
+            3955,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            6974,
+            506,
+            2129,
+            236764,
+            1299,
+            9128,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            48,
+            6639,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            3770,
+            236787,
+            4530,
+            236764,
+            3955,
+            236787,
+            52,
+            1257,
+            886,
+            107,
+            1257,
+            1156,
+            52,
+            236764,
+            7655,
+            29616,
+            236746,
+            24845,
+            236800,
+            236761,
+            236771,
+            1604,
+            236802,
+            236787,
+            236770,
+            236761,
+            236771,
+            1263,
+            2337,
+            236787,
+            52,
+            236786,
+            11935,
+            236786,
+            15443,
+            236761,
+            7090,
+            52,
+            236764,
+            28350,
+            236787,
+            236771,
+            236761,
+            236810,
+            236764,
+            4243,
+            2302,
+            236787,
+            236778,
+            236761,
+            236771,
+            236764,
+            30447,
+            236787,
+            236770,
+            236771,
+            236771,
+            236771,
+            236761,
+            236771,
+            236783,
+            49,
+            50,
+            6275,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            2394,
+            236787,
+            52,
+            25217,
+            52,
+            236783,
+            51,
+            105,
+            2364,
+            107,
+            129647,
+            236881,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
+          "id": "tool_function_extra_keys",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "examples": [
+                    "/tmp/a"
+                  ],
+                  "name": "write_file",
+                  "strict": true,
+                  "description": "Write a file",
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                      "path"
+                    ]
+                  }
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
+            "prompt_token_count": 70,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            46,
+            163688,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            7777,
+            236787,
+            52,
+            6974,
+            496,
+            2129,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            2337,
+            29616,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            2337,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1263,
+            6275,
+            29616,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            6974,
+            496,
+            2129,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
           "id": "tools",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -21585,6 +24379,124 @@
       "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
       "cache_routing_eligible": true,
       "cases": [
+        {
+          "id": "assistant_output_text_part",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize the plan."
+              },
+              {
+                "role": "assistant",
+                "content": ""
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
+            "prompt_token_count": 32,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            2364,
+            107,
+            160773,
+            969,
+            506,
+            2731,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            61728,
+            2918,
+            1156,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
         {
           "id": "endpoint_chat_completions",
           "endpoint": "chat_completions",
@@ -27968,6 +30880,628 @@
           ]
         },
         {
+          "id": "tool_call_arguments_bridge",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": {
+                        "path": "/tmp/report.txt",
+                        "content": "line one\nline two",
+                        "append": false,
+                        "retries": 2.0,
+                        "timeout": 1000.0,
+                        "ratio": 0.5,
+                        "meta": {
+                          "z": 1.0,
+                          "a": [
+                            3.0
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "written",
+                "tool_call_id": "call_w"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "description": "Write a file",
+                  "name": "write_file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
+            "prompt_token_count": 197,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            46,
+            163688,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            7777,
+            236787,
+            52,
+            6974,
+            496,
+            2129,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            3770,
+            29616,
+            7777,
+            236787,
+            52,
+            45252,
+            52,
+            236764,
+            2084,
+            236787,
+            52,
+            166264,
+            1536,
+            52,
+            1263,
+            3955,
+            29616,
+            7777,
+            236787,
+            52,
+            4795,
+            52,
+            236764,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            1263,
+            2337,
+            29616,
+            7777,
+            236787,
+            52,
+            3360,
+            52,
+            236764,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            2337,
+            52,
+            236764,
+            52,
+            3955,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            6974,
+            506,
+            2129,
+            236764,
+            1299,
+            9128,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            48,
+            6639,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            3770,
+            236787,
+            4530,
+            236764,
+            3955,
+            236787,
+            52,
+            1257,
+            886,
+            107,
+            1257,
+            1156,
+            52,
+            236764,
+            7655,
+            29616,
+            236746,
+            24845,
+            236800,
+            236761,
+            236771,
+            1604,
+            236802,
+            236787,
+            236770,
+            236761,
+            236771,
+            1263,
+            2337,
+            236787,
+            52,
+            236786,
+            11935,
+            236786,
+            15443,
+            236761,
+            7090,
+            52,
+            236764,
+            28350,
+            236787,
+            236771,
+            236761,
+            236810,
+            236764,
+            4243,
+            2302,
+            236787,
+            236778,
+            236761,
+            236771,
+            236764,
+            30447,
+            236787,
+            236770,
+            236771,
+            236771,
+            236771,
+            236761,
+            236771,
+            236783,
+            49,
+            50,
+            6275,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            2394,
+            236787,
+            52,
+            25217,
+            52,
+            236783,
+            51,
+            105,
+            2364,
+            107,
+            129647,
+            236881,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
+          "id": "tool_function_extra_keys",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "examples": [
+                    "/tmp/a"
+                  ],
+                  "name": "write_file",
+                  "strict": true,
+                  "description": "Write a file",
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                      "path"
+                    ]
+                  }
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
+            "prompt_token_count": 70,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            46,
+            163688,
+            236787,
+            5986,
+            236779,
+            2164,
+            236782,
+            7777,
+            236787,
+            52,
+            6974,
+            496,
+            2129,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            2337,
+            29616,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            2337,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1263,
+            6275,
+            29616,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            6974,
+            496,
+            2129,
+            236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
           "id": "tools",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -28439,6 +31973,179 @@
       "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
       "cache_routing_eligible": true,
       "cases": [
+        {
+          "id": "assistant_output_text_part",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize the plan."
+              },
+              {
+                "role": "assistant",
+                "content": ""
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
+            "prompt_token_count": 87,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            200006,
+            17360,
+            200008,
+            3575,
+            553,
+            17554,
+            162016,
+            11,
+            261,
+            4410,
+            6439,
+            2359,
+            22203,
+            656,
+            7788,
+            17527,
+            558,
+            87447,
+            100594,
+            25,
+            220,
+            1323,
+            19,
+            12,
+            3218,
+            198,
+            6576,
+            3521,
+            25,
+            220,
+            1323,
+            23,
+            12,
+            3286,
+            12,
+            2270,
+            279,
+            30377,
+            289,
+            25,
+            14093,
+            279,
+            2,
+            13888,
+            18403,
+            25,
+            8450,
+            11,
+            49159,
+            11,
+            1721,
+            13,
+            21030,
+            2804,
+            413,
+            7360,
+            395,
+            1753,
+            3176,
+            13,
+            200007,
+            200006,
+            1428,
+            200008,
+            64614,
+            277,
+            750,
+            290,
+            3496,
+            13,
+            200007,
+            200006,
+            173781,
+            200005,
+            17196,
+            200008,
+            200007,
+            200006,
+            1428,
+            200008,
+            46923,
+            5983,
+            1920,
+            13,
+            200007,
+            200006,
+            173781
+          ]
+        },
         {
           "id": "endpoint_chat_completions",
           "endpoint": "chat_completions",
@@ -35658,6 +39365,701 @@
           ]
         },
         {
+          "id": "tool_call_arguments_bridge",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": {
+                        "path": "/tmp/report.txt",
+                        "content": "line one\nline two",
+                        "append": false,
+                        "retries": 2.0,
+                        "timeout": 1000.0,
+                        "ratio": 0.5,
+                        "meta": {
+                          "z": 1.0,
+                          "a": [
+                            3.0
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "written",
+                "tool_call_id": "call_w"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
+            "prompt_token_count": 219,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            200006,
+            17360,
+            200008,
+            3575,
+            553,
+            17554,
+            162016,
+            11,
+            261,
+            4410,
+            6439,
+            2359,
+            22203,
+            656,
+            7788,
+            17527,
+            558,
+            87447,
+            100594,
+            25,
+            220,
+            1323,
+            19,
+            12,
+            3218,
+            198,
+            6576,
+            3521,
+            25,
+            220,
+            1323,
+            23,
+            12,
+            3286,
+            12,
+            2270,
+            279,
+            30377,
+            289,
+            25,
+            14093,
+            279,
+            2,
+            13888,
+            18403,
+            25,
+            8450,
+            11,
+            49159,
+            11,
+            1721,
+            13,
+            21030,
+            2804,
+            413,
+            7360,
+            395,
+            1753,
+            3176,
+            558,
+            63446,
+            316,
+            1879,
+            8437,
+            2804,
+            810,
+            316,
+            290,
+            49159,
+            9334,
+            25,
+            461,
+            44580,
+            6120,
+            200007,
+            200006,
+            77944,
+            200008,
+            2,
+            20574,
+            279,
+            877,
+            9964,
+            279,
+            4797,
+            9964,
+            95359,
+            16465,
+            261,
+            1974,
+            198,
+            2493,
+            5067,
+            5933,
+            314,
+            11350,
+            25,
+            10168,
+            14027,
+            198,
+            4189,
+            25,
+            1621,
+            20046,
+            13885,
+            198,
+            3252,
+            25,
+            1621,
+            20046,
+            58624,
+            198,
+            9132,
+            8528,
+            3870,
+            412,
+            9263,
+            871,
+            1062,
+            502,
+            92,
+            602,
+            9819,
+            9964,
+            200007,
+            200006,
+            1428,
+            200008,
+            10930,
+            290,
+            1974,
+            11,
+            1815,
+            7620,
+            13,
+            200007,
+            200006,
+            173781,
+            316,
+            28,
+            44580,
+            6765,
+            5933,
+            200005,
+            12606,
+            815,
+            5701,
+            200008,
+            10848,
+            9132,
+            1243,
+            7556,
+            3532,
+            3252,
+            7534,
+            1137,
+            1001,
+            3392,
+            1137,
+            1920,
+            4294,
+            11154,
+            70649,
+            64,
+            16853,
+            18,
+            91001,
+            89,
+            1243,
+            16,
+            140781,
+            4189,
+            7534,
+            9855,
+            11669,
+            9855,
+            22869,
+            7186,
+            4294,
+            81339,
+            1243,
+            15,
+            13,
+            20,
+            3532,
+            264,
+            6473,
+            1243,
+            17,
+            3532,
+            32264,
+            1243,
+            1353,
+            15,
+            92,
+            200012,
+            200006,
+            44580,
+            6765,
+            5933,
+            316,
+            28,
+            173781,
+            200005,
+            12606,
+            815,
+            200008,
+            1,
+            54815,
+            1,
+            200007,
+            200006,
+            1428,
+            200008,
+            70132,
+            30,
+            200007,
+            200006,
+            173781
+          ]
+        },
+        {
+          "id": "tool_function_extra_keys",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
+            "prompt_token_count": 121,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            200006,
+            17360,
+            200008,
+            3575,
+            553,
+            17554,
+            162016,
+            11,
+            261,
+            4410,
+            6439,
+            2359,
+            22203,
+            656,
+            7788,
+            17527,
+            558,
+            87447,
+            100594,
+            25,
+            220,
+            1323,
+            19,
+            12,
+            3218,
+            198,
+            6576,
+            3521,
+            25,
+            220,
+            1323,
+            23,
+            12,
+            3286,
+            12,
+            2270,
+            279,
+            30377,
+            289,
+            25,
+            14093,
+            279,
+            2,
+            13888,
+            18403,
+            25,
+            8450,
+            11,
+            49159,
+            11,
+            1721,
+            13,
+            21030,
+            2804,
+            413,
+            7360,
+            395,
+            1753,
+            3176,
+            558,
+            63446,
+            316,
+            1879,
+            8437,
+            2804,
+            810,
+            316,
+            290,
+            49159,
+            9334,
+            25,
+            461,
+            44580,
+            6120,
+            200007,
+            200006,
+            77944,
+            200008,
+            2,
+            20574,
+            279,
+            877,
+            9964,
+            279,
+            4797,
+            9964,
+            95359,
+            16465,
+            261,
+            1974,
+            198,
+            2493,
+            5067,
+            5933,
+            314,
+            11350,
+            25,
+            405,
+            4189,
+            25,
+            1621,
+            412,
+            9263,
+            871,
+            1062,
+            502,
+            92,
+            602,
+            9819,
+            9964,
+            200007,
+            200006,
+            1428,
+            200008,
+            10930,
+            261,
+            1974,
+            13,
+            200007,
+            200006,
+            173781
+          ]
+        },
+        {
           "id": "tools",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -36240,6 +40642,122 @@
       "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
       "cache_routing_eligible": true,
       "cases": [
+        {
+          "id": "assistant_output_text_part",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize the plan."
+              },
+              {
+                "role": "assistant",
+                "content": ""
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
+            "prompt_token_count": 30,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            248045,
+            846,
+            198,
+            8917,
+            5437,
+            537,
+            279,
+            3019,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            37657,
+            2923,
+            1330,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
         {
           "id": "endpoint_chat_completions",
           "endpoint": "chat_completions",
@@ -42915,6 +47433,1082 @@
           ]
         },
         {
+          "id": "tool_call_arguments_bridge",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": {
+                        "path": "/tmp/report.txt",
+                        "content": "line one\nline two",
+                        "append": false,
+                        "retries": 2.0,
+                        "timeout": 1000.0,
+                        "ratio": 0.5,
+                        "meta": {
+                          "z": 1.0,
+                          "a": [
+                            3.0
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "written",
+                "tool_call_id": "call_w"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
+            "prompt_token_count": 425,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "f14ccb55113b1f8714cdbc2cf9a9066238ed88695bbf71fbe3e4f021dbc8a504"
+              }
+            ],
+            "last_complete_block_hash": "f14ccb55113b1f8714cdbc2cf9a9066238ed88695bbf71fbe3e4f021dbc8a504"
+          },
+          "token_ids": [
+            248045,
+            8678,
+            198,
+            2,
+            13455,
+            271,
+            2523,
+            599,
+            2528,
+            310,
+            279,
+            2614,
+            5568,
+            25,
+            271,
+            27,
+            15449,
+            29,
+            198,
+            4754,
+            1628,
+            21624,
+            4532,
+            3147,
+            7734,
+            264,
+            999,
+            2129,
+            591,
+            3147,
+            4775,
+            2378,
+            2129,
+            13390,
+            21624,
+            12811,
+            21624,
+            4928,
+            21624,
+            4532,
+            3147,
+            23130,
+            2129,
+            1267,
+            3147,
+            5925,
+            56658,
+            1733,
+            21624,
+            4532,
+            3147,
+            2674,
+            2129,
+            1267,
+            3147,
+            889,
+            56658,
+            2267,
+            21624,
+            4532,
+            3147,
+            1757,
+            2129,
+            1267,
+            3147,
+            889,
+            29958,
+            1288,
+            6081,
+            35580,
+            2267,
+            2129,
+            1733,
+            66550,
+            1267,
+            3147,
+            1640,
+            29958,
+            1288,
+            1267,
+            3147,
+            1628,
+            8934,
+            198,
+            510,
+            15449,
+            29,
+            271,
+            2592,
+            488,
+            4992,
+            310,
+            1562,
+            264,
+            709,
+            25835,
+            9559,
+            303,
+            279,
+            2614,
+            3443,
+            440,
+            5486,
+            19900,
+            25,
+            271,
+            248058,
+            198,
+            27,
+            1628,
+            28,
+            8422,
+            8901,
+            1224,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            16,
+            29,
+            198,
+            927,
+            62,
+            16,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            17,
+            29,
+            198,
+            1919,
+            369,
+            279,
+            869,
+            364,
+            279,
+            2018,
+            5555,
+            198,
+            8761,
+            628,
+            9111,
+            198,
+            34493,
+            4965,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            510,
+            1628,
+            29,
+            198,
+            248059,
+            271,
+            27,
+            95328,
+            29,
+            198,
+            92065,
+            25,
+            198,
+            12,
+            5534,
+            6526,
+            26834,
+            1732,
+            279,
+            5024,
+            3443,
+            25,
+            449,
+            8906,
+            361,
+            1628,
+            28,
+            1076,
+            1419,
+            1628,
+            29,
+            2424,
+            1902,
+            381,
+            23283,
+            2785,
+            220,
+            248058,
+            248059,
+            11535,
+            9212,
+            198,
+            12,
+            12296,
+            4868,
+            26834,
+            381,
+            5024,
+            198,
+            12,
+            1394,
+            1189,
+            3300,
+            9801,
+            31626,
+            364,
+            678,
+            709,
+            1562,
+            303,
+            5629,
+            3992,
+            54588,
+            279,
+            709,
+            1562,
+            11,
+            694,
+            4045,
+            1238,
+            198,
+            12,
+            1368,
+            1017,
+            369,
+            874,
+            709,
+            1562,
+            2420,
+            11,
+            4087,
+            279,
+            3296,
+            1040,
+            4472,
+            440,
+            678,
+            1428,
+            6337,
+            321,
+            635,
+            524,
+            3184,
+            279,
+            1156,
+            883,
+            709,
+            6526,
+            198,
+            510,
+            95328,
+            29,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            7734,
+            279,
+            999,
+            11,
+            1179,
+            7440,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248058,
+            198,
+            27,
+            1628,
+            28,
+            4775,
+            2378,
+            29,
+            198,
+            27,
+            15704,
+            79114,
+            29,
+            198,
+            55101,
+            60283,
+            3778,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            1733,
+            29,
+            198,
+            1021,
+            799,
+            198,
+            1021,
+            1330,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            4928,
+            29,
+            198,
+            3721,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            47980,
+            4395,
+            29,
+            198,
+            17,
+            13,
+            15,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            13745,
+            29,
+            198,
+            16,
+            15,
+            15,
+            15,
+            13,
+            15,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            30101,
+            6069,
+            29,
+            198,
+            15,
+            13,
+            20,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            5317,
+            29,
+            198,
+            4754,
+            64,
+            8631,
+            18,
+            27573,
+            89,
+            763,
+            16,
+            92,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            510,
+            1628,
+            29,
+            198,
+            248059,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            248066,
+            198,
+            24755,
+            198,
+            248067,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            46348,
+            30,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
+        {
+          "id": "tool_function_extra_keys",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
+            "prompt_token_count": 284,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "3ac37366df0a72111e3157df70dc879eb058a0c4787c55b417eeb3b71febe948"
+              }
+            ],
+            "last_complete_block_hash": "3ac37366df0a72111e3157df70dc879eb058a0c4787c55b417eeb3b71febe948"
+          },
+          "token_ids": [
+            248045,
+            8678,
+            198,
+            2,
+            13455,
+            271,
+            2523,
+            599,
+            2528,
+            310,
+            279,
+            2614,
+            5568,
+            25,
+            271,
+            27,
+            15449,
+            29,
+            198,
+            4754,
+            1628,
+            21624,
+            4532,
+            3147,
+            7734,
+            264,
+            999,
+            2129,
+            49927,
+            35580,
+            4586,
+            5008,
+            4586,
+            64,
+            66550,
+            591,
+            3147,
+            4775,
+            2378,
+            2129,
+            13390,
+            21624,
+            34325,
+            7654,
+            763,
+            3721,
+            1288,
+            12811,
+            21624,
+            2267,
+            21624,
+            1267,
+            3147,
+            889,
+            29958,
+            1288,
+            6081,
+            35580,
+            2267,
+            66550,
+            1267,
+            3147,
+            1640,
+            56658,
+            2246,
+            21624,
+            12811,
+            21624,
+            9363,
+            21624,
+            1267,
+            3147,
+            11326,
+            29958,
+            1288,
+            1267,
+            3147,
+            1640,
+            56658,
+            6418,
+            763,
+            1802,
+            49471,
+            1267,
+            3147,
+            1628,
+            8934,
+            198,
+            510,
+            15449,
+            29,
+            271,
+            2592,
+            488,
+            4992,
+            310,
+            1562,
+            264,
+            709,
+            25835,
+            9559,
+            303,
+            279,
+            2614,
+            3443,
+            440,
+            5486,
+            19900,
+            25,
+            271,
+            248058,
+            198,
+            27,
+            1628,
+            28,
+            8422,
+            8901,
+            1224,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            16,
+            29,
+            198,
+            927,
+            62,
+            16,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            17,
+            29,
+            198,
+            1919,
+            369,
+            279,
+            869,
+            364,
+            279,
+            2018,
+            5555,
+            198,
+            8761,
+            628,
+            9111,
+            198,
+            34493,
+            4965,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            510,
+            1628,
+            29,
+            198,
+            248059,
+            271,
+            27,
+            95328,
+            29,
+            198,
+            92065,
+            25,
+            198,
+            12,
+            5534,
+            6526,
+            26834,
+            1732,
+            279,
+            5024,
+            3443,
+            25,
+            449,
+            8906,
+            361,
+            1628,
+            28,
+            1076,
+            1419,
+            1628,
+            29,
+            2424,
+            1902,
+            381,
+            23283,
+            2785,
+            220,
+            248058,
+            248059,
+            11535,
+            9212,
+            198,
+            12,
+            12296,
+            4868,
+            26834,
+            381,
+            5024,
+            198,
+            12,
+            1394,
+            1189,
+            3300,
+            9801,
+            31626,
+            364,
+            678,
+            709,
+            1562,
+            303,
+            5629,
+            3992,
+            54588,
+            279,
+            709,
+            1562,
+            11,
+            694,
+            4045,
+            1238,
+            198,
+            12,
+            1368,
+            1017,
+            369,
+            874,
+            709,
+            1562,
+            2420,
+            11,
+            4087,
+            279,
+            3296,
+            1040,
+            4472,
+            440,
+            678,
+            1428,
+            6337,
+            321,
+            635,
+            524,
+            3184,
+            279,
+            1156,
+            883,
+            709,
+            6526,
+            198,
+            510,
+            95328,
+            29,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            7734,
+            264,
+            999,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
+        {
           "id": "tools",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -43584,6 +49178,122 @@
       "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
       "cache_routing_eligible": true,
       "cases": [
+        {
+          "id": "assistant_output_text_part",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Summarize the plan."
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The plan has three steps."
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarize the plan."
+              },
+              {
+                "role": "assistant",
+                "content": ""
+              },
+              {
+                "role": "user",
+                "content": "Expand step two."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
+            "prompt_token_count": 30,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            248045,
+            846,
+            198,
+            8917,
+            5437,
+            537,
+            279,
+            3019,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            37657,
+            2923,
+            1330,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
         {
           "id": "endpoint_chat_completions",
           "endpoint": "chat_completions",
@@ -50248,6 +55958,1078 @@
             55091,
             477,
             1879,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
+        {
+          "id": "tool_call_arguments_bridge",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_w",
+                "content": "written"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write the file, then confirm."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_w",
+                    "type": "function",
+                    "function": {
+                      "name": "write_file",
+                      "arguments": {
+                        "path": "/tmp/report.txt",
+                        "content": "line one\nline two",
+                        "append": false,
+                        "retries": 2.0,
+                        "timeout": 1000.0,
+                        "ratio": 0.5,
+                        "meta": {
+                          "z": 1.0,
+                          "a": [
+                            3.0
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "written",
+                "tool_call_id": "call_w"
+              },
+              {
+                "role": "user",
+                "content": "Confirmed?"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "Path"
+                      },
+                      "content": {
+                        "type": "string",
+                        "description": "Content"
+                      },
+                      "append": {
+                        "type": "boolean",
+                        "description": "Append"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content"
+                    ]
+                  }
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
+            "prompt_token_count": 421,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "441122b5f8710c8be073f0c59e30a5acd3a29ffe68d65fdc52ff6fd5756325a2"
+              }
+            ],
+            "last_complete_block_hash": "441122b5f8710c8be073f0c59e30a5acd3a29ffe68d65fdc52ff6fd5756325a2"
+          },
+          "token_ids": [
+            248045,
+            8678,
+            198,
+            2,
+            13455,
+            271,
+            2523,
+            599,
+            2528,
+            310,
+            279,
+            2614,
+            5568,
+            25,
+            271,
+            27,
+            15449,
+            29,
+            198,
+            4754,
+            1628,
+            21624,
+            4532,
+            3147,
+            7734,
+            264,
+            999,
+            2129,
+            591,
+            3147,
+            4775,
+            2378,
+            2129,
+            13390,
+            21624,
+            12811,
+            21624,
+            4928,
+            21624,
+            4532,
+            3147,
+            23130,
+            2129,
+            1267,
+            3147,
+            5925,
+            56658,
+            1733,
+            21624,
+            4532,
+            3147,
+            2674,
+            2129,
+            1267,
+            3147,
+            889,
+            56658,
+            2267,
+            21624,
+            4532,
+            3147,
+            1757,
+            2129,
+            1267,
+            3147,
+            889,
+            29958,
+            1288,
+            6081,
+            35580,
+            2267,
+            2129,
+            1733,
+            66550,
+            1267,
+            3147,
+            1640,
+            29958,
+            1288,
+            1267,
+            3147,
+            1628,
+            8934,
+            198,
+            510,
+            15449,
+            29,
+            271,
+            2592,
+            488,
+            4992,
+            310,
+            1562,
+            264,
+            709,
+            25835,
+            9559,
+            303,
+            279,
+            2614,
+            3443,
+            440,
+            5486,
+            19900,
+            25,
+            271,
+            248058,
+            198,
+            27,
+            1628,
+            28,
+            8422,
+            8901,
+            1224,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            16,
+            29,
+            198,
+            927,
+            62,
+            16,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            17,
+            29,
+            198,
+            1919,
+            369,
+            279,
+            869,
+            364,
+            279,
+            2018,
+            5555,
+            198,
+            8761,
+            628,
+            9111,
+            198,
+            34493,
+            4965,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            510,
+            1628,
+            29,
+            198,
+            248059,
+            271,
+            27,
+            95328,
+            29,
+            198,
+            92065,
+            25,
+            198,
+            12,
+            5534,
+            6526,
+            26834,
+            1732,
+            279,
+            5024,
+            3443,
+            25,
+            449,
+            8906,
+            361,
+            1628,
+            28,
+            1076,
+            1419,
+            1628,
+            29,
+            2424,
+            1902,
+            381,
+            23283,
+            2785,
+            220,
+            248058,
+            248059,
+            11535,
+            9212,
+            198,
+            12,
+            12296,
+            4868,
+            26834,
+            381,
+            5024,
+            198,
+            12,
+            1394,
+            1189,
+            3300,
+            9801,
+            31626,
+            364,
+            678,
+            709,
+            1562,
+            303,
+            5629,
+            3992,
+            54588,
+            279,
+            709,
+            1562,
+            11,
+            694,
+            4045,
+            1238,
+            198,
+            12,
+            1368,
+            1017,
+            369,
+            874,
+            709,
+            1562,
+            2420,
+            11,
+            4087,
+            279,
+            3296,
+            1040,
+            4472,
+            440,
+            678,
+            1428,
+            6337,
+            321,
+            635,
+            524,
+            3184,
+            279,
+            1156,
+            883,
+            709,
+            6526,
+            198,
+            510,
+            95328,
+            29,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            7734,
+            279,
+            999,
+            11,
+            1179,
+            7440,
+            13,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248058,
+            198,
+            27,
+            1628,
+            28,
+            4775,
+            2378,
+            29,
+            198,
+            27,
+            15704,
+            79114,
+            29,
+            198,
+            55101,
+            60283,
+            3778,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            1733,
+            29,
+            198,
+            1021,
+            799,
+            198,
+            1021,
+            1330,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            4928,
+            29,
+            198,
+            3721,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            47980,
+            4395,
+            29,
+            198,
+            17,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            13745,
+            29,
+            198,
+            16,
+            15,
+            15,
+            15,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            30101,
+            6069,
+            29,
+            198,
+            15,
+            13,
+            20,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            5317,
+            29,
+            198,
+            4754,
+            64,
+            8631,
+            18,
+            27573,
+            89,
+            763,
+            16,
+            92,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            510,
+            1628,
+            29,
+            198,
+            248059,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            248066,
+            198,
+            24755,
+            198,
+            248067,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            46348,
+            30,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
+        {
+          "id": "tool_function_extra_keys",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29",
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Write a file."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "description": "Write a file",
+                  "strict": true,
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "response": {
+                    "type": "object",
+                    "properties": {
+                      "bytes": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "examples": [
+                    "/tmp/a"
+                  ]
+                }
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
+            "prompt_token_count": 284,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "9526a7a165bbdb58d07d548f3914ab5b3d2e9d70810d33806595e62d2cab82e4"
+              }
+            ],
+            "last_complete_block_hash": "9526a7a165bbdb58d07d548f3914ab5b3d2e9d70810d33806595e62d2cab82e4"
+          },
+          "token_ids": [
+            248045,
+            8678,
+            198,
+            2,
+            13455,
+            271,
+            2523,
+            599,
+            2528,
+            310,
+            279,
+            2614,
+            5568,
+            25,
+            271,
+            27,
+            15449,
+            29,
+            198,
+            4754,
+            1628,
+            21624,
+            4532,
+            3147,
+            7734,
+            264,
+            999,
+            2129,
+            49927,
+            35580,
+            4586,
+            5008,
+            4586,
+            64,
+            66550,
+            591,
+            3147,
+            4775,
+            2378,
+            2129,
+            13390,
+            21624,
+            34325,
+            7654,
+            763,
+            3721,
+            1288,
+            12811,
+            21624,
+            2267,
+            21624,
+            1267,
+            3147,
+            889,
+            29958,
+            1288,
+            6081,
+            35580,
+            2267,
+            66550,
+            1267,
+            3147,
+            1640,
+            56658,
+            2246,
+            21624,
+            12811,
+            21624,
+            9363,
+            21624,
+            1267,
+            3147,
+            11326,
+            29958,
+            1288,
+            1267,
+            3147,
+            1640,
+            56658,
+            6418,
+            763,
+            1802,
+            49471,
+            1267,
+            3147,
+            1628,
+            8934,
+            198,
+            510,
+            15449,
+            29,
+            271,
+            2592,
+            488,
+            4992,
+            310,
+            1562,
+            264,
+            709,
+            25835,
+            9559,
+            303,
+            279,
+            2614,
+            3443,
+            440,
+            5486,
+            19900,
+            25,
+            271,
+            248058,
+            198,
+            27,
+            1628,
+            28,
+            8422,
+            8901,
+            1224,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            16,
+            29,
+            198,
+            927,
+            62,
+            16,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            8422,
+            24109,
+            62,
+            17,
+            29,
+            198,
+            1919,
+            369,
+            279,
+            869,
+            364,
+            279,
+            2018,
+            5555,
+            198,
+            8761,
+            628,
+            9111,
+            198,
+            34493,
+            4965,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            510,
+            1628,
+            29,
+            198,
+            248059,
+            271,
+            27,
+            95328,
+            29,
+            198,
+            92065,
+            25,
+            198,
+            12,
+            5534,
+            6526,
+            26834,
+            1732,
+            279,
+            5024,
+            3443,
+            25,
+            449,
+            8906,
+            361,
+            1628,
+            28,
+            1076,
+            1419,
+            1628,
+            29,
+            2424,
+            1902,
+            381,
+            23283,
+            2785,
+            220,
+            248058,
+            248059,
+            11535,
+            9212,
+            198,
+            12,
+            12296,
+            4868,
+            26834,
+            381,
+            5024,
+            198,
+            12,
+            1394,
+            1189,
+            3300,
+            9801,
+            31626,
+            364,
+            678,
+            709,
+            1562,
+            303,
+            5629,
+            3992,
+            54588,
+            279,
+            709,
+            1562,
+            11,
+            694,
+            4045,
+            1238,
+            198,
+            12,
+            1368,
+            1017,
+            369,
+            874,
+            709,
+            1562,
+            2420,
+            11,
+            4087,
+            279,
+            3296,
+            1040,
+            4472,
+            440,
+            678,
+            1428,
+            6337,
+            321,
+            635,
+            524,
+            3184,
+            279,
+            1156,
+            883,
+            709,
+            6526,
+            198,
+            510,
+            95328,
+            29,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            7734,
+            264,
+            999,
             13,
             248046,
             198,

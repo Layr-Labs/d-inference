@@ -117,8 +117,8 @@ type routingSnapshot struct {
 	// pendingMaxTokensAllModels is pendingMaxTokens WITHOUT the model filter:
 	// the token budgets of every coordinator-pending request on this provider,
 	// any model. Feeds the pooled-budget admission check (pooledBudgetAdmits)
-	// so co-resident models cannot double-spend shared legacy headroom and do
-	// not lose additive private-grant capacity on v0.7.5+ providers.
+	// so a cold model or a shrunken grant cannot double-spend the box-wide sum
+	// of private grants.
 	pendingMaxTokensAllModels int
 	// pendingMaxBytesAllModels is the byte-normalized analog: each pending
 	// request's token budget × its model's reported KVBytesPerToken. Valid
@@ -154,7 +154,7 @@ type routingSnapshot struct {
 	activeTokenBudgetMax  int64
 	queuedTokenBudget     int64
 	// pooledTokenBudget is the provider's reconstructed whole-box token budget
-	// (all budget slots; layout selected from the provider release version).
+	// (Σ private grants over all budget slots).
 	// Zero value when the provider reports no backend capacity / no budget
 	// slots, which disables the pooled admission check.
 	pooledTokenBudget pooledTokenBudget
@@ -649,7 +649,7 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 
 // commitProviderReservation is the short commit phase. It repeats the full
 // current-state capacity chain before adding the pending debit, so concurrent
-// scans cannot double-spend a provider's shared cross-model token pool.
+// scans cannot double-spend a provider's cross-model token pool.
 //
 // Locking (reserveCommitShared, the default): r.mu is held for READING — the
 // commit needs the provider identity, catalog and cache-routing configuration
@@ -1784,10 +1784,9 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 		if snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens > snap.activeTokenBudgetMax {
 			return false
 		}
-		// The per-slot max encodes this model's own context/KV ceiling. Through
-		// v0.7.4 each slot embeds the same shared headroom; v0.7.5+ reports a
-		// private re-sliced grant. The request must also fit the correctly
-		// reconstructed whole-box pool with EVERY model's
+		// The per-slot max encodes this model's own private re-sliced grant.
+		// The request must also fit the reconstructed whole-box pool with EVERY
+		// model's
 		// coordinator-pending tokens charged — byte-normalized per slot KV rate
 		// when reported, since co-resident models spend the pool at different
 		// bytes/token (see pooled_admission.go). Reduces exactly to the per-slot
@@ -1878,8 +1877,7 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string) {
 	snap.pendingPrefillKnown = true
 	if p.BackendCapacity != nil {
-		snap.pooledTokenBudget = providerPooledTokenBudgetForVersion(
-			p.BackendCapacity.Slots, p.Version)
+		snap.pooledTokenBudget = providerPooledTokenBudget(p.BackendCapacity.Slots)
 	}
 	bytesKnown := snap.pooledTokenBudget.byteMode
 	for _, pr := range p.pendingReqs {

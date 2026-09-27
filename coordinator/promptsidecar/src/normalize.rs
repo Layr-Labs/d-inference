@@ -37,6 +37,12 @@ pub fn normalize(
         .ok_or(NormalizeError::MissingModel)?
         .to_owned();
 
+    // Foundation dictionaries carry no order and `Jinja.Value(any:)` sorts
+    // every object it bridges with Swift `String <` (Unicode scalar order,
+    // which is UTF-8 byte order). The coordinator also serializes provider
+    // bodies with sorted keys, so wire order is never load-bearing for a
+    // template loop such as Harmony's `properties.items()`.
+    let mut body = sorted_object_keys(body);
     normalize_tool_parameter_types(&mut body);
     normalize_legacy_function_calls(&mut body)?;
     let mut messages = template_messages(&body)?;
@@ -240,15 +246,27 @@ fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeE
             };
             let mut message = Map::new();
             message.insert("role".into(), Value::String(role.into()));
-            message.insert(
-                "content".into(),
-                Value::String(message_text(input.get("content"))?),
-            );
+            // Mirror sanitizeJinjaMessages: the provider strips raw Harmony
+            // channel framing from every assistant text field for every model
+            // family before any template sees it.
+            let assistant = role == "assistant";
+            let content = message_text(input.get("content"))?;
+            let content = if assistant {
+                strip_harmony_channel_framing(&content)
+            } else {
+                content
+            };
+            message.insert("content".into(), Value::String(content));
             for key in ["name", "tool_call_id", "reasoning_content"] {
                 match input.get(key) {
                     None | Some(Value::Null) => {}
                     Some(Value::String(value)) => {
-                        message.insert(key.into(), Value::String(value.clone()));
+                        let value = if assistant && key == "reasoning_content" {
+                            strip_harmony_channel_framing(value)
+                        } else {
+                            value.clone()
+                        };
+                        message.insert(key.into(), Value::String(value));
                     }
                     Some(_) => return Err(NormalizeError::InvalidMessages),
                 }
@@ -288,8 +306,13 @@ fn template_tool_call(value: &Value) -> Result<Value, NormalizeError> {
         .get("arguments")
         .and_then(Value::as_str)
         .ok_or(NormalizeError::InvalidTools)?;
-    let arguments =
-        serde_json::from_str(encoded).unwrap_or_else(|_| Value::String(encoded.to_owned()));
+    // decodeToolCallArguments keeps the raw string unless it decodes to an
+    // object; the object then crosses Foundation and the Jinja value bridge,
+    // which sorts keys and renders integral doubles as integers.
+    let arguments = match serde_json::from_str::<Value>(encoded) {
+        Ok(Value::Object(object)) => provider_bridged_value(Value::Object(object)),
+        _ => Value::String(encoded.to_owned()),
+    };
     let id = call
         .get("id")
         .and_then(Value::as_str)
@@ -310,6 +333,104 @@ fn template_tool_call(value: &Value) -> Result<Value, NormalizeError> {
     }))
 }
 
+/// OpenAIFunctionDefinition decodes only `name`, `description` and
+/// `parameters`; `OpenAITool.toolSpec()` renders exactly those. Any other
+/// member of a caller's `function` object (`strict`, `response`, `examples`,
+/// vendor extensions) never reaches the provider's template.
+fn typed_function_definition(function: Map<String, Value>) -> Map<String, Value> {
+    let mut typed = Map::new();
+    for key in ["name", "description", "parameters"] {
+        if let Some(value) = function.get(key) {
+            typed.insert(key.into(), value.clone());
+        }
+    }
+    typed
+}
+
+/// Recursively order object members the way the provider's Jinja value bridge
+/// does (`dict.sorted(by: { $0.key < $1.key })`): byte order of the UTF-8 key.
+fn sorted_object_keys(object: Map<String, Value>) -> Map<String, Value> {
+    let mut entries = object.into_iter().collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    entries
+        .into_iter()
+        .map(|(key, value)| (key, sorted_value_keys(value)))
+        .collect()
+}
+
+fn sorted_value_keys(value: Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(sorted_object_keys(object)),
+        Value::Array(values) => Value::Array(values.into_iter().map(sorted_value_keys).collect()),
+        value => value,
+    }
+}
+
+/// Mirror the provider's value bridge for decoded tool-call arguments:
+/// `Jinja.Value(any:)` sorts object keys with Swift's `String <` (Unicode
+/// scalar order, identical to UTF-8 byte order for distinct scalars) and
+/// matches `Int` before `Double`, so an integral JSON double such as `1.0`
+/// or `1e5` renders as `1` / `100000`. Nested values receive the same bridge.
+fn provider_bridged_value(value: Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            sorted_object_keys(object)
+                .into_iter()
+                .map(|(key, value)| (key, provider_bridged_value(value)))
+                .collect(),
+        ),
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(provider_bridged_value).collect())
+        }
+        Value::Number(number) if number.is_f64() => {
+            let n = number.as_f64().unwrap_or(f64::NAN);
+            if n.fract() == 0.0 && n >= i64::MIN as f64 && n < -(i64::MIN as f64) {
+                Value::Number((n as i64).into())
+            } else {
+                Value::Number(number)
+            }
+        }
+        value => value,
+    }
+}
+
+/// Exact mirror of ProviderCoreFoundation `stripHarmonyChannelFraming`.
+/// Strings without a channel token are returned unchanged; otherwise only the
+/// text after the last final-channel marker survives, cut at the first
+/// terminator, with any remaining control tokens removed.
+fn strip_harmony_channel_framing(text: &str) -> String {
+    const CHANNEL: &str = "<|channel|>";
+    const FINAL_MARKER: &str = "<|channel|>final<|message|>";
+    const TERMINATORS: [&str; 3] = ["<|end|>", "<|return|>", "<|call|>"];
+    const CONTROL: [&str; 6] = [
+        "<|start|>",
+        "<|end|>",
+        "<|return|>",
+        "<|call|>",
+        "<|message|>",
+        CHANNEL,
+    ];
+    if !text.contains(CHANNEL) {
+        return text.to_owned();
+    }
+    let mut answer = match text.rfind(FINAL_MARKER) {
+        Some(index) => {
+            let after = &text[index + FINAL_MARKER.len()..];
+            match TERMINATORS.iter().filter_map(|t| after.find(t)).min() {
+                Some(end) => after[..end].to_owned(),
+                None => after.to_owned(),
+            }
+        }
+        None => String::new(),
+    };
+    if CONTROL.iter().any(|token| answer.contains(token)) {
+        for token in CONTROL {
+            answer = answer.replace(token, "");
+        }
+    }
+    answer
+}
+
 fn message_text(content: Option<&Value>) -> Result<String, NormalizeError> {
     match content {
         None | Some(Value::Null) => Ok(String::new()),
@@ -322,7 +443,9 @@ fn message_text(content: Option<&Value>) -> Result<String, NormalizeError> {
                     .get("type")
                     .and_then(Value::as_str)
                     .ok_or(NormalizeError::InvalidMessages)?;
-                if matches!(kind, "text" | "input_text") {
+                // OpenAIContentPart decodes text, input_text and output_text
+                // identically; every other part type contributes no text.
+                if matches!(kind, "text" | "input_text" | "output_text") {
                     text.push_str(
                         object
                             .get("text")
@@ -358,7 +481,7 @@ fn template_tools(body: &Map<String, Value>) -> Result<Option<Vec<Value>>, Norma
         };
         tools.push(json!({
             "type": tool.get("type").and_then(Value::as_str).unwrap_or("function"),
-            "function": function,
+            "function": typed_function_definition(function),
         }));
     }
     Ok(Some(tools))
@@ -1338,6 +1461,142 @@ mod tests {
             normalized.messages[0]["tool_calls"][0]["function"]["arguments"],
             json!({"y": 1})
         );
+    }
+
+    #[test]
+    fn template_input_is_independent_of_wire_key_order() {
+        let tool = |properties: Value| {
+            json!({"type":"function","function":{"name":"f","description":"d",
+                "parameters":{"type":"object","properties":properties,"required":["path"]}}})
+        };
+        let unsorted = json!({"model":"m","messages":[{"role":"user","content":"hi"}],
+            "tools":[tool(json!({"path":{"type":"string"},"append":{"type":"boolean"},"Content":{"type":"string"}}))]});
+        let sorted = json!({"model":"m","messages":[{"role":"user","content":"hi"}],
+            "tools":[tool(json!({"Content":{"type":"string"},"append":{"type":"boolean"},"path":{"type":"string"}}))]});
+        let left = normalize(unsorted.as_object().unwrap().clone(), None).unwrap();
+        let right = normalize(sorted.as_object().unwrap().clone(), None).unwrap();
+        assert_eq!(left.body, right.body);
+        let keys = left.tools.unwrap()[0]["function"]["parameters"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["Content", "append", "path"]);
+    }
+
+    #[test]
+    fn tool_call_arguments_take_provider_bridge_order_and_numbers() {
+        let body = json!({
+            "model":"m",
+            "messages":[
+                {"role":"assistant","content":null,"tool_calls":[{
+                    "id":"c","type":"function",
+                    "function":{"name":"f","arguments":
+                        "{\"path\":\"/tmp/a\",\"content\":\"x\",\"append\":false,\"n\":100.0,\"e\":1e5,\"h\":0.5,\"z\":{\"b\":1.0,\"a\":[2.0]}}"}
+                }]},
+                {"role":"tool","tool_call_id":"c","content":"ok"}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body, None).unwrap();
+        let arguments = &normalized.messages[0]["tool_calls"][0]["function"]["arguments"];
+        let keys = arguments
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["append", "content", "e", "h", "n", "path", "z"]);
+        assert_eq!(arguments["n"], json!(100));
+        assert_eq!(arguments["e"], json!(100000));
+        assert_eq!(arguments["h"], json!(0.5));
+        assert_eq!(arguments["z"], json!({"a": [2], "b": 1}));
+        assert_eq!(
+            serde_json::to_string(&arguments["z"]).unwrap(),
+            "{\"a\":[2],\"b\":1}"
+        );
+    }
+
+    #[test]
+    fn tool_function_keeps_only_typed_fields() {
+        let body = json!({
+            "model":"m",
+            "messages":[{"role":"user","content":"hi"}],
+            "tools":[{"type":"function","function":{
+                "name":"f","description":"d","strict":true,
+                "parameters":{"type":"object","properties":{"a":{"type":"string"}}},
+                "response":{"type":"object"},"examples":["x"],"x-vendor":1
+            }}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body, None).unwrap();
+        let function = normalized.tools.unwrap()[0]["function"]
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            function.keys().cloned().collect::<Vec<_>>(),
+            ["name", "description", "parameters"]
+        );
+    }
+
+    #[test]
+    fn assistant_harmony_framing_is_stripped_for_every_model() {
+        let framed = "<|channel|>analysis<|message|>hidden<|end|><|start|>assistant<|channel|>final<|message|>Answer.<|end|>";
+        assert_eq!(strip_harmony_channel_framing(framed), "Answer.");
+        assert_eq!(
+            strip_harmony_channel_framing("<|channel|>final<|message|>Plain"),
+            "Plain"
+        );
+        assert_eq!(
+            strip_harmony_channel_framing("<|channel|>analysis<|message|>only<|end|>"),
+            ""
+        );
+        assert_eq!(
+            strip_harmony_channel_framing("<|channel|>final<|message|>a<|start|>b"),
+            "ab"
+        );
+        assert_eq!(
+            strip_harmony_channel_framing("no framing <|end|> here"),
+            "no framing <|end|> here"
+        );
+        let body = json!({
+            "model":"m",
+            "messages":[
+                {"role":"user","content":"q"},
+                {"role":"assistant","content":framed,"reasoning_content":"<|channel|>analysis<|message|>t<|end|>"},
+                {"role":"user","content":framed}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body, Some("gemma4")).unwrap();
+        assert_eq!(normalized.messages[1]["content"], "Answer.");
+        assert_eq!(normalized.messages[1]["reasoning_content"], "");
+        assert_eq!(normalized.messages[2]["content"], framed);
+    }
+
+    #[test]
+    fn output_text_parts_render_like_text_parts() {
+        let body = json!({
+            "model":"m",
+            "messages":[
+                {"role":"user","content":[{"type":"text","text":"a"},{"type":"input_text","text":"b"}]},
+                {"role":"assistant","content":[{"type":"output_text","text":"c"},{"type":"refusal","refusal":"d"}]}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let normalized = normalize(body, None).unwrap();
+        assert_eq!(normalized.messages[0]["content"], "ab");
+        assert_eq!(normalized.messages[1]["content"], "c");
     }
 
     fn normalize_context(body: Value) -> Map<String, Value> {

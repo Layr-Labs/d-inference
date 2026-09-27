@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-21 · commit `b581bfd21`
+> Last updated: 2026-09-27 · commit `75723ca14`
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -160,6 +160,32 @@ this instruction itself. Qwen and Harmony system-turn folding then mirrors
 `Qwen35TemplateFix` / `GPTOSSHarmonyTemplateFix` / `LeadingSystemMessageNormalizer` before rendering
 (`coordinator/promptsidecar/src/leading_system.rs`, `normalize_messages`). Invalid or
 unsupported shapes fail cold.
+
+Five provider-side transformations that precede every template are mirrored in
+`coordinator/promptsidecar/src/normalize.rs`: every object in the lowered body
+is re-ordered by UTF-8 byte order before normalization, because Foundation
+dictionaries carry no order and `Jinja.Value(any:)` sorts keys with Swift
+`String <` while the coordinator serializes provider bodies with sorted keys
+(`sorted_object_keys`); assistant `content` and
+`reasoning_content` lose raw Harmony channel framing for every model family
+(`strip_harmony_channel_framing`, the mirror of `sanitizeJinjaMessages`);
+`output_text` content parts contribute text exactly like `text` and
+`input_text` (`message_text`); a tool's `function` object keeps only `name`,
+`description` and `parameters` because `OpenAITool.toolSpec()` renders nothing
+else (`typed_function_definition`); and decoded tool-call `arguments` take the
+Jinja value bridge's shape — object keys in Unicode-scalar order and integral
+JSON doubles as integers — because `Jinja.Value(any:)` sorts dictionaries and
+matches `Int` before `Double` (`provider_bridged_value`). Without these
+mirrors, exact-cache receipts fail with `prompt_anchor_mismatch` on Qwen
+tool-call histories, on `strict` tool definitions, and on replayed Harmony
+output. Still unmirrored, and therefore still cold-only in practice: the
+Gemma template's `dictsort` filter, which swift-jinja evaluates with
+`localizedCaseInsensitiveCompare` while MiniJinja sorts by bytes (mixed-case,
+underscore-versus-digit and accented keys order differently), and
+pre-tokenizer differences between `swift-transformers` and the `tokenizers`
+crate (combining-mark scripts such as Devanagari, Bengali, Tamil, Thai and
+vocalized Arabic on the Qwen regex; `\r\n` sequences on the o200k and Qwen
+regexes), which are provider-side defects and change the token count.
 
 Constrained tool validation and grammar-cost accounting inspect the same borrowed
 `const`/`enum` values from the parsed schema; they do not allocate temporary

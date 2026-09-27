@@ -719,6 +719,30 @@
         ],
         "_darkbloom_prompt_date": "2028-02-29"
       }
+    },
+    {
+      "id": "assistant_harmony_framing",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is the total?"
+          },
+          {
+            "role": "assistant",
+            "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+            "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+          },
+          {
+            "role": "user",
+            "content": "And doubled?"
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
     }
   ],
   "artifact_gate": "scripts/verify-prompt-parity.sh snapshots the public manifest-backed production catalog, provisions every declared prompt-role artifact by immutable hash, regenerates vectors, and fails on any catalog/vector mismatch.",

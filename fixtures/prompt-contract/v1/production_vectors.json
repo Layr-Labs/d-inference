@@ -8,6 +8,156 @@
       "cache_routing_eligible": true,
       "cases": [
         {
+          "id": "assistant_harmony_framing",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "The total is 42.",
+                "reasoning_content": ""
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
+            "prompt_token_count": 81,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            248045,
+            8678,
+            198,
+            24342,
+            286,
+            4879,
+            369,
+            716,
+            310,
+            830,
+            11553,
+            13,
+            5044,
+            1683,
+            15060,
+            1472,
+            279,
+            3274,
+            11,
+            9307,
+            1328,
+            30800,
+            11,
+            2814,
+            47675,
+            25605,
+            11,
+            321,
+            60445,
+            55404,
+            11,
+            27224,
+            11,
+            321,
+            30246,
+            303,
+            279,
+            1534,
+            4087,
+            13,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            3710,
+            369,
+            279,
+            2702,
+            30,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            271,
+            248069,
+            271,
+            760,
+            2702,
+            369,
+            220,
+            19,
+            17,
+            13,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            2939,
+            33472,
+            30,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
+        {
           "id": "assistant_output_text_part",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -76,7 +226,7 @@
               },
               {
                 "role": "assistant",
-                "content": ""
+                "content": "The plan has three steps."
               },
               {
                 "role": "user",
@@ -87,7 +237,7 @@
           },
           "plan": {
             "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
-            "prompt_token_count": 76,
+            "prompt_token_count": 82,
             "block_boundaries": []
           },
           "token_ids": [
@@ -151,6 +301,12 @@
             271,
             248069,
             271,
+            760,
+            3019,
+            682,
+            2250,
+            7123,
+            13,
             248046,
             198,
             248045,
@@ -643,7 +799,6 @@
                   "name": "weather",
                   "description": "Fetch weather",
                   "parameters": {
-                    "type": "object",
                     "properties": {
                       "city": {
                         "type": "string",
@@ -664,7 +819,8 @@
                     },
                     "required": [
                       "city"
-                    ]
+                    ],
+                    "type": "object"
                   }
                 }
               }
@@ -1857,7 +2013,6 @@
                   "name": "weather",
                   "description": "Fetch current weather",
                   "parameters": {
-                    "type": "object",
                     "patternProperties": {
                       "^city$": {
                         "type": "string",
@@ -1867,6 +2022,7 @@
                     "required": [
                       "city"
                     ],
+                    "type": "object",
                     "properties": {}
                   }
                 }
@@ -7474,18 +7630,18 @@
                     "function": {
                       "name": "write_file",
                       "arguments": {
-                        "path": "/tmp/report.txt",
-                        "content": "line one\nline two",
                         "append": false,
-                        "retries": 2.0,
-                        "timeout": 1000.0,
-                        "ratio": 0.5,
+                        "content": "line one\nline two",
                         "meta": {
-                          "z": 1.0,
                           "a": [
-                            3.0
-                          ]
-                        }
+                            3
+                          ],
+                          "z": 1
+                        },
+                        "path": "/tmp/report.txt",
+                        "ratio": 0.5,
+                        "retries": 2,
+                        "timeout": 1000
                       }
                     }
                   }
@@ -7508,25 +7664,25 @@
                   "name": "write_file",
                   "description": "Write a file",
                   "parameters": {
-                    "type": "object",
                     "properties": {
-                      "path": {
-                        "type": "string",
-                        "description": "Path"
+                      "append": {
+                        "description": "Append",
+                        "type": "boolean"
                       },
                       "content": {
-                        "type": "string",
-                        "description": "Content"
+                        "description": "Content",
+                        "type": "string"
                       },
-                      "append": {
-                        "type": "boolean",
-                        "description": "Append"
+                      "path": {
+                        "description": "Path",
+                        "type": "string"
                       }
                     },
                     "required": [
                       "path",
                       "content"
-                    ]
+                    ],
+                    "type": "object"
                   }
                 }
               }
@@ -7879,12 +8035,11 @@
             198,
             27,
             15704,
-            79114,
+            28,
+            4928,
             29,
             198,
-            55101,
-            60283,
-            3778,
+            3721,
             198,
             510,
             15704,
@@ -7909,10 +8064,45 @@
             27,
             15704,
             28,
-            4928,
+            5317,
             29,
             198,
-            3721,
+            4754,
+            64,
+            8631,
+            18,
+            27573,
+            89,
+            763,
+            16,
+            92,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            79114,
+            29,
+            198,
+            55101,
+            60283,
+            3778,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            30101,
+            6069,
+            29,
+            198,
+            15,
+            13,
+            20,
             198,
             510,
             15704,
@@ -7940,40 +8130,6 @@
             15,
             15,
             15,
-            198,
-            510,
-            15704,
-            29,
-            198,
-            27,
-            15704,
-            30101,
-            6069,
-            29,
-            198,
-            15,
-            13,
-            20,
-            198,
-            510,
-            15704,
-            29,
-            198,
-            27,
-            15704,
-            28,
-            5317,
-            29,
-            198,
-            4754,
-            64,
-            8631,
-            18,
-            27573,
-            89,
-            763,
-            16,
-            92,
             198,
             510,
             15704,
@@ -8114,9 +8270,8 @@
                 "function": {
                   "name": "write_file",
                   "description": "Write a file",
-                  "strict": true,
                   "parameters": {
-                    "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                       "path": {
                         "type": "string"
@@ -8125,19 +8280,8 @@
                     "required": [
                       "path"
                     ],
-                    "additionalProperties": false
-                  },
-                  "response": {
-                    "type": "object",
-                    "properties": {
-                      "bytes": {
-                        "type": "integer"
-                      }
-                    }
-                  },
-                  "examples": [
-                    "/tmp/a"
-                  ]
+                    "type": "object"
+                  }
                 }
               }
             ],
@@ -8145,14 +8289,14 @@
           },
           "plan": {
             "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
-            "prompt_token_count": 322,
+            "prompt_token_count": 297,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "c37655b302c6b00215fa26c86217bb72e5b767d510f9bebc1fa7a9f97d419061"
+                "chain_hash": "1fc7575b49316e57a74a013c92c3861d6fef3061842a0308184f90ac2d87d7da"
               }
             ],
-            "last_complete_block_hash": "c37655b302c6b00215fa26c86217bb72e5b767d510f9bebc1fa7a9f97d419061"
+            "last_complete_block_hash": "1fc7575b49316e57a74a013c92c3861d6fef3061842a0308184f90ac2d87d7da"
           },
           "token_ids": [
             248045,
@@ -8221,13 +8365,6 @@
             264,
             999,
             2129,
-            49927,
-            35580,
-            4586,
-            5008,
-            4586,
-            64,
-            66550,
             591,
             3147,
             4775,
@@ -8256,26 +8393,8 @@
             1267,
             3147,
             1640,
-            56658,
-            2246,
-            21624,
-            12811,
-            21624,
-            9363,
-            21624,
-            1267,
-            3147,
-            11326,
             29958,
             1288,
-            1267,
-            3147,
-            1640,
-            56658,
-            6418,
-            763,
-            1802,
-            49471,
             1267,
             3147,
             1628,
@@ -9192,6 +9311,113 @@
       "cache_routing_eligible": true,
       "cases": [
         {
+          "id": "assistant_harmony_framing",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "The total is 42.",
+                "reasoning_content": ""
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
+            "prompt_token_count": 38,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            2364,
+            107,
+            3689,
+            563,
+            506,
+            2558,
+            236881,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            818,
+            2558,
+            563,
+            236743,
+            236812,
+            236778,
+            236761,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            3133,
+            37402,
+            236881,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
           "id": "assistant_output_text_part",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -9260,7 +9486,7 @@
               },
               {
                 "role": "assistant",
-                "content": ""
+                "content": "The plan has three steps."
               },
               {
                 "role": "user",
@@ -9271,7 +9497,7 @@
           },
           "plan": {
             "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
-            "prompt_token_count": 32,
+            "prompt_token_count": 38,
             "block_boundaries": []
           },
           "token_ids": [
@@ -9289,6 +9515,12 @@
             105,
             4368,
             107,
+            818,
+            2731,
+            815,
+            1806,
+            6555,
+            236761,
             106,
             107,
             105,
@@ -9670,7 +9902,6 @@
                   "description": "Fetch weather",
                   "name": "weather",
                   "parameters": {
-                    "type": "object",
                     "properties": {
                       "city": {
                         "type": "string",
@@ -9689,6 +9920,7 @@
                         "type": "string"
                       }
                     },
+                    "type": "object",
                     "required": [
                       "city"
                     ]
@@ -10533,7 +10765,6 @@
                   "description": "Fetch current weather",
                   "name": "weather",
                   "parameters": {
-                    "type": "object",
                     "patternProperties": {
                       "^city$": {
                         "type": "string",
@@ -10541,6 +10772,7 @@
                       }
                     },
                     "properties": {},
+                    "type": "object",
                     "required": [
                       "city"
                     ]
@@ -15838,18 +16070,18 @@
                     "function": {
                       "name": "write_file",
                       "arguments": {
-                        "path": "/tmp/report.txt",
-                        "content": "line one\nline two",
                         "append": false,
-                        "retries": 2.0,
-                        "timeout": 1000.0,
-                        "ratio": 0.5,
+                        "content": "line one\nline two",
                         "meta": {
-                          "z": 1.0,
                           "a": [
-                            3.0
-                          ]
-                        }
+                            3
+                          ],
+                          "z": 1
+                        },
+                        "path": "/tmp/report.txt",
+                        "ratio": 0.5,
+                        "retries": 2,
+                        "timeout": 1000
                       }
                     }
                   }
@@ -15872,21 +16104,21 @@
                   "description": "Write a file",
                   "name": "write_file",
                   "parameters": {
-                    "type": "object",
                     "properties": {
-                      "path": {
-                        "type": "string",
-                        "description": "Path"
+                      "append": {
+                        "description": "Append",
+                        "type": "boolean"
                       },
                       "content": {
-                        "type": "string",
-                        "description": "Content"
+                        "description": "Content",
+                        "type": "string"
                       },
-                      "append": {
-                        "type": "boolean",
-                        "description": "Append"
+                      "path": {
+                        "description": "Path",
+                        "type": "string"
                       }
                     },
+                    "type": "object",
                     "required": [
                       "path",
                       "content"
@@ -15899,7 +16131,7 @@
           },
           "plan": {
             "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
-            "prompt_token_count": 197,
+            "prompt_token_count": 189,
             "block_boundaries": []
           },
           "token_ids": [
@@ -16029,14 +16261,10 @@
             236746,
             24845,
             236800,
-            236761,
-            236771,
             1604,
             236802,
             236787,
             236770,
-            236761,
-            236771,
             1263,
             2337,
             236787,
@@ -16059,16 +16287,12 @@
             2302,
             236787,
             236778,
-            236761,
-            236771,
             236764,
             30447,
             236787,
             236770,
             236771,
             236771,
-            236771,
-            236761,
             236771,
             236783,
             49,
@@ -16204,28 +16428,16 @@
               {
                 "type": "function",
                 "function": {
-                  "examples": [
-                    "/tmp/a"
-                  ],
-                  "name": "write_file",
-                  "strict": true,
                   "description": "Write a file",
-                  "response": {
-                    "type": "object",
-                    "properties": {
-                      "bytes": {
-                        "type": "integer"
-                      }
-                    }
-                  },
+                  "name": "write_file",
                   "parameters": {
-                    "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                       "path": {
                         "type": "string"
                       }
                     },
-                    "additionalProperties": false,
+                    "type": "object",
                     "required": [
                       "path"
                     ]
@@ -16237,7 +16449,7 @@
           },
           "plan": {
             "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
-            "prompt_token_count": 70,
+            "prompt_token_count": 62,
             "block_boundaries": []
           },
           "token_ids": [
@@ -16278,14 +16490,6 @@
             2337,
             52,
             1604,
-            2084,
-            236787,
-            52,
-            60688,
-            52,
-            1263,
-            6275,
-            29616,
             2084,
             236787,
             52,
@@ -16786,6 +16990,113 @@
       "cache_routing_eligible": true,
       "cases": [
         {
+          "id": "assistant_harmony_framing",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "The total is 42.",
+                "reasoning_content": ""
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
+            "prompt_token_count": 38,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            2364,
+            107,
+            3689,
+            563,
+            506,
+            2558,
+            236881,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            818,
+            2558,
+            563,
+            236743,
+            236812,
+            236778,
+            236761,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            3133,
+            37402,
+            236881,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
           "id": "assistant_output_text_part",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -16854,7 +17165,7 @@
               },
               {
                 "role": "assistant",
-                "content": ""
+                "content": "The plan has three steps."
               },
               {
                 "role": "user",
@@ -16865,7 +17176,7 @@
           },
           "plan": {
             "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
-            "prompt_token_count": 32,
+            "prompt_token_count": 38,
             "block_boundaries": []
           },
           "token_ids": [
@@ -16883,6 +17194,12 @@
             105,
             4368,
             107,
+            818,
+            2731,
+            815,
+            1806,
+            6555,
+            236761,
             106,
             107,
             105,
@@ -17264,7 +17581,6 @@
                   "description": "Fetch weather",
                   "name": "weather",
                   "parameters": {
-                    "type": "object",
                     "properties": {
                       "city": {
                         "type": "string",
@@ -17283,6 +17599,7 @@
                         "type": "string"
                       }
                     },
+                    "type": "object",
                     "required": [
                       "city"
                     ]
@@ -18127,7 +18444,6 @@
                   "description": "Fetch current weather",
                   "name": "weather",
                   "parameters": {
-                    "type": "object",
                     "patternProperties": {
                       "^city$": {
                         "type": "string",
@@ -18135,6 +18451,7 @@
                       }
                     },
                     "properties": {},
+                    "type": "object",
                     "required": [
                       "city"
                     ]
@@ -23432,18 +23749,18 @@
                     "function": {
                       "name": "write_file",
                       "arguments": {
-                        "path": "/tmp/report.txt",
-                        "content": "line one\nline two",
                         "append": false,
-                        "retries": 2.0,
-                        "timeout": 1000.0,
-                        "ratio": 0.5,
+                        "content": "line one\nline two",
                         "meta": {
-                          "z": 1.0,
                           "a": [
-                            3.0
-                          ]
-                        }
+                            3
+                          ],
+                          "z": 1
+                        },
+                        "path": "/tmp/report.txt",
+                        "ratio": 0.5,
+                        "retries": 2,
+                        "timeout": 1000
                       }
                     }
                   }
@@ -23466,21 +23783,21 @@
                   "description": "Write a file",
                   "name": "write_file",
                   "parameters": {
-                    "type": "object",
                     "properties": {
-                      "path": {
-                        "type": "string",
-                        "description": "Path"
+                      "append": {
+                        "description": "Append",
+                        "type": "boolean"
                       },
                       "content": {
-                        "type": "string",
-                        "description": "Content"
+                        "description": "Content",
+                        "type": "string"
                       },
-                      "append": {
-                        "type": "boolean",
-                        "description": "Append"
+                      "path": {
+                        "description": "Path",
+                        "type": "string"
                       }
                     },
+                    "type": "object",
                     "required": [
                       "path",
                       "content"
@@ -23493,7 +23810,7 @@
           },
           "plan": {
             "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
-            "prompt_token_count": 197,
+            "prompt_token_count": 189,
             "block_boundaries": []
           },
           "token_ids": [
@@ -23623,14 +23940,10 @@
             236746,
             24845,
             236800,
-            236761,
-            236771,
             1604,
             236802,
             236787,
             236770,
-            236761,
-            236771,
             1263,
             2337,
             236787,
@@ -23653,16 +23966,12 @@
             2302,
             236787,
             236778,
-            236761,
-            236771,
             236764,
             30447,
             236787,
             236770,
             236771,
             236771,
-            236771,
-            236761,
             236771,
             236783,
             49,
@@ -23798,28 +24107,16 @@
               {
                 "type": "function",
                 "function": {
-                  "examples": [
-                    "/tmp/a"
-                  ],
-                  "name": "write_file",
-                  "strict": true,
                   "description": "Write a file",
-                  "response": {
-                    "type": "object",
-                    "properties": {
-                      "bytes": {
-                        "type": "integer"
-                      }
-                    }
-                  },
+                  "name": "write_file",
                   "parameters": {
-                    "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                       "path": {
                         "type": "string"
                       }
                     },
-                    "additionalProperties": false,
+                    "type": "object",
                     "required": [
                       "path"
                     ]
@@ -23831,7 +24128,7 @@
           },
           "plan": {
             "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
-            "prompt_token_count": 70,
+            "prompt_token_count": 62,
             "block_boundaries": []
           },
           "token_ids": [
@@ -23872,14 +24169,6 @@
             2337,
             52,
             1604,
-            2084,
-            236787,
-            52,
-            60688,
-            52,
-            1263,
-            6275,
-            29616,
             2084,
             236787,
             52,
@@ -24380,6 +24669,113 @@
       "cache_routing_eligible": true,
       "cases": [
         {
+          "id": "assistant_harmony_framing",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "The total is 42.",
+                "reasoning_content": ""
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
+            "prompt_token_count": 38,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            2364,
+            107,
+            3689,
+            563,
+            506,
+            2558,
+            236881,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            818,
+            2558,
+            563,
+            236743,
+            236812,
+            236778,
+            236761,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            3133,
+            37402,
+            236881,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
           "id": "assistant_output_text_part",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -24448,7 +24844,7 @@
               },
               {
                 "role": "assistant",
-                "content": ""
+                "content": "The plan has three steps."
               },
               {
                 "role": "user",
@@ -24459,7 +24855,7 @@
           },
           "plan": {
             "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
-            "prompt_token_count": 32,
+            "prompt_token_count": 38,
             "block_boundaries": []
           },
           "token_ids": [
@@ -24477,6 +24873,12 @@
             105,
             4368,
             107,
+            818,
+            2731,
+            815,
+            1806,
+            6555,
+            236761,
             106,
             107,
             105,
@@ -24858,7 +25260,6 @@
                   "description": "Fetch weather",
                   "name": "weather",
                   "parameters": {
-                    "type": "object",
                     "properties": {
                       "city": {
                         "type": "string",
@@ -24877,6 +25278,7 @@
                         "type": "string"
                       }
                     },
+                    "type": "object",
                     "required": [
                       "city"
                     ]
@@ -25721,7 +26123,6 @@
                   "description": "Fetch current weather",
                   "name": "weather",
                   "parameters": {
-                    "type": "object",
                     "patternProperties": {
                       "^city$": {
                         "type": "string",
@@ -25729,6 +26130,7 @@
                       }
                     },
                     "properties": {},
+                    "type": "object",
                     "required": [
                       "city"
                     ]
@@ -31026,18 +31428,18 @@
                     "function": {
                       "name": "write_file",
                       "arguments": {
-                        "path": "/tmp/report.txt",
-                        "content": "line one\nline two",
                         "append": false,
-                        "retries": 2.0,
-                        "timeout": 1000.0,
-                        "ratio": 0.5,
+                        "content": "line one\nline two",
                         "meta": {
-                          "z": 1.0,
                           "a": [
-                            3.0
-                          ]
-                        }
+                            3
+                          ],
+                          "z": 1
+                        },
+                        "path": "/tmp/report.txt",
+                        "ratio": 0.5,
+                        "retries": 2,
+                        "timeout": 1000
                       }
                     }
                   }
@@ -31060,21 +31462,21 @@
                   "description": "Write a file",
                   "name": "write_file",
                   "parameters": {
-                    "type": "object",
                     "properties": {
-                      "path": {
-                        "type": "string",
-                        "description": "Path"
+                      "append": {
+                        "description": "Append",
+                        "type": "boolean"
                       },
                       "content": {
-                        "type": "string",
-                        "description": "Content"
+                        "description": "Content",
+                        "type": "string"
                       },
-                      "append": {
-                        "type": "boolean",
-                        "description": "Append"
+                      "path": {
+                        "description": "Path",
+                        "type": "string"
                       }
                     },
+                    "type": "object",
                     "required": [
                       "path",
                       "content"
@@ -31087,7 +31489,7 @@
           },
           "plan": {
             "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
-            "prompt_token_count": 197,
+            "prompt_token_count": 189,
             "block_boundaries": []
           },
           "token_ids": [
@@ -31217,14 +31619,10 @@
             236746,
             24845,
             236800,
-            236761,
-            236771,
             1604,
             236802,
             236787,
             236770,
-            236761,
-            236771,
             1263,
             2337,
             236787,
@@ -31247,16 +31645,12 @@
             2302,
             236787,
             236778,
-            236761,
-            236771,
             236764,
             30447,
             236787,
             236770,
             236771,
             236771,
-            236771,
-            236761,
             236771,
             236783,
             49,
@@ -31392,28 +31786,16 @@
               {
                 "type": "function",
                 "function": {
-                  "examples": [
-                    "/tmp/a"
-                  ],
-                  "name": "write_file",
-                  "strict": true,
                   "description": "Write a file",
-                  "response": {
-                    "type": "object",
-                    "properties": {
-                      "bytes": {
-                        "type": "integer"
-                      }
-                    }
-                  },
+                  "name": "write_file",
                   "parameters": {
-                    "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                       "path": {
                         "type": "string"
                       }
                     },
-                    "additionalProperties": false,
+                    "type": "object",
                     "required": [
                       "path"
                     ]
@@ -31425,7 +31807,7 @@
           },
           "plan": {
             "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
-            "prompt_token_count": 70,
+            "prompt_token_count": 62,
             "block_boundaries": []
           },
           "token_ids": [
@@ -31466,14 +31848,6 @@
             2337,
             52,
             1604,
-            2084,
-            236787,
-            52,
-            60688,
-            52,
-            1263,
-            6275,
-            29616,
             2084,
             236787,
             52,
@@ -31974,6 +32348,166 @@
       "cache_routing_eligible": true,
       "cases": [
         {
+          "id": "assistant_harmony_framing",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "gpt-oss-20b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "The total is 42.",
+                "reasoning_content": ""
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
+            "prompt_token_count": 91,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            200006,
+            17360,
+            200008,
+            3575,
+            553,
+            17554,
+            162016,
+            11,
+            261,
+            4410,
+            6439,
+            2359,
+            22203,
+            656,
+            7788,
+            17527,
+            558,
+            87447,
+            100594,
+            25,
+            220,
+            1323,
+            19,
+            12,
+            3218,
+            198,
+            6576,
+            3521,
+            25,
+            220,
+            1323,
+            23,
+            12,
+            3286,
+            12,
+            2270,
+            279,
+            30377,
+            289,
+            25,
+            14093,
+            279,
+            2,
+            13888,
+            18403,
+            25,
+            8450,
+            11,
+            49159,
+            11,
+            1721,
+            13,
+            21030,
+            2804,
+            413,
+            7360,
+            395,
+            1753,
+            3176,
+            13,
+            200007,
+            200006,
+            1428,
+            200008,
+            4827,
+            382,
+            290,
+            3609,
+            30,
+            200007,
+            200006,
+            173781,
+            200005,
+            17196,
+            200008,
+            976,
+            3609,
+            382,
+            220,
+            4689,
+            13,
+            200007,
+            200006,
+            1428,
+            200008,
+            3436,
+            69040,
+            30,
+            200007,
+            200006,
+            173781
+          ]
+        },
+        {
           "id": "assistant_output_text_part",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -32042,7 +32576,7 @@
               },
               {
                 "role": "assistant",
-                "content": ""
+                "content": "The plan has three steps."
               },
               {
                 "role": "user",
@@ -32053,7 +32587,7 @@
           },
           "plan": {
             "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
-            "prompt_token_count": 87,
+            "prompt_token_count": 93,
             "block_boundaries": []
           },
           "token_ids": [
@@ -32133,6 +32667,12 @@
             200005,
             17196,
             200008,
+            976,
+            3496,
+            853,
+            3407,
+            10331,
+            13,
             200007,
             200006,
             1428,
@@ -32671,7 +33211,6 @@
                   "name": "weather",
                   "description": "Fetch weather",
                   "parameters": {
-                    "type": "object",
                     "properties": {
                       "city": {
                         "type": "string",
@@ -32692,7 +33231,8 @@
                     },
                     "required": [
                       "city"
-                    ]
+                    ],
+                    "type": "object"
                   }
                 }
               }
@@ -33718,7 +34258,6 @@
                   "name": "weather",
                   "description": "Fetch current weather",
                   "parameters": {
-                    "type": "object",
                     "patternProperties": {
                       "^city$": {
                         "type": "string",
@@ -33728,6 +34267,7 @@
                     "required": [
                       "city"
                     ],
+                    "type": "object",
                     "properties": {}
                   }
                 }
@@ -39511,18 +40051,18 @@
                     "function": {
                       "name": "write_file",
                       "arguments": {
-                        "path": "/tmp/report.txt",
-                        "content": "line one\nline two",
                         "append": false,
-                        "retries": 2.0,
-                        "timeout": 1000.0,
-                        "ratio": 0.5,
+                        "content": "line one\nline two",
                         "meta": {
-                          "z": 1.0,
                           "a": [
-                            3.0
-                          ]
-                        }
+                            3
+                          ],
+                          "z": 1
+                        },
+                        "path": "/tmp/report.txt",
+                        "ratio": 0.5,
+                        "retries": 2,
+                        "timeout": 1000
                       }
                     }
                   }
@@ -39545,25 +40085,25 @@
                   "name": "write_file",
                   "description": "Write a file",
                   "parameters": {
-                    "type": "object",
                     "properties": {
-                      "path": {
-                        "type": "string",
-                        "description": "Path"
+                      "append": {
+                        "description": "Append",
+                        "type": "boolean"
                       },
                       "content": {
-                        "type": "string",
-                        "description": "Content"
+                        "description": "Content",
+                        "type": "string"
                       },
-                      "append": {
-                        "type": "boolean",
-                        "description": "Append"
+                      "path": {
+                        "description": "Path",
+                        "type": "string"
                       }
                     },
                     "required": [
                       "path",
                       "content"
-                    ]
+                    ],
+                    "type": "object"
                   }
                 }
               }
@@ -39674,11 +40214,11 @@
             11350,
             25,
             10168,
-            14027,
+            58624,
             198,
-            4189,
-            25,
-            1621,
+            9132,
+            8528,
+            3870,
             20046,
             13885,
             198,
@@ -39686,11 +40226,11 @@
             25,
             1621,
             20046,
-            58624,
+            14027,
             198,
-            9132,
-            8528,
-            3870,
+            4189,
+            25,
+            1621,
             412,
             9263,
             871,
@@ -39901,9 +40441,8 @@
                 "function": {
                   "name": "write_file",
                   "description": "Write a file",
-                  "strict": true,
                   "parameters": {
-                    "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                       "path": {
                         "type": "string"
@@ -39912,19 +40451,8 @@
                     "required": [
                       "path"
                     ],
-                    "additionalProperties": false
-                  },
-                  "response": {
-                    "type": "object",
-                    "properties": {
-                      "bytes": {
-                        "type": "integer"
-                      }
-                    }
-                  },
-                  "examples": [
-                    "/tmp/a"
-                  ]
+                    "type": "object"
+                  }
                 }
               }
             ],
@@ -40643,6 +41171,110 @@
       "cache_routing_eligible": true,
       "cases": [
         {
+          "id": "assistant_harmony_framing",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "qwen3.5-35b-a3b",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "The total is 42.",
+                "reasoning_content": ""
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
+            "prompt_token_count": 35,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            248045,
+            846,
+            198,
+            3710,
+            369,
+            279,
+            2702,
+            30,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            760,
+            2702,
+            369,
+            220,
+            19,
+            17,
+            13,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            2939,
+            33472,
+            30,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
+        {
           "id": "assistant_output_text_part",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -40711,7 +41343,7 @@
               },
               {
                 "role": "assistant",
-                "content": ""
+                "content": "The plan has three steps."
               },
               {
                 "role": "user",
@@ -40722,7 +41354,7 @@
           },
           "plan": {
             "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
-            "prompt_token_count": 30,
+            "prompt_token_count": 36,
             "block_boundaries": []
           },
           "token_ids": [
@@ -40740,6 +41372,12 @@
             248045,
             74455,
             198,
+            760,
+            3019,
+            682,
+            2250,
+            7123,
+            13,
             248046,
             198,
             248045,
@@ -41110,7 +41748,6 @@
                   "name": "weather",
                   "description": "Fetch weather",
                   "parameters": {
-                    "type": "object",
                     "properties": {
                       "city": {
                         "type": "string",
@@ -41131,7 +41768,8 @@
                     },
                     "required": [
                       "city"
-                    ]
+                    ],
+                    "type": "object"
                   }
                 }
               }
@@ -42206,7 +42844,6 @@
                   "name": "weather",
                   "description": "Fetch current weather",
                   "parameters": {
-                    "type": "object",
                     "patternProperties": {
                       "^city$": {
                         "type": "string",
@@ -42216,6 +42853,7 @@
                     "required": [
                       "city"
                     ],
+                    "type": "object",
                     "properties": {}
                   }
                 }
@@ -47579,18 +48217,18 @@
                     "function": {
                       "name": "write_file",
                       "arguments": {
-                        "path": "/tmp/report.txt",
-                        "content": "line one\nline two",
                         "append": false,
-                        "retries": 2.0,
-                        "timeout": 1000.0,
-                        "ratio": 0.5,
+                        "content": "line one\nline two",
                         "meta": {
-                          "z": 1.0,
                           "a": [
-                            3.0
-                          ]
-                        }
+                            3
+                          ],
+                          "z": 1
+                        },
+                        "path": "/tmp/report.txt",
+                        "ratio": 0.5,
+                        "retries": 2,
+                        "timeout": 1000
                       }
                     }
                   }
@@ -47613,25 +48251,25 @@
                   "name": "write_file",
                   "description": "Write a file",
                   "parameters": {
-                    "type": "object",
                     "properties": {
-                      "path": {
-                        "type": "string",
-                        "description": "Path"
+                      "append": {
+                        "description": "Append",
+                        "type": "boolean"
                       },
                       "content": {
-                        "type": "string",
-                        "description": "Content"
+                        "description": "Content",
+                        "type": "string"
                       },
-                      "append": {
-                        "type": "boolean",
-                        "description": "Append"
+                      "path": {
+                        "description": "Path",
+                        "type": "string"
                       }
                     },
                     "required": [
                       "path",
                       "content"
-                    ]
+                    ],
+                    "type": "object"
                   }
                 }
               }
@@ -47640,7 +48278,7 @@
           },
           "plan": {
             "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
-            "prompt_token_count": 425,
+            "prompt_token_count": 421,
             "block_boundaries": [
               {
                 "token_count": 256,
@@ -47942,12 +48580,11 @@
             198,
             27,
             15704,
-            79114,
+            28,
+            4928,
             29,
             198,
-            55101,
-            60283,
-            3778,
+            3721,
             198,
             510,
             15704,
@@ -47972,41 +48609,31 @@
             27,
             15704,
             28,
-            4928,
+            5317,
             29,
             198,
-            3721,
-            198,
-            510,
-            15704,
-            29,
-            198,
-            27,
-            15704,
-            47980,
-            4395,
-            29,
-            198,
-            17,
-            13,
-            15,
-            198,
-            510,
-            15704,
-            29,
-            198,
-            27,
-            15704,
-            28,
-            13745,
-            29,
-            198,
+            4754,
+            64,
+            8631,
+            18,
+            27573,
+            89,
+            763,
             16,
-            15,
-            15,
-            15,
-            13,
-            15,
+            92,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            79114,
+            29,
+            198,
+            55101,
+            60283,
+            3778,
             198,
             510,
             15704,
@@ -48028,19 +48655,26 @@
             198,
             27,
             15704,
-            28,
-            5317,
+            47980,
+            4395,
             29,
             198,
-            4754,
-            64,
-            8631,
-            18,
-            27573,
-            89,
-            763,
+            17,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            28,
+            13745,
+            29,
+            198,
             16,
-            92,
+            15,
+            15,
+            15,
             198,
             510,
             15704,
@@ -48181,9 +48815,8 @@
                 "function": {
                   "name": "write_file",
                   "description": "Write a file",
-                  "strict": true,
                   "parameters": {
-                    "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                       "path": {
                         "type": "string"
@@ -48192,19 +48825,8 @@
                     "required": [
                       "path"
                     ],
-                    "additionalProperties": false
-                  },
-                  "response": {
-                    "type": "object",
-                    "properties": {
-                      "bytes": {
-                        "type": "integer"
-                      }
-                    }
-                  },
-                  "examples": [
-                    "/tmp/a"
-                  ]
+                    "type": "object"
+                  }
                 }
               }
             ],
@@ -48212,14 +48834,14 @@
           },
           "plan": {
             "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
-            "prompt_token_count": 284,
+            "prompt_token_count": 259,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "3ac37366df0a72111e3157df70dc879eb058a0c4787c55b417eeb3b71febe948"
+                "chain_hash": "55c2ef69f2fd13479b477d99ed5687c05955d85c4cead2e76391d957a7b0771d"
               }
             ],
-            "last_complete_block_hash": "3ac37366df0a72111e3157df70dc879eb058a0c4787c55b417eeb3b71febe948"
+            "last_complete_block_hash": "55c2ef69f2fd13479b477d99ed5687c05955d85c4cead2e76391d957a7b0771d"
           },
           "token_ids": [
             248045,
@@ -48250,13 +48872,6 @@
             264,
             999,
             2129,
-            49927,
-            35580,
-            4586,
-            5008,
-            4586,
-            64,
-            66550,
             591,
             3147,
             4775,
@@ -48285,26 +48900,8 @@
             1267,
             3147,
             1640,
-            56658,
-            2246,
-            21624,
-            12811,
-            21624,
-            9363,
-            21624,
-            1267,
-            3147,
-            11326,
             29958,
             1288,
-            1267,
-            3147,
-            1640,
-            56658,
-            6418,
-            763,
-            1802,
-            49471,
             1267,
             3147,
             1628,
@@ -49179,6 +49776,110 @@
       "cache_routing_eligible": true,
       "cases": [
         {
+          "id": "assistant_harmony_framing",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "provider_body": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+                "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "template_input": {
+            "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            "messages": [
+              {
+                "role": "user",
+                "content": "What is the total?"
+              },
+              {
+                "role": "assistant",
+                "content": "The total is 42.",
+                "reasoning_content": ""
+              },
+              {
+                "role": "user",
+                "content": "And doubled?"
+              }
+            ],
+            "_darkbloom_prompt_date": "2028-02-29"
+          },
+          "plan": {
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
+            "prompt_token_count": 35,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            248045,
+            846,
+            198,
+            3710,
+            369,
+            279,
+            2702,
+            30,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            760,
+            2702,
+            369,
+            220,
+            19,
+            17,
+            13,
+            248046,
+            198,
+            248045,
+            846,
+            198,
+            2939,
+            33472,
+            30,
+            248046,
+            198,
+            248045,
+            74455,
+            198,
+            248068,
+            198
+          ]
+        },
+        {
           "id": "assistant_output_text_part",
           "endpoint": "chat_completions",
           "scope_id": "fixture-scope",
@@ -49247,7 +49948,7 @@
               },
               {
                 "role": "assistant",
-                "content": ""
+                "content": "The plan has three steps."
               },
               {
                 "role": "user",
@@ -49258,7 +49959,7 @@
           },
           "plan": {
             "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
-            "prompt_token_count": 30,
+            "prompt_token_count": 36,
             "block_boundaries": []
           },
           "token_ids": [
@@ -49276,6 +49977,12 @@
             248045,
             74455,
             198,
+            760,
+            3019,
+            682,
+            2250,
+            7123,
+            13,
             248046,
             198,
             248045,
@@ -49646,7 +50353,6 @@
                   "name": "weather",
                   "description": "Fetch weather",
                   "parameters": {
-                    "type": "object",
                     "properties": {
                       "city": {
                         "type": "string",
@@ -49667,7 +50373,8 @@
                     },
                     "required": [
                       "city"
-                    ]
+                    ],
+                    "type": "object"
                   }
                 }
               }
@@ -50742,7 +51449,6 @@
                   "name": "weather",
                   "description": "Fetch current weather",
                   "parameters": {
-                    "type": "object",
                     "patternProperties": {
                       "^city$": {
                         "type": "string",
@@ -50752,6 +51458,7 @@
                     "required": [
                       "city"
                     ],
+                    "type": "object",
                     "properties": {}
                   }
                 }
@@ -56115,18 +56822,18 @@
                     "function": {
                       "name": "write_file",
                       "arguments": {
-                        "path": "/tmp/report.txt",
-                        "content": "line one\nline two",
                         "append": false,
-                        "retries": 2.0,
-                        "timeout": 1000.0,
-                        "ratio": 0.5,
+                        "content": "line one\nline two",
                         "meta": {
-                          "z": 1.0,
                           "a": [
-                            3.0
-                          ]
-                        }
+                            3
+                          ],
+                          "z": 1
+                        },
+                        "path": "/tmp/report.txt",
+                        "ratio": 0.5,
+                        "retries": 2,
+                        "timeout": 1000
                       }
                     }
                   }
@@ -56149,25 +56856,25 @@
                   "name": "write_file",
                   "description": "Write a file",
                   "parameters": {
-                    "type": "object",
                     "properties": {
-                      "path": {
-                        "type": "string",
-                        "description": "Path"
+                      "append": {
+                        "description": "Append",
+                        "type": "boolean"
                       },
                       "content": {
-                        "type": "string",
-                        "description": "Content"
+                        "description": "Content",
+                        "type": "string"
                       },
-                      "append": {
-                        "type": "boolean",
-                        "description": "Append"
+                      "path": {
+                        "description": "Path",
+                        "type": "string"
                       }
                     },
                     "required": [
                       "path",
                       "content"
-                    ]
+                    ],
+                    "type": "object"
                   }
                 }
               }
@@ -56478,12 +57185,11 @@
             198,
             27,
             15704,
-            79114,
+            28,
+            4928,
             29,
             198,
-            55101,
-            60283,
-            3778,
+            3721,
             198,
             510,
             15704,
@@ -56508,10 +57214,45 @@
             27,
             15704,
             28,
-            4928,
+            5317,
             29,
             198,
-            3721,
+            4754,
+            64,
+            8631,
+            18,
+            27573,
+            89,
+            763,
+            16,
+            92,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            79114,
+            29,
+            198,
+            55101,
+            60283,
+            3778,
+            198,
+            510,
+            15704,
+            29,
+            198,
+            27,
+            15704,
+            30101,
+            6069,
+            29,
+            198,
+            15,
+            13,
+            20,
             198,
             510,
             15704,
@@ -56539,40 +57280,6 @@
             15,
             15,
             15,
-            198,
-            510,
-            15704,
-            29,
-            198,
-            27,
-            15704,
-            30101,
-            6069,
-            29,
-            198,
-            15,
-            13,
-            20,
-            198,
-            510,
-            15704,
-            29,
-            198,
-            27,
-            15704,
-            28,
-            5317,
-            29,
-            198,
-            4754,
-            64,
-            8631,
-            18,
-            27573,
-            89,
-            763,
-            16,
-            92,
             198,
             510,
             15704,
@@ -56713,9 +57420,8 @@
                 "function": {
                   "name": "write_file",
                   "description": "Write a file",
-                  "strict": true,
                   "parameters": {
-                    "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                       "path": {
                         "type": "string"
@@ -56724,19 +57430,8 @@
                     "required": [
                       "path"
                     ],
-                    "additionalProperties": false
-                  },
-                  "response": {
-                    "type": "object",
-                    "properties": {
-                      "bytes": {
-                        "type": "integer"
-                      }
-                    }
-                  },
-                  "examples": [
-                    "/tmp/a"
-                  ]
+                    "type": "object"
+                  }
                 }
               }
             ],
@@ -56744,14 +57439,14 @@
           },
           "plan": {
             "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
-            "prompt_token_count": 284,
+            "prompt_token_count": 259,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "9526a7a165bbdb58d07d548f3914ab5b3d2e9d70810d33806595e62d2cab82e4"
+                "chain_hash": "f6243b3346dd9820efc8d9c1c6a2cc9d957430461bf03613fa8b45125d0017f6"
               }
             ],
-            "last_complete_block_hash": "9526a7a165bbdb58d07d548f3914ab5b3d2e9d70810d33806595e62d2cab82e4"
+            "last_complete_block_hash": "f6243b3346dd9820efc8d9c1c6a2cc9d957430461bf03613fa8b45125d0017f6"
           },
           "token_ids": [
             248045,
@@ -56782,13 +57477,6 @@
             264,
             999,
             2129,
-            49927,
-            35580,
-            4586,
-            5008,
-            4586,
-            64,
-            66550,
             591,
             3147,
             4775,
@@ -56817,26 +57505,8 @@
             1267,
             3147,
             1640,
-            56658,
-            2246,
-            21624,
-            12811,
-            21624,
-            9363,
-            21624,
-            1267,
-            3147,
-            11326,
             29958,
             1288,
-            1267,
-            3147,
-            1640,
-            56658,
-            6418,
-            763,
-            1802,
-            49471,
             1267,
             3147,
             1628,

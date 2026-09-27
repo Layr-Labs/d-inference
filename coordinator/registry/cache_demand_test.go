@@ -121,10 +121,11 @@ func TestCacheDemandOutOfOrderTimestampsCannotReviveExpiredPrefixes(t *testing.T
 
 // A boundary planned nine minutes ago must still be found while other plans
 // arrive at fleet rate. Before the dedicated cap the demand index shared the
-// 10,000-entry holder cap and turned over in about a minute against the
+// then 10,000-entry holder cap and turned over in about a minute against the
 // 10-minute TTL, so nearly every real repeat looked novel.
 func TestCacheDemandRetainsBoundaryForTTLAtFleetRate(t *testing.T) {
 	const fillRatePerSecond, fillMinutes = 200, 9
+	const formerSharedCap = 10_000
 	fill := func(d *cacheDemandTracker, start time.Time) time.Time {
 		step := time.Second / fillRatePerSecond
 		now := start
@@ -148,7 +149,7 @@ func TestCacheDemandRetainsBoundaryForTTLAtFleetRate(t *testing.T) {
 		t.Fatalf("map/order drift: %d vs %d", len(sized.entries), sized.order.Len())
 	}
 
-	holderSized := newCacheDemandTracker(cacheRoutingMaxEntries, defaultCacheRoutingTTL)
+	holderSized := newCacheDemandTracker(formerSharedCap, defaultCacheRoutingTTL)
 	holderSized.observe(target, start)
 	now = fill(holderSized, start)
 	if got, _ := holderSized.observe(target, now); got != 0 {
@@ -164,8 +165,50 @@ func TestCacheDemandCapIsIndependentOfHolderCaps(t *testing.T) {
 	if tracker.maxEntries != cacheRoutingMaxEntries || tracker.maxAttempts != cacheRoutingMaxAttempts {
 		t.Fatalf("holder caps changed: entries=%d attempts=%d", tracker.maxEntries, tracker.maxAttempts)
 	}
-	if cacheDemandMaxEntries < 300*int(defaultCacheRoutingTTL/time.Second) {
-		t.Fatalf("demand cap %d does not hold %s at 300 entries/s", cacheDemandMaxEntries, defaultCacheRoutingTTL)
+	if cacheDemandMaxEntries != 1_000_000 {
+		t.Fatalf("demand cap %d changed; TestCacheDemandCapCoversMeasuredPlanMix holds its sizing", cacheDemandMaxEntries)
+	}
+}
+
+// The demand index shares the routing TTL, which the operator is raising
+// toward the 30 minutes providers keep cache files. 60 plans/s record 424
+// entries/s on the 1,024-token stride. A boundary planned 29 minutes ago must
+// still read as repeated at 450 entries/s; the former 600,000-entry cap
+// turned over in under 23 minutes and reported it novel, which tells the
+// provider not to write it.
+func TestCacheDemandRetainsBoundaryFor29MinutesAtSizingRate(t *testing.T) {
+	const fillRatePerSecond, fillMinutes = 450, 29
+	const formerCap = 600_000
+	target := []cacheDemandBoundary{{"repeated", 1024}}
+	start := time.Unix(1_700_000_000, 0)
+	for _, tc := range []struct {
+		name     string
+		limit    int
+		retained bool
+	}{
+		{"sized", cacheDemandMaxEntries, true},
+		{"former_cap", formerCap, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newCacheDemandTracker(tc.limit, cacheRoutingSizingTTL)
+			d.observe(target, start)
+			now := start
+			for i := 0; i < fillRatePerSecond*60*fillMinutes; i++ {
+				now = now.Add(time.Second / fillRatePerSecond)
+				d.observe([]cacheDemandBoundary{{fmt.Sprintf("other/%d", i), 256}}, now)
+			}
+			if age := now.Sub(start); age < 28*time.Minute+59*time.Second || age >= cacheRoutingSizingTTL {
+				t.Fatalf("fill covered %s, want just under %d minutes", age, fillMinutes)
+			}
+			got, key := d.observe(target, now)
+			if retained := got == 1024 && key == "repeated"; retained != tc.retained {
+				t.Fatalf("boundary observed %s earlier at %d/s: repeat=%d key=%q, retained want %v",
+					now.Sub(start), fillRatePerSecond, got, key, tc.retained)
+			}
+			if len(d.entries) > tc.limit || d.order.Len() != len(d.entries) {
+				t.Fatalf("entries=%d order=%d limit=%d", len(d.entries), d.order.Len(), tc.limit)
+			}
+		})
 	}
 }
 

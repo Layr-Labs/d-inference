@@ -100,7 +100,7 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 	} else {
 		attempt.LookupSeen = true
 	}
-	t.attempts[msg.CacheReceiptNonce] = attempt
+	t.storeAttemptLocked(msg.CacheReceiptNonce, attempt)
 	switch msg.Outcome {
 	case "hit":
 		anchor := *msg.MatchedAnchor

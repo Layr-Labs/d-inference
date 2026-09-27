@@ -49,7 +49,8 @@ func TestProviderInferenceWireMessageCarriesObservedRepeatDemand(t *testing.T) {
 	reg, provider, first := preparedCacheAttemptForTest(t)
 	capability := cacheEligibilityV2Capability("model")
 	// Same account, model and prompt: the planner's demand index observes the
-	// first plan's geometric boundaries and reports the longest one shared.
+	// first plan's 1,024-token stride boundaries and reports the deepest one
+	// shared; this plan ends on the stride at 4,096.
 	secondPlan := cachePreparationPlanForTest(t, reg, capability)
 	if first.CachePlan.RepeatedPrefixTokens != 0 || secondPlan.RepeatedPrefixTokens != 4096 {
 		t.Fatalf("repeat demand first=%d second=%d, want 0 then 4096",

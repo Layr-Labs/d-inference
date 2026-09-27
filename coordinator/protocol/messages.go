@@ -748,8 +748,9 @@ type InferenceRequestMessage struct {
 	// coordinator omits this, so new providers suppress checkpoint receipts.
 	CacheReceiptBoundaryMode string `json:"cache_receipt_boundary_mode,omitempty"`
 	// CacheRepeatedPrefixTokens is the coordinator's observed fleet-wide repeat
-	// demand for this prompt: the longest geometric block boundary another plan
-	// shared within the routing TTL, 0 when none did. It is an integer count
+	// demand for this prompt: the deepest boundary another plan shared within
+	// the routing TTL among those a plan observes, which are the multiples of
+	// 1,024 tokens and its final boundary, 0 when none did. It is an integer count
 	// only, never a key, hash, boundary or prompt-derived identifier. It is set
 	// only with a granted cache scope, so a pointer keeps three states on the
 	// wire: absent (older coordinator or no scope, provider keeps writing every

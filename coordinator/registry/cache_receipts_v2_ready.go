@@ -96,7 +96,7 @@ func (t *cacheRoutingTracker) applyReadyV2Decision(
 	} else {
 		attempt.LastReadyAnchor = final
 	}
-	t.attempts[msg.CacheReceiptNonce] = attempt
+	t.storeAttemptLocked(msg.CacheReceiptNonce, attempt)
 	for _, anchor := range msg.ReadyAnchors {
 		recompute := min(msg.RequiredRecomputeTokens, anchor.TokenCount)
 		key := cacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier)

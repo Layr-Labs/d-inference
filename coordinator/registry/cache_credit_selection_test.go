@@ -367,7 +367,7 @@ func TestCacheCreditIdenticalHoldersSpreadConcurrentBurst(t *testing.T) {
 	}
 	f.r.cacheRouting.mu.Unlock()
 
-	totalScans := 0
+	totalScans, firstScanCommits := 0, 0
 	for round := range rounds {
 		var mu sync.Mutex
 		arrived := 0
@@ -385,6 +385,7 @@ func TestCacheCreditIdenticalHoldersSpreadConcurrentBurst(t *testing.T) {
 			}
 		}
 		winners := make([]*Provider, burst)
+		scanCounts := make([]int, burst)
 		var wg sync.WaitGroup
 		for i := range burst {
 			wg.Add(1)
@@ -400,7 +401,7 @@ func TestCacheCreditIdenticalHoldersSpreadConcurrentBurst(t *testing.T) {
 					t.Errorf("burst request %d: %+v", i, decision)
 					return
 				}
-				winners[i] = p
+				winners[i], scanCounts[i] = p, decision.ScanCount
 			}(i)
 		}
 		wg.Wait()
@@ -418,11 +419,27 @@ func TestCacheCreditIdenticalHoldersSpreadConcurrentBurst(t *testing.T) {
 			t.Fatalf("round %d: burst landed on %d holders, want %d", round, len(distinct), holders)
 		}
 		totalScans += arrived
+		for _, scans := range scanCounts {
+			if scans == 1 {
+				firstScanCommits++
+			}
+		}
 	}
-	// Identity-ordered ties scan exactly 6 times per round (3 + 2 + 1); a
-	// uniform spread averages under 4 and never approaches 5 over 30 rounds.
+	// A request commits on its first scan exactly when its first pick was
+	// distinct within the burst. Identity-ordered ties give every request the
+	// same first pick, so exactly one request per round commits on its first
+	// scan whatever the goroutine schedule; a uniform spread commits about 2.1
+	// of 3 per round (P(all three distinct) = 2/9, P(two distinct) = 2/3).
+	t.Logf("first-scan commits=%d scans=%d over %d rounds", firstScanCommits, totalScans, rounds)
+	if firstScanCommits <= rounds*3/2 {
+		t.Fatalf("burst converged on one holder: %d of %d rounds' requests committed on their first scan (identity order gives %d)",
+			firstScanCommits, rounds, rounds)
+	}
+	// Identity-ordered ties scan 5-6 times per round (3 + 2 + 1, minus one
+	// when a loser rescans after both other commits); a uniform spread
+	// averages about 4.
 	if totalScans > 5*rounds {
-		t.Fatalf("burst cascaded into %d scans over %d rounds (identity-ordered ties would take %d)", totalScans, rounds, 6*rounds)
+		t.Fatalf("burst cascaded into %d scans over %d rounds (identity-ordered ties take %d-%d)", totalScans, rounds, 5*rounds, 6*rounds)
 	}
 }
 

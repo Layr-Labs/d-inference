@@ -114,7 +114,7 @@ import Testing
         "already_queued", "cache_closed", "disk_unavailable", "write_failed",
         "host_memory_unavailable", "cache_epoch_changed", "cache_maintenance_busy",
         "disk_space_insufficient", "unsafe_cache_root", "write_io_failed",
-        "existing_cache_unreadable", "cache_entry_evicted",
+        "existing_cache_unreadable", "cache_entry_evicted", "skipped_novel",
     ])
 }
 
@@ -1232,6 +1232,7 @@ import Testing
         cacheScope: "account-route-key",
         prefixCacheProtocol: 2,
         cacheReceiptBoundaryMode: PrefixCacheV2Capability.checkpointBoundaryMode,
+        cacheRepeatedPrefixTokens: 0,
         toolSchemaMetadataProtocol: 1))
     let data = try ProviderProtocolCodec.encodeCoordinatorMessage(scoped)
     let object = try jsonObject(data)
@@ -1239,8 +1240,19 @@ import Testing
     #expect(object["cache_scope"] as? String == "account-route-key")
     #expect(object["prefix_cache_protocol"] as? Int == 2)
     #expect(object["cache_receipt_boundary_mode"] as? String == "checkpoint")
+    // 0 is a real value (novel fleet-wide) and must survive the round trip;
+    // only a missing key means the coordinator predates the field.
+    #expect(object["cache_repeated_prefix_tokens"] as? Int == 0)
     #expect(object["tool_schema_metadata_protocol"] as? Int == 1)
     #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: data) == scoped)
+
+    let repeated = #"{"type":"inference_request","request_id":"r","body":null,"cache_scope":"s","cache_repeated_prefix_tokens":2048,"future_outer_field":1}"#
+    guard case .inferenceRequest(let repeatedRequest) = try ProviderProtocolCodec.decodeCoordinatorMessage(
+        from: Data(repeated.utf8))
+    else { throw TestFailure.unexpectedMessage }
+    #expect(repeatedRequest.cacheRepeatedPrefixTokens == 2048)
+    #expect(CoordinatorMessage.InferenceRequest(requestId: "neg", cacheRepeatedPrefixTokens: -3)
+        .cacheRepeatedPrefixTokens == 0)
 
     let legacy = #"{"type":"inference_request","request_id":"r","body":null}"#
     guard case .inferenceRequest(let decoded) = try ProviderProtocolCodec.decodeCoordinatorMessage(
@@ -1250,7 +1262,15 @@ import Testing
     #expect(decoded.cacheScope == nil)
     #expect(decoded.prefixCacheProtocol == nil)
     #expect(decoded.cacheReceiptBoundaryMode == nil)
+    #expect(decoded.cacheRepeatedPrefixTokens == nil)
     #expect(decoded.toolSchemaMetadataProtocol == nil)
+}
+
+@Test func donationOutcomeVocabularyIncludesSkippedNovel() {
+    // Mirrors coordinator/registry/cache_eligibility.go (23 known buckets).
+    #expect(PrefixCacheDonationOutcome.allCases.count == 23)
+    #expect(PrefixCacheDonationOutcome.skippedNovel.rawValue == "skipped_novel")
+    #expect(PrefixCacheDonationOutcome(rawValue: "skipped_novel") == .skippedNovel)
 }
 
 @Test func checkpointCapabilityModeIsOptionalAndRoundTrips() throws {

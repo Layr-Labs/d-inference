@@ -167,13 +167,27 @@ final class PrefixCacheLookupReceiptFinalizer: @unchecked Sendable {
 struct RemotePrefixCacheContext: Sendable, Equatable {
     let scope: String?
     let receiptNonce: String?
+    /// Coordinator-observed fleet-wide repeat demand for this prompt (a token
+    /// count, never an identifier). Nil when the coordinator predates the
+    /// `cache_repeated_prefix_tokens` field; 0 means novel fleet-wide.
+    let repeatedPrefixTokens: Int?
 
-    init(cacheScope: String?, cacheReceiptNonce: String?) {
+    init(cacheScope: String?, cacheReceiptNonce: String?, repeatedPrefixTokens: Int? = nil) {
         self.scope = Self.nonEmpty(cacheScope)
         self.receiptNonce = Self.nonEmpty(cacheReceiptNonce)
+        self.repeatedPrefixTokens = repeatedPrefixTokens.map { max(0, $0) }
     }
 
     var cacheEnabled: Bool { scope != nil }
+
+    /// The complete-checkpoint donation gate input. Present only for a remote
+    /// request whose coordinator supplied the field; an older coordinator or
+    /// a standalone/local request yields nil and the store keeps writing every
+    /// captured checkpoint (`SSDCheckpointDemand.admitsWrite`).
+    var donationDemand: SSDCheckpointDonationDemand? {
+        guard cacheEnabled, let repeatedPrefixTokens else { return nil }
+        return SSDCheckpointDonationDemand(repeatedPrefixTokens: repeatedPrefixTokens)
+    }
 
     private static func nonEmpty(_ value: String?) -> String? {
         guard let value,

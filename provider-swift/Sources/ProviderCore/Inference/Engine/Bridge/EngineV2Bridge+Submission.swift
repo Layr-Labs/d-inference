@@ -57,7 +57,8 @@ extension EngineV2Bridge {
         positionState: CBv2PositionState? = nil,
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
-        tokenConstraint: (any CBv2TokenConstraint)? = nil
+        tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        donationDemand: SSDCheckpointDonationDemand? = nil
     ) async -> AsyncStream<GenerationEvent> {
         do {
             return try await submitTokenized(
@@ -73,6 +74,7 @@ extension EngineV2Bridge {
                 hybridPrefixIdentity: hybridPrefixIdentity,
                 mediaKind: mediaKind,
                 tokenConstraint: tokenConstraint,
+                donationDemand: donationDemand,
                 firstContentDeadline: nil)
         } catch MultiModelBatchSchedulerEngineError.advertisedContextExceeded {
             // Preserve the typed client rejection across the nonthrowing stream
@@ -110,6 +112,9 @@ extension EngineV2Bridge {
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        /// Coordinator repeat-demand hint for the complete-checkpoint write
+        /// gate; nil keeps the legacy write-every-checkpoint behaviour.
+        donationDemand: SSDCheckpointDonationDemand? = nil,
         firstContentDeadline: FirstContentDeadline?,
         profile: RequestProfileBuilder? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
@@ -262,6 +267,11 @@ extension EngineV2Bridge {
                 store.registerReadyReceipt(requestID: receiptID, promptTokens: promptTokens,
                                            cacheScope: checkpointScope, callback: callback)
                 readyReceiptRegistered = true
+            }
+            // The donate contract has no slot for coordinator metadata, so the
+            // demand hint rides the receipt ID. Cleared with staging/receipts.
+            if let donationDemand, let store = ssdHybridCheckpointStore {
+                store.registerDonationDemand(donationDemand, requestID: receiptID)
             }
             if multimodal == nil, let evidence = residentPrefixCacheEvidence, let usageSignal,
                 let proof = evidence.promptProof(tokens: promptTokens, scope: cacheScope)

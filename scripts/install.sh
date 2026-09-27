@@ -222,8 +222,7 @@ commit_staged_app() {
     local app_bin="$destination/Contents/MacOS"
     if ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom" "$install_dir/bin/darkbloom" \
         || ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" "$install_dir/bin/darkbloom-enclave" \
-        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/mlx.metallib" "$install_dir/bin/mlx.metallib" \
-        || ! ln -sfn "darkbloom-enclave" "$install_dir/bin/eigeninference-enclave"
+        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/mlx.metallib" "$install_dir/bin/mlx.metallib"
     then
         rm -rf "$destination"
         [ "$had_previous" -eq 1 ] \
@@ -232,28 +231,6 @@ commit_staged_app() {
         return 1
     fi
     chmod +x "$app_bin/darkbloom" "$app_bin/darkbloom-enclave"
-    rm -rf "$backup"
-}
-
-commit_staged_flat_bundle() {
-    local staged_bin=$1
-    local install_dir=$2
-    local backup="$install_dir/.install-backup-$$-$RANDOM"
-    local destination="$install_dir/bin"
-    mkdir -p "$backup"
-    if [ -d "$destination" ]; then
-        mv "$destination" "$backup/bin" || {
-            rm -rf "$backup"
-            return 1
-        }
-    fi
-    if ! mv "$staged_bin" "$destination"; then
-        [ -d "$backup/bin" ] && mv "$backup/bin" "$destination" 2>/dev/null || true
-        rm -rf "$backup"
-        return 1
-    fi
-    chmod +x "$destination/darkbloom" "$destination/darkbloom-enclave"
-    ln -sfn "darkbloom-enclave" "$destination/eigeninference-enclave"
     rm -rf "$backup"
 }
 
@@ -288,42 +265,25 @@ install_bundle_atomically() {
         return 1
     }
 
-    if [ -d "$stage/Darkbloom.app" ]; then
-        verify_staged_app_payload \
-            "$stage/Darkbloom.app" "$binary_hash" "$metallib_hash" || {
-            rm -rf "$stage"
-            return 1
-        }
-        verify_staged_app "$stage/Darkbloom.app" || {
-            rm -rf "$stage"
-            return 1
-        }
-        commit_staged_app "$stage/Darkbloom.app" "$install_dir" || {
-            rm -rf "$stage"
-            fail_install "Atomic app swap failed; previous install was restored."
-            return 1
-        }
-    else
-        if [ "$INSTALL_TEST_MODE" = "1" ]; then
-            codesign --verify --strict --verbose=2 "$flat_bin/darkbloom" >/dev/null 2>&1 || {
-                rm -rf "$stage"
-                fail_install "Strict signature verification failed for legacy flat artifact."
-                return 1
-            }
-        else
-            verify_code_requirement \
-                "$flat_bin/darkbloom" 0 "$DARKBLOOM_DESIGNATED_REQUIREMENT" || {
-                rm -rf "$stage"
-                fail_install "Legacy flat artifact does not satisfy the pinned signature requirement."
-                return 1
-            }
-        fi
-        commit_staged_flat_bundle "$flat_bin" "$install_dir" || {
-            rm -rf "$stage"
-            fail_install "Atomic flat-bundle swap failed; previous install was restored."
-            return 1
-        }
-    fi
+    [ -d "$stage/Darkbloom.app" ] || {
+        rm -rf "$stage"
+        fail_install "Release bundle has no Darkbloom.app; flat-only bundles are no longer installable."
+        return 1
+    }
+    verify_staged_app_payload \
+        "$stage/Darkbloom.app" "$binary_hash" "$metallib_hash" || {
+        rm -rf "$stage"
+        return 1
+    }
+    verify_staged_app "$stage/Darkbloom.app" || {
+        rm -rf "$stage"
+        return 1
+    }
+    commit_staged_app "$stage/Darkbloom.app" "$install_dir" || {
+        rm -rf "$stage"
+        fail_install "Atomic app swap failed; previous install was restored."
+        return 1
+    }
     rm -rf "$stage"
 }
 

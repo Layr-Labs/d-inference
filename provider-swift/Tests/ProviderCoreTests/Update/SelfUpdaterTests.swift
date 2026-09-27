@@ -158,8 +158,8 @@ struct SelfUpdaterTests {
         #expect(reason.contains("unsupported release platform"))
     }
 
-    @Test("installBundle installs flat bundle files into bin/ subdirectory")
-    func installBundleInstallsBundleFiles() throws {
+    @Test("installBundle refuses a flat-only bundle and leaves the live install untouched")
+    func installBundleRefusesFlatOnlyBundle() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("self-updater-test-\(UUID().uuidString)", isDirectory: true)
         let stage = root.appendingPathComponent("stage", isDirectory: true)
@@ -200,16 +200,15 @@ struct SelfUpdaterTests {
             release: release,
             installDir: install
         )
-        guard case .success = result else {
-            Issue.record("installBundleForTesting failed: \(result)")
+        guard case .failure(let error) = result else {
+            Issue.record("a flat-only bundle (no Darkbloom.app) must not install")
             return
         }
+        #expect("\(error)".contains("Darkbloom.app"))
 
-        let installedBin = install.appendingPathComponent("bin")
-        #expect((try String(contentsOf: installedBin.appendingPathComponent("darkbloom"), encoding: .utf8)) == "new darkbloom")
-        #expect((try String(contentsOf: installedBin.appendingPathComponent("darkbloom-enclave"), encoding: .utf8)) == "new enclave")
-        #expect((try String(contentsOf: installedBin.appendingPathComponent("mlx.metallib"), encoding: .utf8)) == "new metallib")
-        #expect(FileManager.default.fileExists(atPath: installedBin.appendingPathComponent("eigeninference-enclave").path))
+        #expect((try String(contentsOf: oldBin.appendingPathComponent("darkbloom"), encoding: .utf8)) == "old darkbloom")
+        #expect((try String(contentsOf: oldBin.appendingPathComponent("darkbloom-enclave"), encoding: .utf8)) == "old enclave")
+        #expect((try String(contentsOf: oldBin.appendingPathComponent("mlx.metallib"), encoding: .utf8)) == "old metallib")
     }
 
     @Test("installBundle with .app bundle creates symlinks from bin/ to .app")
@@ -317,11 +316,9 @@ struct SelfUpdaterTests {
         #expect((try String(contentsOf: installedBin.appendingPathComponent("darkbloom"), encoding: .utf8)) == "app darkbloom")
         #expect((try String(contentsOf: installedBin.appendingPathComponent("darkbloom-enclave"), encoding: .utf8)) == "app enclave")
 
-        // Legacy symlink should exist.
-        let legacyDest = try FileManager.default.destinationOfSymbolicLink(
-            atPath: installedBin.appendingPathComponent("eigeninference-enclave").path
-        )
-        #expect(legacyDest == "darkbloom-enclave")
+        // The Rust-era `eigeninference-enclave` alias is no longer created.
+        #expect(!FileManager.default.fileExists(
+            atPath: installedBin.appendingPathComponent("eigeninference-enclave").path))
     }
 
     // MARK: - Stage / Commit
@@ -838,8 +835,8 @@ private func runTestProcess(
 @Suite("SelfUpdater.installRoot")
 struct SelfUpdaterInstallRootTests {
 
-    @Test("flat bin layout derives the darkbloom root")
-    func flatLayout() {
+    @Test("bin/ entry point derives the darkbloom root")
+    func binEntryPointLayout() {
         let root = SelfUpdater.installRoot(
             forExecutablePath: "/Users/op/.darkbloom/bin/darkbloom")
         #expect(root.path.hasSuffix("/.darkbloom"))

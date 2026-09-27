@@ -81,12 +81,9 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    - `commit_staged_app` moves any existing `~/.darkbloom/Darkbloom.app` to
      `~/.darkbloom/.install-backup-<pid>-<random>`, moves the staged app in,
      writes the symlinks `~/.darkbloom/bin/darkbloom`, `darkbloom-enclave`,
-     `mlx.metallib` → `../Darkbloom.app/Contents/MacOS/*` and the legacy alias
-     `bin/eigeninference-enclave → darkbloom-enclave`, and `chmod +x`. Any
+     `mlx.metallib` → `../Darkbloom.app/Contents/MacOS/*`, and `chmod +x`. Any
      failure moves the backup back;
-   - a tarball without `Darkbloom.app` (legacy flat layout) gets
-     `codesign --verify --strict -R=…` on `bin/darkbloom` and
-     `commit_staged_flat_bundle` swaps `~/.darkbloom/bin` the same way;
+   - a tarball without `Darkbloom.app` (the retired flat layout) is refused;
    - the staging directory is removed; on any failure the script prints
      `Existing installation was left unchanged.` and exits 1.
 4. **PATH.** `ln -sf ~/.darkbloom/bin/darkbloom /usr/local/bin/darkbloom`
@@ -99,10 +96,10 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
 5. **Legacy install migration.** For each real directory `~/.dginf` and
    `~/.eigeninference`: `cp -n` of `enclave_key.data`, `wallet_key` and
    `auth_token` into `~/.darkbloom`, then the old directory is replaced by a
-   symlink to `~/.darkbloom`. `provider.toml` is not migrated by the script;
-   the CLI copies a config found at a legacy path to
-   `~/.config/darkbloom/provider.toml` on its next run
-   (`provider-swift/Sources/darkbloom/Darkbloom.swift`, `migrateConfigIfNeeded`).
+   symlink to `~/.darkbloom`. `provider.toml` is not migrated; the CLI reads
+   only `~/.config/darkbloom/provider.toml` or an explicit `--config` path
+   (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
+   `defaultConfigPath`).
 6. **Step 3/5 — Secure Enclave identity.** Runs `darkbloom-enclave info`
    (`provider-swift/Sources/darkbloom-enclave-cli/EnclaveCLI.swift`), which
    creates the P-256 key if missing. Failure prints a warning; the install

@@ -13,9 +13,8 @@
 // tool is stateless: there is no on-disk key material.
 //
 // Used by `scripts/install.sh` to render an attestation blob during
-// initial device provisioning before the main provider is running. The
-// legacy binary name `eigeninference-enclave` is kept as a symlink in
-// install.sh; the canonical name is `darkbloom-enclave`.
+// initial device provisioning before the main provider is running. Installed
+// as `darkbloom-enclave`.
 
 import ArgumentParser
 import CryptoKit

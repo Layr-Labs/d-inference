@@ -8,7 +8,7 @@
 // scan at startup — the scan IS the recovery protocol, so index and files
 // can never disagree after a crash (no sidecar persistence, spec §5.1).
 //
-// TTL is SLIDING on hit (15-minute max, `SSDPrefixCachePolicy`): a hit
+// TTL is SLIDING on hit (30-minute max, `SSDPrefixCachePolicy`): a hit
 // bumps `lastAccess` AND touches the file's mtime, so recency survives a
 // process restart (the scan seeds `lastAccess` from mtime).
 //

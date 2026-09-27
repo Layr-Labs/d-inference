@@ -46,7 +46,7 @@ struct FlashNextEncryptedHandlerLiveTests {
             models: [model], config: ProviderConfig(
                 provider: ProviderSettings(name: "flash-next-handler-fixture"),
                 backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1, mtpMode: mode.mtpMode)))
-        let loop = try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        let loop = try ProviderLoop(config: config, attestationSigner: nil)
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("flash-next-handler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)

@@ -247,7 +247,7 @@ private func makeWiringLoop(
     let budget = ScriptedProviderMemory.budget(
         physicalBytes: wiringPhysicalBytes, configReserveBytes: wiringReserveBytes)
     return try ProviderLoop(
-        config: config, purgeLegacyFiles: false, attestationSigner: nil,
+        config: config, attestationSigner: nil,
         kvBudgetForTesting: budget)
 }
 

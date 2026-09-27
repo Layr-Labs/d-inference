@@ -103,7 +103,7 @@ import Testing
     max_model_slots = 7
     idle_timeout_mins = 30
     engine_v2_kv_backend = "paged"
-    mtp = true
+    mtp_mode = "on"
     """)
 
     #expect(config.backend.retiredKeysPresent == ["kv_quant"])
@@ -114,7 +114,6 @@ import Testing
     #expect(config.backend.idleTimeoutMins == 30)
     #expect(config.backend.engineV2KVBackend == "paged")
     #expect(config.backend.mtpMode == .on)
-    #expect(config.backend.mtp == true)
 }
 
 @Test func configParsingSurfacesNoRetiredKeysByDefault() throws {
@@ -276,12 +275,10 @@ import Testing
     #expect(decoded.provider.updateJitterSeconds == 60)
 }
 
-// MARK: - engine_v2_max_concurrent: v0.8.1 default + config_version migration
+// MARK: - engine_v2_max_concurrent default
 //
-// v0.8.1 reverts the box-wide concurrency default 8 -> 4, alongside the
-// `.auto` flip back to contiguous KV. The two ARE coupled: v0.8.0's raise was
-// justified by paged's batch curve (1.27x from B=4 to B=8, against contiguous'
-// 1.069x), so reverting the backend takes the raise with it.
+// The box-wide concurrency default is 4, the knee of the measured contiguous
+// batch curve. An explicit value in provider.toml is always honoured.
 
 @Test func maxConcurrentAbsentKeyDefaultsToFour() throws {
     // No `[backend]` section at all...
@@ -337,114 +334,31 @@ import Testing
     """)
 
     #expect(config.backend.engineV2MaxConcurrent == 4)
-    // 4 is the new default, so nothing was migrated — the operator gets no
-    // warning for agreeing with us.
-    #expect(config.appliedMigrations.isEmpty)
-}
-
-// THE POINT OF THE WHOLE MECHANISM. Every v0.8.0 `provider.toml` carries an
-// EXPLICIT `engine_v2_max_concurrent = 8` — `TOMLEncoder` emits every
-// non-optional key, the same reason every field config still carries
-// `kv_quant` (see `configParsingRetiresKVQuantWithoutLosingNeighbours`). A
-// literal does not track the binary, so without this step moving the default
-// constant would reach fresh installs only and be a fleet-wide no-op.
-@Test func maxConcurrentStampedOneEightIsMigratedToFourAndAnnounced() throws {
-    let config = ConfigManager.parse("""
-    config_version = 1
-
-    [provider]
-    name = "test-provider"
-
-    [backend]
-    port = 8100
-    engine_v2_max_concurrent = 8
-    """)
-
-    #expect(config.backend.engineV2MaxConcurrent == 4)
-    #expect(config.appliedMigrations == [ConcurrencyDefaultMigration.v081ConcurrencyRevert.id])
-
-    // The operator is told, on the shared startup surface every serve mode
-    // uses — including, plainly, that this cannot tell their 8 from ours.
-    let messages = RetiredKnobWarnings.messages(config: config, environment: [:])
-    #expect(messages.count == 1)
-    let warning = try #require(messages.first)
-    #expect(warning.contains("engine_v2_max_concurrent"))
-    #expect(warning.contains("config_version"))
-    #expect(warning.contains("CANNOT TELL"))
-    #expect(warning.contains("set it again"))
-}
-
-// Blast radius: ONLY the exact value v0.8.0 generated moves. Every other cap
-// in range was necessarily typed by a human, so it is left exactly as written
-// even though the file is the right schema generation for the step.
-@Test func maxConcurrentStampedOneHandSetValuesSurviveUntouched() throws {
-    for chosen in [1, 2, 3, 5, 6, 7] as [UInt64] {
-        let config = ConfigManager.parse("""
-        config_version = 1
-
-        [provider]
-        name = "test-provider"
-
-        [backend]
-        engine_v2_max_concurrent = \(chosen)
-        """)
-        #expect(config.backend.engineV2MaxConcurrent == chosen)
-        #expect(config.appliedMigrations.isEmpty)
-        #expect(RetiredKnobWarnings.messages(config: config, environment: [:]).isEmpty)
-    }
-}
-
-// The migration burns exactly one boot. Once the file carries the v0.8.1
-// stamp, 8 is just a number an operator chose, and it is honoured forever.
-@Test func maxConcurrentStampedTwoEightIsHonouredNotMigrated() throws {
-    let config = ConfigManager.parse("""
-    config_version = 2
-
-    [provider]
-    name = "test-provider"
-
-    [backend]
-    engine_v2_max_concurrent = 8
-    """)
-
-    #expect(config.backend.engineV2MaxConcurrent == 8)
-    #expect(config.appliedMigrations.isEmpty)
     #expect(RetiredKnobWarnings.messages(config: config, environment: [:]).isEmpty)
 }
 
-// An UNSTAMPED file predates v0.8.0. Its cap is either the 4 that release
-// generated — which is v0.8.1's default anyway — or a value a human typed, so
-// v0.8.1 changes neither. This is a deliberate retirement of the old 4 -> 8
-// step: keeping it would now migrate 4 to 4 and announce a change that did not
-// happen, and a pre-v0.8.0 operator's deliberate 4 is finally honoured.
-@Test func maxConcurrentUnstampedValuesAreNeverRewritten() throws {
-    for chosen in [1, 2, 3, 4, 5, 6, 7, 8] as [UInt64] {
-        let config = ConfigManager.parse("""
-        [provider]
-        name = "test-provider"
+// The retired v0.8.1 migration keyed on `config_version`; the stamp is now an
+// ignored top-level key, so no explicit cap is ever rewritten — including the
+// 8 a v0.8.0 file generated under `config_version = 1`.
+@Test func maxConcurrentExplicitValuesAreHonouredWhateverTheStamp() throws {
+    for stamp in ["", "config_version = 1\n", "config_version = 2\n", "config_version = 3\n"] {
+        for chosen in [1, 2, 3, 4, 5, 6, 7, 8] as [UInt64] {
+            let config = ConfigManager.parse("""
+            \(stamp)[provider]
+            name = "test-provider"
 
-        [backend]
-        engine_v2_max_concurrent = \(chosen)
-        """)
-        #expect(config.backend.engineV2MaxConcurrent == chosen)
-        #expect(config.appliedMigrations.isEmpty)
+            [backend]
+            engine_v2_max_concurrent = \(chosen)
+            """)
+            #expect(config.backend.engineV2MaxConcurrent == chosen)
+            #expect(RetiredKnobWarnings.messages(config: config, environment: [:]).isEmpty)
+        }
     }
 }
 
-// Guard both generated-value migrations against drifting from the defaults
-// and schema generation they are meant to establish.
-@Test func migrationStepsLandOnTheirCurrentPolicies() throws {
-    let newestConcurrency = try #require(ConcurrencyDefaultMigration.steps.last)
-    #expect(newestConcurrency.toCap == BackendSettings.defaultEngineV2MaxConcurrent)
-    #expect(newestConcurrency.toVersion <= ProviderConfig.currentConfigVersion)
-    #expect(
-        MTPModeDefaultMigration.targetConfigVersion
-            == ProviderConfig.currentConfigVersion)
-}
-
-// The stamp has to survive the serializer, or a deliberate cap could never be
-// written back and would be re-migrated on every boot.
-@Test func configVersionStampRoundTripsAndPinsADeliberateEight() throws {
+// A deliberate cap survives a save/load round trip, and saving no longer
+// writes the retired `config_version` stamp.
+@Test func deliberateEightRoundTripsWithoutAStamp() throws {
     let original = ProviderConfig(
         provider: ProviderSettings(name: "test-provider"),
         backend: BackendSettings(engineV2MaxConcurrent: 8),
@@ -452,14 +366,8 @@ import Testing
     )
 
     let toml = ConfigManager.serialize(original)
-    #expect(toml.contains("config_version"))
-    // A top-level key is only valid TOML ahead of the first table header.
-    let firstTable = try #require(toml.range(of: "["))
-    let stamp = try #require(toml.range(of: "config_version"))
-    #expect(stamp.lowerBound < firstTable.lowerBound)
+    #expect(!toml.contains("config_version"))
 
     let decoded = ConfigManager.parse(toml)
-    #expect(decoded.configVersion == ProviderConfig.currentConfigVersion)
     #expect(decoded.backend.engineV2MaxConcurrent == 8)
-    #expect(decoded.appliedMigrations.isEmpty)
 }

@@ -1,7 +1,6 @@
 import Foundation
 
-/// One warning per retired knob an operator is still setting, plus one per
-/// one-time config migration this decode applied silently.
+/// One warning per retired knob an operator is still setting.
 ///
 /// WHY THIS IS NOT IN THE SERVE LOOP. These warnings used to live inline at
 /// the top of `ProviderLoop.run()`, which meant only the coordinator-serving
@@ -16,8 +15,7 @@ import Foundation
 /// coordinator, or a config file on disk.
 public enum RetiredKnobWarnings {
     /// Every config warning this config + environment earns, in a stable
-    /// order: environment variables, then `[backend]` retired keys, then
-    /// applied migrations.
+    /// order: environment variables, then `[backend]` retired keys.
     public static func messages(
         config: ProviderConfig,
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -36,24 +34,6 @@ public enum RetiredKnobWarnings {
             out.append(
                 "provider.toml sets [backend] \(retired), which is a RETIRED knob and is "
                     + "IGNORED — remove the key")
-        }
-        // One-time migrations applied during decode. The operator's file on
-        // disk still reads the OLD value until the startup stamp rewrites
-        // it, so a silent migration would leave the file and the running
-        // behaviour disagreeing with nothing to explain the gap.
-        for id in config.appliedMigrations {
-            guard let step = ConcurrencyDefaultMigration.step(id: id) else { continue }
-            out.append(
-                "provider.toml is at config_version \(step.fromVersion) and sets [backend] "
-                    + "engine_v2_max_concurrent = \(step.fromCap), the default that release "
-                    + "generated — changing it to \(step.toCap). B=\(step.toCap) is the knee of "
-                    + "the measured contiguous batch curve: aggregate throughput is flat from "
-                    + "B=\(step.toCap) to B=\(step.fromCap) while per-request decode is "
-                    + "aggregate/B, so the smaller batch is worth ~87% more tok/s per request "
-                    + "at essentially the same aggregate. THIS CANNOT TELL a generated "
-                    + "\(step.fromCap) from one you chose deliberately — if you meant it, set "
-                    + "it again: this migration runs once and an explicit \(step.fromCap) is "
-                    + "honoured from then on.")
         }
         return out
     }

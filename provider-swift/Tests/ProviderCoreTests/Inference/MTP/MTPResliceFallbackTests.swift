@@ -274,11 +274,9 @@ func mtpFloorLoop(
                 backend: .init(
                     idleTimeoutMins: 0,
                     maxModelSlots: 3,
-                    mtp: mtpMode == nil ? mtpDrafterPath != nil : nil,
-                    mtpMode: mtpMode ?? .auto,
+                    mtpMode: mtpMode ?? (mtpDrafterPath != nil ? .on : .off),
                     mtpDrafterPath: mtpDrafterPath),
                 coordinator: .init(heartbeatIntervalSecs: 60))),
-        purgeLegacyFiles: false,
         attestationSigner: nil,
         kvBudgetForTesting: budget)
 }

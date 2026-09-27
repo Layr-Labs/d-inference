@@ -480,9 +480,9 @@ trust_boundaries:
       restarts and is disabled rather than using a non-persistent key.
 
       The X25519 encryption key pair is generated ephemerally in memory using libsodium
-      (NodeKeyPair.swift). It is NOT persisted to disk. Legacy on-disk key paths
-      (~/.darkbloom/node_key and equivalents) are actively purged via purgeLegacyFiles()
-      on startup. The secret key exists only in process memory, protected by Hardened
+      (NodeKeyPair.swift). It is NOT persisted to disk (the pre-v0.5 on-disk
+      node_key files were purged by every release through v0.9.9; v0.9.10 drops
+      that sweep). The secret key exists only in process memory, protected by Hardened
       Runtime (kernel denies task_for_pid).
 
       The provider config file (~/.config/darkbloom/provider.toml) stores only
@@ -1251,7 +1251,7 @@ threats:
       - provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift
       - provider-swift/Sources/ProviderCore/ProviderLoop.swift
     mitigations:
-      - description: Key is process-scoped and never persisted (NodeKeyPair.generate(), NodeKeyPair.purgeLegacyFiles()).
+      - description: Key is process-scoped and never persisted (NodeKeyPair.generate()).
         status: implemented
       - description: XSalsa20-Poly1305 provides no forward secrecy within a process lifetime; a new key per process bounds exposure to that lifetime.
         status: implemented

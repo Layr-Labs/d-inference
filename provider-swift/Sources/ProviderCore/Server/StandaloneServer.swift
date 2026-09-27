@@ -339,9 +339,6 @@ public actor StandaloneServer {
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
             catalog: SpecDecCatalogLookup(coordinatorURL: config.coordinatorURL))
-        // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
-        // EngineV2 SSD data lives under the separate `darkbloom/kv3` root.
-        LegacyKVCacheSweeper.sweep()
         // Pin the MLX memory ceiling before any model weights load on this path
         // (the coordinator path does this in ProviderLoop.startMemoryProtection).
         MLXMemoryGuard.configureOnce()

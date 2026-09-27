@@ -77,16 +77,11 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     /// does NOT expand $(AppIdentifierPrefix) -- that's Xcode-only.
     public static let defaultAccessGroup = "SLDQ2GJ6TL.io.darkbloom.provider"
 
-    /// Legacy v1 label. Keys stored under this label were created with the old
-    /// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` policy, which becomes
-    /// inaccessible while the screen is locked (signing fails with OSStatus
-    /// -25308). `loadOrCreate` migrates them to `defaultLabel` (v2).
-    public static let legacyLabelV1 = "io.darkbloom.provider.attestation-signing.v1"
-
     /// Current (v2) label. Keys here use
     /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so background
-    /// challenge signing works while the screen is locked. The presence of a
-    /// key under this label is itself the migration marker.
+    /// challenge signing works while the screen is locked. (The retired v1
+    /// label used `WhenUnlockedThisDeviceOnly`; its one-time migration was
+    /// removed in v0.9.10 and a leftover v1 item is simply never read.)
     public static let defaultLabel = "io.darkbloom.provider.attestation-signing.v2"
 
     /// Raw P-256 public key (64 bytes: X || Y, without the 0x04 prefix).
@@ -120,25 +115,9 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
 
     // MARK: - Load or Create
 
-    /// Load an existing persistent key from the keychain, or create one if not found.
-    ///
-    /// Performs a deterministic, version-stamped migration off the legacy v1
-    /// key. Old keys (`legacyLabelV1`) were created with
-    /// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, which becomes
-    /// inaccessible while the screen is locked — `SecKeyCreateSignature` then
-    /// returns OSStatus -25308 and the provider can no longer answer
-    /// attestation challenges. New keys are created under `defaultLabel` (v2)
-    /// with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`.
-    ///
-    /// The migration is independent of lock state: the *presence of a v2 key*
-    /// IS the migration marker — there is no test-sign and no attribute
-    /// probing (the old approach only detected the bad policy while locked,
-    /// which is almost never the case at provider startup). When only a v1 key
-    /// exists, a brand-new v2 key is created under the new label. Creating
-    /// under a *new* label sidesteps the `errSecDuplicateItem` /
-    /// delete-while-locked trap entirely. The v1 key is then deleted on a
-    /// best-effort basis; an orphan left behind because deletion failed while
-    /// locked is harmless — it has a different label and is never used again.
+    /// Load an existing persistent key from the keychain, or create one if not
+    /// found. New keys are created under `defaultLabel` (v2) with
+    /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`.
     public static func loadOrCreate(
         accessGroup: String? = nil,
         label: String? = nil
@@ -154,20 +133,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
             logger.info("Loaded existing persistent Secure Enclave key")
             return existing
         } catch PersistentEnclaveKeyError.keyLookupFailed(status: errSecItemNotFound) {
-            // No key under keyLabel — fall through to (migration +) creation.
-        }
-
-        // Migration only applies to the default (v2) label. A custom label
-        // (used by tests) is pure find-or-create with no migration. If a
-        // legacy v1 key exists, mint a fresh v2 key and retire the v1 key.
-        if keyLabel == defaultLabel,
-           (try? findExisting(accessGroup: group, label: legacyLabelV1)) != nil {
-            logger.warning("Found legacy v1 Secure Enclave key — migrating to v2 (AfterFirstUnlock)")
-            let migrated = try createNew(accessGroup: group, label: defaultLabel)
-            // Best-effort cleanup. If the v1 key is locked and cannot be
-            // deleted, the orphan is harmless: different label, never used.
-            try? delete(accessGroup: group, label: legacyLabelV1)
-            return migrated
+            // No key under keyLabel — fall through to creation.
         }
 
         return try createNew(accessGroup: group, label: keyLabel)

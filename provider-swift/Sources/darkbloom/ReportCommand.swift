@@ -82,8 +82,7 @@ struct Report: AsyncParsableCommand {
             // migration that would write it (or root's home) as root.
             Darkbloom.ensureLogging()
             snapshot = try loadRuntimeSnapshot(
-                configPath: ReportAppAttestEvidence.configPath(explicit: configOptions.config, invokingHome: invokingHome),
-                migrateOnDisk: false)
+                configPath: ReportAppAttestEvidence.configPath(explicit: configOptions.config, invokingHome: invokingHome))
         } else {
             snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         }

@@ -257,7 +257,6 @@ func daemonStatePersistsInjectedEphemeralSignerIdentity() async throws {
                 provider: ProviderSettings(name: "daemon-identity-test"),
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings())),
-        purgeLegacyFiles: false,
         attestationSigner: signer)
     await loop.setDaemonStateFileForTesting(url)
     await loop.writeDaemonState()
@@ -516,7 +515,7 @@ struct DesiredModelsForPostureTests {
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
         )
-        return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        return try ProviderLoop(config: config, attestationSigner: nil)
     }
 
     @Test("a `--model X` selection outside enabled_models stays desired — its failure shows")

@@ -52,7 +52,7 @@ struct BetaCommandTests {
 
         // weightedR1 already decodes to true via the default; the old code
         // no-oped ("already enabled") without pinning anything.
-        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path, migrateOnDisk: false)
+        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path)
 
         let written = try String(contentsOf: url, encoding: .utf8)
         #expect(written.contains("[gemma_optimizations]"))
@@ -69,10 +69,10 @@ struct BetaCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path, migrateOnDisk: false)
+        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path)
         let pinned = try String(contentsOf: url, encoding: .utf8)
 
-        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path, migrateOnDisk: false)
+        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path)
         let after = try String(contentsOf: url, encoding: .utf8)
 
         #expect(after == pinned)
@@ -92,7 +92,7 @@ struct BetaCommandTests {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let before = try String(contentsOf: url, encoding: .utf8)
 
-        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path, migrateOnDisk: false)
+        try setBetaFeature("gemma-weighted-r1", enabled: true, configPath: url.path)
 
         let after = try String(contentsOf: url, encoding: .utf8)
         #expect(after == before)
@@ -108,7 +108,7 @@ struct BetaCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try setBetaFeature("mtp", enabled: false, configPath: url.path, migrateOnDisk: false)
+        try setBetaFeature("mtp", enabled: false, configPath: url.path)
 
         let written = try String(contentsOf: url, encoding: .utf8)
         #expect(written.contains("mtp_mode = 'off'"))
@@ -127,7 +127,7 @@ struct BetaCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try setBetaFeature("mtp", enabled: false, configPath: url.path, migrateOnDisk: false)
+        try setBetaFeature("mtp", enabled: false, configPath: url.path)
 
         let written = try String(contentsOf: url, encoding: .utf8)
         #expect(written.contains("mtp_mode = 'off'"))
@@ -146,7 +146,7 @@ struct BetaCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try setBetaFeature("gemma-weighted-r1", enabled: false, configPath: url.path, migrateOnDisk: false)
+        try setBetaFeature("gemma-weighted-r1", enabled: false, configPath: url.path)
 
         let reloaded = try ConfigManager.load(from: url)
         #expect(!reloaded.gemmaOptimizations.weightedR1)
@@ -166,7 +166,7 @@ struct BetaCommandTests {
         let before = try String(contentsOf: url, encoding: .utf8)
 
         do {
-            try setBetaFeature("gemma-expert-packing", enabled: true, configPath: url.path, migrateOnDisk: false)
+            try setBetaFeature("gemma-expert-packing", enabled: true, configPath: url.path)
             Issue.record("gemma-expert-packing is not a beta feature in this build")
         } catch {
             // ValidationError naming the known feature ids.
@@ -181,13 +181,13 @@ struct BetaCommandTests {
         let url = try makeTempConfig(nil)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try setBetaFeature("gemma-prefill-layer18", enabled: false, configPath: url.path, migrateOnDisk: false)
+        try setBetaFeature("gemma-prefill-layer18", enabled: false, configPath: url.path)
 
         let written = try String(contentsOf: url, encoding: .utf8)
         #expect(written.contains("prefill_layer18 = false"))
     }
 
-    @Test("fixture mutations retain unrelated legacy settings without migration")
+    @Test("config mutations never rewrite unrelated settings (no URL or stamp migration)")
     func isolatedMutationsPreserveOtherSettings() throws {
         let url = try makeTempConfig("""
             config_version = 1
@@ -203,8 +203,8 @@ struct BetaCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try setBetaFeature("mtp", enabled: false, configPath: url.path, migrateOnDisk: false)
-        let idle = try setIdleUnloadMinutes(45, configPath: url.path, migrateOnDisk: false)
+        try setBetaFeature("mtp", enabled: false, configPath: url.path)
+        let idle = try setIdleUnloadMinutes(45, configPath: url.path)
 
         #expect(idle.path == url)
         let reloaded = try ConfigManager.load(from: url)

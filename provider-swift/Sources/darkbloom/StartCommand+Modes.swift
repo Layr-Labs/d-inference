@@ -206,8 +206,8 @@ extension Start {
         }
 
         // Housekeeping has removed the legacy telemetry queue. Install the
-        // panic hook now; its compatibility queue calls are no-ops and its only
-        // provider-owned output is a bounded local stderr marker.
+        // panic hook now; its only provider-owned output is a bounded local
+        // stderr marker.
         PanicHook.install()
 
         // Arm crash recovery for the running daemon however it was launched

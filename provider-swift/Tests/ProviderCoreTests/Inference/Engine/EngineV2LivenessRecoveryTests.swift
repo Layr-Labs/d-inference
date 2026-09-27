@@ -215,7 +215,7 @@ private func makeLivenessLoop() throws -> ProviderLoop {
     let budget = ScriptedProviderMemory.budget(
         physicalBytes: livenessPhysicalBytes, configReserveBytes: livenessReserveBytes)
     return try ProviderLoop(
-        config: config, purgeLegacyFiles: false, attestationSigner: nil,
+        config: config, attestationSigner: nil,
         kvBudgetForTesting: budget)
 }
 

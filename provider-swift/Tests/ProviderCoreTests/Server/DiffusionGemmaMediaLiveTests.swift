@@ -46,7 +46,6 @@ struct DiffusionGemmaMediaLiveTests {
         let selected = try #require(selectedPath)
         try #require(directory.appendingPathComponent("config.json").resolvingSymlinksInPath()
             == URL(fileURLWithPath: selected).appendingPathComponent("config.json").resolvingSymlinksInPath())
-        try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
         _ = Bundle(for: DiffusionMediaBundleAnchor.self).bundleURL
         let model = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: modelID))
         try #require(model.isVision == true && model.templateRenderOK == true,

@@ -31,7 +31,6 @@ struct DiffusionGemmaEncryptedHandlerLiveTests {
                 == directory.appendingPathComponent(name).resolvingSymlinksInPath())
         }
         try DiffusionGemmaArtifactFixture.verify(directory: directory)
-        try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
         _ = Bundle(for: DiffusionEncryptedBundleAnchor.self).bundleURL
         let originalHash = try #require(WeightHasher.computeHash(snapshotDir: directory, modelID: Self.modelID))
         let model = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: Self.modelID))
@@ -41,7 +40,7 @@ struct DiffusionGemmaEncryptedHandlerLiveTests {
                 provider: ProviderSettings(name: "diffusion-handler-fixture"),
                 backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1,
                     engineV2KVBackend: "paged", mtpMode: .auto)))
-        let loop = try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        let loop = try ProviderLoop(config: config, attestationSigner: nil)
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("diffusion-handler-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)

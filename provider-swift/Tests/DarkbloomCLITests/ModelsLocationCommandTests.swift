@@ -52,7 +52,7 @@ struct ModelsLocationCommandTests {
             var input = answers
             return try command(arguments).execute(
                 isInteractive: interactive, environment: environment,
-                homeDirectory: home, currentDirectory: root, migrateOnDisk: false,
+                homeDirectory: home, currentDirectory: root,
                 readInput: { input.isEmpty ? nil : input.removeFirst() }, writeLine: { _ in })
         }
 
@@ -338,7 +338,6 @@ struct ModelsLocationCommandTests {
         for (index, candidate) in candidates.enumerated() {
             let result = try fixture.command(["--from-env"]).execute(
                 isInteractive: false, environment: environment, homeDirectory: fixture.home,
-                migrateOnDisk: false,
                 readInput: { Issue.record("explicit piped import must not prompt"); return nil },
                 writeLine: { _ in })
             #expect(result?.directory.path == candidate.2.path)

@@ -62,7 +62,6 @@ extension Models {
             environment: [String: String] = ProcessInfo.processInfo.environment,
             homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
             currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
-            migrateOnDisk: Bool = true,
             readInput: () -> String? = { readLine() },
             writeLine: (String) -> Void = { print($0) }
         ) throws -> ModelCacheLocationInspection? {
@@ -178,7 +177,7 @@ extension Models {
             }
 
             let result = try setModelCacheLocation(
-                selected, configPath: configOptions.config, migrateOnDisk: migrateOnDisk)
+                selected, configPath: configOptions.config)
             writeLine(result.changed ? "Saved configuration: \(result.path.path)" : "Configuration unchanged.")
             // Inspect only the selected root. Do not scan an unrelated
             // (possibly unavailable) old cache for direct changes.

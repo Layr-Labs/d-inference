@@ -652,10 +652,11 @@ the slow WebSocket integration tests; run the full set before merging.
 #### Provider config cleanup
 
 The CPU-only `e2e/testbed/provider_config_cleanup_test.go` tests retain a fixed
-unstamped legacy fixture to exercise schema-stamped cleanup. Current configs
-come from `BuildProviderTOML` and already include `config_version = 3`. Both
-current and migrated pre-existing files must remain byte-identical; an owned
-file created during a test must be removed after shutdown.
+unstamped legacy fixture. Current configs come from `BuildProviderTOML`, which
+still writes a `config_version = 3` line the provider now ignores. The provider
+no longer rewrites a config on start, so pre-existing files must remain
+byte-identical; an owned file created during a test must be removed after
+shutdown.
 
 ```bash
 go test ./e2e/testbed -run '^TestCleanup' -count=1

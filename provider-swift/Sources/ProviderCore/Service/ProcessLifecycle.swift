@@ -204,7 +204,7 @@ public enum ProcessLifecycle {
     public static func restartAfterUpdate(cause: ProviderRunMarker.ExitCause = .update) throws -> Never {
         ProviderProcessRun.finish(cause: cause)
         do {
-            if LaunchAgent.isAnySupportedLabelLoaded() {
+            if LaunchAgent.isLoaded() {
                 // Launchd-managed: kickstart -k kills us and relaunches the
                 // service in place. Issue it, then exit so launchd is free to
                 // bring the new binary up cleanly (it may already have signalled

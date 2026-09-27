@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-26 · commit `279224c5d`
+> Last updated: 2026-09-26 · commit `e81dee198`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -264,6 +264,8 @@ Evidence is removed or made unreachable on:
   `coordinator/registry/cache_receipts.go`; both are chosen by
   `disablePrefixCacheV2Model`, `coordinator/registry/cache_receipts_v2.go`);
 - verified miss or corruption for the attempted boundaries;
+- a valid hit at a shorter boundary than one recorded for that provider: its
+  deeper holders for that prompt, in that tier;
 - holder expiry or deterministic cap eviction;
 - routing transition to `off`.
 
@@ -273,10 +275,10 @@ The checkpoint routing milestone is covered by local Go protocol, registry,
 simulated multi-provider, and API wire tests; it is not a live two-machine
 measurement ([source and test evidence](../reports/evidence/2026-09-05-ssd-checkpoint-cache/coordinator-evidence-manifest.json)).
 
-Holder removals are counted under one of seven reasons
+Holder removals are counted under one of eight reasons
 (`coordinator/registry/cache_routing.go`): `ttl`, `disconnect`,
 `epoch_change`, `capability_change`, `proof_mismatch`, `miss_invalidation`,
-`capacity_eviction`. Neither tier rotates its epoch on eviction. SSD budget
+`shorter_hit`, `capacity_eviction`. Neither tier rotates its epoch on eviction. SSD budget
 eviction, TTL expiry and corrupt-file removal are per-file: the provider keeps
 its epoch and capability, its remaining checkpoints stay routable, and a stale
 holder is removed by the next exact miss on that provider (`miss_invalidation`)
@@ -284,7 +286,20 @@ or by TTL. The SSD epoch changes only when the provider rebuilds the whole
 model root at initialization (weight hash, prompt contract, block-hash version,
 block size, layout epoch or key fingerprint drift), so `epoch_change` means a
 whole-root rebuild, not capacity pressure. Providers older than this change
-still rotate on eviction. Slot unload,
+still rotate on eviction.
+
+Because a provider that removes one file keeps its epoch, the coordinator
+learns of the removal from the next lookup: a miss at the attempted boundaries
+(`miss_invalidation`), or a valid hit below a boundary recorded for that
+provider (`shorter_hit`, `supersedeDeeperHoldersLocked`,
+`coordinator/registry/cache_receipts_v2_lookup.go`), which drops that
+provider's deeper holders for that prompt in the receipt's tier. Without the
+second rule a provider that evicted its deeper checkpoint would keep attracting
+the prefix and answer with a partial hit each time. The provider may still
+store the deeper file and have skipped it under a stage-size or stage-time cap;
+the receipt cannot distinguish the two, holders are advisory, and a later ready
+or hit re-teaches them. Neither path fences the provider or moves its sequence
+watermark. Slot unload,
 replacement, shutdown, and connection changes invalidate resident evidence.
 There is no targeted resident-eviction wire message in this extension.
 
@@ -328,7 +343,7 @@ lookup hashes `B` times and visits at most `2 × B × H` holder records; this wo
 does not grow with unrelated fleet members. The normal eligibility scan still
 visits its ordinary candidate pool once. Epoch, connection pointer, capability
 and proof quarantine remain required; capability revisions are rechecked at
-selection and reservation. A miss or epoch rotation removes only that
+selection and reservation. A miss, a shorter hit or an epoch rotation removes only that
 provider's evidence from the common bucket.
 
 All ordinary trust, model, trait, memory, token-budget, queue, cooldown, health,

@@ -99,15 +99,9 @@ const (
 )
 
 type routingSnapshot struct {
-	provider   *Provider
-	model      string
-	chipFamily string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
-	// binaryVersion is the provider's reported binary version (p.Version, read
-	// under p.mu at snapshot time; empty = unreported/legacy). Feeds the
-	// version-gated activation-reserve selection in the cold servability
-	// estimate (servabilityActivationFloor) so a mixed-version fleet
-	// is charged the reserve each binary actually holds.
-	binaryVersion    string
+	provider         *Provider
+	model            string
+	chipFamily       string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
 	slotState        string
 	hasHeadroom      bool
 	totalPending     int

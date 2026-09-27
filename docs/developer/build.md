@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-26 · commit `86895ace9`
+> Last updated: 2026-09-26 · commit `bcf5dcce9`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -731,3 +731,5 @@ opt-in encrypted transport gate.
 ## Telemetry archive worker
 
 The independent Python worker uses `scripts/telemetry_archive/Dockerfile` and hash-pinned `requirements.lock`. Run `uv sync --locked` in that directory for local tooling; build the container for Linux/amd64. It does not rebuild or deploy the coordinator. The same worker supports isolated accounting archives and indexed ID batches; deploy each archive job with its own destination permissions. See [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).
+
+`telemetry-archive analytics-preview` compiles catalog-pinned accounting analytics SQL locally; `--execute` runs capped SELECT-only BigQuery checks. It requires no coordinator build or deploy. See the [analytics preparation design](../design/archive-analytics-retention.md).

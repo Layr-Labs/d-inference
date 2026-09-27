@@ -22,7 +22,7 @@ def parameters(window, as_of, limit):
 def source_tables(query):
     if query not in QUERIES:
         raise ArchiveError("unsupported analytics query")
-    return ("usage",) if query == "usage-timeseries" else ("provider_earnings", "ledger_entries")
+    return ["usage"] if query == "usage-timeseries" else ["provider_earnings", "ledger_entries"]
 
 
 def query_sql(project, dataset, catalog, query, metric="earnings"):

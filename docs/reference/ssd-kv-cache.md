@@ -26,8 +26,9 @@ The tier owns one root per user, one directory per model.
 
 ## DBK3 file format
 
-Every `.dbk3` file is the reviewed `EncryptedKVStore` scheme with
-`formatVersion = 3` (`SSDBlockStore.swift`, header comment and `enum SSDBlockStore`).
+Every `.dbk3` file is the reviewed v1 `DBKV` chunked AES-GCM scheme (the
+retired `EncryptedKVStore`) with `formatVersion = 3` (`SSDBlockStore.swift`,
+header comment and `enum SSDBlockStore`).
 
 | Offset | Size | Field |
 |---|---|---|

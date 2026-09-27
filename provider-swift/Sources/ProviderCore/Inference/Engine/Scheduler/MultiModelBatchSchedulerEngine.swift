@@ -959,9 +959,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             severity: .error)
                     }
                     await releaseBox.fire()
-                    // P2 #6: parse the scheduler's structured error
-                    // prefix (`token_budget_exhausted: ...`, `... queue
-                    // full`, `timed out waiting for capacity`, etc.)
+                    // P2 #6: parse the bridge's structured error prefix
+                    // (`token_budget_exhausted: ...`, `... queue full`,
+                    // `multimodal_rejected: ...`, etc.)
                     // into a typed error so the status mapper can
                     // return 429/503 instead of collapsing every
                     // admission failure into 500.

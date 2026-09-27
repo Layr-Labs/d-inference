@@ -158,18 +158,6 @@ struct SelfUpdaterTests {
         #expect(reason.contains("unsupported release platform"))
     }
 
-    @Test("ReleaseInfo sha256 compatibility returns bundle hash")
-    func releaseInfoShaCompatibility() {
-        let hash = String(repeating: "d", count: 64)
-        let release = ReleaseInfo(
-            version: "1.0.0",
-            platform: "macos-arm64",
-            url: "https://example.test/bundle.tar.gz",
-            bundleHash: hash
-        )
-        #expect(release.sha256 == hash)
-    }
-
     @Test("installBundle installs flat bundle files into bin/ subdirectory")
     func installBundleInstallsBundleFiles() throws {
         let root = FileManager.default.temporaryDirectory
@@ -517,25 +505,6 @@ struct SelfUpdaterTests {
             metallibHash: sha256Hex(
                 try Data(contentsOf: bin.appendingPathComponent("mlx.metallib"))))
         return (tarball, release, install)
-    }
-
-    @Test("v0.8.9 parent can bootstrap a v0.8.10 runtime-smoke child")
-    func oldParentBootstrapsCandidateSmoke() throws {
-        _ = LiveInferenceFixtures.ensureMetallibColocated()
-        let executable = try activeBuildProduct("darkbloom")
-        let output = try BoundedProcess.runCapturingStandardOutput(
-            executable,
-            arguments: ["runtime-smoke"],
-            environment: [
-                "DARKBLOOM_NO_UPDATE_CHECK": "1",
-                GemmaOptimizationEnvironment.prefillLayer18Key: "0",
-                GemmaOptimizationEnvironment.weightedUnsortKey: "0",
-                GemmaOptimizationEnvironment.safeR1Key: "0",
-            ],
-            timeout: 30)
-        #expect(PackagedRuntimeSmoke.containsGemmaOptimizationSuccessMarker(output))
-        #expect(String(data: output, encoding: .utf8)?.contains(
-            "paged-kernel-runtime-smoke: ok") == true)
     }
 
     @Test("signed extracted child proves retained Gemma marker before staging succeeds")

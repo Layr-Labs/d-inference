@@ -25,10 +25,6 @@ public struct ReleaseInfo: Sendable {
         self.binaryHash = binaryHash
         self.metallibHash = metallibHash
     }
-
-    public var sha256: String {
-        bundleHash
-    }
 }
 
 /// Result of an update check.
@@ -303,10 +299,7 @@ public struct SelfUpdater: Sendable {
             guard platform == "macos-arm64" else {
                 return .failed("coordinator returned unsupported release platform \(platform)")
             }
-            guard let bundleHash = (json["bundle_hash"] as? String)
-                    ?? (json["sha256"] as? String)
-                    ?? (json["binary_hash"] as? String)
-            else {
+            guard let bundleHash = json["bundle_hash"] as? String else {
                 return .failed("missing release hash field")
             }
 

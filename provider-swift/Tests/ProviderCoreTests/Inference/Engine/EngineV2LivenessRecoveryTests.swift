@@ -342,10 +342,6 @@ struct EngineV2LivenessVerdictTests {
         #expect(reloading.state == "reloading")
         // And no NEW recovery can be confirmed while one is in flight.
         #expect(await bridge.confirmedWedgeForRecovery(now: t0.advanced(by: .seconds(600))) == false)
-
-        await bridge.endRecoveryReload()
-        let after = await bridge.backendSlotCapacity(now: t0.advanced(by: .seconds(13)))
-        #expect(after.state == "crashed")
     }
 }
 

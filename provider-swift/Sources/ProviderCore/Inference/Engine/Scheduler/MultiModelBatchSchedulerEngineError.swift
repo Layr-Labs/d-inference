@@ -52,9 +52,9 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// coordinator's normal bounded-failover path, NOT as a generic 500
     /// that burns provider reputation.
     case toolChoiceViolation(String)
-    /// Admission rejection caused by the batch token budget / global
-    /// KV-cache headroom / pending-queue timeout. Surfaces as 503 so
-    /// clients back off and retry once capacity frees up.
+    /// Admission rejection caused by KV capacity / global KV-cache
+    /// headroom. Surfaces as 503 so clients back off and retry once
+    /// capacity frees up.
     case tokenBudgetExhausted(String)
     /// Pending request queue is full. Surfaces as 429 so clients can
     /// honour a retry-after.
@@ -153,24 +153,17 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return .toolChoiceViolation(
                 "inference-time tool constraint reached an impossible state")
         }
-        // Planner validation failures share the `token_budget_exhausted:`
-        // prefix but are request-shape errors, NOT transient capacity
-        // exhaustion. Map them to 400 (`.requestRejected`) so clients
-        // don't get a misleading 503 + retry signal for a request that
-        // will fail identically on retry.
-        if lowercased.contains("invalid token count")
-            || lowercased.contains("duplicate request id")
-            || lowercased.contains("exceeds batch token budget")
-        {
+        // The bridge's duplicate-request-id guard shares the
+        // `token_budget_exhausted:` prefix but is a request-shape error, NOT
+        // transient capacity exhaustion: keep it off `.tokenBudgetExhausted`
+        // so its diagnostic reason stays a client error.
+        if lowercased.contains("duplicate request id") {
             return .requestRejected(message)
         }
         if lowercased.contains("queue full") {
             return .queueFull(message)
         }
-        if lowercased.contains("token_budget_exhausted")
-            || lowercased.contains("timed out waiting for capacity")
-            || lowercased.contains("insufficient global kv cache headroom")
-        {
+        if lowercased.contains("token_budget_exhausted") {
             return .tokenBudgetExhausted(message)
         }
         return .generationFailed(message)

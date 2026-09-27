@@ -63,7 +63,7 @@ provider-swift/       Swift provider CLI for Apple Silicon Macs
 ├── Sources/darkbloom/                CLI (`start`, `stop`, `status`, `models`, `benchmark`, `doctor`, `login`, `local`, etc.)
 ├── Sources/darkbloom-publish/        registry manifest builder used by publish workflow
 ├── Sources/darkbloom-enclave-cli/    Secure Enclave attestation/sign helper
-├── Sources/ProviderBenchmark*, kv-*  benchmark + KV-cache self-test executables
+├── Sources/ProviderBenchmark/        benchmark harness library behind `darkbloom benchmark`
 └── Tests/                            ProviderCore, ProviderCoreFoundation, CLI, and publish tests
 
 console-ui/           Next.js 16 / React 19 frontend

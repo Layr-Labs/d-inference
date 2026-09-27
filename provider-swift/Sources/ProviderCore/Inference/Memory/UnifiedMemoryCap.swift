@@ -292,27 +292,6 @@ public enum UnifiedMemoryCap {
         return realFree > activations ? realFree - activations : 0
     }
 
-    /// Whether a new model of `candidateWeightBytes` may be admitted while
-    /// `currentResidentWeightBytes` are already resident, leaving at least
-    /// `minimumKVBytes` of KV headroom under the cap (a model that loads with no
-    /// room to serve any KV is useless). Pure check; eviction is the caller's job.
-    public static func canAdmit(
-        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
-        currentResidentWeightBytes: UInt64,
-        candidateWeightBytes: UInt64,
-        minimumKVBytes: UInt64,
-        activationReserveBytes: UInt64? = nil,
-        ramPrefixAllowanceBytes: UInt64 = 0,
-        capFraction: Double? = nil
-    ) -> Bool {
-        let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
-        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
-        let need = saturatingAdd(
-            currentResidentWeightBytes, candidateWeightBytes,
-            activations, ramPrefixAllowanceBytes, minimumKVBytes)
-        return need <= cap
-    }
-
     /// Effective reserve (bytes) the model-LOAD gate must hold back below total
     /// physical memory so that loading never pushes usage past the cap.
     ///

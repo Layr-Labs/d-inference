@@ -89,9 +89,6 @@ liveKVHeadroomBytes(physical, mlxUsed, systemAvailable, activations, configReser
     realFree     = min(effectiveCap − mlxUsed (clamped ≥ 0), systemAvailable)
     = realFree > activations ? realFree − activations : 0
 
-canAdmit(currentResident, candidate, minimumKV, activations, ramPrefix)
-    = currentResident + candidate + activations + ramPrefix + minimumKV ≤ hardCapBytes
-
 loadReserveBytes(configReserve) = max(configReserve, physical − hardCapBytes)
 
 loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ minimumLoadKVBytes

@@ -1030,7 +1030,13 @@ jobs:
           APP="$ARTIFACT/extracted/Darkbloom.app"
           codesign --verify --deep --strict "$APP"
           xcrun stapler validate "$APP"
-          OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
+          # The child validates the retained Gemma latches, which MLX reads at
+          # its first Metal touch — seed them exactly as SelfUpdater does.
+          OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
+            DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
+            MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
+            MLX_GATHER_QMM_EXPERT_SLICES=1 \
+            "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$OUTPUT"
           for marker in app-attest-callback-runtime-smoke gemma-optimizations-runtime-smoke paged-kernel-runtime-smoke qwen4-metal-resources-runtime-smoke; do
             printf '%s\n' "$OUTPUT" | grep -Fqx "$marker: ok"

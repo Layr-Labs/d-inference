@@ -380,30 +380,6 @@ public actor StandaloneServer {
     /// default through to ``MultiModelBatchSchedulerEngine``.
     static let slotDefaultMaxTokens = 4096
 
-    /// Map an engine-side admission error message to an HTTP status. Used
-    /// by tests and by any custom error-mapping middleware. The keyword set
-    /// matches the canonical `token_budget_exhausted:` message contract the
-    /// v2 bridge preserves from the legacy scheduler.
-    static func schedulerErrorStatus(for message: String) -> HTTPResponse.Status {
-        let lowercased = message.lowercased()
-        if lowercased.contains("invalid token")
-            || lowercased.contains("duplicate request")
-            || lowercased.contains("batch token budget")
-        {
-            return .badRequest
-        }
-        if lowercased.contains("queue full") {
-            return .tooManyRequests
-        }
-        if lowercased.contains("token_budget_exhausted")
-            || lowercased.contains("timed out waiting for capacity")
-            || lowercased.contains("insufficient global kv cache headroom")
-        {
-            return .serviceUnavailable
-        }
-        return .internalServerError
-    }
-
     /// Update the advertised model list (e.g. after a rescan). Applies the
     /// same CBv2 supported-set filter as init. The serving set is part of
     /// the activation-reserve basis, so the update is:

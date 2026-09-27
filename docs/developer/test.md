@@ -762,16 +762,17 @@ suites from process-wide environment changes.
 so removing hidden-entry skipping changes the manifest. `TemplateRenderCheckTests`
 uses templates that reject an incorrect BOS value for both tokenizer-config
 forms and require the empty default when the config is absent.
-`storeRejectsTamperedMetadata` in
-`provider-swift/Tests/ProviderCoreTests/KVCache/EncryptedKVStoreTests.swift`
-keeps changed metadata valid JSON and requires a `KVCacheKEKError` from the
-authenticated read; it separately retains malformed-metadata rejection.
+`tamperFailsClosed` in
+`provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDPrefixCacheTests.swift`
+keeps changed metadata valid JSON and requires
+`SSDBlockStoreError.authenticationFailed` from the authenticated read; it
+separately retains schema-validation rejection.
 Run these after building and staging the test product as described below:
 
 ```bash
 cd provider-swift
 swift test --skip-build --no-parallel \
-  --filter 'HiddenFileSkippingTest|TemplateRenderCheckTests|storeRejectsTamperedMetadata'
+  --filter 'HiddenFileSkippingTest|TemplateRenderCheckTests|tamperFailsClosed'
 ```
 
 These fixtures use temporary files and an in-memory KEK. They do not exercise
@@ -2310,7 +2311,9 @@ fixing them, and verify fixes are pushed before resolving threads. A passing
 local suite does not establish that the post-push review cycle has completed.
 
 After the optimized provider is packaged with its resources, run
-`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all four markers:
+`DARKBLOOM_NO_UPDATE_CHECK=1 DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=1 Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`
+(the child validates retained latches that MLX reads at its first Metal touch,
+so the caller seeds them, exactly as `SelfUpdater` and `install.sh` do). Require all four markers:
 `app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
 `paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. Callback completion and expiry are exercised
 without Apple service calls or a Keychain item. This linked-binary check catches

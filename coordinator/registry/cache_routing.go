@@ -153,6 +153,11 @@ const (
 	cacheHolderRemovalProofMismatch    cacheHolderRemovalReason = "proof_mismatch"
 	cacheHolderRemovalMissInvalidation cacheHolderRemovalReason = "miss_invalidation"
 	cacheHolderRemovalCapacityEviction cacheHolderRemovalReason = "capacity_eviction"
+	// A hit proven below a recorded deeper boundary. Kept apart from
+	// miss_invalidation: the provider may still store the deeper file and
+	// have skipped it under a stage cap, which the wire cannot distinguish
+	// from an eviction.
+	cacheHolderRemovalShorterHit cacheHolderRemovalReason = "shorter_hit"
 )
 
 func CacheHolderRemovalReasons() []string {
@@ -164,6 +169,7 @@ func CacheHolderRemovalReasons() []string {
 		string(cacheHolderRemovalProofMismatch),
 		string(cacheHolderRemovalMissInvalidation),
 		string(cacheHolderRemovalCapacityEviction),
+		string(cacheHolderRemovalShorterHit),
 	}
 }
 

@@ -3,7 +3,6 @@ import {
   MICRO_PER_USD,
   microToUsd,
   formatUsd,
-  formatUsdWhole,
   formatUsdMicro,
 } from "@/lib/format/currency";
 import {
@@ -28,11 +27,6 @@ describe("format/currency", () => {
   it("formatUsd is fixed-decimals, unsigned", () => {
     expect(formatUsd(1.2)).toBe("$1.20");
     expect(formatUsd(1.239, 3)).toBe("$1.239");
-  });
-
-  it("formatUsdWhole uses separators and signs", () => {
-    expect(formatUsdWhole(1234)).toBe("$1,234");
-    expect(formatUsdWhole(-1234)).toBe("-$1,234");
   });
 
   it("formatUsdMicro keeps sub-cent precision", () => {

@@ -334,10 +334,3 @@ export function computeWarnings(
 
   return out;
 }
-
-export function highestSeverity(warnings: Warning[]): WarningSeverity | null {
-  if (warnings.some((w) => w.severity === "blocking")) return "blocking";
-  if (warnings.some((w) => w.severity === "degrading")) return "degrading";
-  if (warnings.some((w) => w.severity === "info")) return "info";
-  return null;
-}

@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	cacheRefreshInterval = time.Minute
+	cacheRefreshInterval = 5 * time.Minute
 	// Stats has a shorter freshness window than the network earnings totals.
 	statsRefreshInterval = 30 * time.Second
 	// Failed refreshes retain the previous success only until this safety TTL.
@@ -19,6 +19,7 @@ const (
 // cacheRefresher coalesces computations of one read-cache entry. Only complete
 // successful results are cached; query errors never become partial JSON data.
 type cacheRefresher struct {
+	ttl      time.Duration // Fixed at entry construction; zero uses refreshedCacheTTL.
 	mu       sync.Mutex
 	inflight chan struct{}
 }
@@ -60,11 +61,17 @@ func (s *Server) computeCachedEntry(entry *cacheRefresher, key string, refresh b
 
 	body, err := compute()
 	if err != nil {
-		s.logger.Warn("cache refresh failed; keeping previous value", "key", key, "error", err)
+		if s.logger != nil {
+			s.logger.Warn("cache refresh failed; keeping previous value", "key", key, "error", err)
+		}
 		s.ddIncr("cache.refresh_failed", []string{"key:" + key})
 		return s.readCache.Get(key)
 	}
-	s.readCache.Set(key, body, refreshedCacheTTL)
+	ttl := entry.ttl
+	if ttl <= 0 {
+		ttl = refreshedCacheTTL
+	}
+	s.readCache.Set(key, body, ttl)
 	return body, true
 }
 
@@ -92,13 +99,16 @@ func (s *Server) runCacheRefreshLoop(ctx context.Context, interval time.Duration
 // loops keep slow geography queries off the core stats path. Stops when ctx
 // is cancelled.
 func (s *Server) StartCacheRefreshers(ctx context.Context) {
+	s.startAnalyticsSnapshots(ctx)
 	saferun.Go(s.logger, "api.statsGeographyRefresher", func() {
 		s.runCacheRefreshLoop(ctx, statsRefreshInterval, func() { s.refreshStatsGeography() })
 	})
 	saferun.Go(s.logger, "api.statsRefresher", func() {
 		s.runStatsRefresher(ctx, statsRefreshInterval)
 	})
-	saferun.Go(s.logger, "api.networkTotalsRefresher", func() {
-		s.runNetworkTotalsRefresher(ctx, cacheRefreshInterval)
-	})
+	if s.analyticsSnapshotPath == "" {
+		saferun.Go(s.logger, "api.networkTotalsRefresher", func() {
+			s.runNetworkTotalsRefresher(ctx, cacheRefreshInterval)
+		})
+	}
 }

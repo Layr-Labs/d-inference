@@ -36,6 +36,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/analyticssnapshot"
 	"github.com/eigeninference/d-inference/coordinator/apns"
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/auth"
@@ -199,6 +200,13 @@ type releaseTrustPolicySnapshot struct {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
+	leaderboardRefresh struct {
+		mu      sync.Mutex
+		entries map[string]*cacheRefresher
+	}
+	analyticsSnapshotPath string
+	analyticsSnapshot     analyticssnapshot.Cache
+
 	appAttestRuntimeRefreshPending atomic.Bool
 
 	appAttestShadow               AppAttestShadowConfig
@@ -826,6 +834,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	}
 
 	s := &Server{
+		analyticsSnapshotPath:    cfg.AnalyticsSnapshotPath,
 		registry:                 reg,
 		store:                    st,
 		ledger:                   payments.NewLedger(st),

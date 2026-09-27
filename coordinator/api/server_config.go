@@ -1,7 +1,9 @@
 package api
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,17 +14,18 @@ import (
 // ServerConfig holds coordinator HTTP server and URL configuration applied
 // when NewServer constructs an instance.
 type ServerConfig struct {
-	AppAttestShadow     AppAttestShadowConfig
-	Port                string
-	ConsoleURL          string
-	CORSOrigin          string
-	BaseURL             string
-	R2CDNURL            string
-	MinProviderVersion  string
-	AdminKey            string
-	AdminEmails         []string
-	ReleaseKey          string
-	ServiceReservations bool
+	AnalyticsSnapshotPath string // Empty keeps the existing database-backed analytics path.
+	AppAttestShadow       AppAttestShadowConfig
+	Port                  string
+	ConsoleURL            string
+	CORSOrigin            string
+	BaseURL               string
+	R2CDNURL              string
+	MinProviderVersion    string
+	AdminKey              string
+	AdminEmails           []string
+	ReleaseKey            string
+	ServiceReservations   bool
 	// DurableTrustReuse enables the fsync-backed local hard-untrust journal.
 	// Production enables it when the coordinator uses its durable Postgres store.
 	DurableTrustReuse     bool
@@ -74,6 +77,7 @@ type BaseRewardsConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
+		AnalyticsSnapshotPath:   os.Getenv(env.EnvPrefix + "_ANALYTICS_SNAPSHOT_PATH"),
 		AppAttestShadow:         readAppAttestShadowConfig(),
 		Port:                    env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
 		ConsoleURL:              os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
@@ -154,4 +158,12 @@ func ParseCommaList(raw string) []string {
 		}
 	}
 	return result
+}
+
+// CheckAnalyticsSnapshot validates the opt-in local snapshot path before startup.
+func (c ServerConfig) CheckAnalyticsSnapshot() error {
+	if c.AnalyticsSnapshotPath != "" && !filepath.IsAbs(c.AnalyticsSnapshotPath) {
+		return fmt.Errorf("EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH must be absolute")
+	}
+	return nil
 }

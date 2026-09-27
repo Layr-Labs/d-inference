@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — archived analytics reader
+
+- Add an opt-in validated local snapshot path for leaderboard/network totals/network series, with source freshness checks and clear 503 responses when unavailable. Default database mode shares coalesced leaderboard results across aliases and limits, propagates query failures as 503, and uses a 5-minute public analytics cadence.
+
 ## Release candidate v0.9.10 — live switching and App Attest recovery (not shipped; 2026-09-27)
 
 - Align `ProviderCore.version` and the coordinator display fallback at 0.9.10. Upgrade the coordinator before publishing the separately qualified signed provider; the source bump does not advance the registered latest release.

@@ -58,6 +58,7 @@ func (c AppConfig) Check() error {
 		check func() error
 	}{
 		{"store", c.StoreConfig.Check},
+		{"analytics_snapshot", c.ServerConfig.CheckAnalyticsSnapshot},
 		{"billing", c.BillingConfig.Check},
 		{"auth", c.AuthConfig.Check},
 		{"rate_limit", c.RateLimitCfg.Check},

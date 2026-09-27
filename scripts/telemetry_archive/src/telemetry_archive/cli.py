@@ -19,6 +19,7 @@ from .objects import archive_bucket, check_generations, load_remote, upload
 from .publish import publish as publish_catalog
 from .queries import verify_query
 from .scope import require_bucket_scope
+from .snapshot_sync import sync_snapshot
 from .windows import IDWindow
 
 
@@ -78,13 +79,20 @@ def parser():
     analytics.add_argument("--limit", type=int, default=50)
     analytics.add_argument("--maximum-bytes-billed", type=int, default=1024**3)
     analytics.add_argument("--execute", action="store_true")
-    for command in (send, remote, publish, run, catalog, analytics):
+    sync = commands.add_parser(
+        "sync-analytics-snapshot", help="stage a qualified GCS snapshot atomically"
+    )
+    sync.add_argument("--bucket", required=True)
+    sync.add_argument("--output", type=Path, required=True)
+    for command in (send, remote, publish, run, catalog, analytics, sync):
         command.add_argument("--project", required=True)
         command.add_argument("--location", default="us-east4")
     return root
 
 
 def execute(args):
+    if args.command == "sync-analytics-snapshot":
+        return sync_snapshot(args)
     if args.command == "analytics-preview":
         return preview(args)
     if args.command == "publish-catalog":

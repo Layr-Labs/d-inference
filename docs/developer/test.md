@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-26 · commit `fb655c362`
+> Last updated: 2026-09-26 · commit `002317b97`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2378,3 +2378,7 @@ versus reward-only cohorts, anonymous network earnings, signed corrections,
 base-reward exclusion from tokens/jobs, ties/limits, empty windows, exact time
 boundaries and sums beyond INT64. CI skips these credentialed tests; their live
 results must be recorded separately from the local suite.
+
+Archived snapshot validation and no-scan HTTP tests live in `coordinator/analyticssnapshot` and `coordinator/api/analytics_snapshot_test.go`; run with the race detector. Python `test_snapshot_sync.py` tests generation/hash/scope validation and atomic file replacement. See [snapshot operations](../operations/analytics-snapshots.md).
+
+Leaderboard cache tests cover concurrent callers with different limits and aliases sharing one top-200 query, and failed queries remaining uncached. Store tests cover closed pools and scan overflow after a valid first row returning an error with no partial ranking; the latter uses session-local PostgreSQL tables only.

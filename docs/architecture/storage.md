@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-26 · commit `cf7393580`
+> Last updated: 2026-09-26 · commit `002317b97`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -362,3 +362,9 @@ KV blocks under a per-model key, not tokens.
 `coordinator/store/model_token_promotions_schema.go` (`modelTokenPromotionDDL`) adds `model_token_promotions`, account/model keyed `model_token_grants`, durable `model_token_reservations`, and provider-account keyed `model_token_provider_carries`. The carry row retains a sub-micro-dollar payout remainder in `[0, 100000000)`; the additive table also works when upgrading an existing promotion schema. Promotion model IDs deliberately do not reference the model registry, allowing pre-launch setup. The promotion row serializes claims, enforces the maximum claim count and validates the user table’s authoritative account creation timestamp. Account/model uniqueness makes duplicate claims idempotent. Grant counters enforce nonnegative usage/reservations and prevent their sum from exceeding the grant. Reservation terminal state prevents duplicate spending, refunds and provider credit. Claim windows do not expire previously issued grants.
 
 `coordinator/store/model_token_settlement_postgres.go` (`SettleModelTokenReservation`) updates grant usage, consumer money, fractional payout carry and provider earnings in one transaction, locking balance rows in account order before the carry row. `coordinator/store/model_token_earnings_postgres.go` (`carryModelTokenEarningPostgres`) updates the remainder; the reservation persists the credited whole-micro-dollar payout so replay returns the original result without accumulating fractions again. The optional backend capability is discovered through `store.As`; grants bypass the user/model read-through caches and no user/model invalidation is needed. Lease recovery is in `coordinator/store/model_token_leases.go` (`ReleaseStaleModelTokenReservations`). Operational details: [model token promotions](../operations/model-token-promotions.md).
+
+## Optional archived public analytics reader
+
+`coordinator/analyticssnapshot` validates and atomically caches a private local generation. `coordinator/api/analytics_snapshot.go` polls the file; when configured, leaderboard, network totals and network series bypass PostgreSQL and its legacy totals refresher. Financial amounts retain integer semantics and IDs remain pseudonymized by the API. The copy-only archive cannot qualify production snapshots; continuous capture and reconciliation remain rollout gates. See [operations and rollback](../operations/analytics-snapshots.md). Source-retention behavior is unchanged.
+
+In default database mode, `coordinator/api/leaderboard_cache.go` coalesces concurrent requests and shares one top-200 ranking per metric/canonical window across limits/aliases. `PostgresStore.Leaderboard` returns errors on query, scan or iteration failure; the handler never caches a partial ranking. Network totals refresh every 5 minutes with a 15-minute maximum success TTL, reducing scheduled aggregate frequency from once per minute. Network series caches successful results for 5 minutes.

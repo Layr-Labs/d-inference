@@ -172,6 +172,8 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_fence{event=expired}",
 		"exact_cache_fenced_capabilities",
 		"exact_cache_donation_outcome{outcome=skipped_novel}",
+		"exact_cache_demand_entries",
+		"exact_cache_demand_cap_evictions",
 	} {
 		if _, ok := gauges[key]; !ok {
 			t.Fatalf("missing exact-cache gauge %q", key)
@@ -197,6 +199,8 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache.donation_outcome",
 		"exact_cache.fence",
 		"exact_cache.fenced_capabilities",
+		"exact_cache.demand_entries",
+		"exact_cache.demand_cap_evictions",
 	} {
 		if !hasMetric(packets, metric) {
 			t.Fatalf("missing Datadog gauge %q in %v", metric, packets)

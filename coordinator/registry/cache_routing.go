@@ -44,10 +44,10 @@ const (
 	// at fleet rate, not for the holder cap. A plan records its boundaries on
 	// the 1,024-token stride and its final one (cacheDemandAnchors). Measured
 	// over the production prompt lengths with every prompt distinct
-	// (TestCacheDemandCapCoversMeasuredPlanMix): 7.07 entries per plan for
-	// gpt-oss-20b and 3.82 for gemma. The index expires on the routing TTL, so
-	// it is sized for cacheRoutingSizingTTL: 60 plans/s × 7.07 × 1,800 s =
-	// 763,000; 1,000,000 leaves 1.3× headroom. An index that turns over before
+	// (TestCacheDemandCapCoversMeasuredPlanMix): 7.11 entries per plan for
+	// gpt-oss-20b and 3.85 for gemma. The index expires on the routing TTL, so
+	// it is sized for cacheRoutingSizingTTL: 60 plans/s × 7.11 × 1,800 s =
+	// 768,000; 1,000,000 leaves 1.3× headroom. An index that turns over before
 	// the TTL reports a repeated prefix as novel, and the provider then skips
 	// writing it. Measured (BenchmarkCacheDemandMemory, settled heap): 200 B
 	// per entry, which is the 43-byte base64url HMAC key, a list.Element, a
@@ -415,6 +415,12 @@ type CacheRoutingLifecycleStatus struct {
 	FencesApplied      uint64            `json:"fences_applied"`
 	FencesExpired      uint64            `json:"fences_expired"`
 	FencedCapabilities int               `json:"fenced_capabilities"`
+	// DemandEntries is what the observed-demand index holds now, including
+	// expired entries its bounded sweep has not reached. DemandCapEvictions
+	// counts entries the cap removed inside their TTL; while it grows, the
+	// index is too small and repeated prefixes are reported as novel.
+	DemandEntries      int    `json:"demand_entries"`
+	DemandCapEvictions uint64 `json:"demand_cap_evictions"`
 }
 
 func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
@@ -427,6 +433,8 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 	if tracker == nil {
 		return CacheRoutingLifecycleStatus{}
 	}
+	// The demand index has its own lock; it is never taken with the tracker's.
+	demandEntries, demandCapEvictions := tracker.demand.stats()
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	holderRemoved := zeroUint64Buckets(CacheHolderRemovalReasons())
@@ -447,6 +455,7 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 		DonationOutcomes: donationOutcomes,
 		FencesApplied:    tracker.fencesApplied, FencesExpired: tracker.fencesExpired,
 		FencedCapabilities: fenced,
+		DemandEntries:      demandEntries, DemandCapEvictions: demandCapEvictions,
 	}
 }
 

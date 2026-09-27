@@ -19,6 +19,9 @@ type cacheDemandTracker struct {
 	ttl     time.Duration
 	order   list.List
 	entries map[string]*list.Element
+	// capEvictions counts entries the cap removed while they were still
+	// inside the TTL. Each one is a repeat that may now read as novel.
+	capEvictions uint64
 }
 
 type cacheDemandEntry struct {
@@ -55,18 +58,33 @@ func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.
 		delete(d.entries, first.Value.(cacheDemandEntry).key)
 		d.order.Remove(first)
 	}
-	longest, affinity := 0, ""
+	// The repeat is the deepest boundary that matched. Affinity is keyed by
+	// the deepest matched rung instead (cacheDemandAffinityRung), so a growing
+	// conversation keeps one key until it doubles, and falls back to the
+	// deepest match when no rung matched, which is how a prompt under 1,024
+	// tokens matches on its final boundary.
+	longest, deepest, rung, affinity := 0, "", 0, ""
 	// Read the old set before inserting: a request cannot match itself.
 	for _, boundary := range boundaries {
-		if entry := d.entries[boundary.key]; entry != nil && boundary.tokens > longest {
-			age := now.Sub(entry.Value.(cacheDemandEntry).seen)
-			// Concurrent callers can acquire the lock in a different order
-			// from their timestamp samples. Validate each match independently
-			// of the eviction list's insertion order.
-			if age >= 0 && age < d.ttl {
-				longest, affinity = boundary.tokens, boundary.key
-			}
+		entry := d.entries[boundary.key]
+		if entry == nil {
+			continue
 		}
+		// Concurrent callers can acquire the lock in a different order from
+		// their timestamp samples. Validate each match independently of the
+		// eviction list's insertion order.
+		if age := now.Sub(entry.Value.(cacheDemandEntry).seen); age < 0 || age >= d.ttl {
+			continue
+		}
+		if boundary.tokens > longest {
+			longest, deepest = boundary.tokens, boundary.key
+		}
+		if boundary.tokens > rung && cacheDemandAffinityRung(boundary.tokens) {
+			rung, affinity = boundary.tokens, boundary.key
+		}
+	}
+	if affinity == "" {
+		affinity = deepest
 	}
 	for _, boundary := range boundaries {
 		if boundary.key == "" {
@@ -84,44 +102,88 @@ func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.
 		}
 		for len(d.entries) > d.limit {
 			first := d.order.Front()
-			delete(d.entries, first.Value.(cacheDemandEntry).key)
+			evicted := first.Value.(cacheDemandEntry)
+			// A head past its TTL that the bounded sweep has not reached is
+			// an expiry, not a cap eviction.
+			if now.Sub(evicted.seen) < d.ttl {
+				d.capEvictions++
+			}
+			delete(d.entries, evicted.key)
 			d.order.Remove(first)
 		}
 	}
 	return longest, affinity
 }
 
+// stats reports the entries held, including expired ones the bounded sweep
+// has not reached, and the cap evictions so far.
+func (d *cacheDemandTracker) stats() (entries int, capEvictions uint64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.entries), d.capEvictions
+}
+
 const (
-	// cacheDemandStrideTokens spaces the observed boundaries. The provider
-	// engine keeps a checkpoint at every multiple of 1,024 tokens and none
-	// below its 1,024-token floor (minEffectiveTokens), and it uses the
-	// observed repeat to choose the checkpoint at or below it. A boundary
-	// between two multiples, or below the first, names a prefix that can be
-	// neither written nor restored.
+	// cacheDemandStrideTokens spaces the observed boundaries to match the two
+	// provider consumers of the reported repeat. The engine's historical
+	// checkpoint retention keeps the 1,024-aligned boundary at or below it
+	// (CBv2Request.prefixCheckpointTargetTokens, which the provider bridge
+	// sets from RemotePrefixCacheContext.repeatedPrefixTokens; it lands with
+	// the checkpoint-geometry change), and SSDCheckpointDemand.admitsWrite
+	// gates the write on repeatedPrefixTokens >= minEffectiveTokens, which is
+	// 1,024. A boundary between two multiples, or below the first, names a
+	// prefix that can be neither written nor restored.
 	cacheDemandStrideTokens = 4 * int(promptcontract.BlockSize)
-	// cacheDemandMaxStrideBoundaries bounds one plan's stride observations.
-	// A prompt longer than 64 × 1,024 tokens keeps its deepest 64: those are
-	// the ones worth restoring, and its shallow prefix is what shorter plans
-	// observe.
+	// cacheDemandMaxStrideBoundaries is the window: one plan observes its
+	// deepest 64 boundaries on the stride, which are the ones worth restoring.
 	cacheDemandMaxStrideBoundaries = 64
+	// cacheDemandMaxLadderBoundaries bounds the rungs a plan longer than the
+	// window observes below it: 1,024 × 2^0 … 2^9 are the rungs a plan of
+	// cacheRoutingMaxReceiptTokens can have. A prompt under 131,072 tokens
+	// has at most six below its window (1,024 … 32,768).
+	cacheDemandMaxLadderBoundaries = 10
+	// cacheDemandMaxPlanBoundaries is what one plan reads and records at
+	// most, whatever its length: the window, the final boundary and the
+	// ladder. It is 71 for a prompt under 131,072 tokens and 65 up to 65,536.
+	cacheDemandMaxPlanBoundaries = cacheDemandMaxStrideBoundaries + 1 + cacheDemandMaxLadderBoundaries
 )
 
-// cacheDemandAnchors selects what a plan observes: its deepest
-// cacheDemandMaxStrideBoundaries boundaries on the 1,024-token stride and
-// its final boundary, which need not be on the stride. The result is at most
-// cacheDemandMaxStrideBoundaries + 1 anchors, shallowest first. Selection is
-// by token count, so it does not depend on the plan listing every block.
+// cacheDemandAffinityRung reports a power-of-two multiple of 1,024 tokens:
+// 1,024, 2,048, 4,096, 8,192 and so on.
+func cacheDemandAffinityRung(tokens int) bool {
+	strides := tokens / cacheDemandStrideTokens
+	return tokens > 0 && tokens%cacheDemandStrideTokens == 0 && strides&(strides-1) == 0
+}
+
+// cacheDemandAnchors selects what a plan observes, shallowest first:
+//
+//   - the window: its deepest cacheDemandMaxStrideBoundaries boundaries on
+//     the 1,024-token stride;
+//   - its final boundary, which need not be on the stride;
+//   - the ladder, for a plan longer than the window only: the rungs
+//     (cacheDemandAffinityRung) below the window. Without it a plan over
+//     65,536 tokens reports no repeat for a shallow shared prefix, such as a
+//     system prompt and tool block, and the provider skips the write as
+//     skipped_novel.
+//
+// Selection is by token count, so it does not depend on the plan listing
+// every block.
 func cacheDemandAnchors(boundaries []protocol.PrefixCacheAnchor) []protocol.PrefixCacheAnchor {
 	last := len(boundaries) - 1
 	selected := make([]protocol.PrefixCacheAnchor, 0,
-		min(len(boundaries), cacheDemandMaxStrideBoundaries+1))
-	strides := 0
-	for i := last; i >= 0 && strides < cacheDemandMaxStrideBoundaries; i-- {
+		min(len(boundaries), cacheDemandMaxPlanBoundaries))
+	i, strides := last, 0
+	for ; i >= 0 && strides < cacheDemandMaxStrideBoundaries; i-- {
 		onStride := boundaries[i].TokenCount%cacheDemandStrideTokens == 0
 		if onStride {
 			strides++
 		}
 		if onStride || i == last {
+			selected = append(selected, boundaries[i])
+		}
+	}
+	for ; i >= 0; i-- {
+		if cacheDemandAffinityRung(boundaries[i].TokenCount) {
 			selected = append(selected, boundaries[i])
 		}
 	}
@@ -134,7 +196,7 @@ func (t *cacheRoutingTracker) observeCacheDemand(plan *CachePlan, routeKey []byt
 		return
 	}
 	// The same anchors are read and then recorded, so one plan costs at most
-	// cacheDemandMaxStrideBoundaries + 1 = 65 keyed digests and index entries
+	// cacheDemandMaxPlanBoundaries = 75 keyed digests and index entries
 	// whatever its length. Full holder lookup still checks EVERY boundary.
 	anchors := cacheDemandAnchors(plan.Boundaries)
 	boundaries := make([]cacheDemandBoundary, 0, len(anchors))

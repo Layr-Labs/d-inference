@@ -260,6 +260,12 @@ func (s *Server) registerExactCacheGauges() {
 	s.metrics.RegisterGauge("exact_cache_fenced_capabilities", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Lifecycle.FencedCapabilities)
 	}))
+	s.metrics.RegisterGauge("exact_cache_demand_entries", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Lifecycle.DemandEntries)
+	}))
+	s.metrics.RegisterGauge("exact_cache_demand_cap_evictions", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Lifecycle.DemandCapEvictions)
+	}))
 }
 
 func (s *Server) exactCacheGaugeSnapshot() ExactCacheStatus {
@@ -365,6 +371,8 @@ func (s *Server) emitExactCacheDDGauges() {
 	s.ddGauge("exact_cache.fence", float64(status.Lifecycle.FencesApplied), []string{"event:applied"})
 	s.ddGauge("exact_cache.fence", float64(status.Lifecycle.FencesExpired), []string{"event:expired"})
 	s.ddGauge("exact_cache.fenced_capabilities", float64(status.Lifecycle.FencedCapabilities), nil)
+	s.ddGauge("exact_cache.demand_entries", float64(status.Lifecycle.DemandEntries), nil)
+	s.ddGauge("exact_cache.demand_cap_evictions", float64(status.Lifecycle.DemandCapEvictions), nil)
 }
 
 func boolGauge(value bool) float64 {

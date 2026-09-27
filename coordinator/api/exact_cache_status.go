@@ -78,8 +78,9 @@ func (s *Server) ExactCacheStatusSnapshot() ExactCacheStatus {
 		routingMode = registry.CacheRoutingOff
 	}
 	// Count first: counting settles expiry, and the lifecycle counters read
-	// afterwards then include those removals, so within one scrape
-	// holder_added minus the removals never exceeds holders.
+	// afterwards then include those removals. The two reads take the tracker
+	// lock separately, so a receipt that lands between them can still leave
+	// holder_added minus the removals one or two off holders in a scrape.
 	holders, attempts := s.registry.CacheRoutingStateCounts()
 	status := ExactCacheStatus{
 		Holders: holders, Attempts: attempts,

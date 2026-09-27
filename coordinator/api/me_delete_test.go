@@ -112,8 +112,12 @@ func TestDeleteMyProvider_OnlineConflict409(t *testing.T) {
 	srv, st := newKeyTestServer(t)
 	seedProviderRecord(t, st, "live-p", "SER-ON", "acct-1")
 
-	// Register a live provider connection with a matching serial.
-	live := srv.registry.Register("live-p", nil, &protocol.RegisterMessage{})
+	// Register a live connection that carries the same serial under a
+	// different session id. The handler's online check matches by serial, and
+	// the registry's async persist of this connection writes the "live-conn"
+	// row, so it can never overwrite the seeded "live-p" row the assertion
+	// below reads.
+	live := srv.registry.Register("live-conn", nil, &protocol.RegisterMessage{})
 	live.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SER-ON"})
 
 	r := reqWithUser(http.MethodDelete, "/v1/me/providers/live-p", "", "acct-1")
@@ -124,8 +128,12 @@ func TestDeleteMyProvider_OnlineConflict409(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
 	}
-	if rec, _ := st.GetProviderForRestore(context.Background(), "SER-ON", "", nil); rec == nil {
-		t.Fatal("online machine record was deleted despite 409")
+	rec, err := st.GetProviderRecord(context.Background(), "live-p")
+	if err != nil || rec == nil {
+		t.Fatalf("online machine record was deleted despite 409: %v", err)
+	}
+	if rec.SerialNumber != "SER-ON" || rec.AccountID != "acct-1" {
+		t.Fatalf("online machine record changed: serial=%q account=%q", rec.SerialNumber, rec.AccountID)
 	}
 }
 

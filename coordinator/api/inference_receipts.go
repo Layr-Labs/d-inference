@@ -26,6 +26,10 @@ const (
 	inferenceReceiptHashHeader    = "X-Darkbloom-Receipt-Hash"
 	inferenceReceiptRequired      = "required"
 	defaultInferenceReceiptExpiry = 90 * 24 * time.Hour
+	// inferenceReceiptStoreTimeout bounds receipt writes that run detached from
+	// the request context, so a client disconnect cannot abandon a transition
+	// and a stalled store cannot hold the handler indefinitely.
+	inferenceReceiptStoreTimeout = 5 * time.Second
 )
 
 var errInferenceReceiptUnavailable = errors.New("inference receipt service unavailable")
@@ -179,9 +183,8 @@ func (s *Server) newInferenceReceiptRequest(
 			return nil, errors.New("receipt-enabled messages must have a supported role and non-empty text content")
 		}
 	}
-	var nonce []byte
-	var err error
-	if nonce, err = base64.RawURLEncoding.DecodeString(nonceHeader); err != nil || len(nonce) != 32 || base64.RawURLEncoding.EncodeToString(nonce) != nonceHeader {
+	nonce, err := base64.RawURLEncoding.DecodeString(nonceHeader)
+	if err != nil || len(nonce) != 32 || base64.RawURLEncoding.EncodeToString(nonce) != nonceHeader {
 		return nil, errors.New("receipt nonce must be a canonical base64url encoding of 32 random bytes")
 	}
 	callerRef := keyIDFromContext(r.Context())
@@ -240,10 +243,15 @@ func pendingInferenceReceipt(request *inferenceReceiptRequest, providerBody []by
 		return nil
 	}
 	return &registry.InferenceReceiptContext{
-		JobID: request.JobID, Nonce: request.Nonce, CallerRef: request.CallerRef,
-		RequestSHA256: request.RequestSHA256, RequestBytesSHA256: request.RequestBytesSHA256,
-		ProviderRequestSHA256: receipts.HashBytes(providerBody), RequestedModel: request.RequestedModel,
-		CreatedAt: request.CreatedAt, LookupExpiresAt: request.LookupExpiresAt,
+		JobID:                 request.JobID,
+		Nonce:                 request.Nonce,
+		CallerRef:             request.CallerRef,
+		RequestSHA256:         request.RequestSHA256,
+		RequestBytesSHA256:    request.RequestBytesSHA256,
+		ProviderRequestSHA256: receipts.HashBytes(providerBody),
+		RequestedModel:        request.RequestedModel,
+		CreatedAt:             request.CreatedAt,
+		LookupExpiresAt:       request.LookupExpiresAt,
 	}
 }
 
@@ -256,7 +264,7 @@ func (s *Server) finalizeInferenceReceipt(w http.ResponseWriter, pr *registry.Pe
 	}
 	output, finishReason, err := plainTextReceiptOutput(response)
 	if err != nil {
-		_ = s.store.SetInferenceReceiptState(context.Background(), pr.InferenceReceipt.JobID, store.InferenceReceiptFailed, time.Now().UTC())
+		s.markInferenceReceiptFailed(pr.InferenceReceipt.JobID)
 		return err
 	}
 	completedAt := time.Now().UTC()
@@ -280,18 +288,20 @@ func (s *Server) finalizeInferenceReceipt(w http.ResponseWriter, pr *registry.Pe
 	}
 	envelope, err := s.inferenceReceiptSigner.Sign(payload)
 	if err != nil {
-		_ = s.store.SetInferenceReceiptState(context.Background(), pr.InferenceReceipt.JobID, store.InferenceReceiptFailed, completedAt)
+		s.markInferenceReceiptFailed(pr.InferenceReceipt.JobID)
 		return err
 	}
 	encoded, err := json.Marshal(envelope)
 	if err != nil {
-		_ = s.store.SetInferenceReceiptState(context.Background(), pr.InferenceReceipt.JobID, store.InferenceReceiptFailed, completedAt)
+		s.markInferenceReceiptFailed(pr.InferenceReceipt.JobID)
 		return errors.New("could not encode inference receipt")
 	}
-	changed, err := s.store.CompleteInferenceReceipt(context.Background(), pr.InferenceReceipt.JobID,
+	ctx, cancel := context.WithTimeout(context.Background(), inferenceReceiptStoreTimeout)
+	changed, err := s.store.CompleteInferenceReceipt(ctx, pr.InferenceReceipt.JobID,
 		envelope.ReceiptHash, encoded, completedAt, payload.LookupExpiresAt)
+	cancel()
 	if err != nil {
-		_ = s.store.SetInferenceReceiptState(context.Background(), pr.InferenceReceipt.JobID, store.InferenceReceiptFailed, completedAt)
+		s.markInferenceReceiptFailed(pr.InferenceReceipt.JobID)
 		return fmt.Errorf("persist completed inference receipt: %w", err)
 	}
 	if !changed {
@@ -340,36 +350,50 @@ func (s *Server) failPendingInferenceReceipt(request *inferenceReceiptRequest) {
 	if request == nil || s.store == nil {
 		return
 	}
-	_ = s.store.SetInferenceReceiptState(context.Background(), request.JobID, store.InferenceReceiptFailed, time.Now().UTC())
+	s.markInferenceReceiptFailed(request.JobID)
+}
+
+// markInferenceReceiptFailed moves a pending receipt to failed. Terminal rows
+// are left unchanged by the store, so calling it after completion is a no-op.
+func (s *Server) markInferenceReceiptFailed(jobID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), inferenceReceiptStoreTimeout)
+	defer cancel()
+	if err := s.store.SetInferenceReceiptState(ctx, jobID, store.InferenceReceiptFailed, time.Now().UTC()); err != nil {
+		s.logger.Warn("inference receipt failure state was not recorded", "job_id", jobID, "error", err)
+	}
 }
 
 func (s *Server) writeInferenceReceiptFailure(w http.ResponseWriter, pr *registry.PendingRequest) {
 	if pr != nil && pr.InferenceReceipt != nil && s.store != nil {
-		_ = s.store.SetInferenceReceiptState(context.Background(), pr.InferenceReceipt.JobID, store.InferenceReceiptFailed, time.Now().UTC())
+		s.markInferenceReceiptFailed(pr.InferenceReceipt.JobID)
 	}
 	writeJSON(w, http.StatusBadGateway, errorResponse("receipt_unavailable", "inference completed but its verification receipt could not be recorded"))
 }
 
 func (s *Server) handleInferenceReceiptByJobID(w http.ResponseWriter, r *http.Request) {
 	record, err := s.store.GetInferenceReceiptByJobID(r.Context(), r.PathValue("job_id"))
-	if err != nil || !record.ExpiresAt.After(time.Now()) {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "inference receipt not found"))
-		return
-	}
-	s.writeInferenceReceiptLookup(w, record)
+	s.writeInferenceReceiptLookup(w, record, err)
 }
 
 func (s *Server) handleInferenceReceiptByHash(w http.ResponseWriter, r *http.Request) {
 	record, err := s.store.GetInferenceReceiptByHash(r.Context(), r.PathValue("receipt_hash"))
+	s.writeInferenceReceiptLookup(w, record, err)
+}
+
+// writeInferenceReceiptLookup answers a job or hash lookup. Only a true miss or
+// an expired row is 404; a transient store failure is 503 so a verifier never
+// mistakes an outage for proof that a receipt does not exist.
+func (s *Server) writeInferenceReceiptLookup(w http.ResponseWriter, record store.InferenceReceiptRecord, err error) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.logger.Error("inference receipt lookup failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("receipt_unavailable", "inference receipt lookup is unavailable"))
+		return
+	}
 	if err != nil || !record.ExpiresAt.After(time.Now()) {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "inference receipt not found"))
 		return
 	}
-	s.writeInferenceReceiptLookup(w, record)
-}
-
-func (s *Server) writeInferenceReceiptLookup(w http.ResponseWriter, record store.InferenceReceiptRecord) {
-	w.Header().Set("Cache-Control", "private, no-store")
 	response := inferenceReceiptLookupResponse{JobID: record.JobID, State: record.State}
 	if record.State == store.InferenceReceiptCompleted {
 		var envelope receipts.Envelope

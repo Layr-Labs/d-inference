@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -248,6 +250,38 @@ func TestInferenceReceiptLookupHidesExpiredAndMissing(t *testing.T) {
 	s.handleInferenceReceiptByJobID(w, r)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("missing receipt status = %d", w.Code)
+	}
+}
+
+type failingReceiptLookupStore struct {
+	store.Store
+}
+
+func (failingReceiptLookupStore) GetInferenceReceiptByJobID(context.Context, string) (store.InferenceReceiptRecord, error) {
+	return store.InferenceReceiptRecord{}, errors.New("connection reset")
+}
+
+func (failingReceiptLookupStore) GetInferenceReceiptByHash(context.Context, string) (store.InferenceReceiptRecord, error) {
+	return store.InferenceReceiptRecord{}, errors.New("connection reset")
+}
+
+func TestInferenceReceiptLookupReportsStoreFailureAsUnavailable(t *testing.T) {
+	s := &Server{
+		store:  failingReceiptLookupStore{Store: store.NewMemory(store.Config{})},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	for name, lookup := range map[string]func(http.ResponseWriter, *http.Request){
+		"job":  s.handleInferenceReceiptByJobID,
+		"hash": s.handleInferenceReceiptByHash,
+	} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.SetPathValue("job_id", "job")
+		r.SetPathValue("receipt_hash", strings.Repeat("a", 64))
+		lookup(w, r)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s lookup status = %d, want 503; body=%s", name, w.Code, w.Body.String())
+		}
 	}
 }
 

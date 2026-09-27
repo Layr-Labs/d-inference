@@ -1,6 +1,6 @@
 # Architecture — how Darkbloom works
 
-> Last updated: 2026-09-24 · commit `b6f9574ed`
+> Last updated: 2026-09-27 · commit `d3e3c3a62`
 
 Explanation pages: context, mechanism, invariants, failure modes, and a code
 map for each part of the system. The code in `coordinator/`,

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-27 · commit `f99e56eb0`
+> Last updated: 2026-09-27 · commit `d3e3c3a62`
 
 The complete public HTTP surface of the coordinator, derived from the 120 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for receipt lifecycle see [`../architecture/inference-receipts.md`](../architecture/inference-receipts.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -473,8 +473,8 @@ The `receipt_hash` is lowercase hex SHA-256 of `darkbloom:inference-receipt:v1\0
 
 | Lookup | Success shape/status | Other outcomes |
 |---|---|---|
-| Job path | `{job_id, state}`; pending → 202, terminal → 200; completed includes `receipt` | Missing/expired → 404 `not_found`; corrupt stored envelope or absent historical verification key → 503 `receipt_unavailable` |
-| Hash path | Completed, unexpired `{job_id, state:"completed", receipt}` → 200 | Missing, non-completed, or expired → 404 `not_found` |
+| Job path | `{job_id, state}`; pending → 202, terminal → 200; completed includes `receipt` | Missing/expired → 404 `not_found`; store lookup failure, corrupt stored envelope, or absent historical verification key → 503 `receipt_unavailable` |
+| Hash path | Completed, unexpired `{job_id, state:"completed", receipt}` → 200 | Missing, non-completed, or expired → 404 `not_found`; store lookup failure → 503 `receipt_unavailable` |
 | Public key path | `{issuer, keys:[{key_id, algorithm:"Ed25519", public_key}]}` → 200; sorted key IDs; `Cache-Control: public, max-age=300` | Disabled/unavailable signer or empty key set → 503 `receipt_unavailable` |
 
 Lookup responses use `Cache-Control: private, no-store`. Public lookup reveals hashes and metadata only, never request prompt or assistant output. Any query parameters supplied to these three routes are ignored; the handlers do not read them. The payload's `lookup_expires_at` is enforced by the handlers even if an expired row remains in the store (`writeInferenceReceiptLookup`, `coordinator/api/inference_receipts.go`).

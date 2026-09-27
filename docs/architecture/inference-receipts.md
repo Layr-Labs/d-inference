@@ -1,6 +1,6 @@
 # Inference receipts
 
-> Last updated: 2026-09-24 · commit `b6f9574ed`
+> Last updated: 2026-09-27 · commit `d3e3c3a62`
 
 Inference receipts define a coordinator-signed record binding a supported chat job to request and output commitments. This explanation covers the coded lifecycle, persistence, verification, key rotation, and failure behavior; consumer request and verification steps are in the [consumer procedure](../consumer/inference-receipts.md).
 

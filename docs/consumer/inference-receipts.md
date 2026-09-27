@@ -1,6 +1,6 @@
 # How to request and verify an inference receipt
 
-> Last updated: 2026-09-24 · commit `b6f9574ed`
+> Last updated: 2026-09-27 · commit `d3e3c3a62`
 
 This how-to documents the opt-in request contract, public lookup, and independent verification of request, provider-request, and assistant-text commitments. A receipt records a trusted-network event; it does not prove that the answer is correct or acceptable for your task.
 

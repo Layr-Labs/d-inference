@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-26 · commit `10fb4b7c1`
+> Last updated: 2026-09-27 · commit `649e2fa5e`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the

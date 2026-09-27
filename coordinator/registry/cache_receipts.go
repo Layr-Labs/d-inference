@@ -88,8 +88,9 @@ func (t *cacheRoutingTracker) markAttemptTerminal(nonce string, now time.Time) {
 	}
 	t.mu.Lock()
 	if attempt, ok := t.activeAttemptLocked(nonce, now); ok {
+		// Through the store so the expiry heap moves with the new deadline.
 		attempt.ExpiresAt = now.Add(cacheRoutingAttemptTTL)
-		t.attempts[nonce] = attempt
+		t.storeAttemptLocked(nonce, attempt)
 	}
 	t.mu.Unlock()
 }
@@ -183,11 +184,11 @@ func (t *cacheRoutingTracker) storeAttemptLocked(nonce string, attempt cacheAtte
 	}
 	t.attempts[nonce] = attempt
 	if entry := t.attemptOrderByNonce[nonce]; entry != nil {
-		entry.createdAt = attempt.CreatedAt
+		entry.expiresAt = attempt.ExpiresAt
 		heap.Fix(&t.attemptOrder, entry.index)
 		return
 	}
-	entry := &cacheAttemptOrderEntry{nonce: nonce, createdAt: attempt.CreatedAt}
+	entry := &cacheAttemptOrderEntry{nonce: nonce, expiresAt: attempt.ExpiresAt}
 	heap.Push(&t.attemptOrder, entry)
 	t.attemptOrderByNonce[nonce] = entry
 }
@@ -214,7 +215,7 @@ func (t *cacheRoutingTracker) upsertHolderLocked(key string, holder cacheHolder)
 		t.holderAdded++
 	}
 	holders[holder.ProviderID] = holder
-	t.trackHolderOrderLocked(key, holder.ProviderID, holder.UpdatedAt)
+	t.trackHolderOrderLocked(key, holder.ProviderID, holder.ExpiresAt)
 	if len(holders) > t.maxHolders {
 		oldestProviderID := ""
 		var oldestUpdatedAt time.Time
@@ -227,7 +228,8 @@ func (t *cacheRoutingTracker) upsertHolderLocked(key string, holder cacheHolder)
 		}
 		t.removeHolderLocked(key, oldestProviderID, cacheHolderRemovalCapacityEviction)
 	}
-	t.enforceCapLocked()
+	// Every receipt stamps UpdatedAt with the tracker clock it was applied at.
+	t.enforceCapLocked(holder.UpdatedAt)
 }
 
 func (t *cacheRoutingTracker) activeHolderLocked(
@@ -260,17 +262,19 @@ func (t *cacheRoutingTracker) activeAttemptLocked(nonce string, now time.Time) (
 	return cacheAttempt{}, false
 }
 
+// A refresh re-keys the existing entry in place: heap.Fix moves it to the
+// position of its new expiry, in either direction.
 func (t *cacheRoutingTracker) trackHolderOrderLocked(
 	key, providerID string,
-	updatedAt time.Time,
+	expiresAt time.Time,
 ) {
 	ref := cacheHolderRef{key: key, providerID: providerID}
 	if entry := t.holderOrderByRef[ref]; entry != nil {
-		entry.updatedAt = updatedAt
+		entry.expiresAt = expiresAt
 		heap.Fix(&t.holderOrder, entry.index)
 		return
 	}
-	entry := &cacheHolderOrderEntry{ref: ref, updatedAt: updatedAt}
+	entry := &cacheHolderOrderEntry{ref: ref, expiresAt: expiresAt}
 	heap.Push(&t.holderOrder, entry)
 	t.holderOrderByRef[ref] = entry
 }
@@ -293,44 +297,5 @@ func (t *cacheRoutingTracker) removeHolderLocked(
 	if entry := t.holderOrderByRef[ref]; entry != nil {
 		heap.Remove(&t.holderOrder, entry.index)
 		delete(t.holderOrderByRef, ref)
-	}
-}
-
-func (t *cacheRoutingTracker) sweepLocked(now time.Time) {
-	for key, holders := range t.holders {
-		for providerID, holder := range holders {
-			if !now.Before(holder.ExpiresAt) {
-				t.removeHolderLocked(key, providerID, cacheHolderRemovalTTL)
-			}
-		}
-	}
-	for nonce, attempt := range t.attempts {
-		if !now.Before(attempt.ExpiresAt) {
-			t.removeAttemptLocked(nonce)
-		}
-	}
-	t.sweepFencesLocked(now)
-}
-
-func (t *cacheRoutingTracker) sweepIfDueLocked(now time.Time) {
-	if !t.lastSweep.IsZero() && now.Before(t.lastSweep.Add(cacheRoutingSweepInterval)) {
-		return
-	}
-	t.sweepLocked(now)
-	t.lastSweep = now
-}
-
-func (t *cacheRoutingTracker) enforceCapLocked() {
-	for t.holderCount > t.maxEntries {
-		t.removeHolderLocked(
-			t.holderOrder[0].ref.key,
-			t.holderOrder[0].ref.providerID,
-			cacheHolderRemovalCapacityEviction)
-	}
-}
-
-func (t *cacheRoutingTracker) enforceAttemptCapLocked() {
-	for len(t.attempts) > t.maxAttempts {
-		t.removeAttemptLocked(t.attemptOrder[0].nonce)
 	}
 }

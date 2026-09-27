@@ -21,15 +21,34 @@ const (
 	cacheRoutingAttemptTTL           = 2 * time.Minute
 	cacheRoutingInFlightAttemptTTL   = 2 * time.Hour
 	cacheRoutingSweepInterval        = 30 * time.Second
-	cacheRoutingMaxEntries           = 10_000
+	// cacheRoutingSizingTTL is the longest holder TTL the in-memory caps below
+	// are sized for. Providers keep cache files for 30 minutes, so a longer
+	// routing TTL would only retain evidence for files that are gone. It is a
+	// sizing basis, not a limit: configuration does not enforce it.
+	cacheRoutingSizingTTL = 30 * time.Minute
+	// cacheRoutingMaxEntries is the global holder cap. Holders live their whole
+	// TTL, so the steady state is creation rate × TTL. Production creates about
+	// 7 holders/s and checkpoint geometry is expected to raise that toward
+	// 30/s: 30/s × 1,800 s (cacheRoutingSizingTTL) = 54,000. 250,000 leaves
+	// more than 4× headroom (about 139/s sustained) before the cap displaces
+	// live evidence and shortens the effective TTL. Measured through the
+	// receipt path (BenchmarkCacheHolderMemory, settled heap): 982 B per
+	// donated holder and 1,126 B per holder recorded by a hit, which adds the
+	// stage measurement. That covers the holder and its decoded strings, its
+	// bucket map, the expiry-heap entry and both index slots, so a full index
+	// is about 270 MiB and 54,000 holders about 60 MiB.
+	cacheRoutingMaxEntries = 250_000
 	// cacheDemandMaxEntries sizes the observed-demand index for the routing TTL
 	// at fleet rate, not for the holder cap: each plan records ~5 geometric
-	// boundary keys, so ~35 plans/s is ~170 entries/s and 10,000 entries turned
-	// over in about a minute against a 10-minute TTL. 300 entries/s × 600 s =
-	// 180,000; 250,000 leaves headroom. Each entry is a 43-byte base64url HMAC
-	// key (48 B), a list.Element (48 B), a boxed cacheDemandEntry (48 B) and a
-	// map slot (~37 B), about 180 B, so a full index is roughly 45 MB.
-	cacheDemandMaxEntries                 = 250_000
+	// boundary keys, so ~35 plans/s is ~170 entries/s. The index expires on the
+	// routing TTL, so it is sized for cacheRoutingSizingTTL: 300 entries/s ×
+	// 1,800 s = 540,000; 600,000 leaves headroom. An index that turns over
+	// before the TTL reports a repeated prefix as novel, and the provider then
+	// skips writing it. Measured (BenchmarkCacheDemandMemory, settled heap):
+	// 191 B per entry, which is the 43-byte base64url HMAC key, a list.Element,
+	// a boxed cacheDemandEntry and a map slot, so a full index is about
+	// 110 MiB.
+	cacheDemandMaxEntries                 = 600_000
 	cacheRoutingMaxAttempts               = 50_000
 	cacheRoutingMaxReceiptTokens          = 1_000_000
 	cacheRoutingMaxStageMs                = 10 * 60 * 1000.0
@@ -181,9 +200,17 @@ func CacheHolderRemovalReasons() []string {
 	}
 }
 
+// Both order heaps are min-heaps on expiry, so the head is always the entry
+// that lapses first. One structure then serves the TTL sweep (pop while the
+// head is expired, O(expired · log n)) and the entry cap (evict the head,
+// which forfeits the least remaining lifetime). Creation or update time is
+// not a substitute: an attempt's expiry is rewritten when it turns terminal
+// (2 h in flight, 2 min after), and resident holders live
+// min(ttl, cacheRoutingMemoryTTL) while SSD holders live the full ttl, so
+// neither order matches the order of expiry.
 type cacheAttemptOrderEntry struct {
 	nonce     string
-	createdAt time.Time
+	expiresAt time.Time
 	index     int
 }
 
@@ -192,10 +219,10 @@ type cacheAttemptOrderHeap []*cacheAttemptOrderEntry
 func (h cacheAttemptOrderHeap) Len() int { return len(h) }
 
 func (h cacheAttemptOrderHeap) Less(i, j int) bool {
-	if h[i].createdAt.Equal(h[j].createdAt) {
+	if h[i].expiresAt.Equal(h[j].expiresAt) {
 		return h[i].nonce < h[j].nonce
 	}
-	return h[i].createdAt.Before(h[j].createdAt)
+	return h[i].expiresAt.Before(h[j].expiresAt)
 }
 
 func (h cacheAttemptOrderHeap) Swap(i, j int) {
@@ -227,7 +254,7 @@ type cacheHolderRef struct {
 
 type cacheHolderOrderEntry struct {
 	ref       cacheHolderRef
-	updatedAt time.Time
+	expiresAt time.Time
 	index     int
 }
 
@@ -236,8 +263,8 @@ type cacheHolderOrderHeap []*cacheHolderOrderEntry
 func (h cacheHolderOrderHeap) Len() int { return len(h) }
 
 func (h cacheHolderOrderHeap) Less(i, j int) bool {
-	if !h[i].updatedAt.Equal(h[j].updatedAt) {
-		return h[i].updatedAt.Before(h[j].updatedAt)
+	if !h[i].expiresAt.Equal(h[j].expiresAt) {
+		return h[i].expiresAt.Before(h[j].expiresAt)
 	}
 	if h[i].ref.key != h[j].ref.key {
 		return h[i].ref.key < h[j].ref.key
@@ -268,15 +295,18 @@ func (h *cacheHolderOrderHeap) Pop() any {
 }
 
 type cacheRoutingTracker struct {
-	demand              *cacheDemandTracker
-	generation          *cacheRoutingGeneration
-	mu                  sync.Mutex
-	ttl                 time.Duration
-	maxHolders          int
-	maxEntries          int
-	maxAttempts         int
-	holderCount         int
-	lastSweep           time.Time
+	demand      *cacheDemandTracker
+	generation  *cacheRoutingGeneration
+	mu          sync.Mutex
+	ttl         time.Duration
+	maxHolders  int
+	maxEntries  int
+	maxAttempts int
+	holderCount int
+	lastSweep   time.Time
+	// sweepBacklog is set when a sweep spent its whole removal budget; the
+	// next tracker operation then continues without waiting for the interval.
+	sweepBacklog        bool
 	holders             map[string]map[string]cacheHolder
 	attempts            map[string]cacheAttempt
 	holderOrder         cacheHolderOrderHeap
@@ -355,10 +385,7 @@ func (r *Registry) CacheRoutingStateCounts() (holders, attempts int) {
 	if tracker == nil {
 		return 0, 0
 	}
-	tracker.mu.Lock()
-	defer tracker.mu.Unlock()
-	tracker.sweepIfDueLocked(tracker.now())
-	return tracker.holderCount, len(tracker.attempts)
+	return tracker.stateCounts(tracker.now())
 }
 
 // CacheRoutingLifecycleStatus carries aggregate counts only. The fence fields

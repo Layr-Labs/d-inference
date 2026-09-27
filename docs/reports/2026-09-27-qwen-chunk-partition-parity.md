@@ -1,6 +1,6 @@
 # Qwen chunk-partition parity and chunk-agnostic recurrent capture (2026-09-27)
 
-> Last updated: 2026-09-27 · commit `667d504c3`
+> Last updated: 2026-09-27 · commit `f6321a391`
 
 **Question.** Does a hybrid recurrent Qwen (GatedDeltaNet + full attention)
 reach the same complete-checkpoint state at a prefill boundary whatever chunk
@@ -60,8 +60,9 @@ Live runs on real weights with the inline MTP head (provider
 | Run | Prompt | Hint | Published boundaries | File bytes | Next turn |
 |---|---:|---:|---|---|---|
 | Qwen3.5-9B solo stripe | 9,171 | 5,120 | 2,048 / 4,096 / 8,192 | 135.4 / 219.3 / 387.1 MB | restores 8,192; a 4,967-token fork restores 4,096, same text as its cold control |
+| Qwen3.5-9B, 8,169-token solo donor (adjacency) | 8,169 | 5,120 | 2,048 / 4,096 / 6,144 | 135.4 / 219.3 / 303.2 MB | the 4,096 target, one 2,048-chunk below the 6,144 latest, is kept |
 | Qwen3.5-9B, 6 × 512 then 2,048 chunks (company leaves) | 9,171 | 5,120 | 1,024 / 5,120 / 7,168 (manifest `chunkSize` 512 / 2,048 / 2,048) | 93.5 / 261.2 / 345.1 MB | restores 7,168, same text; warm TTFT 3.1 s vs 13.4 s cold |
-| Qwen3.6-35B-A3B solo stripe | 9,171 | none | 2,048 / 4,096 / 8,192 | 114.7 / 165.1 / 265.7 MB | restores 8,192, same text; warm TTFT 1.0 s vs 6.5 s cold |
+| Qwen3.6-35B-A3B solo stripe | 9,171 | 5,120 | 2,048 / 4,096 / 8,192 | 114.7 / 165.1 / 265.7 MB | restores 8,192, same text; warm TTFT 1.0 s vs 6.5 s cold |
 | Qwen3.6-35B-A3B mixed chunks | 9,171 | 5,120 | 1,024 / 5,120 / 7,168 | 89.6 / 190.2 / 240.6 MB | no disarm |
 
 Before the change the second row published only what the uniform-chunk rule

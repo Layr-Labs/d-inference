@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-27 · commit `667d504c3`
+> Last updated: 2026-09-27 · commit `f6321a391`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -491,8 +491,9 @@ projection) but stays out of rectangular packed prefill
 slot-wide cap: each staged checkpoint is one transient reservation on the
 admission ledger for its copied recurrent state, and three such copies of
 about 51 MB (Qwen3.5-9B) against 210 MB per Gemma 4 window were judged small
-enough, so N concurrent recurrent donors stage at most N × 3 copies. Revisit
-if state sizes grow. Window copies finish
+enough, so N concurrent recurrent donors stage at most N × 3 copies, plus
+one transient copy while a donor rolls its latest (the new copy is reserved
+before the old latest retires). Revisit if state sizes grow. Window copies finish
 before successor writes and remain owned until their captured stream drains.
 The encrypted manifest binds exact input token IDs, scope, checkpoint position,
 codec/layout and tensor descriptors. DBK3 writes bounded tensor segments into

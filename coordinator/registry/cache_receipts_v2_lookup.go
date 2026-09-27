@@ -127,6 +127,7 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 			}
 		}
 		t.upsertHolderLocked(key, holder)
+		t.supersedeDeeperHoldersLocked(providerID, attempt.Plan, anchor, msg.Tier, routeKey)
 	case "miss_absent", "miss_corrupt":
 		for _, anchor := range attempt.Plan.Boundaries {
 			t.removeHolderLocked(
@@ -146,4 +147,32 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 		}
 	}
 	return CacheReceiptResult{Accepted: true, Reason: CacheReceiptAccepted, PromptTokens: attempt.Plan.PromptTokenCount}
+}
+
+// supersedeDeeperHoldersLocked drops this provider's holders, in the receipt's
+// tier only, at every verified plan boundary deeper than the one it just
+// proved. Both provider stores search longest-first, so a shorter hit means
+// the provider will not deliver the deeper boundary for this prefix: the file
+// was evicted or expired, a block failed authentication, or a stage cap
+// trimmed the run. The receipt cannot tell those apart and no miss will ever
+// fire, so without this the stale holder keeps the larger credit until its
+// TTL and can outrank a machine that really holds the deeper boundary.
+//
+// Holders are advisory: a later ready or hit re-teaches a boundary that is
+// still stored. This never fences, never touches sequence watermarks, and
+// leaves every other provider's holder at those boundaries in place. Keys are
+// content-addressed, so a deeper holder that belongs to a different
+// continuation of the same prefix is not in this plan and is not removed.
+func (t *cacheRoutingTracker) supersedeDeeperHoldersLocked(
+	providerID string, plan CachePlan, matched protocol.PrefixCacheAnchor,
+	tier string, routeKey []byte,
+) {
+	for _, boundary := range plan.Boundaries {
+		if boundary.TokenCount <= matched.TokenCount {
+			continue
+		}
+		if key := cacheTierBoundaryKey(routeKey, plan, boundary, tier); key != "" {
+			t.removeHolderLocked(key, providerID, cacheHolderRemovalShorterHit)
+		}
+	}
 }

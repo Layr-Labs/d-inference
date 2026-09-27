@@ -43,6 +43,7 @@ type Store interface {
 	UsageStore
 	TelemetryStore
 	RequestOutcomeStore
+	InferenceReceiptStore
 	LedgerStore
 	BillingStore
 	ModelRegistryStore

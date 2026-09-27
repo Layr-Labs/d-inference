@@ -50,6 +50,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
+	"github.com/eigeninference/d-inference/coordinator/receipts"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -223,6 +224,11 @@ type Server struct {
 	mdmSchedulerConfig            MDMSchedulerConfig
 	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
 	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
+	inferenceReceiptEnabled       bool
+	inferenceReceiptSigner        *receipts.Signer
+	inferenceReceiptPublicKeys    map[string][]byte
+	inferenceReceiptIssuer        string
+	inferenceReceiptRetention     time.Duration
 	promptArtifacts               *promptcontract.Provisioner
 	promptContract                *promptcontract.Client
 	promptSupervisor              *promptcontract.Supervisor
@@ -851,6 +857,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		firstContentSLAEmails:    firstContentSLAEmails,
 		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
+	s.configureInferenceReceipts(cfg)
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
 		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
 			"requested", os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"),
@@ -2710,6 +2717,11 @@ func (s *Server) routes() {
 	// Optional: senders may use this to encrypt request bodies; plaintext path
 	// continues to work unchanged when this header isn't set.
 	s.mux.HandleFunc("GET /v1/encryption-key", s.handleEncryptionKey)
+	// Network-verifiable inference receipts are unguessable capability records.
+	// Their public lookup returns commitments and signed metadata, never content.
+	s.mux.HandleFunc("GET /v1/inference-receipts/jobs/{job_id}", s.handleInferenceReceiptByJobID)
+	s.mux.HandleFunc("GET /v1/inference-receipts/hashes/{receipt_hash}", s.handleInferenceReceiptByHash)
+	s.mux.HandleFunc("GET /v1/inference-receipts/keys", s.handleInferenceReceiptKeys)
 
 	// MDM webhook — MicroMDM sends command responses here.
 	s.mux.HandleFunc("POST /v1/mdm/webhook", s.HandleMDMWebhook)
@@ -3469,11 +3481,28 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 // the wildcard applies only to GET; non-GET methods fall through to the
 // credentialed, single-origin CORS below.
 var publicCORSPaths = map[string]bool{
-	"/v1/models/catalog":       true,
-	"/v1/pricing":              true,
-	"/v1/stats":                true,
-	"/v1/network/series":       true,
-	"/v1/network/model-demand": true,
+	"/v1/models/catalog":          true,
+	"/v1/pricing":                 true,
+	"/v1/stats":                   true,
+	"/v1/network/series":          true,
+	"/v1/network/model-demand":    true,
+	"/v1/inference-receipts/keys": true,
+}
+
+func isPublicCORSPath(path string) bool {
+	if publicCORSPaths[path] {
+		return true
+	}
+	for _, prefix := range []string{
+		"/v1/inference-receipts/jobs/",
+		"/v1/inference-receipts/hashes/",
+	} {
+		if strings.HasPrefix(path, prefix) {
+			identifier := strings.TrimPrefix(path, prefix)
+			return identifier != "" && !strings.Contains(identifier, "/")
+		}
+	}
+	return false
 }
 
 // corsMiddleware sets CORS headers. Authenticated/credentialed requests are
@@ -3498,7 +3527,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		if publicCORSPaths[r.URL.Path] && effectiveMethod == http.MethodGet {
+		if isPublicCORSPath(r.URL.Path) && effectiveMethod == http.MethodGet {
 			// Public, non-credentialed GET — any origin may read it.
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
@@ -3507,11 +3536,11 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+metadataDetailsHeader)
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+metadataDetailsHeader+", "+inferenceReceiptHeader+", "+inferenceReceiptNonceHeader)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 
-		w.Header().Set("Access-Control-Expose-Headers", "X-Provider-Verification, X-Provider-Authorization-Method, X-Provider-Encrypted, X-Provider-Trust-Level, X-Provider-Attested")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Provider-Verification, X-Provider-Authorization-Method, X-Provider-Encrypted, X-Provider-Trust-Level, X-Provider-Attested, "+inferenceReceiptJobIDHeader+", "+inferenceReceiptHashHeader)
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

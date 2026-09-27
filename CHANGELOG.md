@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — inference receipts
+
+- Add opt-in, nonce-bound Ed25519 inference receipts for non-streaming plain-text `/v1/chat/completions`, with public job, receipt-hash and signing-key lookup routes. See [inference receipts](docs/consumer/inference-receipts.md).
+
 ## Release candidate v0.9.10 — live switching and App Attest recovery (not shipped; 2026-09-27)
 
 - Align `ProviderCore.version` and the coordinator display fallback at 0.9.10. Upgrade the coordinator before publishing the separately qualified signed provider; the source bump does not advance the registered latest release.

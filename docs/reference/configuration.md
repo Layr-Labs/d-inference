@@ -90,6 +90,17 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 | `EIGENINFERENCE_ROUTING_CONCURRENCY` | integer ≥ 2 | `runtime.NumCPU()` (min 2) | `coordinator/cmd/coordinator/main.go`; `coordinator/api/server.go` (`DefaultRoutingConcurrency`) | Cap on concurrent routing scans. |
 | `EIGENINFERENCE_PPROF_ADDR` | `host:port` | unset (off) | `coordinator/cmd/coordinator/main.go` (`startPprofListener`) | Serves `net/http/pprof` on a separate listener; bind loopback or firewall it. A successful listener enables mutex sampling at fraction `100` and block sampling at rate `1_000_000` ns (`enableContentionProfiling`). |
 
+### Inference receipt signing
+
+Inference receipts are disabled unless explicitly enabled. Keep the signing secret private; publish historical public keys while their receipts can still be looked up. The issuer is derived from `EIGENINFERENCE_BASE_URL` (default `https://api.darkbloom.dev`); verifiers fetch the public-key set from that issuer's `/v1/inference-receipts/keys` route (`configureInferenceReceipts`, `coordinator/api/inference_receipts.go`).
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `EIGENINFERENCE_INFERENCE_RECEIPTS_ENABLED` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/inference_receipts.go` (`configureInferenceReceipts`) | Enables receipt signing and lookup only when active key ID and key material validate. |
+| `EIGENINFERENCE_INFERENCE_RECEIPT_SIGNING_KEY_ID` | non-empty key ID, at most 128 UTF-8 bytes | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/receipts/receipts.go` (`validateKeyID`) | ID of the active Ed25519 signing key; included in signed envelopes and public-key lookup. |
+| `EIGENINFERENCE_INFERENCE_RECEIPT_SIGNING_KEY` | standard-base64 32-byte seed or 64-byte Ed25519 private key (secret) | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/receipts/receipts.go` (`NewSignerFromBytes`) | Private key used to sign new receipts; invalid or absent material leaves the feature unavailable when enabled. |
+| `EIGENINFERENCE_INFERENCE_RECEIPT_PUBLIC_KEYS` | JSON object mapping key IDs to standard-base64 32-byte Ed25519 public keys | unset (active key only) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/inference_receipts.go` (`configureInferenceReceipts`) | Retains historical verification keys and publishes them at `/v1/inference-receipts/keys`; a configured active ID must match its signing key. |
+
 ### Database, store and persistent disk
 
 | Variable | Values / type | Default | Read in | Effect |

@@ -179,6 +179,10 @@ type PendingRequest struct {
 	// MetadataDetails is true. Opaque to the registry; writers attach it as
 	// the response "metadata" field. Nil when the caller did not opt in.
 	ResponseMetadata json.RawMessage
+	// InferenceReceipt is present only for explicitly receipt-enabled
+	// non-streaming text requests. A fresh per-attempt copy binds the final
+	// provider request digest; the winning pending request supplies the receipt.
+	InferenceReceipt *InferenceReceiptContext
 	// Speculative backup telemetry. UsedBackup means a backup race was launched
 	// for this logical request; BackupWon is true only on the serving backup.
 	UsedBackup atomic.Bool

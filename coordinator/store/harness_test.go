@@ -58,6 +58,7 @@ func testPostgresStore(t testing.TB) *PostgresStore {
 		"request_outcomes",
 		"model_demand_requests",
 		"model_demand_hourly",
+		"inference_receipts",
 		"provider_trust_reuse",
 		"provider_floor_draws",
 		"code_attestations",

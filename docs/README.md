@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-24 · commit `b6f9574ed`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -39,6 +39,7 @@
 - [`architecture/scheduling.md`](architecture/scheduling.md): per-model queues, slot states, token-budget admission, model swaps, warm pool, heartbeat and eviction.
 - [`architecture/cache-aware-routing.md`](architecture/cache-aware-routing.md): provider-confirmed exact prefix-cache routing and its kill switch.
 - [`architecture/inference.md`](architecture/inference.md): the CBv2 engine — request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families.
+- [`architecture/inference-receipts.md`](architecture/inference-receipts.md): the opt-in signed receipt lifecycle, durable state, winner-attempt binding, key rotation, and lookup expiry.
 - [`architecture/prefix-cache.md`](architecture/prefix-cache.md): KV layouts, encrypted SSD checkpoint streaming, exact prefix reuse by model family, and explicit resident-cache modes.
 - [`architecture/prompt-contract-sidecar.md`](architecture/prompt-contract-sidecar.md): the Rust sidecar that derives token boundaries for cache routing, and its failure isolation.
 - [`architecture/model-registry.md`](architecture/model-registry.md): model manifests, aliases, publishing, and provider downloads.
@@ -78,10 +79,12 @@
 ## Consumer how-tos
 
 - [`consumer/quickstart.md`](consumer/quickstart.md): first request, streaming, SDK base-URL swap.
+- [`consumer/README.md`](consumer/README.md): index of consumer tasks and how-to pages.
 - [`consumer/authentication.md`](consumer/authentication.md): create and manage API keys, sign in with Privy, run the device-code flow for the CLI; auth failures and fixes.
 - [`consumer/models.md`](consumer/models.md): the model catalog, aliases, capabilities, and how to query it.
 - [`consumer/billing.md`](consumer/billing.md): funding a balance, reading usage, what a 402 means.
 - [`consumer/verification.md`](consumer/verification.md): verify the provider that served you.
+- [`consumer/inference-receipts.md`](consumer/inference-receipts.md): request and verify a signed record for supported non-streaming plain-text chat completions.
 - [`consumer/privacy-expectations.md`](consumer/privacy-expectations.md): what a consumer can and cannot assume, in plain terms.
 - [`provider/self-route.md`](provider/self-route.md): pin your own API traffic to your own provider machine.
 

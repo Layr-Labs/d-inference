@@ -43,13 +43,20 @@ func testServerFastQueue(t *testing.T) (*Server, *store.MemoryStore) {
 // attestation challenges and serves inference requests via the given handler.
 // Returns the httptest server, cleanup func, and a channel that the provider
 // goroutine closes when done.
-func setupE2ETest(t *testing.T, model string, handler func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string)) (*httptest.Server, func(), <-chan struct{}) {
+func setupE2ETest(t *testing.T, model string, handler func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string), configs ...ServerConfig) (*httptest.Server, func(), <-chan struct{}) {
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	serverConfig := ServerConfig{}
+	if len(configs) > 1 {
+		t.Fatal("setupE2ETest accepts at most one ServerConfig")
+	}
+	if len(configs) == 1 {
+		serverConfig = configs[0]
+	}
+	srv := NewServer(reg, st, serverConfig, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 

@@ -1416,6 +1416,8 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			CompleteCh:   make(chan protocol.UsageInfo, 1),
 			ErrorCh:      make(chan protocol.InferenceErrorMessage, 1),
 			Timing:       d.timing,
+			InferenceReceipt: pendingInferenceReceipt(
+				inferenceReceiptRequestFromContext(r.Context()), d.rawBody),
 		}
 		d.configurePending(queuePR)
 		if receivedAt := timingReceivedAt(d.timing); !receivedAt.IsZero() && d.deadline > 0 {
@@ -3805,6 +3807,9 @@ func (d *dispatchState) writeCommittedResponse() {
 		info.Verification = &verification
 	}
 	writeCommittedProviderHeaders(w, info)
+	if pr.InferenceReceipt != nil {
+		w.Header().Set(inferenceReceiptJobIDHeader, pr.InferenceReceipt.JobID)
+	}
 	d.writeTimingHeaderWithProfile(w, pr)
 	d.stampCommitted(pr)
 	writeInferenceJobIDHeader(w, pr.RequestID)

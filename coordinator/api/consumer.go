@@ -1070,7 +1070,9 @@ func (s *Server) dispatchWithReserver(
 		ChunkCh:                make(chan registry.ProviderChunk, chunkBufferSize),
 		CompleteCh:             make(chan protocol.UsageInfo, 1),
 		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-		Timing:                 timing,
+		InferenceReceipt: pendingInferenceReceipt(
+			inferenceReceiptRequestFromContext(r.Context()), rawBody),
+		Timing: timing,
 	}
 	stampModelTokenReservation(pr, modelTokenReservation(r))
 	if !receivedAt.IsZero() && requestDeadline > 0 {
@@ -1889,6 +1891,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	policy := s.resolveSelfRoutePolicy(r)
 
 	isResponsesAPI := input != nil && len(messages) == 0
+	receiptRequest, receiptErr := s.newInferenceReceiptRequest(
+		r, parsed, prelude.originalRawBody, r.URL.Path, isResponsesAPI)
+	if receiptErr != nil {
+		if errors.Is(receiptErr, errInferenceReceiptUnavailable) {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("receipt_unavailable", "inference receipts are unavailable"))
+		} else {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", receiptErr.Error()))
+		}
+		return
+	}
 	// Tool-constraint validation must judge the PRE-normalization tools (a
 	// normalization marker in the caller's body is forged). On the chat surface
 	// that is the parsed map with the caller's original tools restored; the
@@ -2437,6 +2449,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// Track providers that failed during retry so we don't dispatch to them again.
 		excludeProviders: make(map[string]struct{}),
 	}
+	if receiptRequest != nil {
+		if err := s.createPendingInferenceReceipt(r.Context(), receiptRequest); err != nil {
+			refundReservation()
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("receipt_unavailable", "could not reserve an inference receipt"))
+			return
+		}
+		defer s.failPendingInferenceReceipt(receiptRequest)
+		r = r.WithContext(withInferenceReceiptRequest(r.Context(), receiptRequest))
+		d.r = r
+	}
 	d.run()
 }
 
@@ -2700,6 +2722,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	rawBody := prelude.originalRawBody
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
+	if hasReceiptRequest(r) {
+		_, receiptErr := s.newInferenceReceiptRequest(r, parsed, originalRawBody, endpoint, false)
+		if errors.Is(receiptErr, errInferenceReceiptUnavailable) {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("receipt_unavailable", "inference receipts are unavailable"))
+		} else if receiptErr != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", receiptErr.Error()))
+		} else {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "receipts currently support chat completions only"))
+		}
+		return
+	}
 	model := prelude.model
 	runtimeDefaults := newModelRuntimeDefaults(parsed)
 	endpointKind := promptcontract.EndpointCompletions

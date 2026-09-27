@@ -1153,6 +1153,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS model_demand_collection (singleton BOOLEAN PRIMARY KEY CHECK(singleton), started_at TIMESTAMPTZ NOT NULL)`,
 		`INSERT INTO model_demand_collection (singleton,started_at) VALUES (TRUE,NOW()) ON CONFLICT DO NOTHING`,
 		requestOutcomesTableDDL,
+		inferenceReceiptTableDDL,
 		`CREATE INDEX IF NOT EXISTS idx_request_outcomes_received ON request_outcomes (received_at, coord_request_id)`,
 		requestProfilesTableDDL,
 		requestProfilesCreatedIndexDDL,

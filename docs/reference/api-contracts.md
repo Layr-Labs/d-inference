@@ -2,7 +2,7 @@
 
 > Last updated: 2026-09-27 · commit `f99e56eb0`
 
-The complete public HTTP surface of the coordinator, derived from the 117 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 120 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for receipt lifecycle see [`../architecture/inference-receipts.md`](../architecture/inference-receipts.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -168,6 +168,16 @@ as inference budgets.
 | POST | `/v1/responses` | `handleChatCompletions` — the same handler; it detects `input` (Responses) versus `messages` (Chat) | `key` | same | OpenAI Responses; lowered by `coordinator/promptcontract/endpoint_lower_responses.go`, streamed by `newResponsesStreamEmitter` (`coordinator/api/responses_stream.go`) |
 | POST | `/v1/completions` | `handleCompletions` (`coordinator/api/consumer.go`) | `key` | same | Legacy text completions; response built by `coordinator/api/generic_endpoint_response.go`, streamed by `newGenericEndpointStreamEmitter` (`coordinator/api/generic_endpoint_stream.go`) |
 | POST | `/v1/messages` | `handleAnthropicMessages` (`coordinator/api/consumer.go`) | `key` | same | Anthropic Messages; lowered by `coordinator/promptcontract/endpoint_lower_messages.go`, streamed by `newMessagesStreamEmitter` |
+
+### Inference receipts (3)
+
+These public read-only routes expose receipt state and signed hashes/metadata, never request or output plaintext. They have no authentication or rate-limit middleware. Query parameters are not read and have no effect.
+
+| Method | Path | Handler | Auth | Limiter | Notes |
+|---|---|---|---|---|---|
+| GET | `/v1/inference-receipts/jobs/{job_id}` | `handleInferenceReceiptByJobID` (`coordinator/api/inference_receipts.go`) | `—` | — | Job state; 202 while pending, 200 for completed/failed/interrupted, 404 when missing or lookup-expired. Completed records include the verified envelope. |
+| GET | `/v1/inference-receipts/hashes/{receipt_hash}` | `handleInferenceReceiptByHash` (`coordinator/api/inference_receipts.go`) | `—` | — | Lookup completed, unexpired receipts by receipt hash; 404 when missing or expired. |
+| GET | `/v1/inference-receipts/keys` | `handleInferenceReceiptKeys` (`coordinator/api/inference_receipts.go`) | `—` | — | `{issuer, keys:[{key_id, algorithm:"Ed25519", public_key}]}`; public keys use standard base64. Cacheable for 300 seconds; 503 `receipt_unavailable` when receipt signing/key configuration is unavailable. |
 
 ### Models and catalog (9)
 
@@ -425,8 +435,49 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 |---|---|---|
 | `/v1/` | `handleUnimplementedEndpoint` | Any `/v1/*` request matching no registered method+path — including a wrong method on a real path — gets 404 `invalid_request_error` with message `endpoint <METHOD> <path> is not implemented` |
 
-Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 6 + 5 + 3 + 1 + 41 + 1 = **117 registrations**, matching `routes()`.
+Total: 4 + 3 + 9 + 10 + 3 + 15 + 13 + 6 + 6 + 5 + 3 + 1 + 41 + 1 = **120 registrations**, matching `routes()`.
 
+## Inference receipts
+
+`X-Darkbloom-Receipt: required` and a fresh `X-Darkbloom-Receipt-Nonce` opt a request into the receipt contract. Current support is limited to non-streaming plain-text `POST /v1/chat/completions`; tools, media, `/v1/responses`, `/v1/messages`, and `/v1/completions` are rejected. The consumer guide has the [request and independent-verification procedure](../consumer/inference-receipts.md); the lifecycle and persistence behavior are in [architecture](../architecture/inference-receipts.md).
+
+### Receipt request validation and digests
+
+| Contract | Behavior | Code |
+|---|---|---|
+| Opt-in headers | Both headers are required together. The mode must equal `required` case-insensitively. Either header without the other is HTTP 400 `invalid_request_error`. | `newInferenceReceiptRequest`, `coordinator/api/inference_receipts.go` |
+| Verifier nonce | Exactly 32 random bytes encoded as canonical unpadded base64url (43 characters). Decoding and re-encoding must reproduce the submitted value. A nonce already reserved by another receipt cannot be reused; reservation failure returns 503 `receipt_unavailable`. | `newInferenceReceiptRequest`, `coordinator/api/inference_receipts.go`; `validInferenceReceiptNonce`, `coordinator/store/inference_receipts.go` |
+| Request shape | Non-streaming Chat Completions only; one or more messages, each with role `system`, `developer`, `user`, or `assistant` and non-empty string `content`. Tools, `tool_choice`, media, Responses-shaped `input`, and other inference endpoints are rejected with HTTP 400 `invalid_request_error`. | `newInferenceReceiptRequest`, `coordinator/api/inference_receipts.go` |
+| Stable caller reference | `caller_ref` is the authenticated API key's public ID from `keyIDFromContext`; no stable key ID → HTTP 400. The API-key secret is not included. | `keyIDFromContext`, `coordinator/api/server.go`; `newInferenceReceiptRequest`, `coordinator/api/inference_receipts.go` |
+| `request_sha256` | Lowercase SHA-256 of version-1 canonical JSON bytes from the original plaintext body. Canonicalization requires exactly one top-level object, rejects duplicate decoded keys at any depth, preserves number lexemes with `UseNumber`, emits compact JSON with sorted keys and Go `encoding/json` default string escaping, and caps input at 16 MiB and nested containers at depth 256 (root counts). | `CanonicalJSON`, `HashCanonicalJSON`, `coordinator/receipts/canonical.go` |
+| `request_bytes_sha256` | Lowercase SHA-256 of the exact original plaintext body bytes, before coordinator normalization or endpoint lowering. For sealed requests, this is the decrypted JSON plaintext. | `newInferenceReceiptRequest`, `coordinator/api/inference_receipts.go` |
+| `provider_request_sha256` | Lowercase SHA-256 of the provider request-body bytes attached to dispatch; the body itself is not in the receipt. | `pendingInferenceReceipt`, `coordinator/api/inference_receipts.go` |
+| `output_sha256` | Lowercase SHA-256 of the exact UTF-8 bytes of the completed assistant message's `content` string. Finalization requires one choice, text content, no `tool_calls`, and finish reason `stop` or `length`. | `plainTextReceiptOutput`, `finalizeInferenceReceipt`, `coordinator/api/inference_receipts.go` |
+
+### Receipt envelope and lookup responses
+
+The envelope has `payload`, `receipt_hash`, `key_id`, and `signature`. The version-1 payload fields are:
+
+| Field | Meaning | Code |
+|---|---|---|
+| `schema_version` | `1` | `Payload`, `coordinator/receipts/receipts.go` |
+| `issuer` | Coordinator origin derived from `EIGENINFERENCE_BASE_URL`, defaulting to `https://api.darkbloom.dev` | `inferenceReceiptIssuer`, `coordinator/api/inference_receipts.go` |
+| `job_id`, `winning_attempt_id` | Receipt job UUID and the request ID of the attempt that committed the response | `finalizeInferenceReceipt`, `coordinator/api/inference_receipts.go` |
+| `nonce`, `caller_ref` | Consumer nonce and API-key public ID | `Payload`, `coordinator/receipts/receipts.go` |
+| `request_sha256`, `request_bytes_sha256`, `provider_request_sha256`, `output_sha256` | Commitments described above | `Payload`, `coordinator/receipts/receipts.go` |
+| `requested_model`, `resolved_model` | Consumer model identifier and routed concrete model | `finalizeInferenceReceipt`, `coordinator/api/inference_receipts.go` |
+| `status`, `finish_reason` | `completed`; finish reason `stop` or `length` | `plainTextReceiptOutput`, `coordinator/api/inference_receipts.go` |
+| `completed_at`, `lookup_expires_at` | UTC completion time and 90-day lookup deadline | `finalizeInferenceReceipt`, `coordinator/api/inference_receipts.go` |
+
+The `receipt_hash` is lowercase hex SHA-256 of `darkbloom:inference-receipt:v1\0` followed by the Go JSON encoding of the fixed-order payload. The Ed25519 signature is standard-base64 and signs the same domain, a 4-byte big-endian key-ID byte length, the key-ID bytes, and the payload digest (`payloadDigest`, `signaturePreimage`, `coordinator/receipts/receipts.go`). Verification rejects non-canonical hash/signature encodings and invalid payload fields (`Verify`, same file).
+
+| Lookup | Success shape/status | Other outcomes |
+|---|---|---|
+| Job path | `{job_id, state}`; pending → 202, terminal → 200; completed includes `receipt` | Missing/expired → 404 `not_found`; corrupt stored envelope or absent historical verification key → 503 `receipt_unavailable` |
+| Hash path | Completed, unexpired `{job_id, state:"completed", receipt}` → 200 | Missing, non-completed, or expired → 404 `not_found` |
+| Public key path | `{issuer, keys:[{key_id, algorithm:"Ed25519", public_key}]}` → 200; sorted key IDs; `Cache-Control: public, max-age=300` | Disabled/unavailable signer or empty key set → 503 `receipt_unavailable` |
+
+Lookup responses use `Cache-Control: private, no-store`. Public lookup reveals hashes and metadata only, never request prompt or assistant output. Any query parameters supplied to these three routes are ignored; the handlers do not read them. The payload's `lookup_expires_at` is enforced by the handlers even if an expired row remains in the store (`writeInferenceReceiptLookup`, `coordinator/api/inference_receipts.go`).
 
 ## Exact cache status
 
@@ -513,6 +564,8 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | `X-Request-ID` | `loggingMiddleware` | Honoured if present, otherwise generated (`newRequestID`); echoed back and logged, never persisted |
 | `Content-Type: application/eigeninference-sealed+json` | `sealedTransport` (`coordinator/api/sender_encryption.go`) | Switches the inference endpoint into sealed mode (`SealedContentType`) |
 | `X-Darkbloom-Metadata-Details` | `applyMetadataDetailsRequest` (`coordinator/api/response_metadata.go`) | Requests the extended `metadata` object (`timing`, `location`) on chat completions; `?metadata=details` does the same |
+| `X-Darkbloom-Receipt: required` | `newInferenceReceiptRequest` (`coordinator/api/inference_receipts.go`) | Opts supported non-streaming plain-text chat completions into receipt recording; requires the nonce header |
+| `X-Darkbloom-Receipt-Nonce` | `newInferenceReceiptRequest` (`coordinator/api/inference_receipts.go`) | One-time canonical unpadded base64url encoding of 32 random bytes; see [receipt request validation](#receipt-request-validation-and-digests) |
 | `X-Darkbloom-Route: self` / `prefer` | `resolveSelfRoutePolicy` (`coordinator/api/self_route.go`) | `self` restricts dispatch to the account's own machines; `prefer` tries them first and falls back to the fleet; see [`../provider/self-route.md`](../provider/self-route.md) |
 | `X-Darkbloom-Publishing-Key` | `requirePublishingAPIKey` | Publishing credential for `/v1/admin/models/*` |
 | `X-Provider-Wallet` | `handleProviderEarnings` | Wallet address for the legacy earnings lookup (fallback when `?wallet=` is absent) |
@@ -530,12 +583,14 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | `x-ratelimit-limit-input-tokens`, `x-ratelimit-remaining-input-tokens`, `x-ratelimit-reset-input-tokens`, and the `-output-tokens` triple | `setTokenRateLimitHeaders` | Inference responses when token limits are configured |
 | `X-Timing` | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | Committed inference responses. A JSON object with the `RequestTimingDetails` fields (`coordinator/api/types/types.go`): `parse_us`, `reserve_us`, `media_fetch_us`, `route_us`, `queue_us`, `encrypt_us`, `dispatch_us`, `provider_us`, plus profiler-only additive keys (`pre_handler_us`, `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`, `socket_us`, `provider_ack_us`, `timing_anomaly`) |
 | `X-Inference-Job-ID` | `writeInferenceJobIDHeader` (`coordinator/api/sse_response.go`) | Committed inference responses; the coordinator job id, which can differ from `X-Request-ID` across retries |
+| `X-Darkbloom-Receipt-Job-ID` | `writeCommittedResponse` (`coordinator/api/dispatch.go`) | Committed receipt-enabled inference response; identifier for `/v1/inference-receipts/jobs/{job_id}` |
+| `X-Darkbloom-Receipt-Hash` | `finalizeInferenceReceipt` (`coordinator/api/inference_receipts.go`) | Receipt-enabled response after signed envelope persistence; identifier for `/v1/inference-receipts/hashes/{receipt_hash}` |
 | `X-Provider-Id`, `X-Provider-Attested` (`true`/`false`), `X-Provider-Trust-Level`, `X-Provider-Chip`, `X-Provider-Model`, `X-Provider-Encrypted` (only when `true`), `X-Provider-Secure-Enclave` (when known), `X-Provider-Mda-Verified` (only when `true`) | `writeCommittedProviderHeaders` (`coordinator/api/response_metadata.go`) | Committed inference responses; the same facts as the `metadata` object |
 | `X-Attestation-Se-Public-Key` | `writeCommittedProviderHeaders` | When the provider attested with a Secure Enclave key; see [`../consumer/verification.md`](../consumer/verification.md) |
 | `X-Eigen-Sealed: true`, `X-Eigen-Sealed-Kid` | `sealingResponseWriter` (`coordinator/api/sender_encryption.go`) | Sealed-mode responses |
 | `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive` | `writeSSEResponseHeader` (`coordinator/api/sse_response.go`) | Streaming responses, written at commit |
 | `Cache-Control: public, max-age=300` | `handleEncryptionKey` | `/v1/encryption-key` |
-| `Access-Control-Allow-*` | `corsMiddleware` | Methods `GET, POST, PUT, PATCH, DELETE, OPTIONS`; allowed request headers include `Authorization`, `Content-Type`, `X-Darkbloom-Metadata-Details` |
+| `Access-Control-Allow-*`, `Access-Control-Expose-Headers` | `corsMiddleware` (`coordinator/api/server.go`) | Methods `GET, POST, PUT, DELETE, OPTIONS`; allowed request headers include `Authorization`, `Content-Type`, `X-Darkbloom-Metadata-Details`, `X-Darkbloom-Receipt`, and `X-Darkbloom-Receipt-Nonce`; exposed response headers include provider-verification headers and `X-Darkbloom-Receipt-Job-ID` / `X-Darkbloom-Receipt-Hash`. Public GET receipt lookups and keys allow any origin without credentials. |
 
 ## Error envelope and status codes
 
@@ -556,11 +611,11 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 
 | Status | `type` values | Raised by |
 |---|---|---|
-| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, native media tools unsupported by a model's serving fleet (`param: model`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
+| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, native media tools unsupported by a model's serving fleet (`param: model`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=`, invalid/incomplete receipt headers, nonce format, or unsupported receipt request shape |
 | 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`requireAuth`, `requirePrivyAuth`), no account user (`requirePrivyUser`), release key |
 | 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
 | 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) |
-| 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; device codes; `/v1/` catch-all; state export when disabled |
+| 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; missing or expired inference receipt lookup; device codes; `/v1/` catch-all; state export when disabled |
 | 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state |
 | 410 | `telemetry_ingest_disabled`, `expired_token`, `expired_code` | [Telemetry endpoint](#telemetry-1); expired [device codes](#device-code-flow-3) |
 | 412 | `precondition_failed` | State export without an encryption recipient |
@@ -569,8 +624,8 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 | 426 | `upgrade_required` | Log report from a provider below the minimum version |
 | 429 | `rate_limit_exceeded`, `machine_busy` | `machine_busy`: self-route (`X-Darkbloom-Route: self`) when the owned machine is at capacity, with `Retry-After` (`preContentTerminal`, `coordinator/api/dispatch.go`). `rate_limit_exceeded`: key RPM, account RPM, input/output tokens per minute, coordinator drain (`Retry-After` = [`coordinatorDrainRetryAfter`](#timeouts-and-constants)), admission shedding, model-rejection shedding, fleet TTFT too slow, and dispatch exhausted on capacity: every attempt refused for capacity, no provider produced first content within the deadline (the coordinator's own pre-content timeout is reclassified from 504 by `classifyExhaustedStatus`, `coordinator/api/dispatch.go`), or the request fits no provider; always with `Retry-After` |
 | 500 | `internal_error`, `server_error`, `auth_error`, `otp_error` | Store failures, token generation, account lookup, admin OTP delivery |
-| 502 | `provider_error`, `stripe_error` | Provider returned an error or no usable output; Stripe API failures |
-| 503 | `model_unavailable` (no `Retry-After`; may carry `code: model_capability_unsupported`), `service_unavailable`, `encryption_unavailable`, `machine_offline`, `model_not_loaded`, `billing_error`, `not_configured`, `provider_error` | No routable provider for the resolved model; no serving capacity (`writeServiceUnavailable`); sealing not configured; self-route machine states; ledger or Stripe not configured; Privy not configured for admin OTP; `/readyz` while draining; dispatch exhausted on a genuine provider 503; public stats/totals/series store failure with no usable cached body (see [public stats](#public-stats-and-health-5)) |
+| 502 | `provider_error`, `stripe_error`, `receipt_unavailable` | Provider returned an error or no usable output; Stripe API failures; inference completed but its requested verification receipt could not be recorded |
+| 503 | `model_unavailable` (no `Retry-After`; may carry `code: model_capability_unsupported`), `service_unavailable`, `encryption_unavailable`, `machine_offline`, `model_not_loaded`, `billing_error`, `not_configured`, `provider_error`, `receipt_unavailable` | No routable provider for the resolved model; no serving capacity (`writeServiceUnavailable`); sealing not configured; self-route machine states; ledger or Stripe not configured; Privy not configured for admin OTP; receipts disabled/unavailable or a stored receipt cannot be verified; `/readyz` while draining; dispatch exhausted on a genuine provider 503; public stats/totals/series store failure with no usable cached body (see [public stats](#public-stats-and-health-5)) |
 | 504 | `timeout`, `provider_error` | `timeout`: non-streaming only, `inferenceTimeout` elapsed after commit while waiting for the response or its usage. `provider_error`: dispatch exhausted on a **typed** provider 504 (`terminalCauseSafetyDeadline`, `terminalCauseBackpressureTimeout`; `isTypedTimeout504Cause`, `coordinator/api/terminal_cause.go`) |
 
 When every dispatched provider rejects a request with the same deterministic client error (for example a chat template that cannot render the messages, or a body the provider caps), the provider's own 4xx status is passed through once as `invalid_request_error` with `code: model_capability` (or `payload_too_large`) rather than being retried or reclassified (`terminalClientError` handling in the exhausted branch of `dispatchState.run`, `coordinator/api/dispatch.go`).
@@ -810,6 +865,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | SSE, timing and provider metadata | `coordinator/api/sse_response.go`, `coordinator/api/chat_metadata_stream.go`, `coordinator/api/response_metadata.go`, `coordinator/api/profiler_dispatch.go` |
 | Tools, media, constraints | `coordinator/api/toolschema.go`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
 | Sealed transport | `coordinator/api/sender_encryption.go` |
+| Inference receipts | `coordinator/api/inference_receipts.go`, `coordinator/receipts/canonical.go`, `coordinator/receipts/receipts.go`, `coordinator/store/postgres_inference_receipts.go` |
 | Models and catalog | `coordinator/api/models_endpoints.go`, `coordinator/api/concrete_model_entries.go`, `coordinator/api/openrouter_endpoint.go`, `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`, `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` |
 | Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |
 | Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |

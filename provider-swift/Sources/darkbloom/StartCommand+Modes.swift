@@ -106,14 +106,14 @@ extension Start {
             ),
             models: advertised
         )
-        if config.backend.startupPreload {
-            let summary = await server.preloadSelectedModels(
-                configuredModelIDs: config.backend.preloadModels)
-            print("Startup preload: \(summary.loaded.count) model(s) loaded")
-        }
+        guard await runLocalStartupPreload(server: server, config: config) else { return }
         try await server.start()
         await ProviderTermination.shared.install {
             await server.drainAndStop(timeoutSeconds: ProviderTermination.timeoutSeconds)
+        }
+        if await ProviderTermination.shared.terminationRequested {
+            await server.stop()
+            return
         }
 
         // Wait until the server CONFIRMS it bound the port before advertising it.

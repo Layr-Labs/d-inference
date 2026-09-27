@@ -110,7 +110,7 @@ extension ProviderLoop {
         let preloadLivenessRefresh = startPreloadLivenessRefresh()
         await runStartupPreloadGate()
         preloadLivenessRefresh.cancel()
-        if servingDrain.phase == .drained { return }
+        if Task.isCancelled || servingDrain.phase == .drained { return }
 
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the

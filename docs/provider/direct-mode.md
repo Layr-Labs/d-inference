@@ -42,7 +42,10 @@ Requests never leave the machine and are never billed.
    serve.` if none remain), and preloads the selected models before listening
    when `[backend] startup_preload` is enabled (the default). The explicit
    `preload_models` list takes precedence; slot and memory limits can skip a
-   model, which still loads on request. It then waits for the socket to bind (`waitUntilBound`,
+   model, which still loads on request. Standalone preload does not run the
+   coordinator-serving one-token startup self-test, so the first local request
+   may still compile Metal kernels. Ctrl-C during preload cancels startup
+   without opening the listener. It then waits for the socket to bind (`waitUntilBound`,
    bounded by the local bind wait in [runtime constants](./cli-reference.md#runtime-constants);
    `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the
    discovery file and holds a fan-control lease while running

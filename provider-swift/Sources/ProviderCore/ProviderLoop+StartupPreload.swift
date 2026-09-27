@@ -47,6 +47,9 @@ extension ProviderLoop {
         case warm
         /// Timeout hit — registering now; loads continue in the background.
         case timedOut
+        /// The serving task was cancelled (for example, a scheduled window
+        /// closed) — the preload driver is cancelled and registration stops.
+        case cancelled
     }
 
     /// Upper bound on one startup self-test decode so a wedged decode can
@@ -165,6 +168,7 @@ extension ProviderLoop {
     /// the background (`startupPreloadTask`); shutdown cancels it.
     @discardableResult
     internal func runStartupPreloadGate() async -> StartupPreloadGateOutcome {
+        guard !Task.isCancelled else { return .cancelled }
         let backend = loopConfig.config.backend
         guard backend.startupPreload else {
             logger.info("Startup preload disabled (startup_preload=false)")
@@ -224,7 +228,13 @@ extension ProviderLoop {
         }
         startupPreloadTask = driver
 
-        let finishedInTime = await waitForPreloads([driver], timeout: timeout)
+        let finishedInTime = await waitForPreloads(
+            [driver], timeout: timeout, returnOnCancellation: true)
+        if Task.isCancelled {
+            driver.cancel()
+            logger.info("Startup preload gate: serving task cancelled — stopping before registration")
+            return .cancelled
+        }
         if finishedInTime {
             logger.info(
                 "Startup preload gate: warm after \(StartupPreloader.secs(clock.now - started)) — registering")

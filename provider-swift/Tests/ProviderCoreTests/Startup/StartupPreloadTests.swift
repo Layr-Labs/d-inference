@@ -474,6 +474,45 @@ struct StartupPreloadPlanTests {
 @Suite("ProviderLoop startup preload gate")
 struct StartupPreloadGateTests {
 
+    @Test("cancelling a scheduled serve leaves the preload gate before registration")
+    func gateCancellationStopsRegistration() async throws {
+        let releaseLoad = PreloadGate()
+        defer { releaseLoad.signal() }
+        let loop = try await makePreloadLoop(
+            models: [preloadModelInfo("a", memoryGb: 2)],
+            backend: BackendSettings(
+                preloadModels: ["a"], startupPreloadTimeoutSecs: 30,
+                startupSelftest: false))
+        await loop.setStartupPreloadLoadOverrideForTesting { _ in
+            await releaseLoad.wait()
+        }
+
+        let serve = Task { await loop.runStartupPreloadGateForTesting() }
+        var waited = 0
+        while !(await loop.startupPreloadTaskRunningForTesting()), waited < 100 {
+            try await Task.sleep(for: .milliseconds(10))
+            waited += 1
+        }
+        #expect(await loop.startupPreloadTaskRunningForTesting())
+        serve.cancel()
+
+        let outcome = await withTaskGroup(
+            of: ProviderLoop.StartupPreloadGateOutcome?.self
+        ) { group in
+            group.addTask { await serve.value }
+            group.addTask {
+                do { try await Task.sleep(for: .seconds(5)) }
+                catch { return nil }
+                releaseLoad.signal() // fail-safe: unwind a regressed gate
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        #expect(outcome == .cancelled)
+    }
+
     @Test("startup_preload = false disables the gate entirely")
     func gateDisabledByConfig() async throws {
         let loop = try await makePreloadLoop(

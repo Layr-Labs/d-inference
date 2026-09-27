@@ -432,7 +432,9 @@ defers registration for up to `startup_preload_timeout_secs`; standalone
 `--local` finishes preloading before it listens. An explicit `[backend]
 preload_models` list takes precedence. The slot limit and available memory
 can leave models to load on a later request. `startup_preload = false`
-disables preloading in either mode.
+disables preloading in either mode. The one-token `startup_selftest` and
+`startup_selftest_fail_closed` settings apply only to coordinator-connected
+startup; `--local` does not run a synthetic decode.
 
 Examples:
 

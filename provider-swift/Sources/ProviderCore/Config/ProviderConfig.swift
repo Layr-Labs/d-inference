@@ -217,14 +217,17 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// the remaining loads finish in the background. Default 120s covers a
     /// ~26 GB weight load + engine warmup with margin.
     public var startupPreloadTimeoutSecs: UInt64
-    /// After each startup preload, run a 1-token greedy decode through the real
-    /// serving path through the model's EngineV2 bridge so
+    /// Coordinator-connected startup only: after each preload, run a 1-token
+    /// greedy decode through the model's EngineV2 bridge so
     /// Metal JIT, compiled buckets, and the chat-template render are warm
     /// before the first routed request. Default true. Failure is fail-open
     /// (WARN telemetry, model stays advertised) unless
-    /// `startup_selftest_fail_closed = true`.
+    /// `startup_selftest_fail_closed = true`. Standalone `--local` preloads
+    /// weights and the engine but does not run a synthetic decode; its first
+    /// request may still pay Metal JIT or compiled-bucket warmup.
     public var startupSelftest: Bool
-    /// When true, a model whose startup self-test decode fails is unloaded and
+    /// Coordinator-connected startup only: when true, a model whose startup
+    /// self-test decode fails is unloaded and
     /// dropped from the advertised set for this run (fail-closed). Default
     /// false: availability beats perfection — a self-test failure may be
     /// transient and the model can still serve via the lazy-load path.

@@ -135,8 +135,8 @@ type inferencePrelude struct {
 
 // parseInferencePrelude runs the request prelude shared verbatim by
 // handleChatCompletions and handleGenericInference: read the body, parse JSON
-// (once), normalize tool JSON-Schemas on the decoded map (so pre-0.6.3
-// providers never see chat-template-crashing shapes), require a model, and
+// (once), normalize tool JSON-Schemas on the decoded map (so no provider sees
+// chat-template-crashing shapes), require a model, and
 // enforce the per-key model allowlist. On any failure it writes the exact
 // OpenAI-compatible error response and returns ok=false; the caller must then
 // return immediately.
@@ -172,12 +172,12 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 		o.mu.Unlock()
 	}
 
-	// Normalize tool JSON-Schemas before dispatch so providers running binaries
-	// older than 0.6.3 (which normalize provider-side, #310) never see the
+	// Normalize tool JSON-Schemas before dispatch so no provider sees the
 	// schema shapes that crash Gemma-style chat templates ("upper filter
-	// requires string" — nullable array types, missing types). Centralizing
-	// this in the coordinator covers the whole fleet the moment the
-	// coordinator deploys, instead of waiting out provider update lag. The
+	// requires string" — nullable array types, missing types). The Swift
+	// provider repairs only tools[].function.parameters, after media inlining
+	// may have pushed the body past its size gate, so flat and input_schema
+	// tools and large bodies depend on this pass (see toolschema.go). The
 	// repair runs on the decoded map (one parse per request); the caller's
 	// original tools are kept for constraint validation.
 	originalTools, _ := normalizeParsedToolSchemas(parsed, rawBody)

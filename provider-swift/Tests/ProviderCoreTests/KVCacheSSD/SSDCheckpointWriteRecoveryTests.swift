@@ -80,6 +80,34 @@ struct SSDCheckpointWriteRecoveryTests {
         await store.closeAndWait()
     }
 
+    @Test("a file removed between publish and indexing is reported evicted, never donated")
+    func removalBetweenPublishAndIndexIsNotAdvertised() async throws {
+        let f = try SSDHybridCheckpointTestFixture()
+        defer { f.remove() }
+        let telemetry = PrefixCacheDonationTelemetry()
+        let store = try f.makeStore(donationRecorder: telemetry)
+        let url = f.file(store)
+        // Whole-root maintenance unlinks the freshly published file before the
+        // writer indexes it. It takes the removal lock, so the writer's
+        // publish-to-index step must observe the removal rather than insert a
+        // phantom entry and advertise READY for an absent checkpoint.
+        store.afterPublishBeforeIndexForTesting = {
+            _ = store.performExternalDestructiveChange {
+                _ = SSDBlockStore.removeItemIfSafe(at: url, under: f.modelRoot)
+            }
+        }
+        #expect(try await f.donate(store) == [], "no ready endpoint for a removed file")
+        #expect(count(.cacheEntryEvicted, in: telemetry) == 1)
+        #expect(count(.donated, in: telemetry) == 0)
+        #expect(store.index.count == 0, "no phantom index entry")
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        store.afterPublishBeforeIndexForTesting = nil
+        // A later donation of the same prefix recovers normally.
+        #expect(try await f.donate(store, receipt: 11) == [256])
+        #expect(store.index.count == 1)
+        await store.closeAndWait()
+    }
+
     @Test("missing host reservation authority is not a disk write failure")
     func hostReservationRefusal() async throws {
         let f = try SSDHybridCheckpointTestFixture(sharedPaged: true)

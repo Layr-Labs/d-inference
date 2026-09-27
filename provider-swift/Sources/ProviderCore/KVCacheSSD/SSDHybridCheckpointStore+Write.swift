@@ -252,7 +252,22 @@ extension SSDHybridCheckpointStore {
                     })
                 guard !isClosed else { result.outcome = .cacheClosed; return }
                 guard epochMatches(job.epoch) else { result.outcome = .cacheEpochChanged; return }
-                index.insert(tag16: short, fileBytes: written, lastAccess: config.nowSeconds())
+                #if DEBUG
+                afterPublishBeforeIndexForTesting?()
+                #endif
+                // Publish-to-index is atomic with respect to removals: every
+                // unlink (budget eviction, TTL sweep, corrupt drop, whole-root
+                // maintenance) holds `removalLock`, so the file is either still
+                // present here and indexed before any later removal can
+                // reconcile it, or already gone and never advertised.
+                let indexed = removalLock.withLock {
+                    guard SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) == .regular else {
+                        return false
+                    }
+                    index.insert(tag16: short, fileBytes: written, lastAccess: config.nowSeconds())
+                    return true
+                }
+                guard indexed else { result.outcome = .cacheEntryEvicted; return }
                 statsBox.update { $0.filesWritten += 1; $0.bytesWritten += written }
             }
             config.maintainWholeRoot()

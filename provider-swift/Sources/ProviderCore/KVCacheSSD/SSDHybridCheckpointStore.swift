@@ -45,6 +45,11 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, CBv2Native
     /// taking `lock` for anything but a state read; bodies do unlink + index
     /// work only, so it nests safely inside `SSDDiskBudget`'s lock.
     let removalLock = NSLock()
+    #if DEBUG
+    /// Test-only: runs after a fresh checkpoint file is published and before
+    /// it is indexed, to reproduce a maintenance removal in that window.
+    var afterPublishBeforeIndexForTesting: (@Sendable () -> Void)?
+    #endif
     let statsBox = SSDHybridCheckpointStatsBox()
     let activity = SSDCheckpointActivity()
     let fileCoordinator = SSDCheckpointFileCoordinator.shared

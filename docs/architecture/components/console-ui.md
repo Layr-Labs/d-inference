@@ -38,7 +38,7 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 | `/earn` | `earn/page.tsx`, `earn/calc.ts`, `earn/useEarningsCalculator.ts`, `earn/providerReadiness.ts` | Earnings calculator — pure client math, no network call; readiness notice below `MIN_PROVIDER_MEMORY_GB` | Public; CTAs call `login()` |
 | `/leaderboard` | `leaderboard/page.tsx` → `components/leaderboard/LeaderboardContent.tsx`, `components/leaderboard/useLeaderboard.ts` | Provider leaderboard from `/api/leaderboard?<metric,window,limit>` | Public |
 
-`components/earn/BaseRewardsPanel.tsx` is not mounted by any page (its only importer is its test), so base rewards are not surfaced anywhere in the console — see [`../../design/base-rewards.md`](../../design/base-rewards.md).
+No console page surfaces base rewards; the only base-rewards code is the Privy-gated admin proxy `console-ui/src/app/api/admin/base-rewards/route.ts` — see [`../../design/base-rewards.md`](../../design/base-rewards.md).
 
 ### Workspace entry and provider journeys
 

@@ -441,5 +441,7 @@ jobs:
         run: cd console-ui && npm ci
       - name: Lint
         run: cd console-ui && npx eslint src/
+      - name: Test
+        run: cd console-ui && npm test
       - name: Build
         run: cd console-ui && npm run build

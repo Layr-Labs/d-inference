@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-27 · commit `f99e56eb0`
+> Last updated: 2026-09-27 · commit `d621f9772`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -64,11 +64,19 @@ Production publication requires independent [durable App Attest build qualificat
    App Attest authorization and failure diagnostics, dead-key and enrollment
    recovery, APNs proof refresh after a release reconnect, live model switching
    with its same-session routing receipt, and explicit model-cache selection
-   without moving existing stores. Verify encrypted inference, local serving,
-   streaming and non-streaming drain, restart, scheduled windows, and terminal
-   accounting on the exact signed artifact. Use an isolated qualification
-   coordinator before production registration: registration advances the fleet
-   updater, not a canary-only channel. Record the evidence using the
+   without moving existing stores. Verify the new default selected-model preload:
+   coordinator registration waits at most `startup_preload_timeout_secs` (default
+   120 seconds), truthful warm slots follow completed loads, and standalone
+   `--local` does not listen before its preload attempts finish. Check explicit
+   `preload_models`, `startup_preload = false`, normal memory/slot admission,
+   and cancellation on stop or a closing scheduled window. A slow preload before
+   registration is distinct from an attestation-pending registered provider
+   ([startup preload settings](../reference/configuration.md#startup-model-preload)).
+   Verify encrypted inference, local serving, streaming and non-streaming drain,
+   restart, scheduled windows, and terminal accounting on the exact signed
+   artifact. Use an isolated qualification coordinator before production
+   registration, which advances the fleet updater rather than a canary-only
+   channel. Record the evidence using the
    [build qualification runbook](app-attest-build-qualification.md); the prod
    tag workflow does not run the older-macOS validation-only job.
 7. Approve the exact 0.9.10 build and **Publish qualified signed release**.
@@ -76,8 +84,34 @@ Production publication requires independent [durable App Attest build qualificat
    using the retained signed bytes. Keep earlier build approvals active during
    adoption. Verify `/v1/releases/latest`, install/update metadata, actual
    completed requests by version, authorization cohorts, switch receipts,
-   App Attest freshness, disconnects, and earnings. Console publication and
-   provider publication are separate operations.
+   App Attest freshness, startup-preload outcomes, disconnects, and earnings.
+   Console and provider publication are separate operations.
+
+### Staffed windows and recovery timing
+
+Plan the coordinator swap and provider publication as separate staffed windows.
+After the approved coordinator swap, observe the previously serving 0.9.9
+authorization cohort and completed encrypted requests for at least two hours
+before deciding whether to publish the provider. Build, sign, stage and qualify
+the 0.9.10 artifact in parallel, but publish only after that exact artifact and
+the coordinator cohort pass their gates. After publication, staff another
+two-hour observation and continue cohort monitoring for 24 hours. These are
+operational observation windows, not a promise that every failed provider
+recovers by their end.
+
+Confirm the live `APNS_MODE` before scheduling. Background code-identity pushes
+have a 20-minute per-device budget and, after three unanswered fast attempts,
+retry at most hourly on a live connection; alert-mode pushes have a 75-second
+budget. A recent same-process proof may instead allow a live resume challenge.
+App Attest first-grant and Apple-error recovery can retry after one, five and
+then ten minutes. Eligible dead-key rotation needs two qualifying assertion
+failures and a fresh replacement proof; repeated new-key `invalidKey` failures
+can impose a durable six-hour backoff. A new 0.9.10 process may also spend up to
+120 seconds preloading before it registers. Compare process-start, registration,
+code-identity proof, App Attest proof, current authorization and completed work
+as separate milestones. See [APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)
+and [App Attest recovery bounds](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle)
+for the exact conditions and limits.
 
 The drain implementation lives in `provider-swift/Sources/darkbloom/ServiceDrain.swift`
 (`ServiceDrain`) and `coordinator/api/provider_completion_barrier.go`

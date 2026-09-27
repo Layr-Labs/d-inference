@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -321,11 +322,140 @@ func TestCacheCreditReservationRescanMatchesFreshScan(t *testing.T) {
 			again, fresh, freshPR := f.reserve(t, "fresh")
 			checkRescanExpectation(t, "fresh", again, fresh, freshPR, tc.fresh)
 			// The evidence weight decays with wall-clock age between two separate
-			// queries (1 minute TTL): allow that drift and nothing else.
-			if again != selected || math.Abs(fresh.CostMs-decision.CostMs) > 1 ||
-				math.Abs(fresh.CacheDiscountMs-decision.CacheDiscountMs) > 1 {
+			// queries (1 minute TTL), so compare the time-independent base cost
+			// exactly and the credit as a bounded monotone decay of the committed
+			// one, rather than pinning either to the wall clock.
+			if again != selected || math.Abs((fresh.CostMs+fresh.CacheDiscountMs)-(decision.CostMs+decision.CacheDiscountMs)) > 1e-6 ||
+				fresh.CacheDiscountMs > decision.CacheDiscountMs || fresh.CacheDiscountMs < .9*decision.CacheDiscountMs {
 				t.Fatalf("fresh scan diverged from the committed winner: %+v vs %+v", fresh, decision)
 			}
 		})
+	}
+}
+
+// A burst of same-prefix requests over holders that tie on every ranking term
+// must not converge on one holder: the first commit bumps its pending count,
+// every other request fails the commit compare and rescans, and a stable
+// identity order would send them all to the next holder in turn (K(K+1)/2
+// scans for K requests). Uniform spreading keeps most bursts at one scan each.
+func TestCacheCreditIdenticalHoldersSpreadConcurrentBurst(t *testing.T) {
+	const holders, burst, rounds = 3, 3, 30
+	f := newCreditTestFixture(t)
+	ids := make([]*Provider, holders)
+	for i := range ids {
+		ids[i] = f.holder(t, fmt.Sprintf("holder-%c", 'a'+i))
+	}
+	f.cold(t, "cold") // 4 s beyond the holders: never in the band.
+	// One Ready receipt per holder for the same checkpoint at the same stage
+	// cost; the receipts are microseconds apart, so the age weights differ by
+	// well under a nanosecond of credit and the holders rank equal.
+	for i, p := range ids {
+		f.publish(t, p, fmt.Sprintf("donor-%d", i), f.checkpoint, 100)
+	}
+	// Equalize the receipt timestamps exactly so every holder's evidence weight
+	// is identical at any query time.
+	f.r.cacheRouting.mu.Lock()
+	var stamp time.Time
+	for _, bucket := range f.r.cacheRouting.holders {
+		for id, holder := range bucket {
+			if stamp.IsZero() {
+				stamp = holder.UpdatedAt
+			}
+			holder.UpdatedAt, holder.ExpiresAt = stamp, stamp.Add(f.r.cacheRouting.ttl)
+			bucket[id] = holder
+		}
+	}
+	f.r.cacheRouting.mu.Unlock()
+
+	totalScans := 0
+	for round := range rounds {
+		var mu sync.Mutex
+		arrived := 0
+		release := make(chan struct{})
+		f.r.reservationAfterScan = func(string) {
+			mu.Lock()
+			arrived++
+			n := arrived
+			if n == burst {
+				close(release)
+			}
+			mu.Unlock()
+			if n <= burst {
+				<-release // every request of the burst scans the same idle pool
+			}
+		}
+		winners := make([]*Provider, burst)
+		var wg sync.WaitGroup
+		for i := range burst {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				pr := f.request(fmt.Sprintf("burst-%d-%d", round, i))
+				p, decision := f.r.ReserveProviderEx("model", pr)
+				// Each commit bumps its holder out of the band, so a rescanning
+				// loser may find the last idle holder alone (unique_min); every
+				// request must still land on a credited holder.
+				if p == nil || decision.CacheDiscountMs <= 0 ||
+					(decision.SelectionPath != SelectionCacheCredit && decision.SelectionPath != SelectionUniqueMin) {
+					t.Errorf("burst request %d: %+v", i, decision)
+					return
+				}
+				winners[i] = p
+			}(i)
+		}
+		wg.Wait()
+		f.r.reservationAfterScan = nil
+		if t.Failed() {
+			t.FailNow()
+		}
+		distinct := map[*Provider]bool{}
+		for i, p := range winners {
+			distinct[p] = true
+			p.RemovePending(fmt.Sprintf("burst-%d-%d", round, i))
+			f.r.SetProviderIdle(p.ID)
+		}
+		if len(distinct) != holders {
+			t.Fatalf("round %d: burst landed on %d holders, want %d", round, len(distinct), holders)
+		}
+		totalScans += arrived
+	}
+	// Identity-ordered ties scan exactly 6 times per round (3 + 2 + 1); a
+	// uniform spread averages under 4 and never approaches 5 over 30 rounds.
+	if totalScans > 5*rounds {
+		t.Fatalf("burst cascaded into %d scans over %d rounds (identity-ordered ties would take %d)", totalScans, rounds, 6*rounds)
+	}
+}
+
+// A plan alternate is priced and admitted cold; the primary scan's cache
+// selection must not describe it at the terminal.
+func TestCacheCreditPlanRetryClearsCacheSelection(t *testing.T) {
+	f := newCreditTestFixture(t)
+	holder, cold := f.holder(t, "holder"), f.cold(t, "cold")
+	f.publish(t, holder, "donor", f.checkpoint, 100)
+	f.pendingTurn(holder, "previous-turn", "model", 100)
+	pr := f.request("retried")
+	primary, decision, plan := f.r.ReserveProviderWithPlan("model", pr)
+	if primary != holder || plan == nil || decision.SelectionPath != SelectionCacheCredit ||
+		!pr.CacheSelectionSelected || !pr.CacheOpportunity.CreditWonNearTie || pr.CacheOpportunityReason() != "selected_near_tie" {
+		t.Fatalf("primary reservation did not select the credited holder: %v %+v %+v", primary, decision, pr.CacheOpportunity)
+	}
+	// Pre-content failure on the holder: the dispatcher releases it and takes
+	// the next plan entry with the holder excluded.
+	holder.RemovePending(pr.RequestID)
+	f.r.SetProviderIdle(holder.ID)
+	alternate, retry, skips := f.r.ReserveNextFromPlan(pr, plan, holder.ID)
+	if alternate != cold {
+		t.Fatalf("plan retry reserved %v, want cold: %+v skips=%v", alternate, retry, skips)
+	}
+	defer func() { cold.RemovePending(pr.RequestID); f.r.SetProviderIdle(cold.ID) }()
+	if pr.CacheSelectionSelected || pr.CacheOpportunity.CreditWonNearTie || pr.CacheSelectionTier != "" ||
+		pr.CacheSelectionDiscountMs != 0 || pr.CacheSelectionEstimatedTTFTSavedMs != 0 ||
+		retry.CacheDiscountMs != 0 || retry.CacheTier != "" {
+		t.Fatalf("plan alternate inherited the primary cache selection: %+v %+v", retry, pr.CacheOpportunity)
+	}
+	if pr.CacheSelectionMode != "active" || pr.CacheOpportunityReason() != "holder_not_selected" ||
+		pr.CacheOpportunity.CreditedCandidates != 1 {
+		t.Fatalf("plan retry lost participation or opportunity evidence: mode=%q reason=%s %+v",
+			pr.CacheSelectionMode, pr.CacheOpportunityReason(), pr.CacheOpportunity)
 	}
 }

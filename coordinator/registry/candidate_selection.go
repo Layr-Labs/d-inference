@@ -28,8 +28,9 @@ func preferRoutingCandidates(pool []*routingCandidate, prefer func(*routingCandi
 // with or without cache adjustments in the pool. Inside that band a proven
 // holder with a positive cache credit is preferred (the cheapest such holder);
 // otherwise the existing least-busy spreading and the soft prefix affinity
-// apply. A candidate carrying a restore penalty competes on strict cost only.
-// The pool itself remains immutable.
+// apply. A candidate carrying a restore penalty competes on strict cost only:
+// it is retained only at the exact minimum, where it is an ordinary member of
+// the band with no preference of its own. The pool itself remains immutable.
 func selectRoutingCandidate(pool []*routingCandidate) (winner, runnerUp *routingCandidate, nearTieSize int, path SelectionPath) {
 	return selectRoutingCandidateWithAffinity(pool, "")
 }
@@ -86,8 +87,31 @@ func selectRoutingCandidateWithAffinity(pool []*routingCandidate, affinity strin
 	if credited != nil && nearTieSize > 1 {
 		// The band contains a proven holder and at least one other candidate:
 		// the credit, not load spreading, decides. A lone candidate in the
-		// band is a unique minimum whether or not it is credited.
+		// band is a unique minimum whether or not it is credited. Holders
+		// that tie on every ranking term are spread uniformly, as cold
+		// near-ties are: a stable identity order would send every request of
+		// a same-prefix burst to one holder, whose commit then forces the
+		// rest to rescan.
 		winner, path = credited, SelectionCacheCredit
+		ties := 0
+		for _, candidate := range pool {
+			if candidate.breakdown.CacheDiscountMs > 0 && isNear(candidate) && cacheCreditEquivalent(candidate, credited) {
+				ties++
+			}
+		}
+		if ties > 1 {
+			chosen := rand.Intn(ties)
+			for _, candidate := range pool {
+				if candidate.breakdown.CacheDiscountMs <= 0 || !isNear(candidate) || !cacheCreditEquivalent(candidate, credited) {
+					continue
+				}
+				if chosen == 0 {
+					winner = candidate
+					break
+				}
+				chosen--
+			}
+		}
 		runnerUp = best
 		if winner == best {
 			runnerUp = second
@@ -141,11 +165,12 @@ func selectRoutingCandidateWithAffinity(pool []*routingCandidate, affinity strin
 	return winner, runnerUp, nearTieSize, path
 }
 
-// cacheCreditRanksAbove is the total order over credited near-ties: the lowest
-// adjusted service cost (the credit is already inside it, so a larger credit
-// and a lighter load both rank higher), then the larger credit, the fresher
-// evidence, the lighter queue and pending load, and finally a stable provider
-// identity. Being total, a rescan over the same pool reproduces the winner.
+// cacheCreditRanksAbove orders credited near-ties: the lowest adjusted service
+// cost (the credit is already inside it, so a larger credit and a lighter load
+// both rank higher), then the larger credit, the fresher evidence, and the
+// lighter queue and pending load. Candidates equal on every term are
+// equivalent (cacheCreditEquivalent) and are spread at random; a rescan over
+// the same pool therefore selects from the same equivalent set.
 func cacheCreditRanksAbove(a, b *routingCandidate) bool {
 	if a.costMs != b.costMs {
 		return a.costMs < b.costMs
@@ -159,15 +184,11 @@ func cacheCreditRanksAbove(a, b *routingCandidate) bool {
 	if a.effectiveQueue != b.effectiveQueue {
 		return a.effectiveQueue < b.effectiveQueue
 	}
-	if a.snapshot.totalPending != b.snapshot.totalPending {
-		return a.snapshot.totalPending < b.snapshot.totalPending
-	}
-	return routingCandidateID(a) < routingCandidateID(b)
+	return a.snapshot.totalPending < b.snapshot.totalPending
 }
 
-func routingCandidateID(c *routingCandidate) string {
-	if c == nil || c.provider == nil {
-		return ""
-	}
-	return c.provider.ID
+func cacheCreditEquivalent(a, b *routingCandidate) bool {
+	return a.costMs == b.costMs && a.breakdown.CacheDiscountMs == b.breakdown.CacheDiscountMs &&
+		a.cacheEvidenceWeight == b.cacheEvidenceWeight && a.effectiveQueue == b.effectiveQueue &&
+		a.snapshot.totalPending == b.snapshot.totalPending
 }

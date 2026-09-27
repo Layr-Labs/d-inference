@@ -84,16 +84,19 @@ func TestSelectRoutingCandidateMatchesRankingPolicy(t *testing.T) {
 		var choices []*routingCandidate
 		wantPath := SelectionUniqueMin
 		if len(credited) > 0 && len(near) > 1 {
-			slices.SortStableFunc(credited, func(a, b *routingCandidate) int {
+			rank := func(a, b *routingCandidate) int {
 				return cmp.Or(
 					cmp.Compare(a.costMs, b.costMs),
 					cmp.Compare(b.breakdown.CacheDiscountMs, a.breakdown.CacheDiscountMs),
 					cmp.Compare(b.cacheEvidenceWeight, a.cacheEvidenceWeight),
 					cmp.Compare(a.effectiveQueue, b.effectiveQueue),
-					cmp.Compare(a.snapshot.totalPending, b.snapshot.totalPending),
-					cmp.Compare(a.provider.ID, b.provider.ID))
-			})
-			choices, wantPath = credited[:1], SelectionCacheCredit
+					cmp.Compare(a.snapshot.totalPending, b.snapshot.totalPending))
+			}
+			slices.SortStableFunc(credited, rank)
+			// Every credited holder equal to the top on all terms is a permitted
+			// (uniformly spread) winner.
+			choices = slices.DeleteFunc(slices.Clone(credited), func(c *routingCandidate) bool { return rank(c, credited[0]) != 0 })
+			wantPath = SelectionCacheCredit
 		} else {
 			slices.SortStableFunc(near, func(a, b *routingCandidate) int {
 				return cmp.Or(cmp.Compare(a.effectiveQueue, b.effectiveQueue),

@@ -408,14 +408,35 @@ func TestSelectRoutingCandidatePaths(t *testing.T) {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 		}
 	})
-	t.Run("cache_equal_deterministic", func(t *testing.T) {
-		// Identical credited holders resolve by stable identity, never randomly,
-		// so a reservation rescan over the same pool reproduces the winner.
+	t.Run("cache_equal_spread", func(t *testing.T) {
+		// Holders identical on every ranking term are spread uniformly, so a
+		// same-prefix burst does not converge on one holder and cascade into
+		// commit-time rescans. A rescan selects from the same equivalent set.
 		a, b := mkCandidate("a", 900, 0, 0, 500), mkCandidate("b", 900, 0, 0, 500)
-		for _, pool := range [][]*routingCandidate{{a, b}, {b, a}} {
-			w, ru, n, path := selectRoutingCandidate(pool)
-			if id(w) != "a" || id(ru) != "b" || n != 2 || path != SelectionCacheCredit {
+		seen := map[string]bool{}
+		for i := 0; i < 60; i++ {
+			w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b})
+			if (w != a && w != b) || (w == a && ru != b) || (w == b && ru != a) || n != 2 || path != SelectionCacheCredit {
 				t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
+			}
+			seen[id(w)] = true
+		}
+		if !seen["a"] || !seen["b"] {
+			t.Fatalf("equivalent credited holders were not spread: %v", seen)
+		}
+	})
+	t.Run("cache_credit_tie_breaks_before_spread", func(t *testing.T) {
+		// Equal cost and credit: the fresher evidence, then the lighter load,
+		// still decide before any random draw.
+		fresh, stale := mkCandidate("fresh", 900, 0, 0, 500), mkCandidate("stale", 900, 0, 0, 500)
+		fresh.cacheEvidenceWeight, stale.cacheEvidenceWeight = 1, .5
+		idle, busy := mkCandidate("idle", 900, 0, 0, 500), mkCandidate("busy", 900, 0, 1, 500)
+		for i := 0; i < 20; i++ {
+			if w, _, _, path := selectRoutingCandidate([]*routingCandidate{stale, fresh}); w != fresh || path != SelectionCacheCredit {
+				t.Fatalf("stale evidence won: %s %s", id(w), path)
+			}
+			if w, _, _, path := selectRoutingCandidate([]*routingCandidate{busy, idle}); w != idle || path != SelectionCacheCredit {
+				t.Fatalf("busier holder won: %s %s", id(w), path)
 			}
 		}
 	})

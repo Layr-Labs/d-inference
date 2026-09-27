@@ -29,10 +29,12 @@ func TestCheckpointSSDStageCostCompetesWithColdCapacityAndLoad(t *testing.T) {
 		{name: "full_N_still_required", want: "cold", stage: 100, prefill: 5000, coldPrefill: 4800, decode: 100, full: true, nearTie: 1, path: SelectionUniqueMin},
 		{name: "normal_TTFT_gate_preserved", want: "cold", stage: 100, prefill: 1000, coldPrefill: 5000, decode: 100, maxTTFT: 1000, nearTie: 1, path: SelectionUniqueMin},
 		{name: "only_expensive_holder_still_serves", want: "ssd", stage: 900, prefill: 5000, decode: 100, onlyHolder: true, nearTie: 1, path: SelectionUniqueMin},
-		// The scan prices a restore penalty at 5,000 tok/s and selects the
-		// holder as the strict minimum; the commit reprices it at 1,000 tok/s,
-		// where the same file is a 3.2 s credit, and rescans. The repriced
-		// holder is then a credited near-tie of the cold peer and wins.
+		// The scan prices a restore penalty at 5,000 tok/s and, as the exact
+		// minimum, the holder is the less loaded near-tie of the cold peer;
+		// the commit reprices it at 1,000 tok/s, where the same file is a
+		// 3.2 s credit (age-weighted, so the lower bound below allows up to
+		// ~3 s of wall-clock decay), and rescans. The repriced holder is then
+		// a credited near-tie of the cold peer and wins.
 		{name: "reservation_reprices_changed_rate", want: "ssd", stage: 900, prefill: 5000, coldPrefill: 4000, decode: 100, afterScanPrefill: 1000, nearTie: 2, path: SelectionCacheCredit},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -119,7 +121,7 @@ func TestCheckpointSSDStageCostCompetesWithColdCapacityAndLoad(t *testing.T) {
 			if tc.maxTTFT > 0 && decision.TTFTRejections != 1 {
 				t.Fatal("cache benefit bypassed normal TTFT eligibility")
 			}
-			if tc.afterScanPrefill > 0 && (scans < 2 || decision.ScanCount < 2 || decision.CacheEstimatedTTFTSavedMs < 3190 || decision.CacheEstimatedTTFTSavedMs > 3196) {
+			if tc.afterScanPrefill > 0 && (scans < 2 || decision.ScanCount < 2 || decision.CacheEstimatedTTFTSavedMs < 3000 || decision.CacheEstimatedTTFTSavedMs > 3196) {
 				t.Fatalf("reservation did not reprice the current provider rate: scans=%d %+v", scans, decision)
 			}
 			if tc.want == "cold" {

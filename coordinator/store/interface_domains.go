@@ -578,6 +578,10 @@ type ProviderEarningsStore interface {
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
 
+	// GetAccountEarningsByProvider returns an account's lifetime earnings
+	// grouped by provider_key (stable machine identity), highest total first.
+	GetAccountEarningsByProvider(accountID string) ([]ProviderMachineEarnings, error)
+
 	// AccountEarningsWindows returns the account's last-24h and last-7d row
 	// count and micro-USD sum as of now, aggregated by the store over the
 	// 7 d window only. Every provider_earnings row counts (base_reward rows

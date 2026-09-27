@@ -414,11 +414,10 @@ func TestFleetSpecCarriesCapabilities(t *testing.T) {
 		t.Fatalf("prov-l = version %q models %+v, want no version and no flags", lVersion, lModels)
 	}
 
-	// The gates read them: prov-v serves tools (version ≥ floor) and vision
-	// (IsVision) for simModel but never simModel2 (render-broken); prov-l
-	// serves neither trait.
+	// The gates read them: prov-v serves tools and vision (IsVision) for
+	// simModel but never simModel2 (render-broken).
 	if !reg.HasToolCapableProviderForModel(simModel) || !reg.HasVisionProviderForModel(simModel) {
-		t.Fatal("prov-v must pass the tools floor and the vision gate for simModel")
+		t.Fatal("prov-v must pass the tools and vision gates for simModel")
 	}
 	if reg.HasToolCapableProviderForModel(simModel2) {
 		t.Fatal("a template_render_ok=false slot must not pass the tools gate")

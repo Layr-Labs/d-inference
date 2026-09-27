@@ -318,8 +318,8 @@ func (s *Server) candidateProviderBody(
 
 // visionToolsFailFast is the shared media/tools capability fast-fail (mirrored
 // between the two handlers). A media request must land on a constraint-eligible
-// vision-capable provider, and a tool-bearing request on a provider past the
-// tools version floor with a healthy chat-template render; otherwise the request
+// vision-capable provider, and a tool-bearing request on a provider with a
+// healthy chat-template render; otherwise the request
 // can never route and must fail fast with a clear model_unavailable rather than
 // queue for 120s into a misleading capacity 429. Both gates are constrained to
 // allowedProviderSerials (a public capable provider must not satisfy an
@@ -351,10 +351,9 @@ func (s *Server) visionToolsFailFast(
 		}
 	}
 	// Tools fail-fast (mirrors the vision gate): when every constraint-eligible
-	// provider serving this model is trait-gated — below the tools version floor,
-	// below the mode-specific floor (tool_choice "none" needs the v0.7.10
-	// prompt-side policy that hides declared tools), or advertising a broken
-	// chat-template render — the request can never route. Without this gate it
+	// provider serving this model is trait-gated — chiefly by advertising a
+	// broken chat-template render (template_render_ok=false) — the request can
+	// never route. Without this gate it
 	// passes the trait-blind QuickCapacityCheck preflight, queues for up to 120s,
 	// and dies with a misleading capacity 429. The traits here must match what
 	// the scheduler enforces at dispatch or the fail-fast and the queue disagree.
@@ -369,7 +368,7 @@ func (s *Server) visionToolsFailFast(
 			allowedProviderSerials...,
 		) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-			fmt.Sprintf("no online provider for model %q supports tool calls (requires provider >= 0.6.3 with a healthy chat template) — providers may still be updating", publicModel),
+			fmt.Sprintf("no online provider for model %q supports tool calls with a healthy chat template right now", publicModel),
 			withParam("model")))
 		return true
 	}

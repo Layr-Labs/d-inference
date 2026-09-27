@@ -12,8 +12,8 @@ package api
 //     content-bearing chunk results in a transparent retry on another
 //     provider — invisible to the consumer (200, clean stream, one [DONE]).
 //     In-band SSE errors are surfaced ONLY after content has flowed.
-//   - [WS-R] Inference-error cooldown, tools version floors, and the
-//     template_render_ok routing gate (see failover_routing_integration_test.go).
+//   - [WS-R] Inference-error cooldown and the template_render_ok routing
+//     gate (see failover_routing_integration_test.go).
 //   - [WS-T] Tool-schema normalization reaching the provider (see
 //     failover_routing_integration_test.go).
 //

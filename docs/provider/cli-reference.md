@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-27 · commit `e8d00933d`
+> Last updated: 2026-09-27 · commit `4ad3034df`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -422,9 +422,19 @@ Memory when idle
 ```
 
 Enter keeps the policy already in force (`Free when idle` on a fresh install).
-The answer is written to `[backend] idle_timeout_mins` and applies to every
-serve mode; `--model`/`--all`, `--idle-timeout`, non-interactive runs and the
+The answer is written to `[backend] idle_timeout_mins` for coordinator-connected
+idle unloading; `--model`/`--all`, `--idle-timeout`, non-interactive runs and the
 launchd relaunch never prompt. See [`darkbloom idle`](#darkbloom-idle).
+Every `darkbloom start` mode preloads selected models with the default
+`startup_preload = true`, regardless of the idle-memory policy. A
+coordinator-connected provider prioritizes previously loaded models and
+defers registration for up to `startup_preload_timeout_secs`; standalone
+`--local` finishes preloading before it listens. An explicit `[backend]
+preload_models` list takes precedence. The slot limit and available memory
+can leave models to load on a later request. `startup_preload = false`
+disables preloading in either mode. The one-token `startup_selftest` and
+`startup_selftest_fail_closed` settings apply only to coordinator-connected
+startup; `--local` does not run a synthetic decode.
 
 Examples:
 
@@ -566,8 +576,8 @@ Output includes:
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
 - `Memory when idle`: the idle-memory policy in force (`always ready` or
-  `free after N idle`), and any advertised models that are currently not
-  loaded, with the reason (unloaded when idle vs. loads on first request).
+  `free after N idle`). Advertised models without a resident engine are
+  separated into `Startup preload pending` and `Not loaded (loads on request)`.
 - Per-slot posture: the KV backend each loaded model actually resolved to
   (`paged` / `contiguous`), the selection the config asked for, and whether
   MTP is enabled, active, or enabled-but-inert.
@@ -1113,7 +1123,7 @@ override `provider.toml` for one process, are in
 | `[backend] engine_v2_max_concurrent` | `4` (clamped to `[1, 8]`) | Concurrent requests per engine |
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
-| `[backend] startup_preload` | `true` | Load advertised models at start |
+| `[backend] startup_preload` | `true` | Preload `preload_models` when set, otherwise selected models (previously loaded first on coordinator starts), within slot and memory limits |
 | `[coordinator] url` | `"wss://api.darkbloom.dev/ws/provider"` | |
 | `[coordinator] heartbeat_interval_secs` | `5` | Heartbeat; state file refresh is half of it |
 | `[coordinator] private_only` | `false` | Serve only the owner's [self-route](./self-route.md) traffic |

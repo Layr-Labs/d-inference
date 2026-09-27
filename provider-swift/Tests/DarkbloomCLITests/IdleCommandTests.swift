@@ -225,18 +225,22 @@ struct IdleCommandTests {
 
     // MARK: - status
 
-    @Test("status lists advertised-but-unloaded models with the policy's reason")
-    func statusNotLoadedLine() {
-        #expect(Status.notLoadedLine(
-            advertised: nil, warmModels: [], currentModel: nil, idleTimeoutMins: 60) == nil)
-        #expect(Status.notLoadedLine(
-            advertised: ["a", "b"], warmModels: ["a"], currentModel: "b", idleTimeoutMins: 60) == nil)
+    @Test("status distinguishes pending startup loads from request-time loads")
+    func statusNotLoadedLines() {
+        #expect(Status.notLoadedLines(
+            advertised: nil, warmModels: [], currentModel: nil,
+            startupPreloadPendingModels: nil).isEmpty)
+        #expect(Status.notLoadedLines(
+            advertised: ["a", "b"], warmModels: ["a"], currentModel: "b",
+            startupPreloadPendingModels: []).isEmpty)
 
-        #expect(Status.notLoadedLine(
-            advertised: ["a", "b"], warmModels: ["a"], currentModel: nil, idleTimeoutMins: 60)
-            == "Not loaded (unloaded when idle; reloads on demand): b")
-        #expect(Status.notLoadedLine(
-            advertised: ["a", "b"], warmModels: [], currentModel: nil, idleTimeoutMins: 0)
-            == "Not loaded (loads on first request): a, b")
+        #expect(Status.notLoadedLines(
+            advertised: ["a", "b", "c"], warmModels: ["a"], currentModel: nil,
+            startupPreloadPendingModels: ["b"])
+            == ["Startup preload pending: b", "Not loaded (loads on request): c"])
+        #expect(Status.notLoadedLines(
+            advertised: ["a", "b"], warmModels: [], currentModel: nil,
+            startupPreloadPendingModels: nil)
+            == ["Not loaded (loads on request): a, b"])
     }
 }

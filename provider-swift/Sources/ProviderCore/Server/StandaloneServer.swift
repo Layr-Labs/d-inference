@@ -1270,10 +1270,10 @@ public actor StandaloneServer {
         return true
     }
 
-    private func evictIfNeededForLoad() async throws {
+    private func evictIfNeededForLoad(allowEviction: Bool) async throws {
         guard slots.count >= config.maxCachedModels else { return }
 
-        guard await evictLRUIdleSlot() else {
+        guard allowEviction, await evictLRUIdleSlot() else {
             throw StandaloneServerError.capacityUnavailable(
                 "All \(config.maxCachedModels) cached model slot(s) are active; try again when a request finishes"
             )
@@ -1281,7 +1281,8 @@ public actor StandaloneServer {
     }
 
     private func ensureMemoryHeadroomForLoad(
-        requiredGb: Double, waitForQwen4Retirement: Bool = false
+        requiredGb: Double, waitForQwen4Retirement: Bool = false,
+        allowEviction: Bool = true
     ) async throws {
         guard requiredGb.isFinite, requiredGb > 0 else { return }
 
@@ -1289,7 +1290,7 @@ public actor StandaloneServer {
             try Task.checkCancellation()
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
                 try await retirement.pauseForRecheck() { continue }
-            guard await evictLRUIdleSlot() else {
+            guard allowEviction, await evictLRUIdleSlot() else {
                 throw StandaloneServerError.capacityUnavailable(
                     String(format: "Insufficient memory headroom to load model (needs %.1f GB available)", requiredGb)
                 )
@@ -1301,7 +1302,7 @@ public actor StandaloneServer {
     /// clamped to real OS-available memory (`SystemMemory`) and minus any KV
     /// already promised to in-flight requests (`kvBudget`). See
     /// `ModelLoadAdmission` for the rationale.
-    private func availableMemoryGb() async -> Double {
+    func availableMemoryGb() async -> Double {
         kvBudget.availableForLoadGb()
     }
 
@@ -1474,10 +1475,10 @@ public actor StandaloneServer {
         }.value
     }
 
-    /// Lazy-load a model if it isn't already resident. Serializes loads and
-    /// applies LRU + memory-headroom eviction, then builds the v2 slot
-    /// through the shared sizing → re-slice → bridge path.
-    func ensureModelLoaded(_ modelId: String) async throws {
+    /// Load a model if it isn't already resident. Request loads may evict idle
+    /// slots; startup preloads pass `allowEviction = false` to preserve earlier
+    /// warm models while still using the authoritative memory gate.
+    func ensureModelLoaded(_ modelId: String, allowEviction: Bool = true) async throws {
         await waitForMTPUpgrade(modelId)
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: config.runtimeCapabilities)
@@ -1496,7 +1497,7 @@ public actor StandaloneServer {
                 touchSlot(modelId)
                 return
             }
-            try await ensureModelLoaded(modelId)
+            try await ensureModelLoaded(modelId, allowEviction: allowEviction)
             return
         }
 
@@ -1530,7 +1531,7 @@ public actor StandaloneServer {
             return
         }
         if modelsLoading.contains(modelId) {
-            try await ensureModelLoaded(modelId)
+            try await ensureModelLoaded(modelId, allowEviction: allowEviction)
             return
         }
 
@@ -1569,7 +1570,7 @@ public actor StandaloneServer {
         await pushActivationReserve()
         do {
             try Task.checkCancellation()
-            try await evictIfNeededForLoad()
+            try await evictIfNeededForLoad(allowEviction: allowEviction)
             let targetRequiredGb = ModelLoadAdmission.requiredToLoadGb(
                     // Includes the validated native load-copy envelope or
                     // legacy padding; never substitute bare steady residency.
@@ -1582,7 +1583,8 @@ public actor StandaloneServer {
                         / (1024.0 * 1024.0 * 1024.0))
             try await ensureMemoryHeadroomForLoad(
                 requiredGb: targetRequiredGb,
-                waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
+                waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType),
+                allowEviction: allowEviction)
             // Inline assistants ride the target checkpoint's own shards,
             // already counted in estimatedMemoryGb -> targetRequiredGb; only
             // separately staged assistants add bytes on top

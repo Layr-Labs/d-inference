@@ -145,9 +145,17 @@ struct RetryNotifyingPrefetchSink: PrefetchStatusSink {
 internal final class OneShotBoolContinuation: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
+    private var cancelled = false
 
-    init(_ continuation: CheckedContinuation<Bool, Never>) {
+    func install(_ continuation: CheckedContinuation<Bool, Never>) {
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            continuation.resume(returning: false)
+            return
+        }
         self.continuation = continuation
+        lock.unlock()
     }
 
     func resume(returning value: Bool) {
@@ -156,6 +164,15 @@ internal final class OneShotBoolContinuation: @unchecked Sendable {
         self.continuation = nil
         lock.unlock()
         continuation?.resume(returning: value)
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: false)
     }
 }
 
@@ -514,12 +531,23 @@ public actor ProviderLoop {
     internal var preloadTasks: [String: Task<Void, Never>] = [:]
 
     /// Startup preload driver (`ProviderLoop+StartupPreload`). Non-nil while
-    /// the boot-time preload of the configured/previously-served model set is
+    /// the boot-time preload of the selected model set is
     /// still running — it may outlive the registration gate when the
     /// `startup_preload_timeout_secs` deadline passes (loads continue in the
     /// background). Cancelled and awaited on shutdown alongside the
     /// coordinator-driven preloads.
     internal var startupPreloadTask: Task<Void, Never>?
+    /// Wakes the registration gate when lifecycle draining starts, even if
+    /// the preload driver is inside a slow model load.
+    internal var startupPreloadGateWaiter: OneShotBoolContinuation?
+    /// Coalesces pre-registration teardown requested by the serve task and a
+    /// concurrent signal handler. Detached from a cancelled schedule task.
+    internal var preRegistrationCleanupTask: Task<Void, Never>?
+    /// Set once the coordinator event reader owns the normal shutdown path.
+    internal var coordinatorEventLoopStarted = false
+    /// Suffix of the startup plan not yet completed by the driver. Exposed in
+    /// the daemon state so status can distinguish warmup from request loading.
+    internal var startupPreloadPendingModels: [String] = []
 
     /// Test seam: overrides the loaded-models persistence file
     /// (default: `LoadedModelsStore.path()`).

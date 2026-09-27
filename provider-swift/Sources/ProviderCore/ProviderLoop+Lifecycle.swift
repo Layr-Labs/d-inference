@@ -3,6 +3,11 @@ import Foundation
 extension ProviderLoop {
     internal func beginServingDrain(owner: ProviderDrain.Owner) {
         servingDrain.begin(owner)
+        // Before registration there is no event reader to wake the startup
+        // gate. Stop its driver and release the wait as soon as draining owns
+        // admission; the serve task performs slot teardown before returning.
+        startupPreloadTask?.cancel()
+        startupPreloadGateWaiter?.cancel()
         if servingDrain.owner != .lifecycle { lifecycleStatus = .init(outcome: .draining, remaining: lifecycleRemaining) }
         localResponseTracker.setAccepting(false)
         state.refusingNewWork = true
@@ -136,7 +141,8 @@ extension ProviderLoop {
     /// path. Neither cancels the event reader or closes the socket first.
     public func drainAndShutdown(timeoutSeconds: Int = 600) async -> Bool {
         if servingDrain.phase == .drained {
-            await coordinatorClient?.shutdown()
+            if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
+            else { await shutdownBeforeRegistration() }
             return true
         }
         guard let identity = ProcessIdentity.current() else { return false }
@@ -144,7 +150,8 @@ extension ProviderLoop {
         if let task = lifecycleDrainTask { result = await task.value }
         else { result = await drainForLifecycle(request: ProviderDrainRequest(target: identity, timeoutSeconds: timeoutSeconds)) }
         guard result.outcome == .drained || result.outcome == .forced else { return false }
-        await coordinatorClient?.shutdown()
+        if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
+        else { await shutdownBeforeRegistration() }
         return true
     }
 }

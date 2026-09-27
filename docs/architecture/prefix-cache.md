@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-27 · commit `8c44a3dee`
+> Last updated: 2026-09-27 · commit `4b8ef6717`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -397,15 +397,17 @@ write unconditionally (`SSDCheckpointDemand.admitsWrite`; policy in the
 MTP history. Historical attention includes exact owning full rows and the
 window contents at the captured boundary, preserving borrower relationships.
 Capture is chunk-agnostic for both layouts. Recurrent (Qwen, Nemotron,
-Bonsai) checkpoints exist at every contiguous computed-range end strictly
-inside the prompt (the prompt end itself is never a boundary: export needs a
-token after the checkpoint) that is a multiple of 256 tokens
+Bonsai) checkpoints exist at every contiguous computed-range end inside the
+prompt that is a multiple of 256 tokens
 (`CBv2RecurrentCheckpointGeometry.recurrentCheckpointStrideTokens`, the
 block-hash size) and query-block aligned, or, equivalently in production, the
 end of a full chunk of its own cap (the clause that keeps files written under
 the earlier uniform-chunk rule and the small-chunk engine fixtures valid), at
 or above the store's 1,024-token floor, so a donor prefilled in 512-token
-chunks retains 1,024 first. The rule rests on the
+chunks retains 1,024 first. The durable path skips the prompt end itself
+(export needs a token after the checkpoint, so a staged terminal copy could
+only stand in for the deepest boundary in the adjacency drop); the resident
+bank keeps that endpoint, since a longer next turn restores it. The rule rests on the
 [chunk-partition parity measurement](../reports/2026-09-27-qwen-chunk-partition-parity.md):
 on dense Qwen3.5-9B the recurrent state at a boundary is bit-identical under
 every partition tried and a restore continues token-exactly under any

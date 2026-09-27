@@ -1,6 +1,6 @@
 # Qwen chunk-partition parity and chunk-agnostic recurrent capture (2026-09-27)
 
-> Last updated: 2026-09-27 · commit `8c44a3dee`
+> Last updated: 2026-09-27 · commit `4b8ef6717`
 
 **Question.** Does a hybrid recurrent Qwen (GatedDeltaNet + full attention)
 reach the same complete-checkpoint state at a prefill boundary whatever chunk
@@ -41,9 +41,10 @@ keep only the 256-token block alignment the routing chain needs.
 ## Decision and what shipped
 
 Capture is now chunk-agnostic (`CBv2RecurrentCheckpointGeometry.isRecurrentBoundary`):
-a recurrent boundary is any contiguous computed-range end strictly inside the
-prompt (the prompt end itself is never one: export needs a token after the
-checkpoint) that is a multiple of 256 tokens and query-block aligned (or the end of a full
+a recurrent boundary is any contiguous computed-range end inside the prompt
+that is a multiple of 256 tokens and query-block aligned (the durable path
+skips the prompt end itself, since export needs a token after the
+checkpoint; the resident bank keeps that endpoint for the next turn) (or the end of a full
 chunk of its own cap, a production no-op that keeps files written under the
 old rule valid). Packed rows and preemption still disarm; a ragged range end
 is simply not a boundary. The manifest's `chunkSize` is provenance, and every

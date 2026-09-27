@@ -31,11 +31,24 @@ public enum RetiredKnobWarnings {
                     + "everything; rollback is release-level, not a per-box switch")
         }
         for retired in config.backend.retiredKeysPresent {
-            out.append(
-                "provider.toml sets [backend] \(retired), which is a RETIRED knob and is "
-                    + "IGNORED — remove the key")
+            out.append(retiredBackendKeyMessage(retired))
         }
         return out
+    }
+
+    /// The boolean `mtp` key gets its own wording because ignoring it changes
+    /// behavior: a bare `mtp = false` used to mean off, and without an
+    /// `mtp_mode` the box now resolves the `auto` default. The operator has to
+    /// be told which `mtp_mode` value restores the old intent.
+    static func retiredBackendKeyMessage(_ key: String) -> String {
+        guard key == "mtp" else {
+            return "provider.toml sets [backend] \(key), which is a RETIRED knob and is "
+                + "IGNORED — remove the key"
+        }
+        return "provider.toml sets [backend] mtp, which is a RETIRED knob and is IGNORED — "
+            + "MTP follows [backend] mtp_mode (default \"auto\"), not this key. "
+            + "To keep MTP off, set mtp_mode = \"off\"; to force it on, set "
+            + "mtp_mode = \"on\"; then remove the mtp key"
     }
 
     /// Log the above at WARN and hand them back so a caller with an operator

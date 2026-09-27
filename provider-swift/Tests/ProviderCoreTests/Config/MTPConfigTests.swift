@@ -90,7 +90,20 @@ struct MTPConfigKeyTests {
                     """)
                 #expect(config.backend.mtpMode == .auto)
                 #expect(config.backend.retiredKeysPresent == ["mtp"])
-                #expect(RetiredKnobWarnings.messages(config: config, environment: [:]).count == 1)
+                let messages = RetiredKnobWarnings.messages(config: config, environment: [:])
+                #expect(messages.count == 1)
+                // A bare `mtp = false` used to mean off and now resolves as
+                // `auto`, so the warning must name the exact mtp_mode values
+                // that keep the old intent.
+                let warning = messages.first ?? ""
+                #expect(warning.contains("[backend] mtp,"))
+                #expect(warning.contains("RETIRED knob and is IGNORED"))
+                #expect(warning.contains(#"default "auto""#))
+                #expect(warning.contains(#"To keep MTP off, set mtp_mode = "off""#))
+                #expect(warning.contains(#"to force it on, set mtp_mode = "on""#))
+                for value in [MTPMode.off, .on, .auto] {
+                    #expect(warning.contains(#""\#(value.rawValue)""#))
+                }
             }
         }
         let modeWins = ConfigManager.parse(

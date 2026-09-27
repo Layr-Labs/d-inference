@@ -214,6 +214,9 @@ public struct StartupPreloader: Sendable {
               case .modelLoadFailed(let message) = loadError else { return false }
         return message.hasPrefix("Insufficient memory (")
             || message.hasPrefix("Insufficient memory for '")
+            || (message.hasPrefix("Model '")
+                && (message.contains("' loaded but has insufficient KV headroom under the memory cap")
+                    || message.contains("' loaded but its engine build left insufficient KV headroom under the memory cap")))
     }
 
     // MARK: - Formatting helpers

@@ -53,6 +53,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public var configPath: String?
     public var runtimeCapabilities: [String]?
     public var inferenceActive: Bool
+    /// Accepted or queued work, including local-endpoint requests that have
+    /// not begun decoding. Nil for older daemon state files.
+    public var requestWorkPending: Bool?
     /// Written directly from the loop even before backend capacity exists,
     /// so doctor can defer a verdict during pre-registration preload.
     public var loadTransitionActive: Bool?
@@ -247,6 +250,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         advertisedModels: [String]? = nil,
         startupPreloadPendingModels: [String]? = nil,
         inferenceActive: Bool = false,
+        requestWorkPending: Bool? = nil,
         loadTransitionActive: Bool? = nil,
         lifecycle: ProviderDrainStatus? = nil,
         modelSwitch: ProviderModelSwitchStatus? = nil,
@@ -278,6 +282,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.configPath = configPath
         self.runtimeCapabilities = runtimeCapabilities
         self.inferenceActive = inferenceActive
+        self.requestWorkPending = requestWorkPending
         self.loadTransitionActive = loadTransitionActive
         self.stats = stats
         self.system = system

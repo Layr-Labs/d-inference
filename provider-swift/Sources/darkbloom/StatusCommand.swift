@@ -145,7 +145,8 @@ struct Status: AsyncParsableCommand {
             startupPreloadPendingModels: state.startupPreloadPendingModels,
             readiness: readiness,
             evictionAwareWeightGb: state.capacity?.freeForLoadGb,
-            inferenceActive: state.inferenceActive || state.loadTransitionActive == true
+            inferenceActive: state.inferenceActive || state.requestWorkPending == true
+                || state.loadTransitionActive == true
                 || state.capacity?.loadTransitionActive == true)
         {
             print(line)

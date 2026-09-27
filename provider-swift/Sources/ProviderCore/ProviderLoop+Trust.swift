@@ -48,6 +48,8 @@ extension ProviderLoop {
             advertisedModels: advertisedModels.keys.sorted(),
             startupPreloadPendingModels: startupPreloadPendingModels,
             inferenceActive: state.inferenceActive,
+            requestWorkPending: DaemonWorkPosture.hasPendingRequest(
+                inflight: hasInflightWork, capacity: cap),
             loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
                 || !startupPreloadPendingModels.isEmpty
                 || cap?.slots.contains { $0.state == "reloading" } == true,

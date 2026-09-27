@@ -212,6 +212,8 @@ struct StartupPreloaderTests {
             "Insufficient memory (8.0 GB free, need 24.7 GB) to load without evicting resident models",
             "Insufficient memory for 'raced' at final load admission",
             "Insufficient memory for 'raced' at allocation: load headroom changed",
+            "Model 'raced' loaded but has insufficient KV headroom under the memory cap (0.1 GB free, need 1.0 GB to serve) — unloaded",
+            "Model 'raced' loaded but its engine build left insufficient KV headroom under the memory cap (0.1 GB free) — unloaded",
         ] {
             let recorder = PreloadRecorder()
             var deps = makeDeps(

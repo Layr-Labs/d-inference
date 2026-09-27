@@ -495,6 +495,8 @@ canonicalized heartbeat slots and memory sample apply. The response also carries
 snapshot. A repeated or out-of-order capacity sequence can advance
 `last_heartbeat` for liveness without refreshing this timestamp. The owner
 load verdict uses `capacity_accepted_at` and withholds stale or absent samples.
+`models_replace` clears this owner load evidence until an accepted heartbeat
+for the replacement inventory arrives, including when a model ID is reused.
 It also carries optional `backend_capacity.load_transition_active`, which marks
 an in-flight model load or load-gate update before a slot exists. The provider
 emits a capacity heartbeat when this transition changes. My Macs and the

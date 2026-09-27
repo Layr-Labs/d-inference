@@ -586,7 +586,7 @@ Output includes:
   minimum-KV serving reserve, required total and no-eviction shortfall. When
   request-time eviction still cannot fit the model, the cold-load shortfall
   (the amount to free) is shown separately. Older or stale snapshots and
-  snapshots taken during active inference, a model load or a reload withhold a
+  snapshots taken during active or queued requests, a model load or a reload withhold a
   definitive verdict. The daemon writes the load transition during startup
   preload even before its first backend-capacity snapshot.
   `always ready`
@@ -595,7 +595,8 @@ Output includes:
   models from a cold request that can evict idle slots; only the latter earns
   the `Cold load blocked` label when it still cannot fit.
   A memory skip also writes a fixed public category to `darkbloom logs`; model
-  loads refused at final admission or allocation recheck use the same warning.
+  loads refused at final admission, allocation recheck, or measured post-load
+  KV headroom use the same warning.
   Model names and exact load figures remain private there and appear in the owner's
   live `status` and `doctor` output instead.
 - Per-slot posture: the KV backend each loaded model actually resolved to

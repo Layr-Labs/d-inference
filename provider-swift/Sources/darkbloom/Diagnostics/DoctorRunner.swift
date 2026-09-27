@@ -201,7 +201,8 @@ enum DoctorRunner {
                     evictionAwareWeightGb: hasLiveLoadPair ? liveLoadBudget?.freeForLoadGb : nil,
                     loadHeadroomGb: hasLiveLoadPair ? liveLoadBudget?.loadHeadroomGb : nil,
                     busyServing: loadSnapshotFresh &&
-                        (state?.inferenceActive == true || state?.loadTransitionActive == true
+                        (state?.inferenceActive == true || state?.requestWorkPending == true
+                            || state?.loadTransitionActive == true
                             || state?.capacity?.loadTransitionActive == true)))
             }
         }

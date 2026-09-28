@@ -1,7 +1,5 @@
 """Trusted-base orchestration. Fetch PR patches as data; never check out PR code."""
-import os
 import re
-from pathlib import Path
 from .client import GitHub, ReviewUnavailable
 from .report import MARKER, render
 from .review import DEFAULT_MODEL, review

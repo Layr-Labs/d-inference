@@ -1,6 +1,6 @@
 # Model artifact revisions
 
-> Last updated: 2026-09-28 · commit `ac63cefa7`
+> Last updated: 2026-09-28 · commit `fb33ea84e`
 
 An existing model can acquire new weights without changing its model ID or
 releasing another provider binary. Publishers upload an immutable revision and
@@ -101,9 +101,13 @@ The provider never deletes retained revisions automatically.
 The selected receipt must match the requested version/hash, have valid manifest
 metadata and identify its canonical snapshot directory. Receipt checks do not
 hash weights during reconciliation. When reusing a snapshot,
-`verifyRevisionAndRepairReceipt` first verifies its files under the writer lease,
-then atomically restores a missing, malformed or mismatched receipt. Corrupt
-weights are rejected without rewriting the receipt. Canonical parent comparison
+`verifyRevisionAndRepairReceipt` first checks that the complete integrity-file
+inventory from `ModelScanner.collectWeightFiles` matches the manifest, then
+verifies its bytes under the writer lease and atomically restores a missing,
+malformed or mismatched receipt. Extra templates, tokenizer files or weights
+are rejected on reuse and before first publication from staging; unrelated notes
+and hidden receipts remain outside the integrity surface. Corrupt weights are
+rejected without rewriting the receipt. Canonical parent comparison
 also lets activation and rollback use resolved paths beneath a valid linked
 model directory while rejecting snapshots outside that model's store.
 

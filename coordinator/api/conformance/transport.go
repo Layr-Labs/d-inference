@@ -1,4 +1,4 @@
-package api
+package conformance
 
 import (
 	"net/http"
@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestOpenRouterConformanceTransport(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceTransport(t *testing.T) {
 	var otherHits, originHits atomic.Int32
 	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { otherHits.Add(1) }))
 	defer other.Close()

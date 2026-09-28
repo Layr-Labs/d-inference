@@ -1,4 +1,4 @@
-package api
+package conformance
 
 import (
 	"encoding/json"
@@ -13,8 +13,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func TestOpenRouterConformanceAuth(t *testing.T) {
-	f := newORFixture(t, true)
+func (s Suite) TestOpenRouterConformanceAuth(t *testing.T) {
+	f := s.newORFixture(t, true)
 	past := time.Now().Add(-time.Hour)
 	expired, _, err := f.st.CreateAPIKey(orAccount, store.APIKeyCreate{ExpiresAt: &past})
 	if err != nil {
@@ -56,8 +56,8 @@ func TestOpenRouterConformanceAuth(t *testing.T) {
 	f.settled(orAccount, 0, 0)
 }
 
-func TestOpenRouterConformanceFeed(t *testing.T) {
-	f := newORFixture(t, true)
+func (s Suite) TestOpenRouterConformanceFeed(t *testing.T) {
+	f := s.newORFixture(t, true)
 	p := f.provider("0.8.15")
 	read := func() types.OpenRouterModelsResponse {
 		t.Helper()
@@ -117,7 +117,7 @@ func TestOpenRouterConformanceFeed(t *testing.T) {
 		}
 	}
 	p.close()
-	orEventually(t, func() bool { return f.srv.registry.ProviderCount() == 0 }, "provider disconnect")
+	orEventually(t, func() bool { return f.srv.Registry.ProviderCount() == 0 }, "provider disconnect")
 	// Invalidate the read cache through the existing catalog seam so outage
 	// persistence is checked against a newly constructed feed, not stale bytes.
 	f.srv.SyncModelCatalog()
@@ -128,11 +128,11 @@ func TestOpenRouterConformanceFeed(t *testing.T) {
 	t.Log(`OR_REPORT {"scenario":"A2","status":200,"public_models":["conformance-alias","conformance-staged"],"outage_persistent":true}`)
 }
 
-func TestOpenRouterConformanceChat(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceChat(t *testing.T) {
 	for _, holds := range []bool{false, true} {
 		for _, mode := range []string{"nonstream", "stream", "stream_usage"} {
 			t.Run(fmt.Sprintf("holds_%t/%s", holds, mode), func(t *testing.T) {
-				f := newORFixture(t, holds)
+				f := s.newORFixture(t, holds)
 				p := f.provider("0.8.15")
 				stream := mode != "nonstream"
 				ch, cancel := f.startChat(f.keys[orAccount], stream, nil)
@@ -195,10 +195,10 @@ func TestOpenRouterConformanceChat(t *testing.T) {
 	}
 }
 
-func TestOpenRouterConformanceAccountSLA(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceAccountSLA(t *testing.T) {
 	for _, name := range []string{orAccount, "second", "conformance-exempt", "conformance-other-service"} {
 		t.Run(name, func(t *testing.T) {
-			f := newORFixture(t, true)
+			f := s.newORFixture(t, true)
 			p := f.provider("0.8.15")
 			ch, cancel := f.startChat(f.keys[name], false, nil)
 			defer cancel()
@@ -217,8 +217,8 @@ func TestOpenRouterConformanceAccountSLA(t *testing.T) {
 	}
 }
 
-func TestOpenRouterConformanceDrain(t *testing.T) {
-	f := newORFixture(t, true)
+func (s Suite) TestOpenRouterConformanceDrain(t *testing.T) {
+	f := s.newORFixture(t, true)
 	f.srv.SetDraining(true)
 	// Deliberate unauthenticated request proves drain's outer middleware precedence.
 	ch, cancel := f.startChat("", true, nil)

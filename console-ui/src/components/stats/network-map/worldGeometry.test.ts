@@ -5,7 +5,6 @@ import {
   dotsToPathData,
   generateLandDots,
   getLandDots,
-  isPointOnLand,
   parsePolygons,
   pointInPolygon,
   type Point,
@@ -72,27 +71,6 @@ describe("pointInPolygon", () => {
   });
 });
 
-describe("isPointOnLand (even-odd across rings)", () => {
-  const outer: Point[] = [
-    { x: 0, y: 0 },
-    { x: 100, y: 0 },
-    { x: 100, y: 100 },
-    { x: 0, y: 100 },
-  ];
-  const hole: Point[] = [
-    { x: 25, y: 25 },
-    { x: 75, y: 25 },
-    { x: 75, y: 75 },
-    { x: 25, y: 75 },
-  ];
-
-  it("treats a nested ring as a carved-out hole", () => {
-    expect(isPointOnLand({ x: 10, y: 10 }, [outer, hole])).toBe(true); // ring only
-    expect(isPointOnLand({ x: 50, y: 50 }, [outer, hole])).toBe(false); // in hole
-    expect(isPointOnLand({ x: 200, y: 200 }, [outer, hole])).toBe(false); // outside
-  });
-});
-
 describe("generateLandDots", () => {
   it("only returns points strictly inside the land shape", () => {
     const dots = generateLandDots({ pathData: SQUARE, spacing: 20, width: 400, height: 400 });
@@ -109,6 +87,15 @@ describe("generateLandDots", () => {
     const dots = generateLandDots({ pathData: SQUARE, spacing: 20, width: 400, height: 400 });
     // Grid centers at 10,30,...,390; those inside (100,300) are 110..290 → 10 per axis.
     expect(dots).toHaveLength(100);
+  });
+
+  it("carves a nested ring out as a hole (even-odd fill)", () => {
+    const outerWithHole = "M 0 0 L 100 0 L 100 100 L 0 100 Z M 25 25 L 75 25 L 75 75 L 25 75 Z";
+    const dots = generateLandDots({ pathData: outerWithHole, spacing: 20, width: 100, height: 100 });
+    // Centers 10..90 on each axis: 25 inside the outer ring, 9 of them in the hole.
+    expect(dots).toHaveLength(16);
+    expect(dots).toContainEqual({ x: 10, y: 10 });
+    expect(dots).not.toContainEqual({ x: 50, y: 50 });
   });
 
   it("is deterministic across calls", () => {

@@ -25,18 +25,16 @@ type providerBodyEntry struct {
 // providerBodyMemo caches candidate bodies per model for the life of one
 // request. It is single-goroutine (the handler's preprocessing runs inline).
 type providerBodyMemo struct {
-	build          func(model string) ([]byte, error)
-	hasTools       bool
-	requiresVision bool
-	entries        map[string]*providerBodyEntry
+	build    func(model string) ([]byte, error)
+	hasTools bool
+	entries  map[string]*providerBodyEntry
 }
 
-func newProviderBodyMemo(build func(model string) ([]byte, error), hasTools, requiresVision bool) *providerBodyMemo {
+func newProviderBodyMemo(build func(model string) ([]byte, error), hasTools bool) *providerBodyMemo {
 	return &providerBodyMemo{
-		build:          build,
-		hasTools:       hasTools,
-		requiresVision: requiresVision,
-		entries:        make(map[string]*providerBodyEntry, 2),
+		build:    build,
+		hasTools: hasTools,
+		entries:  make(map[string]*providerBodyEntry, 2),
 	}
 }
 
@@ -77,7 +75,7 @@ func (m *providerBodyMemo) reset() {
 func (m *providerBodyMemo) sizing(model string) *providerBodyEntry {
 	e := m.entry(model)
 	if e.err == nil && !e.sized {
-		e.traits, e.sizeErr = routingTraitsForProviderBody(m.hasTools, e.body, m.requiresVision)
+		e.traits, e.sizeErr = routingTraitsForProviderBody(m.hasTools, e.body)
 		e.sized = true
 	}
 	return e

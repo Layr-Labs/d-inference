@@ -1,5 +1,5 @@
-/// ModelDownloader download orchestration: manifest + legacy CDN download
-/// flows (fetch manifest, per-file resume, staged finalize, publish).
+/// ModelDownloader download orchestration: the verified-manifest download
+/// flow (fetch manifest, per-file resume, staged finalize, publish).
 
 import Foundation
 
@@ -49,70 +49,6 @@ extension ModelDownloader {
         }
     }
 
-    internal func downloadLegacyModelFromCDN(
-        model: CatalogModel,
-        onProgress: (@Sendable (ProgressEvent) -> Void)?
-    ) async throws {
-        let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
-        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-
-        let base = "\(r2CDNURL)/\(model.s3Name)"
-
-        // 1. config.json (smoke-test the model exists on the CDN).
-        try await downloadFile(
-            from: "\(base)/config.json",
-            to: cacheDir.appendingPathComponent("config.json"),
-            label: "config.json",
-            onProgress: onProgress,
-            required: true
-        )
-
-        // 2. tokenizer files. Best-effort.
-        for name in ["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "tokenizer.model", "chat_template.jinja"] {
-            _ = try? await downloadFile(
-                from: "\(base)/\(name)",
-                to: cacheDir.appendingPathComponent(name),
-                label: name,
-                onProgress: onProgress,
-                required: false
-            )
-        }
-
-        // 3. Single safetensors? If a HEAD request returns 200 we go that route.
-        if try await urlExists("\(base)/model.safetensors") {
-            try await downloadFile(
-                from: "\(base)/model.safetensors",
-                to: cacheDir.appendingPathComponent("model.safetensors"),
-                label: "model.safetensors",
-                onProgress: onProgress,
-                required: true
-            )
-        } else {
-            // 4. Sharded model. Pull the index, then each shard listed in
-            // `weight_map`.
-            let indexPath = cacheDir.appendingPathComponent("model.safetensors.index.json")
-            try await downloadFile(
-                from: "\(base)/model.safetensors.index.json",
-                to: indexPath,
-                label: "model.safetensors.index.json",
-                onProgress: onProgress,
-                required: true
-            )
-            let shards = try Self.parseShardNames(indexPath: indexPath)
-            for shard in shards {
-                try await downloadFile(
-                    from: "\(base)/\(shard)",
-                    to: cacheDir.appendingPathComponent(shard),
-                    label: shard,
-                    onProgress: onProgress,
-                    required: true
-                )
-            }
-        }
-
-        try writeMainRef(for: model.id)
-    }
-
     internal func downloadManifestModel(
         model: CatalogModel,
         manifest: ModelManifest,
@@ -122,6 +58,7 @@ extension ModelDownloader {
 
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
+        try Self.prepareModelCacheDirectory(at: snapshotsDir.deletingLastPathComponent())
         try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
 
         // STABLE staging dir keyed by the manifest prefix (NOT a random UUID) so an

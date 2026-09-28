@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -67,7 +67,7 @@
 - [`reference/api-contracts.md`](reference/api-contracts.md): every HTTP route, header, status code, and JSON shape of the coordinator.
 - [`reference/protocol-messages.md`](reference/protocol-messages.md): every WebSocket message between coordinator and provider, field by field, Go ↔ Swift.
 - [`reference/configuration.md`](reference/configuration.md): every environment variable with type, default, reading file and effect — coordinator `EIGENINFERENCE_*` (routing, admission, TTFT, warm pool, cache routing, billing, MDM, telemetry), provider `DARKBLOOM_*`, console-ui and admin-ui — plus where each process gets its environment.
-- [`reference/telemetry-schema.md`](reference/telemetry-schema.md): telemetry event types, field allowlist, symmetry rules.
+- [`reference/telemetry-schema.md`](reference/telemetry-schema.md): telemetry event types and symmetry rules.
 - [`reference/telemetry-inventory.md`](reference/telemetry-inventory.md): every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file.
 - [`reference/pricing-model.md`](reference/pricing-model.md): micro-USD units, price resolution, formulas, every billing constant (the single home for money constants), routes, service accounts.
 - [`reference/model-registry-format.md`](reference/model-registry-format.md): manifest schema, registration payload, alias format.

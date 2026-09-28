@@ -88,18 +88,6 @@ export function pointInPolygon(point: Point, ring: Point[]): boolean {
   return inside;
 }
 
-/**
- * Land test across many rings using the even-odd fill rule (inside an odd number
- * of rings → land). This naturally carves out any nested holes.
- */
-export function isPointOnLand(point: Point, rings: Point[][]): boolean {
-  let crossings = 0;
-  for (const ring of rings) {
-    if (pointInPolygon(point, ring)) crossings += 1;
-  }
-  return crossings % 2 === 1;
-}
-
 function withBoundingBox(points: Point[]): Ring {
   let minX = Infinity;
   let minY = Infinity;

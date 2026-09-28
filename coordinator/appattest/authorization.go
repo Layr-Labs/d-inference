@@ -61,7 +61,7 @@ func EvaluateAuthorization(e AuthorizationEvidence, now time.Time) Authorization
 	if e.Binding.Account == "" || e.Binding.Machine == "" || e.Binding.Credential == "" || e.Binding.Connection == "" || e.Binding.Endpoint == "" || e.Binding.AppID == "" || e.Binding.Environment == "" {
 		unknown("identity_missing")
 	}
-	if e.ProtocolVersion != 2 && e.ProtocolVersion != 3 {
+	if e.ProtocolVersion != 3 {
 		unknown("signed_status_unavailable")
 	}
 	if !e.ArchiveComplete {

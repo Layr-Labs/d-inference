@@ -134,7 +134,7 @@ struct ProcessLifecycleTests {
     let stale = ProcessIdentity(pid: live.pid, startTimeMicros: live.startTimeMicros - 1)
     DaemonStateFile.write(.init(pid: stale.pid, processIdentity: stale, version: "old",
                                 writtenAt: 0, startedAt: 0), to: statePath)
-    try ProcessLifecycle.acquireSingleInstanceLock(at: path, terminationGracePeriod: 0, stateFile: statePath)
+    try ProcessLifecycle.acquireSingleInstanceLock(at: path, stateFile: statePath)
     #expect(process.isRunning)
     #expect(ProcessLifecycle.existingPID(at: path) == getpid())
     ProcessLifecycle.releaseSingleInstanceLock(at: path)

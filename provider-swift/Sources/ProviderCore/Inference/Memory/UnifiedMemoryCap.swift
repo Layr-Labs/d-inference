@@ -132,9 +132,11 @@ public enum UnifiedMemoryCap {
     /// peak-over-resident rows).
     ///
     /// Mirrored by coordinator/registry/servability.go
-    /// (`servabilityModelActivationFloorsGB` +
-    /// `servabilityPerModelFloorMinVersion`); the tables MUST move in the
-    /// same commit — see the doc comment on ``defaultActivationReserveBytes``.
+    /// (`servabilityModelActivationFloorsGB`, with `servabilityActivationFloorGB`
+    /// as the 5.5 GiB default): `servabilityActivationFloor` takes the model's
+    /// measured floor, else the default — no provider-version regimes. The
+    /// tables MUST move in the same commit — see the doc comment on
+    /// ``defaultActivationReserveBytes``.
     static let measuredActivationFloorsBytes: [String: UInt64] = [
         // Measured B=8 activation peak: 2.56 GiB eager, 3.20 GiB compiled
         // (fused SDPA, head_dim 64). 3.5 = 3.20 + 0.30 slack. Basis: raw
@@ -290,27 +292,6 @@ public enum UnifiedMemoryCap {
         let realFree = min(underCap, systemAvailableBytes)
         let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
         return realFree > activations ? realFree - activations : 0
-    }
-
-    /// Whether a new model of `candidateWeightBytes` may be admitted while
-    /// `currentResidentWeightBytes` are already resident, leaving at least
-    /// `minimumKVBytes` of KV headroom under the cap (a model that loads with no
-    /// room to serve any KV is useless). Pure check; eviction is the caller's job.
-    public static func canAdmit(
-        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
-        currentResidentWeightBytes: UInt64,
-        candidateWeightBytes: UInt64,
-        minimumKVBytes: UInt64,
-        activationReserveBytes: UInt64? = nil,
-        ramPrefixAllowanceBytes: UInt64 = 0,
-        capFraction: Double? = nil
-    ) -> Bool {
-        let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
-        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
-        let need = saturatingAdd(
-            currentResidentWeightBytes, candidateWeightBytes,
-            activations, ramPrefixAllowanceBytes, minimumKVBytes)
-        return need <= cap
     }
 
     /// Effective reserve (bytes) the model-LOAD gate must hold back below total

@@ -219,7 +219,7 @@ func TestAppAttestAuthorizationQueueAndRetry(t *testing.T) {
 	if err := r.Queue().Enqueue(queued); err != nil {
 		t.Fatal(err)
 	}
-	r.DrainQueuedRequestsForProvider(p)
+	r.DrainQueuedRequestsForProviderWithReason(p, DrainTriggerUnknown)
 	select {
 	case <-queued.ResponseCh:
 		t.Fatal("unverified queue dispatch")

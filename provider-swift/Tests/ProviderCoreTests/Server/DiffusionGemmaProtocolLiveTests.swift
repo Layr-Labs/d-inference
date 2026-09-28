@@ -28,7 +28,6 @@ struct DiffusionGemmaProtocolLiveTests {
         let selected = try #require(selectedPath)
         try #require(directory.appendingPathComponent("config.json").resolvingSymlinksInPath()
             == URL(fileURLWithPath: selected).appendingPathComponent("config.json").resolvingSymlinksInPath())
-        try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
         _ = Bundle(for: DiffusionProtocolBundleAnchor.self).bundleURL
         let model = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: modelID))
         let token = UUID().uuidString + UUID().uuidString

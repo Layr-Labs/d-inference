@@ -55,7 +55,6 @@ struct WeightHashCacheEligibilityTests {
             modelHashFingerprints: [modelID: fingerprint])
         return try ProviderLoop(
             config: config,
-            purgeLegacyFiles: false,
             attestationSigner: nil)
     }
 

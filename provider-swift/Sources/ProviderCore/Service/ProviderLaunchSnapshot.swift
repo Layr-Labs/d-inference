@@ -27,12 +27,9 @@ public struct ProviderLaunchSnapshot: Codable, Sendable, Equatable {
 
 extension LaunchAgent {
     public static func launchSnapshot() -> ProviderLaunchSnapshot? {
-        for label in supportedLabels {
-            let output = LaunchctlControl.printOutput(label: label)
-            guard output.succeeded else { continue }
-            return parseLaunchSnapshot(label: label, output: output.stdout)
-        }
-        return nil
+        let output = LaunchctlControl.printOutput(label: label)
+        guard output.succeeded else { return nil }
+        return parseLaunchSnapshot(label: label, output: output.stdout)
     }
 
     static func parseLaunchSnapshot(

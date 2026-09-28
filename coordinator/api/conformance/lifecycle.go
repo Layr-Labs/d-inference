@@ -115,7 +115,7 @@ func (s Suite) TestOpenRouterConformanceClientError(t *testing.T) {
 	ch, cancel := f.startChat(f.keys[orAccount], true, nil)
 	defer cancel()
 	p, r := orNextEither(t, f, a, b)
-	p.failure(r, 400, "", "")
+	p.failure(r, 400, protocol.FailureCodeInvalidRequest, "")
 	result := f.response(ch)
 	body := orReadBody(t, result.resp)
 	if result.resp.StatusCode != 400 || !json.Valid(body) || a.count.Load()+b.count.Load() != 1 {
@@ -214,11 +214,21 @@ func (s Suite) TestOpenRouterConformanceTools(t *testing.T) {
 	for _, supported := range []bool{false, true} {
 		t.Run(fmt.Sprintf("supported_%t", supported), func(t *testing.T) {
 			f := s.newORFixture(t, true)
-			version := "0.5.16"
-			if supported {
-				version = "0.8.15"
-			}
-			p := f.provider(version)
+			p := f.provider("0.9.5")
+			// Current providers are fenced by the real per-model template
+			// verdict, not the retired pre-0.9.5 version heuristics.
+			p.write(protocol.ModelsUpdateMessage{Type: protocol.TypeModelsUpdate, Models: []protocol.ModelInfo{{ID: f.model, WeightHash: testHash, ModelType: "chat", Quantization: "4bit", TemplateRenderOK: &supported}}})
+			orEventually(t, func() bool {
+				rp := f.srv.Registry.GetProvider(p.id)
+				rp.Mu().Lock()
+				defer rp.Mu().Unlock()
+				for _, m := range rp.Models {
+					if m.ID == f.model && m.TemplateRenderOK != nil {
+						return *m.TemplateRenderOK == supported
+					}
+				}
+				return false
+			}, "template capability advertisement")
 			extra := map[string]any{"tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "fixture_tool", "parameters": map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}}}}}}
 			ch, cancel := f.startChat(f.keys[orAccount], false, extra)
 			defer cancel()

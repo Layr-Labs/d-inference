@@ -7,7 +7,8 @@ import {
   upstreamOk,
 } from "./helpers/route-harness";
 
-// Proxy tests for the payments + invite route handlers.
+// Proxy tests for the payments + invite route handlers. The Stripe routes
+// share one adapter and are covered table-driven in stripe-proxy-contracts.test.ts.
 
 const upstream = stubUpstreamFetch();
 
@@ -76,52 +77,6 @@ describe("GET /api/payments/balance", () => {
 
     const [upstreamUrl] = upstream.fetch.mock.calls[0];
     expect(upstreamUrl).toContain("/v1/payments/balance");
-  });
-});
-
-describe("POST /api/payments/stripe/checkout", () => {
-  it("forwards body and auth to coordinator /v1/billing/stripe/create-session", async () => {
-    upstream.fetch.mockResolvedValueOnce(
-      upstreamOk({ url: "https://checkout.stripe.com/session/123", session_id: "cs_123" })
-    );
-
-    const { POST } = await import("@/app/api/payments/stripe/checkout/route");
-    const req = makeRequest("/api/payments/stripe/checkout", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        authorization: "Bearer privy-token-123",
-      },
-      body: JSON.stringify({ amount_usd: "10" }),
-    });
-    const res = await POST(req);
-
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.url).toBe("https://checkout.stripe.com/session/123");
-
-    const [upstreamUrl, upstreamOpts] = upstream.fetch.mock.calls[0];
-    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/billing/stripe/create-session`);
-    expect(upstreamOpts.method).toBe("POST");
-    expect(upstreamOpts.headers["Content-Type"]).toBe("application/json");
-    expect(upstreamOpts.headers.Authorization).toBe("Bearer privy-token-123");
-    expect(JSON.parse(upstreamOpts.body)).toEqual({ amount_usd: "10" });
-  });
-
-  it("returns error on upstream failure", async () => {
-    upstream.fetch.mockResolvedValueOnce(upstreamError(400, "bad request"));
-
-    const { POST } = await import("@/app/api/payments/stripe/checkout/route");
-    const req = makeRequest("/api/payments/stripe/checkout", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ amount_usd: "-1" }),
-    });
-    const res = await POST(req);
-
-    expect(res.status).toBe(400);
-    const data = await res.json();
-    expect(data.error).toBe("bad request");
   });
 });
 

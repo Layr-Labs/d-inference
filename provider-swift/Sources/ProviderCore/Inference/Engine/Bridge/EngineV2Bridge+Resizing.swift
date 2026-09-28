@@ -90,7 +90,6 @@ extension EngineV2Bridge {
 
     /// Publish changes in raw pool/grant bytes, never an occupancy ratio.
     /// WARN while a shortfall exists and INFO when the grant becomes exact.
-    /// All three byte fields are mirrored in the telemetry wire allowlists.
     private func publishPagedPoolResizeShortfall(_ shortfall: PagedPoolResizeShortfall) {
         guard shortfall != lastPagedShortfallEmitted else { return }
         // Nothing to report when a slot has been exact all along.

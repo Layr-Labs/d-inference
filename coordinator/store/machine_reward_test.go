@@ -63,6 +63,12 @@ func TestMachineFloorSettlementPreservesOldKeysAndMergeIdempotency(t *testing.T)
 			inventory, _ := As[MachineInventoryStore](backend)
 			rewards, _ := As[MachineRewardStore](backend)
 			now := time.Now()
+			// The legacy floor was paid under the raw endpoint key before any
+			// machine inventory bound that key.
+			legacy := &ProviderFloorDraw{ProviderKey: "original-encryption-key", AccountID: "owner", EpochID: "legacy-epoch", AmountMicroUSD: 123}
+			if !settleFloorDraw(t, backend, legacy) {
+				t.Fatal("legacy setup was not credited")
+			}
 			first, err := inventory.ObserveMachine(ctx, MachineObservation{SessionID: "old", AccountID: "owner", SEKey: "se", VerifiedAppAttestKey: "apple", At: now})
 			if err != nil {
 				t.Fatal(err)
@@ -72,10 +78,6 @@ func TestMachineFloorSettlementPreservesOldKeysAndMergeIdempotency(t *testing.T)
 			}
 			if err := backend.TouchProviderSession(ctx, "old", "", "owner", "original-encryption-key", now); err != nil {
 				t.Fatal(err)
-			}
-			legacy := &ProviderFloorDraw{ProviderKey: "original-encryption-key", AccountID: "owner", EpochID: "legacy-epoch", AmountMicroUSD: 123}
-			if paid, err := backend.SettleProviderFloorDraw(ctx, legacy); err != nil || !paid {
-				t.Fatalf("legacy setup %v %v", paid, err)
 			}
 			before := backend.LedgerHistory("owner")
 			if paid, err := rewards.SettleMachineFloorDraw(ctx, first.ID, legacy); err != nil || paid {
@@ -88,8 +90,10 @@ func TestMachineFloorSettlementPreservesOldKeysAndMergeIdempotency(t *testing.T)
 			if paid, err := rewards.SettleMachineFloorDraw(ctx, first.ID, canonicalFirst); err != nil || !paid {
 				t.Fatalf("canonical-first setup: %v %v", paid, err)
 			}
-			if paid, err := rewards.SettleProviderFloorDrawForSession(ctx, "old", canonicalFirst); err != nil || paid {
-				t.Fatalf("stale raw key paid after canonical floor: %v %v", paid, err)
+			batch, _ := As[FloorDrawBatchStore](backend)
+			stale, err := batch.SettleProviderFloorDrawBatch(ctx, []FloorDrawBatchItem{{SessionID: "old", Draw: *canonicalFirst}}, func(int) bool { return true })
+			if err != nil || stale.Committed || len(stale.Rejections) != 1 || stale.Rejections[0].Reason != FloorDrawAlreadyPaid {
+				t.Fatalf("stale raw key paid after canonical floor: %+v %v", stale, err)
 			}
 			second, err := inventory.ObserveMachine(ctx, MachineObservation{SessionID: "new", AccountID: "owner", SEKey: "new-se", At: now})
 			if err != nil {

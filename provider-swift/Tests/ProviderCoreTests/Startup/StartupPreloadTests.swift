@@ -154,7 +154,9 @@ struct StartupPreloaderTests {
         let recorder = PreloadRecorder()
         // 8 GB free: the 30 GB model must be skipped WITHOUT evicting anything;
         // the smaller ones still load.
-        let preloader = StartupPreloader(deps: makeDeps(recorder: recorder, freeMemoryGb: 8))
+        var deps = makeDeps(recorder: recorder, freeMemoryGb: 8)
+        deps.onInsufficientMemory = { recorder.recordLog("public memory warning") }
+        let preloader = StartupPreloader(deps: deps)
 
         let summary = await preloader.run(candidates: [
             candidate("big-26b", requiredGb: 30),
@@ -167,6 +169,7 @@ struct StartupPreloaderTests {
         #expect(summary.loaded == ["mid-8b", "small-1b"])
         let warns = recorder.logs.filter { $0.contains("WARN") && $0.contains("big-26b") }
         #expect(!warns.isEmpty)
+        #expect(recorder.logs.filter { $0 == "public memory warning" }.count == 1)
     }
 
     @Test("a skipped candidate does not consume the live slot limit")
@@ -201,6 +204,41 @@ struct StartupPreloaderTests {
         #expect(summary.failed == ["broken"])
         #expect(summary.loaded == ["healthy"])
         #expect(recorder.loads == ["broken", "healthy"])
+    }
+
+    @Test("authoritative no-eviction refusal emits the public memory warning")
+    func lateMemoryRefusalWarnsPublicly() async {
+        for message in [
+            "Insufficient memory (8.0 GB free, need 24.7 GB) to load without evicting resident models",
+            "Insufficient memory for 'raced' at final load admission",
+            "Insufficient memory for 'raced' at allocation: load headroom changed",
+            "Model 'raced' loaded but has insufficient KV headroom under the memory cap (0.1 GB free, need 1.0 GB to serve) — unloaded",
+            "Model 'raced' loaded but its engine build left insufficient KV headroom under the memory cap (0.1 GB free) — unloaded",
+            "loading 'raced' would re-slice some model's KV grant below the 1.0 GB serviceability floor (fleet KV budget 123 B across 2 slots) — refused",
+            "Model 'raced' MTP fallback engine construction failed: model load failed: loading 'raced' would re-slice some model's KV grant below the 1.0 GB serviceability floor (fleet KV budget 123 B across 2 slots) — refused — unloaded",
+        ] {
+            let recorder = PreloadRecorder()
+            var deps = makeDeps(
+                recorder: recorder,
+                loadError: { id in id == "raced" ? InferenceError.modelLoadFailed(message) : nil })
+            deps.onInsufficientMemory = { recorder.recordLog("public memory warning") }
+            let summary = await StartupPreloader(deps: deps).run(candidates: [candidate("raced")])
+            #expect(summary.failed == ["raced"])
+            #expect(recorder.logs.filter { $0 == "public memory warning" }.count == 1)
+        }
+    }
+
+    @Test("non-memory load failures do not emit the public memory warning")
+    func nonMemoryLoadFailureKeepsWarningClosed() async {
+        let recorder = PreloadRecorder()
+        var deps = makeDeps(
+            recorder: recorder,
+            loadError: { id in id == "broken" ? InferenceError.modelLoadFailed(
+                "Model 'broken' MTP fallback engine construction failed: invalid tokenizer — unloaded") : nil })
+        deps.onInsufficientMemory = { recorder.recordLog("public memory warning") }
+        let summary = await StartupPreloader(deps: deps).run(candidates: [candidate("broken")])
+        #expect(summary.failed == ["broken"])
+        #expect(!recorder.logs.contains("public memory warning"))
     }
 
     @Test("self-test runs once per LOADED model, not for skipped/failed ones")
@@ -325,7 +363,7 @@ private func makePreloadLoop(
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    let loop = try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    let loop = try ProviderLoop(config: config, attestationSigner: nil)
     if let loadedModelsFile {
         await loop.setLoadedModelsFileForTesting(loadedModelsFile)
     } else {
@@ -620,6 +658,8 @@ struct StartupPreloadGateTests {
         #expect(outcome == .timedOut)
         #expect(recorder.loads.isEmpty)
         #expect(DaemonStateFile.read(from: stateFile)?.startupPreloadPendingModels == ["a"])
+        #expect(DaemonStateFile.read(from: stateFile)?.capacity == nil)
+        #expect(DaemonStateFile.read(from: stateFile)?.loadTransitionActive == true)
 
         // The driver keeps warming in the background after the gate released.
         releaseLoad.signal()
@@ -638,6 +678,7 @@ struct StartupPreloadGateTests {
         }
         #expect(await loop.startupPreloadTaskRunningForTesting() == false)
         #expect(DaemonStateFile.read(from: stateFile)?.startupPreloadPendingModels == [])
+        #expect(DaemonStateFile.read(from: stateFile)?.loadTransitionActive == false)
     }
 
     @Test("fail-closed self-test failure retires the model from the advertised set")
@@ -842,7 +883,7 @@ struct StartupPreloadNoEvictTests {
 
         let loop = try await makePreloadLoop(
             models: [preloadModelInfo(fakeId, memoryGb: 0.01)],
-            backend: BackendSettings(maxModelSlots: 3, mtp: true))
+            backend: BackendSettings(maxModelSlots: 3, mtpMode: .on))
         let gate = PreloadRaceGateCatalog()
         await loop.setSpecDecFunnelForTesting(SpecDecArtifactFunnel(
             resolver: SpecDecResolver(), catalog: gate))

@@ -18,7 +18,7 @@ struct Qwen4ReclaimAdmissionTests {
                            sizeBytes: 1 << 30, estimatedMemoryGb: 1)],
             config: .init(provider: .init(name: "reclaim-admission-test"),
                           backend: .init(idleTimeoutMins: 0, maxModelSlots: 1))),
-            purgeLegacyFiles: false, attestationSigner: nil)
+            attestationSigner: nil)
     }
 
     @Test func genuineShortageStillRefusesAfterWindowExpires() async throws {

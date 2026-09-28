@@ -7,9 +7,9 @@
 ///   * `signal(2)` on SIGSEGV / SIGBUS / SIGILL / SIGABRT -- catches
 ///     hard crashes from misaligned memory, traps, and `fatalError`.
 ///
-/// Both paths converge on `recordPanic(...)`, whose production telemetry calls
-/// are privacy-disabled no-ops, then re-raise with the default handler so
-/// launchd / CrashReporter sees the real exit status.
+/// Both paths converge on `recordPanic(...)`, which writes a fixed stderr
+/// marker (client telemetry is privacy-disabled), then re-raise with the
+/// default handler so launchd / CrashReporter sees the real exit status.
 
 import Foundation
 #if canImport(Darwin)
@@ -34,15 +34,13 @@ public enum PanicHook {
                 _ = signal(signo, panicSignalHandler)
             }
 
-            NSSetUncaughtExceptionHandler { exception in
+            NSSetUncaughtExceptionHandler { _ in
                 recordPanic(
                     kind: "uncaught_exception",
                     // Objective-C exception reasons can embed request values
                     // (for example invalid media URLs or template arguments).
-                    // Keep only the fixed category; the call stack retains the
-                    // actionable code location without persisting plaintext.
-                    message: "uncaught Objective-C exception",
-                    stack: exception.callStackSymbols.joined(separator: "\n")
+                    // Keep only the fixed category.
+                    message: "uncaught Objective-C exception"
                 )
             }
         }
@@ -52,8 +50,8 @@ public enum PanicHook {
 // MARK: - Signal handler
 
 /// C-callable signal handler. Must be `@convention(c)` and only call
-/// async-signal-safe functions in principle. We call into Swift telemetry
-/// here -- technically unsafe -- but the alternative is a silent crash.
+/// async-signal-safe functions in principle. We format a Swift string here --
+/// technically unsafe -- but the alternative is a silent crash.
 private func panicSignalHandler(_ signo: Int32) {
     let name: String
     switch signo {
@@ -65,8 +63,7 @@ private func panicSignalHandler(_ signo: Int32) {
     default:      name = "signal_\(signo)"
     }
 
-    let stack = Thread.callStackSymbols.joined(separator: "\n")
-    recordPanic(kind: "signal", message: name, stack: stack)
+    recordPanic(kind: "signal", message: name)
 
     // Restore the default handler and re-raise so the process exits with the
     // real status and Apple's CrashReporter still gets to write its report.
@@ -76,22 +73,7 @@ private func panicSignalHandler(_ signo: Int32) {
 
 // MARK: - Recording
 
-private func recordPanic(kind: String, message: String, stack: String) {
-    let truncatedStack = String(stack.prefix(8000))
-
-    var event = TelemetryEvent(
-        source: .provider,
-        severity: .fatal,
-        kind: .panic,
-        message: "[\(kind)] \(message)"
-    )
-    event.stack = truncatedStack
-
-    // Production client telemetry is disabled; both compatibility calls are
-    // no-ops. Legacy disk cleanup already ran under the media-serving lock.
-    TelemetryOverflowQueue.shared.push(event)
-    TelemetryClient.shared.shutdownSync()
-
+private func recordPanic(kind: String, message: String) {
     // Best-effort fixed marker on stderr so the launchd log captures it next to
     //    any `darkbloom logs --watch` viewer.
     let line = "\(panicISO8601Now()) FATAL panic kind=\(kind) message=\(message)\n"

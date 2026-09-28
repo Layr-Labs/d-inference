@@ -107,6 +107,9 @@ public enum CoordinatorEvent: Sendable {
         cacheScope: String?,
         prefixCacheProtocol: Int?,
         cacheReceiptBoundaryMode: String? = nil,
+        /// Coordinator-observed fleet-wide repeat demand (token count); nil
+        /// from an older coordinator. See `InferenceRequest.cacheRepeatedPrefixTokens`.
+        cacheRepeatedPrefixTokens: Int? = nil,
         toolSchemaMetadataProtocol: Int?,
         firstContentDeadline: FirstContentDeadline?,
         receivedAt: ContinuousClock.Instant,
@@ -148,7 +151,6 @@ public struct CoordinatorClientConfig: Sendable {
     public let backendName: String
     public let heartbeatInterval: TimeInterval
     public let publicKey: String?
-    public let walletAddress: String?
     public let attestation: RawJSON?
     /// Called for every WebSocket registration, including reconnects. Production
     /// re-signs a fresh timestamp while preserving the same bound claims.
@@ -179,7 +181,6 @@ public struct CoordinatorClientConfig: Sendable {
         backendName: String,
         heartbeatInterval: TimeInterval = 30.0,
         publicKey: String? = nil,
-        walletAddress: String? = nil,
         attestation: RawJSON? = nil,
         registrationAttestation: (@Sendable () -> RawJSON?)? = nil,
         authToken: String? = nil,
@@ -198,7 +199,6 @@ public struct CoordinatorClientConfig: Sendable {
         self.backendName = backendName
         self.heartbeatInterval = heartbeatInterval
         self.publicKey = publicKey
-        self.walletAddress = walletAddress
         self.attestation = attestation
         self.registrationAttestation = registrationAttestation ?? { attestation }
         self.authToken = authToken
@@ -214,17 +214,11 @@ public struct CoordinatorClientConfig: Sendable {
 }
 
 public struct RuntimeHashes: Sendable {
-    public let pythonHash: String?
-    public let runtimeHash: String?
     public let templateHashes: [String: String]
 
     public init(
-        pythonHash: String? = nil,
-        runtimeHash: String? = nil,
         templateHashes: [String: String] = [:]
     ) {
-        self.pythonHash = pythonHash
-        self.runtimeHash = runtimeHash
         self.templateHashes = templateHashes
     }
 }
@@ -319,8 +313,6 @@ public struct AttestationResponsePayload: Sendable {
     public let secureBootEnabled: Bool?
     public let binaryHash: String?
     public let activeModelHash: String?
-    public let pythonHash: String?
-    public let runtimeHash: String?
     public let templateHashes: [String: String]
     public let modelHashes: [String: String]
 
@@ -334,8 +326,6 @@ public struct AttestationResponsePayload: Sendable {
         secureBootEnabled: Bool? = nil,
         binaryHash: String? = nil,
         activeModelHash: String? = nil,
-        pythonHash: String? = nil,
-        runtimeHash: String? = nil,
         templateHashes: [String: String] = [:],
         modelHashes: [String: String] = [:]
     ) {
@@ -348,8 +338,6 @@ public struct AttestationResponsePayload: Sendable {
         self.secureBootEnabled = secureBootEnabled
         self.binaryHash = binaryHash
         self.activeModelHash = activeModelHash
-        self.pythonHash = pythonHash
-        self.runtimeHash = runtimeHash
         self.templateHashes = templateHashes
         self.modelHashes = modelHashes
     }

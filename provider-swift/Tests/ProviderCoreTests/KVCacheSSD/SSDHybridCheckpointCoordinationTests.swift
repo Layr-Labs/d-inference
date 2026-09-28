@@ -132,14 +132,15 @@ struct SSDHybridCheckpointCoordinationTests {
         #expect(FileManager.default.fileExists(atPath: file.path))
     }
 
-    @Test("queued reads recheck TTL and epoch before I/O", arguments: [false, true])
-    func queuedValidity(epochChange: Bool) async throws {
+    @Test("queued reads recheck TTL and index membership before I/O", arguments: [false, true])
+    func queuedValidity(removal: Bool) async throws {
         let fixture = try SSDHybridCheckpointTestFixture()
         defer { fixture.remove() }
         let store = try fixture.makeStore()
         defer { store.close() }
         #expect(try await fixture.donate(store) == [256])
         let file = fixture.file(store)
+        let epoch = try #require(store.config.epochStore?.current)
         let owner = store.fileCoordinator.makeAccess(to: file)
         try await owner.acquire()
         defer { owner.release() }
@@ -149,13 +150,23 @@ struct SSDHybridCheckpointCoordinationTests {
         }
         defer { stage.cancel() }
         try await SSDCheckpointCoordinationTestSupport.waitUntil { store.fileCoordinator.pendingCount(for: file) == 1 }
-        if epochChange {
-            #expect(store.performExternalDestructiveChange({}))
+        if removal {
+            // A whole-root removal of the queued file reconciles the index
+            // before the barrier lifts; the epoch is untouched, so the reader
+            // sees an ordinary miss rather than a suppressed cache.
+            var unlinked = false
+            #expect(store.performExternalDestructiveChange {
+                unlinked = SSDBlockStore.removeItemIfSafe(at: file, under: fixture.root)
+            })
+            #expect(unlinked)
+            #expect(store.index.count == 0)
         } else {
             store.index.touch(tags16: store.index.allTags(), now: 1)
         }
         owner.release()
-        #expect(await stage.value.disposition == (epochChange ? .skippedPolicy : .missAbsent))
+        #expect(await stage.value.disposition == .missAbsent)
+        #expect(store.config.epochStore?.current == epoch)
+        #expect(store.prefixCacheV2Capability()?.cacheEpoch == epoch)
         #expect(store.stats().filesRead == 0)
         #expect(store.stats().corruptDropped == 0)
         await store.closeAndWait()

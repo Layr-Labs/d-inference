@@ -112,13 +112,17 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                             removed.insert(file.url.standardizedFileURL.path)
                         }
                     }
+                    // Neither path rotates the model's cache epoch: an active
+                    // store serializes the unlink with its own removals and
+                    // reconciles its index; an unloaded root only needs the
+                    // epoch record validated under the initialization lock.
                     let completed =
                         SSDDiskBudget.shared.performActiveDestructiveChange(
                             root: modelRoot, mutation)
                         ?? SSDCacheEpochStore.performUnloadedDestructiveChange(
                             root: modelRoot, mutation)
                     if !completed {
-                        // The body never runs unless its epoch barrier succeeds.
+                        // The body never runs unless its maintenance barrier succeeds.
                         continue
                     }
                 }

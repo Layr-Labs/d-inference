@@ -46,13 +46,12 @@ private func modelCacheLocationProblem(_ directory: URL) -> String? {
 @discardableResult
 func setModelCacheLocation(
     _ directory: URL?,
-    configPath: String?,
-    migrateOnDisk: Bool = true
+    configPath: String?
 ) throws -> (path: URL, changed: Bool) {
     if let directory, let problem = modelCacheLocationProblem(directory) {
         throw ValidationError(problem)
     }
-    return try withMutableConfig(configPath: configPath, migrateOnDisk: migrateOnDisk) { savePath, config in
+    return try withMutableConfig(configPath: configPath) { savePath, config in
         guard config.backend.modelCacheDirectory != directory?.path else {
             return (savePath, false)
         }

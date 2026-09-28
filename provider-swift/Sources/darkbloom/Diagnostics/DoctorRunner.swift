@@ -99,6 +99,9 @@ enum DoctorRunner {
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----
         if let hw = snapshot.hardware {
+            let loadSnapshotFresh = stateFresh && (state?.ageSeconds(now: now) ?? .infinity)
+                <= KVBackendPosture.staleAfterSeconds(
+                    heartbeatIntervalSecs: snapshot.config.coordinator.heartbeatIntervalSecs)
             // Mirror the provider's REAL load gate via ModelFitDiagnostic →
             // ModelLoadAdmission: clamp to live OS-available memory and subtract
             // the OS reserve + resident MLX memory, not raw total−reserve —
@@ -110,19 +113,23 @@ enum DoctorRunner {
             let gpuCacheGb = (stateFresh ? state?.capacity?.gpuMemoryCacheGb : nil) ?? 0
             let bytesPerGb = 1024.0 * 1024.0 * 1024.0
             let systemAvailableGb = SystemMemory.availableBytes().map { Double($0) / bytesPerGb }
-            let usableGb = ModelFitDiagnostic.usableInferenceGb(
+            let independentlySampledUsableGb = ModelFitDiagnostic.usableInferenceGb(
                 totalGb: Double(hw.memoryGb),
                 reserveGb: Double(snapshot.config.provider.memoryReserveGB),
                 systemAvailableGb: systemAvailableGb,
                 gpuActiveGb: gpuActiveGb,
                 gpuCacheGb: gpuCacheGb)
-
-            // Prefer the live loaded model ONLY when the daemon is up and fresh;
-            // otherwise diagnose the CONFIGURED model. A stale state file (daemon
-            // stopped/crashed, then provider.toml changed to a larger model)
-            // would otherwise check last session's model and miss the new misfit.
-            let liveModel = stateFresh ? state?.currentModel : nil
-            let targetID = liveModel ?? snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first
+            // A fresh daemon snapshot is the same no-eviction load gate that
+            // decided startup preload. Prefer it over a second-process sample
+            // so doctor, status and My Macs explain the same decision.
+            let liveLoadBudget = loadSnapshotFresh ? state?.capacity : nil
+            // Use the daemon's usable and headroom fields as one pair: a
+            // CLI-side reserve override can differ from the serving process.
+            let hasLiveLoadPair = liveLoadBudget?.loadUsableGb != nil
+                && liveLoadBudget?.loadHeadroomGb != nil
+            let usableGb = hasLiveLoadPair
+                ? (liveLoadBudget?.loadUsableGb ?? independentlySampledUsableGb)
+                : independentlySampledUsableGb
 
             // Use the UNFILTERED model list: ModelScanner.scanModels drops models
             // too large for this box, so a too-large CONFIGURED model would be
@@ -132,6 +139,9 @@ enum DoctorRunner {
             let alternatives = allModels.map {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
             }
+            let targets = DoctorModelSelection.diagnosticTargets(
+                state: state, stateFresh: stateFresh, localModels: alternatives,
+                fallback: snapshot.config.backend.model ?? snapshot.config.backend.enabledModels.first)
             // The daemon's load gate holds the max activation floor over its
             // WHOLE serving set — mirror the daemon's ADVERTISE basis, not
             // the raw scan: the daemon selects from the memory-filtered
@@ -172,9 +182,10 @@ enum DoctorRunner {
                     ? daemonBasis.map(\.id)
                     : daemonBasis.map(\.id).filter(enabled.contains)
             }
-            if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
+            for target in targets {
+                let targetID = target.id
                 out.append(ModelFitDiagnostic.diagnose(
-                    modelID: targetID, weightGb: target.estimatedMemoryGb,
+                    modelID: targetID, weightGb: target.weightGb,
                     usableGb: usableGb, alternatives: alternatives,
                     // A LIVE empty set is authoritative (the daemon retired
                     // everything) and must reach the verdict as [] — the
@@ -183,14 +194,16 @@ enum DoctorRunner {
                     // offline reconstruction treats empty as "unknown".
                     servingSetIDs: servingSetIsLive
                         ? servingSetIDs
-                        : (servingSetIDs.isEmpty ? nil : servingSetIDs)))
-            } else if !alternatives.isEmpty {
-                // No specific/known target; check the largest local model fits.
-                if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {
-                    out.append(ModelFitDiagnostic.diagnose(
-                        modelID: biggest.id, weightGb: biggest.weightGb,
-                        usableGb: usableGb, alternatives: alternatives))
-                }
+                        : (servingSetIDs.isEmpty ? nil : servingSetIDs),
+                    alreadyResident: loadSnapshotFresh && state.map {
+                        DoctorModelSelection.isResident(targetID, state: $0)
+                    } == true,
+                    evictionAwareWeightGb: hasLiveLoadPair ? liveLoadBudget?.freeForLoadGb : nil,
+                    loadHeadroomGb: hasLiveLoadPair ? liveLoadBudget?.loadHeadroomGb : nil,
+                    busyServing: loadSnapshotFresh &&
+                        (state?.inferenceActive == true || state?.requestWorkPending == true
+                            || state?.loadTransitionActive == true
+                            || state?.capacity?.loadTransitionActive == true)))
             }
         }
 

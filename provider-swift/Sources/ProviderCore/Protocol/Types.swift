@@ -456,8 +456,6 @@ public struct EncryptedPayload: Codable, Sendable, Equatable {
 public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public var textBackendInprocess: Bool
     public var textProxyDisabled: Bool
-    public var pythonRuntimeLocked: Bool
-    public var dangerousModulesBlocked: Bool
     public var sipEnabled: Bool
     public var antiDebugEnabled: Bool
     public var coreDumpsDisabled: Bool
@@ -466,8 +464,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case textBackendInprocess = "text_backend_inprocess"
         case textProxyDisabled = "text_proxy_disabled"
-        case pythonRuntimeLocked = "python_runtime_locked"
-        case dangerousModulesBlocked = "dangerous_modules_blocked"
         case sipEnabled = "sip_enabled"
         case antiDebugEnabled = "anti_debug_enabled"
         case coreDumpsDisabled = "core_dumps_disabled"
@@ -477,8 +473,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public init(
         textBackendInprocess: Bool,
         textProxyDisabled: Bool,
-        pythonRuntimeLocked: Bool,
-        dangerousModulesBlocked: Bool,
         sipEnabled: Bool,
         antiDebugEnabled: Bool,
         coreDumpsDisabled: Bool,
@@ -486,8 +480,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     ) {
         self.textBackendInprocess = textBackendInprocess
         self.textProxyDisabled = textProxyDisabled
-        self.pythonRuntimeLocked = pythonRuntimeLocked
-        self.dangerousModulesBlocked = dangerousModulesBlocked
         self.sipEnabled = sipEnabled
         self.antiDebugEnabled = antiDebugEnabled
         self.coreDumpsDisabled = coreDumpsDisabled
@@ -850,6 +842,18 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     /// re-deriving free memory from the gpu/total figures. 0 means "cannot load
     /// anything new right now".
     public var freeForLoadGb: Double
+    /// Current no-eviction load gate, before activation and minimum-KV
+    /// headroom. Unlike freeForLoadGb this never credits resident slots as
+    /// reclaimable, so an owner can explain why startup preload skipped a
+    /// cold model. Absent on older providers.
+    public var loadUsableGb: Double?
+    /// The serving set's resolved activation plus minimum-KV allowance.
+    /// A model needs estimated_memory_gb + this amount of loadUsableGb.
+    public var loadHeadroomGb: Double?
+    /// A model load or related load-gate transition is still in flight. Its
+    /// memory reservation can make a cold-load snapshot look temporarily short.
+    /// Absent on older providers.
+    public var loadTransitionActive: Bool?
     /// Optional so coordinators and tooling can distinguish providers with the
     /// reclaimer instrumentation from older providers whose counters are unknown.
     public var mlxCacheReclaimer: MLXCacheReclaimerTelemetry?
@@ -873,6 +877,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         case gpuMemoryCacheGb = "gpu_memory_cache_gb"
         case totalMemoryGb = "total_memory_gb"
         case freeForLoadGb = "free_for_load_gb"
+        case loadUsableGb = "load_usable_gb"
+        case loadHeadroomGb = "load_headroom_gb"
+        case loadTransitionActive = "load_transition_active"
         case mlxCacheReclaimer = "mlx_cache_reclaimer"
         case capacitySeq = "capacity_seq"
         case telemetry
@@ -886,6 +893,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         gpuMemoryCacheGb: Double,
         totalMemoryGb: Double,
         freeForLoadGb: Double = 0,
+        loadUsableGb: Double? = nil,
+        loadHeadroomGb: Double? = nil,
+        loadTransitionActive: Bool? = nil,
         mlxCacheReclaimer: MLXCacheReclaimerTelemetry? = nil,
         capacitySeq: UInt64 = 0,
         telemetry: CapacityTelemetry? = nil,
@@ -897,6 +907,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.gpuMemoryCacheGb = gpuMemoryCacheGb
         self.totalMemoryGb = totalMemoryGb
         self.freeForLoadGb = freeForLoadGb
+        self.loadUsableGb = loadUsableGb
+        self.loadHeadroomGb = loadHeadroomGb
+        self.loadTransitionActive = loadTransitionActive
         self.mlxCacheReclaimer = mlxCacheReclaimer
         self.capacitySeq = capacitySeq
         self.telemetry = telemetry
@@ -913,6 +926,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.gpuMemoryCacheGb = try c.decode(Double.self, forKey: .gpuMemoryCacheGb)
         self.totalMemoryGb = try c.decode(Double.self, forKey: .totalMemoryGb)
         self.freeForLoadGb = try c.decodeIfPresent(Double.self, forKey: .freeForLoadGb) ?? 0
+        self.loadUsableGb = try c.decodeIfPresent(Double.self, forKey: .loadUsableGb)
+        self.loadHeadroomGb = try c.decodeIfPresent(Double.self, forKey: .loadHeadroomGb)
+        self.loadTransitionActive = try c.decodeIfPresent(Bool.self, forKey: .loadTransitionActive)
         self.mlxCacheReclaimer = try c.decodeIfPresent(
             MLXCacheReclaimerTelemetry.self, forKey: .mlxCacheReclaimer)
         self.telemetry = try c.decodeIfPresent(CapacityTelemetry.self, forKey: .telemetry)
@@ -931,6 +947,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         try c.encode(gpuMemoryCacheGb, forKey: .gpuMemoryCacheGb)
         try c.encode(totalMemoryGb, forKey: .totalMemoryGb)
         try c.encode(freeForLoadGb, forKey: .freeForLoadGb)
+        try c.encodeIfPresent(loadUsableGb, forKey: .loadUsableGb)
+        try c.encodeIfPresent(loadHeadroomGb, forKey: .loadHeadroomGb)
+        try c.encodeIfPresent(loadTransitionActive, forKey: .loadTransitionActive)
         try c.encodeIfPresent(mlxCacheReclaimer, forKey: .mlxCacheReclaimer)
         if capacitySeq != 0 {
             try c.encode(capacitySeq, forKey: .capacitySeq)

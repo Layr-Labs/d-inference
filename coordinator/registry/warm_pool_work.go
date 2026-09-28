@@ -53,16 +53,18 @@ func (m warmWorkMean) measured(now time.Time) bool {
 
 // Caller holds p.mu and has already rejected stale capacity sequences. Each
 // new slot epoch starts with a baseline: old work with unknown age cannot be
-// presented as fresh load. Missing capacity, eviction and decreases also reset.
-func (p *Provider) reconcileWarmPoolWorkLocked(capacity *protocol.BackendCapacity, now time.Time, c *warmPoolController) {
-	if capacity == nil || c == nil {
+// presented as fresh load. Missing capacity, eviction, decreases and loss of
+// public routing eligibility also reset. Eligible models were captured under
+// r.mu and p.mu, which remains held through reconciliation.
+func (p *Provider) reconcileWarmPoolWorkLocked(capacity *protocol.BackendCapacity, now time.Time, c *warmPoolController, eligible map[string]bool) {
+	if capacity == nil || c == nil || len(eligible) == 0 {
 		p.warmWorkCounters = nil
 		return
 	}
 	next := make(map[string]warmWorkCounters, len(capacity.Slots))
 	for _, slot := range capacity.Slots {
 		t := slot.Telemetry
-		if !slotStateModelLoaded(slot.State) || t == nil || slot.PerformanceMeasurements == nil || slot.PerformanceMeasurements.Epoch == "" ||
+		if !eligible[slot.Model] || !slotStateModelLoaded(slot.State) || t == nil || slot.PerformanceMeasurements == nil || slot.PerformanceMeasurements.Epoch == "" ||
 			t.PrefillTokensTotal == nil || t.PrefillRequestsTotal == nil ||
 			t.GeneratedTokensTotal == nil || t.GenerationRequestsTotal == nil {
 			continue

@@ -20,11 +20,11 @@ func TestWarmWorkBaselinesResetsAndPartialOutput(t *testing.T) {
 	r.ConfigureWarmPool(testWarmPoolConfig())
 	p := &Provider{}
 	now := time.Now()
-	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("a", 10000, 10, 1000, 10), now, r.warmPool)
+	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("a", 10000, 10, 1000, 10), now, r.warmPool, map[string]bool{"m": true})
 	if len(r.warmPool.state.snapshot(now, time.Minute)) != 0 {
 		t.Fatal("historic baseline became fresh demand")
 	}
-	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("a", 18000, 18, 1080, 18), now.Add(time.Second), r.warmPool)
+	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("a", 18000, 18, 1080, 18), now.Add(time.Second), r.warmPool, map[string]bool{"m": true})
 	b := r.warmPool.state.snapshot(now.Add(time.Second), time.Minute)["m"]
 	if b.promptWork.tokens != 1000 || b.outputWork.tokens != 10 || !b.outputWork.measured(now.Add(time.Second)) {
 		t.Fatalf("actual partial output/cold work lost: %+v", b)
@@ -36,7 +36,7 @@ func TestWarmWorkBaselinesResetsAndPartialOutput(t *testing.T) {
 		nil,
 		warmWorkCapacity("new", 100000, 100, 10000, 100), // reappearance baseline
 	} {
-		p.reconcileWarmPoolWorkLocked(capacity, now.Add(2*time.Second), r.warmPool)
+		p.reconcileWarmPoolWorkLocked(capacity, now.Add(2*time.Second), r.warmPool, map[string]bool{"m": true})
 	}
 	if got := r.warmPool.state.snapshot(now.Add(2*time.Second), time.Minute)["m"]; got.promptWork.count != 8 || got.outputWork.count != 8 {
 		t.Fatalf("replay/reset fabricated work: %+v", got)
@@ -126,8 +126,8 @@ func TestWarmWorkLongReportingGapRebaselines(t *testing.T) {
 	r.ConfigureWarmPool(testWarmPoolConfig())
 	p := &Provider{}
 	now := time.Now()
-	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("a", 0, 0, 0, 0), now, r.warmPool)
-	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("a", 100000, 100, 10000, 100), now.Add(time.Hour), r.warmPool)
+	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("a", 0, 0, 0, 0), now, r.warmPool, map[string]bool{"m": true})
+	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("a", 100000, 100, 10000, 100), now.Add(time.Hour), r.warmPool, map[string]bool{"m": true})
 	if len(r.warmPool.state.snapshot(now.Add(time.Hour), time.Minute)) != 0 {
 		t.Fatal("hour of unobserved history became a fresh burst")
 	}

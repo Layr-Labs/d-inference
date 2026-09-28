@@ -18,8 +18,8 @@ func TestWarmPoolLogsExcludeMeasuredWorkload(t *testing.T) {
 	r.ConfigureWarmPool(cfg)
 	now := time.Now()
 	p := &Provider{}
-	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("epoch", 1000, 1, 100, 1), now, r.warmPool)
-	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("epoch", 9000, 9, 900, 9), now.Add(time.Second), r.warmPool)
+	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("epoch", 1000, 1, 100, 1), now, r.warmPool, map[string]bool{"m": true})
+	p.reconcileWarmPoolWorkLocked(warmWorkCapacity("epoch", 9000, 9, 900, 9), now.Add(time.Second), r.warmPool, map[string]bool{"m": true})
 	snaps := r.warmPool.tick(now.Add(time.Second))
 	if len(snaps) != 1 || snaps[0].MeasuredPromptTokens != 1000 || snaps[0].MeasuredOutputTokens != 100 {
 		t.Fatalf("test must exercise real measured workload: %+v", snaps)

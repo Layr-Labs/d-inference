@@ -123,6 +123,7 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 	p.CapacityModelIDs = nil
 	p.CapacityAcceptedAt = time.Time{}
 	p.firstContentMeasurements = nil
+	p.warmWorkCounters = nil
 	p.ToolConstraintProtocol = msg.ToolConstraintProtocol
 	p.ToolConstraintModels = tools
 	if len(invalidated) > 0 {

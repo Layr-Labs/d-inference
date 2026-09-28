@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-28 · commit `2a21a7f8c`
+> Last updated: 2026-09-28 · commit `e4ea7aeb1`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -443,7 +443,11 @@ per-engine epoch/counter deltas update shape EWMAs and aggregate work rates in
 after ten minutes without new work the assumed shapes remain the fallback.
 First snapshots, resets, stale sequence numbers, reconnects and reporting gaps
 longer than `firstContentPerformanceFreshness = 2 * time.Minute` supply no new
-work. Partial output and prompt computation before later cancellation count as
+work. Only providers and models eligible for public routing contribute measured
+work; private-only, untrusted, off-catalog and dedicated-pool-excluded reports
+clear their baselines. Trust or model eligibility loss also invalidates baselines
+between heartbeats, so the first recovered report cannot replay excluded work.
+Partial output and prompt computation before later cancellation count as
 real consumed work. Separate spill/reject pressure remains visible.
 An admission cancelled or expired after engine commitment but before the client
 pump starts is drained for numeric output work. Service, KV and measurement

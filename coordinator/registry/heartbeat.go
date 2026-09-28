@@ -261,6 +261,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 		}
 	}
 	warmController := r.warmPool
+	// Capture public work eligibility while the registry and provider locks
+	// protect the same routing-policy snapshot. Reconciliation below holds only
+	// p.mu, so it must not reacquire r.mu in the reverse order.
+	workModels := r.warmPoolWorkModelsLocked(p, eligibleModels, msg.Status, time.Now())
 	warmModels, currentModel, backendCapacity := canonicalHeartbeatModelState(
 		eligibleModels, msg.WarmModels, msg.ActiveModel, msg.BackendCapacity)
 	r.mu.RUnlock()
@@ -307,7 +311,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	now := time.Now()
 	prevHB := p.LastHeartbeat
 	p.reconcileFirstContentMeasurementsLocked(backendCapacity, now)
-	p.reconcileWarmPoolWorkLocked(backendCapacity, now, warmController)
+	p.reconcileWarmPoolWorkLocked(backendCapacity, now, warmController, workModels)
 	p.reconcileCapacitySamplesLocked(backendCapacity, now)
 	p.LastHeartbeat = now
 	applyHeartbeatStatsDelta(&p.Stats, p.lastSessionStats, msg.Stats)

@@ -51,7 +51,7 @@ func newLifecycleSession(t *testing.T) (*rotationHarness, *Session, *lifecycleAr
 		t.Fatal(err)
 	}
 	a := &lifecycleArchive{MemoryStore: h.mem}
-	x := h.session(1)
+	x := h.session(3)
 	x.archive, x.key, x.publicKey = a, &record, "endpoint"
 	x.verifier = appattest.New(appattest.Policy{AppID: "TEST.app", Environment: "production"})
 	return h, x, a, private
@@ -76,7 +76,8 @@ func lifecycleAssertion(t *testing.T, x *Session, private *ecdsa.PrivateKey, cou
 	x.beginAssertionChallenge()
 	rp := sha256.Sum256([]byte("TEST.app"))
 	auth := append(append([]byte{}, rp[:]...), 0, 0, 0, 0, counter)
-	hash := protocol.AppAttestShadowHash("assert", x.id, "production", x.key.KeyID, x.challenge, x.publicKey)
+	status := testShadowStatus()
+	hash := testAssertionHash(x, x.key.KeyID, status)
 	signed := sha256.Sum256(append(auth, hash[:]...))
 	signed = sha256.Sum256(signed[:])
 	signature, err := ecdsa.SignASN1(rand.Reader, private, signed[:])
@@ -88,7 +89,7 @@ func lifecycleAssertion(t *testing.T, x *Session, private *ecdsa.PrivateKey, cou
 		t.Fatal(err)
 	}
 	if next := x.handle(t.Context(), protocol.AppAttestShadowPayload{Session: x.id, Action: "assertion", Result: "ok", KeyID: x.key.KeyID,
-		Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(body)}); next != "wait" || !x.proofArchiveComplete() {
+		Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(body), ProtocolVersion: 3, Status: status}); next != "wait" || !x.proofArchiveComplete() {
 		t.Fatalf("assertion did not durably verify: next=%s outcome=%s", next, x.lastOutcome)
 	}
 }

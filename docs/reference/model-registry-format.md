@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-08 · commit `efb5517fc`
+> Last updated: 2026-09-27 · commit `5d0dd2674`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -401,7 +401,7 @@ Defined in `coordinator/protocol/messages.go`; full field tables in
 
 | `type` | Direction | Shape |
 |---|---|---|
-| `desired_models` | coordinator → provider | `{"type","models":[{"model_name","desired_build","previous_build"}]}` (`DesiredModelsMessage`); only to Swift providers ≥ `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) |
+| `desired_models` | coordinator → provider | `{"type","models":[{"model_name","desired_build","previous_build"}]}` (`DesiredModelsMessage`); only to Swift providers (`providerSupportsDesiredModels`, `coordinator/api/model_alias_handlers.go`) |
 | `prefetch_model_status` | provider → coordinator | `status` ∈ `started`, `downloading`, `verified`, `failed`; `bytes_done`, `bytes_total`, `error` |
 | `models_update` | provider → coordinator | full `ModelInfo` (with `weight_hash`) for newly verified builds; merged only when the hash matches the catalog (`mergeProviderModels`, `coordinator/registry/provider_models.go`) |
 

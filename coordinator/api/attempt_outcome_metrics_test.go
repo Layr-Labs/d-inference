@@ -459,7 +459,7 @@ func TestUnknownFrames_CountedByKindAndVersion(t *testing.T) {
 	frames := []any{
 		protocol.InferenceResponseChunkMessage{Type: protocol.TypeInferenceResponseChunk, RequestID: bogus, Data: "data: {}\n\n"},
 		protocol.InferenceCompleteMessage{Type: protocol.TypeInferenceComplete, RequestID: bogus},
-		protocol.InferenceErrorMessage{Type: protocol.TypeInferenceError, RequestID: bogus, Error: "zombie", StatusCode: 500},
+		protocol.InferenceErrorMessage{Type: protocol.TypeInferenceError, RequestID: bogus, Error: "zombie", StatusCode: 500, FailureCode: protocol.FailureCodeGenerationFailure},
 	}
 	for _, frame := range frames {
 		data, err := json.Marshal(frame)

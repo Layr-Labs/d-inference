@@ -274,11 +274,9 @@ func mtpFloorLoop(
                 backend: .init(
                     idleTimeoutMins: 0,
                     maxModelSlots: 3,
-                    mtp: mtpMode == nil ? mtpDrafterPath != nil : nil,
-                    mtpMode: mtpMode ?? .auto,
+                    mtpMode: mtpMode ?? (mtpDrafterPath != nil ? .on : .off),
                     mtpDrafterPath: mtpDrafterPath),
                 coordinator: .init(heartbeatIntervalSecs: 60))),
-        purgeLegacyFiles: false,
         attestationSigner: nil,
         kvBudgetForTesting: budget)
 }
@@ -519,7 +517,7 @@ struct MTPResliceFallbackTests {
         defer { try? FileManager.default.removeItem(at: fakeDir) }
 
         let server = StandaloneServer(
-            config: .init(maxCachedModels: 3, mtp: true),
+            config: .init(maxCachedModels: 3, mtpMode: .on),
             models: [ModelInfo(
                 id: fakeId, modelType: "gemma4", parameters: nil,
                 quantization: nil, sizeBytes: 1, estimatedMemoryGb: 0.01)],

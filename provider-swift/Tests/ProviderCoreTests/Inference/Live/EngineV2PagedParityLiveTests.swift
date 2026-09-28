@@ -337,7 +337,7 @@ struct EngineV2PagedParityLiveTests {
             )
         )
         let loop = try ProviderLoop(
-            config: config, purgeLegacyFiles: false, attestationSigner: nil)
+            config: config, attestationSigner: nil)
         let runtime = EngineV2Runtime()
         await loop.setEngineV2RuntimeForTesting(runtime)
         defer {
@@ -501,7 +501,7 @@ struct EngineV2PagedParityLiveTests {
             )
         )
         let loop = try ProviderLoop(
-            config: config, purgeLegacyFiles: false, attestationSigner: nil)
+            config: config, attestationSigner: nil)
         let runtime = EngineV2Runtime()
         await loop.setEngineV2RuntimeForTesting(runtime)
         defer {

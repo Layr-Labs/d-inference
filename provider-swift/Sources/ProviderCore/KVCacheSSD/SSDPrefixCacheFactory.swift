@@ -43,13 +43,8 @@ enum SSDPrefixCacheFactory {
     /// re-downloads (the metadata weightHash binding invalidates stale
     /// files).
     ///
-    /// DELIBERATELY OUTSIDE the legacy `darkbloom/kv` root: the legacy
-    /// tier's startup machinery sheds retired-tier ciphertext under `kv/`
-    /// on upgrade (v0.7.5 integration: `LegacyKVCacheSweeper` replaces the
-    /// old accountant wipe), and this tier's durable restart warmth must
-    /// never depend on an exclusion contract with that sweeper — a
-    /// separate root is fully self-contained, zero coupling. Survival
-    /// after a legacy sweep is pinned by tests.
+    /// DELIBERATELY OUTSIDE the retired pre-v0.7.5 `darkbloom/kv` root, so
+    /// this tier never shares a directory with that tier's leftovers.
     static let ssdRootDirectoryName = "darkbloom/kv3"
     /// Testbed-only isolated root. Requires the explicit test opt-in; ordinary
     /// isolated tests use an in-memory KEK, while persistent tests opt in separately.

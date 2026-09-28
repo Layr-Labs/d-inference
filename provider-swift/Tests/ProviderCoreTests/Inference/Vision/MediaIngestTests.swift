@@ -282,7 +282,6 @@ func vlmProviderLoopConstructionDoesNotRunMediaHousekeeping() throws {
 
     _ = try ProviderLoop(
         config: config,
-        purgeLegacyFiles: true,
         attestationSigner: nil)
 
     #expect(fileManager.fileExists(atPath: legacy.path))

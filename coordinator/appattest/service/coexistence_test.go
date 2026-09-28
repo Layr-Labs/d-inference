@@ -34,7 +34,7 @@ func TestShadowProofsNeverMutateLegacyTrust(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	x := &Session{s: s, provider: p, in: make(chan protocol.AppAttestShadowPayload, 2), id: "test-session", owner: "test-owner", publicKey: p.PublicKey, version: "0.9.0", key: record, challenge: "fresh", expected: "assertion", store: st, verifier: appattest.New(appattest.Policy{AppID: "TEST.app", Environment: "production"})}
+	x := &Session{s: s, provider: p, in: make(chan protocol.AppAttestShadowPayload, 2), id: "test-session", owner: "test-owner", publicKey: p.PublicKey, version: "0.9.0", protocolVersion: 3, key: record, challenge: "fresh", expected: "assertion", store: st, verifier: appattest.New(appattest.Policy{AppID: "TEST.app", Environment: "production"})}
 	snapshot := func() []any {
 		p.Mu().Lock()
 		defer p.Mu().Unlock()
@@ -59,12 +59,13 @@ func TestShadowProofsNeverMutateLegacyTrust(t *testing.T) {
 	// is test evidence; production enrolls it through Apple's certificate verifier.
 	rp := sha256.Sum256([]byte("TEST.app"))
 	auth := append(append([]byte{}, rp[:]...), 0, 0, 0, 0, 1)
-	hash := protocol.AppAttestShadowHash("assert", x.id, "production", record.KeyID, x.challenge, x.publicKey)
+	status := testShadowStatus()
+	hash := testAssertionHash(x, record.KeyID, status)
 	signed := sha256.Sum256(append(auth, hash[:]...))
 	signed = sha256.Sum256(signed[:])
 	signature, _ := ecdsa.SignASN1(rand.Reader, key, signed[:])
 	proof, _ := cbor.Marshal(map[string]any{"signature": signature, "authenticatorData": auth})
-	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof)}); next != "wait" {
+	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof), ProtocolVersion: 3, Status: status}); next != "wait" {
 		t.Fatalf("valid assertion: %s", next)
 	}
 	stored, _ := st.GetAppAttestShadowKey(ctx, record.KeyID)
@@ -80,12 +81,12 @@ func TestShadowProofsNeverMutateLegacyTrust(t *testing.T) {
 	before = snapshot()
 	x.challenge = "another-fresh-challenge"
 	auth[len(auth)-1] = 2
-	hash = protocol.AppAttestShadowHash("assert", x.id, "production", record.KeyID, x.challenge, x.publicKey)
+	hash = testAssertionHash(x, record.KeyID, status)
 	signed = sha256.Sum256(append(auth, hash[:]...))
 	signed = sha256.Sum256(signed[:])
 	signature, _ = ecdsa.SignASN1(rand.Reader, key, signed[:])
 	proof, _ = cbor.Marshal(map[string]any{"signature": signature, "authenticatorData": auth})
-	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof)}); next != "wait" {
+	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof), ProtocolVersion: 3, Status: status}); next != "wait" {
 		t.Fatal(next)
 	}
 	if !reflect.DeepEqual(before, snapshot()) {

@@ -26,13 +26,14 @@ private func testKEK(
 
 @Test
 func kekLoadOrCreateGeneratesOnFirstCall() async throws {
-    let kek = testKEK()
+    let storage = InMemoryWrappedKEKStorage(identifier: UUID().uuidString)
+    let kek = testKEK(storage: storage)
 
-    #expect(try await kek.existsInStorage() == false)
+    #expect(try storage.load() == nil)
 
     let first = try await kek.loadOrCreate()
 
-    #expect(try await kek.existsInStorage() == true)
+    #expect(try storage.load() != nil)
 
     // Subsequent loadOrCreate returns the same key (in-memory cache hit).
     let second = try await kek.loadOrCreate()
@@ -60,96 +61,6 @@ func kekPersistsAcrossActorInstances() async throws {
     let raw2 = kek2.withUnsafeBytes { Data($0) }
 
     #expect(raw1 == raw2)
-}
-
-@Test
-func kekWipeForcesRegeneration() async throws {
-    let kek = testKEK()
-    let first = try await kek.loadOrCreate()
-    let raw1 = first.withUnsafeBytes { Data($0) }
-
-    try await kek.wipe()
-    #expect(try await kek.existsInStorage() == false)
-
-    let second = try await kek.loadOrCreate()
-    let raw2 = second.withUnsafeBytes { Data($0) }
-
-    #expect(raw1 != raw2, "wipe must invalidate the cached KEK")
-}
-
-@Test
-func kekDEKWrapUnwrapRoundtripWithAAD() async throws {
-    let kek = testKEK()
-    let aad = Data("model-hash=abc;tokens=1234".utf8)
-
-    let (dek, wrapped) = try await kek.freshDEK(aad: aad)
-    let raw1 = dek.withUnsafeBytes { Data($0) }
-
-    let recovered = try await kek.unwrap(wrappedDEK: wrapped, aad: aad)
-    let raw2 = recovered.withUnsafeBytes { Data($0) }
-
-    #expect(raw1 == raw2)
-}
-
-@Test
-func kekDEKUnwrapFailsOnTamperedAAD() async throws {
-    let kek = testKEK()
-    let aad = Data("trusted-metadata".utf8)
-    let (_, wrapped) = try await kek.freshDEK(aad: aad)
-
-    let tamperedAAD = Data("evil-metadata".utf8)
-    await #expect(throws: KVCacheKEKError.self) {
-        _ = try await kek.unwrap(wrappedDEK: wrapped, aad: tamperedAAD)
-    }
-}
-
-@Test
-func kekDEKUnwrapFailsOnTamperedCiphertext() async throws {
-    let kek = testKEK()
-    let aad = Data("metadata".utf8)
-    var (_, wrapped) = try await kek.freshDEK(aad: aad)
-
-    // Tag tamper.
-    let last = wrapped.count - 1
-    wrapped[last] ^= 0xFF
-    await #expect(throws: KVCacheKEKError.self) {
-        _ = try await kek.unwrap(wrappedDEK: wrapped, aad: aad)
-    }
-}
-
-@Test
-func kekFreshDEKProducesUniqueKeys() async throws {
-    let kek = testKEK()
-    let aad = Data("metadata".utf8)
-
-    let (dek1, _) = try await kek.freshDEK(aad: aad)
-    let (dek2, _) = try await kek.freshDEK(aad: aad)
-
-    let raw1 = dek1.withUnsafeBytes { Data($0) }
-    let raw2 = dek2.withUnsafeBytes { Data($0) }
-    #expect(raw1 != raw2, "DEKs must be independently random per file")
-}
-
-@Test
-func kekUnwrapFailsAfterStorageWipe() async throws {
-    // Simulate Keychain wipe between writer and reader: same wrapper
-    // (so unwrap of any prior wrap WOULD succeed in principle), but
-    // the wrapped KEK isn't in storage anymore — so loadOrCreate
-    // generates a *new* KEK, and the old DEK won't unwrap under it.
-    let wrapper = InMemoryKeyWrappingService()
-    let storage = InMemoryWrappedKEKStorage(identifier: "wipe")
-
-    let kek = KVCacheKEK(wrapper: wrapper, storage: storage)
-    let aad = Data("aad".utf8)
-    let (_, wrappedDEK) = try await kek.freshDEK(aad: aad)
-
-    try await kek.wipe()
-
-    // New KEK actor, same wrapper/storage. KEK is regenerated.
-    let fresh = KVCacheKEK(wrapper: wrapper, storage: storage)
-    await #expect(throws: KVCacheKEKError.self) {
-        _ = try await fresh.unwrap(wrappedDEK: wrappedDEK, aad: aad)
-    }
 }
 
 // MARK: - Secure Enclave + Keychain end-to-end (skips when unavailable)
@@ -185,11 +96,11 @@ func kekRoundtripsViaSecureEnclave() async throws {
         "SE-backed KEK must be idempotent within a process"
     )
 
-    let aad = Data("se-test-metadata".utf8)
-    let (dek, wrapped) = try await kek.freshDEK(aad: aad)
-    let recovered = try await kek.unwrap(wrappedDEK: wrapped, aad: aad)
+    // A fresh actor over the same storage unwraps the persisted KEK through
+    // the Secure Enclave (simulated restart).
+    let restarted = try await KVCacheKEK(wrapper: svc, storage: storage).loadOrCreate()
     #expect(
-        dek.withUnsafeBytes { Data($0) } == recovered.withUnsafeBytes { Data($0) }
+        first.withUnsafeBytes { Data($0) } == restarted.withUnsafeBytes { Data($0) }
     )
 }
 
@@ -229,7 +140,6 @@ func kekRoundtripsViaKeychainStorage() async throws {
     let raw2 = second.withUnsafeBytes { Data($0) }
 
     #expect(raw1 == raw2)
-    try await kek2.wipe()
 }
 
 // MARK: - first-use KEK race (saveIfAbsent first-writer-wins)

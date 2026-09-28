@@ -425,7 +425,6 @@ import Testing
             secureBootEnabled: true,
             binaryHash: "binaryhash",
             activeModelHash: "modelhash",
-            runtimeHash: "runtimehash",
             templateHashes: ["chatml": "templatehash"],
             modelHashes: ["model": "weighthash"]
         )),
@@ -798,7 +797,6 @@ import Testing
         throw TestFailure.unexpectedMessage
     }
     #expect(inferenceRequest.requestId == "go-enc-req-1")
-    #expect(inferenceRequest.body.isNull)
     #expect(inferenceRequest.encryptedBody?.ephemeralPublicKey == "ZXBoZW1lcmFs")
 
     let status = CoordinatorMessage.runtimeStatus(CoordinatorMessage.RuntimeStatus(
@@ -1030,25 +1028,26 @@ import Testing
     #expect(decoded == slot)
 }
 
-@Test func privacyCapabilitiesJSONOmitsHypervisorKeys() throws {
-    // The hypervisor concept was removed from the provider (it never uses
-    // hypervisors; the old field was a hardcoded-false trust signal). Pin
-    // that registration privacy_capabilities JSON carries NO hypervisor key.
+@Test func privacyCapabilitiesJSONCarriesOnlySwiftRuntimeKeys() throws {
+    // Registration privacy_capabilities carries exactly the Swift-runtime
+    // flags under snake_case keys: the retired hypervisor and Python-runtime
+    // flags (`hypervisor_active`, `python_runtime_locked`,
+    // `dangerous_modules_blocked`) are never on the wire.
     let data = try JSONEncoder().encode(samplePrivacyCapabilities())
     let object = try jsonObject(data)
 
-    #expect(object["hypervisor_active"] == nil)
-    #expect(object["hypervisorActive"] == nil)
-    // Sanity: the remaining capabilities still encode under snake_case keys.
+    #expect(Set(object.keys) == [
+        "text_backend_inprocess", "text_proxy_disabled", "sip_enabled",
+        "anti_debug_enabled", "core_dumps_disabled", "env_scrubbed",
+    ])
     #expect(object["text_backend_inprocess"] as? Bool == true)
     #expect(object["env_scrubbed"] as? Bool == true)
-    #expect(object.count == 8)
 }
 
-@Test func attestationResponseJSONOmitsHypervisorKeys() throws {
-    // Challenge-response wire shape: no hypervisor_active key, ever -- the
-    // canonical status bytes (StatusCanonical) omit it too, so the coordinator
-    // and provider sign/verify the same bytes.
+@Test func attestationResponseJSONOmitsRetiredKeys() throws {
+    // Challenge-response wire shape: no retired hypervisor or Python-runtime
+    // hash keys, ever -- the canonical status bytes (StatusCanonical) omit
+    // them too, so the coordinator and provider sign/verify the same bytes.
     let message = ProviderMessage.attestationResponse(ProviderMessage.AttestationResponse(
         nonce: "bm9uY2U=",
         signature: "c2ln",
@@ -1059,15 +1058,15 @@ import Testing
         secureBootEnabled: true,
         binaryHash: "binaryhash",
         activeModelHash: "modelhash",
-        runtimeHash: "runtimehash",
         templateHashes: ["chatml": "templatehash"],
         modelHashes: ["model": "weighthash"]
     ))
     let data = try ProviderProtocolCodec.encodeProviderMessage(message)
     let object = try jsonObject(data)
 
-    #expect(object["hypervisor_active"] == nil)
-    #expect(object["hypervisorActive"] == nil)
+    for retired in ["hypervisor_active", "hypervisorActive", "python_hash", "runtime_hash"] {
+        #expect(object[retired] == nil, "\(retired) must not ride the attestation response")
+    }
     // Sanity: the posture fields that remain still ride the response.
     #expect(object["rdma_disabled"] as? Bool == true)
     #expect(object["sip_enabled"] as? Bool == true)
@@ -2053,8 +2052,6 @@ private func samplePrivacyCapabilities() -> PrivacyCapabilities {
     PrivacyCapabilities(
         textBackendInprocess: true,
         textProxyDisabled: true,
-        pythonRuntimeLocked: true,
-        dangerousModulesBlocked: true,
         sipEnabled: true,
         antiDebugEnabled: true,
         coreDumpsDisabled: true,

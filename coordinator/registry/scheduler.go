@@ -99,15 +99,9 @@ const (
 )
 
 type routingSnapshot struct {
-	provider   *Provider
-	model      string
-	chipFamily string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
-	// binaryVersion is the provider's reported binary version (p.Version, read
-	// under p.mu at snapshot time; empty = unreported/legacy). Feeds the
-	// version-gated activation-reserve selection in the cold servability
-	// estimate (servabilityActivationFloor) so a mixed-version fleet
-	// is charged the reserve each binary actually holds.
-	binaryVersion    string
+	provider         *Provider
+	model            string
+	chipFamily       string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
 	slotState        string
 	hasHeadroom      bool
 	totalPending     int
@@ -123,8 +117,8 @@ type routingSnapshot struct {
 	// pendingMaxTokensAllModels is pendingMaxTokens WITHOUT the model filter:
 	// the token budgets of every coordinator-pending request on this provider,
 	// any model. Feeds the pooled-budget admission check (pooledBudgetAdmits)
-	// so co-resident models cannot double-spend shared legacy headroom and do
-	// not lose additive private-grant capacity on v0.7.5+ providers.
+	// so a cold model or a shrunken grant cannot double-spend the box-wide sum
+	// of private grants.
 	pendingMaxTokensAllModels int
 	// pendingMaxBytesAllModels is the byte-normalized analog: each pending
 	// request's token budget × its model's reported KVBytesPerToken. Valid
@@ -160,7 +154,7 @@ type routingSnapshot struct {
 	activeTokenBudgetMax  int64
 	queuedTokenBudget     int64
 	// pooledTokenBudget is the provider's reconstructed whole-box token budget
-	// (all budget slots; layout selected from the provider release version).
+	// (Σ private grants over all budget slots).
 	// Zero value when the provider reports no backend capacity / no budget
 	// slots, which disables the pooled admission check.
 	pooledTokenBudget pooledTokenBudget
@@ -658,7 +652,7 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 
 // commitProviderReservation is the short commit phase. It repeats the full
 // current-state capacity chain before adding the pending debit, so concurrent
-// scans cannot double-spend a provider's shared cross-model token pool.
+// scans cannot double-spend a provider's cross-model token pool.
 //
 // Locking (reserveCommitShared, the default): r.mu is held for READING — the
 // commit needs the provider identity, catalog and cache-routing configuration
@@ -1189,7 +1183,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		// snapshotProviderIntoLockedEx applies every per-provider gate via the shared
 		// providerPassesRoutingGatesLocked, INCLUDING the shape-keyed
 		// inference-error cooldown and the trait gates (render-broken fences all
-		// shapes; the tools version floor fences tool requests). A failing
+		// shapes; tool-constraint and native-media gates fence their shapes). A failing
 		// provider is simply dropped here — the returned gate reason names WHICH
 		// gate dropped it for the profiler tally without changing the verdict.
 		// The snapshot is written straight into an arena slot (candidate_arena.go).
@@ -1419,9 +1413,10 @@ func providerVersion(p *Provider) string {
 // privacy/runtime/challenge gates as routing but deliberately ignores the
 // hardware-trust gate, which self-route relaxes for a caller's own machine.
 // traits/requiresVision mirror the dispatch-time gates
-// (providerEligibleForTraitsLocked, the vision gate): without them a tool call
-// to an owned box below the tools floor — or a media request to a text-only
-// build — would pass this preflight, queue for up to 120s, and die as
+// (providerEligibleForTraitsLocked, the vision gate): without them a
+// constrained tool call to an owned box that does not advertise the tool
+// constraint — or a media request to a text-only build — would pass this
+// preflight, queue for up to 120s, and die as
 // machine_busy instead of failing fast with the real cause. Callers asking the
 // base-shape question ("any owned box serves this model at all?") pass zero
 // traits and requiresVision=false. "Linked but offline" providers are not
@@ -1798,10 +1793,9 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 		if snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens > snap.activeTokenBudgetMax {
 			return false
 		}
-		// The per-slot max encodes this model's own context/KV ceiling. Through
-		// v0.7.4 each slot embeds the same shared headroom; v0.7.5+ reports a
-		// private re-sliced grant. The request must also fit the correctly
-		// reconstructed whole-box pool with EVERY model's
+		// The per-slot max encodes this model's own private re-sliced grant.
+		// The request must also fit the reconstructed whole-box pool with EVERY
+		// model's
 		// coordinator-pending tokens charged — byte-normalized per slot KV rate
 		// when reported, since co-resident models spend the pool at different
 		// bytes/token (see pooled_admission.go). Reduces exactly to the per-slot
@@ -1892,8 +1886,7 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string) {
 	snap.pendingPrefillKnown = true
 	if p.BackendCapacity != nil {
-		snap.pooledTokenBudget = providerPooledTokenBudgetForVersion(
-			p.BackendCapacity.Slots, p.Version)
+		snap.pooledTokenBudget = providerPooledTokenBudget(p.BackendCapacity.Slots)
 	}
 	bytesKnown := snap.pooledTokenBudget.byteMode
 	for _, pr := range p.pendingReqs {
@@ -2918,30 +2911,18 @@ func (r *Registry) DrainQueuedRequestsForModelWithReason(model, reason string) {
 	r.drainQueuedRequestsForModelsWithReason([]string{model}, reason)
 }
 
-// DrainQueuedRequestsForProvider attempts to assign queued requests for every
-// model a provider serves. Called when a provider becomes newly eligible for
-// routing (e.g. it just passed APNs code-identity attestation) so queued
-// demand is satisfied immediately instead of waiting for the next heartbeat.
-func (r *Registry) DrainQueuedRequestsForProvider(p *Provider) {
-	r.DrainQueuedRequestsForProviderWithReason(p, DrainTriggerUnknown)
-}
-
-// DrainQueuedRequestsForProviderWithReason is DrainQueuedRequestsForProvider
-// with the bounded drain trigger the api layer knows at its call site (e.g.
-// DrainTriggerChallenge after an attestation pass). Unknown values fold to
-// DrainTriggerUnknown.
+// DrainQueuedRequestsForProviderWithReason attempts to assign queued requests
+// for every model a provider serves. Called when a provider becomes newly
+// eligible for routing (e.g. it just passed APNs code-identity attestation) so
+// queued demand is satisfied immediately instead of waiting for the next
+// heartbeat. reason is the bounded drain trigger the api layer knows at its
+// call site (e.g. DrainTriggerChallenge after an attestation pass); unknown
+// values fold to DrainTriggerUnknown.
 func (r *Registry) DrainQueuedRequestsForProviderWithReason(p *Provider, reason string) {
 	if p == nil {
 		return
 	}
 	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), reason)
-}
-
-// drainQueuedRequestsForModels is the legacy entry point (reason "unknown");
-// callers should migrate to drainQueuedRequestsForModelsWithReason so the
-// queued request's routing record names what unblocked it.
-func (r *Registry) drainQueuedRequestsForModels(models []string) {
-	r.drainQueuedRequestsForModelsWithReason(models, DrainTriggerUnknown)
 }
 
 // drainQueuedRequestsForModelsWithReason drains the per-model queues for

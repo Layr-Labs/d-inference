@@ -363,7 +363,7 @@ private func makePreloadLoop(
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    let loop = try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    let loop = try ProviderLoop(config: config, attestationSigner: nil)
     if let loadedModelsFile {
         await loop.setLoadedModelsFileForTesting(loadedModelsFile)
     } else {
@@ -883,7 +883,7 @@ struct StartupPreloadNoEvictTests {
 
         let loop = try await makePreloadLoop(
             models: [preloadModelInfo(fakeId, memoryGb: 0.01)],
-            backend: BackendSettings(maxModelSlots: 3, mtp: true))
+            backend: BackendSettings(maxModelSlots: 3, mtpMode: .on))
         let gate = PreloadRaceGateCatalog()
         await loop.setSpecDecFunnelForTesting(SpecDecArtifactFunnel(
             resolver: SpecDecResolver(), catalog: gate))

@@ -73,19 +73,11 @@ func TestSettleProviderFloorDraw_Idempotent(t *testing.T) {
 				MemoryGB:       64,
 			}
 
-			credited, err := s.SettleProviderFloorDraw(ctx, draw)
-			if err != nil {
-				t.Fatalf("first settle: %v", err)
-			}
-			if !credited {
+			if !settleFloorDraw(t, s, draw) {
 				t.Fatalf("first settle credited=false, want true")
 			}
 
-			credited2, err := s.SettleProviderFloorDraw(ctx, draw)
-			if err != nil {
-				t.Fatalf("second settle: %v", err)
-			}
-			if credited2 {
+			if settleFloorDraw(t, s, draw) {
 				t.Fatalf("second settle credited=true, want false (idempotent)")
 			}
 
@@ -151,11 +143,7 @@ func TestSettleProviderFloorDraw_ZeroAmount(t *testing.T) {
 				MemoryGB:       64,
 			}
 
-			credited, err := s.SettleProviderFloorDraw(ctx, draw)
-			if err != nil {
-				t.Fatalf("settle: %v", err)
-			}
-			if !credited {
+			if !settleFloorDraw(t, s, draw) {
 				t.Fatalf("zero-amount settle credited=false, want true (audit row inserted)")
 			}
 
@@ -184,11 +172,7 @@ func TestSettleProviderFloorDraw_ZeroAmount(t *testing.T) {
 			}
 
 			// A re-settle of the same epoch is still idempotent.
-			credited2, err := s.SettleProviderFloorDraw(ctx, draw)
-			if err != nil {
-				t.Fatalf("re-settle: %v", err)
-			}
-			if credited2 {
+			if settleFloorDraw(t, s, draw) {
 				t.Fatalf("re-settle credited=true, want false")
 			}
 		})
@@ -390,12 +374,10 @@ func TestSettleProviderFloorDraw_RecordsVisibleEarning(t *testing.T) {
 			pk := uniqueID("pk")
 			acct := uniqueID("acct")
 			epoch := "2026-07"
-			if _, err := s.SettleProviderFloorDraw(ctx, &ProviderFloorDraw{
+			settleFloorDraw(t, s, &ProviderFloorDraw{
 				ProviderKey: pk, AccountID: acct, EpochID: epoch,
 				AmountMicroUSD: 18_000_000, FloorMicroUSD: 18_000_000, UptimeFrac: 1.0, MemoryGB: 64,
-			}); err != nil {
-				t.Fatalf("settle: %v", err)
-			}
+			})
 
 			// Visible in earnings history as a base_reward row.
 			earnings, err := s.GetAccountEarnings(acct, 10)

@@ -45,7 +45,7 @@ func TestAppAttestShadowCannotChangeRoutingOrTrust(t *testing.T) {
 		owner += ":" + ar.PublicKey
 	}
 	ownerHash := sha256.Sum256([]byte(owner))
-	_, err := st.InsertAppAttestShadowKey(ctx, store.AppAttestShadowKey{KeyID: keyID, Owner: hex.EncodeToString(ownerHash[:]), PublicKey: public, AppID: "TEST.app", Environment: "production"})
+	_, err := st.InsertAppAttestShadowKey(ctx, store.AppAttestShadowKey{KeyID: keyID, Owner: hex.EncodeToString(ownerHash[:]), AccountID: "test-account", PublicKey: public, AppID: "TEST.app", Environment: "production"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestAppAttestShadowCannotChangeRoutingOrTrust(t *testing.T) {
 	}
 	before := snapshot()
 	feature := attestservice.New(ctx, AppAttestShadowConfig{Enabled: true, RolloutPercent: 100, AppID: "TEST.app", Environment: "production"}, attestservice.Dependencies{Store: st, Registry: reg})
-	session := feature.StartSession(ctx, p, &protocol.RegisterMessage{AppAttestProtocol: 1, Version: "0.9.4", PublicKey: p.PublicKey}, "test-account")
+	session := feature.StartSession(ctx, p, &protocol.RegisterMessage{AppAttestProtocol: 3, Version: "0.9.4", PublicKey: p.PublicKey}, "test-account")
 	if session == nil {
 		t.Fatal("session not started")
 	}
@@ -85,12 +85,13 @@ func TestAppAttestShadowCannotChangeRoutingOrTrust(t *testing.T) {
 	}
 	rp := sha256.Sum256([]byte("TEST.app"))
 	auth := append(append([]byte{}, rp[:]...), 0, 0, 0, 0, 1)
-	hash := protocol.AppAttestShadowHash("assert", request.Session, "production", keyID, string(nonce), p.PublicKey)
+	signedStatus := &protocol.AppAttestStatus{OSVersion: "27"}
+	hash := protocol.AppAttestShadowHashV3("assert", request.Session, "production", keyID, string(nonce), p.PublicKey, request.AccountScope, signedStatus)
 	signed := sha256.Sum256(append(auth, hash[:]...))
 	signed = sha256.Sum256(signed[:])
 	signature, _ := ecdsa.SignASN1(rand.Reader, key, signed[:])
 	proof, _ := cbor.Marshal(map[string]any{"signature": signature, "authenticatorData": auth})
-	session.Offer(protocol.AppAttestShadowPayload{Action: "assertion", Session: request.Session, Result: "ok", KeyID: keyID, Challenge: string(nonce), Proof: base64.StdEncoding.EncodeToString(proof)})
+	session.Offer(protocol.AppAttestShadowPayload{Action: "assertion", Session: request.Session, Result: "ok", KeyID: keyID, Challenge: string(nonce), Proof: base64.StdEncoding.EncodeToString(proof), ProtocolVersion: 3, Status: signedStatus})
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {

@@ -24,6 +24,7 @@ func attemptUsageErrMsg(reqID string, usage *protocol.UsageInfo) protocol.Infere
 		StatusCode:    504,
 		TerminalCause: terminalCauseSafetyDeadline,
 		AttemptUsage:  usage,
+		FailureCode:   protocol.FailureCodeGenerationFailure,
 	}
 }
 
@@ -77,6 +78,7 @@ func TestProviderErrorOutcomesWithoutAttemptUsageUnchanged(t *testing.T) {
 	msg := protocol.InferenceErrorMessage{
 		Type: protocol.TypeInferenceError, RequestID: pr.RequestID,
 		Error: "boom", StatusCode: 500,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	}
 
 	pre := preCommitProviderErrorOutcome(pr, msg)

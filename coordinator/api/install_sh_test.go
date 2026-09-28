@@ -125,8 +125,13 @@ func TestInstallScriptTemplating(t *testing.T) {
 		if !strings.Contains(body, "mlx.metallib") {
 			t.Error("install.sh does not handle mlx.metallib")
 		}
-		if !strings.Contains(body, "eigeninference-enclave") {
+		if !strings.Contains(body, "darkbloom-enclave") {
 			t.Error("install.sh does not install the Secure Enclave helper")
+		}
+		// The Rust-era `eigeninference-enclave` alias (binary renamed in
+		// v0.3.0) is no longer created.
+		if strings.Contains(body, "eigeninference-enclave") {
+			t.Error("install.sh still creates the retired eigeninference-enclave symlink")
 		}
 	})
 

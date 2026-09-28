@@ -20,14 +20,10 @@ var versionMemoCorpus = []string{
 // every shape of input the fleet (or an attacker) can send.
 func TestVersionSegmentsMemoMatchesParser(t *testing.T) {
 	versionSegmentsMemo.reset()
-	slotBudgetLayoutMemo.reset()
 	for round := 0; round < 3; round++ {
 		for _, v := range versionMemoCorpus {
 			if got, want := versionSegments(v), parseVersionSegments(v); !reflect.DeepEqual(got, want) {
 				t.Fatalf("round %d versionSegments(%q) = %v, want %v", round, v, got, want)
-			}
-			if got, want := slotBudgetLayoutForVersion(v), parseSlotBudgetLayout(v); got != want {
-				t.Fatalf("round %d slotBudgetLayoutForVersion(%q) = %v, want %v", round, v, got, want)
 			}
 		}
 		for _, a := range versionMemoCorpus {
@@ -43,9 +39,6 @@ func TestVersionSegmentsMemoMatchesParser(t *testing.T) {
 	if CompareVersions("0.6.10", "0.6.3") <= 0 || CompareVersions("0.6", "0.6.0") != 0 ||
 		CompareVersions("garbage", "0") != 0 || CompareVersions("0.6.3-rc1", "0.6.0") != 0 {
 		t.Fatal("documented CompareVersions tolerances no longer hold")
-	}
-	if slotBudgetLayoutForVersion("0.7.5-rc1") != privateSlotGrants || slotBudgetLayoutForVersion("0.7.4") != sharedSlotHeadroom {
-		t.Fatal("layout floor no longer honored")
 	}
 }
 
@@ -99,67 +92,37 @@ func TestVersionMemoFullCachePreservesHotEntries(t *testing.T) {
 
 // TestVersionMemoNeverRetainsOversizedVersions pins the byte bound: a 1 MiB
 // version string (a valid "1.0.0+<metadata>" that fits the frame limit) is
-// parsed correctly and selects the right layout, but leaves the segments memo
-// unchanged and adds at most the shared numeric-core entry to the layout memo
-// — so distinct oversized strings cannot grow either memo. A short string
-// with too many segments is likewise parsed but not retained.
+// parsed and compared correctly but never retained, so distinct oversized
+// strings cannot grow the memo. A short string with too many segments is
+// likewise parsed but not retained.
 func TestVersionMemoNeverRetainsOversizedVersions(t *testing.T) {
 	versionSegmentsMemo.reset()
-	slotBudgetLayoutMemo.reset()
 	_ = versionSegments("0.8.15") // warm one real entry
-	_ = slotBudgetLayoutForVersion("0.8.15")
-	segsBefore, layoutBefore := versionSegmentsMemo.size(), slotBudgetLayoutMemo.size()
+	segsBefore := versionSegmentsMemo.size()
 
 	meta := strings.Repeat("a", 1<<20)
 	for i := 0; i < 8; i++ {
-		huge := fmt.Sprintf("1.%d.0+%s%d", i, meta, i) // distinct 1 MiB strings, distinct cores
+		huge := fmt.Sprintf("1.%d.0+%s%d", i, meta, i) // distinct 1 MiB strings
 		if got := versionSegments(huge); !reflect.DeepEqual(got, []int{1, i, 0}) {
 			t.Fatalf("oversized version parsed as %v", got)
-		}
-		if got := slotBudgetLayoutForVersion(huge); got != privateSlotGrants {
-			t.Fatalf("oversized version layout = %v, want privateSlotGrants", got)
 		}
 		if CompareVersions(huge, "0.7.5") <= 0 {
 			t.Fatal("oversized version must still compare correctly")
 		}
 	}
-	// Only the short numeric cores ("1.N.0", via the layout path's
-	// CompareVersions) may have been retained — never a 1 MiB key.
-	if grown := versionSegmentsMemo.size() - segsBefore; grown > 8 {
-		t.Fatalf("segments memo grew by %d entries on oversized keys", grown)
+	// Only the short comparison operand ("0.7.5") may have been retained —
+	// never a 1 MiB key.
+	if grown := versionSegmentsMemo.size() - segsBefore; grown > 1 {
+		t.Fatalf("segments memo grew by %d entries on oversized keys, want at most 1 (the short operand)", grown)
 	}
 	for i := 0; i < 8; i++ {
 		huge := fmt.Sprintf("1.%d.0+%s%d", i, meta, i)
-		if versionSegmentsMemo.has(huge) || slotBudgetLayoutMemo.has(huge) {
-			t.Fatal("a 1 MiB version string was retained in a memo")
+		if versionSegmentsMemo.has(huge) {
+			t.Fatal("a 1 MiB version string was retained in the memo")
 		}
 	}
 	if l := versionSegmentsMemo.maxKeyLen(); l > maxMemoizedVersionLen {
 		t.Fatalf("segments memo holds a %d-byte key", l)
-	}
-	if l := slotBudgetLayoutMemo.maxKeyLen(); l > maxMemoizedVersionLen {
-		t.Fatalf("layout memo holds a %d-byte key", l)
-	}
-	// The layout memo keys on the numeric core ("1.N.0"): 8 distinct cores at
-	// most, never the 1 MiB strings themselves.
-	if grown := slotBudgetLayoutMemo.size() - layoutBefore; grown > 8 {
-		t.Fatalf("layout memo grew by %d entries", grown)
-	}
-	// The same core with different oversized suffixes shares ONE layout entry.
-	layoutMid := slotBudgetLayoutMemo.size()
-	for i := 0; i < 8; i++ {
-		_ = slotBudgetLayoutForVersion(fmt.Sprintf("2.0.0+%s%d", meta, i))
-	}
-	if slotBudgetLayoutMemo.size() != layoutMid+1 {
-		t.Fatalf("suffix variants of one core created %d layout entries, want 1", slotBudgetLayoutMemo.size()-layoutMid)
-	}
-	// An oversized numeric core is computed without caching.
-	longCore := strings.Repeat("1.", 60) + "1" // 121 bytes, all segments
-	if got := slotBudgetLayoutForVersion(longCore); got != privateSlotGrants {
-		t.Fatalf("long-core layout = %v", got)
-	}
-	if slotBudgetLayoutMemo.size() != layoutMid+1 {
-		t.Fatal("oversized numeric core was retained in the layout memo")
 	}
 	// Too many segments in a short string: parsed, not retained.
 	many := "1.2.3.4.5.6.7.8.9.10.11.12.13.14.15.16.17"
@@ -177,40 +140,35 @@ func TestVersionMemoNeverRetainsOversizedVersions(t *testing.T) {
 	}
 }
 
-// A normalized core is a substring of the registration version. Retaining
-// that substring's storage would defeat the byte bound even though len(key)
-// is small; compare storage identity without dereferencing either pointer.
-func TestVersionMemoCopiesNormalizedKeyStorage(t *testing.T) {
-	var memo cowMemo[slotBudgetLayout]
+// A short key can be a substring of a much larger string (a version sliced out
+// of a registration frame). Retaining that substring's storage would defeat the
+// byte bound even though len(key) is small; compare storage identity without
+// dereferencing either pointer.
+func TestVersionMemoCopiesKeyStorage(t *testing.T) {
+	var memo cowMemo[[]int]
 	version := "1.2.3+" + strings.Repeat("x", 1<<20)
-	core := versionNumericCore(version)
-	memo.get(core, parseSlotBudgetLayoutCore)
-	for key := range *memo.entries.Load() {
-		if key != core {
-			t.Fatalf("memo key = %q, want %q", key, core)
+	key := version[:len("1.2.3")]
+	memo.get(key, parseVersionSegments)
+	for stored := range *memo.entries.Load() {
+		if stored != key {
+			t.Fatalf("memo key = %q, want %q", stored, key)
 		}
-		if unsafe.StringData(key) == unsafe.StringData(version) {
+		if unsafe.StringData(stored) == unsafe.StringData(version) {
 			t.Fatal("short memo key retains the oversized version's backing storage")
 		}
 	}
 }
 
 // TestVersionMemoReadsAllocateNothing pins the hot-path contract: once a
-// version has been seen, comparing it and selecting its budget layout
-// allocate nothing.
+// version has been seen, comparing it allocates nothing.
 func TestVersionMemoReadsAllocateNothing(t *testing.T) {
 	versionSegmentsMemo.reset()
-	slotBudgetLayoutMemo.reset()
-	_ = CompareVersions("0.8.15", privateSlotGrantsMinVersion)
-	_ = CompareVersions("0.8.15", "0.6.3")
-	_ = slotBudgetLayoutForVersion("0.8.15")
-	_ = slotBudgetLayoutForVersion("v0.7.5-rc1")
+	_ = CompareVersions("0.9.9", qwen4RegistryMinimumProviderVersion)
+	_ = CompareVersions("0.9.9", "0.6.3")
 	sink := 0
 	allocs := testing.AllocsPerRun(200, func() {
-		sink += CompareVersions("0.8.15", "0.6.3")
-		sink += CompareVersions("0.8.15", privateSlotGrantsMinVersion)
-		sink += int(slotBudgetLayoutForVersion("0.8.15"))
-		sink += int(slotBudgetLayoutForVersion("v0.7.5-rc1"))
+		sink += CompareVersions("0.9.9", "0.6.3")
+		sink += CompareVersions("0.9.9", qwen4RegistryMinimumProviderVersion)
 	})
 	if allocs != 0 {
 		t.Fatalf("warm version reads allocated %v per run; want 0", allocs)
@@ -236,7 +194,6 @@ func TestVersionMemoConcurrentUse(t *testing.T) {
 					return
 				}
 				_ = CompareVersions(v, "1.2.3")
-				_ = slotBudgetLayoutForVersion(v)
 			}
 		}(g)
 	}

@@ -11,13 +11,11 @@ import (
 
 // productionShapeRelease mirrors the EXACT active production release rows
 // observed in the incident DB (2026-08-31): binary_hash and metallib_hash
-// present, python_hash and runtime_hash EMPTY, and template_hashes carrying
+// present, and template_hashes carrying
 // CI-fabricated per-model-family entries (qwen3.5/trinity/gemma4/minimax)
 // that no provider build has ever reported.
 func productionShapeRelease(version, binaryHash string) *store.Release {
 	rel := testRelease(version, binaryHash)
-	rel.PythonHash = ""
-	rel.RuntimeHash = ""
 	rel.TemplateHashes = "qwen3.5=" + strings.Repeat("4", 64) +
 		",trinity=" + strings.Repeat("5", 64) +
 		",gemma4=" + strings.Repeat("6", 64) +
@@ -26,9 +24,8 @@ func productionShapeRelease(version, binaryHash string) *store.Release {
 }
 
 // productionShapeChallenge mirrors the exact v0.8.15 provider attestation
-// response wire shape: binary hash present, SIP/Secure Boot true, NO
-// python_hash, NO runtime_hash, and template_hashes containing ONLY
-// mlx_metallib (the provider's entire template vocabulary).
+// response wire shape: binary hash present, SIP/Secure Boot true, and
+// template_hashes containing ONLY mlx_metallib (the provider's entire template vocabulary).
 func productionShapeChallenge(binaryHash string) *protocol.AttestationResponseMessage {
 	return &protocol.AttestationResponseMessage{
 		BinaryHash: binaryHash,

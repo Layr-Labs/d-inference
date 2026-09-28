@@ -84,8 +84,6 @@ docs/coordinator-deploy-runbook.md
 docs/.private/
 docs/default-private-inference-plan.md
 
-# Rust cross-language test build artifacts
-coordinator/internal/e2e/testdata/decrypt/target/
 coordinator/coordinator
 coordinator/eigeninference-coordinator-linux
 docs/RUNBOOK.md

@@ -92,9 +92,7 @@ type myProvider struct {
 	MDASEPVersion     string `json:"mda_sepos_version,omitempty"`
 
 	// Runtime integrity
-	RuntimeVerified bool   `json:"runtime_verified"`
-	PythonHash      string `json:"python_hash,omitempty"`
-	RuntimeHash     string `json:"runtime_hash,omitempty"`
+	RuntimeVerified bool `json:"runtime_verified"`
 
 	// Challenge state
 	LastChallengeVerified *time.Time `json:"last_challenge_verified,omitempty"`
@@ -498,8 +496,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		// it with live.PublicKey when the machine is currently connected.
 		mp.ProviderKey = rec.PublicKey
 		mp.RuntimeVerified = rec.RuntimeVerified
-		mp.PythonHash = rec.PythonHash
-		mp.RuntimeHash = rec.RuntimeHash
 		mp.LastChallengeVerified = rec.LastChallengeVerified
 		mp.FailedChallenges = rec.FailedChallenges
 		mp.LifetimeRequestsServed = rec.LifetimeRequestsServed
@@ -571,8 +567,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.MDAVerified = live.MDAVerified
 		mp.SEKeyBound = live.SEKeyBound
 		mp.RuntimeVerified = live.RuntimeVerified
-		mp.PythonHash = live.PythonHash
-		mp.RuntimeHash = live.RuntimeHash
 		if !live.LastChallengeVerified.IsZero() {
 			t := live.LastChallengeVerified
 			mp.LastChallengeVerified = &t

@@ -192,6 +192,9 @@ func serveChunkThenProviderError(ctx context.Context, t *testing.T, conn *websoc
 					RequestID:  inferReq.RequestID,
 					Error:      "backend failed after first token",
 					StatusCode: statusCode,
+					// A mid-stream engine fault; every current provider
+					// classifies it with a failure code.
+					FailureCode: protocol.FailureCodeGenerationFailure,
 				}
 				errData, _ := json.Marshal(errMsg)
 				conn.Write(ctx, websocket.MessageText, errData)

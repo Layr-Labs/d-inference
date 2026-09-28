@@ -144,8 +144,6 @@ export interface MyProvider {
   mda_sepos_version?: string;
 
   runtime_verified: boolean;
-  python_hash?: string;
-  runtime_hash?: string;
 
   last_challenge_verified?: string;
   failed_challenges: number;
@@ -167,8 +165,6 @@ export interface MyProvider {
 
   lifetime_requests_served: number;
   lifetime_tokens_generated: number;
-
-  wallet_address?: string;
 
   registered_at?: string;
   last_seen?: string;
@@ -194,7 +190,6 @@ export interface MyFleetCounts {
 
 export interface MySummaryResponse {
   account_id: string;
-  wallet_address?: string;
   available_balance_micro_usd: number;
   withdrawable_balance_micro_usd?: number;
   payout_ready?: boolean;

@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-28 · commit `1f664f507`
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -108,6 +108,27 @@ sequenceDiagram
 | Requirement | The provider must register with `encrypted_response_chunks: true`; otherwise it never passes `providerSupportsPrivateTextLocked` | `coordinator/protocol/messages.go` (`RegisterMessage`) |
 | Violation | A plaintext chunk, a mixed chunk, or a sender key ≠ `K` marks the provider `untrusted` and fails the request with `502` / `FailureCodeEncryptionFailure` | `coordinator/api/provider.go` (`decryptTextResponseChunk`, `errTextChunkViolation`) |
 
+### Provider-bound field minimization
+
+Before serializing and re-sealing an inference request, the shared
+`parseInferencePrelude` invokes `stripProviderCallerIdentity` to remove only
+caller-supplied top-level `user` and generic `metadata`
+(`coordinator/api/inference_preprocess.go`, `coordinator/api/provider_body_privacy.go`).
+Direct, queued and retried requests use that prepared body. The original input
+bytes remain available in request memory for existing validation; they are not
+substituted back into the provider payload.
+
+Nested fields, prompt text, tool/schema content, media and generation controls
+remain unchanged. `metadata_details` is a distinct coordinator opt-in, and
+coordinator-authored cache scopes and receipt controls retain their existing
+account-bound derivation. Body-size-derived estimates and activation sampling
+can change when unnecessary bytes are removed; authenticated account ownership
+and prompt-bearing content do not change.
+
+This does not provide anonymity: prompts, nested content or other caller fields
+can still identify a person, and a provider can process requests from multiple
+accounts. It remains the plaintext endpoint for requests routed to it.
+
 ### What each party can observe
 
 This table is the privacy statement. [`../../consumer/privacy-expectations.md`](../../consumer/privacy-expectations.md) and [`../../provider/attestation.md`](../../provider/attestation.md) link to it and do not restate it.
@@ -118,11 +139,11 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Completion text | yes | yes, in memory while relaying; never logged or stored | yes (generates it) |
 | Model, sampling parameters, `stream`, `max_tokens` | yes | yes; stored as non-content request params | yes |
 | Token counts, latency, request/trace IDs, selected provider | yes (headers, usage) | yes; stored and logged | own requests only |
-| Consumer identity, API key, Privy DID, balance | own | yes | no |
+| Consumer identity, API key, Privy DID, balance | own | yes | not forwarded as authentication/billing context; caller content can still disclose identity |
 | Provider identity: SE public key, chip, model | yes (`X-Provider-*`, `GET /v1/providers/attestation`) | yes | own |
 | Provider serial, UDID, APNs token, MDA certificate chain | no | yes (stored) | own |
 | Provider X25519 private key, SE private key | no | no | own process / Secure Enclave |
-| Other consumers' prompts | no | yes, in memory, one request at a time | no |
+| Other consumers' prompts | no | for requests it processes | only requests routed to that provider; it may serve multiple accounts |
 
 ### What the coordinator logs and retains
 

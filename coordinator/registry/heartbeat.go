@@ -15,7 +15,7 @@ import (
 // clamped unnecessarily.
 const (
 	maxDecodeTPS                    = 500.0
-	maxPrefillTPS                   = 5000.0
+	maxPrefillTPS                   = 20000.0
 	maxMemoryBandwidthGBs           = 2000.0
 	maxMemoryGB                     = 1024
 	maxMemoryGBFloat                = 1024.0
@@ -165,9 +165,7 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 			}
 		}
 		if t := s.Telemetry; t != nil {
-			// System-profiler slot telemetry (measurement only). Silent
-			// clamps, like the token-budget fields above: nothing routes on
-			// these, so a bad value is not worth a log line per heartbeat.
+			// Counts remain bounded for diagnostics and routing forecasts.
 			// t is the registry-owned clone made by canonicalHeartbeatModelState.
 			clampTelemetryCount(t.QueuedPrefillTokens)
 			clampTelemetryCount(t.PartialPrefillRows)
@@ -184,10 +182,10 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 			// after ~17 min of stepping, so it gets the wide ns bound.
 			clampTelemetryInt64(t.StepWallNSTotal, maxTelemetryNSTotal)
 			if p := t.IsolatedPrefillTPS; p != nil {
-				if math.IsNaN(*p) || math.IsInf(*p, 0) {
-					t.IsolatedPrefillTPS = nil // garbage reads as "not reported"
-				} else if v, changed := clampNonNeg(*p, maxTelemetryTPS); changed {
-					*p = v
+				if math.IsNaN(*p) || math.IsInf(*p, 0) || *p < 0 || *p > maxPrefillTPS {
+					logger.Warn("provider isolated_prefill_tps out of range; ignoring",
+						"provider_id", providerID, "model", s.Model, "reported", *p)
+					t.IsolatedPrefillTPS = nil
 				}
 			}
 		}
@@ -209,11 +207,10 @@ func validLoadDiagnosticGB(v float64) bool {
 // numerics are clamped in place into [0, max]; nil (absent) is left alone so
 // presence semantics survive.
 const (
-	maxTelemetryCount   int64   = 1_000_000_000_000 // 1e12
-	maxTelemetryBytes   int64   = 1 << 48
-	maxTelemetryMS      int64   = 3_600_000                 // 1 h
-	maxTelemetryNSTotal int64   = 1_000_000_000_000_000_000 // 1e18 ≈ 31 y of cumulative ns
-	maxTelemetryTPS     float64 = 20_000
+	maxTelemetryCount   int64 = 1_000_000_000_000 // 1e12
+	maxTelemetryBytes   int64 = 1 << 48
+	maxTelemetryMS      int64 = 3_600_000                 // 1 h
+	maxTelemetryNSTotal int64 = 1_000_000_000_000_000_000 // 1e18 ≈ 31 y of cumulative ns
 )
 
 func clampTelemetryInt64(p *int64, limit int64) {
@@ -304,6 +301,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	clampBackendCapacity(r.logger, id, backendCapacity)
 	now := time.Now()
 	prevHB := p.LastHeartbeat
+	p.reconcileFirstContentMeasurementsLocked(backendCapacity)
 	p.reconcileCapacitySamplesLocked(backendCapacity, now)
 	p.LastHeartbeat = now
 	applyHeartbeatStatsDelta(&p.Stats, p.lastSessionStats, msg.Stats)

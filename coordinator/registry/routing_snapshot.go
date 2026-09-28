@@ -23,6 +23,8 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	snap.minRAMGb = r.catalogMinRAMGbLocked(model)
 
 	fillSnapshotPendingAndPool(snap, p, model)
+	fillFirstContentPending(snap, p, model)
+	snap.firstContentPendingKnown = true
 
 	snap.hasBackendCapacity = p.BackendCapacity != nil
 
@@ -76,4 +78,5 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	// confirmed against p.gate like the gates above (gateView).
 	rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
 	snap.budgetClamped = r.budgetClampedFor(p, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
+	r.fillFirstContentSnapshot(snap, p, now)
 }

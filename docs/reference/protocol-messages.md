@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `2496ac833`
+> Last updated: 2026-09-28 · commit `1f664f507`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -730,7 +730,7 @@ drift correction for the coordinator's ledger, not reservations.
 | JSON key | Go | Presence | Notes |
 |---|---|---|---|
 | `quote_id` | `string` | req | echo of the probe's random, request-local id |
-| `capacity_seq` | `uint64` | req | snapshot the quote was computed from; the coordinator trusts the probe window (`capacityProbeWindow`, [`../architecture/routing.md#entry-points`](../architecture/routing.md#entry-points)) and does not compare seqs |
+| `capacity_seq` | `uint64` | req | snapshot the quote was computed from; `applyFirstContentQuote` (`coordinator/registry/first_content_plan.go`) rejects older accepted-capacity sequences and newer local reservations; response correlation remains bounded by `capacityProbeWindow` |
 | `admissible_now` | `bool` | req | advisory — the inference request itself is the reservation |
 | `rejection_reason` | `CapacityRejectionReason` | opt | present **exactly when** `admissible_now` is false: `token_budget`, `kv_headroom`, `memory_cap`, `slot_state`, `template`, `capability`, `deadline` |
 | `ttft_p50_ms`, `ttft_p90_ms` | `float64` | req | end-to-end quantiles from completed comparable requests, never summed per-stage p95s |

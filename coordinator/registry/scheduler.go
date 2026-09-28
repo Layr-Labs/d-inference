@@ -15,19 +15,14 @@ const (
 	// routing heuristics and queue admission, not billing or protocol limits.
 	defaultRequestedMaxTokens = 256
 
+	// A changing fleet must not spin forever for deadline-exempt requests.
+	maxReservationRescans = 32
+
 	slotStatePenaltyRunning      = 0.0
 	slotStatePenaltyUnknown      = 30_000.0
 	slotStatePenaltyIdleShutdown = 20_000.0
 
-	// Penalty constants. Phase 3 raised queueDepthPenaltyMs (1000→3000),
-	// totalPendingPenaltyMs (250→750), and nearTieCostWindowMs (750→2500).
-	// The old values let a fast provider with 1-2 in-flight requests
-	// outscore an idle slow provider, because the per-request decode-cost
-	// gap (~3-10 s) dwarfed the queue penalty (~1 s/request). The new
-	// values make one queued request roughly equivalent to one
-	// slow-provider decode, so the cost function actually spreads load
-	// across the fleet. Wider tie window admits more candidates to the
-	// queue-depth tie-break + random distribution.
+	// Legacy cost diagnostics remain separate from first-content ranking.
 	queueDepthPenaltyMs      = 3_000.0
 	totalPendingPenaltyMs    = 750.0
 	memoryPressurePenaltyMs  = 4_000.0
@@ -35,7 +30,6 @@ const (
 	gpuUtilizationPenaltyMs  = 5_000.0
 	thermalPenaltyFairMs     = 2_000.0
 	thermalPenaltySeriousMs  = 8_000.0
-	nearTieCostWindowMs      = 3_000.0
 	challengeFreshnessMaxAge = 16 * time.Minute
 
 	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by
@@ -99,6 +93,7 @@ const (
 )
 
 type routingSnapshot struct {
+	firstContentSnapshot
 	provider         *Provider
 	model            string
 	chipFamily       string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
@@ -111,9 +106,16 @@ type routingSnapshot struct {
 	// aggregates price reservations not yet reflected by an idle heartbeat.
 	// Unknown sizes and cache participants retain the incoming-prompt proxy.
 	// Token-budget reservations (including output) remain memory accounting.
-	pendingPrefillTokens  float64
-	pendingPrefillUnknown int
-	pendingPrefillKnown   bool
+	pendingPrefillTokens      float64
+	pendingPrefillUnknown     int
+	pendingPrefillKnown       bool
+	firstContentPendingKnown  bool
+	unreportedPrefillTokens   float64
+	unreportedPrefillUnknown  int
+	overlappingPrefillTokens  float64
+	overlappingPrefillUnknown int
+	newestReservationAt       time.Time
+	pendingPrefillRestoreMs   float64
 	// pendingMaxTokensAllModels is pendingMaxTokens WITHOUT the model filter:
 	// the token budgets of every coordinator-pending request on this provider,
 	// any model. Feeds the pooled-budget admission check (pooledBudgetAdmits)
@@ -206,7 +208,13 @@ type routingSnapshot struct {
 }
 
 type routingCandidate struct {
-	cacheAffinityEligible bool
+	firstContentEvidenceQualified bool
+	firstContent                  FirstContentEstimate
+	firstContentCachedTokens      float64
+	firstContentRestoreMs         float64
+	firstContentCacheWeight       float64
+	firstContentCacheExpiresAt    time.Time
+	cacheAffinityEligible         bool
 	// Exact base-score work eligible for a cache credit; never includes load or decode.
 	pricedPromptTokens int
 	prefillCostMs      float64
@@ -312,15 +320,16 @@ type costBreakdown struct {
 // selection. Returned by ReserveProviderEx so callers can emit metrics
 // and structured logs without reaching into registry internals.
 type RoutingDecision struct {
-	ProviderID string  // winning provider, empty if no selection
-	Model      string  // requested model
-	CostMs     float64 // total cost of the winning candidate
-	StateMs    float64 // slot-state penalty contribution
-	QueueMs    float64 // pendingForModel × queueDepthPenaltyMs
-	PendingMs  float64 // totalPending × totalPendingPenaltyMs
-	BacklogMs  float64 // tokens-ahead / decodeTPS contribution
-	ThisReqMs  float64 // prefill+decode, including long-prompt and excess restore costs
-	HealthMs   float64 // memory/CPU/thermal/GPU-util contribution
+	FirstContent FirstContentEstimate
+	ProviderID   string  // winning provider, empty if no selection
+	Model        string  // requested model
+	CostMs       float64 // total cost of the winning candidate
+	StateMs      float64 // slot-state penalty contribution
+	QueueMs      float64 // pendingForModel × queueDepthPenaltyMs
+	PendingMs    float64 // totalPending × totalPendingPenaltyMs
+	BacklogMs    float64 // tokens-ahead / decodeTPS contribution
+	ThisReqMs    float64 // prefill+decode, including long-prompt and excess restore costs
+	HealthMs     float64 // memory/CPU/thermal/GPU-util contribution
 	// CapacityRateMs is the gray-box capacity-503 rate penalty added to the
 	// winner's cost (capacity_rate.go); 0 for healthy pairs. In-memory
 	// observability only — not persisted (inference_routes has no column and
@@ -480,10 +489,12 @@ const (
 )
 
 type providerReservationScan struct {
-	selected     *routingCandidate
-	candidates   candidateScan
-	cacheTracker *cacheRoutingTracker
-	cacheMode    string
+	quote          *PlanEntry
+	claimPlanEntry func(string) bool
+	selected       *routingCandidate
+	candidates     candidateScan
+	cacheTracker   *cacheRoutingTracker
+	cacheMode      string
 	// Profiler stamps for the decision: time waiting for the scan RLock and
 	// the scan+selection itself, in microseconds.
 	lockWaitUS int64
@@ -540,7 +551,7 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 		decision.ScanCount = scans
 		return decision
 	}
-	for pr.RefreshFirstContentBudget(time.Now()) {
+	for scans < maxReservationRescans && pr.RefreshFirstContentBudget(time.Now()) {
 		last = r.scanProviderReservation(model, pr, excluded...)
 		scans++
 		if last.selected == nil {
@@ -591,35 +602,7 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	// Profiler stamps: scan-lock wait (from here to the scan RLock) and the
 	// scan itself land on the decision as LockWaitUS / ScanUS; ~25 ns each.
 	tScanStart := time.Now()
-	// Snapshot receipt-confirmed cache hints before taking the registry scan lock.
-	// Query holders outside the scan lock; the later candidate quarantine check
-	// uses the same registry -> provider -> tracker order as receipt rejection.
-	r.mu.RLock()
-	cacheTracker, cacheMode := r.cacheRouting, r.cacheRoutingMode
-	// Skip digest derivation and holder lookup unless the request can use them.
-	// Only matching holders need a capability snapshot; cold providers are
-	// visited once, by the ordinary eligibility scan below.
-	wantHints := cacheTracker != nil && cacheMode == CacheRoutingOn &&
-		pr.CachePlan.present() && len(r.cacheRouteKeys.route) > 0
-	var cacheRouteKey []byte
-	if wantHints {
-		cacheRouteKey = append([]byte(nil), r.cacheRouteKeys.route...)
-	}
-	r.mu.RUnlock()
-	pr.cacheRoutingHints = nil
-	pr.CacheOpportunity = CacheOpportunity{}
-	if wantHints {
-		pr.cacheRoutingHints, pr.CacheOpportunity = r.cacheRoutingHintsWithObservation(
-			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, cacheTracker.now())
-	}
-	pr.CacheSelectionMode = ""
-	pr.CacheSelectionTier = ""
-	pr.CacheSelectionDiscountMs = 0
-	pr.CacheSelectionEstimatedTTFTSavedMs = 0
-	pr.CacheSelectionSelected = false
-	if pr.CachePlan.present() && cacheMode == CacheRoutingOn {
-		pr.CacheSelectionMode = "active"
-	}
+	cacheTracker, cacheMode := r.prepareRequestCacheHints(model, pr)
 
 	r.mu.RLock()
 	tLocked := time.Now()
@@ -650,6 +633,40 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	return result
 }
 
+func (r *Registry) prepareRequestCacheHints(model string, pr *PendingRequest) (*cacheRoutingTracker, string) {
+	// Snapshot receipt-confirmed cache hints before taking the registry scan lock.
+	// Query holders outside the scan lock; the later candidate quarantine check
+	// uses the same registry -> provider -> tracker order as receipt rejection.
+	r.mu.RLock()
+	cacheTracker, cacheMode := r.cacheRouting, r.cacheRoutingMode
+	// Skip digest derivation and holder lookup unless the request can use them.
+	// Only matching holders need a capability snapshot; cold providers are
+	// visited once, by the ordinary eligibility scan below.
+	wantHints := cacheTracker != nil && cacheMode == CacheRoutingOn &&
+		pr.CachePlan.present() && len(r.cacheRouteKeys.route) > 0
+	var cacheRouteKey []byte
+	if wantHints {
+		cacheRouteKey = append([]byte(nil), r.cacheRouteKeys.route...)
+	}
+	r.mu.RUnlock()
+	pr.cacheRoutingHints = nil
+	pr.CacheOpportunity = CacheOpportunity{}
+	if wantHints {
+		pr.cacheRoutingHints, pr.CacheOpportunity = r.cacheRoutingHintsWithObservation(
+			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, cacheTracker.now())
+	}
+	pr.CacheSelectionMode = ""
+	pr.CacheSelectionTier = ""
+	pr.CacheSelectionDiscountMs = 0
+	pr.CacheSelectionEstimatedTTFTSavedMs = 0
+	pr.CacheSelectionSelected = false
+	if pr.CachePlan.present() && cacheMode == CacheRoutingOn {
+		pr.CacheSelectionMode = "active"
+	}
+
+	return cacheTracker, cacheMode
+}
+
 // commitProviderReservation is the short commit phase. It repeats the full
 // current-state capacity chain before adding the pending debit, so concurrent
 // scans cannot double-spend a provider's cross-model token pool.
@@ -673,7 +690,11 @@ func (r *Registry) commitProviderReservation(
 	scan providerReservationScan,
 	excludeIDs ...string,
 ) (*Provider, *routingCandidate, reservationCommitOutcome, RoutingDecision) {
-	lock := r.commitLock("commit")
+	site := "commit"
+	if scan.claimPlanEntry != nil {
+		site = "commit_plan"
+	}
+	lock := r.commitLock(site)
 	lock.lock()
 	defer lock.unlock()
 
@@ -736,6 +757,10 @@ func (r *Registry) commitProviderReservation(
 	// and the debit.
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	now = time.Now()
+	if !pr.RefreshFirstContentBudget(now) {
+		return nil, nil, reservationDeadlineExpired, RoutingDecision{}
+	}
 	var snapshot routingSnapshot
 	if ok, _ := r.snapshotProviderIntoPLockedEx(
 		&snapshot, p, model, pr.Traits, relaxTrust, scan.candidates.ignoreProviderBreaker, now); !ok {
@@ -750,21 +775,29 @@ func (r *Registry) commitProviderReservation(
 		return nil, nil, reservationCandidateRejected,
 			routingDecisionForCommitRejection(model, reason, false)
 	}
-	if pr.MaxTTFTMs > 0 && !pr.RequiresVision && snapshot.hasBackendCapacity &&
-		candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
+	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
+	r.estimateFirstContent(candidate, pr, now)
+	if scan.quote != nil {
+		applyFirstContentQuote(candidate, pr, *scan.quote, now)
+	}
+	if !firstContentCandidateAllowed(candidate, pr) {
 		return nil, nil, reservationCandidateRejected,
 			routingDecisionForCommitRejection(model, rejectNone, true)
 	}
-	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
 
 	// Another reservation or cache quarantine changed this winner after the
 	// shared scan. Re-scan before committing stale cost or affinity preference.
 	// Quarantine can change affinity without changing any cost. The counters here
 	// were read under the p.mu this section still holds, so a concurrent commit
 	// on the same provider is either fully before (and visible) or fully after.
-	if snapshot.pendingForModel != selected.snapshot.pendingForModel ||
+	if snapshot.capacitySeq != selected.snapshot.capacitySeq ||
+		snapshot.pendingForModel != selected.snapshot.pendingForModel ||
 		snapshot.totalPending != selected.snapshot.totalPending ||
 		candidate.effectiveQueue != selected.effectiveQueue ||
+		candidate.firstContent.ExpectedMs != selected.firstContent.ExpectedMs ||
+		candidate.firstContent.ConservativeMs != selected.firstContent.ConservativeMs ||
+		candidate.firstContent.Status != selected.firstContent.Status ||
+		candidate.firstContent.ServiceMs != selected.firstContent.ServiceMs ||
 		candidate.costMs != selected.costMs ||
 		candidate.breakdown.CacheDiscountMs != selected.breakdown.CacheDiscountMs ||
 		candidate.cacheAffinityEligible != selected.cacheAffinityEligible {
@@ -776,6 +809,10 @@ func (r *Registry) commitProviderReservation(
 		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
 		return nil, nil, reservationCandidateRejected, RoutingDecision{}
 	}
+	if scan.claimPlanEntry != nil && !scan.claimPlanEntry(p.ID) {
+		return nil, nil, reservationNeedsRescan, RoutingDecision{}
+	}
+
 	// Half-open capacity probe: check-and-claim under gate.mu (p.mu → gate.mu).
 	// A pair whose expired cooldown was claimed by a concurrent commit for the
 	// same identity is closed again; reject rather than leak a second probe.
@@ -785,6 +822,7 @@ func (r *Registry) commitProviderReservation(
 	}
 
 	pr.ProviderID = p.ID
+	recordReservedPrefill(pr, candidate)
 	p.addPendingLocked(pr)
 	if p.Status != StatusUntrusted && p.Status != StatusOffline {
 		p.Status = StatusServing
@@ -884,6 +922,7 @@ func routingDecisionForCandidate(model string, provider *Provider, candidate *ro
 	bd := candidate.breakdown
 	decision := routingDecisionForFailedScan(model, scan)
 	decision.ProviderID = provider.ID
+	decision.FirstContent = candidate.firstContent
 	decision.CostMs = bd.Total
 	decision.StateMs = bd.StateMs
 	decision.QueueMs = bd.QueueMs
@@ -1000,6 +1039,7 @@ func shouldBypassBreakerFailOpen(winner *routingCandidate, breakerRejected, capa
 // idle-spread shadow scan (loadedIdleAlternativeExistsLocked) so the two can
 // never drift on which providers are routable.
 type candidateScan struct {
+	affinity              string
 	pool                  []*routingCandidate
 	candidateCount        int
 	capacityRejections    int
@@ -1155,7 +1195,6 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// Vision preparation is absent from the token-prefill projection, so media
 	// estimates are advisory even if a caller accidentally supplies a ceiling.
 	// The request-absolute first-content deadline remains authoritative.
-	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision
 	for _, p := range providers {
 		scan.scanned++
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
@@ -1234,29 +1273,19 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			continue
 		}
 
-		// Track the best reliable TTFT seen among providers that passed all
-		// structural and capacity gates. Even if this candidate is over the
-		// ceiling, the value is used for Retry-After on the TTFT 429 path.
-		// Providers without BackendCapacity do not contribute a reliable TTFT
-		// estimate, so they are skipped here.
-		if c.snapshot.hasBackendCapacity && (c.breakdown.TTFTMs < scan.bestTTFTMs || scan.bestTTFTMs == 0) {
-			scan.bestTTFTMs = c.breakdown.TTFTMs
+		r.applyCacheRoutingCost(p, model, pr, c)
+		r.estimateFirstContent(c, pr, now)
+		bestTTFT := c.firstContent.ConservativeMs
+		if bestTTFT > 0 && (scan.bestTTFTMs == 0 || bestTTFT < scan.bestTTFTMs) {
+			scan.bestTTFTMs = bestTTFT
 		}
-
-		// Enforce the per-request TTFT ceiling for public inference routes.
-		// Providers above the threshold are counted as TTFT rejections and
-		// excluded from cost-based selection so the router cannot pick a
-		// provider that misses the OpenRouter SLA target. Providers without
-		// BackendCapacity have no reliable TTFT estimate, so the ceiling is
-		// not enforced on them (matching the preflight behavior).
-		if enforceTTFT && c.snapshot.hasBackendCapacity && c.breakdown.TTFTMs > pr.MaxTTFTMs {
+		if !firstContentCandidateAllowed(c, pr) {
 			arena.release(c)
 			scan.ttftRejections++
 			scan.tallyGate(GateTTFTCeiling)
 			continue
 		}
 
-		r.applyCacheRoutingCost(p, model, pr, c)
 		// Best-idle is computed UNCONDITIONALLY over every routable candidate
 		// (before pool narrowing) so the record can answer "was an idle warm box
 		// available?" whether or not the shadow evaluator is on.
@@ -1280,6 +1309,8 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			return providerOwnedBy(c.provider, pr.OwnerAccountID)
 		})
 	}
+
+	pool = preferFirstContentCandidates(pool)
 
 	// Version-diverse retry (SOFT): when a previous attempt failed on a given
 	// binary version, prefer candidates running any OTHER version so a
@@ -1347,6 +1378,7 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 			}
 		}
 	}
+	scan.affinity = affinity
 	winner, runnerUp, nearTieSize, path := selectRoutingCandidateWithAffinity(scan.pool, affinity)
 	pr.CacheOpportunity.AffinityApplied = path == SelectionPrefixAffinity
 	// The runner-up is the pool minimum whenever the winner is not; a credited
@@ -2196,8 +2228,11 @@ func resolveEffectiveTPS(snap *routingSnapshot) float64 {
 // today's fleet this is a no-op that returns the existing ×12-chain value.
 func resolvePrefillTPS(snap *routingSnapshot) float64 {
 	tps := snap.prefillTPS
-	if snap.observedPrefillTPS > 0 {
+	if finitePositive(snap.observedPrefillTPS) {
 		tps = snap.observedPrefillTPS
+	}
+	if !finitePositive(tps) {
+		tps = 1
 	}
 	if tps > maxPrefillTPS {
 		tps = maxPrefillTPS
@@ -2588,6 +2623,9 @@ func (r *Registry) QuickCapacityCheckForRequest(model string, estimatedPromptTok
 	return candidateCount, capacityRejections, modelTooLarge
 }
 
+// QuickCapacityCheckWithTTFTForRequest retains the historical calibrated TTFT
+// diagnostic for telemetry and calibration replay. Live request preflight uses
+// QuickFirstContentCapacityForRequest with request clocks and cache evidence.
 func (r *Registry) QuickCapacityCheckWithTTFTForRequest(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int, bestTTFT time.Duration, hasTTFT bool) {
 	return r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
 }
@@ -2757,17 +2795,16 @@ func estimatedTTFTFromSnapshot(snap *routingSnapshot, reqPromptTokens int) time.
 	if ttftMs <= 0 || math.IsNaN(ttftMs) || math.IsInf(ttftMs, 0) {
 		return 0
 	}
-	// Same calibration as the scheduler's gate input (buildCandidateWithReason)
-	// so the preflight bestTTFT and the hard-reject ceiling cannot drift.
+	// Keep this historical capacity diagnostic aligned with the legacy
+	// candidate cost breakdown. It is not a first-content confidence bound.
 	ttftMs = calibratedTTFTMs(snap, ttftMs)
 	return time.Duration(ttftMs * float64(time.Millisecond))
 }
 
 // ttftMsFromSnapshot returns the estimated time-to-first-token in milliseconds
-// for a candidate/provider snapshot. It is shared between the preflight
-// (QuickCapacityCheckWithTTFTForRequest) and the scheduler
-// (buildCandidateWithReason) so the two paths cannot drift on what "TTFT"
-// means.
+// for historical candidate and capacity diagnostics. Live request selection
+// and feasibility use estimateFirstContent; calibration of this diagnostic
+// cannot establish confidence for stale or missing performance evidence.
 //
 // Token-budget fields are admission/memory reservations, not decode work that
 // must fully drain before this request can emit a first token. Continuous

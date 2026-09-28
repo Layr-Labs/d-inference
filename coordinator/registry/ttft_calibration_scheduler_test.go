@@ -43,124 +43,45 @@ func feedCalibrationThroughScheduler(t *testing.T, reg *Registry, model string, 
 	}
 }
 
-// A provider whose raw estimate is ~3x reality (the production gpt-oss shape)
-// hard-rejects a request it could serve; after the calibrator learns the true
-// ratio from completed requests, the same request passes the gate — and the
-// kill switch restores the uncalibrated behavior live.
-func TestTTFTCalibrationUnblocksHardRejectGate(t *testing.T) {
-	resetCalibrator(t)
-	reg := New(testLogger())
-	model := "calib-overpredict-model"
-	// prompt 1000 / prefill 100 tok/s => raw estimate 10010ms.
-	calibrationTestProvider(t, reg, "over-estimator", model, 100, 100)
-	const promptTokens = 1000
-	const rawEstimateMs = 10_010.0
-	const ceilingMs = 5_000.0
-
-	gatedReq := func(id string) *PendingRequest {
-		return &PendingRequest{
-			RequestID:             id,
-			Model:                 model,
-			EstimatedPromptTokens: promptTokens,
-			RequestedMaxTokens:    128,
-			MaxTTFTMs:             ceilingMs,
-		}
-	}
-
-	// Uncalibrated: the raw 10s estimate exceeds the 5s ceiling.
-	selected, decision := reg.ReserveProviderEx(model, gatedReq("calib-before"))
-	if selected != nil {
-		t.Fatalf("uncalibrated reserve selected %q, want TTFT rejection", selected.ID)
-	}
-	if decision.TTFTRejections != 1 {
-		t.Fatalf("uncalibrated TTFTRejections = %d, want 1", decision.TTFTRejections)
-	}
-	if math.Abs(decision.BestTTFTMs-rawEstimateMs) > 1 {
-		t.Fatalf("uncalibrated BestTTFTMs = %f, want ~%f", decision.BestTTFTMs, rawEstimateMs)
-	}
-	_, _, _, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(model, promptTokens, 128, RequestTraits{}, false)
-	if !hasTTFT || math.Abs(float64(bestTTFT.Milliseconds())-rawEstimateMs) > 5 {
-		t.Fatalf("uncalibrated preflight bestTTFT = %v, want ~%vms", bestTTFT, rawEstimateMs)
-	}
-
-	// Reality: first content lands in a third of the estimate.
-	feedCalibrationThroughScheduler(t, reg, model, promptTokens, ttftCalibrationWarmupObs, rawEstimateMs*0.3)
-
-	// Calibrated: 10010 x 0.3 = 3003ms clears the 5s ceiling.
-	selected, decision = reg.ReserveProviderEx(model, gatedReq("calib-after"))
-	if selected == nil {
-		t.Fatalf("calibrated reserve rejected: %+v", decision)
-	}
-	if math.Abs(decision.TTFTMs-rawEstimateMs*0.3) > 1 {
-		t.Fatalf("calibrated TTFTMs = %f, want ~%f", decision.TTFTMs, rawEstimateMs*0.3)
-	}
-	selected.RemovePending("calib-after")
-	reg.SetProviderIdle(selected.ID)
-
-	// The preflight consumes the same calibrated estimate.
-	_, _, _, bestTTFT, hasTTFT = reg.QuickCapacityCheckWithTTFTForRequest(model, promptTokens, 128, RequestTraits{}, false)
-	if !hasTTFT || math.Abs(float64(bestTTFT.Milliseconds())-rawEstimateMs*0.3) > 5 {
-		t.Fatalf("calibrated preflight bestTTFT = %v, want ~%vms", bestTTFT, time.Duration(rawEstimateMs*0.3)*time.Millisecond)
-	}
-
-	// Kill switch: live env flip restores the uncalibrated gate.
-	t.Setenv("EIGENINFERENCE_TTFT_CALIBRATION", "off")
-	selected, decision = reg.ReserveProviderEx(model, gatedReq("calib-killed"))
-	if selected != nil {
-		t.Fatalf("kill-switched reserve selected %q, want TTFT rejection", selected.ID)
-	}
-	if decision.TTFTRejections != 1 {
-		t.Fatalf("kill-switched TTFTRejections = %d, want 1", decision.TTFTRejections)
-	}
-}
-
-// The reverse direction: a provider whose estimate is optimistic (actuals run
-// 2x the prediction) initially passes the gate; after the calibrator learns
-// upward (clamped at 1.5x), the same request is TTFT-rejected.
-func TestTTFTCalibrationLearnsUpward(t *testing.T) {
-	resetCalibrator(t)
-	reg := New(testLogger())
-	model := "calib-underpredict-model"
-	// prompt 400 / prefill 100 tok/s => raw estimate 4010ms, under the ceiling.
-	calibrationTestProvider(t, reg, "under-estimator", model, 100, 100)
-	const promptTokens = 400
-	const rawEstimateMs = 4_010.0
-	const ceilingMs = 5_000.0
-
-	req := &PendingRequest{
-		RequestID:             "under-before",
-		Model:                 model,
-		EstimatedPromptTokens: promptTokens,
-		RequestedMaxTokens:    128,
-		MaxTTFTMs:             ceilingMs,
-	}
-	selected, decision := reg.ReserveProviderEx(model, req)
-	if selected == nil {
-		t.Fatalf("uncalibrated reserve rejected: %+v", decision)
-	}
-	selected.RemovePending(req.RequestID)
-	reg.SetProviderIdle(selected.ID)
-
-	// Reality is 2x the estimate; the learned ratio clamps to 1.5 at apply.
-	feedCalibrationThroughScheduler(t, reg, model, promptTokens, ttftCalibrationWarmupObs, rawEstimateMs*2)
-
-	// 4010 x 1.5 = 6015ms breaches the 5s ceiling.
-	req = &PendingRequest{
-		RequestID:             "under-after",
-		Model:                 model,
-		EstimatedPromptTokens: promptTokens,
-		RequestedMaxTokens:    128,
-		MaxTTFTMs:             ceilingMs,
-	}
-	selected, decision = reg.ReserveProviderEx(model, req)
-	if selected != nil {
-		t.Fatalf("calibrated reserve selected %q, want TTFT rejection", selected.ID)
-	}
-	if decision.TTFTRejections != 1 {
-		t.Fatalf("calibrated TTFTRejections = %d, want 1", decision.TTFTRejections)
-	}
-	if math.Abs(decision.BestTTFTMs-rawEstimateMs*1.5) > 1 {
-		t.Fatalf("calibrated BestTTFTMs = %f, want ~%f (clamped 1.5x)", decision.BestTTFTMs, rawEstimateMs*1.5)
+// The historical learned TTFT ratio remains a diagnostic. It must never turn
+// missing or stale performance evidence into credible admission certainty.
+func TestTTFTCalibrationDoesNotChangeFirstContentConfidence(t *testing.T) {
+	for _, factor := range []float64{0.3, 2} {
+		t.Run(fmt.Sprintf("factor-%v", factor), func(t *testing.T) {
+			resetCalibrator(t)
+			reg := New(testLogger())
+			model := "calibration-diagnostic"
+			calibrationTestProvider(t, reg, "provider", model, 100, 100)
+			const rawEstimateMs = 10010.0
+			request := func(id string) *PendingRequest {
+				return &PendingRequest{RequestID: id, Model: model, EstimatedPromptTokens: 1000,
+					RequestedMaxTokens: 128, MaxTTFTMs: 5000, FirstContentDeadline: time.Now().Add(5 * time.Second)}
+			}
+			reserve := func(id string) RoutingDecision {
+				p, d := reg.ReserveProviderEx(model, request(id))
+				if p == nil || d.FirstContent.Status != FirstContentUnknown || d.TTFTRejections != 0 {
+					t.Fatalf("calibration cannot certify unknown samples: provider=%v forecast=%+v rejects=%d", p != nil, d.FirstContent, d.TTFTRejections)
+				}
+				p.RemovePending(id)
+				reg.SetProviderIdle(p.ID)
+				return d
+			}
+			before := reserve("before")
+			feedCalibrationThroughScheduler(t, reg, model, 1000, ttftCalibrationWarmupObs, rawEstimateMs*factor)
+			after := reserve("after")
+			want := rawEstimateMs * min(factor, 1.5)
+			if math.Abs(after.TTFTMs-want) > 1 {
+				t.Fatalf("learned diagnostic=%v, want %v", after.TTFTMs, want)
+			}
+			if after.FirstContent.ExpectedMs != before.FirstContent.ExpectedMs || after.FirstContent.ConservativeMs != before.FirstContent.ConservativeMs {
+				t.Fatal("historical mean calibration changed independent first-content work forecast")
+			}
+			t.Setenv("EIGENINFERENCE_TTFT_CALIBRATION", "off")
+			disabled := reserve("disabled")
+			if math.Abs(disabled.TTFTMs-rawEstimateMs) > 1 {
+				t.Fatalf("disabled diagnostic=%v, want %v", disabled.TTFTMs, rawEstimateMs)
+			}
+		})
 	}
 }
 

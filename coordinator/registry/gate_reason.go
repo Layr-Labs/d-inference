@@ -221,6 +221,9 @@ func ProviderVersionFold(raw string) string {
 // string-header copy of the immutable Provider.ID.
 type CandidateSummary struct {
 	ProviderID string
+	// FirstContent carries the advisory delivery forecast separately from the
+	// historical cost/TTFT diagnostics. It contains no prompt or cache identity.
+	FirstContent FirstContentEstimate
 
 	CostMs, StateMs, QueueMs, PendingMs, BacklogMs, ThisReqMs, HealthMs, CapacityRateMs, CacheDiscountMs float64
 	TTFTMs, EffectiveTPS                                                                                 float64
@@ -249,6 +252,7 @@ func candidateSummaryOf(c *routingCandidate) CandidateSummary {
 	snap := &c.snapshot
 	return CandidateSummary{
 		ProviderID:            c.provider.ID,
+		FirstContent:          c.firstContent,
 		CostMs:                c.costMs,
 		StateMs:               bd.StateMs,
 		QueueMs:               bd.QueueMs,

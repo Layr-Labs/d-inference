@@ -54,31 +54,32 @@ func boolPtr(b bool) *bool { return &b }
 
 // candidateJSON is the persisted shape of one candidate summary.
 type candidateJSON struct {
-	ProviderID            string  `json:"provider_id"`
-	CostMs                float64 `json:"cost_ms"`
-	StateMs               float64 `json:"state_ms"`
-	QueueMs               float64 `json:"queue_ms"`
-	PendingMs             float64 `json:"pending_ms"`
-	BacklogMs             float64 `json:"backlog_ms"`
-	ThisReqMs             float64 `json:"this_req_ms"`
-	HealthMs              float64 `json:"health_ms"`
-	CapacityRateMs        float64 `json:"capacity_rate_ms"`
-	CacheDiscountMs       float64 `json:"cache_discount_ms"`
-	TTFTMs                float64 `json:"ttft_ms"`
-	EffectiveTPS          float64 `json:"effective_tps"`
-	EffectiveQueue        int32   `json:"effective_queue"`
-	TotalPending          int32   `json:"total_pending"`
-	BackendRunning        int32   `json:"backend_running"`
-	BackendWaiting        int32   `json:"backend_waiting"`
-	ActiveTokenBudgetUsed int64   `json:"active_token_budget_used"`
-	ActiveTokenBudgetMax  int64   `json:"active_token_budget_max"`
-	QueuedPrefillTokens   int64   `json:"queued_prefill_tokens"`
-	SlotState             string  `json:"slot_state"`
-	HBAgeMs               int32   `json:"hb_age_ms"`
+	FirstContent          *registry.FirstContentEstimate `json:"first_content,omitempty"`
+	ProviderID            string                         `json:"provider_id"`
+	CostMs                float64                        `json:"cost_ms"`
+	StateMs               float64                        `json:"state_ms"`
+	QueueMs               float64                        `json:"queue_ms"`
+	PendingMs             float64                        `json:"pending_ms"`
+	BacklogMs             float64                        `json:"backlog_ms"`
+	ThisReqMs             float64                        `json:"this_req_ms"`
+	HealthMs              float64                        `json:"health_ms"`
+	CapacityRateMs        float64                        `json:"capacity_rate_ms"`
+	CacheDiscountMs       float64                        `json:"cache_discount_ms"`
+	TTFTMs                float64                        `json:"ttft_ms"`
+	EffectiveTPS          float64                        `json:"effective_tps"`
+	EffectiveQueue        int32                          `json:"effective_queue"`
+	TotalPending          int32                          `json:"total_pending"`
+	BackendRunning        int32                          `json:"backend_running"`
+	BackendWaiting        int32                          `json:"backend_waiting"`
+	ActiveTokenBudgetUsed int64                          `json:"active_token_budget_used"`
+	ActiveTokenBudgetMax  int64                          `json:"active_token_budget_max"`
+	QueuedPrefillTokens   int64                          `json:"queued_prefill_tokens"`
+	SlotState             string                         `json:"slot_state"`
+	HBAgeMs               int32                          `json:"hb_age_ms"`
 }
 
 func candidateFromSummary(c registry.CandidateSummary) candidateJSON {
-	return candidateJSON{
+	result := candidateJSON{
 		ProviderID: c.ProviderID, CostMs: c.CostMs, StateMs: c.StateMs, QueueMs: c.QueueMs,
 		PendingMs: c.PendingMs, BacklogMs: c.BacklogMs, ThisReqMs: c.ThisReqMs, HealthMs: c.HealthMs,
 		CapacityRateMs: c.CapacityRateMs, CacheDiscountMs: c.CacheDiscountMs, TTFTMs: c.TTFTMs,
@@ -87,6 +88,10 @@ func candidateFromSummary(c registry.CandidateSummary) candidateJSON {
 		ActiveTokenBudgetUsed: c.ActiveTokenBudgetUsed, ActiveTokenBudgetMax: c.ActiveTokenBudgetMax,
 		QueuedPrefillTokens: c.QueuedPrefillTokens, SlotState: string(c.SlotState), HBAgeMs: c.HBAgeMs,
 	}
+	if c.FirstContent.Status != "" {
+		result.FirstContent = &c.FirstContent
+	}
+	return result
 }
 
 // decisionJSON encodes the routing context fields that are not flat columns.
@@ -94,6 +99,11 @@ func decisionJSON(d registry.RoutingDecision) (candidates, gateRejections json.R
 	top := make([]candidateJSON, 0, len(d.Top))
 	for _, c := range d.Top {
 		if c.Present {
+			// Selection snapshots precede atomic reservation. Persist the winner's
+			// refreshed clock and evidence, not its earlier scan-time forecast.
+			if c.ProviderID == d.ProviderID && d.FirstContent.Status != "" {
+				c.FirstContent = d.FirstContent
+			}
 			top = append(top, candidateFromSummary(c))
 		}
 	}

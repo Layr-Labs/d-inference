@@ -22,6 +22,7 @@ func TestReplaceProviderModelsInvalidatesOwnerLoadEvidenceForSameID(t *testing.T
 	p.Models[0].EstimatedMemoryGB = 18.2
 	p.CapacityModelIDs = []string{drainStateTestModel}
 	p.CapacityAcceptedAt = time.Now()
+	p.firstContentMeasurements = map[string]firstContentMeasurement{drainStateTestModel: {rate: 1000, observedAfter: time.Now()}}
 	p.BackendCapacity = &protocol.BackendCapacity{Slots: []protocol.BackendSlotCapacity{}}
 	p.mu.Unlock()
 	generation := r.CommitProviderDrain(p, "drain")
@@ -35,6 +36,9 @@ func TestReplaceProviderModelsInvalidatesOwnerLoadEvidenceForSameID(t *testing.T
 	}
 	if p.CapacityModelIDs != nil || !p.CapacityAcceptedAt.IsZero() || p.BackendCapacity == nil {
 		t.Fatal("same-ID replacement left owner load evidence fresh or disturbed routing capacity")
+	}
+	if p.firstContentMeasurements != nil {
+		t.Fatal("same-ID artifact replacement retained prior performance freshness")
 	}
 	if !r.Heartbeat(p.ID, &protocol.HeartbeatMessage{
 		Type: protocol.TypeHeartbeat, Status: "idle",

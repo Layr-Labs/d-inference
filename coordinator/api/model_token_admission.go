@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
@@ -15,9 +16,9 @@ var errPromotionKeyLimit = errors.New("API key spend limit reached")
 
 // Free tokens cover input first, then output. The normal minimum applies only
 // when some tokens remain paid; a fully sponsored request costs its user zero.
-func modelTokenQuote(model string, prompt, completion int, in, out int64, custom bool, limit *int64) store.ModelTokenQuote {
+func modelTokenQuote(prompt, completion int, rates payments.Rates, limit *int64) store.ModelTokenQuote {
 	return func(free int64) (int64, int64, error) {
-		price, err := priceModelTokens(model, prompt, completion, in, out, custom, free, nil)
+		price, err := priceModelTokens(prompt, completion, rates, free, nil)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -69,9 +70,9 @@ func (s *Server) reserveModelTokenPromotion(w http.ResponseWriter, r *http.Reque
 		return 0, false, false
 	}
 	prompt := max(p.billingPromptTokens, p.estimatedPromptTokens)
-	in, out, custom := s.store.GetModelPrice("platform", p.model)
+	rates := payments.RatesFor(s.store.GetModelPrice("platform", p.model))
 	limit := s.promotionKeyRemaining(keyIDFromContext(r.Context()), keyLimitMicroFromContext(r.Context()), keyLimitResetFromContext(r.Context()))
-	quote := modelTokenQuote(p.model, prompt, p.requestedMaxTokens, in, out, custom, limit)
+	quote := modelTokenQuote(prompt, p.requestedMaxTokens, rates, limit)
 	var freeSeen int64
 	quoted := false
 	wrapped := func(free int64) (int64, int64, error) { quoted = true; freeSeen = free; return quote(free) }
@@ -122,12 +123,12 @@ func (s *Server) topUpModelTokenPromotion(pr *registry.PendingRequest, provider 
 	if !ok {
 		return 0, errors.New("promotion store unavailable")
 	}
-	in, out, custom := s.store.GetModelPrice(providerPricingKeys(provider), pr.Model)
+	price, custom := s.store.GetModelPrice(providerPricingKeys(provider), pr.Model)
 	if !custom || pr.PromotionFreeTokens > 0 {
-		in, out, custom = s.store.GetModelPrice("platform", pr.Model)
+		price, custom = s.store.GetModelPrice("platform", pr.Model)
 	}
 	limit := s.promotionKeyRemaining(pr.KeyID, pr.KeyLimitMicroUSD, pr.KeyLimitReset)
-	reservation, err := backend.TopUpModelTokenReservation(pr.ModelTokenReservationID, 0, modelTokenQuote(pr.Model, pr.EstimatedPromptTokens, pr.RequestedMaxTokens, in, out, custom, limit))
+	reservation, err := backend.TopUpModelTokenReservation(pr.ModelTokenReservationID, 0, modelTokenQuote(pr.EstimatedPromptTokens, pr.RequestedMaxTokens, payments.RatesFor(price, custom), limit))
 	if err != nil {
 		return pr.ReservedMicroUSD, err
 	}

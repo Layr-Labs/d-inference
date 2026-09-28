@@ -167,6 +167,7 @@ func cacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
 		// the provider does not accept a coordinator-selected endpoint today.
 		out[holder.ProviderID] = cacheRoutingHint{
 			generation:         plan.generation,
+			ExpiresAt:          holder.ExpiresAt,
 			PrefillTokensSaved: holder.Anchor.TokenCount - holder.RequiredRecomputeTokens,
 			CachedTokens:       holder.Anchor.TokenCount,
 			StageMs:            stageMs,

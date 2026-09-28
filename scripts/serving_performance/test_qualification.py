@@ -52,6 +52,48 @@ def run(report):
 
 
 class QualificationTests(unittest.TestCase):
+    def test_identity_cannot_inject_qualification_results_or_runtime_policy(self):
+        injected = {
+            "mixed_prefill_token_cap": 512,
+            "max_concurrency": 16,
+            "whole_mac_concurrency": 16,
+            "batch_curve": [{"width": 16, "decode_p10_tps": 1000}],
+            "qualification_report_sha256": "f" * 64,
+            "unreviewed_policy": {"enabled": True},
+        }
+        for selected_widths in ((1,), (1, 2)):
+            for field, value in injected.items():
+                with self.subTest(widths=selected_widths, field=field):
+                    report = receipt(selected_widths)
+                    self.assertTrue(run(report)["qualified"])
+                    report["identity"][field] = value
+                    result = run(report)
+                    self.assertFalse(result["qualified"])
+                    self.assertIsNone(result["profile"])
+                    self.assertIn(f"identity.{field} is not a supported identity field", result["errors"])
+
+    def test_profile_contains_only_identity_and_evaluated_results(self):
+        identity_fields = {
+            "id", "model_id", "artifact_sha256", "provider_version", "runtime_revision",
+            "kv_backend", "chip_name", "gpu_cores", "memory_gb", "context_tokens_max",
+        }
+        derived_fields = {
+            "max_concurrency", "whole_mac_concurrency", "qualification_report_sha256", "batch_curve",
+        }
+        for mixed in (False, True):
+            for limit in (1, 2):
+                with self.subTest(mixed=mixed, limit=limit):
+                    report = chunk_receipt() if mixed else receipt()
+                    report["qualification_cells"] = [
+                        cell for cell in report["qualification_cells"] if cell["width"] <= limit]
+                    profile = run(report)["profile"]
+                    fields = identity_fields | derived_fields
+                    if mixed and limit > 1:
+                        fields |= {"mixed_prefill_token_cap"}
+                        self.assertEqual(profile["mixed_prefill_token_cap"], 128)
+                    self.assertEqual(set(profile), fields)
+                    self.assertEqual(profile["max_concurrency"], limit)
+
     def test_only_complete_passing_widths_promote(self):
         report = receipt()
         result = run(report)

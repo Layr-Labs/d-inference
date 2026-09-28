@@ -19,6 +19,7 @@ extension EngineV2Bridge {
     }
 
     func acquireServiceAllowance(requestID: String, serviceReservationID: String? = nil,
+        serviceReservation: ServiceReservationLifetime? = nil,
         allowExpansion: Bool? = nil) -> Bool {
         let effectiveProfile = currentPerformanceProfile(
             allowExpansion: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
@@ -30,7 +31,8 @@ extension EngineV2Bridge {
             ownerID: serviceOwnerPrefix + ":" + requestID,
             concurrency: effectiveProfile?.wholeMacConcurrency
                 ?? ServingPerformanceProfiles.legacyWholeMacConcurrency,
-            serviceReservationID: serviceReservationID) ?? true
+            serviceReservationID: serviceReservationID,
+            serviceReservation: serviceReservation) ?? true
     }
 
     /// Call only at refused pre-submit cleanup or completed engine retirement.

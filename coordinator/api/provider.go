@@ -713,6 +713,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// like heartbeat ingest — no DB or lock-heavy work on this path.
 			s.registry.HandleCapacityQuote(providerID, quoteMsg)
 
+		case protocol.TypeServiceReservationReleased:
+			released := msg.Payload.(*protocol.ServiceReservationReleasedMessage)
+			s.registry.ReleaseServiceReservation(provider, released.ServiceReservationID)
+
 		case protocol.TypeInferenceAccepted:
 			acceptMsg := msg.Payload.(*protocol.InferenceAcceptedMessage)
 			s.handleInferenceAccepted(provider, acceptMsg)

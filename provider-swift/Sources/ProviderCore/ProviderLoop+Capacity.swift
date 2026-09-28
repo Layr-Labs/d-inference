@@ -222,6 +222,7 @@ extension ProviderLoop {
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             wholeMacServiceUsed: serviceSnapshot.usedFraction,
+            wholeMacServiceRetirementProtocol: 1,
             wholeMacServiceReservations: serviceSnapshot.reservations,
             gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
             gpuMemoryPeakGb: Double(mlxPeakBytes) / gbDivisor,

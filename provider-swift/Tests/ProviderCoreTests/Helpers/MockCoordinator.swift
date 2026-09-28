@@ -38,6 +38,7 @@ public struct CapturedMessages: Sendable {
     public var attestationResponses: [ProviderMessage.AttestationResponse] = []
     public var codeAttestationResponses: [ProviderMessage.CodeAttestationResponse] = []
     public var inferenceAccepted: [ProviderMessage.InferenceAccepted] = []
+    public var serviceReservationReleases: [String] = []
     public var inferenceChunks: [ProviderMessage.InferenceResponseChunk] = []
     public var inferenceComplete: [ProviderMessage.InferenceComplete] = []
     public var inferenceErrors: [ProviderMessage.InferenceError] = []
@@ -636,6 +637,7 @@ public final class MockCoordinator: @unchecked Sendable {
             case .attestationResponse(let a): captured.attestationResponses.append(a)
             case .codeAttestationResponse(let c): captured.codeAttestationResponses.append(c)
             case .inferenceAccepted(let a):   captured.inferenceAccepted.append(a)
+            case .serviceReservationReleased(let id): captured.serviceReservationReleases.append(id)
             case .inferenceResponseChunk(let c): captured.inferenceChunks.append(c)
             case .inferenceComplete(let c):   captured.inferenceComplete.append(c)
             case .inferenceError(let e):      captured.inferenceErrors.append(e)

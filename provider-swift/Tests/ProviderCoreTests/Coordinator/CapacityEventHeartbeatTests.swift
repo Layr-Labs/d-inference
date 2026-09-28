@@ -95,6 +95,15 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
     #expect(!CapacityHeartbeatMateriality.isMaterial(previous: after, current: after))
 }
 
+@Test func serviceRetirementProtocolSupportIsMaterialWithoutUsageChanges() {
+    let legacy = capacity([])
+    var current = legacy
+    current.wholeMacServiceRetirementProtocol = 1
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: legacy, current: current))
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: current, current: legacy))
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: current, current: current))
+}
+
 @Test func admissionCompletionAndHealthTransitionsAreMaterial() {
     let base = capacity([slot(numRunning: 1)])
     // Request admitted / completed: numRunning moved.

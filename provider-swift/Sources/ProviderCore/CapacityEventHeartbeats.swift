@@ -55,6 +55,7 @@ public enum CapacityHeartbeatMateriality {
         // unchanged while changing whole-Mac admission headroom.
         if previous.wholeMacServiceUsed != current.wholeMacServiceUsed { return true }
         if previous.wholeMacServiceReservations != current.wholeMacServiceReservations { return true }
+        if previous.wholeMacServiceRetirementProtocol != current.wholeMacServiceRetirementProtocol { return true }
 
         // Slot roster: a model loaded, unloaded, or evicted.
         let previousSlots = Dictionary(

@@ -33,3 +33,14 @@ struct ServiceReservationRequestProtocolTests {
         #expect(request.serviceReservationID == nil)
     }
 }
+
+@Test func serviceReservationReleaseWireRoundTrip() throws {
+    let id = "6e1f61d1-e22c-4d24-a3a7-d347772a48cb"
+    let message = CoordinatorClientCodec.providerMessage(for: .serviceReservationReleased(serviceReservationID: id))
+    let data = try JSONEncoder().encode(message)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object.count == 2)
+    #expect(object["type"] as? String == "service_reservation_released")
+    #expect(object["service_reservation_id"] as? String == id)
+    #expect(try JSONDecoder().decode(ProviderMessage.self, from: data) == message)
+}

@@ -46,9 +46,11 @@ struct EngineDeadlineRetirementBridgeTests {
         }
         let request = ChatCompletionRequest(model: "deadline-owner", messages: [], max_tokens: 1)
         let reservationID = UUID().uuidString.lowercased()
+        let releases = ServiceReleaseRecorder()
+        let lifetime = try #require(ServiceReservationLifetime(id: reservationID, onReleased: releases.record))
         let stream = try await bridge.submitTokenized(promptTokens: [1, 2], request: request,
             requestId: "held", firstContentDeadline: .init(relativeBudgetMilliseconds: 60_000),
-            serviceReservationID: reservationID)
+            serviceReservationID: reservationID, serviceReservation: lifetime)
         #expect(engine.deadlineAdmissions.count == 1)
         let continuation = try #require(engine.continuations.last)
         continuation.yield(.finished(reason: cancelled ? .cancelled : .stop,
@@ -56,6 +58,8 @@ struct EngineDeadlineRetirementBridgeTests {
         continuation.finish()
         let terminalErrors = await errors(in: stream)
         #expect(terminalErrors == (cancelled ? ["request cancelled"] : []))
+        lifetime.finishPipeline()
+        #expect(releases.ids.isEmpty, "a client terminal cannot acknowledge device retirement")
 
         #expect(budget.serviceBudget.count == limit)
         #expect(budget.serviceBudget.snapshot().reservations == [
@@ -93,6 +97,7 @@ struct EngineDeadlineRetirementBridgeTests {
         #expect(!isolated.overlap.contended)
         isolated.end()
         #expect(budget.serviceBudget.snapshot().reservations.isEmpty)
+        #expect(releases.ids == [reservationID])
         let retried = await otherBridge.submitTokenized(promptTokens: [1, 2], request: request,
             requestId: "other")
         let otherContinuation = try #require(otherEngine.continuations.last)

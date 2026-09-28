@@ -326,6 +326,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = backendCapacity
+	if backendCapacity != nil && backendCapacity.WholeMacServiceRetirementProtocol == 1 && backendCapacity.WholeMacServiceUsed != nil {
+		p.serviceRetirementProtocol = true
+	}
 	p.CapacityAcceptedAt = time.Time{}
 	if backendCapacity != nil {
 		p.CapacityAcceptedAt = now

@@ -8,6 +8,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     private struct Charge {
         let fraction: Double
         let reservationID: String?
+        let lifetime: ServiceReservationLifetime?
     }
     struct Snapshot: Sendable, Equatable {
         let usedFraction: Double
@@ -17,12 +18,12 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     private var observerID: UUID?
     private var observer: AsyncStream<Void>.Continuation?
 
-    func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil) -> Bool {
+    func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil,
+        serviceReservation: ServiceReservationLifetime? = nil) -> Bool {
         // Correlation is optional. Malformed input gets no overlap credit; it
         // never bypasses the actual provider-side service allowance.
-        let reservationID = serviceReservationID.flatMap {
-            $0.utf8.count == 36 ? UUID(uuidString: $0)?.uuidString.lowercased() : nil
-        }
+        let reservationID = serviceReservation?.id
+            ?? ServiceReservationLifetime.normalizedID(serviceReservationID)
         let (acquired, notification) = lock.withLock { () -> (Bool, AsyncStream<Void>.Continuation?) in
             guard charges[ownerID] == nil, concurrency > 0 else { return (false, nil) }
             if let reservationID, charges.values.contains(where: { $0.reservationID == reservationID }) {
@@ -30,7 +31,9 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             }
             let charge = 1 / Double(concurrency)
             guard charges.values.reduce(0, { $0 + $1.fraction }) + charge <= 1 + 1e-12 else { return (false, nil) }
-            charges[ownerID] = Charge(fraction: charge, reservationID: reservationID)
+            guard serviceReservation?.acquireLease() ?? true else { return (false, nil) }
+            charges[ownerID] = Charge(fraction: charge, reservationID: reservationID,
+                lifetime: serviceReservation)
             return (true, observer)
         }
         notification?.yield()
@@ -38,10 +41,11 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     }
 
     func release(ownerID: String) {
-        let notification = lock.withLock { () -> AsyncStream<Void>.Continuation? in
-            guard charges.removeValue(forKey: ownerID) != nil else { return nil }
-            return observer
+        let (charge, notification) = lock.withLock { () -> (Charge?, AsyncStream<Void>.Continuation?) in
+            guard let charge = charges.removeValue(forKey: ownerID) else { return (nil, nil) }
+            return (charge, observer)
         }
+        charge?.lifetime?.releaseLease()
         notification?.yield()
     }
 

@@ -36,17 +36,28 @@ func (p *Provider) WriteInferenceTextDeferred(
 	}
 	p.mu.Lock()
 	w := p.writer
+	reservationID := pending.ServiceReservationID()
 	p.mu.Unlock()
 	if w == nil {
 		return TextFrameWriteMetadata{}, errProviderWriterStopped
 	}
-	return w.writeRequest(ctx, &providerWriteRequest{
+	metadata, err := w.writeRequest(ctx, &providerWriteRequest{
 		builder:     builder,
-		beforeWrite: func() error { return p.registry.authorizeInferenceHandoff(p, pending, w) },
+		beforeWrite: func() error { return p.registry.authorizeInferenceAttemptHandoff(p, pending, w, reservationID) },
 	}, false, onHandoff)
+	if !metadata.Committed {
+		// The writer proves no frame reached the wire, including cancellation
+		// after authorization but before its final in-flight CAS.
+		p.abortServiceReservationHandoff(reservationID)
+	}
+	return metadata, err
 }
 
 func (r *Registry) authorizeInferenceHandoff(p *Provider, pending *PendingRequest, writer *providerWriter) error {
+	return r.authorizeInferenceAttemptHandoff(p, pending, writer, pending.ServiceReservationID())
+}
+
+func (r *Registry) authorizeInferenceAttemptHandoff(p *Provider, pending *PendingRequest, writer *providerWriter, reservationID string) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.providers[p.ID] != p {
@@ -60,7 +71,7 @@ func (r *Registry) authorizeInferenceHandoff(p *Provider, pending *PendingReques
 	if providerDrainingLocked(p, now) {
 		return ErrProviderDraining
 	}
-	if p.writer != writer || p.pendingReqs[pending.RequestID] != pending || pending.ProviderID != p.ID {
+	if p.writer != writer || p.pendingReqs[pending.RequestID] != pending || pending.ProviderID != p.ID || pending.ServiceReservationID() != reservationID || pending.serviceHandoffAborted {
 		return ErrProviderServingUnauthorized
 	}
 	if pending.providerAuthorizationBinding != providerRequestAuthorizationBindingLocked(p) {
@@ -81,5 +92,6 @@ func (r *Registry) authorizeInferenceHandoff(p *Provider, pending *PendingReques
 		return ErrProviderServingUnauthorized
 	}
 	pending.DispatchVerification = r.providerVerificationLocked(p, now)
+	pending.serviceHandoffAuthorized = true
 	return nil
 }

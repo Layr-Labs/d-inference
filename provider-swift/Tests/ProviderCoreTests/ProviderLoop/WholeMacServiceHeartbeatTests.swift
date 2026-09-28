@@ -56,6 +56,7 @@ struct WholeMacServiceHeartbeatTests {
                 let used = capacity.wholeMacServiceUsed, abs(used - expected) < 1e-12 {
                 #expect(capacity.slots.isEmpty, "No slot/count change may account for this rebuild")
                 #expect(capacity.wholeMacServiceReservations == reservations)
+                #expect(capacity.wholeMacServiceRetirementProtocol == 1)
                 return
             }
             try await Task.sleep(for: .milliseconds(1))

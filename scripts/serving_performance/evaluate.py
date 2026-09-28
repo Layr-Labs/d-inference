@@ -2,7 +2,7 @@
 import hashlib
 import json
 
-from .matrix import CHECKS, MIN_SAMPLES, cell_key, digest, identity_errors, positive, shapes, widths
+from .matrix import CHECKS, IDENTITY_FIELDS, MIN_SAMPLES, cell_key, digest, identity_errors, positive, shapes, widths
 
 METRICS = ("decode_p10_tps", "aggregate_decode_tps", "prefill_tps",
            "first_content_p95_ms", "token_gap_p95_ms")
@@ -181,7 +181,10 @@ def evaluate(raw):
             previous_width = width
     if selected:
         limit = selected[-1]["width"]
-        profile = dict(identity, max_concurrency=limit, whole_mac_concurrency=limit,
+        # Identity cannot carry serving policy or qualification results. Copy
+        # only the closed identity contract; derive every other field below.
+        profile = {field: identity[field] for field in IDENTITY_FIELDS}
+        profile.update(max_concurrency=limit, whole_mac_concurrency=limit,
                        qualification_report_sha256=result["receipt_sha256"], batch_curve=selected)
         # B1 has no mixed steps and therefore cannot certify a chunk policy.
         if limit > 1 and report.get("mixed_prefill_token_cap") is not None:

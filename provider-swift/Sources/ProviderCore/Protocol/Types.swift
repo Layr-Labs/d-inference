@@ -845,6 +845,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     public var slots: [BackendSlotCapacity]
     /// Fraction of the shared whole-Mac service allowance currently leased.
     public var wholeMacServiceUsed: Double?
+    /// Version 1 explicitly acknowledges pipeline and service-lease retirement.
+    public var wholeMacServiceRetirementProtocol: Int?
     /// Exact coordinator attempts included in the total, omitted for local work.
     public var wholeMacServiceReservations: [WholeMacServiceReservation]
     public var gpuMemoryActiveGb: Double
@@ -890,6 +892,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case slots
         case wholeMacServiceUsed = "whole_mac_service_used"
+        case wholeMacServiceRetirementProtocol = "whole_mac_service_retirement_protocol"
         case wholeMacServiceReservations = "whole_mac_service_reservations"
         case gpuMemoryActiveGb = "gpu_memory_active_gb"
         case gpuMemoryPeakGb = "gpu_memory_peak_gb"
@@ -908,6 +911,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     public init(
         slots: [BackendSlotCapacity],
         wholeMacServiceUsed: Double? = nil,
+        wholeMacServiceRetirementProtocol: Int? = nil,
         wholeMacServiceReservations: [WholeMacServiceReservation] = [],
         gpuMemoryActiveGb: Double,
         gpuMemoryPeakGb: Double,
@@ -924,6 +928,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     ) {
         self.slots = slots
         self.wholeMacServiceUsed = wholeMacServiceUsed
+        self.wholeMacServiceRetirementProtocol = wholeMacServiceRetirementProtocol
         self.wholeMacServiceReservations = wholeMacServiceReservations
         self.gpuMemoryActiveGb = gpuMemoryActiveGb
         self.gpuMemoryPeakGb = gpuMemoryPeakGb
@@ -945,6 +950,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.slots = try c.decode([BackendSlotCapacity].self, forKey: .slots)
         self.wholeMacServiceUsed = try c.decodeIfPresent(Double.self, forKey: .wholeMacServiceUsed)
+        self.wholeMacServiceRetirementProtocol = try c.decodeIfPresent(Int.self, forKey: .wholeMacServiceRetirementProtocol)
         self.wholeMacServiceReservations = try c.decodeIfPresent(
             [WholeMacServiceReservation].self, forKey: .wholeMacServiceReservations) ?? []
         self.gpuMemoryActiveGb = try c.decode(Double.self, forKey: .gpuMemoryActiveGb)
@@ -969,6 +975,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(slots, forKey: .slots)
         try c.encodeIfPresent(wholeMacServiceUsed, forKey: .wholeMacServiceUsed)
+        try c.encodeIfPresent(wholeMacServiceRetirementProtocol, forKey: .wholeMacServiceRetirementProtocol)
         if !wholeMacServiceReservations.isEmpty {
             try c.encode(wholeMacServiceReservations, forKey: .wholeMacServiceReservations)
         }

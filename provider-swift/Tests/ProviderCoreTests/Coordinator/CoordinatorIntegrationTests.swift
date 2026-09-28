@@ -93,7 +93,7 @@ struct CoordinatorIntegrationTests {
     // MARK: 2. End-to-end encryption + cancellation
 
     @Test("inference_request decrypts, preserves reservation, and cancels with status 499",
-        arguments: [Optional("opaque-service-reservation"), nil])
+        arguments: [Optional("6e1f61d1-e22c-4d24-a3a7-d347772a48cb"), nil])
     func inferenceRequestE2EEncryptionAndCancellation(serviceReservationID: String?) async throws {
         let mock = MockCoordinator()
         let baseURL = try await mock.start()
@@ -149,6 +149,12 @@ struct CoordinatorIntegrationTests {
         let chunksToSend = cannedChunks
 
         let testTask: Task<Void, Never> = Task { [stateBox] in
+            let budget = WholeMacServiceBudget()
+            var reservationLifetime: ServiceReservationLifetime?
+            defer {
+                reservationLifetime?.finishPipeline()
+                budget.release(ownerID: requestId)
+            }
             for await event in events {
                 switch event {
                 case .inferenceRequest(
@@ -159,6 +165,11 @@ struct CoordinatorIntegrationTests {
                     #expect(nonce == "nonce-int-1")
                     #expect(scope == "authenticated-account-route")
                     #expect(reservationID == serviceReservationID)
+                    reservationLifetime = ServiceReservationLifetime(id: reservationID) { id in
+                        send.send(.serviceReservationReleased(serviceReservationID: id))
+                    }
+                    #expect(budget.acquire(ownerID: rid, concurrency: 24,
+                        serviceReservationID: reservationID, serviceReservation: reservationLifetime))
                     guard let firstContentDeadline else {
                         Issue.record("missing first-content deadline")
                         continue
@@ -221,6 +232,7 @@ struct CoordinatorIntegrationTests {
         let preSnap = try #require(preCancel)
         #expect(preSnap.inferenceAccepted.first?.requestId == requestId)
         #expect(preSnap.inferenceChunks.count >= cannedChunks.count)
+        #expect(preSnap.serviceReservationReleases.isEmpty)
 
         // The chunks were encrypted to the consumer's ephemeral key (the one
         // the mock generated and the provider extracted on decrypt). We can't
@@ -238,13 +250,15 @@ struct CoordinatorIntegrationTests {
 
         try await mock.pushCancel(requestId: requestId)
 
+        let expectedReleases = serviceReservationID.map { [$0] } ?? []
         let post = try await mock.waitForSnapshot(timeout: .seconds(5)) {
-            !$0.inferenceErrors.isEmpty
+            !$0.inferenceErrors.isEmpty && $0.serviceReservationReleases == expectedReleases
         }
         let postSnap = try #require(post)
         let err = try #require(postSnap.inferenceErrors.first)
         #expect(err.statusCode == 499)
         #expect(err.requestId == requestId)
+        #expect(postSnap.serviceReservationReleases == expectedReleases)
         _ = await testTask.value
         #expect(stateBox.isCanceled())
     }

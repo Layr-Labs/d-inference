@@ -29,15 +29,16 @@ import (
 // Message type constants.
 const (
 	// Provider → Coordinator.
-	TypeRegister               = "register"
-	TypeHeartbeat              = "heartbeat"
-	TypeProviderDrain          = "provider_drain"
-	TypeProviderDrainAck       = "provider_drain_ack"
-	TypeInferenceAccepted      = "inference_accepted"
-	TypeInferenceResponseChunk = "inference_response_chunk"
-	TypeInferenceComplete      = "inference_complete"
-	TypeInferenceError         = "inference_error"
-	TypeAttestationResponse    = "attestation_response"
+	TypeRegister                   = "register"
+	TypeHeartbeat                  = "heartbeat"
+	TypeProviderDrain              = "provider_drain"
+	TypeProviderDrainAck           = "provider_drain_ack"
+	TypeInferenceAccepted          = "inference_accepted"
+	TypeServiceReservationReleased = "service_reservation_released"
+	TypeInferenceResponseChunk     = "inference_response_chunk"
+	TypeInferenceComplete          = "inference_complete"
+	TypeInferenceError             = "inference_error"
+	TypeAttestationResponse        = "attestation_response"
 	// TypeCodeAttestationResponse is the provider's reply to the APNs-delivered
 	// code-identity challenge (E_K(nonce) push). Distinct from the liveness
 	// attestation_response: this is the WebSocket return leg of the push round-trip.
@@ -445,6 +446,8 @@ type MLXCacheReclaimerTelemetry struct {
 // routing decisions based on actual GPU utilization rather than hardcoded limits.
 type BackendCapacity struct {
 	WholeMacServiceUsed *float64 `json:"whole_mac_service_used,omitempty"`
+	// Version 1 sends explicit attempt release proof after pipeline and engine retirement.
+	WholeMacServiceRetirementProtocol int `json:"whole_mac_service_retirement_protocol,omitempty"`
 	// Ephemeral coordinator reservation IDs represented in WholeMacServiceUsed.
 	// Local and legacy request charges contribute only to the aggregate total.
 	WholeMacServiceReservations []WholeMacServiceReservation `json:"whole_mac_service_reservations,omitempty"`
@@ -739,6 +742,14 @@ type InferenceRequestBody struct {
 // InferenceRequestMessage tells a provider to run inference. EncryptedBody
 // carries the NaCl Box encrypted request; only the provider's hardened process
 // can decrypt it using its X25519 private key. There is no plaintext body.
+// ServiceReservationReleasedMessage proves this attempt can no longer acquire
+// service work and all of its service leases have retired. It is independent
+// of inference terminal/billing and is scoped to the current connection.
+type ServiceReservationReleasedMessage struct {
+	Type                 string `json:"type"`
+	ServiceReservationID string `json:"service_reservation_id"`
+}
+
 type InferenceRequestMessage struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
@@ -1102,6 +1113,12 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		}
 		pm.Payload = &msg
 
+	case TypeServiceReservationReleased:
+		var msg ServiceReservationReleasedMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return err
+		}
+		pm.Payload = &msg
 	case TypeInferenceAccepted:
 		var msg InferenceAcceptedMessage
 		if err := json.Unmarshal(data, &msg); err != nil {

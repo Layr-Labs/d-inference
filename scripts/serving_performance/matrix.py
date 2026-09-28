@@ -6,6 +6,10 @@ import re
 RUNTIME_REVISION = "cbv2-first-content-v1"
 CHECKS = ("correctness", "constraints", "isolation", "cancellation", "accounting", "retirement")
 MIN_SAMPLES = 20
+IDENTITY_FIELDS = (
+    "id", "model_id", "artifact_sha256", "provider_version", "runtime_revision",
+    "kv_backend", "chip_name", "gpu_cores", "memory_gb", "context_tokens_max",
+)
 
 
 def positive(value):
@@ -21,7 +25,8 @@ def widths(identity):
 
 
 def identity_errors(identity):
-    errors = []
+    errors = [f"identity.{field} is not a supported identity field"
+              for field in sorted(identity.keys() - set(IDENTITY_FIELDS))]
     for field in ("id", "model_id", "provider_version", "chip_name"):
         if not isinstance(identity.get(field), str) or not identity[field].strip():
             errors.append(f"identity.{field} is required")

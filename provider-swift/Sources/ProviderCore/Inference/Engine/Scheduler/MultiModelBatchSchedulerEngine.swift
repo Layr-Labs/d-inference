@@ -127,6 +127,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Coordinator reservation identity; unrelated to generated engine IDs.
     /// Local requests have no coordinator reservation to acknowledge.
     private let serviceReservationID: String?
+    private let serviceReservation: ServiceReservationLifetime?
     /// Profiler accumulator for the coordinator request this engine view
     /// serves (prompt-prep / tool-constraint / vision-prep stamps; handed on
     /// to the bridge). Nil for local HTTP and tests.
@@ -148,7 +149,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         engineV2Usage: EngineV2RequestUsageSignal? = nil,
         firstContentDeadline: FirstContentDeadline? = nil,
         profile: RequestProfileBuilder? = nil,
-        serviceReservationID: String? = nil
+        serviceReservationID: String? = nil,
+        serviceReservation: ServiceReservationLifetime? = nil
     ) {
         self.profile = profile
         self.registryProvider = registryProvider
@@ -168,6 +170,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.allowInternalToolSchemaMetadata = true
         self.firstContentDeadline = firstContentDeadline
         self.serviceReservationID = serviceReservationID
+        self.serviceReservation = serviceReservation
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -225,6 +228,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.allowInternalToolSchemaMetadata = false
         self.firstContentDeadline = nil
         self.serviceReservationID = nil
+        self.serviceReservation = nil
         self.profile = nil
     }
 
@@ -537,7 +541,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         donationDemand: donationDemand,
                         firstContentDeadline: firstContentDeadline,
                         profile: profile,
-                        serviceReservationID: serviceReservationID
+                        serviceReservationID: serviceReservationID,
+                        serviceReservation: serviceReservation
                     )
                     do {
                         try checkFirstContentDeadline()
@@ -754,7 +759,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     donationDemand: donationDemand,
                     firstContentDeadline: firstContentDeadline,
                     profile: profile,
-                    serviceReservationID: serviceReservationID
+                    serviceReservationID: serviceReservationID,
+                    serviceReservation: serviceReservation
                 )
                 do {
                     try checkFirstContentDeadline()

@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-28 · commit `0b3fe26ea`
+> Last updated: 2026-09-28 · commit `602bfe613`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -298,13 +298,30 @@ the provider gates expansion dynamically until posture recovers. The optional
 allowance usage. Each committed coordinator reservation gets a fresh opaque
 `service_reservation_id`, including retries of the same request. The provider's
 optional `whole_mac_service_reservations` entries name the IDs and actual held
-fractions included in that total. Admission adds every unmatched pending charge
-and any positive difference between a matched coordinator charge and its reported
-fraction; receipt timestamps never establish overlap. Local and legacy provider
+fractions included in that total. Admission adds every unmatched pending or
+terminal-shadow charge and any positive difference between a matched coordinator
+charge and its reported fraction; receipt timestamps never establish overlap.
+Local and legacy provider
 work remains in the total. Missing correlation adds all pending charges
-conservatively, while providers omitting the total retain legacy admission.
+conservatively, while providers that have not opted into retirement reporting
+and omit the total retain legacy admission.
 Correlation is bounded to 64 unique UUIDs with finite positive fractions whose
 sum does not exceed the total; malformed reports fail closed at full usage.
+Providers opt into explicit retirement with
+`whole_mac_service_retirement_protocol = 1`, sticky for their connection.
+Tracking applies to attempts committed after that opt-in; earlier attempts
+retain their original cleanup behavior.
+After a dispatched request's terminal, the coordinator retains its frozen
+service charge until `service_reservation_released` proves that the request
+pipeline can no longer acquire work and all its engine leases have retired.
+Producer callbacks join those lifetimes and also acknowledge never-acquired
+rejections and short leases invisible to coalesced heartbeats. A release before
+terminal prevents a later shadow. No heartbeat omission, receipt timestamp,
+sequence increment or timeout infers release. Definitively unsent writer attempts
+are rolled back locally; disconnect clears ownership, while transient untrust or
+missing capacity retains it. Release wakes the queue after dropping registry
+locks. Admission continues charging shadows, bounding retained owners by actual
+service capacity (current reviewed widths ≤16 and fallback width 24).
 `CapacityHeartbeatMateriality` in
 `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift` treats changes
 to this fraction or its reservation correlations as material even when slot

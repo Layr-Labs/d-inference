@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `0b3fe26ea`
+> Last updated: 2026-09-28 · commit `602bfe613`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -101,6 +101,7 @@ deliver a graceful-drain acknowledgement.
 |---|---|---|---|
 | provider → coordinator | `register` | `RegisterMessage` | `ProviderMessage.register` (`Register`) |
 | provider → coordinator | `heartbeat` | `HeartbeatMessage` | `.heartbeat` (`Heartbeat`) |
+| provider → coordinator | `service_reservation_released` | `ServiceReservationReleasedMessage` | `.serviceReservationReleased` |
 | provider → coordinator | `inference_accepted` | `InferenceAcceptedMessage` | `.inferenceAccepted` |
 | provider → coordinator | `inference_response_chunk` | `InferenceResponseChunkMessage` | `.inferenceResponseChunk` |
 | provider → coordinator | `inference_complete` | `InferenceCompleteMessage` | `.inferenceComplete` |
@@ -278,6 +279,7 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `slots` | `[]BackendSlotCapacity` | `[BackendSlotCapacity]` | req | [`slots[]`](#slots) |
+| `whole_mac_service_retirement_protocol` | `int` | `Int?` | opt | `1` opts this connection into explicit attempt retirement via [`service_reservation_released`](#service_reservation_released); sticky after an accepted capacity report with a service total. Omission/unknown version on a new connection retains legacy terminal cleanup |
 | `whole_mac_service_used` | `*float64` | `Double?` | opt | Fraction of the shared machine service allowance owned by requests until engine retirement; `[0,1]` |
 | `whole_mac_service_reservations` | `[]WholeMacServiceReservation` | `[WholeMacServiceReservation]` | opt | Exact coordinator attempts included in the aggregate above; omitted when empty, including local-only work. Missing decodes to an empty list; [entry schema and reconciliation](#service-reservation-correlation) |
 | `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `gpu_memory_cache_gb` | `float64` | `Double` | req | Metal active / peak / reclaimable cache, shared across slots |
@@ -310,11 +312,15 @@ must sum to no more than `whole_mac_service_used`. With a reported aggregate,
 malformed correlation metadata fails admission closed at full usage.
 
 The coordinator credits overlap only for an exact attempt ID, adding every
-unmatched pending charge and any positive difference between a matched local
-reservation and its reported fraction. Omitting the list while reporting the
-total is supported but conservatively counts all pending reservations in
-addition to that total. Omitting the total retains legacy admission; the list
-alone cannot establish overlap. Receipt time never proves inclusion.
+unmatched pending or terminal-shadow charge and any positive difference between
+a matched local reservation and its reported fraction. Omitting the list while reporting the
+total is supported but conservatively counts all pending and shadow reservations
+in addition to that total. Omitting the total retains legacy admission only before
+retirement-protocol opt-in; afterward omission fails service admission closed
+and cannot reset ownership. The list alone cannot establish overlap. Receipt
+time never proves inclusion. Terminal shadows are frozen attempt UUID/fraction
+pairs retained until explicit release; absence from a heartbeat, even at a newer
+`capacity_seq`, does not prove retirement.
 
 #### `slots[]`
 
@@ -519,6 +525,31 @@ slots. Only accepted capacity replacements advance the reconciliation clock.
 New fresh captures emit gauges; repeated or stale captures emit only age and
 freshness (`coordinator/api/provider_process_memory_telemetry.go`,
 `recordProcessMemoryTelemetry`).
+
+### `service_reservation_released`
+
+Go `ServiceReservationReleasedMessage` · Swift
+`ProviderMessage.serviceReservationReleased` (via `OutboundMessage`).
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `type` | `string` | discriminator | req | `"service_reservation_released"` |
+| `service_reservation_id` | `string` | `String` | req | Exact attempt UUID; no client request ID, prompt or output content |
+
+A provider advertising retirement protocol `1` sends this reliable control frame
+exactly once after the request pipeline can no longer acquire service and every
+acquired service lease has retired. It also covers requests rejected before any
+lease was acquired and leases acquired/released entirely between heartbeats.
+A consumer terminal alone is not release evidence. The coordinator accepts proof
+before terminal (preventing a later shadow) or after terminal (removing the
+shadow and waking queued requests). Malformed, duplicate and unknown IDs allocate
+no retained history. Late callbacks from an old connection cannot release a new
+attempt. Definitively unsent writer attempts are retired locally; ambiguous
+socket writes retain ownership until proof or disconnect. Transient untrust and
+missing capacity do not clear ownership; disconnect clears all session state.
+Legacy providers that do not opt in keep their existing terminal cleanup.
+Coordinator tracking applies only to attempts committed after this connection
+opts in; attempts already pending retain their original cleanup behavior.
 
 ### `inference_accepted`
 

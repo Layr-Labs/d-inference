@@ -117,7 +117,8 @@ extension EngineV2Bridge {
         donationDemand: SSDCheckpointDonationDemand? = nil,
         firstContentDeadline: FirstContentDeadline?,
         profile: RequestProfileBuilder? = nil,
-        serviceReservationID: String? = nil
+        serviceReservationID: String? = nil,
+        serviceReservation: ServiceReservationLifetime? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
@@ -141,7 +142,8 @@ extension EngineV2Bridge {
             return stream
         }
         let retirementTransfer = EngineV2RetirementTransfer()
-        guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID) else {
+        guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
+            serviceReservation: serviceReservation) else {
             usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
             continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
             continuation.finish()

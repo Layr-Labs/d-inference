@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-28 · commit `914dc4e53`
+> Last updated: 2026-09-28 · commit `602bfe613`
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The initial reviewed
@@ -80,6 +80,12 @@ are **not hardware evidence**.
 | Checks | Each of `correctness`, `constraints`, `isolation`, `cancellation`, `accounting`, `retirement` has `passed: true` and `receipt_sha256` |
 | Sample | Unique `run_id`, `decode_p10_tps`, `aggregate_decode_tps`, `prefill_tps`, `first_content_p95_ms`, `token_gap_p95_ms`, actual `forward_widths`, `competing_model_active_requests` (positive measured count for every competing model), `power_mode: "automatic"`, `thermal_state: "nominal"`, `mtp_active: false`, `effective_mixed_prefill_token_cap` (explicit integer engine cap; `null` selects the existing runtime/model default), `runtime_policy_overrides` (empty, or only the exact candidate global override), `activation_peak_bytes`, `kv_peak_bytes`, `resident_bytes`, `activation_reserve_bytes`, `memory_budget_bytes` |
 | Chunk comparison | Each mixed staggered cell also carries `mixed_prefill_work_p95_ms` and `mixed_prefill_baseline` (the five rate/latency metrics, `receipt_sha256`, and explicit `effective_mixed_prefill_token_cap`: `null` for the runtime/model default or a nonnegative integer different from the candidate) |
+
+The identity object accepts only the fields listed above; extra fields reject
+the receipt. Put a candidate `mixed_prefill_token_cap` at the root. The evaluator
+derives concurrency limits, `batch_curve`, and `qualification_report_sha256`
+from the evidence and copies only the allowed identity fields into the profile.
+An identity field cannot attach a runtime policy or qualification result.
 
 ## Verify
 

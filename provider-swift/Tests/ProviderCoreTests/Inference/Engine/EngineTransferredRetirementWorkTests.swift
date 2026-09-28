@@ -85,13 +85,17 @@ struct EngineTransferredRetirementWorkTests {
         await bridge.setMeasurementActivity(activity)
         await bridge.updatePrefillTpsEwma(2_000, isolated: true)
         let usageSignal = EngineV2RequestUsageSignal()
+        let releases = ServiceReleaseRecorder()
+        let reservationID = UUID().uuidString.lowercased()
+        let lifetime = try #require(ServiceReservationLifetime(id: reservationID, onReleased: releases.record))
         let deadline = FirstContentDeadline(
             relativeBudgetMilliseconds: stop == .deadline ? 500 : 60_000)
         let submission = Task {
             try await bridge.submitTokenized(promptTokens: [1, 2],
                 request: .init(model: "transferred-work", messages: [], max_tokens: 10),
                 requestId: "transferred", usageSignal: usageSignal,
-                firstContentDeadline: deadline)
+                firstContentDeadline: deadline, serviceReservationID: reservationID,
+                serviceReservation: lifetime)
         }
         defer {
             engine.continuation?.finish()
@@ -127,6 +131,8 @@ struct EngineTransferredRetirementWorkTests {
             }
         }
         #expect(engine.cancellationCount > 0)
+        lifetime.finishPipeline()
+        #expect(releases.ids.isEmpty)
         #expect(await bridge.activeRequestCount() == 0)
         #expect(await bridge._testLivePumpCount() == 0)
         #expect(await bridge._testPendingSubmissionCount() == 1)
@@ -162,6 +168,7 @@ struct EngineTransferredRetirementWorkTests {
         #expect(await bridge._testMappedRequestCount() == 0)
         #expect(await budget.outstandingReservedBytes() == 0)
         #expect(budget.serviceBudget.count == 0)
+        #expect(releases.ids == [reservationID])
         let capacity = await bridge.backendSlotCapacity()
         #expect(capacity.telemetry?.generatedTokensTotal == Int64(max(2, terminalCompletion ?? 0)))
         #expect(capacity.telemetry?.generationRequestsTotal == 1)

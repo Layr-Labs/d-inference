@@ -180,6 +180,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case register(Register)
     case heartbeat(Heartbeat)
     case inferenceAccepted(InferenceAccepted)
+    case serviceReservationReleased(String)
     case inferenceResponseChunk(InferenceResponseChunk)
     case inferenceComplete(InferenceComplete)
     case inferenceError(InferenceError)
@@ -850,6 +851,7 @@ extension ProviderMessage: Codable {
         case register
         case heartbeat
         case inferenceAccepted = "inference_accepted"
+        case serviceReservationReleased = "service_reservation_released"
         case inferenceResponseChunk = "inference_response_chunk"
         case inferenceComplete = "inference_complete"
         case inferenceError = "inference_error"
@@ -870,6 +872,7 @@ extension ProviderMessage: Codable {
 
     enum CodingKeys: String, CodingKey {
         case type
+        case serviceReservationID = "service_reservation_id"
         // Register
         case hardware, models, backend, version
         case publicKey = "public_key"
@@ -1036,6 +1039,10 @@ extension ProviderMessage: Codable {
             // 0 ("always ready") is a real value and MUST reach the wire; only
             // nil (policy not reported) is omitted — Go decodes into *int.
             try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
+
+        case .serviceReservationReleased(let id):
+            try container.encode(TypeValue.serviceReservationReleased, forKey: .type)
+            try container.encode(id, forKey: .serviceReservationID)
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -1294,6 +1301,9 @@ extension ProviderMessage: Codable {
                     forKey: .prefixCacheDonationOutcomes),
                 idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins)
             ))
+
+        case .serviceReservationReleased:
+            self = .serviceReservationReleased(try container.decode(String.self, forKey: .serviceReservationID))
 
         case .inferenceAccepted:
             self = .inferenceAccepted(InferenceAccepted(

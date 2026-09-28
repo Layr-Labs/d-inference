@@ -40,7 +40,7 @@ without creating another module or changing imports.
 |---|---|
 | Provider admission, deadlines, capacity and events | [Distributed engine](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/) — `DistributedCBv2Engine`, with separate Admission, Submission, Deadlines and Events extensions |
 | Provider request state and trusted time origins | [Requests](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/) |
-| Paired worker ownership and retirement | [Execution](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Execution/) — `DistributedPipeExecutionOwner` |
+| Paired worker ownership and retirement | [Execution owner](../../provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift) and [contract](../../provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift) — stable entry points at the subsystem root |
 | Saved installation and model pins | [Installed](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/) |
 | Member registration and model integrity scan | [Membership](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/) — `ClusterMemberPreparation` |
 | Request timing and logging | [Observability](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Observability/); installed status and doctor observations stay in [Diagnostics](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/) |

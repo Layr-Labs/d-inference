@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — provider routing readiness
+
+- Describe dashboard routing readiness without inferring current traffic or earnings from health warnings. Keep request and money counters separate, and link healthy-but-idle providers to a coordinator-path troubleshooting sequence.
+
 ## Unreleased — automatic model artifact revisions
 
 - Reject cached or staged revisions with unmanifested integrity files, so an added template, tokenizer or weight file cannot be activated under the original approved hash.

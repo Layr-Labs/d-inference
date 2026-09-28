@@ -1,4 +1,4 @@
-// One machine, top to bottom: identity header, the EARNING/NOT-EARNING hero
+// One machine, top to bottom: identity header, the routing-readiness hero
 // verdict, live vitals, models, earnings, and progressive-disclosure detail
 // (backend slots + attestation status). The left rail color and verdict all
 // come from routing.ts so this card can never disagree with the fleet strip or
@@ -84,7 +84,7 @@ export function MachineCard({
         </div>
       </div>
 
-      {/* The hero: EARNING / NOT EARNING verdict with the why + fix inline */}
+      {/* The hero: routing-readiness verdict with the why + fix inline */}
       <CardRoutingVerdict provider={provider} state={state} topWarning={topWarning} />
 
       {/* Always-visible body: live vitals, models, then earnings */}

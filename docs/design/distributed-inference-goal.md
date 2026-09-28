@@ -181,7 +181,7 @@ deployment action after the implementation is reviewable.
 
 ## Current evidence and related work
 
-The isolated [cluster experiments](../../experiments/cluster/README.md) contain
+The isolated [cluster experiments](https://github.com/Layr-Labs/d-inference/blob/39ab57dc66da7d15dfeb4ba41fc4ceaf25e24433/experiments/cluster/README.md) contain
 the native transport probe and inference harness. Prototype success is narrower
 than qualification: local synthetic partition parity has passed, while
 successful two-machine RDMA inference and M3 Ultra throughput remain unproven.

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-28 · commit `39ab57dc6`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -21,28 +21,23 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
 
-The optional [cluster inference experiments](../../experiments/cluster/README.md)
-have separate native build instructions and runtime bundles. They are isolated
-from the provider build and are not included in `make build`.
-The same experiment executable includes the optional
-[persistent rank worker](../../experiments/cluster/runtime/PERSISTENT_WORKERS.md);
-it does not replace the provider's production engine.
-Qwen and Gemma adapters share that executable and its native dependency bundle.
+Distributed serving uses the shared cluster modules and the separate native
+worker described below. The retired standalone probe, its copied runtime and
+offline planning harness remain recoverable at
+[the source import commit](https://github.com/Layr-Labs/d-inference/tree/39ab57dc66da7d15dfeb4ba41fc4ceaf25e24433/experiments/cluster).
 
 The shared `DarkbloomClusterSecurity` target depends only on Foundation and
 CryptoKit. Its [CPU check runner](../../libs/darkbloom-cluster/Tests/SecurityChecks/README.md)
 builds the record codec and transport adapter without compiling MLX. The native
-array bridge still requires the cluster executable build; adding the module
+array bridge still requires the native worker build; adding the module
 does not enable encrypted RDMA in a serving configuration.
 The [native send-buffer checks](../../libs/darkbloom-cluster/Tests/NativeSendChecks/README.md)
 compile the current JACCL headers against simulated verbs with sanitizers; they
 are independent of the full MLX build and physical RDMA qualification.
-The [resident stage build](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md)
-includes the aligned selected-payload reader and dedicated-rank freed-buffer
-cache policy, and passes six worker-check groups
-and 43 native adapter records. The reader requires a 16 KiB OS page size; its
-bounded anonymous scratch and descriptor policy are documented in
-[selected-stage loading](../../experiments/cluster/inference/QWEN_DENSE_STAGE_LOADING.md#aligned-selected-payload-reads).
+The shared runtime owns selected-weight loading and resident stage execution.
+Its aligned reader requires a 16 KiB OS page size and bounds scratch storage
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CheckpointAlignedReader.swift`,
+`CheckpointAlignedReader`).
 The [completed two-Mac cohort](../reports/2026-09-15-cluster-rdma-prefill-baseline.md)
 records physical execution separately from these build checks; the
 [continuation and timing report](../reports/2026-09-15-cluster-lookahead-generation-and-timing.md)
@@ -69,12 +64,6 @@ physical deployment or its serving performance.
 The [focused tests](test.md#distributed-provider-lifecycle) include
 actual local owner/native test children and C/Swift callback ABI checks without
 model loads.
-The separate [candidate metadata exporter](../../experiments/cluster/inference/Tools/LayerStageCandidates/README.md)
-compiles a temporary Foundation/CryptoKit executable with Swift 6. It uses the
-native planning sources without MLX or model weights. The
-[recorded-service adapter](../../experiments/cluster/planning/measurements/README.md)
-needs only Python 3.9 or newer and does not rebuild the inference executable.
-
 The [external streaming benchmark](../../scripts/benchmarks/benchmark_streaming.py)
 uses Python's standard library on macOS/Linux. It requires an explicitly supplied
 serving endpoint; it does not launch a provider or build native dependencies.

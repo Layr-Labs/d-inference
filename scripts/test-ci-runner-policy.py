@@ -121,6 +121,19 @@ class RunnerPolicyTests(unittest.TestCase):
         job['env']['DEVELOPER_DIR'] = '/Applications/Xcode_27.0.app/Contents/Developer'
         self.assertTrue(policy.check({'release-swift.yml': workflow}))
 
+    def test_blacksmith_mac_pins_python_before_release_helpers(self):
+        workflow = policy.load(policy.ROOT / '.github/workflows/release-swift.yml')
+        job = workflow['jobs']['build-provider']
+        self.assertEqual(policy.check({'release-swift.yml': workflow}), [])
+        python = next(step for step in job['steps']
+                      if step.get('uses') == policy.PINNED_PYTHON_ACTION)
+        job['steps'].remove(python)
+        self.assertTrue(any('pin Python 3.12.10' in error
+                            for error in policy.check({'release-swift.yml': workflow})))
+        job['steps'].insert(0, python)
+        self.assertTrue(any('pin Python 3.12.10' in error
+                            for error in policy.check({'release-swift.yml': workflow})))
+
     def test_secrets_in_local_composite_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

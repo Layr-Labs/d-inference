@@ -71,6 +71,10 @@ Blacksmith's macOS 27 image selects Xcode 27 by default. The release selector
 reads that choice with `xcode-select` and `xcrun` after checkout, then requires
 SDK 27.0 and Swift 6.4. Do not set `DEVELOPER_DIR` at job scope: a guessed app
 path can break `/usr/bin/git` before checkout and before the selector runs.
+The image's default `python3` may be older than the release helpers require.
+Every macOS 27 release job pins Python 3.12.10 with `actions/setup-python`
+after checkout and before invoking those helpers; the runner-policy check
+enforces that order.
 
 Release artifacts pass through GitHub Actions, but Tenki does not compile or
 cache their release inputs. Blacksmith is trusted to execute the release and

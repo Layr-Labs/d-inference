@@ -164,6 +164,8 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
    `blacksmith-12vcpu-macos-27` runners, with no signing secrets or publication steps. This seeds
    caches in the default branch's scope, which release tags can restore. PR
    validation caches stay isolated to their PR and do not seed `master`.
+   Each macOS 27 job selects the image's Xcode 27 and pins Python 3.12.10
+   after checkout, before running the release helpers.
    Pipeline shutdown changes run these lanes on their PR as well; the
    [shutdown drain regression](../developer/test.md#sdk-27-release-qualification)
    must pass before retrying a release that failed that assertion.

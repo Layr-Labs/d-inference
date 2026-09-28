@@ -113,6 +113,9 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
       - run: ./scripts/check-release-version.sh "$VERSION"
       - uses: ./.github/actions/provider-release-build
         id: build
@@ -153,6 +156,9 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
       - uses: ./.github/actions/provider-release-build
         with:
           lane: qualification
@@ -212,6 +218,10 @@ jobs:
           persist-credentials: false
           submodules: recursive
           fetch-depth: 0   # gh release --generate-notes wants full history
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
 
       - name: Validate release version integrity
         run: ./scripts/check-release-version.sh "$VERSION"

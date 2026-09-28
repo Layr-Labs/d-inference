@@ -14,6 +14,7 @@ BLACKSMITH_MAC_26 = 'blacksmith-12vcpu-macos-26'
 BLACKSMITH_BENCHMARK = 'blacksmith-12vcpu-macos-latest'
 BLACKSMITH = {BLACKSMITH_LINUX, BLACKSMITH_MAC_27, BLACKSMITH_MAC_26,
               BLACKSMITH_BENCHMARK}
+PINNED_PYTHON_ACTION = 'actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97'
 # Release inputs, credentials and write-capable jobs must stay on the reviewed
 # Blacksmith images. The signed older-OS proof uses a separate macOS 26 image.
 BLACKSMITH_JOBS = {
@@ -82,6 +83,19 @@ def check(workflows, root=ROOT):
                 # set at job scope can break checkout before any guard runs.
                 if 'DEVELOPER_DIR' in workflow.get('env', {}) or 'DEVELOPER_DIR' in job.get('env', {}):
                     errors.append(f'{label}: select the image Xcode after checkout, not at job scope')
+            if runner == BLACKSMITH_MAC_27:
+                steps_for_python = job.get('steps', [])
+                checkouts = [i for i, step in enumerate(steps_for_python)
+                             if step.get('uses', '').startswith('actions/checkout@')]
+                python = [i for i, step in enumerate(steps_for_python)
+                          if step.get('uses') == PINNED_PYTHON_ACTION
+                          and step.get('with', {}).get('python-version') == '3.12.10']
+                last_checkout = max(checkouts, default=-1)
+                first_helper = next((i for i, step in enumerate(steps_for_python)
+                                     if i > last_checkout and
+                                     (step.get('run') or step.get('uses', '').startswith('./'))), len(steps_for_python))
+                if not checkouts or len(python) != 1 or not (last_checkout < python[0] < first_helper):
+                    errors.append(f'{label}: pin Python 3.12.10 after checkout and before release helpers')
             # Benchmark compute remains read-only even though it needs a 48 GB
             # Blacksmith Mac. Every Tenki job has the same credential boundary.
             if runner not in TENKI and (filename, name) != ('benchmarks.yml', 'benchmark'):

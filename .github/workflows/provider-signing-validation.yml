@@ -47,6 +47,9 @@ jobs:
           path: candidate
           submodules: recursive
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
       - name: Validate packaging and workflow isolation guards
         run: python3 tooling/scripts/test-provider-signing-validation.py
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34
@@ -106,6 +109,9 @@ jobs:
           ref: ${{ github.sha }}
           path: tooling
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
       - name: Read this run's unsigned artifact
         env:
           GH_TOKEN: ${{ github.token }}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -9,6 +10,18 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+// Preserve the tiny shared seams used by the dependent composed-cache tests.
+// Their implementation and fixture constants remain owned by conformance/.
+const orInitial = conformance.InitialBalanceMicroUSD
+const orCost = conformance.RequestCostMicroUSD
+
+func orLoopbackClient(t *testing.T, origin string) *http.Client {
+	return conformance.LoopbackClient(t, origin)
+}
+func orEventually(t *testing.T, predicate func() bool, what string) {
+	conformance.Eventually(t, predicate, what)
+}
 
 // Keep only the package-private bindings here. All scenarios, fixtures and
 // observers live in conformance/. No production API is exported for testing.

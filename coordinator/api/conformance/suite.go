@@ -48,6 +48,13 @@ const huggingFaceIDMetadataKey = "hugging_face_id"
 const errorReasonDeadlineUnreachable = "deadline_unreachable"
 const errorReasonCancelled = "cancelled"
 
+// Shared fixture contracts used by the separate composed cache tests.
+const InitialBalanceMicroUSD = orInitial
+const RequestCostMicroUSD = orCost
+
+func LoopbackClient(t *testing.T, origin string) *http.Client     { return orLoopbackClient(t, origin) }
+func Eventually(t *testing.T, predicate func() bool, what string) { orEventually(t, predicate, what) }
+
 // Wire DTO intentionally independent of the handler's private request type.
 type registerModelRequest struct {
 	HuggingFaceArtifact *store.HuggingFaceArtifact `json:"hugging_face_artifact,omitempty"`

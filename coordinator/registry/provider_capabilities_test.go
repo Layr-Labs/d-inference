@@ -662,3 +662,29 @@ func TestClearIneligiblePendingModelLoadsAfterCapabilityRevocation(t *testing.T)
 		t.Fatal("revoked protected load still consumes pending budget")
 	}
 }
+
+func TestR2ChunkDownloadCapability(t *testing.T) {
+	required := []string{ProviderCapabilityR2Chunks}
+	if capabilitySetContainsAll(nil, required) {
+		t.Fatal("legacy provider accepted for chunked model")
+	}
+	if !capabilitySetContainsAll(required, required) {
+		t.Fatal("chunk-capable provider rejected")
+	}
+	reg := New(testLogger())
+	reg.SetModelCatalog([]CatalogEntry{
+		{ID: "legacy"},
+		{ID: "chunked", RequiredProviderCapabilities: required},
+	})
+	p := &Provider{}
+	if !reg.providerCanAcquireCatalogModelLocked(p, "legacy") {
+		t.Fatal("existing unchunked model became unavailable to an old provider")
+	}
+	if reg.providerCanAcquireCatalogModelLocked(p, "chunked") {
+		t.Fatal("old provider can acquire a chunked model")
+	}
+	p.RuntimeCapabilities = required
+	if !reg.providerCanAcquireCatalogModelLocked(p, "chunked") {
+		t.Fatal("updated provider cannot acquire a chunked model")
+	}
+}

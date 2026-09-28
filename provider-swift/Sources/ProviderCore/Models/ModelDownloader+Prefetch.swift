@@ -74,22 +74,11 @@ extension ModelDownloader {
         }
         onByteProgress?(progress.done, total)
 
-        // Capacity pre-check must account for already-staged bytes: on a resumed
-        // prefetch most files are present + valid, so we only need free space for
-        // the files we still have to download. Demanding the FULL model size here
-        // would spuriously fail a resume that has plenty of room for what remains.
-        // Publishing is a same-volume move of the staging dir, so staged bytes
-        // need no extra headroom.
-        // Count bytes already saved in each file's resumable `.part` so a tight-
-        // disk resume isn't rejected for lacking room equal to a whole shard when
-        // the byte-resume below will only append the missing suffix via `Range`.
-        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
-        let remainingBytes = Self.remainingBytesToFetch(
-            sizes: jobs.map(\.file.sizeBytes),
-            alreadyValid: alreadyValid,
-            partBytes: partBytes
-        )
-        try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: remainingBytes)
+        // Publishing moves staging on the same volume. Reserve only missing
+        // bytes, plus one chunk of scratch for this sequential download path.
+        try capacityCheck(snapshotsDir, manifestCapacityRequired(
+            jobs: jobs, alreadyValid: alreadyValid,
+            huggingFaceArtifact: model.huggingFaceArtifact, concurrency: 1))
 
         // Sequential downloads (one at a time) so prefetch yields to inference
         // and never saturates bandwidth the way the foreground 4-way concurrent

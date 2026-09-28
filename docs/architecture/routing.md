@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-27 · commit `eafeab723`
+> Last updated: 2026-09-27 · commit `d624f1753`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -383,6 +383,13 @@ Other IDs, including the legacy developer ID, retain existing version rules.
 Sources: `coordinator/registry/qwen4_model_policy.go`
 (`providerMeetsQwen4CatalogPolicyLocked`) and
 `coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`).
+
+The `r2_chunked_downloads` transport requirement follows the active model
+version's files. Staging another version cannot change eligibility for the
+currently served transport; promotion and rollback recompute the requirement.
+`coordinator/api/model_manifest_chunks.go` (`modelTransportCapabilities`)
+derives it for both public catalog responses and `SyncModelCatalog` in
+`coordinator/api/server.go`. Other operator-specified capabilities remain intact.
 
 ### Selection paths
 

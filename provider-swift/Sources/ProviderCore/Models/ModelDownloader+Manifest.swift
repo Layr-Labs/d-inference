@@ -5,6 +5,7 @@ import Foundation
 /// progress behavior while using the same on-disk correctness boundary.
 extension ModelDownloader {
     static func validate(manifest: ModelManifest, for model: CatalogModel) throws {
+        try Self.validateChunkedManifest(manifest)
         guard manifest.modelID == model.id else {
             throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
         }

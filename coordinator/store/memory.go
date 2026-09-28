@@ -1659,6 +1659,7 @@ func (s *MemoryStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelV
 	fileCopies := make([]ModelVersionFile, len(files))
 	for i := range files {
 		fileCopies[i] = files[i]
+		fileCopies[i].R2Chunks = append([]ManifestChunk(nil), files[i].R2Chunks...)
 		fileCopies[i].ID = int64(i + 1)
 		fileCopies[i].ModelVersionID = versionCopy.ID
 	}
@@ -1835,6 +1836,9 @@ func (s *MemoryStore) modelRegistryRecordLocked(modelID string) *ModelRegistryRe
 	entryCopy := cloneModelRegistryEntry(entry)
 	versionCopy := cloneModelVersion(version)
 	files := append([]ModelVersionFile(nil), s.modelVersionFiles[versionID]...)
+	for i := range files {
+		files[i].R2Chunks = append([]ManifestChunk(nil), files[i].R2Chunks...)
+	}
 	return &ModelRegistryRecord{ModelRegistryEntry: entryCopy, ActiveVersion: &versionCopy, Files: files}
 }
 
@@ -1920,7 +1924,7 @@ func manifestFromRecord(rec *ModelRegistryRecord) *ModelManifest {
 	}
 	files := make([]ManifestFile, len(rec.Files))
 	for i, f := range rec.Files {
-		files[i] = ManifestFile{Path: f.Path, SizeBytes: f.SizeBytes, SHA256: f.SHA256, Role: f.Role}
+		files[i] = ManifestFile{Path: f.Path, SizeBytes: f.SizeBytes, SHA256: f.SHA256, Role: f.Role, R2Chunks: append([]ManifestChunk(nil), f.R2Chunks...)}
 	}
 	return &ModelManifest{
 		SchemaVersion:   1,

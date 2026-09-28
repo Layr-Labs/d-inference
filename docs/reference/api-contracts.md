@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-27 · commit `d624f1753`
 
 The complete public HTTP surface of the coordinator, derived from the 115 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -805,6 +805,24 @@ For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to 
 An unsubmitted confirmation invalidated by paused admissions returns 409 `quote_paused`; changed payout settings return 409 `payout_changed`. The browser releases that saved confirmation. Invalidation is atomic with `BeginGlobalPayout`; if another confirmation has already debited, the endpoint returns/reconciles the existing withdrawal instead. A recipient minimum/maximum violation returns 400 `recipient_amount_limit` with the threshold in local currency (`coordinator/api/global_payouts_withdraw.go`, `maybeGlobalWithdraw`, `handleGlobalPayoutQuote`).
 
 An unknown payout outcome held for manual reconciliation remains `status=pending` and exposes `failure_reason=manual_reconciliation_required`. History displays **Needs review**; the debit remains reserved, and automatic scans and repeated confirmations do not resubmit or refund it (`coordinator/store/global_payouts.go`, `GlobalPayout.RequiresManualReconciliation`; `coordinator/api/global_payouts_history.go`, `globalWithdrawalView`).
+
+## Model manifests: R2 chunks
+
+Model manifest file entries accept optional ordered `r2_chunks` objects containing
+`size_bytes` and `sha256`. Registration requires the `r2_chunked_downloads` provider
+capability for chunked manifests and verifies the chunk objects instead of the
+original large file. See [the model registry format](model-registry-format.md#cacheable-r2-transport-chunks)
+and `coordinator/api/model_manifest_chunks.go` (`validateChunkCapability`).
+
+The effective `r2_chunked_downloads` requirement follows the active version's
+`r2_chunks` metadata. Registering an inactive chunked version leaves an active
+unchunked version usable by older providers; registering an inactive unchunked
+version cannot remove the requirement from an active chunked version. Activation
+or rollback recomputes this transport requirement while retaining other operator
+requirements. Catalog responses and routing synchronization use the same derived
+requirements. Code: `coordinator/api/model_manifest_chunks.go`
+(`modelTransportCapabilities`) and `coordinator/api/server.go`
+(`SyncModelCatalog`).
 
 ## Code map
 

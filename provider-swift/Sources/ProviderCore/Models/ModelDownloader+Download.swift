@@ -75,17 +75,9 @@ extension ModelDownloader {
         // Resume: skip files already staged + valid; only the not-yet-valid files
         // are enqueued below.
         let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
-        // The foreground per-file downloader now byte-resumes (streams to a stable
-        // `.part` and appends via HTTP `Range`), so credit any bytes already saved
-        // in each `.part`: a near-complete resume of a big shard must not be charged
-        // disk room equal to the whole shard.
-        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
-        try Self.ensureAvailableCapacity(
-            at: snapshotsDir,
-            requiredBytes: Self.remainingBytesToFetch(
-                sizes: jobs.map(\.file.sizeBytes), alreadyValid: alreadyValid, partBytes: partBytes
-            )
-        )
+        try capacityCheck(snapshotsDir, manifestCapacityRequired(
+            jobs: jobs, alreadyValid: alreadyValid,
+            huggingFaceArtifact: model.huggingFaceArtifact, concurrency: concurrency))
         let pending = zip(jobs, alreadyValid).filter { !$0.1 }.map(\.0)
 
         // FINISH-ON-RESTART: a prior run already staged every shard size+SHA-valid
@@ -156,13 +148,10 @@ extension ModelDownloader {
             renderTask.cancel()
             // One last render so the user sees where things stopped.
             renderer.render(progress.allProgress)
-            // Keep staging ONLY if it holds resumable content (a completed file or
-            // a `.part` prefix); otherwise remove the empty husk so a first-file
-            // failure doesn't leave a stray staging dir behind. (A promoted file is
-            // full-size + SHA-verified; size/SHA failures delete the `.part` first.)
+            // Keep completed files, HTTP prefixes and chunk transfers. A retry
+            // revalidates the chunk prefix before reusing any saved bytes.
             let hasResumable = jobs.contains {
-                fileSize($0.destination) == $0.file.sizeBytes
-                    || fileSize($0.destination.appendingPathExtension("part")) > 0
+                hasResumableContent(file: $0.file, destination: $0.destination)
             }
             if !hasResumable {
                 try? FileManager.default.removeItem(at: stagingDir)

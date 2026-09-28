@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-09-27 · commit `5d0dd2674`
+> Last updated: 2026-09-27 · commit `d624f1753`
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -316,3 +316,10 @@ with it, `previous_build` must equal `alias_id`):
 - [`../architecture/model-registry.md`](../architecture/model-registry.md) — how the registry, catalog, and provider download fit together.
 - [dev-environment.md](dev-environment.md) — where to rehearse.
 - [release-policy-rollout.md](release-policy-rollout.md) — the other routing gate that can deroute providers during a rollout.
+
+### Cacheable R2 publication
+
+Opt into `R2_CHUNK_BYTES=480000000` to package large files as chunks and add the
+`r2_chunked_downloads` provider requirement to its registration command. Upgrade
+the coordinator and provider before promoting such a build. Follow
+[the R2 chunk runbook](model-r2-chunks.md) to verify object sizes and CDN cache hits.

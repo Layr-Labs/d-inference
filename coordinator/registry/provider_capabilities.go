@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	ProviderCapabilityAppleM5 = "apple_m5"
-	ProviderCapabilityMLXNAX  = "mlx_nax"
+	ProviderCapabilityAppleM5  = "apple_m5"
+	ProviderCapabilityMLXNAX   = "mlx_nax"
+	ProviderCapabilityR2Chunks = "r2_chunked_downloads"
 
 	Qwen38NAXModelID = "EigenLabs/Qwen3.8-27B-4bit"
 )
@@ -198,7 +199,7 @@ func attestedRuntimeCapabilitiesLocked(provider *Provider) ([]string, bool, bool
 
 func knownProviderCapability(capability string) bool {
 	switch capability {
-	case ProviderCapabilityAppleM5, ProviderCapabilityMLXNAX:
+	case ProviderCapabilityAppleM5, ProviderCapabilityMLXNAX, ProviderCapabilityR2Chunks:
 		return true
 	default:
 		return false

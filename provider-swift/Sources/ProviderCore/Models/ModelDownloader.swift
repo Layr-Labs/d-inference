@@ -3,7 +3,7 @@
 /// Struct declaration, init, the `download` entry point, `remove`, and
 /// the cache-path / staging-name / R2-path helpers. The bigger flows live
 /// in companion extensions:
-///   - ModelDownloader+Download.swift  manifest/legacy download orchestration
+///   - ModelDownloader+Download.swift  verified-manifest download orchestration
 ///   - ModelDownloader+Prefetch.swift  resume-aware background prefetch
 ///   - ModelDownloader+HTTP.swift       low-level file fetch/stream/hash/publish
 
@@ -29,6 +29,10 @@ public struct ModelDownloader: Sendable {
     internal let catalogClient: ModelCatalogClient?
     internal let concurrency: Int
     internal let runtimeCapabilities: Set<ProviderRuntimeCapability>
+    // Injectable for deterministic low-disk integration tests.
+    internal var capacityCheck: @Sendable (URL, Int64) throws -> Void = {
+        try ModelDownloader.ensureAvailableCapacity(at: $0, requiredBytes: $1)
+    }
 
     public init(
         r2CDNURL: String? = nil,

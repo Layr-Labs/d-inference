@@ -1243,12 +1243,11 @@ func (s *Server) SyncModelCatalog() {
 			continue
 		}
 		entries = append(entries, registry.CatalogEntry{
-			ID:         row.ID,
-			WeightHash: row.ActiveVersion.AggregateSHA256,
-			SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
-			MinRAMGB:   row.MinRAMGB,
-			RequiredProviderCapabilities: append(
-				[]string{}, row.RequiredProviderCapabilities...),
+			ID:                           row.ID,
+			WeightHash:                   row.ActiveVersion.AggregateSHA256,
+			SizeGB:                       float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
+			MinRAMGB:                     row.MinRAMGB,
+			RequiredProviderCapabilities: modelTransportCapabilities(&row),
 		})
 	}
 	// Advance the prompt-artifact generation before publishing new routing

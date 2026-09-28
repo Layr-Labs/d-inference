@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-27 · commit `a0b81c7e6`
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -45,3 +45,5 @@ Provider CLI releases register a release with the production coordinator and
 follow both rules: [`provider-release.md`](provider-release.md).
 
 - [App Attest recovery rollout](app-attest-rollout.md) — fixed-provider cohorts, receipt recovery, qualification and gates for later MDM retirement.
+
+- [Publish cacheable R2 model chunks](model-r2-chunks.md) — package weights, stage compatible providers, and verify CDN cache hits.

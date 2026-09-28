@@ -20,6 +20,7 @@ extension ModelDownloader {
         huggingFaceArtifact: HuggingFaceArtifact? = nil,
         onChunk: (@Sendable (Int64) -> Void)? = nil
     ) async throws {
+        try Self.validateR2Chunks(job.file)
         if let artifact = huggingFaceArtifact {
             let hfURL = try artifact.downloadURL(for: job.file.path)
             do {
@@ -28,7 +29,13 @@ extension ModelDownloader {
                     onProgress: nil, required: true, expectedSHA256: job.file.sha256.lowercased(),
                     maximumBytes: job.file.sizeBytes, attempts: 1,
                     requestTimeout: Self.huggingFaceIdleTimeout, onChunk: onChunk)
-                if ok, fileSize(job.destination) == job.file.sizeBytes { return }
+                if ok, fileSize(job.destination) == job.file.sizeBytes {
+                    let transfer = job.destination.appendingPathExtension("r2-transfer")
+                    if job.file.r2Chunks != nil, FileManager.default.fileExists(atPath: transfer.path) {
+                        try FileManager.default.removeItem(at: transfer)
+                    }
+                    return
+                }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -45,6 +52,10 @@ extension ModelDownloader {
             onChunk?(0)
         }
         try Task.checkCancellation()
+        if let chunks = job.file.r2Chunks {
+            try await downloadR2Chunks(job, chunks: chunks, onChunk: onChunk)
+            return
+        }
         let ok = try await downloadFile(
             from: job.url,
             to: job.destination,

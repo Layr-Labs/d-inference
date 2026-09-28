@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-27 · commit `4320091ca`
+> Last updated: 2026-09-27 · commit `d624f1753`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -270,6 +270,29 @@ Every file path in the first four rows can be moved with the `DARKBLOOM_*`
 variables in [`../reference/configuration.md`](../reference/configuration.md).
 Sealed request plaintext never reaches disk on a provider; the SSD cache holds
 KV blocks under a per-model key, not tokens.
+
+## Model transport metadata
+
+`model_version_files.r2_chunks` is nullable JSONB containing ordered R2 chunk sizes
+and hashes. The additive migration runs after table creation in
+`coordinator/store/postgres.go`. `coordinator/store/postgres_model_registry.go`
+reads/writes it in both individual and batched file queries; `manifestFromRecord`
+in `coordinator/store/memory.go` returns the metadata with original file identities.
+See [the manifest format](../reference/model-registry-format.md#cacheable-r2-transport-chunks).
+
+Download staging keeps R2 assembly bytes in each file's
+`.r2-transfer/assembled` path. Failure cleanup retains nonempty assembly and chunk
+transfer files, including after cancellation. The next attempt rehashes complete
+chunk prefixes and truncates any incomplete or invalid suffix before continuing.
+Capacity checks deduct only verified assembly bytes and reserve temporary space
+for the largest remaining chunk per concurrent file. When Hugging Face is
+configured, the estimate also covers the separate full-file `.part` download;
+those bytes do not count as an R2 assembly prefix. Foreground downloads and
+background prefetch share these rules. Code:
+`provider-swift/Sources/ProviderCore/Models/ModelDownloader+Resume.swift`
+(`manifestCapacityRequired`, `hasResumableContent`, `verifiedR2Prefix`) and
+`provider-swift/Sources/ProviderCore/Models/ModelDownloader+Chunks.swift`
+(`downloadR2Chunks`).
 
 ## Invariants
 

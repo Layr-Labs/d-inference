@@ -50,11 +50,14 @@ public struct ManifestFile: Codable, Sendable, Equatable {
     public let sha256: String        // lowercase hex
     public let role: String          // weight | tokenizer | config | template | preprocessor | index | other
 
-    public init(path: String, sizeBytes: Int64, sha256: String, role: String) {
+    public let r2Chunks: [ManifestChunk]?
+
+    public init(path: String, sizeBytes: Int64, sha256: String, role: String, r2Chunks: [ManifestChunk]? = nil) {
         self.path = path
         self.sizeBytes = sizeBytes
         self.sha256 = sha256
         self.role = role
+        self.r2Chunks = r2Chunks
     }
 
     enum CodingKeys: String, CodingKey {
@@ -62,5 +65,23 @@ public struct ManifestFile: Codable, Sendable, Equatable {
         case sizeBytes = "size_bytes"
         case sha256
         case role
+        case r2Chunks = "r2_chunks"
+    }
+}
+
+/// Ordered transport pieces at `<file.path>.chunks/<six-digit-index>.bin`.
+/// File and aggregate hashes still describe the original, reconstructed bytes.
+public struct ManifestChunk: Codable, Sendable, Equatable {
+    public let sizeBytes: Int64
+    public let sha256: String
+
+    public init(sizeBytes: Int64, sha256: String) {
+        self.sizeBytes = sizeBytes
+        self.sha256 = sha256
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case sizeBytes = "size_bytes"
+        case sha256
     }
 }

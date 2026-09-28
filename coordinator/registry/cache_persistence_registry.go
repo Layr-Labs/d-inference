@@ -62,7 +62,7 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 	r.mu.Unlock()
 	// Providers that registered before the restore (none at boot, but tests
 	// and reconfigures may) bind now.
-	r.bindRestoredHoldersForConnectedProviders(now)
+	r.bindRestoredHoldersForConnectedProviders()
 	go r.runCacheRoutingPersistence(ctx, persister)
 	return persister.status(), restoreErr
 }
@@ -71,7 +71,16 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 // the provider.mu → tracker.mu order the receipt path uses. It is called from
 // UpdatePrefixCacheSnapshot (provider.mu already held) and from Register.
 func (t *cacheRoutingTracker) bindRestoredHolders(provider *Provider, capabilities map[string]protocol.PrefixCacheV2Capability) {
-	if t == nil || t.persister == nil {
+	if t == nil || len(capabilities) == 0 {
+		return
+	}
+	// Heartbeats carry capabilities every few seconds; in the steady state
+	// nothing is parked, so check the leaf lock first and take tracker.mu
+	// only when there is something to bind.
+	t.mu.Lock()
+	p := t.persister
+	t.mu.Unlock()
+	if p == nil || !p.hasPending() {
 		return
 	}
 	t.mu.Lock()
@@ -89,7 +98,7 @@ func (r *Registry) bindRegisteredProvider(p *Provider) {
 	r.mu.RLock()
 	tracker := r.cacheRouting
 	r.mu.RUnlock()
-	if tracker == nil || tracker.persister == nil {
+	if tracker == nil {
 		return
 	}
 	p.mu.Lock()
@@ -98,7 +107,7 @@ func (r *Registry) bindRegisteredProvider(p *Provider) {
 	tracker.bindRestoredHolders(p, caps)
 }
 
-func (r *Registry) bindRestoredHoldersForConnectedProviders(now time.Time) {
+func (r *Registry) bindRestoredHoldersForConnectedProviders() {
 	r.mu.RLock()
 	tracker := r.cacheRouting
 	providers := make([]*Provider, 0, len(r.providers))
@@ -109,7 +118,6 @@ func (r *Registry) bindRestoredHoldersForConnectedProviders(now time.Time) {
 	if tracker == nil {
 		return
 	}
-	_ = now
 	for _, p := range providers {
 		p.mu.Lock()
 		caps := clonePrefixCacheCapabilities(p.PrefixCacheV2Models)

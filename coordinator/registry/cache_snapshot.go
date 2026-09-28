@@ -155,7 +155,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 			}
 		}
 	}
-	if tracker != nil && len(resultCapabilities) > 0 {
+	if tracker != nil {
 		// Rows restored from the durable copy that name one of these epochs
 		// become live holders now (cache_persistence.go). Not gated on a
 		// change: registration already carries the capabilities, so the first

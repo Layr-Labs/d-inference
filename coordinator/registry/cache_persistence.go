@@ -464,6 +464,16 @@ func (p *cacheRoutingPersister) prunePending(now time.Time) {
 	}
 }
 
+// hasPending reports whether any restored or parked rows await a provider.
+func (p *cacheRoutingPersister) hasPending() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.pendingCount > 0
+}
+
 // dropPending discards the rows parked under one (cache epoch, model) and
 // schedules their durable rows for deletion: the capability they described no
 // longer exists.

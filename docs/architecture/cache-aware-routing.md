@@ -739,7 +739,8 @@ back are operator procedures, kept in the runbook
    `coordinator/store/cache_routing_state.go`). Restored holders are parked by
    the provider's cache epoch and become live only when a provider applies
    capabilities with that epoch, model, artifact and contract
-   (`bindPendingLocked`, called from `UpdatePrefixCacheSnapshot`), so a bound
+   (`bindPendingLocked`, run at the end of `Register` and on every capability
+   apply in `UpdatePrefixCacheSnapshot`, changed or not), so a bound
    holder carries a live `*Provider` exactly like a fresh receipt; a
    disconnect parks the holder instead of deleting its row, and every other
    removal reason deletes it. Resident (memory-tier) holders are never

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-28 · commit `914dc4e53`
+> Last updated: 2026-09-28 · commit `4ea5c4e49`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -136,7 +136,7 @@ The provider consumes the local packages through immutable Git submodule pins:
 | Package | Merged revision | Included update |
 |---|---|---|
 | `libs/mlx-swift` | `0f4fe403bef6899e8a72882bc6d4036a7a62ae31` | [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28): exact constant reuse for eligible Bonsai packed projections |
-| `libs/mlx-swift-lm` | `e22fc82bdb7bfbd93874d56c7df9ca3306782b09` | [PR #155](https://github.com/Layr-Labs/mlx-swift-lm/pull/155): exact Bonsai carry scheduling and safe HTTP failures |
+| `libs/mlx-swift-lm` | `e69081b2773930063fc61bf88eb7298f7cfe02b1` | [PR #170](https://github.com/Layr-Labs/mlx-swift-lm/pull/170): completed prefill receipts, confirmed-token timing and per-engine mixed-prefill policy |
 
 Keep both local packages in the provider build. The SDK's standalone package
 manifest can still reference a pre-merge Swift review revision; the nested-test
@@ -144,6 +144,8 @@ procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matche
 Swift gitlink. The MLX core and C-wrapper pins are unchanged by this update.
 Rebuild the consumer after changing pins; earlier full-model measurements are
 evidence for their recorded dependency set, not a new benchmark of these pins.
+The merged SDK revision has the same complete Git tree as reviewed head
+`b52335b839d80c8e6d4194ebbd8809d737cd8eb3`; the pin uses the merged `main` history.
 
 ### Native Flash-Next candidate
 

@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28 · commit `ac63cefa7`
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -91,9 +91,10 @@ Overwriting an already published R2 revision is rejected.
    checks the R2 manifest and file sizes before promotion; providers check file
    and aggregate SHA-256 hashes for either source. If publication returns 503
    after promotion, retry with the same version and HF flags until the live
-   catalog refresh and desired-state delivery succeed. A provider send failure
+   catalog and alias refresh and desired-state delivery succeed. An alias read or provider send failure
    can return 503 even after the durable promotion and live catalog have changed;
-   do not treat that response as a rollback.
+   do not treat that response as a rollback. An alias refresh failure retains the
+   last loaded alias map and does not fan out desired state from that stale map.
 
 4. Let eligible providers download while serving their existing revisions.
    Providers then stagger their model-scoped drains, switch snapshots and

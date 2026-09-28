@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28 · commit `ac63cefa7`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -572,7 +572,11 @@ merge semantics.
 `request_id` is nonempty and at most 64 bytes. `drain_request_id` must name the
 latest committed **and settled** `provider_drain` on this exact live connection.
 Every model ID must be unique and nonempty and meet the attested runtime
-capability floor. Catalog-tracked models must carry their catalog-pinned hash.
+capability floor. When the catalog pins a hash, the model must carry the active
+or an explicitly retained revision hash for that same model. Both validation
+and commit check the current approvals, so retirement between those phases
+rejects the replacement (`coordinator/registry/provider_models_replace.go`,
+`ReplaceProviderModels`).
 As with registration, off-catalog local models may be advertised regardless of
 `private_only` or whether the provider has a linked owner; advertising them does
 not grant trust or ownership. With a configured catalog, they are eligible only

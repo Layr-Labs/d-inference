@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28 · commit `ac63cefa7`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -324,7 +324,9 @@ version instead retains its stored locator on retry. It is separate from upstrea
 `hugging_face_id` metadata. Its [pinned artifact validation](#hugging-face-download-artifact)
 applies before registration or promotion. A 503 can occur after the durable
 promotion and live catalog update when sending desired state to a provider fails;
-it does not imply rollback. Retry with the same version and source fields. An
+an alias-store read failure also returns 503 and suppresses desired-state fan-out
+until alias synchronization succeeds (`syncModelCatalog`, `syncModelAliases` in
+`coordinator/api/server.go`). Neither failure implies rollback. Retry with the same version and source fields. An
 identical retry preserves the original `uploaded_by` and `uploaded_at`, plus the
 currently stored download source. Use normal registration for deliberate source edits.
 Promoting a retired revision returns 409 (`ErrModelVersionRetired`);

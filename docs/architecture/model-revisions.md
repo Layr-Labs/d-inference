@@ -1,6 +1,6 @@
 # Model artifact revisions
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28 · commit `ac63cefa7`
 
 An existing model can acquire new weights without changing its model ID or
 releasing another provider binary. Publishers upload an immutable revision and
@@ -148,8 +148,8 @@ random rollout jitter is not a fleet availability guarantee.
    changes the ref; no in-place snapshot replacement is used for manifest models.
 3. **Promoting a revision does not revoke previous approved bytes.**
    `ModelRegistryRecord.ServingVersions` contains previously promoted `ready`
-   revisions. Routing, `models_update` and challenge validation accept only the
-   desired or explicitly retained hashes for that same model. Unpromoted hashes
+   revisions. Routing, `models_update`, drained inventory replacement and challenge
+   validation accept only the desired or explicitly retained hashes for that same model. Unpromoted hashes
    are excluded. Existing legacy omission semantics are unchanged.
 4. **Revocation is explicit.** `RetireModelVersion` removes an inactive revision
    from the accepted set. It refuses the active version and invalidates the
@@ -169,9 +169,8 @@ random rollout jitter is not a fleet availability guarantee.
 
 | Condition | Result |
 |---|---|
-| Live catalog refresh fails after promotion | HTTP 503 with `Retry-After`; retry publication using the same version and source |
 | Incomplete upload or invalid manifest | Publishing is rejected; desired revision stays unchanged |
-| Live catalog refresh or provider desired-state send fails after promotion | API returns retryable 503; retry the same version and source fields, preserving the committed revision and original upload attribution |
+| Catalog/alias refresh or provider desired-state send fails after promotion | API returns retryable 503; retry the same version and source fields. Alias read failures retain the last alias map and suppress fan-out until refresh succeeds; already-applied hash policy remains in effect |
 | Network interruption or insufficient disk | Old revision serves; partial downloads can resume |
 | Removal while a writer owns the model lease | Removal returns a busy error; retry after download or update completes |
 | Process exits after first activation-enabled snapshot publication | Prewritten ref selects the complete verified snapshot on restart |
@@ -191,6 +190,7 @@ random rollout jitter is not a fleet availability guarantee.
 | Update and retirement API | `coordinator/api/model_revision_handlers.go` |
 | Persistent acceptance and immutable versions | `coordinator/store/model_revision.go`, `postgres_model_revisions.go`, `postgres_model_registry.go`; `CachedStore` overrides |
 | Desired state and routing hash admission | `coordinator/registry/model_commands.go`, `model_revisions.go`, `model_catalog.go` |
+| Drained inventory hash validation | `coordinator/registry/provider_models_replace.go` (`ReplaceProviderModels`) |
 | Immutable files and atomic selection | `provider-swift/Sources/ProviderCore/Models/ModelArtifactRevision.swift`, `ModelArtifactWriteLease.swift` |
 | Verified local receipt recovery | `provider-swift/Sources/ProviderCore/Models/ModelArtifactReceipt.swift` (`verifyRevisionAndRepairReceipt`) |
 | Reconciliation and backoff | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelRevisions.swift` |

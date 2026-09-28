@@ -1,12 +1,28 @@
 # MiMo prompt fixture reproduction
 
-> Last updated: 2026-09-28 · commit `05d26caaf`
+> Last updated: 2026-09-28 · commit `013867d9e`
 
 The Rust MiMo parity tests intentionally require pinned metadata and an
 independent20-case corpus. Missing inputs are failures, not silently skipped
 checks. No model weights, API credential or running inference service is needed.
 
-Set `MIMO_PROMPT_ARTIFACT_DIRECTORY` to a metadata-only directory and
+CI prepares the exact public-source inputs before running the unchanged tests:
+
+```bash
+python3 scripts/prepare-mimo-prompt-fixtures.py --output /absolute/fresh/fixture-directory
+```
+
+The script prints `MIMO_PROMPT_ARTIFACT_DIRECTORY` and
+`MIMO_PROMPT_REFERENCE_VECTORS`; set both to those returned paths for local
+`cargo test --locked`. It downloads only four public metadata files from
+`XiaomiMiMo/MiMo-V2.6-Flash-RL` at immutable revision
+`5711b268169967567844e1e560e8a3966da959b1`, with no Hub login, credential read,
+weights or executable model code. The unchanged synthetic corpus is checked in
+at `fixtures/prompt-contract/mimo-v26-additional20.json`; its attribution is in
+`fixtures/prompt-contract/README-mimo-v26.md`. An existing output directory,
+changed input, oversized file or checksum mismatch is a failure, not a skip.
+
+Alternatively, set `MIMO_PROMPT_ARTIFACT_DIRECTORY` to a metadata-only directory and
 `MIMO_PROMPT_REFERENCE_VECTORS` to the unchanged20-case JSON file. Both must
 be ordinary bounded files, not symlinks. Validate these exact SHA-256 values:
 
@@ -37,7 +53,8 @@ then125 unit plus27 integration/binary passes (152 total,0 failed/ignored)
 after test-only canonicalization.
 The original failing binary also passed those three cases when only its
 temporary-directory path was canonicalized. Retain all attempts separately.
-This is not full API/media/end-to-end qualification.
+This is not full API/media/end-to-end qualification, and these original public
+metadata pins do not establish parity for a newer serving-artifact tokenizer.
 
 Public fixture redistribution/retrieval must retain applicable licenses and
 the exact hashes above; this page neither embeds private diagnostics nor

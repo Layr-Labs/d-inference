@@ -38,6 +38,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0 # Frozen source links are checked at their stamped commits.
+      - name: Initialize pinned SDK documentation
+        run: git submodule update --init --depth 1 libs/mlx-swift-lm
       - name: Test historical source-link validation
         run: python3 scripts/test-docs-check-historical-links.py
       - name: Check freshness stamps, links, cited paths, orphans
@@ -136,6 +138,10 @@ jobs:
         run: |
           rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
           rustup override set 1.88.0
+      - name: Verify MiMo fixture setup without network
+        run: python3 scripts/test-prepare-mimo-prompt-fixtures.py
+      - name: Prepare pinned public MiMo metadata and original corpus
+        run: python3 scripts/prepare-mimo-prompt-fixtures.py --output "$RUNNER_TEMP/mimo-prompt-fixtures" --github-env "$GITHUB_ENV"
       - name: Check formatting, lint, and tests
         working-directory: coordinator/promptsidecar
         run: |

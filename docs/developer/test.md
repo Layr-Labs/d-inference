@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `a1e64a532`
+> Last updated: 2026-09-28 · commit `013867d9e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1833,6 +1833,13 @@ binary that already has `mlx.metallib` beside it.
 | `e2e/benchmark_test.go` | `TestBenchmark_SingleProviderStreaming`, `_SingleProviderNonStreaming`, `_MultiModelMultiProvider`, `_HighConcurrency`, `_QueueSaturation`, `_ManyUsers`, `_SingleModelScaling`, `_HeavyLoad_100Concurrent_10KB`; config tests `TestBenchmarkSuiteConfig*`, `TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture`, `TestBenchmarkCapacitySaturationPolicy` |
 
 ### 9. Prompt-contract parity fixtures and vectors
+
+Before the MiMo Rust cases, use the [pinned metadata setup](mimo-prompt-fixtures.md).
+`scripts/test-prepare-mimo-prompt-fixtures.py` tests its allowlist, exact hashes,
+size limits and non-overwriting/no-symlink behavior without network access.
+The actual setup fetches only four public metadata files and uses the unchanged
+checked-in synthetic20-case corpus. It neither loads weights nor qualifies the
+selected serving artifact's model generation or native API path.
 
 For the registry-ID/native-context follow-up, run `Qwen4SupportPolicyTests`,
 `Qwen4OwnedVLMRoutingTests`, `Qwen4ToolChoicePromptPolicyTests`,

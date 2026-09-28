@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-28 · commit `9540c801d`
+> Last updated: 2026-09-28 · commit `8305ac7aa`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -334,7 +334,11 @@ pages also assign it to the lower-memory M5 Pro mini; see the
    `Rates.CacheRead` instead of `Rates.Input`. `buildModelPricing` renders
    that same `CacheRead` as the OpenRouter feed's `input_cache_read`, so what
    OpenRouter computes from the usage and the feed equals the service-account
-   debit. A cache hit never raises a bill: `CachedTokens` is clamped to
+   debit. A public alias is advertised at its primary build's rates while
+   settlement prices the build that served the request, so for an alias the
+   parity holds when the builds behind it share their price rows
+   (`scripts/preposition-rollback-build.sh` copies `cache_read_price` for
+   that reason). A cache hit never raises a bill: `CachedTokens` is clamped to
    `PromptTokens` and `cache_read_price ≤ input_price` is enforced at every
    writer. Caching is provider-initiated, so there is no cache-write SKU.
    Exception: a request settled against a model-token grant is priced by

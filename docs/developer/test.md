@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `5c2da4e0f`
+> Last updated: 2026-09-28 · commit `8b8ed95e1`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2388,9 +2388,16 @@ go test -race ./api ./modelpolicy \
 `coordinator/api/tool_constraints_test.go`
 (`TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals`) checks exact
 integer results and rejects fractional, negative, huge-exponent and multi-megabyte
-inputs. Its five-second per-call ceiling is a catastrophic-stall guard with
-headroom for race and atomic-coverage instrumentation, not proof of linear
-complexity. No production parser limit or acceptance rule changes.
+inputs. The original 250 ms per-call budget remains enforced by normal tests
+and a separate uninstrumented step in the Coordinator Tests CI job. Covered
+runs use a five-second catastrophic-stall ceiling to allow for race and
+atomic-coverage overhead. The benchmark below supplements that enforced CI gate;
+it does not replace it. Neither wall-clock budget proves linear complexity.
+No production parser limit or acceptance rule changes.
+
+Run the enforced performance gate with
+`go test -race=false -cover=false ./coordinator/api -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1`.
+The following full CI suite still runs with race detection and atomic coverage.
 
 Measure size scaling separately with
 `coordinator/api/tool_constraint_numbers_bench_test.go`

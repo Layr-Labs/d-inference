@@ -957,12 +957,16 @@ func TestInexactFiniteValuesFailOnlyInConstrainedModes(t *testing.T) {
 
 // The exact-integer parse must stay LINEAR in the literal length: json.Number
 // carries raw request bytes unbounded, so a bignum-backed parse would hand an
-// attacker free coordinator CPU per oversized literal. The wall-clock ceiling
-// below catches catastrophic stalls; it is not a complexity proof. Race and
-// atomic coverage instrumentation charge every scanned byte, so ordinary linear
-// work needs headroom on shared CI runners. Use the size-scaling benchmark for
-// performance comparisons without instrumentation.
+// attacker free coordinator CPU per oversized literal. CI enforces the original
+// 250ms budget in a separate uninstrumented run. Atomic coverage with the race
+// detector charges every scanned byte, so covered runs use a catastrophic-stall
+// ceiling instead. Neither wall-clock threshold is a complexity proof; use the
+// size-scaling benchmark to compare performance without instrumentation.
 func TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals(t *testing.T) {
+	budget := 250 * time.Millisecond
+	if testing.CoverMode() != "" {
+		budget = 5 * time.Second
+	}
 	longDigits := strings.Repeat("9", 4_000_000)
 	cases := map[string]struct {
 		literal string
@@ -985,8 +989,8 @@ func TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			start := time.Now()
 			got, err := constrainedExactNonnegativeInt(tc.literal)
-			if elapsed := time.Since(start); elapsed > 5*time.Second {
-				t.Fatalf("parse took %v — exceeded catastrophic-stall ceiling", elapsed)
+			if elapsed := time.Since(start); elapsed > budget {
+				t.Fatalf("parse took %v — exceeded %v parser budget (coverage=%q)", elapsed, budget, testing.CoverMode())
 			}
 			if tc.wantErr {
 				if err == nil {

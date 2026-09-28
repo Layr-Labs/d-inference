@@ -1,4 +1,4 @@
-package api
+package conformance
 
 import (
 	"encoding/base64"
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestOpenRouterConformanceIncidentEnvelope(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceIncidentEnvelope(t *testing.T) {
 	cases := []struct {
 		name, original string
 		change         func(map[string]any)
@@ -48,7 +48,7 @@ func TestOpenRouterConformanceIncidentEnvelope(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newORModelFixture(t, true, orIncidentBuild, orIncidentAlias)
+			f := s.newORModelFixture(t, true, orIncidentBuild, orIncidentAlias)
 			p := f.provider("0.9.0")
 			body := orIncidentRequest(t, tc.original)
 			if tc.change != nil {
@@ -140,11 +140,11 @@ func orAssertIncidentEnvelope(t *testing.T, sent, received map[string]any, befor
 	}
 }
 
-func TestOpenRouterConformanceIncidentRefusal(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceIncidentRefusal(t *testing.T) {
 	for _, original := range []struct{ name, body string }{{"off_omitted", orIncidentOmitted}, {"off_auto", orIncidentAuto}} {
 		for _, refusal := range []struct{ name, text string }{{"39", orRefusal39}, {"43", orRefusal43}} {
 			t.Run(original.name+"/refusal_"+refusal.name, func(t *testing.T) {
-				f := newORModelFixture(t, true, orIncidentBuild, orIncidentAlias)
+				f := s.newORModelFixture(t, true, orIncidentBuild, orIncidentAlias)
 				p := f.provider("0.9.0")
 				body := orIncidentRequest(t, original.body)
 				before := time.Now().UTC().Format(time.DateOnly)

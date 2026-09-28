@@ -116,7 +116,8 @@ extension EngineV2Bridge {
         /// gate; nil keeps the legacy write-every-checkpoint behaviour.
         donationDemand: SSDCheckpointDonationDemand? = nil,
         firstContentDeadline: FirstContentDeadline?,
-        profile: RequestProfileBuilder? = nil
+        profile: RequestProfileBuilder? = nil,
+        serviceReservationID: String? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
@@ -140,7 +141,7 @@ extension EngineV2Bridge {
             return stream
         }
         let retirementTransfer = EngineV2RetirementTransfer()
-        guard acquireServiceAllowance(requestID: id) else {
+        guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID) else {
             usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
             continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
             continuation.finish()
@@ -488,8 +489,9 @@ extension EngineV2Bridge {
             prefillReceipt.complete(usage)
             Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
         }
-        // Accepted requests transfer interval ownership to active state. Rejected
-        // submissions have no work left to classify and release in this defer.
+        // Accepted requests transfer interval ownership to active state or its
+        // retirement owner. Rejected submissions release in this defer; a
+        // transferred receipt ignores it until actual engine retirement.
         defer {
             if active[id]?.prefillReceipt !== prefillReceipt { prefillReceipt.end() }
         }
@@ -591,6 +593,7 @@ extension EngineV2Bridge {
                             engineID: cbv2Id,
                             stream: stream,
                             retirement: retirement,
+                            prefillReceipt: prefillReceipt,
                             sharedKVReserved: sharedKVReserved,
                             prefixCacheReceiptID: prefixCacheReceiptID,
                             ssdStaged: ssdStaged,
@@ -615,6 +618,7 @@ extension EngineV2Bridge {
                             engineID: cbv2Id,
                             stream: stream,
                             retirement: retirement,
+                            prefillReceipt: prefillReceipt,
                             sharedKVReserved: sharedKVReserved,
                             prefixCacheReceiptID: prefixCacheReceiptID,
                             ssdStaged: ssdStaged,
@@ -702,6 +706,7 @@ extension EngineV2Bridge {
                 engineID: cbv2Id,
                 stream: cancellation.stream,
                 retirement: cancellation.retirement,
+                prefillReceipt: prefillReceipt,
                 sharedKVReserved: sharedKVReserved,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 ssdStaged: ssdStaged,

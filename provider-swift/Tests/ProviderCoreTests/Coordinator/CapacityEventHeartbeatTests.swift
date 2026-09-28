@@ -85,6 +85,16 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
     }
 }
 
+@Test func wholeMacServiceAttemptReplacementIsMaterialAtTheSameTotal() {
+    var before = capacity([])
+    before.wholeMacServiceUsed = 1.0 / 16
+    before.wholeMacServiceReservations = [.init(id: UUID().uuidString, usedFraction: 1.0 / 16)]
+    var after = before
+    after.wholeMacServiceReservations = [.init(id: UUID().uuidString, usedFraction: 1.0 / 16)]
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: before, current: after))
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: after, current: after))
+}
+
 @Test func admissionCompletionAndHealthTransitionsAreMaterial() {
     let base = capacity([slot(numRunning: 1)])
     // Request admitted / completed: numRunning moved.

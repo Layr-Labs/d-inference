@@ -391,9 +391,8 @@ func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 	return cleared
 }
 
-// MarkModelWarm adds a model to the provider's WarmModels list if not already
-// present. Called when load_model_status:succeeded arrives before the next
-// heartbeat, so the scheduler sees the provider as warm during queue drain.
+// MarkModelWarm records a successful placement and fills any warm state not yet
+// reported by heartbeat, so queue drain sees the loaded model immediately.
 func (r *Registry) MarkModelWarm(providerID, modelID string) {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
@@ -411,12 +410,15 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 		p.mu.Unlock()
 		r.mu.RUnlock()
 	}()
+	// A completion heartbeat can report the loaded slot before its succeeded
+	// status arrives. The successful placement still starts dwell in that order;
+	// the early return only avoids rewriting already-authoritative warm state.
+	p.lastWarmPlacementAt = time.Now()
 	for _, wm := range p.WarmModels {
 		if wm == modelID {
 			return // already warm
 		}
 	}
-	p.lastWarmPlacementAt = time.Now()
 	p.WarmModels = append(p.WarmModels, modelID)
 	p.CurrentModel = modelID
 

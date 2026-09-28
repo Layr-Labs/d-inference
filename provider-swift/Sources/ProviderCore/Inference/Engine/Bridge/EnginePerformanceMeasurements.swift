@@ -51,6 +51,7 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     private var sample: Sample?
     private var consumed = false
     private var ended = false
+    private var retirementOwned = false
 
     init(activity: EngineMeasurementActivity, model: String) {
         self.activity = activity
@@ -75,15 +76,29 @@ final class EnginePrefillReceipt: @unchecked Sendable {
 
     var overlap: EngineMeasurementActivity.Overlap { activity.snapshot(activityID) }
 
+    /// A consumer terminal can precede engine cleanup. The retirement owner
+    /// keeps this interval visible after active-state accounting ends.
+    func retainUntilRetirement() {
+        lock.withLock { retirementOwned = true }
+    }
+
     func end() {
+        end(retirementComplete: false)
+    }
+
+    func endAfterRetirement() {
+        end(retirementComplete: true)
+    }
+
+    private func end(retirementComplete: Bool) {
         let release = lock.withLock {
-            guard !ended else { return false }
+            guard !ended, !retirementOwned || retirementComplete else { return false }
             ended = true
             return true
         }
         if release { activity.end(activityID) }
     }
-    deinit { end() }
+    deinit { endAfterRetirement() }
 }
 
 /// Actor-owned bounded EWMAs. Equal new rates still increment count and refresh

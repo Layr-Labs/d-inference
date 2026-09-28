@@ -351,6 +351,7 @@ func (p *Provider) addPendingLocked(pr *PendingRequest) {
 	pr.providerAuthorizationBinding = providerRequestAuthorizationBindingLocked(p)
 	pr.reservedAt = time.Now()
 	pr.reservedServiceCharge = p.serviceChargeForModelLocked(pr.Model)
+	pr.serviceReservationID.Store(newServiceReservationIdentity())
 	p.pendingReqs[pr.RequestID] = pr
 	if p.drainCommitted && p.drainPendingDone == nil {
 		p.drainPendingDone = make(chan struct{})

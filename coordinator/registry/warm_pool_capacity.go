@@ -9,7 +9,7 @@ func (r *Registry) warmPoolCapacityLocked(p *Provider, model string, params warm
 	quality = qualityConcurrency(r.resolvedSoloModelTPSLocked(p, model).tps, params.DecodeFloorTPS, params.LoadFactorK, limit, params.FallbackQualityConcurrency)
 	aggregateDecode = decode * float64(quality)
 	if profile := qualifiedPerformanceProfileLocked(p, model); profile != nil {
-		cap := min(profile.MaxConcurrency, profile.WholeMacConcurrency, limit)
+		cap := profile.concurrencyForDecodeFloor(limit, params.DecodeFloorTPS)
 		if point, ok := profile.batchAt(cap); ok && cap > 0 {
 			quality = cap
 			aggregateDecode = point.AggregateDecodeTPS

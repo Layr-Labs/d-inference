@@ -92,8 +92,9 @@ struct CoordinatorIntegrationTests {
 
     // MARK: 2. End-to-end encryption + cancellation
 
-    @Test("inference_request decrypts, response chunks encrypt, cancel triggers status 499")
-    func inferenceRequestE2EEncryptionAndCancellation() async throws {
+    @Test("inference_request decrypts, preserves reservation, and cancels with status 499",
+        arguments: [Optional("opaque-service-reservation"), nil])
+    func inferenceRequestE2EEncryptionAndCancellation(serviceReservationID: String?) async throws {
         let mock = MockCoordinator()
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
@@ -130,7 +131,8 @@ struct CoordinatorIntegrationTests {
             chatRequestJSON: chatJSON,
             firstContentBudgetMs: 60_000,
             cacheReceiptNonce: "nonce-int-1",
-            cacheScope: "authenticated-account-route"
+            cacheScope: "authenticated-account-route",
+            serviceReservationID: serviceReservationID
         )
 
         // Run a tiny "fake provider loop":
@@ -151,11 +153,12 @@ struct CoordinatorIntegrationTests {
                 switch event {
                 case .inferenceRequest(
                     let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _, _,
-                    let firstContentDeadline, _, _
+                    let firstContentDeadline, _, _, let reservationID
                 ):
                     #expect(rid == requestId)
                     #expect(nonce == "nonce-int-1")
                     #expect(scope == "authenticated-account-route")
+                    #expect(reservationID == serviceReservationID)
                     guard let firstContentDeadline else {
                         Issue.record("missing first-content deadline")
                         continue

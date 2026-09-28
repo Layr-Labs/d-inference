@@ -90,6 +90,62 @@ func TestWarmPoolPlacementDwellExpires(t *testing.T) {
 	}
 }
 
+func TestWarmPoolSuccessfulLoadDwellSurvivesHeartbeatOrdering(t *testing.T) {
+	for _, heartbeatFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("heartbeat_first_%t", heartbeatFirst), func(t *testing.T) {
+			r := New(testLogger())
+			const loaded, next = "loaded-model", "next-model"
+			p := makeWarmPoolColdProvider(t, r, "p", loaded, 80, 64, 8)
+			p.Models = append(p.Models, protocol.ModelInfo{ID: next})
+			cfg := testWarmPoolConfig()
+			cfg.MinDwell = time.Minute
+			r.ConfigureWarmPool(cfg)
+			previousPlacement := time.Now().Add(-2 * cfg.MinDwell)
+			p.lastWarmPlacementAt = previousPlacement
+			key := modelLoadKey{ProviderID: p.ID, ModelID: loaded}
+			r.pendingModelLoads[key] = time.Now().Add(time.Minute)
+			r.pendingModelLoadStarted[key] = time.Now()
+			active := loaded
+			heartbeat := &protocol.HeartbeatMessage{
+				Status: "idle", ActiveModel: &active, WarmModels: []string{loaded},
+				BackendCapacity: &protocol.BackendCapacity{
+					CapacitySeq: 1, TotalMemoryGB: 64, GPUMemoryActiveGB: 8,
+					Slots: []protocol.BackendSlotCapacity{{Model: loaded, State: "idle"}},
+				},
+			}
+			if heartbeatFirst {
+				if !r.Heartbeat(p.ID, heartbeat) {
+					t.Fatal("load completion heartbeat rejected")
+				}
+				if p.lastWarmPlacementAt != previousPlacement {
+					t.Fatal("heartbeat alone changed placement dwell")
+				}
+			}
+			beforeSuccess := time.Now()
+			r.MarkModelWarm(p.ID, loaded)
+			r.ClearPendingModelLoad(p.ID, loaded)
+			if !heartbeatFirst && !r.Heartbeat(p.ID, heartbeat) {
+				t.Fatal("load completion heartbeat rejected")
+			}
+			placedAt := p.lastWarmPlacementAt
+			if placedAt.Before(beforeSuccess) {
+				t.Fatal("successful load did not refresh placement dwell")
+			}
+			if len(p.WarmModels) != 1 || p.WarmModels[0] != loaded {
+				t.Fatalf("warm models = %v, want one loaded model", p.WarmModels)
+			}
+			_, reason := r.warmPoolCandidateReasonLocked(p, next, placedAt.Add(cfg.MinDwell/2))
+			if reason != warmColdDwell {
+				t.Fatalf("newly placed provider selected for another model: %q", reason)
+			}
+			_, reason = r.warmPoolCandidateReasonLocked(p, next, placedAt.Add(cfg.MinDwell))
+			if reason != warmColdEligible {
+				t.Fatalf("placement dwell did not expire: %q", reason)
+			}
+		})
+	}
+}
+
 func TestWarmPoolPreservesRecentResidencyWithoutStarvingNewModel(t *testing.T) {
 	r := New(testLogger())
 	valuable := makeWarmPoolColdProvider(t, r, "valuable", "m", 80, 128, 8)

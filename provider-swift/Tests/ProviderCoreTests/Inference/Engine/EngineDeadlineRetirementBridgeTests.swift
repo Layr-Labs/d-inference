@@ -27,6 +27,9 @@ struct EngineDeadlineRetirementBridgeTests {
         }
         let bridge = makeBridge(engine, model: "deadline-owner")
         let otherBridge = makeBridge(otherEngine, model: "other-model")
+        let activity = EngineMeasurementActivity()
+        await bridge.setMeasurementActivity(activity)
+        await otherBridge.setMeasurementActivity(activity)
         // The test targets retirement ownership; seed a numeric isolated rate
         // so the real bridge takes its atomic deadline-admission branch.
         await bridge.updatePrefillTpsEwma(2_000, isolated: true)
@@ -42,8 +45,10 @@ struct EngineDeadlineRetirementBridgeTests {
             for index in 0..<(limit - 1) { budget.serviceBudget.release(ownerID: "occupied-\(index)") }
         }
         let request = ChatCompletionRequest(model: "deadline-owner", messages: [], max_tokens: 1)
+        let reservationID = UUID().uuidString.lowercased()
         let stream = try await bridge.submitTokenized(promptTokens: [1, 2], request: request,
-            requestId: "held", firstContentDeadline: .init(relativeBudgetMilliseconds: 60_000))
+            requestId: "held", firstContentDeadline: .init(relativeBudgetMilliseconds: 60_000),
+            serviceReservationID: reservationID)
         #expect(engine.deadlineAdmissions.count == 1)
         let continuation = try #require(engine.continuations.last)
         continuation.yield(.finished(reason: cancelled ? .cancelled : .stop,
@@ -53,6 +58,8 @@ struct EngineDeadlineRetirementBridgeTests {
         #expect(terminalErrors == (cancelled ? ["request cancelled"] : []))
 
         #expect(budget.serviceBudget.count == limit)
+        #expect(budget.serviceBudget.snapshot().reservations == [
+            .init(id: reservationID, usedFraction: 1.0 / Double(limit))])
         #expect(abs(budget.serviceBudget.usedFraction - 1) < 1e-12)
         #expect(await budget.outstandingReservedBytes() > 0)
         // Generic bridges remove the active row at terminal; retirement lives
@@ -60,6 +67,10 @@ struct EngineDeadlineRetirementBridgeTests {
         #expect(await bridge.activeRequestCount() == 0)
         #expect(await bridge._testPendingSubmissionCount() == 1)
         #expect(await bridge._testLivePumpCount() == 1)
+        let overlapping = EnginePrefillReceipt(activity: activity, model: "other-model")
+        #expect(overlapping.overlap.contended)
+        #expect(overlapping.overlap.otherModel)
+        overlapping.end()
         let duplicate = try await bridge.submitTokenized(promptTokens: [1, 2], request: request,
             requestId: "held", firstContentDeadline: .init(relativeBudgetMilliseconds: 60_000))
         #expect(await errors(in: duplicate) == ["token_budget_exhausted: duplicate request ID"])
@@ -78,6 +89,10 @@ struct EngineDeadlineRetirementBridgeTests {
         #expect(await bridge._testPendingSubmissionCount() == 0)
         #expect(await budget.outstandingReservedBytes() == 0)
         #expect(budget.serviceBudget.count == limit - 1)
+        let isolated = EnginePrefillReceipt(activity: activity, model: "other-model")
+        #expect(!isolated.overlap.contended)
+        isolated.end()
+        #expect(budget.serviceBudget.snapshot().reservations.isEmpty)
         let retried = await otherBridge.submitTokenized(promptTokens: [1, 2], request: request,
             requestId: "other")
         let otherContinuation = try #require(otherEngine.continuations.last)

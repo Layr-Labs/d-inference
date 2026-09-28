@@ -71,6 +71,7 @@ extension EngineV2Bridge {
         engineID: CBv2RequestID,
         stream: AsyncStream<CBv2Event>,
         retirement: CBv2RequestRetirement,
+        prefillReceipt: EnginePrefillReceipt,
         sharedKVReserved: Bool,
         prefixCacheReceiptID: CBv2RequestID?,
         ssdStaged: Bool,
@@ -79,13 +80,20 @@ extension EngineV2Bridge {
         failure: PrefixCacheLookupFailureClass
     ) {
         guard transfer.claim() else { return }
+        prefillReceipt.retainUntilRetirement()
         let bridge = self
         Task {
+            // Admission can commit and generate tokens before submit resumes.
+            // No active row or client pump exists on this path, so this owner
+            // reconciles work without publishing output or billable usage.
+            let completion = await Self.transferredGenerationWork(in: stream)
             await retirement.wait()
+            prefillReceipt.endAfterRetirement()
             withExtendedLifetime(stream) {}
             await bridge.completeTransferredPreSubmitRetirement(
                 requestID: requestID,
                 engineID: engineID,
+                completion: completion,
                 sharedKVReserved: sharedKVReserved,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 ssdStaged: ssdStaged,
@@ -98,6 +106,7 @@ extension EngineV2Bridge {
     private func completeTransferredPreSubmitRetirement(
         requestID: String,
         engineID: CBv2RequestID,
+        completion: Int,
         sharedKVReserved: Bool,
         prefixCacheReceiptID: CBv2RequestID?,
         ssdStaged: Bool,
@@ -105,6 +114,7 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal?,
         failure: PrefixCacheLookupFailureClass
     ) async {
+        recordGenerationWork(completion: completion)
         await releasePreSubmitResources(
             requestID: requestID,
             sharedKVReserved: sharedKVReserved,

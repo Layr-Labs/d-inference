@@ -5,16 +5,32 @@ import Foundation
 /// Leases have no timeout: cancellation releases only after engine retirement.
 final class WholeMacServiceBudget: @unchecked Sendable {
     private let lock = NSLock()
-    private var charges: [String: Double] = [:]
+    private struct Charge {
+        let fraction: Double
+        let reservationID: String?
+    }
+    struct Snapshot: Sendable, Equatable {
+        let usedFraction: Double
+        let reservations: [WholeMacServiceReservation]
+    }
+    private var charges: [String: Charge] = [:]
     private var observerID: UUID?
     private var observer: AsyncStream<Void>.Continuation?
 
-    func acquire(ownerID: String, concurrency: Int) -> Bool {
+    func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil) -> Bool {
+        // Correlation is optional. Malformed input gets no overlap credit; it
+        // never bypasses the actual provider-side service allowance.
+        let reservationID = serviceReservationID.flatMap {
+            $0.utf8.count == 36 ? UUID(uuidString: $0)?.uuidString.lowercased() : nil
+        }
         let (acquired, notification) = lock.withLock { () -> (Bool, AsyncStream<Void>.Continuation?) in
             guard charges[ownerID] == nil, concurrency > 0 else { return (false, nil) }
+            if let reservationID, charges.values.contains(where: { $0.reservationID == reservationID }) {
+                return (false, nil)
+            }
             let charge = 1 / Double(concurrency)
-            guard charges.values.reduce(0, +) + charge <= 1 + 1e-12 else { return (false, nil) }
-            charges[ownerID] = charge
+            guard charges.values.reduce(0, { $0 + $1.fraction }) + charge <= 1 + 1e-12 else { return (false, nil) }
+            charges[ownerID] = Charge(fraction: charge, reservationID: reservationID)
             return (true, observer)
         }
         notification?.yield()
@@ -55,6 +71,18 @@ final class WholeMacServiceBudget: @unchecked Sendable {
         }
     }
 
-    var usedFraction: Double { lock.withLock { charges.values.reduce(0, +) } }
+    /// Total and correlations must be from one lock epoch. In particular, a
+    /// heartbeat cannot pair a pre-retirement total with post-retirement IDs.
+    func snapshot() -> Snapshot {
+        lock.withLock {
+            let reservations = charges.values.compactMap { charge in
+                charge.reservationID.map { WholeMacServiceReservation(id: $0, usedFraction: charge.fraction) }
+            }.sorted { $0.id < $1.id }
+            return Snapshot(usedFraction: charges.values.reduce(0, { $0 + $1.fraction }),
+                reservations: Array(reservations.prefix(64)))
+        }
+    }
+
+    var usedFraction: Double { lock.withLock { charges.values.reduce(0, { $0 + $1.fraction }) } }
     var count: Int { lock.withLock { charges.count } }
 }

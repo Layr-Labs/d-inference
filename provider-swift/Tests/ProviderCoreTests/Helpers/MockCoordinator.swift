@@ -372,7 +372,8 @@ public final class MockCoordinator: @unchecked Sendable {
         firstContentBudgetMs: Int64? = nil,
         cacheReceiptNonce: String? = nil,
         cacheScope: String? = nil,
-        consumerKeyPair: NodeKeyPair? = nil
+        consumerKeyPair: NodeKeyPair? = nil,
+        serviceReservationID: String? = nil
     ) async throws {
         guard let providerPubKeyData = Data(base64Encoded: providerPublicKeyBase64),
               providerPubKeyData.count == 32
@@ -389,7 +390,8 @@ public final class MockCoordinator: @unchecked Sendable {
             encryptedBody: payload,
             firstContentBudgetMs: firstContentBudgetMs,
             cacheReceiptNonce: cacheReceiptNonce,
-            cacheScope: cacheScope
+            cacheScope: cacheScope,
+            serviceReservationID: serviceReservationID
         ))
         try await sendCoordinatorMessage(msg)
     }

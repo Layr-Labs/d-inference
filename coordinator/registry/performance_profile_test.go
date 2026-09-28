@@ -69,6 +69,54 @@ func TestQualifiedPerformanceProfileExactIdentityAndCap(t *testing.T) {
 	}
 }
 
+func TestQualifiedProfilePreservesConfiguredDecodeFloor(t *testing.T) {
+	p, profile := reviewedProfileFixture(t)
+	profile.BatchCurve = []servingBatchPoint{
+		{Width: 1, DecodeP10TPS: 90, AggregateDecodeTPS: 100, PrefillTPS: 6000, FirstContentP95MS: 1200},
+		{Width: 4, DecodeP10TPS: 50, AggregateDecodeTPS: 250, PrefillTPS: 5000, FirstContentP95MS: 1500},
+		{Width: 8, DecodeP10TPS: 40, AggregateDecodeTPS: 450, PrefillTPS: 4500, FirstContentP95MS: 1800},
+		{Width: 16, DecodeP10TPS: 35, AggregateDecodeTPS: 700, PrefillTPS: 4000, FirstContentP95MS: 2800},
+	}
+	for _, tc := range []struct {
+		name           string
+		enabled        bool
+		floor          float64
+		operator, want int
+	}{
+		{"release floor", true, 30, 16, 16},
+		{"raised floor", true, 40, 16, 8},
+		{"stricter floor", true, 45, 16, 4},
+		{"operator between passing widths", true, 40, 6, 6},
+		{"operator between rejected widths", true, 45, 6, 4},
+		{"operator below passing point", true, 45, 3, 3},
+		{"floor above solo", true, 100, 16, 1},
+		{"floor disabled", false, 100, 16, 16},
+		{"zero floor", true, 0, 16, 16},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p.BackendCapacity.Slots[0].MaxConcurrency = tc.operator
+			r := New(testLogger())
+			r.qualityCapEnabled, r.qualityCapFloorTPS, r.qualityCapFallback = tc.enabled, tc.floor, 1
+			if got := r.effectiveMaxConcurrencyForModelRateLocked(p, "model", soloModelTPS{tps: 1000}); got != tc.want {
+				t.Fatalf("admission cap = %d, want %d", got, tc.want)
+			}
+			warmFloor := tc.floor
+			if !tc.enabled {
+				warmFloor = 0
+			}
+			quality, aggregate, prefill := r.warmPoolCapacityLocked(p, "model", warmTargetParams{DecodeFloorTPS: warmFloor})
+			point, _ := profile.batchAt(tc.want)
+			wantAggregate := point.AggregateDecodeTPS
+			if point.Width != tc.want {
+				wantAggregate = point.DecodeP10TPS * float64(tc.want)
+			}
+			if quality != tc.want || aggregate != wantAggregate || prefill != point.PrefillTPS {
+				t.Fatalf("warm capacity = %d/%v/%v, want %d/%v/%v", quality, aggregate, prefill, tc.want, wantAggregate, point.PrefillTPS)
+			}
+		})
+	}
+}
+
 func TestQualifiedCurveDoesNotExtrapolate(t *testing.T) {
 	_, profile := reviewedProfileFixture(t)
 	snapshot := routingSnapshot{performanceProfile: profile, backendRunning: 7, observedDecodeTPS: 1000, decodeTPS: 1000}
@@ -94,6 +142,11 @@ func TestWholeMacServiceReconcilesFreshReservations(t *testing.T) {
 		"overlap": {Model: "model", reservedAt: now.Add(-time.Second)},
 		"fresh":   {Model: "model", reservedAt: now.Add(time.Second)},
 	}
+	overlapID := "6e1f61d1-e22c-4d24-a3a7-d347772a48cb"
+	p.pendingReqs["overlap"].serviceReservationID.Store(&serviceReservationIdentity{wire: overlapID})
+	p.BackendCapacity.WholeMacServiceReservations = []protocol.WholeMacServiceReservation{{
+		ID: overlapID, UsedFraction: 1.0 / 16,
+	}}
 	if !p.hasWholeMacServiceHeadroomLocked("model") {
 		t.Fatal("last whole-Mac slot unavailable")
 	}

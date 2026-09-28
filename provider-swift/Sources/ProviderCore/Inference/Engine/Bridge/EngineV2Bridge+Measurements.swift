@@ -105,4 +105,25 @@ extension EngineV2Bridge {
         generatedTokensTotal = Self.saturatingCounter(generatedTokensTotal, adding: completion)
         generationRequestsTotal = Self.saturatingCounter(generationRequestsTotal, adding: 1)
     }
+
+    /// A committed admission torn down before active state has no event pump.
+    /// Reconcile numeric output exactly like normal accounting: terminal usage
+    /// may raise the observed token count; a closed stream keeps confirmed
+    /// deltas. Never expose text, update the caller's usage signal, or train a
+    /// rate from this unobserved delivery interval.
+    nonisolated static func transferredGenerationWork(
+        in events: AsyncStream<CBv2Event>
+    ) async -> Int {
+        var completion = 0
+        for await event in events {
+            switch event {
+            case .delta(_, let tokens, _):
+                let (sum, overflow) = completion.addingReportingOverflow(tokens.count)
+                completion = overflow ? .max : sum
+            case .finished(_, let usage):
+                return max(completion, usage.completionTokens)
+            }
+        }
+        return completion
+    }
 }

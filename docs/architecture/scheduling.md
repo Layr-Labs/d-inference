@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-28 · commit `df492a114`
+> Last updated: 2026-09-28 · commit `2a21a7f8c`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -289,14 +289,27 @@ count across all models must be below its *provider cap*.
 `MaxConcurrency` when positive, else the provider cap.
 
 Exact reviewed profiles (`coordinator/registry/performance_profile.go`) replace
-the legacy batch curve and bound the per-model cap. Both languages require the
-same artifact/runtime/backend/hardware/context identity. The optional
+the legacy batch curve and bound the per-model cap. Admission and warm sizing
+still honor their configured decode floors and lower operator concurrency caps.
+Both languages require the same artifact/runtime/backend/hardware/context
+identity. Static qualification survives temporary low-power or thermal limits;
+the provider gates expansion dynamically until posture recovers. The optional
 `whole_mac_service_used` heartbeat field is the provider's shared fractional
-allowance usage; admission also reconciles coordinator-owned reservations.
+allowance usage. Each committed coordinator reservation gets a fresh opaque
+`service_reservation_id`, including retries of the same request. The provider's
+optional `whole_mac_service_reservations` entries name the IDs and actual held
+fractions included in that total. Admission adds every unmatched pending charge
+and any positive difference between a matched coordinator charge and its reported
+fraction; receipt timestamps never establish overlap. Local and legacy provider
+work remains in the total. Missing correlation adds all pending charges
+conservatively, while providers omitting the total retain legacy admission.
+Correlation is bounded to 64 unique UUIDs with finite positive fractions whose
+sum does not exceed the total; malformed reports fail closed at full usage.
 `CapacityHeartbeatMateriality` in
 `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift` treats changes
-to this fraction as material even when slot counts and token budgets remain
-unchanged, covering pre-submit acquisition and delayed retirement release.
+to this fraction or its reservation correlations as material even when slot
+counts and token budgets remain unchanged, covering pre-submit acquisition and
+delayed retirement release.
 The shared budget coalesces ownership notifications into one bounded stream;
 `provider-swift/Sources/ProviderCore/ProviderLoop+ServiceAllowance.swift`
 (`startServiceAllowanceRefreshMonitor`) rebuilds capacity through the existing
@@ -432,6 +445,10 @@ First snapshots, resets, stale sequence numbers, reconnects and reporting gaps
 longer than `firstContentPerformanceFreshness = 2 * time.Minute` supply no new
 work. Partial output and prompt computation before later cancellation count as
 real consumed work. Separate spill/reject pressure remains visible.
+An admission cancelled or expired after engine commitment but before the client
+pump starts is drained for numeric output work. Service, KV and measurement
+activity ownership remain held until engine retirement; this does not publish
+client output or billing usage.
 
 Per-provider reviewed curves supply measured aggregate decode capacity before
 fleet medians are computed. Unqualified providers retain the legacy curve.

@@ -122,6 +122,47 @@ private func measuredProfileFixture() -> ServingPerformanceProfile {
     #expect(!budget.acquire(ownerID: "over", concurrency: 16))
 }
 
+@Test func servingPerformanceProfileRecoversAfterTransientPostureWithoutReload() async throws {
+    let profile = measuredProfileFixture()
+    let budget = GlobalKVCacheBudget(memorySnapshot: {
+        .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
+    })
+    let bridge = EngineV2Bridge(engine: ProfileContextSentinelEngine(), modelId: profile.modelId,
+        tokenizer: TokenizerHandle(ProfileContextTokenizer()), eosTokenIds: [],
+        maxConcurrentRequests: 16, performanceProfile: profile,
+        unqualifiedMaxConcurrentRequests: 4, kvBudget: budget)
+
+    // A slot first used under a transient throttle retains its static profile
+    // while advertising and admitting only the fallback width.
+    #expect(bridge.performanceProfile?.id == profile.id)
+    #expect(await bridge.currentPerformanceProfile(allowExpansion: false) == nil)
+    #expect(await bridge.effectiveServingConcurrency(allowExpansion: false) == 4)
+    #expect(await bridge.profileTestAcquire(requestID: "throttled", allowExpansion: false, pending: 3))
+    #expect(abs(budget.serviceBudget.usedFraction - 1.0 / 24) < 1e-12)
+    #expect(await bridge.profileTestAcquire(requestID: "refused", allowExpansion: false, pending: 4) == false)
+    await bridge.releaseServiceAllowance(requestID: "throttled")
+
+    // The same bridge restores its qualified cap and charge immediately when
+    // normal power and thermal conditions return; no model reload is needed.
+    #expect(await bridge.currentPerformanceProfile(allowExpansion: true)?.id == profile.id)
+    #expect(await bridge.effectiveServingConcurrency(allowExpansion: true) == 16)
+    #expect(await bridge.profileTestAcquire(requestID: "recovered", allowExpansion: true, pending: 4))
+    #expect(abs(budget.serviceBudget.usedFraction - 1.0 / 16) < 1e-12)
+    #expect(await bridge.profileTestAcquire(requestID: "throttled-again", allowExpansion: false, pending: 4) == false)
+    #expect(bridge.performanceProfile?.id == profile.id)
+    await bridge.releaseServiceAllowance(requestID: "recovered")
+    #expect(budget.serviceBudget.count == 0)
+    await bridge.shutdown()
+}
+
+private extension EngineV2Bridge {
+    func profileTestAcquire(requestID: String, allowExpansion: Bool, pending: Int) -> Bool {
+        pendingSubmissionIDs = Set((0..<pending).map { "pending-\($0)" })
+        defer { pendingSubmissionIDs.removeAll() }
+        return acquireServiceAllowance(requestID: requestID, allowExpansion: allowExpansion)
+    }
+}
+
 @Test func servingPerformanceContextRejectsActualPromptAndReservedOutputBeforeAdmission() async throws {
     let profile = measuredProfileFixture()
     for (prompt, output) in [(32768, 1), (32767, 2), (1, Int.max)] {

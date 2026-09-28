@@ -20,6 +20,8 @@ extension EngineV2Bridge {
         nativeRetirement: CBv2RequestRetirement? = nil
     ) {
         let bridge = self
+        let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
+        retirementReceipt?.retainUntilRetirement()
         usageSignal?.beginTerminalObservation()
         let task = Task {
             await bridge.pump(
@@ -33,6 +35,7 @@ extension EngineV2Bridge {
                 profile: profile,
                 nativeRetirement: nativeRetirement
             )
+            retirementReceipt?.endAfterRetirement()
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
         }
         pumpTasks[id] = task

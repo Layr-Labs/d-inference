@@ -642,6 +642,7 @@ func cloneBackendCapacityFields(capacity, in *protocol.BackendCapacity) {
 		used := *in.WholeMacServiceUsed
 		capacity.WholeMacServiceUsed = &used
 	}
+	cloneWholeMacServiceReservations(capacity, in)
 	if in.FreeForLoadGB != nil {
 		free := *in.FreeForLoadGB
 		capacity.FreeForLoadGB = &free

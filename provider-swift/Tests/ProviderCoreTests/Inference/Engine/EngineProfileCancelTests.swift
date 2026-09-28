@@ -100,6 +100,17 @@ private final class ControlledEngine: CBv2Engine, @unchecked Sendable {
         lock.withLock { cancelled.append(id) }
     }
 
+    /// Complete only a committed deadline admission torn down before its
+    /// client pump starts. The fixture has no device ownership to await, but
+    /// still owes the admitted stream its terminal usage. Keep cancel() itself
+    /// passive so ordinary cancellation tests can emit confirmed late tokens.
+    func finishCancelledAdmission() {
+        let output = lock.withLock { continuation }
+        output?.yield(.finished(
+            reason: .cancelled, usage: .init(promptTokens: 3, completionTokens: 0)))
+        output?.finish()
+    }
+
     var cancelledIDs: [CBv2RequestID] { lock.withLock { cancelled } }
 
     func capacity() -> CBv2CapacitySnapshot {
@@ -566,7 +577,11 @@ struct EngineProfileCancelTests {
         #expect(profile.wireObject().deadlineDecision?.continuation == .cancelled)
         #expect(profile.wireObject().engineAdmittedUs == nil)
         #expect(sink.recorded.isEmpty)
-        // The retirement transfer releases the pending bookkeeping.
+        // Retirement alone cannot replace the admitted stream's final usage.
+        #expect(await bridge._testPendingSubmissionCount() == 1)
+        engine.finishCancelledAdmission()
+        // The retirement transfer releases the pending bookkeeping only once
+        // both stream settlement and engine ownership are complete.
         #expect(await awaitPendingDrained(on: bridge))
     }
 
@@ -685,6 +700,8 @@ struct DeadlineDecisionBridgeTests {
         #expect(wire.engineAdmittedUs == nil)
         #expect(wire.projectedServiceUs == nil)
         #expect(engine.cancelledIDs.count == 1)
+        #expect(await bridge._testPendingSubmissionCount() == 1)
+        engine.finishCancelledAdmission()
         #expect(await awaitPendingDrained(on: bridge))
     }
 
@@ -726,6 +743,10 @@ struct DeadlineDecisionBridgeTests {
         #expect(wire.deadlineDecision?.projection == nil)
         #expect(wire.deadlineDecision?.projectedServiceUs == nil)
         #expect(wire.engineAdmittedUs == nil)
+        if accepted {
+            #expect(await bridge._testPendingSubmissionCount() == 1)
+            engine.finishCancelledAdmission()
+        }
         #expect(await awaitPendingDrained(on: bridge))
     }
 

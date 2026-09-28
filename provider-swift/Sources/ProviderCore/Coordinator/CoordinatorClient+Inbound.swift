@@ -95,7 +95,8 @@ extension CoordinatorClient {
                 toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol,
                 firstContentDeadline: firstContentDeadline,
                 receivedAt: receivedAt,
-                profile: profile
+                profile: profile,
+                serviceReservationID: request.serviceReservationID
             ))
 
         case .cancel(let cancel):

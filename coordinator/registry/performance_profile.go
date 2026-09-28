@@ -48,6 +48,22 @@ func (profile *servingPerformanceProfile) batchAt(width int) (servingBatchPoint,
 	return servingBatchPoint{}, false
 }
 
+// concurrencyForDecodeFloor uses the same conservative point as projected
+// decode: intermediate operator caps borrow only the next measured width's p10.
+// A floor above even B1 retains the existing single-request fallback.
+func (profile *servingPerformanceProfile) concurrencyForDecodeFloor(limit int, floor float64) int {
+	limit = min(max(1, limit), profile.MaxConcurrency, profile.WholeMacConcurrency)
+	if floor <= 0 {
+		return limit
+	}
+	for width := limit; width > 1; width-- {
+		if point, ok := profile.batchAt(width); ok && point.DecodeP10TPS >= floor {
+			return width
+		}
+	}
+	return 1
+}
+
 func (profile *servingPerformanceProfile) valid() bool {
 	if profile == nil || profile.ID == "" || profile.ModelID == "" ||
 		!validProfileDigest(profile.ArtifactSHA256) || !validProfileDigest(profile.QualificationReportSHA256) ||

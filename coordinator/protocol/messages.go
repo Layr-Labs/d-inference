@@ -444,12 +444,15 @@ type MLXCacheReclaimerTelemetry struct {
 // on a provider. Reported in heartbeats so the coordinator can make informed
 // routing decisions based on actual GPU utilization rather than hardcoded limits.
 type BackendCapacity struct {
-	WholeMacServiceUsed *float64              `json:"whole_mac_service_used,omitempty"`
-	Slots               []BackendSlotCapacity `json:"slots"`                // per-model slot capacity
-	GPUMemoryActiveGB   float64               `json:"gpu_memory_active_gb"` // Metal active memory (shared across all slots)
-	GPUMemoryPeakGB     float64               `json:"gpu_memory_peak_gb"`   // Metal peak memory
-	GPUMemoryCacheGB    float64               `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
-	TotalMemoryGB       float64               `json:"total_memory_gb"`      // total system/GPU memory
+	WholeMacServiceUsed *float64 `json:"whole_mac_service_used,omitempty"`
+	// Ephemeral coordinator reservation IDs represented in WholeMacServiceUsed.
+	// Local and legacy request charges contribute only to the aggregate total.
+	WholeMacServiceReservations []WholeMacServiceReservation `json:"whole_mac_service_reservations,omitempty"`
+	Slots                       []BackendSlotCapacity        `json:"slots"`                // per-model slot capacity
+	GPUMemoryActiveGB           float64                      `json:"gpu_memory_active_gb"` // Metal active memory (shared across all slots)
+	GPUMemoryPeakGB             float64                      `json:"gpu_memory_peak_gb"`   // Metal peak memory
+	GPUMemoryCacheGB            float64                      `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
+	TotalMemoryGB               float64                      `json:"total_memory_gb"`      // total system/GPU memory
 	// FreeForLoadGB is the max additional model-WEIGHT footprint (GB) the
 	// provider can load right now: net of the 90% unified-memory cap, OS/operator
 	// reserve, and activation+min-KV load headroom, clamped to real OS-available
@@ -739,6 +742,9 @@ type InferenceRequestBody struct {
 type InferenceRequestMessage struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
+	// Fresh opaque ID for this committed service reservation, distinct from
+	// request_id across retries. Providers echo it only while holding its lease.
+	ServiceReservationID string `json:"service_reservation_id,omitempty"`
 	// E2E encrypted request body.
 	EncryptedBody *EncryptedPayload `json:"encrypted_body,omitempty"`
 	// FirstContentBudgetMS is the positive time remaining for this dispatch

@@ -1539,6 +1539,9 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// value, so it is NOT normalised away like `firstContentBudgetMs`.
         public var cacheRepeatedPrefixTokens: Int?
         public var toolSchemaMetadataProtocol: Int?
+        /// Opaque coordinator reservation identity, independent of requestId.
+        /// Nil preserves compatibility with coordinators without service leases.
+        public var serviceReservationID: String?
 
         public init(
             requestId: String,
@@ -1549,7 +1552,8 @@ public enum CoordinatorMessage: Sendable, Equatable {
             prefixCacheProtocol: Int? = nil,
             cacheReceiptBoundaryMode: String? = nil,
             cacheRepeatedPrefixTokens: Int? = nil,
-            toolSchemaMetadataProtocol: Int? = nil
+            toolSchemaMetadataProtocol: Int? = nil,
+            serviceReservationID: String? = nil
         ) {
             self.requestId = requestId
             self.encryptedBody = encryptedBody
@@ -1560,6 +1564,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.cacheReceiptBoundaryMode = cacheReceiptBoundaryMode
             self.cacheRepeatedPrefixTokens = cacheRepeatedPrefixTokens.map { max(0, $0) }
             self.toolSchemaMetadataProtocol = toolSchemaMetadataProtocol
+            self.serviceReservationID = serviceReservationID
         }
     }
 
@@ -1736,6 +1741,7 @@ extension CoordinatorMessage: Codable {
         case requestId = "request_id"
         case encryptedBody = "encrypted_body"
         case firstContentBudgetMs = "first_content_budget_ms"
+        case serviceReservationID = "service_reservation_id"
         case cacheReceiptNonce = "cache_receipt_nonce"
         case cacheScope = "cache_scope"
         case prefixCacheProtocol = "prefix_cache_protocol"
@@ -1789,6 +1795,7 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(
                 r.toolSchemaMetadataProtocol,
                 forKey: .toolSchemaMetadataProtocol)
+            try container.encodeIfPresent(r.serviceReservationID, forKey: .serviceReservationID)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -1883,7 +1890,9 @@ extension CoordinatorMessage: Codable {
                 cacheRepeatedPrefixTokens: try container.decodeIfPresent(
                     Int.self, forKey: .cacheRepeatedPrefixTokens),
                 toolSchemaMetadataProtocol: try container.decodeIfPresent(
-                    Int.self, forKey: .toolSchemaMetadataProtocol)
+                    Int.self, forKey: .toolSchemaMetadataProtocol),
+                serviceReservationID: try container.decodeIfPresent(
+                    String.self, forKey: .serviceReservationID)
             ))
 
         case .cancel:

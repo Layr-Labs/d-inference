@@ -218,9 +218,11 @@ extension ProviderLoop {
         for index in allSlots.indices where mtpAdmissionDrains.contains(allSlots[index].model) {
             allSlots[index].state = "reloading"
         }
+        let serviceSnapshot = kvBudget.serviceBudget.snapshot()
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
-            wholeMacServiceUsed: kvBudget.serviceBudget.usedFraction,
+            wholeMacServiceUsed: serviceSnapshot.usedFraction,
+            wholeMacServiceReservations: serviceSnapshot.reservations,
             gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
             gpuMemoryPeakGb: Double(mlxPeakBytes) / gbDivisor,
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,

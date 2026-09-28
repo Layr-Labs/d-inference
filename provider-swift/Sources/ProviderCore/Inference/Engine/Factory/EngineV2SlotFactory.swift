@@ -297,8 +297,9 @@ enum EngineV2SlotFactory {
                     modelArtifactSHA256: modelArtifactSHA256,
                     constructionPurpose: constructionPurpose,
                     automaticallySelectConcurrency: automaticallySelectConcurrency,
-                    performanceQualificationAllowed: ServingPerformanceProfiles.postureAllowsExpansion
-                        && assistantHandle?.drafter == nil,
+                    // Keep exact static qualification across transient power/
+                    // thermal changes. The bridge gates admission dynamically.
+                    performanceQualificationAllowed: assistantHandle?.drafter == nil,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,

@@ -13,6 +13,7 @@ var errFirstContentDeadlineAtWriter = errors.New(errFirstContentDeadlineExpired)
 
 type providerInferenceFrameSnapshot struct {
 	requestID            string
+	serviceReservationID string
 	ephemeralPublicKey   string
 	ciphertext           string
 	firstContentBudgetMS int64
@@ -33,6 +34,7 @@ func snapshotProviderInferenceFrame(
 		return snapshot
 	}
 	snapshot.firstContentBudgetMS = pr.FirstContentBudgetMS
+	snapshot.serviceReservationID = pr.ServiceReservationID()
 	snapshot.firstContentDeadline = pr.FirstContentDeadline
 	snapshot.cacheAttempt = pr.CacheAttemptSnapshot()
 	return snapshot
@@ -44,6 +46,7 @@ func (snapshot providerInferenceFrameSnapshot) wireMessage(
 	message := protocol.InferenceRequestMessage{
 		Type:                       protocol.TypeInferenceRequest,
 		RequestID:                  snapshot.requestID,
+		ServiceReservationID:       snapshot.serviceReservationID,
 		ToolSchemaMetadataProtocol: 1,
 		EncryptedBody: &protocol.EncryptedPayload{
 			EphemeralPublicKey: snapshot.ephemeralPublicKey,

@@ -19,5 +19,9 @@
   "gpu_memory_cache_gb": 0,
   "total_memory_gb": 192,
   "free_for_load_gb": 100,
-  "whole_mac_service_used": 0.5
+  "whole_mac_service_used": 0.5,
+  "whole_mac_service_reservations": [
+    {"id": "6e1f61d1-e22c-4d24-a3a7-d347772a48cb", "used_fraction": 0.0625},
+    {"id": "9b3f32a9-3d08-4a71-b70a-dd5a2b2f140f", "used_fraction": 0.125}
+  ]
 }

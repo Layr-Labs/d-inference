@@ -182,6 +182,7 @@ extension ProviderLoop {
         firstContentDeadline: FirstContentDeadline? = nil,
         receivedAt: ContinuousClock.Instant = .now,
         profile requestProfile: RequestProfileBuilder? = nil,
+        serviceReservationID: String? = nil,
         send: SendHandle
     ) async {
         // Profiler accumulator anchored at frame receipt (a fresh one for
@@ -810,7 +811,8 @@ extension ProviderLoop {
                 engineV2Sampling: samplingOverrides,
                 engineV2Usage: v2UsageSignal,
                 firstContentDeadline: firstContentDeadline,
-                profile: profile
+                profile: profile,
+                serviceReservationID: serviceReservationID
             )
 
             // Force-stream so we get SSE frames even if the original request

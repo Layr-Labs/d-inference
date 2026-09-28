@@ -24,10 +24,12 @@ struct WholeMacServiceHeartbeatTests {
             try await expectUsage(0, on: loop)
             #expect(budget.serviceBudget.acquire(ownerID: "local-model-a:pre-submit", concurrency: 16))
             try await expectUsage(1.0 / 16.0, on: loop)
-            #expect(budget.serviceBudget.acquire(ownerID: "remote-model-b:retiring", concurrency: 24))
-            try await expectUsage(1.0 / 16.0 + 1.0 / 24.0, on: loop)
+            let reservation = WholeMacServiceReservation(id: UUID().uuidString.lowercased(), usedFraction: 1.0 / 24)
+            #expect(budget.serviceBudget.acquire(ownerID: "remote-model-b:retiring", concurrency: 24,
+                serviceReservationID: reservation.id))
+            try await expectUsage(1.0 / 16.0 + 1.0 / 24.0, reservations: [reservation], on: loop)
             budget.serviceBudget.release(ownerID: "local-model-a:pre-submit")
-            try await expectUsage(1.0 / 24.0, on: loop)
+            try await expectUsage(1.0 / 24.0, reservations: [reservation], on: loop)
             budget.serviceBudget.release(ownerID: "remote-model-b:retiring")
             try await expectUsage(0, on: loop)
             await loop.stopServiceAllowanceRefreshMonitor()
@@ -46,12 +48,14 @@ struct WholeMacServiceHeartbeatTests {
         }
     }
 
-    private func expectUsage(_ expected: Double, on loop: ProviderLoop) async throws {
+    private func expectUsage(_ expected: Double, reservations: [WholeMacServiceReservation] = [],
+        on loop: ProviderLoop) async throws {
         let until = ContinuousClock.now.advanced(by: .seconds(3))
         while ContinuousClock.now < until {
             if let capacity = await loop.backendCapacityForTesting(),
                 let used = capacity.wholeMacServiceUsed, abs(used - expected) < 1e-12 {
                 #expect(capacity.slots.isEmpty, "No slot/count change may account for this rebuild")
+                #expect(capacity.wholeMacServiceReservations == reservations)
                 return
             }
             try await Task.sleep(for: .milliseconds(1))

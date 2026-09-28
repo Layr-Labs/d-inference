@@ -48,14 +48,21 @@ type myProvider struct {
 	Status        string     `json:"status"`
 	Online        bool       `json:"online"`
 	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
+	// Last applied backend-capacity frame; rejected sequence frames only advance
+	// LastHeartbeat and must not freshen owner load diagnostics.
+	CapacityAcceptedAt *time.Time `json:"capacity_accepted_at,omitempty"`
 
 	// Identity / hardware
-	Hardware     protocol.Hardware    `json:"hardware"`
-	Models       []protocol.ModelInfo `json:"models"`
-	Backend      string               `json:"backend,omitempty"`
-	Version      string               `json:"version,omitempty"`
-	OSVersion    string               `json:"os_version,omitempty"` // Current or last app-reported macOS version.
-	serialNumber string
+	Hardware protocol.Hardware    `json:"hardware"`
+	Models   []protocol.ModelInfo `json:"models"`
+	// CapacityModelIDs is the catalog/capability-accepted subset used to
+	// canonicalize warm models and backend slots. Present-empty means none;
+	// omitted means no live capacity evidence (offline/legacy).
+	CapacityModelIDs *[]string `json:"capacity_model_ids,omitempty"`
+	Backend          string    `json:"backend,omitempty"`
+	Version          string    `json:"version,omitempty"`
+	OSVersion        string    `json:"os_version,omitempty"` // Current or last app-reported macOS version.
+	serialNumber     string
 
 	// Trust & attestation
 	TrustLevel  string `json:"trust_level"`
@@ -252,6 +259,9 @@ func needsAttention(mp *myProvider, minVersion string) bool {
 	if minVersion != "" && mp.Version != "" && semverLess(mp.Version, minVersion) {
 		return true
 	}
+	if coldModelLoadBlocked(mp) {
+		return true
+	}
 	return false
 }
 
@@ -337,7 +347,7 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 		Providers:             fleet,
 		LatestProviderVersion: s.latestReleasedVersion(),
 		MinProviderVersion:    s.minProviderVersion,
-		HeartbeatTimeoutSec:   90,
+		HeartbeatTimeoutSec:   ownerHeartbeatTimeoutSeconds,
 		ChallengeMaxAgeSec:    int((6 * time.Minute).Seconds()),
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -545,6 +555,10 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		// the provider may have re-registered with new specs.
 		mp.Hardware = live.Hardware
 		mp.Models = append([]protocol.ModelInfo{}, live.Models...)
+		if live.CapacityModelIDs != nil {
+			ids := append([]string{}, live.CapacityModelIDs...)
+			mp.CapacityModelIDs = &ids
+		}
 		mp.Backend = live.Backend
 		mp.Version = live.Version
 		mp.OSVersion = "" // A live connection must not inherit a previous OS report.
@@ -594,6 +608,10 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		if live.BackendCapacity != nil {
 			cap := *live.BackendCapacity
 			mp.BackendCapacity = &cap
+			if !live.CapacityAcceptedAt.IsZero() {
+				acceptedAt := live.CapacityAcceptedAt
+				mp.CapacityAcceptedAt = &acceptedAt
+			}
 		}
 		if live.IdleUnloadMins != nil {
 			v := *live.IdleUnloadMins

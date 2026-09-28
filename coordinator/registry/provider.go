@@ -45,7 +45,11 @@ type Provider struct {
 	ID       string
 	Hardware protocol.Hardware
 	Models   []protocol.ModelInfo
-	Backend  string
+	// CapacityModelIDs is the catalog/capability-accepted inventory used by
+	// the last applied heartbeat to canonicalize warm models and slots.
+	// Guarded by mu; nil until the first applied heartbeat.
+	CapacityModelIDs []string
+	Backend          string
 	// ReportedRuntimeCapabilities is normalized but untrusted Register input.
 	// RuntimeCapabilities remains empty until ReconcileAttestedRuntimeCapabilities
 	// binds that report to signed claims and approved runtime evidence.
@@ -198,6 +202,10 @@ type Provider struct {
 
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
+	// CapacityAcceptedAt advances only when the backend-capacity frame is
+	// applied. Rejected sequence frames advance LastHeartbeat but leave this
+	// owner-diagnostic clock unchanged. Guarded by p.mu.
+	CapacityAcceptedAt time.Time
 
 	// capacitySamplesAt is the coordinator time of the last accepted slot
 	// sample reconciliation. Separate from LastHeartbeat: rejected capacity

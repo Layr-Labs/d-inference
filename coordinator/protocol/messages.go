@@ -454,6 +454,15 @@ type BackendCapacity struct {
 	// re-derives free memory). A pointer so a legacy provider that doesn't report
 	// it is nil (→ coordinator falls back to the total-memory heuristic).
 	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
+	// LoadUsableGB is the live no-eviction load gate before activation and
+	// minimum-KV headroom. LoadHeadroomGB is that headroom for the current
+	// serving set. Both are owner diagnostics, not routing inputs. A cold model
+	// needs estimated_memory_gb + load_headroom_gb of load_usable_gb.
+	LoadUsableGB   *float64 `json:"load_usable_gb,omitempty"`
+	LoadHeadroomGB *float64 `json:"load_headroom_gb,omitempty"`
+	// LoadTransitionActive marks an in-flight model load or load-gate update.
+	// Its pending reservation makes an owner's memory verdict temporary.
+	LoadTransitionActive *bool `json:"load_transition_active,omitempty"`
 	// MLXCacheReclaimer is nil for providers predating allocator telemetry.
 	MLXCacheReclaimer *MLXCacheReclaimerTelemetry `json:"mlx_cache_reclaimer,omitempty"`
 	// CapacitySeq is a per-connection monotonically increasing sequence number

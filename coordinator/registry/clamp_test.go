@@ -109,6 +109,37 @@ func TestClampBackendCapacityFreeForLoad(t *testing.T) {
 	}
 }
 
+func TestClampBackendCapacityLoadDiagnostics(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	for _, bad := range []float64{math.NaN(), math.Inf(1), -1, 1e9} {
+		usable, headroom := bad, bad
+		bc := &protocol.BackendCapacity{LoadUsableGB: &usable, LoadHeadroomGB: &headroom}
+		clampBackendCapacity(logger, "p1", bc)
+		if bc.LoadUsableGB != nil || bc.LoadHeadroomGB != nil {
+			t.Errorf("bad load diagnostic %v should be omitted", bad)
+		}
+	}
+	zero := 0.0
+	bc := &protocol.BackendCapacity{LoadUsableGB: &zero, LoadHeadroomGB: &zero}
+	clampBackendCapacity(logger, "p1", bc)
+	if bc.LoadUsableGB == nil || bc.LoadHeadroomGB == nil {
+		t.Fatal("legitimate zero must remain present")
+	}
+}
+
+func TestBackendCapacitySnapshotDetachesLoadDiagnostics(t *testing.T) {
+	usable, headroom := 14.3, 6.5
+	p := &Provider{BackendCapacity: &protocol.BackendCapacity{
+		LoadUsableGB: &usable, LoadHeadroomGB: &headroom,
+	}}
+	snapshot := p.BackendCapacitySnapshot()
+	usable, headroom = 20, 7
+	if snapshot.LoadUsableGB == nil || *snapshot.LoadUsableGB != 14.3 ||
+		snapshot.LoadHeadroomGB == nil || *snapshot.LoadHeadroomGB != 6.5 {
+		t.Fatalf("snapshot aliased live load diagnostics: %+v", snapshot)
+	}
+}
+
 func TestClampBackendCapacityReasonableValues(t *testing.T) {
 	// Realistic values should pass through unchanged.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))

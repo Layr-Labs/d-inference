@@ -48,6 +48,12 @@ extension ProviderLoop {
             advertisedModels: advertisedModels.keys.sorted(),
             startupPreloadPendingModels: startupPreloadPendingModels,
             inferenceActive: state.inferenceActive,
+            requestWorkPending: DaemonWorkPosture.hasPendingRequest(
+                inflight: hasInflightWork, capacity: cap),
+            loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
+                || !startupPreloadPendingModels.isEmpty
+                || mtpStagingReservations.hasRetainedTargets
+                || cap?.slots.contains { $0.state == "reloading" } == true,
             lifecycle: lifecycleStatus,
             modelSwitch: modelSwitchStatus,
             configPath: loopConfig.configPath?.path,
@@ -61,7 +67,14 @@ extension ProviderLoop {
                 DaemonState.Capacity(
                     totalMemoryGb: $0.totalMemoryGb,
                     gpuMemoryActiveGb: $0.gpuMemoryActiveGb,
-                    gpuMemoryCacheGb: $0.gpuMemoryCacheGb)
+                    gpuMemoryCacheGb: $0.gpuMemoryCacheGb,
+                    loadUsableGb: $0.loadUsableGb,
+                    loadHeadroomGb: $0.loadHeadroomGb,
+                    freeForLoadGb: $0.freeForLoadGb,
+                    loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
+                        || !startupPreloadPendingModels.isEmpty
+                        || mtpStagingReservations.hasRetainedTargets
+                        || $0.slots.contains { $0.state == "reloading" })
             },
             lastModelLoadError: lastModelLoadError,
             // Joined at WRITE time, not at sample time: a refused explicit

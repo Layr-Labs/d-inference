@@ -395,6 +395,65 @@ func TestHeartbeatDropsUnregisteredModelIdentifiersBeforeStateAndMetrics(t *test
 	}
 }
 
+func TestHeartbeatCapacityModelIDsExcludeOffCatalogOwnerModel(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	acceptedID := msg.Models[0].ID
+	msg.Models = append(msg.Models, protocol.ModelInfo{ID: "owner-only", EstimatedMemoryGB: 18.2})
+	reg.SetModelCatalog([]CatalogEntry{{ID: acceptedID}})
+	p := reg.Register("p1", nil, msg)
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle",
+		WarmModels: []string{"owner-only"},
+		BackendCapacity: &protocol.BackendCapacity{Slots: []protocol.BackendSlotCapacity{
+			{Model: "owner-only", State: "idle"},
+		}},
+	})
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.Models) != 2 || len(p.CapacityModelIDs) != 1 || p.CapacityModelIDs[0] != acceptedID {
+		t.Fatalf("models=%v capacity ids=%v, want both owner models but only accepted evidence",
+			p.Models, p.CapacityModelIDs)
+	}
+	if p.BackendCapacity == nil || len(p.BackendCapacity.Slots) != 0 {
+		t.Fatalf("off-catalog slot leaked into accepted capacity: %+v", p.BackendCapacity)
+	}
+}
+
+func TestHeartbeatCapacityAcceptedAtTracksAppliedFrames(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+	frame := func(seq uint64) *protocol.HeartbeatMessage {
+		return &protocol.HeartbeatMessage{
+			Type: protocol.TypeHeartbeat, Status: "idle",
+			BackendCapacity: &protocol.BackendCapacity{CapacitySeq: seq},
+		}
+	}
+	if !reg.Heartbeat(p.ID, frame(1)) || p.CapacityAcceptedAt.IsZero() {
+		t.Fatal("first applied capacity did not set accepted time")
+	}
+	old := time.Now().Add(-2 * time.Minute)
+	p.mu.Lock()
+	p.CapacityAcceptedAt, p.LastHeartbeat = old, old
+	p.mu.Unlock()
+	if reg.Heartbeat(p.ID, frame(1)) {
+		t.Fatal("repeated sequence should be discarded")
+	}
+	p.mu.Lock()
+	acceptedAt, liveAt := p.CapacityAcceptedAt, p.LastHeartbeat
+	p.mu.Unlock()
+	if !acceptedAt.Equal(old) || !liveAt.After(old) {
+		t.Fatal("discarded frame freshened capacity or failed to prove liveness")
+	}
+	if !reg.Heartbeat(p.ID, frame(2)) || !p.CapacityAcceptedAt.After(old) {
+		t.Fatal("next applied capacity did not refresh accepted time")
+	}
+	reg.Heartbeat(p.ID, &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat})
+	if !p.CapacityAcceptedAt.IsZero() {
+		t.Fatal("nil capacity did not clear accepted time")
+	}
+}
+
 func TestHeartbeatCanonicalizationPreservesNilAndEmptySnapshots(t *testing.T) {
 	reg := New(testLogger())
 	p := reg.Register("p1", nil, testRegisterMessage())

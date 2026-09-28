@@ -14,6 +14,7 @@ import { StatusPill, TrustPill } from "./StatusPill";
 import { CardRoutingVerdict } from "./CardRoutingVerdict";
 import { CardVitals } from "./CardVitals";
 import { ModelsStrip } from "./ModelsStrip";
+import { LoadReadinessPanel } from "./LoadReadinessPanel";
 import { CardEarningsRow } from "./CardEarningsRow";
 import { BackendSlotsPanel } from "./BackendSlotsPanel";
 import { AttestationPanel } from "./AttestationPanel";
@@ -90,6 +91,7 @@ export function MachineCard({
       <div className={dimmed ? "opacity-70" : ""}>
         <CardVitals provider={provider} fleetMaxDecodeTps={fleetMaxDecodeTps} />
         <ModelsStrip provider={provider} />
+        <LoadReadinessPanel provider={provider} heartbeatTimeoutSeconds={ctx.heartbeat_timeout_seconds} />
         <CardEarningsRow provider={provider} />
       </div>
 

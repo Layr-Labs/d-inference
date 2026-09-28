@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-28 · commit `2496ac833`
 
 The complete public HTTP surface of the coordinator, derived from the 115 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -355,7 +355,7 @@ client receipt. See [incoming request accounting](../architecture/request-accoun
 | GET | `/v1/releases/latest` | `handleLatestRelease` (`coordinator/api/release_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `handleReadyz` (`coordinator/api/drain.go`) | `—` | 200 normally; 503 while draining |
 
-The 0.9.10 candidate sets `LatestProviderVersion = "0.9.10"` in
+The 0.9.12 candidate sets `LatestProviderVersion = "0.9.12"` in
 `coordinator/api/server.go`. A registered active release still takes precedence
 for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none
@@ -493,6 +493,33 @@ accepts older responses containing the extra field.
 
 `GET /v1/me/providers` exposes the accepted backend slot snapshot through
 `backend_capacity.slots` (`handleMyProviders`, `coordinator/api/me_handlers.go`). The
+owner-only response also carries optional `backend_capacity.load_usable_gb`
+(live no-eviction load memory before serving headroom),
+`backend_capacity.load_headroom_gb` (activation plus minimum-KV reserve for
+the current serving set), each model's `estimated_memory_gb`, and
+`capacity_model_ids`: the catalog/capability-accepted subset to which the
+canonicalized heartbeat slots and memory sample apply. The response also carries
+`capacity_accepted_at`, the coordinator time of the last applied capacity
+snapshot. A repeated or out-of-order capacity sequence can advance
+`last_heartbeat` for liveness without refreshing this timestamp. The owner
+load verdict uses `capacity_accepted_at` and withholds stale or absent samples.
+`models_replace` clears this owner load evidence until an accepted heartbeat
+for the replacement inventory arrives, including when a model ID is reused.
+It also carries optional `backend_capacity.load_transition_active`, which marks
+an in-flight model load or load-gate update before a slot exists. The provider
+emits a capacity heartbeat when this transition changes. My Macs and the
+coordinator attention count defer memory failures while it is active.
+My Macs shows `estimated_memory_gb + load_headroom_gb` against `load_usable_gb` for
+cold accepted models. A crashed slot retains weights and gets a separate
+backend warning, not a cold-load verdict. Owner-only/off-catalog models remain
+in `models` but are not assigned a load verdict from a different canonical inventory.
+Missing fields from older providers mean unknown, never zero or
+"fits"; a stale capacity sample, active or queued request, in-flight load or
+reloading slot also withholds a definitive cold-load failure. The coordinator does not route
+from these owner diagnostics.
+The existing `free_for_load_gb` remains the routing input and may credit
+eviction of idle slots, so it is not interchangeable with the no-eviction
+preload budget. The
 optional `paged_storage` object carries bounded allocator observations; omitted
 fields mean uninstrumented. Its exact fields and sample-age rules live in the
 [wire reference](protocol-messages.md#slotspaged_storage). The coordinator

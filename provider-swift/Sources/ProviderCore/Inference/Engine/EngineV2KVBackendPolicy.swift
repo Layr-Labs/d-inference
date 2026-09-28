@@ -33,7 +33,7 @@ public enum EngineV2KVBackendPolicy {
             if EngineV2SupportedModels.isNemotron35ListingModelID(modelID) { return .paged }
             if EngineV2SupportedModels.isQwen4ExpListingModelID(modelID) { return .paged }
             switch modelID {
-            case "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            case "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
                 "EigenLabs/Qwen3.8-27B-4bit-mtp", "gpt-oss-20b", "gemma-4-26b-qat-4bit":
                 return .paged
             default:

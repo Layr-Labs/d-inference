@@ -55,6 +55,16 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
     #expect(!CapacityHeartbeatMateriality.isMaterial(previous: current, current: current))
 }
 
+@Test func loadTransitionWithoutASlotIsMaterial() {
+    let before = capacity([])
+    var loading = before
+    loading.loadTransitionActive = true
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: before, current: loading))
+    var settled = loading
+    settled.loadTransitionActive = false
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: loading, current: settled))
+}
+
 @Test func admissionCompletionAndHealthTransitionsAreMaterial() {
     let base = capacity([slot(numRunning: 1)])
     // Request admitted / completed: numRunning moved.

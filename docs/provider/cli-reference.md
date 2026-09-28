@@ -1,12 +1,12 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-27 · commit `c2fa18e02`
+> Last updated: 2026-09-28 · commit `2496ac833`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.7` in
+version `ProviderCore.version` = `0.9.11` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
@@ -572,12 +572,33 @@ Output includes:
 
 - Provider version and config path.
 - Coordinator URL and backend settings.
+- Startup preload on/off, whether the explicit list or selected models drive
+  it, and the registration timeout.
 - Detected hardware (chip, RAM, GPU cores).
+- `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
 - `Memory when idle`: the idle-memory policy in force (`always ready` or
   `free after N idle`). Advertised models without a resident engine are
-  separated into `Startup preload pending` and `Not loaded (loads on request)`.
+  separated into `Startup preload pending`, `Not loaded (loads on request)`,
+  `Preload skipped (no eviction)`, and `Cold load blocked (memory)`. A fresh daemon snapshot reports the no-eviction
+  usable load memory beside a blocked model's scanner estimate, activation +
+  minimum-KV serving reserve, required total and no-eviction shortfall. When
+  request-time eviction still cannot fit the model, the cold-load shortfall
+  (the amount to free) is shown separately. Older or stale snapshots and
+  snapshots taken during active or queued requests, a model load or a reload withhold a
+  definitive verdict. The daemon writes the load transition during startup
+  preload even before its first backend-capacity snapshot.
+  `always ready`
+  retains loaded models but does not override the memory load gate.
+  An eviction-aware allowance distinguishes a preload that preserves resident
+  models from a cold request that can evict idle slots; only the latter earns
+  the `Cold load blocked` label when it still cannot fit.
+  A memory skip also writes a fixed public category to `darkbloom logs`; model
+  loads refused at final admission, allocation recheck, or measured post-load
+  KV headroom, or fleet KV re-slice serviceability use the same warning.
+  Model names and exact load figures remain private there and appear in the owner's
+  live `status` and `doctor` output instead.
 - Per-slot posture: the KV backend each loaded model actually resolved to
   (`paged` / `contiguous`), the selection the config asked for, and whether
   MTP is enabled, active, or enabled-but-inert.
@@ -627,6 +648,23 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 `darkbloom doctor` is read-only except for the subprocess calls used by public
 ProviderCore checks and the explicit `--clear-backend-guard` action
 (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `runClearBackendGuard`).
+The operator report begins with a readiness summary and the first concrete
+action. A failed model-fit check names the live usable memory, the required
+load budget and their shortfall; it tells the operator to free memory, rerun
+`doctor` and restart to retry preload when enabled. Interactive terminals color section
+headings and PASS/WARN/FAIL markers. Every advertised cold model is checked,
+largest first, so a small fit cannot hide a larger model's failure.
+Pipes, `NO_COLOR`, `CLICOLOR=0`, and
+`TERM=dumb` retain plain text.
+When the daemon's capacity snapshot is fresh, `doctor` uses its paired
+no-eviction usable memory and serving headroom sample; otherwise it falls back to a local read-only memory
+sample and does not claim to know the earlier startup decision.
+An already resident target is reported as resident without pretending it needs another cold
+load. When the fresh daemon reports that idle eviction could fit a cold model,
+`doctor` warns about no-eviction preload instead of claiming request-time
+loading is impossible. On a multi-model Mac, a selected cold model with a
+recent load failure is diagnosed before an unrelated recently used resident
+model, so the model-fit line explains the failure the operator came to check.
 
 Two of the detailed checks cover the KV-backend rollout:
 
@@ -691,6 +729,16 @@ Download a model from the coordinator catalog.
 ```bash
 darkbloom models download <id> [--coordinator <url>] [--r2-cdn <url>]
 ```
+
+If the model's `models--<id>` cache entry is a dangling symlink (for example,
+to an unavailable external drive), downloading preserves it as a hidden sibling
+`.models--<id>.unavailable-link-<UUID>` and creates a real model directory in the
+selected cache. This also applies to downloads from `darkbloom start` and
+background prefetch. Reconnect the drive before downloading if you want to keep
+using its existing model directory. Valid directory symlinks are followed;
+regular files and symlinks to files cause an error and are left intact.
+Code: `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Cache.swift`
+(`prepareModelCacheDirectory`).
 
 ### `darkbloom models remove <id>`
 

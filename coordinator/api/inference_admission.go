@@ -435,7 +435,6 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		return model, false
 	}
 
-	ttftThreshold := p.remainingFirstContentBudget()
 	// Pre-flight capacity check: can ANY provider serve this model right
 	// now? If not, return 429 immediately rather than queueing for up to
 	// 120s. OpenRouter treats 429 as "rate limited" (no uptime penalty) vs
@@ -688,7 +687,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			return model, true
 		}
 	}
-	ttftThreshold = p.remainingFirstContentBudget()
+	ttftThreshold := p.remainingFirstContentBudget()
 	if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
 		if !s.hardTTFTGateApplies(p.requiresVision) {
 			// Soft TTFT path: either global hard rejection is disabled (the

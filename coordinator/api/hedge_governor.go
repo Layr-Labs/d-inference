@@ -275,13 +275,6 @@ func (g *hedgeGovernor) tryAcquireHedge(model string, in hedgeGovernorInputs) (v
 	return hedgeAllow, true
 }
 
-// noteHedgeResolved, like any acquired hedge.
-func (g *hedgeGovernor) acquireHedgeUngoverned() {
-	g.mu.Lock()
-	g.activeHedges++
-	g.mu.Unlock()
-}
-
 // noteHedgeResolved decrements the in-flight count when a hedge finishes for
 // any reason — win, loss, cancellation, or provider failure. Clamped at zero
 // so a double-resolve bug degrades to a slightly generous budget instead of a

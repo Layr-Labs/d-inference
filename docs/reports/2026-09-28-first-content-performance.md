@@ -108,7 +108,7 @@ proof that execution would have missed. Removing the haircut would make many
 forecasts fit arithmetically but does not prove successful recoveries. See
 [`EngineV2Bridge+Admission.swift`](../../provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift)
 (`firstTokenDeadlineAdmission`) and
-[`FirstTokenDeadlineAdmissionV2.swift`](../../libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/FirstTokenDeadlineAdmissionV2.swift)
+[`FirstTokenDeadlineAdmissionV2.swift`](https://github.com/Layr-Labs/mlx-swift-lm/blob/9f70e68dce563c90ad443fef470a713936bf6a4d/Libraries/MLXLMCommon/ContinuousBatchingV2/FirstTokenDeadlineAdmissionV2.swift)
 (`CBv2FirstTokenScheduledWork`).
 
 At 04:50, 73/153 successful sampled requests had a recorded top-four candidate

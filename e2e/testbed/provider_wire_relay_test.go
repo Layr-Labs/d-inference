@@ -108,7 +108,6 @@ func TestProviderTOMLExplicitNormalMTP(t *testing.T) {
 	for _, mode := range []string{"on", "off"} {
 		config, err := BuildProviderTOML(ProviderConfig{MTPMode: mode, MTPDrafterPath: "/fixture/assistant"}, 0)
 		require.NoError(t, err)
-		require.Contains(t, config, "config_version = 3")
 		require.Contains(t, config, `mtp_mode = "`+mode+`"`)
 		require.Contains(t, config, `mtp_drafter_path = "/fixture/assistant"`)
 	}

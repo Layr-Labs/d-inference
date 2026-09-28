@@ -6,9 +6,9 @@ import Foundation
 /// Four call sites hand-rolled the same five-key base — `component`,
 /// `operation`, `backend`, `kv_backend`, `model` — and three of them
 /// re-implemented `if let sink { sink(event) } else { TelemetryClient.shared
-/// .emit(event) }` beside it. `TelemetryFieldFilter` drops unmirrored keys
-/// SILENTLY, so a base assembled by hand fails the way that is hardest to
-/// notice: the producer looks healthy and the field never arrives.
+/// .emit(event) }` beside it. A base assembled by hand drifts the way that is
+/// hardest to notice: one producer misspells or drops a key and still looks
+/// healthy.
 ///
 /// `kvBackend` is OPTIONAL and must stay optional. Absent means the slot's
 /// backend was never resolved, which is a different fact from any value the
@@ -55,7 +55,7 @@ enum EngineHealthEvent {
             severity: severity,
             kind: .engineHealth,
             message: message)
-        event.fields = TelemetryFieldFilter.filter(fields)
+        event.fields = fields
         return event
     }
 }

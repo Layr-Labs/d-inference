@@ -542,7 +542,7 @@ struct ProviderLoopPrefetchTests {
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
         )
-        return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        return try ProviderLoop(config: config, attestationSigner: nil)
     }
 
     private func makeClient() -> CoordinatorClient {
@@ -1204,7 +1204,7 @@ struct ProviderLoopPrefetchTests {
             ),
             modelHashes: hashes
         )
-        return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        return try ProviderLoop(config: config, attestationSigner: nil)
     }
 }
 

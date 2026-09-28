@@ -52,7 +52,7 @@ func TestRequestOutcomeCompactProfilePreservesTerminalArbitration(t *testing.T) 
 						time.Sleep(time.Millisecond)
 					}
 				}
-				srv.handleInferenceError(provider.ID, provider, &protocol.InferenceErrorMessage{Type: protocol.TypeInferenceError, RequestID: pr.RequestID, StatusCode: 500})
+				srv.handleInferenceError(provider.ID, provider, &protocol.InferenceErrorMessage{Type: protocol.TypeInferenceError, RequestID: pr.RequestID, StatusCode: 500, FailureCode: protocol.FailureCodeGenerationFailure})
 				if mode == "heavy" {
 					if provider.GetPending(pr.RequestID) == nil {
 						t.Fatal("heavy profile arbitration changed")

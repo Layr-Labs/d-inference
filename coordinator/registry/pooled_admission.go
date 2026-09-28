@@ -2,38 +2,34 @@ package registry
 
 import (
 	"math"
-	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // pooled_admission.go — provider-level (all-models) token-budget admission.
 //
-// Provider versions through v0.7.4 report each slot's committed tokens plus the
-// box's ONE shared live KV headroom. The per-slot admission check can therefore
-// double-spend that shared pool across co-resident models inside the heartbeat
-// gap. The v0.7.5 one-engine runtime instead re-slices the fleet KV budget into
-// private per-engine grants; those slot maxima are additive, while each slot's
-// own admission ceiling remains binding. The pooled check closes the legacy
-// heartbeat gap and preserves the v0.7.5 aggregate capacity by reconstructing
-// the layout appropriate for the provider version, with ALL models'
-// coordinator-pending tokens counted. Providers that report neither a token
-// budget nor a KV rate remain unconstrained; a modern slot with a positive KV
-// rate and a zero budget is authoritative known-zero capacity and fails closed.
+// The one-engine runtime re-slices the box's KV budget into private per-engine
+// grants: each slot's ActiveTokenBudgetMax is that model's own grant, so the
+// slot maxima are additive while each slot's own admission ceiling remains
+// binding. The per-slot check alone cannot see two cases where one model's
+// work spends capacity another model's check would still offer: a re-slice
+// that shrank a grant below its live use (the excess is physically held, so
+// it drains the box-wide total), and a COLD model that has no slot to check
+// yet but lands in the same box after load. The pooled check reconstructs the
+// box-wide pool (Σ grants) and charges ALL models' coordinator-pending tokens
+// against it. Providers that report neither a token budget nor a KV rate
+// remain unconstrained; a slot with a positive KV rate and a zero budget is
+// authoritative known-zero capacity and fails closed.
 //
-// Units: the shared pool is physically BYTES of unified memory, and
-// co-resident models spend it at different per-token rates
+// Units: the pool is physically BYTES of unified memory, and co-resident
+// models spend it at different per-token rates
 // (BackendSlotCapacity.KVBytesPerToken — a 26B model's token costs ~10× a
 // small model's), so tokens are not a common unit across slots. When every
 // budget slot reports its KV rate, the pool and all charges against it are
 // normalized into bytes. A pending/incoming request whose cold model has no
 // reported rate is charged at a bounded conservative default so it cannot
-// disable byte accounting for a reconstructable pool. Otherwise (any legacy
-// slot) the check falls back to token accounting, exactly the pre-byte behavior.
-// Token accounting denominates the pool in the LARGEST per-slot free-token view (the
-// smallest-KV model's), so a big-KV model's pending burst is under-charged
-// against it — the byte form is what makes a small-KV model's burst visible
-// to a big-KV co-resident and vice versa.
+// disable byte accounting for a reconstructable pool. Otherwise (any budget
+// slot without a rate) the check falls back to token accounting.
 
 // maxKVBytesPerToken bounds a slot's reported per-token KV cost before it enters
 // byte-pool math. Heartbeat token counts are clamped to ~10B upstream, but
@@ -45,50 +41,6 @@ import (
 // with the 10B-token clamp is 1.68e17, and the per-slot sums stay far below
 // int64max (9.2e18).
 const maxKVBytesPerToken = 1 << 24 // 16 MiB per token
-
-type slotBudgetLayout uint8
-
-const (
-	sharedSlotHeadroom slotBudgetLayout = iota
-	privateSlotGrants
-	privateSlotGrantsMinVersion = "0.7.5"
-)
-
-// slotBudgetLayoutForVersion selects the pooled-budget layout for a provider
-// binary version. It runs once per provider per routing scan via
-// fillSnapshotPendingAndPool, so the result is memoized (version_memo.go) —
-// keyed on the NORMALIZED numeric core ("1.0.0" for "v1.0.0-rc1+meta"), so
-// suffix variants of one version share an entry and an oversized suffix can
-// never be retained; a core longer than maxMemoizedVersionLen is computed
-// without caching.
-func slotBudgetLayoutForVersion(version string) slotBudgetLayout {
-	return slotBudgetLayoutMemo.get(versionNumericCore(version), parseSlotBudgetLayoutCore)
-}
-
-// versionNumericCore strips surrounding whitespace and any pre-release/build
-// suffix ("-…" / "+…") from a version, leaving the dotted numeric core.
-func versionNumericCore(version string) string {
-	version = strings.TrimSpace(version)
-	if suffix := strings.IndexAny(version, "-+"); suffix >= 0 {
-		version = version[:suffix]
-	}
-	return version
-}
-
-// parseSlotBudgetLayout is the uncached selection behind
-// slotBudgetLayoutForVersion: a pre-release/build suffix is ignored and the
-// numeric core compared against privateSlotGrantsMinVersion.
-func parseSlotBudgetLayout(version string) slotBudgetLayout {
-	return parseSlotBudgetLayoutCore(versionNumericCore(version))
-}
-
-// parseSlotBudgetLayoutCore compares an already-normalized numeric core.
-func parseSlotBudgetLayoutCore(core string) slotBudgetLayout {
-	if CompareVersions(core, privateSlotGrantsMinVersion) >= 0 {
-		return privateSlotGrants
-	}
-	return sharedSlotHeadroom
-}
 
 func addNonnegativeSaturating(total, value int64) int64 {
 	if value <= 0 {
@@ -177,15 +129,13 @@ type pooledTokenBudget struct {
 	// commitment baseline subtracted from coordinator-pending tokens so
 	// requests the provider already accounts for are not double-counted.
 	committed int64
-	// total is the layout-specific physical ceiling: live use plus one shared
-	// free-headroom view through v0.7.4, or the sum of fixed private engine
-	// grants for v0.7.5+.
+	// total is the physical ceiling: the sum of the slots' private engine
+	// grants (ActiveTokenBudgetMax).
 	total int64
 
 	// usedBytes / committedBytes / totalBytes are the byte-normalized analogs
 	// of used / committed / total: each slot's token quantities × that slot's
-	// KVBytesPerToken, using the same version-specific shared/private layout as
-	// total. Only meaningful when byteMode is true.
+	// KVBytesPerToken. Only meaningful when byteMode is true.
 	usedBytes      int64
 	committedBytes int64
 	totalBytes     int64
@@ -212,24 +162,14 @@ type pooledTokenBudget struct {
 // backend slots. A legacy slot with neither a positive token budget nor a KV
 // rate is ignored. A positive KV rate is retained even when the token budget is
 // zero: Engine V2 uses that combination to report authoritative known-zero
-// capacity after its live fleet clamp. Only positive maxima add capacity; in
-// the private layout, a known-zero slot's live use is still retained as a
-// commitment after a grant shrink. Negative values are floored.
-// A nil/empty or entirely legacy slice yields the unconstrained zero value.
+// capacity after its live fleet clamp. Only positive maxima (private grants)
+// add capacity; a known-zero slot's live use is still retained as a
+// commitment after a grant shrink. Negative values are floored. A nil/empty or
+// entirely legacy slice yields the unconstrained zero value.
 func providerPooledTokenBudget(slots []protocol.BackendSlotCapacity) pooledTokenBudget {
-	return providerPooledTokenBudgetWithLayout(slots, sharedSlotHeadroom)
-}
-
-func providerPooledTokenBudgetForVersion(slots []protocol.BackendSlotCapacity, version string) pooledTokenBudget {
-	return providerPooledTokenBudgetWithLayout(slots, slotBudgetLayoutForVersion(version))
-}
-
-func providerPooledTokenBudgetWithLayout(slots []protocol.BackendSlotCapacity, layout slotBudgetLayout) pooledTokenBudget {
-	used, total := providerTokenBudgetWithLayout(slots, layout)
+	used, total := providerTokenBudget(slots)
 	pool := pooledTokenBudget{used: used, total: total, byteMode: true}
 	reportedSlots := 0
-	var pooledFreeBytes int64
-	var privateCapacityBytes int64
 	for _, slot := range slots {
 		// Retain a reported rate before considering the token maximum. A v2
 		// slot can have a known rate and an authoritative zero max; pending,
@@ -241,8 +181,8 @@ func providerPooledTokenBudgetWithLayout(slots []protocol.BackendSlotCapacity, l
 		}
 		reportedSlots++
 		if rate <= 0 {
-			// A positive token budget without a KV rate keeps the exact legacy
-			// token-mode behavior for the whole provider.
+			// A positive token budget without a KV rate keeps token-mode
+			// accounting for the whole provider.
 			pool.byteMode = false
 		} else {
 			pool.setKVRate(slot.Model, rate)
@@ -260,54 +200,28 @@ func providerPooledTokenBudgetWithLayout(slots []protocol.BackendSlotCapacity, l
 		if c < 0 {
 			c = 0
 		}
+		// A re-slice may shrink below an in-flight request's live use. Keep
+		// that commitment in the de-dup baseline even when the new max is zero.
+		pool.committed = addNonnegativeSaturating(pool.committed, c)
 		if rate > 0 {
 			// Live/committed use remains physical even when the current max is
 			// zero. Saturation makes malformed reports fail closed.
 			pool.usedBytes = addPooledKVByteCharge(pool.usedBytes, slotUsed, rate)
 			pool.committedBytes = addPooledKVByteCharge(pool.committedBytes, c, rate)
-			if layout == privateSlotGrants {
-				privateCapacityBytes = addNonnegativeSaturating(
-					privateCapacityBytes,
-					addPooledKVByteCharge(0, slot.ActiveTokenBudgetMax, rate))
-			}
-		}
-		if layout == privateSlotGrants {
-			// A re-slice may shrink below an in-flight request's live use. Keep
-			// that commitment in the de-dup baseline even when the new max is zero.
-			pool.committed = addNonnegativeSaturating(pool.committed, c)
-		}
-		if slot.ActiveTokenBudgetMax <= 0 {
-			// Known-zero contributes no new headroom.
-			continue
-		}
-		if layout != privateSlotGrants {
-			pool.committed = addNonnegativeSaturating(pool.committed, c)
-		}
-		if rate <= 0 {
-			continue
-		}
-		free := addPooledKVByteCharge(0, slot.ActiveTokenBudgetMax-slotUsed, rate)
-		if layout != privateSlotGrants && free > pooledFreeBytes {
-			// v0.7.4 and older: every slot observes the same shared pool, so
-			// count the largest live view exactly once.
-			pooledFreeBytes = free
+			// totalBytes mirrors the token path's physical ceiling (Σ grants),
+			// NOT committed+potential. committedBytes carries
+			// MaxTokensPotential only as the pending de-dup baseline
+			// (subtracted in pooledBudgetAdmits' extra); adding it into the
+			// pool total too would double-count a slot's not-yet-materialized
+			// future growth as extra physical KV capacity.
+			pool.totalBytes = addNonnegativeSaturating(
+				pool.totalBytes,
+				addPooledKVByteCharge(0, slot.ActiveTokenBudgetMax, rate))
 		}
 	}
 	pool.hasBudgetReport = reportedSlots > 0
 	if !pool.hasBudgetReport {
 		pool.byteMode = false
-	}
-	// totalBytes mirrors the token path's physical ceiling, NOT
-	// committed+potential. Private layouts sum the fixed engine grants; legacy
-	// layouts reconstruct live used + one shared-free view. committedBytes carries
-	// MaxTokensPotential only as the pending de-dup baseline (subtracted in
-	// pooledBudgetAdmits' extra); adding it into the pool total too would
-	// double-count a co-resident slot's not-yet-materialized future growth as
-	// extra physical KV capacity, letting an in-gap burst overcommit the box.
-	if layout == privateSlotGrants {
-		pool.totalBytes = privateCapacityBytes
-	} else {
-		pool.totalBytes = addNonnegativeSaturating(pool.usedBytes, pooledFreeBytes)
 	}
 	return pool
 }
@@ -363,7 +277,7 @@ func pooledBudgetAdmits(snap *routingSnapshot, requestTokens int64) bool {
 
 // pooledRemainingTokens is the capacity-snapshot analog of pooledBudgetAdmits:
 // how many tokens of a model whose per-token KV rate is modelRate still fit the
-// shared pool once every model's coordinator-pending tokens are charged.
+// box-wide pool once every model's coordinator-pending tokens are charged.
 // pooledBudgetAdmits(snap, n) admits iff n <= pooledRemainingTokens(pool, …,
 // snap.kvBytesPerToken) with the same inputs, so the public capacity feed
 // (/v1/models[/capacity]) cannot advertise pooled headroom the admission gate

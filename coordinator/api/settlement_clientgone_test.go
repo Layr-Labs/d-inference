@@ -461,10 +461,11 @@ func TestHandleInferenceErrorEmitsAfterCommitClientGone(t *testing.T) {
 	parkConsumerGone(srv, provider, pr)
 
 	srv.handleInferenceError(provider.ID, provider, &protocol.InferenceErrorMessage{
-		Type:       protocol.TypeInferenceError,
-		RequestID:  pr.RequestID,
-		Error:      "backend crashed mid-generation",
-		StatusCode: 500,
+		Type:        protocol.TypeInferenceError,
+		RequestID:   pr.RequestID,
+		Error:       "backend crashed mid-generation",
+		StatusCode:  500,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 
 	_ = dd.Statsd.Flush()

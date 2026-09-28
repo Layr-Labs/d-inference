@@ -7,7 +7,7 @@ import (
 )
 
 // New native families use the existing explicit-model protocol. Family names
-// alone must never bypass advertisement, template, version, or runtime gates.
+// alone must never bypass advertisement, template, or runtime gates.
 func TestNativeToolAdvertisementRouting(t *testing.T) {
 	models := []protocol.ModelInfo{
 		{ID: "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit", ModelType: "nemotron_h"},
@@ -63,8 +63,6 @@ func TestNativeToolAdvertisementRouting(t *testing.T) {
 				}},
 				{"old_protocol", func(p *Provider) { p.ToolConstraintProtocol = 0 }},
 				{"unknown_protocol", func(p *Provider) { p.ToolConstraintProtocol = 2 }},
-				{"old_version", func(p *Provider) { p.Version = "0.6.2" }},
-				{"missing_version", func(p *Provider) { p.Version = "" }},
 				{"broken_template", func(p *Provider) { p.Models[0].TemplateRenderOK = boolPtr(false) }},
 				{"unverified_runtime", func(p *Provider) { p.RuntimeVerified = false }},
 			} {

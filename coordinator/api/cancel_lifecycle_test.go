@@ -263,6 +263,7 @@ func TestUnknownTerminalPathsOnBareServer(t *testing.T) {
 			srv.handleInferenceError("p-bare", provider, &protocol.InferenceErrorMessage{
 				Type: protocol.TypeInferenceError, RequestID: unknownID,
 				Error: "boom", StatusCode: 500,
+				FailureCode: protocol.FailureCodeGenerationFailure,
 			})
 			srv.handleCompleteAt("p-bare", provider, &protocol.InferenceCompleteMessage{
 				Type: protocol.TypeInferenceComplete, RequestID: unknownID,

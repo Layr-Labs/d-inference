@@ -532,9 +532,9 @@ func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 	}
 
 	// Verify provider earnings were recorded.
-	earnings, err := st.GetProviderEarnings(pubKey, 10)
+	earnings, err := st.GetAccountEarnings(accountID, 10)
 	if err != nil {
-		t.Fatalf("get provider earnings: %v", err)
+		t.Fatalf("get account earnings: %v", err)
 	}
 	if len(earnings) == 0 {
 		t.Error("expected at least one provider earning record")
@@ -542,6 +542,9 @@ func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 		e := earnings[0]
 		if e.AccountID != accountID {
 			t.Errorf("earning account_id = %q, want %q", e.AccountID, accountID)
+		}
+		if e.ProviderKey != pubKey {
+			t.Errorf("earning provider_key = %q, want %q", e.ProviderKey, pubKey)
 		}
 		if e.AmountMicroUSD <= 0 {
 			t.Error("earning amount should be > 0")

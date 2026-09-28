@@ -8,18 +8,17 @@ import (
 
 // version_memo.go — memoized parsing of provider binary versions.
 //
-// The routing scan compares every provider's reported version against the
-// capability floors (providerMeetsTraitFloorsLocked) and the pooled-budget
-// layout floor (slotBudgetLayoutForVersion → CompareVersions) on every
-// request. Parsing a dotted version allocates (strings.Split + a segment
-// slice) — ~4% of the fleet-scale scan's allocation volume for what is, in
-// practice, a handful of distinct strings across the whole fleet. Each memo
-// below maps the RAW input string to its parsed result behind a copy-on-write
-// map: reads are one atomic load plus a map lookup with no lock and no
-// allocation; inserts (rare — a new version string) rebuild the small map.
+// The routing scan compares a provider's reported version against the qwen4
+// catalog-policy floor (providerMeetsQwen4CatalogPolicyLocked) on every
+// request for that model. Parsing a dotted version allocates (strings.Split +
+// a segment slice) for what is, in practice, a handful of distinct strings
+// across the whole fleet. The memo maps the RAW input string to its parsed
+// result behind a copy-on-write map: reads are one atomic load plus a map
+// lookup with no lock and no allocation; inserts (rare — a new version
+// string) rebuild the small map.
 //
 // Bounds. Provider versions are attacker-supplied at registration, so the
-// memos are bounded in BOTH dimensions:
+// memo is bounded in BOTH dimensions:
 //
 //   - count: at most versionMemoCap entries; a full memo keeps its existing
 //     entries and computes misses without inserting or taking the writer lock.
@@ -30,15 +29,11 @@ import (
 //     (a valid "1.0.0+<multi-MiB metadata>" inside the frame limit could
 //     otherwise pin megabytes per entry). The worst case is therefore
 //     versionMemoCap × (64-byte key + 16-segment slice) ≈ tens of KiB. Keys
-//     are cloned on insertion so a short normalized core cannot keep the
-//     backing allocation of an oversized version suffix alive.
-//
-// The layout memo additionally keys on the NORMALIZED numeric core
-// ("1.0.0" for "v1.0.0-rc1+meta"), so suffix variants of one version share an
-// entry (pooled_admission.go).
+//     are cloned on insertion so a short key that is a substring of a larger
+//     string cannot keep that string's backing allocation alive.
 
 const (
-	// versionMemoCap bounds each memo's entry count.
+	// versionMemoCap bounds the memo's entry count.
 	versionMemoCap = 256
 	// maxMemoizedVersionLen bounds the key bytes retained per entry. Real
 	// versions are ~6-12 bytes; 64 leaves room for a short prerelease tag.
@@ -138,9 +133,5 @@ func (m *cowMemo[V]) reset() {
 	m.entries.Store(nil)
 }
 
-var (
-	// versionSegmentsMemo backs versionSegments (request_traits.go).
-	versionSegmentsMemo cowMemo[[]int]
-	// slotBudgetLayoutMemo backs slotBudgetLayoutForVersion (pooled_admission.go).
-	slotBudgetLayoutMemo cowMemo[slotBudgetLayout]
-)
+// versionSegmentsMemo backs versionSegments (request_traits.go).
+var versionSegmentsMemo cowMemo[[]int]

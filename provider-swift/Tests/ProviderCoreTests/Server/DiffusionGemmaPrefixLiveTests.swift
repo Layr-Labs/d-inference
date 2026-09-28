@@ -69,7 +69,6 @@ struct DiffusionGemmaPrefixLiveTests {
         let selected = try #require(selectedPath)
         try #require(directory.appendingPathComponent("config.json").resolvingSymlinksInPath()
             == URL(fileURLWithPath: selected).appendingPathComponent("config.json").resolvingSymlinksInPath())
-        try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
         _ = Bundle(for: DiffusionPrefixBundleAnchor.self).bundleURL
         if persistent {
             // The CLI binds its immutable library before MLX startup. HTTP

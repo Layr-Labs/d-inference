@@ -32,7 +32,7 @@ struct Switch: AsyncParsableCommand {
             throw ValidationError("The running provider lacks live-switch metadata. Upgrade it before switching.")
         }
         let capabilities = Set(reportedCapabilities.map { ProviderRuntimeCapability(rawValue: $0) })
-        let snapshot = try loadRuntimeSnapshot(configPath: configPath, migrateOnDisk: false)
+        let snapshot = try loadRuntimeSnapshot(configPath: configPath)
         guard let hardware = snapshot.hardware else {
             throw ValidationError("Cannot scan local models: hardware detection failed.")
         }

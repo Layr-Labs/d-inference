@@ -8,7 +8,7 @@
 /// (and its BoringSSL/NIO/Jinja transitive closure) just for the
 /// `from(modelFolder:)` entrypoint we already have.
 ///
-/// Used by ProviderLoop and LocalMLXModelLoader.
+/// Used by ProviderLoop and the engine/model factories.
 
 import Foundation
 import MLXLMCommon

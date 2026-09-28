@@ -13,34 +13,25 @@ struct ReportAppAttestEvidenceTests {
     }
 
     @Test(arguments: [".config/eigeninference/auth_token", "Library/Application Support/eigeninference/auth_token"])
-    func sudoReportReadsLegacyCredentialsWithoutMigration(legacyPath: String) throws {
+    func sudoReportIgnoresRetiredCredentialPaths(retiredPath: String) throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("report-auth-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: home) }
-        let legacy = home.appendingPathComponent(legacyPath)
-        try writeToken("legacy-test-token\n", at: legacy)
+        let retired = home.appendingPathComponent(retiredPath)
+        try writeToken("retired-test-token\n", at: retired)
 
-        #expect(ReportAppAttestEvidence.authToken(invokingHome: home, environment: [:]) == "legacy-test-token")
-        #expect(try String(contentsOf: legacy, encoding: .utf8) == "legacy-test-token\n")
+        #expect(ReportAppAttestEvidence.authToken(invokingHome: home, environment: [:]) == nil)
+        #expect(try String(contentsOf: retired, encoding: .utf8) == "retired-test-token\n")
         #expect(!FileManager.default.fileExists(atPath: home.appendingPathComponent(".darkbloom").path))
     }
 
-    @Test func sudoReportPreservesCanonicalAndLegacyPrecedence() throws {
+    @Test func sudoReportReadsTheCanonicalCredential() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("report-auth-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: home) }
         let canonical = home.appendingPathComponent(".darkbloom/auth_token")
-        let configLegacy = home.appendingPathComponent(".config/eigeninference/auth_token")
-        let supportLegacy = home.appendingPathComponent("Library/Application Support/eigeninference/auth_token")
         try writeToken("canonical-test-token\n", at: canonical)
-        try writeToken("config-test-token\n", at: configLegacy)
-        try writeToken("support-test-token\n", at: supportLegacy)
 
         #expect(ReportAppAttestEvidence.authToken(invokingHome: home, environment: [:]) == "canonical-test-token")
-        try FileManager.default.removeItem(at: canonical)
-        #expect(ReportAppAttestEvidence.authToken(invokingHome: home, environment: [:]) == "config-test-token")
-        #expect(!FileManager.default.fileExists(atPath: canonical.path))
-        try FileManager.default.removeItem(at: configLegacy)
-        #expect(ReportAppAttestEvidence.authToken(invokingHome: home, environment: [:]) == "support-test-token")
-        #expect(!FileManager.default.fileExists(atPath: canonical.path))
+        #expect(try String(contentsOf: canonical, encoding: .utf8) == "canonical-test-token\n")
     }
 
     @Test func sudoReportLeavesAnAbsentTokenAbsent() throws {
@@ -56,10 +47,8 @@ struct ReportAppAttestEvidenceTests {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("report-auth-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: home) }
         let canonical = home.appendingPathComponent(".darkbloom/auth_token")
-        let legacy = home.appendingPathComponent(".config/eigeninference/auth_token")
         let override = home.appendingPathComponent("operator-token")
         try writeToken("canonical-test-token\n", at: canonical)
-        try writeToken("legacy-test-token\n", at: legacy)
         try writeToken("override-test-token\n", at: override)
         let environment = ["DARKBLOOM_AUTH_TOKEN_PATH": override.path]
 
@@ -68,7 +57,6 @@ struct ReportAppAttestEvidenceTests {
         #expect(ReportAppAttestEvidence.authToken(invokingHome: home, environment: environment) == nil)
         #expect(!FileManager.default.fileExists(atPath: override.path))
         #expect(try String(contentsOf: canonical, encoding: .utf8) == "canonical-test-token\n")
-        #expect(try String(contentsOf: legacy, encoding: .utf8) == "legacy-test-token\n")
     }
 
     @Test func snapshotUsesInvocationAgesWithoutRewritingObservationMetadata() throws {

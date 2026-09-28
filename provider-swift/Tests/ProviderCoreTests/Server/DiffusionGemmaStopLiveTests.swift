@@ -19,7 +19,6 @@ struct DiffusionGemmaStopLiveTests {
         let directory = try #require(ModelScanner.resolveLocalPath(modelID: modelID))
         try #require(directory.appendingPathComponent("config.json").resolvingSymlinksInPath()
             == selected.appendingPathComponent("config.json").resolvingSymlinksInPath())
-        try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
         _ = Bundle(for: DiffusionStopBundleAnchor.self).bundleURL
         let model = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: modelID))
         let token = UUID().uuidString + UUID().uuidString

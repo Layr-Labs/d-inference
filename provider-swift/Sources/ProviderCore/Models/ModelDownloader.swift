@@ -49,13 +49,9 @@ public struct ModelDownloader: Sendable {
         self.runtimeCapabilities = runtimeCapabilities
     }
 
-    /// Download a catalog model into the local HuggingFace cache.
-    ///
-    /// Tries (in order):
-    ///   1. `${R2_CDN}/${s3_name}/config.json` -- the existence smoke test
-    ///   2. tokenizer files (best-effort, missing files are fine)
-    ///   3. `model.safetensors` if present, else
-    ///   4. `model.safetensors.index.json` + each shard listed inside
+    /// Download a catalog model into the local HuggingFace cache from its
+    /// verified R2 manifest (per-file and aggregate SHA-256 checked). A
+    /// catalog entry without `r2_prefix`/`aggregate_sha256` is refused.
     ///
     /// On success, the model is laid out under
     /// `{hf-cache}/models--{org}--{name}/snapshots/local/` (see
@@ -74,13 +70,16 @@ public struct ModelDownloader: Sendable {
             throw ModelCatalogError.ineligible(
                 ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
         }
-        if model.r2Prefix != nil, model.aggregateSHA256 != nil {
-            let manifest = try await resolveManifest(model: model)
-            try await downloadManifestModel(model: model, manifest: manifest, onProgress: onProgress)
-            return
+        // Fail closed: every served catalog version carries a verified
+        // manifest (`r2_prefix` + `aggregate_sha256`, NOT NULL in the
+        // coordinator's model_versions). An entry without one has no hash to
+        // verify against, so it is never downloaded.
+        guard model.r2Prefix != nil, model.aggregateSHA256 != nil else {
+            throw ModelCatalogError.downloadFailed(
+                "\(model.id) has no verified manifest (r2_prefix/aggregate_sha256); refusing an unverified download")
         }
-
-        try await downloadLegacyModelFromCDN(model: model, onProgress: onProgress)
+        let manifest = try await resolveManifest(model: model)
+        try await downloadManifestModel(model: model, manifest: manifest, onProgress: onProgress)
     }
 
     /// Remove a downloaded model from the cache. Returns true if anything was

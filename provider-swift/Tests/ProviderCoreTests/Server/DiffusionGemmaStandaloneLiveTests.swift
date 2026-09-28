@@ -33,8 +33,6 @@ struct DiffusionGemmaStandaloneLiveTests {
         let resolved = try #require(ModelScanner.resolveLocalPath(modelID: modelID))
         try #require(resolved.appendingPathComponent("config.json").resolvingSymlinksInPath().standardizedFileURL
             == selected.appendingPathComponent("config.json").resolvingSymlinksInPath().standardizedFileURL)
-        // Do not let a live fixture delete an operator's retired cache tree.
-        try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
         _ = Bundle(for: DiffusionStandaloneBundleAnchor.self).bundleURL
         let model = try #require(ModelScanner.parseModelInfo(snapshotDir: resolved, modelName: modelID))
         try #require(model.modelType == "diffusion_gemma" && model.templateRenderOK != false)
@@ -117,7 +115,6 @@ struct DiffusionGemmaStandaloneLiveTests {
     func reasoningAndAutomaticToolsAcrossHTTP() async throws {
         let modelID = "mlx-community/diffusiongemma-26B-A4B-it-4bit"
         let directory = try #require(ModelScanner.resolveLocalPath(modelID: modelID))
-        try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
         _ = Bundle(for: DiffusionStandaloneBundleAnchor.self).bundleURL
         let model = try #require(ModelScanner.parseModelInfo(snapshotDir: directory, modelName: modelID))
         let token = UUID().uuidString + UUID().uuidString

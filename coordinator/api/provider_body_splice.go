@@ -2,13 +2,11 @@ package api
 
 // provider_body_splice.go is the allocation-free fast path behind the
 // protocol-0 cache-isolation sizing and sealing (bodyForCacheAttempt and its
-// size-only callers, see provider_body_seal.go) and the legacy vision penalty
-// strip (bodyForProvider).
+// size-only callers, see provider_body_seal.go).
 //
 // Those helpers used to decode the whole provider body into
 // map[string]json.RawMessage and re-encode it — twice per candidate model per
-// request, and again per dispatch attempt — just to add one top-level member
-// (or check whether a few exist). For a body the coordinator itself serialized
+// request, and again per dispatch attempt — just to add one top-level member. For a body the coordinator itself serialized
 // (marshalForwardBody: compact, keys sorted, canonical string escaping) the
 // re-encode is the identity on every existing member, so the sealed body is
 // the input with `"prompt_cache_key":<value>` spliced in at its sorted
@@ -435,21 +433,4 @@ func insertionPoint(body []byte, idx topLevelIndex, key string) (at int, insertB
 		return idx.members[pos].keyStart, true
 	}
 	return len(body) - 1, false
-}
-
-// topLevelObjectHasAnyKey reports whether body carries any of keys as a
-// top-level member. ok=false when body is not a valid object or a key is
-// not plain (an escaped spelling could decode to a listed key), in which case
-// the caller must decode for real.
-func topLevelObjectHasAnyKey(body []byte, keys []string) (has bool, ok bool) {
-	idx, ok := indexTopLevelObject(body)
-	if !ok || !idx.plainKeys {
-		return false, false
-	}
-	for _, key := range keys {
-		if _, exists := idx.find(body, key); exists {
-			return true, true
-		}
-	}
-	return false, true
 }

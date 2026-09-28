@@ -27,7 +27,7 @@ func TestPostgresPredictionColumnsUpgradeKeepsUnknownHistory(t *testing.T) {
 			t.Fatalf("upgrade %d: %v", i, err)
 		}
 	}
-	rows := s.RequestProfilesSince(time.Time{})
+	rows := s.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{})
 	if len(rows) != 1 || rows[0].RequestID != old.RequestID || rows[0].AdmissionMode != "" || rows[0].PredictiveBypass != "" || rows[0].ReservationTTFTCeilingMs != nil || rows[0].DispatchBudgetMs != nil {
 		t.Fatalf("upgrade fabricated or lost historical evidence: %+v", rows)
 	}
@@ -35,7 +35,7 @@ func TestPostgresPredictionColumnsUpgradeKeepsUnknownHistory(t *testing.T) {
 	if err := s.RecordRequestProfiles([]*RequestProfileRecord{fresh}); err != nil {
 		t.Fatal(err)
 	}
-	rows = s.RequestProfilesSince(time.Time{})
+	rows = s.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{})
 	if len(rows) != 2 || rows[0].RequestID != fresh.RequestID || rows[0].DispatchBudgetMs == nil || *rows[0].DispatchBudgetMs != *fresh.DispatchBudgetMs || rows[0].ReservationTTFTCeilingMs == nil || *rows[0].ReservationTTFTCeilingMs != *fresh.ReservationTTFTCeilingMs {
 		t.Fatalf("upgraded schema lost new evidence: %+v", rows)
 	}

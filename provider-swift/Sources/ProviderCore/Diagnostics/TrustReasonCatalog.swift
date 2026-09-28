@@ -34,11 +34,7 @@ public enum TrustReasonCatalog {
 
         switch reason {
         // ---- success / status (sendTrustStatus) ----
-        // The first string is what current coordinators send; the "MDM/ACME"
-        // variant is what pre-ACME-removal coordinators sent — keep matching it
-        // so this build gives friendly advice against an older coordinator.
-        case "SE attestation verified, awaiting MDM verification",
-             "SE attestation verified, awaiting MDM/ACME upgrade":
+        case "SE attestation verified, awaiting MDM verification":
             if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
                 return DiagnosticAdvice(
                     message: "Secure Enclave verification passed; this legacy trust message does not confirm App Attest serving authorization.",

@@ -418,9 +418,10 @@ func TestBufferedContentBeatsReadyErrorAndPreservesNativeMessagesTerminal(t *tes
 		ReceivedAt: time.Now(),
 	}
 	errMsg := protocol.InferenceErrorMessage{
-		RequestID:  pr.RequestID,
-		Error:      "generation failed",
-		StatusCode: http.StatusInternalServerError,
+		RequestID:   pr.RequestID,
+		Error:       "generation failed",
+		StatusCode:  http.StatusInternalServerError,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	}
 
 	if !d.commitReadyFirstContent(pr, &d.heldChunks, errMsg) {

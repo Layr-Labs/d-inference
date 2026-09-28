@@ -481,7 +481,6 @@ struct WatchdogAgentPlistTests {
     @Test("the watchdog label is distinct from the provider label")
     func distinctLabel() {
         #expect(WatchdogAgent.label != LaunchAgent.label)
-        #expect(LaunchAgent.supportedLabels.contains(LaunchAgent.label))
     }
 }
 

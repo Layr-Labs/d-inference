@@ -14,7 +14,7 @@ import Testing
             models: [], config: ProviderConfig(
                 provider: ProviderSettings(name: "authorization-test"),
                 backend: BackendSettings(), coordinator: CoordinatorSettings()))
-        let loop = try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        let loop = try ProviderLoop(config: config, attestationSigner: nil)
         let stateURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: stateURL) }
         await loop.installAuthorizationStateFileForTesting(stateURL)

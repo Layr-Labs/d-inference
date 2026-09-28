@@ -50,14 +50,14 @@ func TestMachineInventoryRequiresSEBoundMDAForSerialAlias(t *testing.T) {
 func TestAppAttestEnrollmentRecoveryUsesOriginalTranscriptAndOwner(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	now := time.Now()
-	x := &Session{s: &Service{store: st, config: Config{AppID: "TEST.app", Environment: "production"}}, owner: "owner", account: "account", id: "new", challenge: "new challenge", publicKey: "new endpoint", protocolVersion: 2, key: &store.AppAttestShadowKey{KeyID: "key"}}
-	e := store.AppAttestEnrollment{ID: "original", Owner: "owner", KeyID: "key", CreatedAt: now, AppID: "TEST.app", Environment: "production", Challenge: "old challenge", PublicKey: "old endpoint", AccountScope: x.accountScope()}
+	x := &Session{s: &Service{store: st, config: Config{AppID: "TEST.app", Environment: "production"}}, owner: "owner", account: "account", id: "new", challenge: "new challenge", publicKey: "new endpoint", protocolVersion: 3, key: &store.AppAttestShadowKey{KeyID: "key"}}
+	e := store.AppAttestEnrollment{ProtocolVersion: 3, ID: "original", Owner: "owner", KeyID: "key", CreatedAt: now, AppID: "TEST.app", Environment: "production", Challenge: "old challenge", PublicKey: "old endpoint", AccountScope: x.accountScope()}
 	if err := st.SaveAppAttestEnrollment(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	reply := protocol.AppAttestShadowPayload{ProtocolVersion: 2, EnrollmentSession: "original", Status: &protocol.AppAttestStatus{OSVersion: "27"}}
+	reply := protocol.AppAttestShadowPayload{ProtocolVersion: 3, EnrollmentSession: "original", Status: &protocol.AppAttestStatus{OSVersion: "27"}}
 	hash, err := x.clientHash(context.Background(), "attest", reply)
-	if err != nil || hash != protocol.AppAttestShadowHashV2("attest", e.ID, e.Environment, e.KeyID, e.Challenge, e.PublicKey, e.AccountScope, reply.Status) {
+	if err != nil || hash != protocol.AppAttestShadowHashV3("attest", e.ID, e.Environment, e.KeyID, e.Challenge, e.PublicKey, e.AccountScope, reply.Status) {
 		t.Fatalf("recovery %v", err)
 	}
 	x.owner = "attacker"

@@ -1,7 +1,8 @@
 // Client telemetry is disabled for inference privacy. Free-form browser errors,
-// URLs, stacks, and request identifiers are not safe to forward merely because
-// their field names are allowlisted. Keep the facade so call sites remain
-// source-compatible while the product moves to closed, per-kind schemas.
+// URLs, stacks, and request identifiers are not safe to forward even under a
+// field-name allowlist, and the coordinator has no ingestion route. Keep the
+// facade so call sites remain source-compatible while the product moves to
+// closed, per-kind schemas.
 
 import type { TelemetryKind, TelemetrySeverity } from "./telemetry-types";
 

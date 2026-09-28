@@ -236,8 +236,6 @@ type Provider struct {
 	RuntimeManifestChecked  bool   `json:"runtime_manifest_checked"`            // true only when a manifest was present and hashes were verified (fail-closed for text)
 	MetallibVerified        bool   `json:"metallib_verified"`                   // explicit mlx_metallib entry matched the approved runtime manifest
 	EncryptedResponseChunks bool   `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are encrypted to the coordinator
-	PythonHash              string `json:"python_hash,omitempty"`
-	RuntimeHash             string `json:"runtime_hash,omitempty"`
 	TemplateHashes          map[string]string
 
 	// Phase 7: Privacy invariant attestation.

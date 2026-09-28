@@ -6,9 +6,7 @@ import { Ticket, X, Check, Loader2 } from "lucide-react";
 import { redeemInviteCode } from "@/lib/api";
 import { trackEvent } from "@/lib/google-analytics";
 
-export const INVITE_DISMISSED_KEY = "darkbloom_invite_dismissed";
-/** Fired on dismissal so other invitation surfaces can update. */
-export const INVITE_DISMISSED_EVENT = "darkbloom-invite-dismissed";
+const INVITE_DISMISSED_KEY = "darkbloom_invite_dismissed";
 
 export function InviteCodeBanner() {
   // Match the server on the first paint before reading browser-local state.
@@ -25,7 +23,6 @@ export function InviteCodeBanner() {
   const dismissBanner = useCallback(() => {
     setDismissed(true);
     localStorage.setItem(INVITE_DISMISSED_KEY, "1");
-    window.dispatchEvent(new Event(INVITE_DISMISSED_EVENT));
   }, []);
 
   useEffect(() => {

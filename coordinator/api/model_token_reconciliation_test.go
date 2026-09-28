@@ -56,7 +56,7 @@ func TestModelTokenPromotionReconciliationResumesAccountingOnce(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			s, st, r := promotionTestServer(t, 100)
-			if err := st.SetModelPrice("platform", promoTestModel, 1_000_000, 2_000_000); err != nil {
+			if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: promoTestModel, InputPrice: 1_000_000, OutputPrice: 2_000_000}); err != nil {
 				t.Fatal(err)
 			}
 			if err := st.Credit("promotion-user", 1000, store.LedgerAdminCredit, "seed"); err != nil {
@@ -139,7 +139,7 @@ func TestModelTokenPromotionInsufficientSettlementClosesHolds(t *testing.T) {
 		for _, priceIncrease := range []bool{false, true} {
 			t.Run(fmt.Sprintf("retry=%t/price_increase=%t", delayed, priceIncrease), func(t *testing.T) {
 				s, st, r := promotionTestServer(t, 100)
-				if err := st.SetModelPrice("platform", promoTestModel, 1_000_000, 2_000_000); err != nil {
+				if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: promoTestModel, InputPrice: 1_000_000, OutputPrice: 2_000_000}); err != nil {
 					t.Fatal(err)
 				}
 				if err := st.CreditWithdrawable("promotion-user", 200, store.LedgerAdminCredit, "seed"); err != nil {
@@ -154,7 +154,7 @@ func TestModelTokenPromotionInsufficientSettlementClosesHolds(t *testing.T) {
 				output := 150 // Paid overage is within 2x cap, but there is no cash left.
 				if priceIncrease {
 					output = 100
-					if err := st.SetModelPrice("platform", promoTestModel, 1_000_000, 3_000_000); err != nil {
+					if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: promoTestModel, InputPrice: 1_000_000, OutputPrice: 3_000_000}); err != nil {
 						t.Fatal(err)
 					}
 				}

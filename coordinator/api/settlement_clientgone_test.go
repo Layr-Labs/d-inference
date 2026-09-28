@@ -68,7 +68,7 @@ func TestHandleCompleteClientGoneAfterCommitSettlesAndPays(t *testing.T) {
 	provider.Mu().Unlock()
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
-	expectedCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	expectedCost := payments.DefaultRates().CostWithMinimum(billableUsage(usage))
 	expectedPayout := payments.ProviderPayout(expectedCost)
 
 	consumerID := testConsumerID
@@ -183,7 +183,7 @@ func TestHandleCompleteClientGoneAfterCommitNotAProviderFailure(t *testing.T) {
 
 	consumerID := testConsumerID
 	usage := protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 200}
-	cost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	cost := payments.DefaultRates().CostWithMinimum(billableUsage(usage))
 	if err := ledger.Charge(consumerID, cost, "reserve:"+consumerID); err != nil {
 		t.Fatalf("reserve balance: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestHandleCompleteEmitsPartialSuccessMetric(t *testing.T) {
 	cleanProvider := srv.registry.Register("partial-metric-clean-provider", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: cleanModel, ModelType: "chat", Quantization: "4bit"}},
 	})
-	cleanPR := newPR("partial-metric-clean", cleanModel, payments.CalculateCost(cleanModel, usage.PromptTokens, usage.CompletionTokens))
+	cleanPR := newPR("partial-metric-clean", cleanModel, payments.DefaultRates().CostWithMinimum(billableUsage(usage)))
 	cleanProvider.AddPending(cleanPR) // present at completion → consumerGone == false
 	srv.handleComplete(cleanProvider.ID, cleanProvider, &protocol.InferenceCompleteMessage{
 		Type:      protocol.TypeInferenceComplete,
@@ -403,7 +403,7 @@ func TestHandleCompleteEmitsPartialSuccessMetric(t *testing.T) {
 	goneProvider := srv.registry.Register("partial-metric-gone-provider", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: goneModel, ModelType: "chat", Quantization: "4bit"}},
 	})
-	gonePR := newPR("partial-metric-gone", goneModel, payments.CalculateCost(goneModel, usage.PromptTokens, usage.CompletionTokens))
+	gonePR := newPR("partial-metric-gone", goneModel, payments.DefaultRates().CostWithMinimum(billableUsage(usage)))
 	parkConsumerGone(srv, goneProvider, gonePR)
 	srv.handleComplete(goneProvider.ID, goneProvider, &protocol.InferenceCompleteMessage{
 		Type:      protocol.TypeInferenceComplete,

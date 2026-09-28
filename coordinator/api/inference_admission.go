@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -147,9 +148,9 @@ func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.
 			s.writeServiceUnavailable(w, p.model)
 			return currentMicroUSD, true
 		}
-		in, out, custom := s.store.GetModelPrice("platform", p.model)
+		rates := payments.RatesFor(s.store.GetModelPrice("platform", p.model))
 		limit := s.promotionKeyRemaining(keyIDFromContext(r.Context()), keyLimitMicroFromContext(r.Context()), keyLimitResetFromContext(r.Context()))
-		updated, err := backend.TopUpModelTokenReservation(reservation.ID, int64(max(p.billingPromptTokens, p.estimatedPromptTokens))+int64(p.requestedMaxTokens), modelTokenQuote(p.model, max(p.billingPromptTokens, p.estimatedPromptTokens), p.requestedMaxTokens, in, out, custom, limit))
+		updated, err := backend.TopUpModelTokenReservation(reservation.ID, int64(max(p.billingPromptTokens, p.estimatedPromptTokens))+int64(p.requestedMaxTokens), modelTokenQuote(max(p.billingPromptTokens, p.estimatedPromptTokens), p.requestedMaxTokens, rates, limit))
 		if err != nil {
 			s.writePromotionAdmissionError(w, p.model, err, true, reservation.FreeTokens)
 			return currentMicroUSD, true

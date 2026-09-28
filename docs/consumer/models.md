@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-28 · commit `4d6793601`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -67,7 +67,7 @@ What is listed (`listModelEntries`, `aliasModelEntries`):
 | `quantization` | string | Quantization of a concrete build; empty on alias entries because an alias spans quants | `mapQuantizationToOpenRouter` |
 | `context_length` | int | Maximum prompt+completion context of the primary build | registry `MaxContextLength` |
 | `max_output_length` | int | Maximum completion length; `max_tokens` above it is clamped at request time (`ensureMaxTokensBound`, `coordinator/api/consumer.go`) | registry `MaxOutputLength` |
-| `pricing` | object | `prompt`, `completion`, `image`, `request`, `input_cache_read` — USD per unit as decimal strings, from the platform price table | `buildModelPricing`, `resolvePlatformPricing`; see [`../reference/pricing-model.md`](../reference/pricing-model.md) |
+| `pricing` | object | `prompt`, `completion`, `image`, `request`, `input_cache_read` — USD per unit as decimal strings, from the platform price table. `input_cache_read` is the per-token rate for prompt tokens a provider serves from its prefix cache (returned as `usage.prompt_tokens_details.cached_tokens`); it is the rate settlement bills, derived as half the prompt rate when the model sets none | `buildModelPricing`, `resolvePlatformPricing`; see [`../reference/pricing-model.md`](../reference/pricing-model.md) |
 | `supported_sampling_parameters` | string[] | `temperature`, `top_p`, `top_k`, `frequency_penalty`, `presence_penalty`, `repetition_penalty`, `stop`, `seed`, `max_tokens` | `defaultSamplingParameters` |
 | `supported_features` | string[] | Feature vocabulary derived from registry capabilities: `tools`, `json_mode`, `structured_outputs`, `logprobs`, `web_search`, `reasoning`; omitted when none | `supportedFeaturesFromCapabilities` |
 | `deprecation_date` | string | Optional, from registry metadata | `deprecationDateFromMetadata` |

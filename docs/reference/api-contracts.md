@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-28 · commit `8e8b3471a`
+> Last updated: 2026-09-28 · commit `9dd9c58ba`
 
 The complete public HTTP surface of the coordinator, derived from the 115 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -722,7 +722,7 @@ root response marked `incomplete` because generation reached its output limit.
 
 ### Completions and Messages
 
-`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/generic_endpoint_response.go` and streams by `coordinator/api/generic_endpoint_stream.go`, which terminates with `data: [DONE]`. Non-streaming usage reports a validated cache hit in each endpoint's own schema (`completionsUsage`, `messagesUsage`): `/v1/completions` adds `usage.prompt_tokens_details.cached_tokens` (a subset of `prompt_tokens`); `/v1/messages` reports `cache_read_input_tokens` and excludes those tokens from `input_tokens`, as Anthropic does. The streamed forms carry no prompt usage (completions emits no usage block; the messages `message_delta` carries only `output_tokens`).
+`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/generic_endpoint_response.go` and streams by `coordinator/api/generic_endpoint_stream.go`, which terminates with `data: [DONE]`. Usage reports a validated cache hit in each endpoint's own schema (`completionsUsage`, `messagesUsage`): `/v1/completions` adds `usage.prompt_tokens_details.cached_tokens` (a subset of `prompt_tokens`); `/v1/messages` reports `cache_read_input_tokens` and excludes those tokens from `input_tokens`, as Anthropic does. Streams carry the same object on their terminal event: the final `text_completion` chunk's `usage` for completions, and the `message_delta` `usage` for messages (its `message_start` still reports `input_tokens: 0`, because usage is known only at the end).
 
 ## SSE framing
 

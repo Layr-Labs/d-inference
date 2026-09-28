@@ -285,3 +285,31 @@ func TestGenericEndpointResponsesReportCachedTokens(t *testing.T) {
 		t.Fatalf("miss messages usage = %#v", u)
 	}
 }
+
+// The terminal stream events carry the same usage breakdown as the non-stream
+// responses, so a streamed caller can reconcile a cache-read discount.
+func TestGenericEndpointStreamsReportCachedTokens(t *testing.T) {
+	hit := protocol.UsageInfo{PromptTokens: 10_000, CachedTokens: 8_000, CompletionTokens: 500}
+	for _, tc := range []struct {
+		endpoint string
+		want     []string
+	}{
+		{completionsEndpoint, []string{`"usage":{`, `"prompt_tokens":10000`, `"prompt_tokens_details":{"cached_tokens":8000}`, `"total_tokens":10500`}},
+		{messagesEndpoint, []string{"event: message_delta", `"input_tokens":2000`, `"cache_read_input_tokens":8000`, `"output_tokens":500`}},
+	} {
+		t.Run(tc.endpoint, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			pr := &registry.PendingRequest{RequestID: "request-id", PublicModel: "public-model", ConsumerEndpoint: tc.endpoint}
+			emitter := newGenericEndpointStreamEmitter(recorder, recorder, pr)
+			emitter.start()
+			emitter.handleChunk(`data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`)
+			emitter.finish(hit)
+			body := recorder.Body.String()
+			for _, want := range tc.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("stream missing %q:\n%s", want, body)
+				}
+			}
+		})
+	}
+}

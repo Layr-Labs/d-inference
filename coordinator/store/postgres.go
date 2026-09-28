@@ -285,7 +285,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS public_model TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		// Prompt tokens billed at the cache-read rate; rows written before the
 		// column existed had no cache discount, so 0 is the truthful backfill.
-		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS cached_tokens INTEGER NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
+		// Deliberately not wrapped in an exception handler: RecordUsage writes
+		// this column, so a failed ALTER (lock timeout, missing privilege) must
+		// abort startup rather than lose every usage row after settlement.
+		`ALTER TABLE usage ADD COLUMN IF NOT EXISTS cached_tokens INTEGER NOT NULL DEFAULT 0`,
 		// Indexes for usage queries (stats, billing, per-consumer history).
 		`CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_consumer ON usage(consumer_key_hash, created_at DESC)`,
@@ -374,7 +377,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// cache (OpenRouter pricing.input_cache_read). Nullable: NULL means the
 		// row sets none and billing derives the rate from input_price, so
 		// existing rows gain the default cache discount without a backfill.
-		`DO $$ BEGIN ALTER TABLE model_prices ADD COLUMN IF NOT EXISTS cache_read_price BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
+		// Not wrapped in an exception handler: GetModelPrice selects this
+		// column, so a failed ALTER must abort startup rather than make every
+		// price lookup miss and bill at the default rates.
+		`ALTER TABLE model_prices ADD COLUMN IF NOT EXISTS cache_read_price BIGINT`,
 
 		// Users — Privy identity → internal account mapping
 		`CREATE TABLE IF NOT EXISTS users (

@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-27 · commit `eafeab723`
+> Last updated: 2026-09-28 · commit `1f664f507`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -77,7 +77,14 @@ overrides and their defaults are in
 `Enqueue` sweeps the model's stale entries, then returns `ErrQueueFull` when
 the queue already holds `maxSize` requests. Each waiter blocks in
 `WaitForProviderContext` on its own `maxWait` timer and on the request's
-absolute first-content clock. The queue's error vocabulary:
+absolute first-content clock. Public deadline-bound dispatch only waits when
+credible release evidence leaves time for first content. Current occupancy-only
+reports cannot establish a future release, so a full public request returns its
+early overload response instead of spending the configured maximum. Explicit
+owner and deadline-exempt queue behavior remains. See
+[first-content routing](first-content-routing.md).
+
+The queue's error vocabulary:
 
 | Error | Meaning |
 |---|---|

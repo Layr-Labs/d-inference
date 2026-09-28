@@ -1,33 +1,10 @@
 package api
 
-// Per-request dispatch state machine for the consumer inference path.
-//
-// This file holds the speculative TTFT-aware dispatch loop that handleChatCompletions
-// drives: it picks a provider (or queues), waits for the first CONTENT chunk with a
-// speculative backup race, fails over invisibly on provider error/timeout up to
-// maxDispatchAttempts, and commits exactly once. It is a PURELY STRUCTURAL extraction
-// of what previously lived inline in consumer.go — every select arm, timer Stop/Reset,
-// channel-close+ErrorCh grace window, heldChunks cap, liveness extension, speculative
-// race (backup dispatch / cancel-loser / skipBackup), refund-exactly-once, breaker
-// call, DD metric, and status code is preserved exactly.
-//
-// Control-flow mapping (former labeled blocks → methods):
-//
-//	for attempt := range maxDispatchAttempts   → dispatchState.run (the orchestrator)
-//	dispatch-primary block (incl. queue path)  → dispatchState.dispatchPrimary
-//	firstChunkWait + speculative race          → dispatchState.waitFirstChunk
-//	  noBackupWait                             →   dispatchState.waitNoBackup
-//	  race + sub-waits                         →   dispatchState.runRace
-//	    backupFailedPrimaryWait                →     dispatchState.raceBackupFailedWaitPrimary
-//	    primaryFailedBackupWait                →     dispatchState.racePrimaryFailedWaitBackup
-//	    backupFailedWaitPrimary                →     dispatchState.raceBackupErrWaitPrimary
-//	acceptedWait                               → dispatchState.waitAccepted
-//
-// The former labeled jumps become method returns: `continue dispatch` → outcomeRetry,
-// `break`/commit → outcomeCommitted, `break <label>` into the accepted wait →
-// outcomeAccepted, `return` (client gone, after refund) → outcomeClientGone, and the
-// queue-rejection `writeJSON; return` paths → outcomeResponseWritten. The orchestrator
-// switches on the outcome, exactly reproducing the original flow.
+// Per-request dispatch state machine shared by consumer inference routes.
+// Attempts retain the original first-content clock, fail over without exposing
+// provider preambles, and commit exactly one content stream or valid terminal.
+// first_content_retry.go carries evidence refresh and queue policy;
+// dispatch_plan_wiring.go carries retained-plan and quote/hedge integration.
 
 import (
 	"context"
@@ -185,6 +162,13 @@ type dispatchState struct {
 	// DETERMINISTIC-context rejection (prompt > model context) stops on the first
 	// attempt regardless (see classifyRejection / failoverOutcome).
 	capacityRetries int
+	// Predictive refusals are request-local evidence, never provider faults.
+	predictiveRefusals         int
+	predictiveRefusedProviders map[string]struct{}
+	freshFeasibleAfter         time.Time
+	freshQuotesUsed            bool
+	probeDone                  <-chan struct{}
+	hedgeAttempted             bool
 	// firstChunkTimeoutRetries counts attempts that ended in a
 	// coordinator-synthesized first-chunk TIMEOUT (untyped 504 → the
 	// "first_chunk_timeout" 429 on exhaustion). Bounded by
@@ -290,13 +274,17 @@ type dispatchState struct {
 // traits builds the routing traits for the current attempt, steering away from
 // the most recently failed provider's binary version.
 func (d *dispatchState) traits() registry.RequestTraits {
+	avoidVersion := d.lastFailedVersion
+	if d.lastFailureDeadline {
+		avoidVersion = "" // A request-clock refusal does not indict the provider build.
+	}
 	return registry.RequestTraits{
 		HasTools:               d.hasTools,
 		RequiresToolConstraint: d.requiresToolConstraint,
 		ToolChoiceMode:         d.toolChoiceMode,
 		ToolChoiceName:         d.toolChoiceName,
 		ParallelToolCalls:      d.parallelToolCalls,
-		AvoidVersion:           d.lastFailedVersion,
+		AvoidVersion:           avoidVersion,
 		MinPrefixCacheProtocol: d.minPrefixCacheProtocol,
 	}
 }
@@ -884,6 +872,9 @@ func (d *dispatchState) setLastInferenceError(provider *registry.Provider, msg p
 	d.lastErrCode = msg.StatusCode
 	d.lastErrReason = msg.ErrorReason
 	d.lastFailureDeadline = isDeadlineUnreachableErrorReason(msg.ErrorReason)
+	if d.lastFailureDeadline {
+		d.notePredictiveRefusal(provider)
+	}
 	d.lastErrProviderBudget = providerBudget
 	d.lastErrRejectionReason = msg.RejectionReason
 	d.lastErrTerminalCause = msg.TerminalCause
@@ -1212,6 +1203,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	r, w := d.r, d.w
 	attempt := d.attempt
 
+	// Refresh evidence after repeated predictive refusals before another reservation.
+	d.refreshPredictiveRefusalQuotes()
+
 	// Dispatch the primary provider.
 	var dispatchErr string
 	var dispatchErrCode int
@@ -1244,14 +1238,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	}
 	if !planTried {
 		var plan *registry.DispatchPlan
-		d.provider, d.pr, decision, plan, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
-			r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
-			d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
-			d.traits(),
-			d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cachePlan, d.excludeProviders,
-			d.attempt, d.profile, "",
-			recordRoute,
-			d.noteProviderDispatched,
+		d.provider, d.pr, decision, plan, dispatchErr, dispatchErrCode = d.dispatchProviderWith(
+			func(pr *registry.PendingRequest, excludeIDs []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
+				return s.registry.ReserveProviderWithPlan(d.model, pr, excludeIDs...)
+			}, true, d.timing, d.excludeProviders, "", recordRoute,
 		)
 		if d.plan == nil {
 			// Adopt the FIRST retained plan only. Once the plan chain
@@ -1378,6 +1368,13 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			}
 			return outcomeFailFast
 		}
+		// Current telemetry has no credible future capacity-release timestamp.
+		// Public requests with an absolute clock must not spend it on a blind
+		// configured queue wait. Explicit owner and deadline-exempt requests
+		// retain their existing queue semantics.
+		if d.rejectUnforecastableCapacityWait(decision) {
+			return outcomeResponseWritten
+		}
 		// No idle provider — try queueing.
 		d.requestID = uuid.New().String()
 		queuePR := &registry.PendingRequest{
@@ -1417,6 +1414,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			Timing:       d.timing,
 		}
 		d.configurePending(queuePR)
+		d.configureFirstContentReservation(queuePR, false)
 		if receivedAt := timingReceivedAt(d.timing); !receivedAt.IsZero() && d.deadline > 0 {
 			queuePR.FirstContentDeadline = receivedAt.Add(d.deadline)
 		}
@@ -1989,8 +1987,13 @@ func (d *dispatchState) latchJinjaTerminalReject(reason, src string) (latched bo
 // a memory-pressured loser's "batch token budget" is NOT latched, so failover to a
 // healthier provider still happens. Harmless if the survivor ultimately succeeds —
 // d.unservable is only consulted on the exhausted/retry path, never on a commit.
+// Predictive refusals also count toward the request's fresh-evidence threshold,
+// without replacing the survivor's terminal error or becoming a health fault.
 func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
 	msg = normalizeInferenceErrorForInternalUse(msg)
+	if isDeadlineUnreachableErrorReason(msg.ErrorReason) {
+		d.notePredictiveRefusal(provider)
+	}
 	// Same budget preference as setLastInferenceError: the enriched LIVE
 	// gate budget (explicit zero included) supersedes the stale heartbeat
 	// snapshot for this loser's classification.
@@ -2025,8 +2028,8 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 	switch classifyRejection(msg.ErrorReason, msg.Error, budget, d.modelMaxContext, msg.RejectionReason) {
 	case rejectionDeadlineUnreachable:
 		// A race loser that could not meet the remaining absolute deadline is
-		// health-neutral and non-deterministic across providers. It must not
-		// become sticky: the surviving attempt owns the eventual terminal.
+		// counted above, but remains health-neutral and non-deterministic across
+		// providers: the surviving attempt owns the eventual terminal.
 	case rejectionDeterministicUnservable:
 		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
 		d.unservable = true
@@ -2263,7 +2266,10 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 // set as waitFirstChunk.
 func (d *dispatchState) runSpeculative() dispatchOutcome {
 	s := d.s
-	r := d.r
+	if d.hedgeAttempted {
+		return d.waitNoBackup()
+	}
+	d.hedgeAttempted = true
 	provider := d.provider
 	if d.onSpeculativeDispatch != nil {
 		d.onSpeculativeDispatch()
@@ -2357,18 +2363,10 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		backupProvider, backupPR, _, backupErr, backupErrCode, planTried =
 			d.dispatchFromPlanMachinery(backupTiming, backupExclude, d.requestID, recordBackupRoute)
 		if !planTried {
-			backupProvider, backupPR, _, _, backupErr, backupErrCode = s.dispatchOneProvider(
-				r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
-				d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
-				d.traits(),
-				d.allowedProviderSerials, d.isResponsesAPI, d.policy,
-				backupTiming,
-				d.serviceReservation,
-				d.cachePlan,
-				backupExclude,
-				d.attempt, d.profile, d.requestID,
-				recordBackupRoute,
-				d.noteProviderDispatched,
+			backupProvider, backupPR, _, _, backupErr, backupErrCode = d.dispatchProviderWith(
+				func(pr *registry.PendingRequest, excludeIDs []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
+					return s.registry.ReserveProviderWithPlan(d.model, pr, excludeIDs...)
+				}, true, backupTiming, backupExclude, d.requestID, recordBackupRoute,
 			)
 		}
 	}

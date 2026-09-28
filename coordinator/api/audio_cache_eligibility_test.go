@@ -127,12 +127,26 @@ func TestAudioCacheHasMediaRefusesBeforeWorkingSidecar(t *testing.T) {
 		if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 			t.Fatal(err)
 		}
-		return reg.PlanCacheRouteWithResult(context.Background(), client, registry.CachePlanInput{
-			Account: "account", Model: capability.ModelID,
-			ModelAggregateSHA256: capability.ModelAggregateHash,
-			PromptContractID:     capability.PromptContractID, Body: []byte(body),
-			HasMedia: cachePlanHasMedia(detectMediaRequirement(parsed), parsed),
-		})
+		var result registry.CachePlanResult
+		planningCalls := 0
+		memo := newRequestCachePlans(
+			func(string) ([]byte, error) { return []byte(body), nil },
+			func(model string, encoded []byte, hasMedia bool) registry.CachePlan {
+				planningCalls++
+				result = reg.PlanCacheRouteWithResult(context.Background(), client, registry.CachePlanInput{
+					Account: "account", Model: model,
+					ModelAggregateSHA256: capability.ModelAggregateHash,
+					PromptContractID:     capability.PromptContractID, Body: encoded,
+					HasMedia: hasMedia,
+				})
+				return result.Plan
+			}, detectMediaRequirement(parsed), parsed)
+		_ = memo.forModel(capability.ModelID)              // actual preflight entry
+		_ = memo.forBody(capability.ModelID, []byte(body)) // actual dispatch entry
+		if planningCalls != 1 {
+			t.Fatal("matching preflight/dispatch repeated planning or lost a media refusal")
+		}
+		return result
 	}
 	control := plan(`{"messages":[{"role":"user","content":"plain input_audio word"}]}`)
 	if control.Outcome != registry.CachePlanPlanned || !control.SidecarCalled || calls.Load() != 1 {

@@ -498,6 +498,20 @@ bundles dereference `reputation.score` and cannot consume the new response.
 Existing tabs running an older bundle must reload. The updated console also
 accepts older responses containing the extra field.
 
+## First-content routing and retry behavior
+
+Public inference uses [first-content routing](../architecture/first-content-routing.md)
+by default across chat completions, Responses, completions and Anthropic messages.
+Internal retries, cache planning, quotes, queue waits and hedges consume the same
+original request deadline. Predictive provider refusals do not count as node
+health failures; after two, another attempt needs fresh feasible evidence.
+A request can launch at most one speculative backup. Current error JSON and
+`Retry-After` contracts remain; unavailable deadline-bound capacity can produce
+an earlier overload response instead of waiting the queue maximum. Explicit
+owner routing, deadline exemptions and valid empty completions keep their
+existing contracts (`coordinator/api/first_content_retry.go`,
+`coordinator/api/first_content_preflight.go`).
+
 ## Provider capacity observations
 
 `GET /v1/me/providers` exposes the accepted backend slot snapshot through

@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-28 · commit `0bd16a9fa`
+> Last updated: 2026-09-28 · commit `1f664f507`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -429,8 +429,9 @@ checkpoint and has no prefill-time comparison that bypasses an expensive hit
 `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`).
 The priced component applies the existing long-prompt prefill multiplier to
 both savings and overhead, with stage cost counted once. Model load and its multiplier, decode, queue, pending, backlog,
-health and capacity penalties remain intact. The cold TTFT ceiling and full
-memory/token admission estimates are unchanged. Nonfinite or unusable costs
+health and capacity diagnostics remain intact. The full memory/token admission
+estimates are unchanged. First-content forecasting consumes validated cache
+work before deadline classification, then revalidates it at atomic reservation. Nonfinite or unusable costs
 leave ordinary cold scoring.
 
 The optional
@@ -457,41 +458,20 @@ performance. Neither observation is measured request latency.
 
 SSD requires a positive external stage cost; memory can report zero external
 staging, without claiming engine restoration is free. Endpoint credits never
-stack. `selectRoutingCandidate` keeps the `nearTieCostWindowMs` band (3 s)
-whether or not the pool carries cache adjustments
-(`coordinator/registry/candidate_selection.go`). Inside the band, if any
-candidate has a positive credit and the band has more than one member, the
-cheapest credited holder wins (`SelectionPath` `cache_credit`,
-`SelectionCacheCredit`); credited ties resolve by larger credit, fresher
-evidence weight, then lighter queue and pending load (`cacheCreditRanksAbove`),
-and holders equal on all of these are spread uniformly so a same-prefix burst
-does not converge on one holder (`cacheCreditEquivalent`). A credited holder
-beyond the band still loses. A candidate carrying a restore penalty is retained
-only at the exact minimum, where it is an ordinary band member with no
-preference: before this change any adjustment collapsed the band and a
-penalized strict minimum won outright. With no credited candidate in the band,
-the ordinary least-busy tie-breaks and the soft prefix affinity apply. The band
-is not scaled with the estimated saving, which is already inside the adjusted
-cost.
-This service-cost model still includes decode/backlog terms and is not a pure
-first-token latency optimizer or a hard cache affinity.
+stack. `applyCacheRoutingCostPLocked` validates the holder before
+`estimateFirstContent` computes uncached prompt work and charges full restoration
+once. Cached tokens are bounded by the current prompt and expire with the proof.
+The historical score caps apply to `CacheDiscountMs`; they do not falsify the
+separate work forecast. Neither field establishes actual reuse or billing credit.
 
-For example, a fresh 4,096-token checkpoint, a 1,000-token/s prefill rate and
-120 ms stage cost save 3,976 ms of prefill. With 10,000 prompt tokens and 2,000 ms
-of decode cost, an idle cold provider costs 12,000 ms. A matching provider with
-3,750 ms of queue/pending penalties costs 11,774 ms and wins; at 7,500 ms of
-penalties it costs 15,524 ms and loses (3,524 ms beyond the 3 s band). These
-are deterministic scheduler examples, not model measurements. The regression
-suite also checks slower cached hardware — a 400 tok/s holder 4,880 ms above
-the cold peer loses because the band does not scale with the saving, while its
-500 tok/s sibling 1,928 ms above the cold peer wins inside the band
-(`TestCacheServiceCostBalancesQueueAndHardware`) — longest-endpoint execution
-alignment and ambiguous tier rejection
-(`coordinator/registry/cache_service_cost_test.go`). A 4,096-token checkpoint
-on a 5,000-token/s provider with a 900 ms stage instead adds 80.8 ms before
-long-prompt weighting. That overhead can make a slightly slower cold peer the
-better choice, while an only-available expensive holder remains eligible
-(`coordinator/registry/cache_checkpoint_stage_cost_test.go`).
+`selectRoutingCandidateWithAffinity` applies the
+[first-content selection policy](first-content-routing.md) to both cached and
+uncached providers. A useful holder can enter the fast band because reuse lowers
+its expected first-content time; inside the band, whole-Mac service work takes
+precedence over cache affinity. Restore overhead remains in the forecast even
+when it exceeds the saved prefill. Reservation and every retained retry refresh
+proof, capacity and the original remaining deadline. Cache isolation and
+receipt-confirmed billing remain unchanged.
 
 Cache-participating attempts (`PendingRequest.CacheRoutingParticipates`) are
 excluded from TTFT calibration (`observeTTFTCalibration`,
@@ -633,8 +613,7 @@ forwards `RepeatedPrefixTokens` to the provider as
 absent means no granted scope; the row is in
 [`../reference/protocol-messages.md`](../reference/protocol-messages.md#inference_request).
 
-When ordinary candidates tie within the existing service-cost window, queue
-and pending-work criteria, `selectRoutingCandidateWithAffinity` uses a stable
+When candidates tie within the first-content band and whole-Mac service work, `selectRoutingCandidateWithAffinity` uses a stable
 keyed ranking to seed an observed repeated prefix on a cache-capable candidate.
 `cacheAffinityEligibleLocked` checks each matching SSD or resident capability
 against the tracker's proof quarantine while holding the current provider
@@ -644,9 +623,8 @@ checked against its own identity.
 Reservation repeats the same check under the provider lock and rescans if
 affinity eligibility changed since selection, even when service cost is equal.
 If no candidate has an unfenced matching capability, ordinary routing continues.
-Busy or more expensive machines still lose. A cache credit inside the near-tie
-band takes precedence over this tie breaker; a credit beyond the band no longer
-disables it. All admission/identity/proof checks are unchanged. No extra
+Useful verified reuse breaks equal-work choices before soft prefix affinity;
+a holder beyond the first-content band cannot displace its faster alternatives. All admission/identity/proof checks are unchanged. No extra
 request or replica is generated. Providers may still miss;
 affinity alone never produces cached-token usage or a cache discount.
 
@@ -661,9 +639,9 @@ population, including parked completions, not a unique-client success rate.
 | `holder_evidence_unusable` | Matching records exist, but capability, epoch, connection, tier selection or quarantine prevents using them. |
 | `holder_unavailable` | Valid hints exist, but none survives the request's candidate gates/preferences with executable cache pricing. |
 | `holder_no_positive_credit` | Executable cache candidates exist, but none has positive allowed cache-cost credit. Staging may cost more than recomputing. |
-| `holder_not_selected` | At least one executable cache candidate survived; it was beyond the near-tie band, lost among credited near-ties, a plan-based retry reserved a cold alternate, or commit-time revalidation selected otherwise. |
+| `holder_not_selected` | At least one executable cache candidate survived; it was beyond the near-tie band, lost among credited near-ties, a retained retry or commit-time revalidation selected otherwise. |
 | `selected` | Reservation selected a provider with positive validated cache credit at the pool minimum. Actual reuse is still reported independently. |
-| `selected_near_tie` | Reservation selected a provider with positive validated cache credit that cost more than the pool minimum; the near-tie credit preference chose it (`CacheOpportunity.CreditWonNearTie`, `coordinator/registry/cache_opportunity.go`). Actual reuse is still reported independently. |
+| `selected_near_tie` | Reservation selected a provider with positive validated cache credit that was not the minimum first-content candidate; the equal-work cache preference chose it (`CacheOpportunity.CreditWonNearTie`, `coordinator/registry/cache_opportunity.go`). Actual reuse is still reported independently. |
 
 A selected-rate query must sum `reason:selected` and `reason:selected_near_tie`.
 A plan-based retry (`ReserveNextFromPlan`,
@@ -801,7 +779,7 @@ back are operator procedures, kept in the runbook
 | One provider loses all holders for a model | The model root was rebuilt at load (binding drift) and its cache epoch changed, the model was unloaded (`capability_change`), or the provider predates the per-file eviction change and still rotates on eviction | Invalidates that provider/model evidence; other machines holding the same prefix remain eligible |
 | Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, a hit below a recorded boundary, TTL, cap eviction | Removal counted under one of the eight `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
 | `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `maxPrefixCacheStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `sanitizePrefixCacheStatuses` drops the optional snapshot; routing capability is never weakened (`coordinator/registry/cache_snapshot.go`) |
-| A cached provider loses to a cold one | Residual prefill, full staging, age, queue or hardware costs outweigh its benefit; or an explicit limit clips it | Minimum adjusted service cost wins; there is no hard affinity |
+| A cached provider loses to a cold one | Residual prefill, full staging, age, queue or hardware costs outweigh its benefit; or an explicit limit clips it | First-content band and whole-Mac service work decide; there is no hard affinity |
 
 Receipt rejection telemetry distinguishes invalid shape, missing/expired attempt,
 request/connection/capability changes, prior rejection fencing, duplicate or stale
@@ -833,7 +811,7 @@ and `coordinator/api/cache_model_telemetry.go`.
 | Receipts, v2 proof acceptance, legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `disablePrefixCacheV2Model` |
 | Bounded proof fence and plan-scoped invalidation | `coordinator/registry/cache_proof_fence.go` — `capabilityRejected`, `rejectCapability`, `invalidateProviderPlan`; `coordinator/registry/cache_model_changes.go` — `reconcileFences` |
 | Status vocabularies and sanitization | `coordinator/registry/cache_eligibility.go`, `coordinator/registry/cache_status.go`, `coordinator/registry/cache_snapshot.go` |
-| Discount in the cost model and near-tie credit preference | `coordinator/registry/scheduler.go` — `applyCacheRoutingCost`; `coordinator/registry/candidate_selection.go` — `selectRoutingCandidate`, `cacheCreditRanksAbove`; `coordinator/registry/gate_reason.go` — `SelectionCacheCredit` |
+| Discount in the cost model and near-tie credit preference | `coordinator/registry/scheduler.go` — `applyCacheRoutingCost`; `coordinator/registry/candidate_selection.go` — `selectRoutingCandidate`, `selectFirstContentCandidate`; `coordinator/registry/gate_reason.go` — `SelectionCacheCredit` |
 | Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/api/consumer.go` — `bodyForCacheAttempt` |
 | Status endpoint and gauges | `coordinator/api/exact_cache_status.go`, `coordinator/api/exact_cache_metrics.go` |
 | Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/api/settlement.go` — `observeTTFTCalibration`; `coordinator/api/dispatch.go` |

@@ -205,7 +205,7 @@ func TestReserveProviderBalancesAcrossHotSlots(t *testing.T) {
 	_ = p2
 }
 
-func TestReserveProviderUsesColdSlotWhenHotBacklogIsHuge(t *testing.T) {
+func TestReserveProviderDoesNotTurnOutputCommitmentIntoSerialWait(t *testing.T) {
 	reg := New(testLogger())
 	model := "cold-start-model"
 	hot := makeSchedulerProvider(t, reg, "hot", model, 40)
@@ -231,8 +231,8 @@ func TestReserveProviderUsesColdSlotWhenHotBacklogIsHuge(t *testing.T) {
 	if selected == nil {
 		t.Fatal("ReserveProvider returned nil")
 	}
-	if selected.ID != cold.ID {
-		t.Fatalf("selected %q, want cold slot %q", selected.ID, cold.ID)
+	if selected.ID != hot.ID {
+		t.Fatalf("selected %q, want resident slot %q: maximum output commitments are not a serial queue", selected.ID, hot.ID)
 	}
 }
 

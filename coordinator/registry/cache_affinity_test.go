@@ -20,19 +20,19 @@ func TestCacheAffinityStableAcrossPoolOrderAndFailsOver(t *testing.T) {
 			t.Fatal("same prefix moved with pool order")
 		}
 	}
-	winner.effectiveQueue = 1
+	winner.firstContent.ServiceMs = 1
 	fallback, _, _, _ := selectRoutingCandidateWithAffinity(pool, "scoped-prefix")
 	if fallback == winner {
 		t.Fatal("affinity overrode queue headroom")
 	}
-	winner.effectiveQueue = 0
-	winner.snapshot.totalPending = 1
+	winner.firstContent.ServiceMs = 0
+	winner.firstContent.ServiceMs = 2
 	fallback, _, _, _ = selectRoutingCandidateWithAffinity(pool, "scoped-prefix")
 	if fallback == winner {
 		t.Fatal("affinity overrode pending load")
 	}
-	winner.snapshot.totalPending = 0
-	winner.costMs = 10000
+	winner.firstContent.ServiceMs = 0
+	winner.firstContent.ExpectedMs = 10000
 	fallback, _, _, _ = selectRoutingCandidateWithAffinity(pool, "scoped-prefix")
 	if fallback == winner {
 		t.Fatal("affinity overrode service cost")
@@ -43,6 +43,8 @@ func TestCacheAffinityDoesNotInventCreditOrOverrideVerifiedSavings(t *testing.T)
 	cold := &routingCandidate{cacheAffinityEligible: true, provider: &Provider{ID: "cold"}, costMs: 100}
 	cached := &routingCandidate{cacheAffinityEligible: true, provider: &Provider{ID: "cached"}, costMs: 99}
 	cached.breakdown.CacheDiscountMs = 20
+	cached.firstContent.CachedTokens = 20
+	cached.cacheEstimatedTTFTSavedMs = 20
 	got, _, _, path := selectRoutingCandidateWithAffinity([]*routingCandidate{cold, cached}, "scoped-prefix")
 	if got != cached || path == SelectionPrefixAffinity {
 		t.Fatal("affinity overrode actual cache pricing")
@@ -61,7 +63,7 @@ func TestCacheAffinitySeedsOnlyCacheCapableEquivalentCandidates(t *testing.T) {
 			t.Fatal("repeat was seeded on an incapable provider")
 		}
 	}
-	capable.effectiveQueue = 1
+	capable.firstContent.ServiceMs = 1
 	winner, _, _, path := selectRoutingCandidateWithAffinity([]*routingCandidate{incapable, capable}, "repeat")
 	if winner != incapable || path == SelectionPrefixAffinity {
 		t.Fatal("affinity displaced a less loaded candidate")

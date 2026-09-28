@@ -494,10 +494,11 @@ func TestCompleteHandlerFinalizesTerminalAfterSettlement(t *testing.T) {
 // it (the old defer keyed on d.pr == queuePR, which is set BEFORE the write).
 // queueDispatchState builds the dispatchState the queue-path tests drive
 // through the real dispatchPrimary: with no routable provider registered,
-// attempt 0 finds none and the request takes the queue path.
+// attempt 0 finds none and an explicit prefer-owner request takes the queue path.
 func queueDispatchState(s *Server, model string, rp *registry.RequestProfile, r *http.Request, deadline time.Duration) *dispatchState {
 	return &dispatchState{
 		s:                      s,
+		policy:                 selfRoutePolicy{prefer: true, ownerAccountID: testConsumerID},
 		w:                      httptest.NewRecorder(),
 		r:                      r,
 		model:                  model,

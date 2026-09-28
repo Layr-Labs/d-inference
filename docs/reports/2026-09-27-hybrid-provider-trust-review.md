@@ -2,7 +2,7 @@
 
 > Last updated: 2026-09-27 · commit `0bd16a9fa`
 
-This follow-up to the [September 10 security review](2026-09-10-security-model-review.md) verifies the current coexistence of legacy MDM/APNs and App Attest in source and focused tests. It updates the [canonical threat model](../threat-model.yaml) and [provider trust explanation](../architecture/security/provider-trust.md). It does not reclassify all 13 historical findings or claim that the live fleet has adopted particular settings.
+This review records the September 27 coexistence of legacy MDM/APNs and App Attest in source and focused tests. It updates the [canonical threat model](../threat-model.yaml) and [provider trust explanation](../architecture/security/provider-trust.md). It does not reassess unrelated historical findings or claim that the live fleet has adopted particular settings.
 
 ## Assessment
 

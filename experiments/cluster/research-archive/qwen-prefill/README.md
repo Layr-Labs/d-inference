@@ -1,7 +1,7 @@
 # Preserved cluster research: qwen-prefill
 
 Source snapshot captured 2026-09-28 for later review and fixes. This archive holds
-2,083 distinct source/document versions from the private research workspace.
+2,084 distinct source/document versions from the private research workspace.
 The implementation has not been integrated or corrected.
 
 `source-index.json` maps every retained source to its original relative locations

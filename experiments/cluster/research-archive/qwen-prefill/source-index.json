@@ -22062,6 +22062,14 @@
         "resident-native-worker-draft-20260915/Package.swift.proposed"
       ],
       "privacy_redacted": false
+    },
+    {
+      "file": "sources/qwen-mtp-accepted-rounds-20260920/Tests/expected-checks.json",
+      "sha256": "d138644510d029c8532d4a25f98ffc659ed7a9b426ebf9521cb83bcaa2a832b2",
+      "locations": [
+        "qwen-mtp-accepted-rounds-20260920/Tests/expected-checks.json"
+      ],
+      "privacy_redacted": false
     }
   ],
   "category": "qwen-prefill"

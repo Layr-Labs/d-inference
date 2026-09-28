@@ -140,6 +140,17 @@ extension EngineV2Bridge {
             return stream
         }
         let retirementTransfer = EngineV2RetirementTransfer()
+        guard acquireServiceAllowance(requestID: id) else {
+            usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
+            continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
+            continuation.finish()
+            return stream
+        }
+        defer {
+            if active[id] == nil && !retirementTransfer.isClaimed {
+                releaseServiceAllowance(requestID: id)
+            }
+        }
         pendingSubmissionIDs.insert(id)
         if let profile { pendingProfiles[id] = profile }
         // Profiler: this prompt is "queued for prefill" for exactly the span
@@ -467,18 +478,21 @@ extension EngineV2Bridge {
             readyReceiptRegistered: readyReceiptRegistered,
             usageSignal: usageSignal)
 
-        // Snapshot queue isolation at the exact engine-submit boundary. The
-        // current provider request is already in `pendingSubmissionIDs`; every
-        // other active or pending row disqualifies this sample.
-        disqualifyOverlappedPrefillSamples()
-        let isolatedPrefillSampleEligible =
-            isIsolatedPrefillSubmitBoundary(currentProviderRequestID: id)
-
         // Reserve the deterministic or monotonic ID before any admission
         // suspension. EngineV2Bridge+Identity defines collision handling.
         let cbv2Id = mintEngineRequestId(
             seed: cbv2Request.sampling.seed, promptTokens: promptTokens)
         cbv2Request.id = cbv2Id
+        let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId)
+        cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
+            prefillReceipt.complete(usage)
+            Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
+        }
+        // Accepted requests transfer interval ownership to active state. Rejected
+        // submissions have no work left to classify and release in this defer.
+        defer {
+            if active[id]?.prefillReceipt !== prefillReceipt { prefillReceipt.end() }
+        }
         let engineRequest = cbv2Request
         pendingEngineIDs.insert(cbv2Id)
         idMap[id] = cbv2Id
@@ -722,14 +736,11 @@ extension EngineV2Bridge {
         active[id] = ActiveRequestState(
             promptTokens: promptTokens.count,
             maxTokens: cbv2Request.maxTokens,
-            isolatedPrefillSampleEligible:
-                isolatedPrefillSampleEligible
-                && pendingSubmissionIDs.allSatisfy({ $0 == id })
-                && pendingEngineIDs.allSatisfy({ $0 == cbv2Id })
-                && active.isEmpty,
             submittedAt: engineAdmittedAt,
-            profile: profile
+            profile: profile,
+            prefillReceipt: prefillReceipt
         )
+        consumePrefillReceipt(id: id, receipt: prefillReceipt)
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
 

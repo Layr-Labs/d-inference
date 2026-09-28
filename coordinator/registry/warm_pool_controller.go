@@ -3,7 +3,6 @@ package registry
 import (
 	"context"
 	"sort"
-	"sync"
 	"time"
 )
 
@@ -14,121 +13,6 @@ const (
 	warmPoolMinServiceTime = 500 * time.Millisecond
 	warmPoolMaxServiceTime = 2 * time.Minute
 )
-
-type warmPoolController struct {
-	registry *Registry
-	config   WarmPoolConfig
-	state    *warmPoolState
-	queueMu  syncQueuePressure
-	tickMu   sync.Mutex
-	triggerC chan struct{}
-
-	// lastMu guards the most recent set of per-model snapshots produced by tick.
-	// They are cached read-only so observability paths (network utilization
-	// gauges, /v1/stats, /v1/admin/utilization) can read the Little's Law
-	// diagnostics the controller already computes without re-running a planning
-	// pass (which has model-load side effects).
-	lastMu      sync.RWMutex
-	lastSnaps   []WarmPoolSnapshot
-	lastSnapsAt time.Time
-}
-
-type syncQueuePressure struct {
-	mu     sync.Mutex
-	models map[string]warmPoolQueuePressure
-}
-
-type warmPoolQueuePressure struct {
-	Depth     int
-	OldestAge time.Duration
-	UpdatedAt time.Time
-}
-
-type WarmPoolSnapshot struct {
-	Model              string
-	TargetWarm         int
-	WarmProviders      int
-	EligibleCold       int
-	QueueDepth         int
-	OldestQueueAge     time.Duration
-	CapacityRejects    int
-	TTFTMisses         int
-	SpeculativeStarted int
-	SpeculativeWon     int
-	ColdDispatches     int
-	LoadDurationEWMA   time.Duration
-	ObserveOnly        bool
-	Actions            []modelLoadAction
-
-	// Little's Law diagnostics (Layer 3, routing-v2.md). DemandConcurrency is
-	// L = λ·E[S]; QualityConcurrency is the per-provider batch ceiling at the
-	// decode floor; SpillArrivalRate is the EWMA arrivals/sec the pool shed.
-	RunningRequests int
-	WaitingRequests int
-	WarmSaturated   int // warm providers with NO concurrency headroom left
-	// WarmForeignBlocked is the subset of WarmSaturated saturated by a CO-RESIDENT
-	// model (no headroom, none of THIS model's requests in flight). It is added to
-	// the headroom floor because that load never appears in running/waiting.
-	WarmForeignBlocked int
-	SpillArrivalRate   float64
-	// OccupancyRamp is the measured demand-growth EWMA (slots/interval) and
-	// HeadroomProviders the floor derived from it — the two numbers needed to
-	// audit why a model's proactive target is what it is.
-	OccupancyRamp      float64
-	HeadroomProviders  int
-	ServiceTime        time.Duration
-	QualityConcurrency int
-	DemandConcurrency  float64
-
-	// ColdIneligible is the count of cold (on-disk, not-warm) providers advertising
-	// the model that failed the warm-pool candidate gate this tick, with
-	// ColdDisqualifiers breaking it down by reason (warmColdReason). Diagnoses why
-	// the eligible-cold set (and thus the warmable target) is smaller than the raw
-	// cold-provider count — counts only, no provider identities.
-	ColdIneligible    int
-	ColdDisqualifiers map[string]int
-}
-
-type warmPoolModelSnapshot struct {
-	model         string
-	warm          int
-	warmSaturated int
-	// warmForeignBlocked is the subset of warmSaturated whose saturation is NOT
-	// explained by this model's own load: the provider has the weights resident
-	// but zero concurrency headroom while running NONE of this model's requests,
-	// so a co-resident model consumed its capacity. Those requests are absent
-	// from this model's running/waiting, so such a provider contributes qc to
-	// nominal capacity while being able to serve nothing — see headroomTarget.
-	warmForeignBlocked int
-	// running / waiting are the in-flight load summed across warm providers'
-	// backend slots for this model (the observable L in Little's Law).
-	running int
-	waiting int
-	// soloDecodeTPS / serviceDecodeTPS / prefillTPS / maxProviderConc are
-	// representative (median) rates and the per-provider concurrency cap across
-	// providers serving the model. soloDecodeTPS is the STATIC solo rate from
-	// the quality-cap resolver (resolvedSoloModelTPSLocked) and feeds quality
-	// concurrency, so warm targets and admission caps use the same math and
-	// cannot disagree. serviceDecodeTPS keeps the observed-EWMA-preferring
-	// chain (resolvedModelTPSLocked) and feeds only the E[S] service-time
-	// estimate, which deliberately wants the load-inclusive rate a request
-	// actually sees.
-	soloDecodeTPS    float64
-	serviceDecodeTPS float64
-	prefillTPS       float64
-	maxProviderConc  int
-	eligibleCold     []warmPoolCandidate
-	// coldIneligible / coldDisq tally cold (on-disk, not-warm) providers that
-	// FAILED the warm-pool candidate gate, by reason — diagnostics for why
-	// eligibleCold is smaller than the raw cold count.
-	coldIneligible int
-	coldDisq       map[warmColdReason]int
-}
-
-type warmPoolCandidate struct {
-	providerID string
-	score      float64
-}
 
 func newWarmPoolController(r *Registry, cfg WarmPoolConfig) *warmPoolController {
 	return &warmPoolController{
@@ -277,6 +161,12 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 				"service_time_ms", snap.ServiceTime.Milliseconds(),
 				"quality_concurrency", snap.QualityConcurrency,
 				"demand_concurrency", snap.DemandConcurrency,
+				"measured_prompt_tokens", snap.MeasuredPromptTokens,
+				"measured_output_tokens", snap.MeasuredOutputTokens,
+				"prompt_work_tps", snap.PromptWorkTPS,
+				"generation_work_tps", snap.GenerationWorkTPS,
+				"aggregate_decode_tps", snap.AggregateDecodeTPS,
+				"work_providers", snap.WorkProviders,
 				"capacity_rejects", snap.CapacityRejects,
 				"ttft_misses", snap.TTFTMisses,
 				"speculative_started", snap.SpeculativeStarted,
@@ -310,6 +200,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 	// so the Little's Law target tracks demand. Gate folds at half the control
 	// interval so coalesced hot-path trigger ticks don't spike the rate.
 	c.state.foldArrivalRates(now, c.config.Interval/2, warmPoolArrivalEWMAAlpha)
+	c.state.foldWorkRates(now, c.config.Interval/2)
 	pressure := c.state.snapshot(now, stateWindow)
 	queue := c.queueSnapshot(now, stateWindow)
 	fleet := c.registry.warmPoolFleetSnapshot(now)
@@ -367,11 +258,13 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 	}
 
 	params := c.targetParams()
+	assigned := make(map[string]bool)
 	var out []WarmPoolSnapshot
 	for _, model := range ordered {
 		p := pressure[model]
 		q := queue[model]
 		f := fleet[model]
+		f.workProviders = measuredWorkProviders(f, p, now)
 		// E[S] from the load-inclusive service rate (what a request actually
 		// sees); quality concurrency below from the solo rate (the admission
 		// cap's math). Falls back to the solo rate when no service samples
@@ -381,7 +274,14 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 		if serviceTPS <= 0 {
 			serviceTPS = f.soloDecodeTPS
 		}
-		svc := estimateServiceTime(f.prefillTPS, serviceTPS, params)
+		serviceParams := measuredWarmServiceParams(params, p, now)
+		svc := estimateServiceTime(f.prefillTPS, serviceTPS, serviceParams)
+		if f.qualityConc > 0 && f.aggregateDecodeTPS > 0 {
+			// Convert serial prompt work and measured aggregate generation work
+			// into the request-concurrency units used by the existing target.
+			svc = estimateServiceTime(f.prefillTPS, f.aggregateDecodeTPS, serviceParams) * time.Duration(f.qualityConc)
+			svc = min(svc, warmPoolMaxServiceTime)
+		}
 		target := c.targetWarm(f, p, q, params, svc, now)
 
 		gap := target - f.warm
@@ -401,13 +301,11 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 		if need < 0 {
 			need = 0
 		}
-		actions := make([]modelLoadAction, 0, need)
-		for i := 0; i < need; i++ {
-			actions = append(actions, modelLoadAction{providerID: f.eligibleCold[i].providerID, modelID: model})
+		activeReserve := reserve
+		if c.config.ObserveOnly {
+			activeReserve = nil
 		}
-		if reserve != nil && !c.config.ObserveOnly {
-			actions = reserve(actions, now)
-		}
+		actions := allocateWarmPoolLoads(model, f.eligibleCold, need, assigned, now, activeReserve)
 		loadsRemaining -= len(actions)
 		c.state.rememberTarget(model, target, now)
 		// Surface why cold boxes aren't warmable (counts only). For a dedicated pool
@@ -422,39 +320,41 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			)
 		}
 		out = append(out, WarmPoolSnapshot{
-			Model:              model,
-			TargetWarm:         target,
-			WarmProviders:      f.warm,
-			EligibleCold:       len(f.eligibleCold),
-			ColdIneligible:     f.coldIneligible,
-			ColdDisqualifiers:  warmColdReasonStrings(f.coldDisq),
-			QueueDepth:         q.Depth,
-			OldestQueueAge:     q.OldestAge,
-			CapacityRejects:    p.capacityRejects,
-			TTFTMisses:         p.ttftMisses,
-			SpeculativeStarted: p.speculativeStarted,
-			SpeculativeWon:     p.speculativeWon,
-			ColdDispatches:     p.coldDispatches,
-			LoadDurationEWMA:   p.loadDurationEWMA,
-			ObserveOnly:        c.config.ObserveOnly,
-			Actions:            actions,
-			RunningRequests:    f.running,
-			WaitingRequests:    f.waiting,
-			WarmSaturated:      f.warmSaturated,
-			WarmForeignBlocked: f.warmForeignBlocked,
-			OccupancyRamp:      p.occupancyRampEWMA,
-			HeadroomProviders:  headroomProviders(c.targetInputs(f, p, q), params, qualityConcurrency(f.soloDecodeTPS, params.DecodeFloorTPS, params.LoadFactorK, f.maxProviderConc, params.FallbackQualityConcurrency)),
-			SpillArrivalRate:   p.arrivalRateEWMA,
-			ServiceTime:        svc,
-			QualityConcurrency: qualityConcurrency(f.soloDecodeTPS, params.DecodeFloorTPS, params.LoadFactorK, f.maxProviderConc, params.FallbackQualityConcurrency),
-			DemandConcurrency:  demandConcurrency(c.targetInputs(f, p, q), svc),
+			Model:                model,
+			TargetWarm:           target,
+			WarmProviders:        f.warm,
+			EligibleCold:         len(f.eligibleCold),
+			ColdIneligible:       f.coldIneligible,
+			ColdDisqualifiers:    warmColdReasonStrings(f.coldDisq),
+			QueueDepth:           q.Depth,
+			OldestQueueAge:       q.OldestAge,
+			CapacityRejects:      p.capacityRejects,
+			TTFTMisses:           p.ttftMisses,
+			SpeculativeStarted:   p.speculativeStarted,
+			SpeculativeWon:       p.speculativeWon,
+			ColdDispatches:       p.coldDispatches,
+			LoadDurationEWMA:     p.loadDurationEWMA,
+			ObserveOnly:          c.config.ObserveOnly,
+			Actions:              actions,
+			RunningRequests:      f.running,
+			WaitingRequests:      f.waiting,
+			WarmSaturated:        f.warmSaturated,
+			WarmForeignBlocked:   f.warmForeignBlocked,
+			OccupancyRamp:        p.occupancyRampEWMA,
+			HeadroomProviders:    headroomProviders(c.targetInputs(f, p, q), params, warmPoolQualityConcurrency(f, params)),
+			SpillArrivalRate:     p.arrivalRateEWMA,
+			ServiceTime:          svc,
+			QualityConcurrency:   warmPoolQualityConcurrency(f, params),
+			DemandConcurrency:    demandConcurrency(c.targetInputs(f, p, q), svc),
+			MeasuredPromptTokens: p.promptWork.tokens,
+			MeasuredOutputTokens: p.outputWork.tokens,
+			PromptWorkTPS:        p.promptWorkRate,
+			GenerationWorkTPS:    p.outputWorkRate,
+			AggregateDecodeTPS:   f.aggregateDecodeTPS,
+			WorkProviders:        f.workProviders,
 		})
 	}
 	return out
-}
-
-func (c *warmPoolController) reserveActions(actions []modelLoadAction, now time.Time) []modelLoadAction {
-	return c.registry.reservePendingModelLoads(actions, now)
 }
 
 // targetParams snapshots the controller config into the pure warmTargetParams
@@ -493,6 +393,8 @@ func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure 
 		SoloDecodeTPS:      fleet.soloDecodeTPS,
 		PrefillTPS:         fleet.prefillTPS,
 		MaxProviderConc:    fleet.maxProviderConc,
+		QualityConcurrency: fleet.qualityConc,
+		WorkProviders:      fleet.workProviders,
 		DemandPressure:     c.hasDemandPressure(fleet, pressure, queue),
 	}
 }
@@ -582,255 +484,4 @@ func (c *warmPoolController) queueSnapshot(now time.Time, recentWindow time.Dura
 		out[model] = p
 	}
 	return out
-}
-
-func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModelSnapshot {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make(map[string]warmPoolModelSnapshot)
-	// Per-model rate samples (from every eligible provider serving the model,
-	// warm or warmable) collapsed to a representative median at the end.
-	// decodeSamples carries the quality-cap solo rate (→ qualityConcurrency);
-	// serviceSamples the observed-EWMA service rate (→ E[S]).
-	decodeSamples := make(map[string][]float64)
-	serviceSamples := make(map[string][]float64)
-	prefillSamples := make(map[string][]float64)
-	concSamples := make(map[string][]float64)
-	for _, p := range r.providers {
-		p.mu.Lock()
-		models := make([]string, 0, len(p.Models))
-		for _, m := range p.Models {
-			if r.providerModelAllowedByCatalogLocked(p, m) {
-				models = append(models, m.ID)
-			}
-		}
-		for _, model := range models {
-			warm := r.providerHasWarmModelLocked(p, model, now)
-			if warm {
-				s := out[model]
-				s.model = model
-				s.warm++
-				running, waiting := warmPoolModelLoadLocked(p, model)
-				s.running += running
-				s.waiting += waiting
-				if !r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model) || warmPoolBackendSlotBusyLocked(p) {
-					s.warmSaturated++
-					// Saturated while serving NONE of this model's requests means
-					// a co-resident model is holding the capacity. That load is
-					// invisible in s.running/s.waiting, so the warm-pool target
-					// must not treat this provider as usable capacity for this
-					// model (see headroomTarget).
-					if running+waiting == 0 {
-						s.warmForeignBlocked++
-					}
-				}
-				out[model] = s
-				// decodeSamples feed soloDecodeTPS → qualityConcurrency in the
-				// warm target. Use the SAME solo resolver as the admission cap
-				// (solo median / seed → provider benchmark), NOT the per-slot
-				// observed EWMA: the EWMA is a contended rate, and planning warm
-				// targets from it while admission caps from the solo rate would
-				// let the two disagree. The observed-EWMA chain
-				// (resolvedModelTPSLocked) still feeds serviceSamples/prefill —
-				// E[S] wants the load-inclusive rate a request actually sees.
-				serviceTPS, prefillTPS := resolvedModelTPSLocked(p, model)
-				decodeSamples[model] = append(decodeSamples[model], r.resolvedSoloModelTPSLocked(p, model).tps)
-				serviceSamples[model] = append(serviceSamples[model], serviceTPS)
-				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
-				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
-				continue
-			}
-			candidate, reason := r.warmPoolCandidateReasonLocked(p, model, now)
-			s := out[model]
-			s.model = model
-			if reason == warmColdEligible {
-				s.eligibleCold = append(s.eligibleCold, candidate)
-				out[model] = s
-				// Same solo-resolver / service-rate split as the warm branch above.
-				serviceTPS, prefillTPS := resolvedModelTPSLocked(p, model)
-				decodeSamples[model] = append(decodeSamples[model], r.resolvedSoloModelTPSLocked(p, model).tps)
-				serviceSamples[model] = append(serviceSamples[model], serviceTPS)
-				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
-				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
-			} else {
-				if s.coldDisq == nil {
-					s.coldDisq = make(map[warmColdReason]int)
-				}
-				s.coldDisq[reason]++
-				s.coldIneligible++
-				out[model] = s
-			}
-		}
-		p.mu.Unlock()
-	}
-	for model, s := range out {
-		sort.Slice(s.eligibleCold, func(i, j int) bool { return s.eligibleCold[i].score > s.eligibleCold[j].score })
-		s.soloDecodeTPS = medianFloat(decodeSamples[model])
-		s.serviceDecodeTPS = medianFloat(serviceSamples[model])
-		s.prefillTPS = medianFloat(prefillSamples[model])
-		s.maxProviderConc = int(medianFloat(concSamples[model]))
-		out[model] = s
-	}
-	return out
-}
-
-// warmPoolModelLoadLocked returns the in-flight (NumRunning) and provider-queued
-// (NumWaiting) request counts for the model on this provider, read from the
-// authoritative BackendCapacity slot. Caller must hold p.mu.
-func warmPoolModelLoadLocked(p *Provider, model string) (running, waiting int) {
-	if p.BackendCapacity == nil {
-		return 0, 0
-	}
-	for _, slot := range p.BackendCapacity.Slots {
-		if slot.Model == model {
-			return slot.NumRunning, slot.NumWaiting
-		}
-	}
-	return 0, 0
-}
-
-// warmColdReason labels why a cold (on-disk, not-warm) provider is or isn't an
-// eligible warm-pool target. Empty ("") means eligible. Used to instrument why
-// the eligible-cold set is smaller than the raw cold-provider count (e.g. a
-// dedicated pool reporting many cold boxes but warming few) — counts only, no
-// provider identities, so it is privacy-safe to log/expose.
-type warmColdReason string
-
-const (
-	warmColdEligible       warmColdReason = ""
-	warmColdOfflineUntrust warmColdReason = "offline_untrusted_private"
-	warmColdPendingLoad    warmColdReason = "pending_load_or_cooldown"
-	warmColdNotIdle        warmColdReason = "not_idle"
-	warmColdThermal        warmColdReason = "thermal_critical"
-	warmColdTrust          warmColdReason = "trust_or_runtime"
-	warmColdStaleChallenge warmColdReason = "stale_challenge"
-	warmColdNotServing     warmColdReason = "not_serving_catalog"
-	warmColdDedicated      warmColdReason = "dedicated_excluded"
-	warmColdTooLarge       warmColdReason = "model_too_large"
-	warmColdNoFreeForLoad  warmColdReason = "no_free_for_load"
-	warmColdStateRestoring warmColdReason = "state_restoring"
-)
-
-// warmColdReasonStrings converts a reason tally to a string-keyed map for
-// logging / the snapshot. Returns nil for an empty tally.
-func warmColdReasonStrings(in map[warmColdReason]int) map[string]int {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]int, len(in))
-	for reason, n := range in {
-		out[string(reason)] = n
-	}
-	return out
-}
-
-func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.Time) (warmPoolCandidate, bool) {
-	c, reason := r.warmPoolCandidateReasonLocked(p, model, now)
-	return c, reason == warmColdEligible
-}
-
-// warmPoolCandidateReasonLocked is warmPoolCandidateLocked with the
-// disqualification reason exposed for instrumentation. Caller holds r.mu + p.mu.
-//
-// This is intentionally NOT folded onto providerLivenessGateLocked /
-// providerServesRoutableModelLocked (unlike the other four eligibility gates):
-// it returns a granular per-gate reason label (exposed in the warm-pool
-// snapshot/metrics), so the liveness checks must stay split across their
-// distinct reason buckets (warmColdOfflineUntrust / warmColdTrust /
-// warmColdStaleChallenge / warmColdNotServing / warmColdDedicated) rather than
-// collapse into one boolean. It also interleaves warm-pool-specific gates
-// (pending-load, not-idle, thermal-critical, model-too-large, free-for-load)
-// between those buckets, in an order that determines which reason wins. Reusing
-// the boolean helpers here would change the reported reason mix — a behavior
-// change — so the checks are kept inline.
-func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now time.Time) (warmPoolCandidate, warmColdReason) {
-	if p.Status == StatusOffline || p.Status == StatusUntrusted || p.PrivateOnly {
-		return warmPoolCandidate{}, warmColdOfflineUntrust
-	}
-	if providerStateRestoreRequiredLocked(p) {
-		return warmPoolCandidate{}, warmColdStateRestoring
-	}
-	if r.providerHasPendingLoad(p.ID) || r.gateOf(p).dispatchLoadCooled(model, now) {
-		return warmPoolCandidate{}, warmColdPendingLoad
-	}
-	if providerDrainingLocked(p, now) || p.pendingCount() != 0 || warmPoolBackendSlotBusyLocked(p) {
-		return warmPoolCandidate{}, warmColdNotIdle
-	}
-	if p.SystemMetrics.ThermalState == "critical" {
-		return warmPoolCandidate{}, warmColdThermal
-	}
-	if !r.providerTrustMeetsMinimumAtLocked(p, r.MinTrustLevel, now) || !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p) {
-		return warmPoolCandidate{}, warmColdTrust
-	}
-	if !r.providerChallengeFreshAtLocked(p, now) {
-		return warmPoolCandidate{}, warmColdStaleChallenge
-	}
-	if !r.providerServesCatalogModelLocked(p, model) {
-		return warmPoolCandidate{}, warmColdNotServing
-	}
-	// Don't pre-warm a dedicated-family model (e.g. Gemma 4) onto a non-dedicated
-	// (mixed-catalog) box: routing will never send the model there, so the warm
-	// would be wasted GPU memory and would mislead the demand calc into thinking
-	// the model is already covered. Mirrors the routing/preflight gate.
-	if r.providerExcludedByDedicatedRuleLocked(p, model) {
-		return warmPoolCandidate{}, warmColdDedicated
-	}
-	totalMemoryGB := float64(p.Hardware.MemoryGB)
-	gpuActiveGB := 0.0
-	if p.BackendCapacity != nil {
-		if p.BackendCapacity.TotalMemoryGB > 0 {
-			totalMemoryGB = p.BackendCapacity.TotalMemoryGB
-		}
-		gpuActiveGB = p.BackendCapacity.GPUMemoryActiveGB
-	}
-	if !modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), totalMemoryGB) {
-		return warmPoolCandidate{}, warmColdTooLarge
-	}
-	// Live free-capacity gate (shared helper with the direct/planner paths): don't
-	// pick a warm-pool target the provider already reports it cannot fit, or the
-	// warm pool issues a load_model the provider rejects (failed warm + pending-load
-	// cooldown) instead of choosing a truly loadable node (#390).
-	if admit, reported := reportedFreeForLoadAdmitsWithOffload(r.catalogSizeGBLocked(model), advertisedOffloadedMemoryGBLocked(p, model), backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
-		return warmPoolCandidate{}, warmColdNoFreeForLoad
-	}
-	freeGB := totalMemoryGB - gpuActiveGB
-	if freeGB < 0 {
-		freeGB = 0
-	}
-	thermalPenalty := 0.0
-	switch p.SystemMetrics.ThermalState {
-	case "serious":
-		thermalPenalty = 1000
-	case "fair":
-		thermalPenalty = 250
-	}
-	score := freeGB*100 + resolvedDecodeTPS(p)*10 - p.SystemMetrics.MemoryPressure*500 - p.SystemMetrics.CPUUsage*100 - thermalPenalty
-	return warmPoolCandidate{providerID: p.ID, score: score}, warmColdEligible
-}
-
-func warmPoolBackendSlotBusyLocked(p *Provider) bool {
-	if p.BackendCapacity == nil {
-		return false
-	}
-	for _, slot := range p.BackendCapacity.Slots {
-		if slot.NumRunning > 0 || slot.NumWaiting > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *Registry) pendingModelLoadCount(now time.Time) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	count := 0
-	for key, expiresAt := range r.pendingModelLoads {
-		if now.After(expiresAt) {
-			delete(r.pendingModelLoads, key)
-			delete(r.pendingModelLoadStarted, key)
-			continue
-		}
-		count++
-	}
-	return count
 }

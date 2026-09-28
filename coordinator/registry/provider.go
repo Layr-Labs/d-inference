@@ -212,6 +212,9 @@ type Provider struct {
 	// frames prove liveness but must not erase elapsed sample age. Guarded by p.mu.
 	capacitySamplesAt        time.Time
 	firstContentMeasurements map[string]firstContentMeasurement
+	warmWorkCounters         map[string]warmWorkCounters
+	lastWarmPlacementAt      time.Time
+	transport                transportMeasurement
 
 	// capacitySeq is the highest BackendCapacity.CapacitySeq applied on THIS
 	// connection; capacityQuoteCapable latches true the first time a heartbeat
@@ -347,6 +350,7 @@ func (p *Provider) AddPending(pr *PendingRequest) {
 func (p *Provider) addPendingLocked(pr *PendingRequest) {
 	pr.providerAuthorizationBinding = providerRequestAuthorizationBindingLocked(p)
 	pr.reservedAt = time.Now()
+	pr.reservedServiceCharge = p.serviceChargeForModelLocked(pr.Model)
 	p.pendingReqs[pr.RequestID] = pr
 	if p.drainCommitted && p.drainPendingDone == nil {
 		p.drainPendingDone = make(chan struct{})

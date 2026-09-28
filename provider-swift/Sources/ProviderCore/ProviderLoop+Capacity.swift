@@ -219,6 +219,7 @@ extension ProviderLoop {
         }
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
+            wholeMacServiceUsed: kvBudget.serviceBudget.usedFraction,
             gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
             gpuMemoryPeakGb: Double(mlxPeakBytes) / gbDivisor,
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,

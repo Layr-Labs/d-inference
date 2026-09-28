@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28 · commit `914dc4e53`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -24,7 +24,7 @@ available; new cold loads wait through the activation boundary. See
 
 A lifecycle-draining connection is excluded from `modelLoadCandidatePendingLocked`
 and `providerHasWarmModelLocked` in `coordinator/registry/model_loading.go`, from
-`warmPoolCandidateReasonLocked` in `coordinator/registry/warm_pool_controller.go`,
+`warmPoolCandidateReasonLocked` in `coordinator/registry/warm_pool_fleet.go`,
 and from load/prefetch command submission in `coordinator/registry/model_commands.go`.
 A slot being warm does not make a stopped provider available. Provider admission
 and the final inference writer still fence races after planning; existing accepted
@@ -70,7 +70,7 @@ plus whatever it has dispatched since. Scheduling therefore has three jobs:
    the signals justify it, without flapping.
 
 Warm-pool eligibility uses the same complete legacy or qualified App Attest
-serving policy as dispatch (`coordinator/registry/warm_pool_controller.go`,
+serving policy as dispatch (`coordinator/registry/warm_pool_fleet.go`,
 `warmPoolCandidateReasonLocked`). App Attest never changes capacity or grants
 legacy trust flags. See [provider authorization](../reference/provider-authorization.md).
 
@@ -288,6 +288,15 @@ count across all models must be below its *provider cap*.
 **Per-model base cap** (`maxConcurrencyForModelLocked`): the slot's reported
 `MaxConcurrency` when positive, else the provider cap.
 
+Exact reviewed profiles (`coordinator/registry/performance_profile.go`) replace
+the legacy batch curve and bound the per-model cap. Both languages require the
+same artifact/runtime/backend/hardware/context identity. The optional
+`whole_mac_service_used` heartbeat field is the provider's shared fractional
+allowance usage; admission also reconciles coordinator-owned reservations.
+Three loaded engines do not receive three independent qualified machine budgets.
+The [qualification procedure](../developer/serving-performance-qualification.md)
+describes promotion; the initial reviewed catalogs contain no entries.
+
 **Quality cap** (`effectiveMaxConcurrencyForModelRateLocked`), enabled by
 [`EIGENINFERENCE_QUALITY_CONCURRENCY_CAP`](../reference/configuration.md#routing-admission-and-ttft):
 the base cap is
@@ -406,17 +415,45 @@ warm-saturated fraction (`warmSaturated / warm`) reaches
 concurrency headroom for the model or its backend slot is busy.
 
 **Target** (`warmTarget`, `coordinator/registry/warm_pool_target.go`) applies
-Little's Law when pressure is present and otherwise holds the current warm
-count:
+Little's Law alongside measured token work and proactive headroom. Prompt work
+is serial service and is not divided by the decode batch width. Accepted
+per-engine epoch/counter deltas update shape EWMAs and aggregate work rates in
+`coordinator/registry/warm_pool_work.go`. At least eight observations are needed;
+after ten minutes without new work the assumed shapes remain the fallback.
+First snapshots, resets, stale sequence numbers, reconnects and reporting gaps
+longer than `firstContentPerformanceFreshness = 2 * time.Minute` supply no new
+work. Partial output and prompt computation before later cancellation count as
+real consumed work. Separate spill/reject pressure remains visible.
+
+Per-provider reviewed curves supply measured aggregate decode capacity before
+fleet medians are computed. Unqualified providers retain the legacy curve.
+The target combines occupied/spilled service with measured work demand, then
+adds burst headroom and applies the existing bounds:
 
 ```text
-serviceTime  = clamp(AssumedPromptTokens / prefillTPS + AssumedCompletionTokens / decodeTPS,
-                     warmPoolMinServiceTime, warmPoolMaxServiceTime)   # 500 * time.Millisecond … 2 * time.Minute
-L            = running + waiting + queueDepth + spillArrivalRate × serviceTime
-target       = ceil(L / qualityConcurrency) + BurstBuffer
-target       = max(target, warm + 1)              # reactive: pressure always earns one more
-target       = clamp(target, warm, warm + eligibleCold)
+qc                    = median(per-provider qualified or legacy quality concurrency)
+normalizedServiceTime = clamp(promptTokens / prefillTPS + outputTokens / aggregateDecodeTPS,
+                              warmPoolMinServiceTime, warmPoolMaxServiceTime)
+serviceTime           = min(normalizedServiceTime × qc, warmPoolMaxServiceTime)
+L                     = running + waiting + queueDepth + spillArrivalRate × serviceTime
+occupiedProviderDemand = L / qc
+measuredWorkProviders  = promptWorkTPS / prefillTPS + generationWorkTPS / aggregateDecodeTPS
+target                = ceil(max(occupiedProviderDemand, measuredWorkProviders)) + BurstBuffer
+target                = max(target, headroomTarget)
+target                = max(target, warm + 1)       # only when demand pressure is present
+target                = clamp(target, warm, warm + eligibleCold)
 ```
+
+`promptTokens` and `outputTokens` use fresh measured shape EWMAs where available,
+otherwise `AssumedPromptTokens` and `AssumedCompletionTokens`. The service clamps
+are `warmPoolMinServiceTime = 500 * time.Millisecond` and
+`warmPoolMaxServiceTime = 2 * time.Minute`. Without usable aggregate capacity,
+service time retains the legacy per-request decode estimate. The measured-work
+term includes only fresh qualified-count observations. Reviewed curves provide
+aggregate throughput at an exact width; an operator cap between qualified widths
+uses the next measured point's conservative per-request decode p10 times the cap.
+Unknown profiles derive aggregate capacity from the observed per-request rate
+and legacy quality concurrency.
 
 `spillArrivalRate` is an EWMA of arrivals the warm set could not absorb,
 `warmPoolArrivalEWMAAlpha = 0.3` (`coordinator/registry/warm_pool_state.go`).
@@ -433,7 +470,18 @@ ranked by `warmPoolCandidateReasonLocked`; those disqualified are tallied by
 reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `thermal_critical`, `trust_or_runtime`, `stale_challenge`,
 `not_serving_catalog`, `dedicated_excluded`, `model_too_large`,
-`no_free_for_load`, `state_restoring`).
+`no_free_for_load`, `state_restoring`, `placement_dwell`).
+
+The active controller owns model-load planning; `TriggerModelSwaps` coalesces
+a controller wakeup instead of running a second planner. Disabled/observe-only
+controllers keep the legacy fallback. Allocation tries the remaining ranked
+candidates when another model already reserved the first candidate, and
+rechecks eligibility atomically before sending a command
+(`coordinator/registry/warm_pool_allocation.go`). Successful loads start a per-provider
+`MinDwell` interval before another warming command; recently useful resident
+models rank after idle alternatives but remain eligible when no spare exists.
+Only downloaded/operator-enabled inventory is eligible, with complete load
+estimates and pending-load/slot limits preserved.
 
 **`WarmPoolSnapshot`.** Every tick produces one per model, writes
 `warm_pool_tick` to the process logger, and retains the controller's latest
@@ -614,7 +662,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Token-budget and memory admission | `coordinator/registry/scheduler.go` — `freeMemoryAdmits`, `pooledBudgetAdmits`, `knownZeroTokenBudget`, `committedTokenBudget` |
 | Concurrency caps | `coordinator/registry/provider.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`; `coordinator/registry/config.go` — `DefaultMaxConcurrent`; `coordinator/registry/concurrency_cap.go` — `SetQualityConcurrencyCap`, `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked` |
 | Pending loads and swaps | `coordinator/registry/model_loading.go` — `pendingModelLoadTTL`, `TriggerModelSwaps`, `bestModelLoadProviderLocked`; `coordinator/registry/model_commands.go` — `SendLoadModel`; `coordinator/registry/model_swap_coalesce.go` — `modelSwapPlanInterval`, `modelSwapPlanGate`, `triggerModelSwapsFromHeartbeat` |
-| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha`; `coordinator/api/warm_pool_telemetry.go` — `StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields` |
+| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`; `coordinator/registry/warm_pool_types.go` — `WarmPoolSnapshot`; `coordinator/registry/warm_pool_fleet.go` — `warmPoolFleetSnapshot`, `warmPoolCandidateReasonLocked`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha`; `coordinator/api/warm_pool_telemetry.go` — `StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields` |
 | Warm-pool and quality-cap configuration | `coordinator/registry/config.go` — `WarmPoolConfig`, `QualityCapConfig`, `ReadConfig` |
 | Eviction | `coordinator/registry/provider_lifecycle.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
 | Provider writer | `coordinator/registry/provider_writer.go` — `providerWriter`, `providerWriteTimeout`, `watchWrites` |

@@ -583,6 +583,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					schedulerGeneration = s.mdmScheduler.Submit(loopCtx, providerID, provider, priority)
 				}
 			}
+			saferun.Go(s.logger, "providerTransportLoop", func() {
+				s.providerTransportLoop(loopCtx, provider)
+			})
 			// Start challenge loop after registration
 			saferun.Go(s.logger, "challengeLoop", func() {
 				s.challengeLoop(loopCtx, providerID, provider, tracker)

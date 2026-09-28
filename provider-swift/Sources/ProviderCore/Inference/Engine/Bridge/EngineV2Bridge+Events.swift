@@ -181,6 +181,7 @@ extension EngineV2Bridge {
             continuation.finish()
             await nativeRetirement.wait()
         }
+        releaseServiceAllowance(requestID: id)
         // Every exit releases only the resources owned by this submission.
         // Staging completion is an idempotent backstop for lookup misses.
         if holdsSharedReservation {
@@ -213,7 +214,7 @@ extension EngineV2Bridge {
         lastDeltaAt: SuspendingClock.Instant? = nil
     ) {
         let final = recordFinish(
-            id: id, usage: usage, success: reason == .stop || reason == .length,
+            id: id, usage: usage,
             lastDeltaAt: lastDeltaAt, finishReason: reason)
         switch reason {
         case .stop, .length:

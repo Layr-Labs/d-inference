@@ -65,11 +65,12 @@ public struct StandaloneServerConfig: Sendable {
     public let authToken: String?
     public let runtimeCapabilities: Set<ProviderRuntimeCapability>
     /// Box-wide concurrent-decode cap per v2 engine
-    /// (`[backend] engine_v2_max_concurrent`), clamped to [1, 8]. Defaults to
+    /// (`[backend] engine_v2_max_concurrent`), bounded by the resolved profile. Defaults to
     /// ``BackendSettings/defaultEngineV2MaxConcurrent`` rather than a literal:
     /// a third independent copy of the fleet default is exactly how the
     /// memberwise/decode pair drifted in v0.8.0.
     public let engineV2MaxConcurrent: UInt64
+    public let engineV2MaxConcurrentIsExplicit: Bool
     /// Per-model overrides (`engine_v2_max_concurrent_by_model`).
     public let engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`[backend] engine_v2_kv_backend`):
@@ -90,7 +91,7 @@ public struct StandaloneServerConfig: Sendable {
         maxCachedModels: Int = 3,
         authToken: String? = nil,
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
-        engineV2MaxConcurrent: UInt64 = BackendSettings.defaultEngineV2MaxConcurrent,
+        engineV2MaxConcurrent: UInt64? = nil,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
@@ -104,7 +105,8 @@ public struct StandaloneServerConfig: Sendable {
         self.maxCachedModels = max(1, maxCachedModels)
         self.authToken = authToken
         self.runtimeCapabilities = runtimeCapabilities
-        self.engineV2MaxConcurrent = engineV2MaxConcurrent
+        self.engineV2MaxConcurrent = engineV2MaxConcurrent ?? BackendSettings.defaultEngineV2MaxConcurrent
+        self.engineV2MaxConcurrentIsExplicit = engineV2MaxConcurrent != nil
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
@@ -807,7 +809,7 @@ public actor StandaloneServer {
     func engineV2MaxConcurrent(forModel modelId: String) -> Int {
         let raw = config.engineV2MaxConcurrentByModel[modelId]
             ?? config.engineV2MaxConcurrent
-        return ProviderLoop.clampEngineV2Concurrency(raw)
+        return ServingPerformanceProfiles.requestedConcurrency(raw)
     }
 
     /// Fleet KV budget for a prospective residency set: the unified-memory
@@ -1057,6 +1059,8 @@ public actor StandaloneServer {
                 sizing: sizing,
                 kvBytesCapacity: targets[modelId] ?? 0,
                 maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelId),
+                automaticallySelectConcurrency: !config.engineV2MaxConcurrentIsExplicit
+                    && config.engineV2MaxConcurrentByModel[modelId] == nil,
                 kvBudget: kvBudget,
                 // Paged capacity decision carves the same serving-set reserve
                 // as the grants above (was the flat default).

@@ -320,16 +320,19 @@ type HeartbeatMessage struct {
 // BackendSlotCapacity describes the capacity state of a single backend slot
 // (one MLX-Swift in-process model serving one model).
 type BackendSlotCapacity struct {
-	Model              string `json:"model"`                     // model ID for this slot
-	State              string `json:"state"`                     // "running", "idle_shutdown", "crashed", "reloading"
-	NumRunning         int    `json:"num_running"`               // requests actively generating
-	NumWaiting         int    `json:"num_waiting"`               // requests queued in backend scheduler
-	MaxConcurrency     int    `json:"max_concurrency,omitempty"` // provider-reported concurrent request cap for this slot
-	ActiveTokens       int64  `json:"active_tokens"`             // sum of (prompt_tokens + completion_tokens) across running requests
-	MaxTokensPotential int64  `json:"max_tokens_potential"`      // sum of max_tokens across running requests (worst-case growth)
+	PerformanceProfile *ServingPerformanceProfileReference `json:"performance_profile,omitempty"`
+	// Transient routing observations; not part of persisted numeric SlotTelemetry.
+	PerformanceMeasurements *PerformanceMeasurements `json:"performance_measurements,omitempty"`
+	Model                   string                   `json:"model"`                     // model ID for this slot
+	State                   string                   `json:"state"`                     // "running", "idle_shutdown", "crashed", "reloading"
+	NumRunning              int                      `json:"num_running"`               // requests actively generating
+	NumWaiting              int                      `json:"num_waiting"`               // requests queued in backend scheduler
+	MaxConcurrency          int                      `json:"max_concurrency,omitempty"` // provider-reported concurrent request cap for this slot
+	ActiveTokens            int64                    `json:"active_tokens"`             // sum of (prompt_tokens + completion_tokens) across running requests
+	MaxTokensPotential      int64                    `json:"max_tokens_potential"`      // sum of max_tokens across running requests (worst-case growth)
 
 	ObservedDecodeTPS     float64 `json:"observed_decode_tps,omitempty"`      // EWMA of measured per-request decode TPS
-	ObservedPrefillTPS    float64 `json:"observed_prefill_tps,omitempty"`     // EWMA of measured per-request prefill TPS (admission→first token); omitted when unmeasured
+	ObservedPrefillTPS    float64 `json:"observed_prefill_tps,omitempty"`     // EWMA of cold prefill TPS; new providers use engine prompt timings and explicit measurement metadata
 	ActiveTokenBudgetUsed int64   `json:"active_token_budget_used,omitempty"` // tokens reserved by active requests (prompt + max_output)
 	ActiveTokenBudgetMax  int64   `json:"active_token_budget_max,omitempty"`  // maximum token budget for this slot
 	QueuedTokenBudget     int64   `json:"queued_token_budget,omitempty"`      // tokens reserved by queued requests
@@ -441,11 +444,12 @@ type MLXCacheReclaimerTelemetry struct {
 // on a provider. Reported in heartbeats so the coordinator can make informed
 // routing decisions based on actual GPU utilization rather than hardcoded limits.
 type BackendCapacity struct {
-	Slots             []BackendSlotCapacity `json:"slots"`                // per-model slot capacity
-	GPUMemoryActiveGB float64               `json:"gpu_memory_active_gb"` // Metal active memory (shared across all slots)
-	GPUMemoryPeakGB   float64               `json:"gpu_memory_peak_gb"`   // Metal peak memory
-	GPUMemoryCacheGB  float64               `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
-	TotalMemoryGB     float64               `json:"total_memory_gb"`      // total system/GPU memory
+	WholeMacServiceUsed *float64              `json:"whole_mac_service_used,omitempty"`
+	Slots               []BackendSlotCapacity `json:"slots"`                // per-model slot capacity
+	GPUMemoryActiveGB   float64               `json:"gpu_memory_active_gb"` // Metal active memory (shared across all slots)
+	GPUMemoryPeakGB     float64               `json:"gpu_memory_peak_gb"`   // Metal peak memory
+	GPUMemoryCacheGB    float64               `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
+	TotalMemoryGB       float64               `json:"total_memory_gb"`      // total system/GPU memory
 	// FreeForLoadGB is the max additional model-WEIGHT footprint (GB) the
 	// provider can load right now: net of the 90% unified-memory cap, OS/operator
 	// reserve, and activation+min-KV load headroom, clamped to real OS-available

@@ -93,6 +93,7 @@ const (
 )
 
 type routingSnapshot struct {
+	performanceProfile *servingPerformanceProfile
 	firstContentSnapshot
 	provider         *Provider
 	model            string
@@ -2206,8 +2207,12 @@ func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) 
 }
 
 // resolveEffectiveTPS returns the best available decode TPS estimate.
-// Fallback chain: observed EWMA → fleet median → load-scaled benchmark.
+// Qualified curves use their measured conservative width point; unmatched
+// configurations fall back through observed EWMA, fleet median and benchmark.
 func resolveEffectiveTPS(snap *routingSnapshot) float64 {
+	if point, ok := snap.performanceProfile.batchAt(max(1, snapshotOccupancy(snap)+1)); ok {
+		return point.DecodeP10TPS
+	}
 	if snap.observedDecodeTPS > 0 {
 		return snap.observedDecodeTPS
 	}
@@ -2228,6 +2233,9 @@ func resolveEffectiveTPS(snap *routingSnapshot) float64 {
 // today's fleet this is a no-op that returns the existing ×12-chain value.
 func resolvePrefillTPS(snap *routingSnapshot) float64 {
 	tps := snap.prefillTPS
+	if point, ok := snap.performanceProfile.batchAt(max(1, snapshotOccupancy(snap)+1)); ok {
+		tps = point.PrefillTPS
+	}
 	if finitePositive(snap.observedPrefillTPS) {
 		tps = snap.observedPrefillTPS
 	}
@@ -2493,6 +2501,9 @@ func projectedPerRequestDecodeTPS(snap *routingSnapshot) float64 {
 // peers the heartbeat has not yet reflected (occ > backend_running) is charged at
 // the contended rate it will actually see — not the idle/low-batch rate.
 func projectedPerRequestDecodeTPSAtBatch(snap *routingSnapshot, joinBatch int) float64 {
+	if point, ok := snap.performanceProfile.batchAt(max(1, joinBatch+1)); ok {
+		return point.DecodeP10TPS
+	}
 	k := effectiveTPSLoadFactor
 	if k < 0 {
 		k = 0

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28 · commit `914dc4e53`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -52,6 +52,13 @@ artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools
 The [revision runbook](../operations/model-revisions.md) describes its invocation.
 
 ## SDK 27 release builds and caches
+
+Serving performance work changes the pinned CBv2 library as well as the
+provider. Initialize the recorded submodules before building, and retain
+source-matched Metal libraries for benchmarks. The
+[profile qualification procedure](serving-performance-qualification.md)
+records the exact model/runtime/backend/hardware identity; a successful build
+alone does not qualify a wider serving limit.
 
 The release pipeline runs optimized products and SDK qualification on separate
 `xcode-27-xlarge` runners. Both call `.github/actions/provider-release-build/action.yml`;

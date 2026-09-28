@@ -106,6 +106,16 @@ func (g *gateState) dispatchLoadCooled(modelID string, now time.Time) bool {
 // Called after heartbeat processing and queue drain to catch demand that
 // can't be satisfied by warm providers alone.
 func (r *Registry) TriggerModelSwaps() {
+	// An active controller owns warming, including queue-triggered demand. A
+	// second planner would bypass its global budgets and dwell policy.
+	r.mu.RLock()
+	controller := r.warmPool
+	active := controller != nil && controller.config.Enabled && !controller.config.ObserveOnly
+	r.mu.RUnlock()
+	if active {
+		r.RequestWarmPoolTrigger()
+		return
+	}
 	queue := r.Queue()
 	if queue == nil {
 		return
@@ -406,6 +416,7 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 			return // already warm
 		}
 	}
+	p.lastWarmPlacementAt = time.Now()
 	p.WarmModels = append(p.WarmModels, modelID)
 	p.CurrentModel = modelID
 

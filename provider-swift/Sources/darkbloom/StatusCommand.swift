@@ -53,6 +53,7 @@ struct Status: AsyncParsableCommand {
         let enabledFilter = config.backend.enabledModels.isEmpty ? "none" : config.backend.enabledModels.joined(separator: ", ")
         print("Enabled model filter: \(enabledFilter)")
         print("Local MLX models: \(models.count)")
+        print("Serving concurrency: \(ServingPerformanceProfiles.summary(configured: config.backend.engineV2MaxConcurrent, automatic: !config.backend.engineV2MaxConcurrentIsExplicit))")
 
         // Live daemon state (from the state file the running daemon writes).
         print("")

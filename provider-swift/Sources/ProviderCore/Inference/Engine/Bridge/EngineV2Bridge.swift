@@ -74,6 +74,10 @@ public actor EngineV2Bridge {
     let stopTokenIds: Set<Int>
     let defaultMaxTokens: Int
     let maxConcurrentRequests: Int
+    nonisolated let performanceProfile: ServingPerformanceProfile?
+    let unqualifiedMaxConcurrentRequests: Int
+    nonisolated let serviceBudget: WholeMacServiceBudget?
+    let serviceOwnerPrefix = UUID().uuidString
     /// Operational control for atomic first-token deadline admission.
     /// Parsed once per bridge so runtime behavior cannot change mid-request.
     let prefillDeadlineMode: PrefillDeadlineMode
@@ -161,10 +165,6 @@ public actor EngineV2Bridge {
     struct ActiveRequestState {
         let promptTokens: Int
         let maxTokens: Int
-        /// True only when no other bridge row (prefill or decode) and no other
-        /// provider/engine submission existed at this request's exact
-        /// engine-submit boundary.
-        var isolatedPrefillSampleEligible: Bool
         var completionTokens: Int = 0
         var submittedAt: ContinuousClock.Instant
         var firstTokenAt: ContinuousClock.Instant?
@@ -172,6 +172,7 @@ public actor EngineV2Bridge {
         /// Profiler accumulator (coordinator requests only). Written at
         /// first token, cancel, and finish — never per token.
         var profile: RequestProfileBuilder? = nil
+        var prefillReceipt: EnginePrefillReceipt? = nil
     }
 
     var active: [String: ActiveRequestState] = [:]
@@ -180,8 +181,8 @@ public actor EngineV2Bridge {
     /// `telemetry.queued_prefill_tokens`; per-request
     /// `queued_prefill_tokens_at_admit` reports the OTHER requests' share.
     var queuedPrefillTokens = 0
-    /// Profiler: cumulative Σ(prompt − cached) over finished requests
-    /// (heartbeat `telemetry.prefill_tokens_total`; attributed at finish).
+    /// Actual completed-prompt work, attributed at engine prompt completion.
+    /// Later cancellation does not erase work already performed.
     var prefillTokensTotal: Int64 = 0
     /// IDs that have passed bridge validation but have not yet completed
     /// engine admission. Atomic deadline submission suspends this actor; this
@@ -253,11 +254,16 @@ public actor EngineV2Bridge {
 
     /// Heartbeat health is sampled from the engine's monotonic step counter.
     var wedgeMonitor = WedgeMonitor()
+    var measurementActivity = EngineMeasurementActivity()
+    var performanceMeasurements = EnginePerformanceMeasurements()
+    var prefillRequestsTotal: Int64 = 0
+    var generatedTokensTotal: Int64 = 0
+    var generationRequestsTotal: Int64 = 0
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
-    /// Cold-prefill throughput from successful requests with no adopted KV.
-    /// Uses engine admission → first token, with plausibility bounds applied
-    /// by recordPrefillSample. Cache-hit latency never trains this estimate.
+    /// Cold-prefill throughput from completed prompt computation, independent
+    /// of answer success. Engine timings exclude queueing and output delivery;
+    /// cache-reuse samples remain in their separate workload buckets.
     var observedPrefillTpsEwma: Double = 0
     var prefillEwmaInitialized = false
     /// Queue- and decode-excluded cold-prefill service-rate EWMA used ONLY by
@@ -304,6 +310,8 @@ public actor EngineV2Bridge {
         extraEOSTokens: [String] = [],
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
+        performanceProfile: ServingPerformanceProfile? = nil,
+        unqualifiedMaxConcurrentRequests: Int? = nil,
         prefillDeadlineMode: PrefillDeadlineMode = PrefillDeadlineMode.resolve(),
         prefillDeadlineProjectionEnabled: Bool = true,
         partialPrefillCap: Int? = nil,
@@ -333,6 +341,7 @@ public actor EngineV2Bridge {
         self.advertisedContextTokens =
             Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
             ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)
+            ?? performanceProfile?.contextTokensMax
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(
@@ -343,6 +352,10 @@ public actor EngineV2Bridge {
         )
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests
+        self.performanceProfile = performanceProfile
+        self.unqualifiedMaxConcurrentRequests = min(maxConcurrentRequests,
+            max(1, unqualifiedMaxConcurrentRequests ?? min(maxConcurrentRequests, 8)))
+        self.serviceBudget = kvBudget?.serviceBudget
         self.prefillDeadlineMode = prefillDeadlineMode
         self.prefillDeadlineProjectionEnabled = prefillDeadlineProjectionEnabled
         self.partialPrefillCap = partialPrefillCap

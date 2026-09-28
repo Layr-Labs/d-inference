@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `ac63cefa7`
+> Last updated: 2026-09-28 · commit `914dc4e53`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -278,6 +278,7 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `slots` | `[]BackendSlotCapacity` | `[BackendSlotCapacity]` | req | [`slots[]`](#slots) |
+| `whole_mac_service_used` | `*float64` | `Double?` | opt | Fraction of the shared machine service allowance owned by requests until engine retirement; `[0,1]` |
 | `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `gpu_memory_cache_gb` | `float64` | `Double` | req | Metal active / peak / reclaimable cache, shared across slots |
 | `total_memory_gb` | `float64` | `Double` | req | |
 | `free_for_load_gb` | `*float64` | `Double` (always encoded) | ptr | **The single source of truth for cold-load admission**: max additional model-weight GB loadable now, net of the unified-memory cap (`defaultCapFraction`, [`../architecture/hardware-support.md#constants`](../architecture/hardware-support.md#constants)), the OS/operator reserve and activation + minimum-KV headroom, clamped to real OS-available memory, with idle resident models counted as evictable. Nil (legacy provider) → the coordinator falls back to its total-memory heuristic |
@@ -302,10 +303,12 @@ routing on them.
 | `state` | `string` | `String` | req | Coordinator accepts `running`, `idle`, `idle_shutdown`, `crashed`, `reloading`; `registry.SlotStateFold` (`coordinator/registry/gate_reason.go`) folds anything else to `other`. The v0.8.16 provider emits `running`, `idle`, `crashed`, `reloading` (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`); `idle_shutdown` stays accepted for older providers. `idle` means the model **is loaded** (`slotStateModelLoaded`, `coordinator/registry/scheduler.go`); `reloading`/`crashed` make the slot unroutable |
 | `num_running`, `num_waiting` | `int` | `UInt32` | req | |
 | `max_concurrency` | `int` | `UInt32` | opt | |
+| `performance_profile` | `*ServingPerformanceProfileReference` | `ServingPerformanceProfileReference?` | opt | Reviewed profile identity; omitted when no exact qualified profile applies |
+| `performance_measurements` | `*PerformanceMeasurements` | `PerformanceMeasurements?` | opt | Transient routing observations; [schema below](#slotsperformance_measurements) |
 | `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
 | `max_tokens_potential` | `int64` | `Int64` | req | Σ `max_tokens` over running requests |
 | `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS |
-| `observed_prefill_tps` | `float64` | `Double` | opt | EWMA (admission → first token); omitted when unmeasured |
+| `observed_prefill_tps` | `float64` | `Double` | opt | Cold-prefill engine-phase EWMA, published at prompt completion; omitted when unmeasured |
 | `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | `int64` | `Int64` | opt | `queued_token_budget` is hard-coded `0` by the v0.8.16 provider (`backendSlotCapacity`, `EngineV2Bridge+Capacity.swift`), so it is always omitted |
 | `kv_bytes_per_token` | `int64` | `Int64` | opt | |
 | `model_load_time_ms` | `int64` | `Int64` | opt | measured cold load; omitted when unmeasured |
@@ -410,7 +413,9 @@ Clamped by `registry.clampBackendCapacity`; persisted to `fleet_snapshots`
 |---|---|---|
 | `queued_prefill_tokens` | `int64` | Σ prompt tokens of requests whose engine submit has not returned |
 | `partial_prefill_rows` | `int64` | admitted rows with no first token yet |
-| `prefill_tokens_total` | `int64` | cumulative |
+| `prefill_tokens_total` | `int64` | Actual computed prompt/suffix tokens at prompt completion, including later cancellations |
+| `prefill_requests_total` | `int64` | Prompt-completion count paired with actual work, including fully reused zero-work prompts |
+| `generated_tokens_total`, `generation_requests_total` | `int64` | Actual output and terminal counts, including partial cancelled generations |
 | `isolated_prefill_tps` | `float64` | isolated prefill EWMA |
 | `ewma_initialized` | `bool` | whether `isolated_prefill_tps` has a sample |
 | `pump_tasks` | `int64` | live stream-pump tasks |
@@ -418,6 +423,34 @@ Clamped by `registry.clampBackendCapacity`; persisted to `fleet_snapshots`
 | `kv_bytes_in_use`, `kv_bytes_capacity` | `int64` | raw bytes |
 | `eval_in_flight_ms` | `int64` | same read as the slot-level key |
 | `step_wall_ns_total`, `decode_rows_total` | `int64` | cumulative engine counters (slice 3) |
+
+#### `slots[].performance_measurements`
+
+`slots[].performance_profile` optionally names reviewed release data with `id`,
+`runtime_revision` and `context_tokens`; it carries no self-certified curve.
+The coordinator resolves the reference against its own catalog and registered
+model artifact. Go `coordinator/protocol/performance_profile.go` and Swift
+`provider-swift/Sources/ProviderCore/Protocol/ServingPerformanceProfileReference.swift`
+define the mirror.
+
+`performance_measurements` is defined in
+`coordinator/protocol/performance_measurements.go` and
+`provider-swift/Sources/ProviderCore/Protocol/PerformanceMeasurements.swift`:
+
+| Key | Meaning |
+|---|---|
+| `epoch` | Per-engine measurement lifetime; replacement resets counter baselines |
+| `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time at snapshot |
+| `workload_buckets` | Bounded numeric buckets with `phase`, `prompt_token_bucket`, `context_token_bucket`, `cache_state`, `contention`, `other_model_activity`, `observation` |
+
+New peers use count/epoch/age to prevent heartbeat replay from refreshing old
+samples. Malformed evidence clears its signal. Older peers may omit the entire
+object and keep legacy changed-EWMA freshness behavior. No prompt text, token IDs
+or cache keys appear in these measurements. Shared profiler fixtures pin the
+Go/Swift shape; these are transient capacity fields, not persisted profiler
+telemetry or telemetry-event fields. Numeric work counters remain in
+`slots[].telemetry`; the epoch and bucket list are excluded from persisted
+numeric-only provider telemetry.
 
 #### `backend_capacity.telemetry`
 

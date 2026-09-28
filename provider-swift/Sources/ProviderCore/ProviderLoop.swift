@@ -915,18 +915,17 @@ public actor ProviderLoop {
         }
     }
 
-    /// Effective concurrent-request cap for a v2 engine slot: the
-    /// per-model override when configured, else the box-wide
-    /// `engine_v2_max_concurrent`, clamped to [1, 8] (the CBv2 product
-    /// ceiling — see `BackendSettings.engineV2MaxConcurrent`).
+    /// Requested cap, carried to final artifact/backend profile resolution.
+    /// Unknown profiles retain the existing 8 ceiling; reviewed profiles can
+    /// qualify up to 16. The preparation owns the effective advertised value.
     internal func engineV2MaxConcurrent(forModel modelId: String) -> Int {
         let backend = loopConfig.config.backend
         let raw = backend.engineV2MaxConcurrentByModel[modelId]
             ?? backend.engineV2MaxConcurrent
-        return Self.clampEngineV2Concurrency(raw)
+        return ServingPerformanceProfiles.requestedConcurrency(raw)
     }
 
-    /// Pure clamp for the configured concurrency (unit-testable).
+    /// Legacy unknown-profile clamp retained for compatibility tests.
     internal static func clampEngineV2Concurrency(_ raw: UInt64) -> Int {
         Int(min(max(raw, 1), 8))
     }

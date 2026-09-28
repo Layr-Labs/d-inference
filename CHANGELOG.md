@@ -16,6 +16,13 @@
 
 - Add automatic artifact revisions for existing model IDs: publish immutable R2 bytes and a manifest once, then supporting providers resume/verify downloads, drain accepted requests and activate with rollback. Retain approved older hashes during convergence; add explicit inactive-revision retirement. Share the idle-upgrade lifecycle with Gemma MTP.
 
+## Unreleased — provider measurements and placement
+
+- Publish prompt-completion observations before generation finishes, with sample age/count, workload buckets and cross-model contention. Keep engine decode capacity, delivered streaming and end-to-end throughput separate.
+- Add exact reviewed serving profiles, per-engine mixed-prefill policy and a shared whole-Mac service allowance. Unknown profiles retain existing limits; no M5 B8/B16 expansion is certified by this change.
+- Size warm pools using actual prompt/generation work and qualified batch curves, keep one model-load planner, retain load hysteresis and use fresh WebSocket RTT in first-content forecasts.
+- Extend arrival benchmarks through width 16 and add a qualification receipt evaluator that rejects missing performance, correctness, memory and lifecycle evidence.
+
 ## Unreleased — coordinator first-content routing
 
 - Rank eligible providers by cache-adjusted first-content forecasts by default, prefer credible deadline-feasible choices, and spread near-equal choices by whole-machine service work within a 100-ms band. Preserve physical prompt/output reservations and explicit owner routing.

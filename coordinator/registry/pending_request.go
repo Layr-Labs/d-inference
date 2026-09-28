@@ -126,6 +126,7 @@ type PendingRequest struct {
 	reservedPrefillRestoreMs float64
 	reservedPrefillKnown     bool
 	reservedAt               time.Time
+	reservedServiceCharge    float64
 	// RequiresVision is true when the request carries image/video input. Such a
 	// request must only be routed to a provider advertising a vision-capable
 	// (VLM) build for the resolved model; otherwise the provider would silently

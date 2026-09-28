@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28 · commit `914dc4e53`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -55,6 +55,34 @@ adapter is dropped from the advertised set at scan time and never loads
 | promptsidecar boundary | Coordinator-side Rust process that computes the same `prompt_contract_id` and block chain ([`prefix-cache.md#block-hashing`](prefix-cache.md#block-hashing)) the provider derives with `PromptContractIdentity.compute(modelDirectory:)`; the provider never calls it | `coordinator/promptsidecar/`, `provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift` — see [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) |
 
 ## Mechanism
+
+### Prompt-completion measurements and qualified profiles
+
+`CBv2Request.onPrefillCompleted` reports the numeric usage snapshot immediately
+after actual prompt work finishes. `EngineV2Bridge+Measurements.swift`
+(`consumePrefillReceipt`) consumes it once, including when generation later
+cancels. Rates use actual computed suffix work and engine phase timing; zero
+work, invalid cache attribution and vision-prefill samples do not train text
+prefill rates. Cross-model activity is tracked across the shared runtime, not
+inferred from one engine's occupancy. Engine decode rate ends at the last
+confirmed token, excluding terminal delivery delays; delivered and end-to-end
+rates remain separate.
+
+`provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`
+matches reviewed data to verified model weights, provider/runtime revision,
+resolved KV backend, GPU/RAM bin and the entire configured context limit.
+Unknown profiles retain the legacy policy. The initial catalogs are empty;
+the [qualification procedure](../developer/serving-performance-qualification.md)
+is required before any higher default or model-specific chunk policy activates.
+Qualified engines share one whole-Mac service allowance and retain physical KV,
+architecture and explicit operator caps. A reservation is released only after
+engine retirement, not when a caller merely requests cancellation.
+
+The optional `CBv2SchedulerConfig.mixedStepPrefillTokenCap` is per engine and
+feeds the same scheduler plan used by execution and first-token projection.
+An absent qualified cap preserves the existing environment/default behavior.
+The prefill-only stripe, one partial prefill, recurrent checkpoints and
+one-image-at-a-time vision execution keep their existing geometry.
 
 ### One request through the engine
 

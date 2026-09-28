@@ -1,8 +1,8 @@
 # First-content routing and provider performance plan
 
-> Last updated: 2026-09-28 · commit `ae4925180`
+> Last updated: 2026-09-28 · commit `914dc4e53`
 
-Status: **In progress** — 2026-09-28 — Delivery A implemented for review; provider qualification and fleet placement remain pending. See [coordinator first-content routing](../architecture/first-content-routing.md).
+Status: **In progress** — 2026-09-28 — Delivery A and the Delivery B/C implementation are prepared for review in separate changes. Hardware profile promotion remains qualification-gated; no M5 B8/B16 profile is certified. See [coordinator first-content routing](../architecture/first-content-routing.md) and [serving qualification](../developer/serving-performance-qualification.md).
 
 Apply one first-content-oriented routing policy across the model catalog, then
 improve provider measurements, chunk scheduling and qualified concurrency.

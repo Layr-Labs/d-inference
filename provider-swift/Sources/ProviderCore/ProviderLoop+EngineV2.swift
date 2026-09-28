@@ -651,6 +651,8 @@ extension ProviderLoop {
                 sizing: sizing,
                 kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: maxConcurrent,
+                automaticallySelectConcurrency: !loopConfig.config.backend.engineV2MaxConcurrentIsExplicit
+                    && loopConfig.config.backend.engineV2MaxConcurrentByModel[modelId] == nil,
                 kvBudget: kvBudget,
                 // The serving-set resolved reserve, so the paged capacity
                 // decision inside the factory measures headroom against the

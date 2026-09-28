@@ -1,0 +1,23 @@
+{
+  "slots": [{
+    "model": "test-model",
+    "state": "idle",
+    "num_running": 0,
+    "num_waiting": 0,
+    "active_tokens": 0,
+    "max_tokens_potential": 0,
+    "max_concurrency": 16,
+    "kv_backend": "paged",
+    "performance_profile": {
+      "id": "test-reviewed-profile",
+      "runtime_revision": "cbv2-first-content-v1",
+      "context_tokens": 32768
+    }
+  }],
+  "gpu_memory_active_gb": 20,
+  "gpu_memory_peak_gb": 25,
+  "gpu_memory_cache_gb": 0,
+  "total_memory_gb": 192,
+  "free_for_load_gb": 100,
+  "whole_mac_service_used": 0.5
+}

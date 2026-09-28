@@ -157,7 +157,10 @@ extension StandaloneServer {
                 modelId: modelID, modelType: original.modelType, isVLM: original.isVLM,
                 modelDirectory: directory, container: originalContainer, tokenizer: original.tokenizer,
                 sizing: sizing, kvBytesCapacity: grant,
-                maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelID), kvBudget: kvBudget,
+                maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelID),
+                automaticallySelectConcurrency: !config.engineV2MaxConcurrentIsExplicit
+                    && config.engineV2MaxConcurrentByModel[modelID] == nil,
+                kvBudget: kvBudget,
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,

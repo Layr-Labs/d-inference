@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28 · commit `914dc4e53`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -70,6 +70,14 @@ Invalid selections leave inventory and drain unchanged. See
 
 
 ## Context
+
+First-content forecasts include fresh coordinator-to-provider WebSocket RTT.
+`coordinator/registry/provider_transport.go` (`transportForecast`) requires two
+successful samples on the current connection within 90 seconds, and adds RTT
+and measured variation to the existing delivery allowances. The 30-second
+probe loop (`coordinator/api/provider_transport.go`) has a three-second bound;
+missing or stale samples retain the conservative legacy allowances. Ping/pong
+control frames do not hold the application text writer while waiting for a pong.
 
 Forced tool choice with media, and media-bearing tool results even with
 `tool_choice: none`, carry `RequestTraits.RequiresNativeMediaTools`. The shared

@@ -303,6 +303,9 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 			return false
 		}
 		delete(r.providers, id)
+		p.transport = transportMeasurement{}
+		p.warmWorkCounters = nil
+		p.lastWarmPlacementAt = time.Time{}
 		p.drainCommitted = false
 		p.drainReady = false
 		p.drainReplacementPending = false

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -130,34 +131,55 @@ func TestDispatchPlanAggregateCountsDescribeFullPool(t *testing.T) {
 // same winner and an identical RoutingDecision. Plan retention must be a pure
 // byproduct of the existing scan, never a selection fork.
 func TestReserveProviderWithPlanPrimarySelectionUnchanged(t *testing.T) {
+	synctest.Test(t, testReserveProviderWithPlanPrimarySelectionUnchanged)
+}
+
+func testReserveProviderWithPlanPrimarySelectionUnchanged(t *testing.T) {
 	model := "plan-equivalence-model"
-	build := func() *Registry {
+	build := func(evidenceAge time.Duration) *Registry {
 		reg := New(testLogger())
 		for i := range 6 {
-			planTestProvider(t, reg, fmt.Sprintf("e%d", i), model, int64(i)*400)
+			p := planTestProvider(t, reg, fmt.Sprintf("e%d", i), model, int64(i)*400)
+			p.mu.Lock()
+			p.CapacityAcceptedAt = time.Now().Add(-evidenceAge)
+			measurement := p.firstContentMeasurements[model]
+			measurement.observedAfter = p.CapacityAcceptedAt
+			measurement.decodeObservedAfter = p.CapacityAcceptedAt
+			p.firstContentMeasurements[model] = measurement
+			p.mu.Unlock()
 		}
 		return reg
 	}
 
 	prA := planTestRequest("equiv", 500, 256)
-	pA, decA := build().ReserveProviderEx(model, prA)
+	pA, decA := build(time.Second).ReserveProviderEx(model, prA)
 
 	prB := planTestRequest("equiv", 500, 256)
-	pB, decB, plan := build().ReserveProviderWithPlan(model, prB)
+	pB, decB, plan := build(2*time.Second).ReserveProviderWithPlan(model, prB)
 
 	if pA == nil || pB == nil || pA.ID != pB.ID {
 		t.Fatalf("winners differ: ReserveProviderEx=%v ReserveProviderWithPlan=%v", pA, pB)
 	}
-	// The profiler's wall-clock stamps (lock wait, scan, admit, heartbeat age
-	// — on the decision AND inside the candidate summaries) legitimately differ
-	// between two reservations built a few hundred microseconds apart;
-	// everything else must match.
+	// Frozen time and different fresh evidence ages reproduce the old CI failure
+	// deterministically, without sleeps or depending on the runner's speed.
+	if decA.FirstContent.CapacityAgeMs != 1000 || decB.FirstContent.CapacityAgeMs != 2000 ||
+		decA.FirstContent.PerformanceAgeMs != 1000 || decB.FirstContent.PerformanceAgeMs != 2000 {
+		t.Fatalf("fixture evidence ages differ from expected 1s/2s: ex=%+v plan=%+v", decA.FirstContent, decB.FirstContent)
+	}
+	// The profiler's wall-clock stamps (lock wait, scan, admit, heartbeat and
+	// evidence ages, on the decision AND inside the candidate summaries) can
+	// differ between equivalent reservations using fresh evidence. All other
+	// decision fields must match.
 	for _, d := range []*RoutingDecision{&decA, &decB} {
 		d.LockWaitUS, d.ScanUS, d.AdmitUS, d.SnapshotAgeMs = 0, 0, 0, 0
+		d.FirstContent.CapacityAgeMs, d.FirstContent.PerformanceAgeMs = 0, 0
 		for i := range d.Top {
 			d.Top[i].HBAgeMs = 0
+			d.Top[i].FirstContent.CapacityAgeMs, d.Top[i].FirstContent.PerformanceAgeMs = 0, 0
 		}
 		d.RunnerUp.HBAgeMs, d.BestIdle.HBAgeMs = 0, 0
+		d.RunnerUp.FirstContent.CapacityAgeMs, d.RunnerUp.FirstContent.PerformanceAgeMs = 0, 0
+		d.BestIdle.FirstContent.CapacityAgeMs, d.BestIdle.FirstContent.PerformanceAgeMs = 0, 0
 	}
 	if decA != decB {
 		t.Fatalf("decisions differ:\n ex:   %+v\n plan: %+v", decA, decB)

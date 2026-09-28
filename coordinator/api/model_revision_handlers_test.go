@@ -47,7 +47,11 @@ func TestPublishModelRevisionPreservesMetadataAndApprovesTransition(t *testing.T
 	if err := st.UpsertModelRegistryEntry(registryEntryFromRecord(before)); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetModelPrice("platform", manifest.ModelID, 123, 456); err != nil {
+	cacheReadPrice := int64(37)
+	if err := st.SetModelPrice(store.ModelPrice{
+		AccountID: "platform", Model: manifest.ModelID,
+		InputPrice: 123, OutputPrice: 456, CacheReadPrice: &cacheReadPrice,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	invoke := func(action, version string) *httptest.ResponseRecorder {
@@ -68,6 +72,10 @@ func TestPublishModelRevisionPreservesMetadataAndApprovesTransition(t *testing.T
 	}
 	if after.ActiveVersion.Version != "v2" || after.DisplayName != before.DisplayName || after.RuntimeParameters["temperature"] != 0.7 {
 		t.Fatalf("metadata changed: %+v", after)
+	}
+	price, ok := st.GetModelPrice("platform", manifest.ModelID)
+	if !ok || price.InputPrice != 123 || price.OutputPrice != 456 || price.CacheReadPrice == nil || *price.CacheReadPrice != cacheReadPrice {
+		t.Fatalf("revision publication changed pricing: %+v", price)
 	}
 	if len(after.ServingVersions) != 2 || !reg.CatalogAcceptsWeightHash(manifest.ModelID, before.ActiveVersion.AggregateSHA256) {
 		t.Fatal("old serving revision was revoked during promotion")

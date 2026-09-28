@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-28 · commit `fa9d83270`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -51,11 +51,11 @@ capability and compatible GPU streams. An M5 label alone is not eligibility;
 non-NAX devices retain the native fallback. Neither component skips on another
 device nor benchmark completion qualifies all RAM configurations.
 
-Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMoV26ServingLoad.swift`
+Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26ServingLoad.swift`
 (`estimatedWeightsGb`),
-`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMoV26AudioSidecarReservation.swift`,
-`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMoV26WiredResidency.swift` (`Bounds.safeCeiling`, `Policy`), and
-`libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26NAXGatherQMM.swift`
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26AudioSidecarReservation.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`Bounds.safeCeiling`, `Policy`), and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26NAXGatherQMM.swift`
 (`gpuStream`, `naxAvailable`).
 
 ## Bonsai 2 qualification scope

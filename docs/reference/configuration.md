@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-28 · commit `59af7292d`
+> Last updated: 2026-09-28 · commit `fa9d83270`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -523,10 +523,10 @@ process-scoped settings before first use and restart for latched kernel flags.
 |---|---|---|---|
 | `backend.mtp_mode` for `mimo_v2` | `on`, subject to existing MTP kill switch | `auto` leaves MiMo MTP off | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.preparation` accepts embedded heads, not an external assistant path |
 | `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` | exact `1` | off; serial target when MTP is enabled | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`); does not itself enable MTP and remains subject to exact greedy/state qualification |
-| `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE` | exact `1` | off | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMoV26RectangularDense.swift` (`enabledByEnvironment`); separately charged scalar-shape projections only in genuine admitted rectangular verification; full target/head-state qualification remains required |
+| `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE` | exact `1` | off | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RectangularDense.swift` (`enabledByEnvironment`); separately charged scalar-shape projections only in genuine admitted rectangular verification; full target/head-state qualification remains required |
 | `DARKBLOOM_MIMO_NATIVE_PAGED_TARGET` | exact `1` with an explicit paged backend | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`; separately issued asymmetric target-only paging; MTP, complete prefix and managed media remain refused in this profile |
-| `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | exact `1` | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMoV26WiredResidency.swift` (`isEnabled`, `Bounds`, `Policy`); shared-manager, owned-lifetime acceleration only, never load admission or physical-page coverage proof |
-| `DARKBLOOM_MIMO_COMPLETE_PREFIX` | exact `1` AND existing model-scoped prefix-cache policy enabled | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+MiMoPrefix.swift` (`nativeMiMoPrefixRefusal`); text-only contiguous COMPLETE checkpoints, exact store/process/loaded-owner binding; decoded-media profiles keep an honest prefix miss |
+| `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | exact `1` | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`, `Bounds`, `Policy`); shared-manager, owned-lifetime acceleration only, never load admission or physical-page coverage proof |
+| `DARKBLOOM_MIMO_COMPLETE_PREFIX` | exact `1` AND existing model-scoped prefix-cache policy enabled | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`nativeMiMoPrefixRefusal`); text-only contiguous COMPLETE checkpoints, exact store/process/loaded-owner binding; decoded-media profiles keep an honest prefix miss |
 
 All kernel controls below default off. A requested flag is not effective
 dispatch: module ownership, actual device/stream, native dtype, shape,
@@ -536,24 +536,24 @@ converted into successful fallback.
 
 | Variable | Values / type | Reader / scoped candidate |
 |---|---|---|
-| `DARKBLOOM_MIMO_FUSED_DECODE_NORMS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMoV26Text.swift` (`useFusedDecodeNorms`); native residual/norm tail |
-| `DARKBLOOM_MIMO_DECODE_ROUTER_GEMV` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMoV26DecodeRouter.swift` (`enabledByEnvironment`); eligible short-forward router |
-| `DARKBLOOM_MIMO_DECODE_EXPERTS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26DecodeExperts.swift` (`requested`); distinct-expert short-forward reuse |
-| `DARKBLOOM_MIMO_FP32_WEIGHTED_REDUCE` | trimmed, case-insensitive `1`, `true`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26FP32WeightedReduction.swift` (`isEnabled`); native FP32 weighted combine |
-| `DARKBLOOM_MIMO_V26_DECODE_ROWS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26DecodeRows.swift` (`requested`); eligible singleton full-attention verification rows |
+| `DARKBLOOM_MIMO_FUSED_DECODE_NORMS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26Text.swift` (`useFusedDecodeNorms`); native residual/norm tail |
+| `DARKBLOOM_MIMO_DECODE_ROUTER_GEMV` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26DecodeRouter.swift` (`enabledByEnvironment`); eligible short-forward router |
+| `DARKBLOOM_MIMO_DECODE_EXPERTS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26DecodeExperts.swift` (`requested`); distinct-expert short-forward reuse |
+| `DARKBLOOM_MIMO_FP32_WEIGHTED_REDUCE` | trimmed, case-insensitive `1`, `true`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26FP32WeightedReduction.swift` (`isEnabled`); native FP32 weighted combine |
+| `DARKBLOOM_MIMO_V26_DECODE_ROWS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26DecodeRows.swift` (`requested`); eligible singleton full-attention verification rows |
 
 | NAX variable | Values / type | Reader / scoped candidate |
 |---|---|---|
-| `DARKBLOOM_MIMO_V26_NAX_GATHER` | trimmed, case-insensitive `1`, `true`, `yes`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26NAXGatherQMM.swift` (`requested`); sorted native MXFP4 projection |
-| `DARKBLOOM_MIMO_V26_NAX_GATE_UP` | same affirmative values | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26NAXGateUp.swift` (`requested`); dual-input projection without resident weight concatenation |
+| `DARKBLOOM_MIMO_V26_NAX_GATHER` | trimmed, case-insensitive `1`, `true`, `yes`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26NAXGatherQMM.swift` (`requested`); sorted native MXFP4 projection |
+| `DARKBLOOM_MIMO_V26_NAX_GATE_UP` | same affirmative values | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26NAXGateUp.swift` (`requested`); dual-input projection without resident weight concatenation |
 | `DARKBLOOM_MIMO_V26_NAX_SWIGLU` | exact `1` | `MiMoV26NAXGateUp.activationRequested`; epilogue preserves the original native rounding stages |
 | `DARKBLOOM_MIMO_V26_NAX_ROW_MAP` | exact `1` | `MiMoV26NAXGateUp.rowMapRequested`; requires the eligible SwiGLU path, reuses sorted route/inverse without repeated input-row materialization |
-| `DARKBLOOM_MIMO_V26_NAX_ATTENTION` | trimmed, case-insensitive `1`, `true`, `yes`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26NAXAttention.swift` (`requested`); three score passes preserve native Q/score/probability rounding and existing q128 visibility |
-| `DARKBLOOM_MIMO_BLOCK_BATCH_PREFILL` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26BlockBatchAttention.swift` (`requested`); separately admitted grouping of existing exact query blocks; also requires the NAX attention path |
-| `DARKBLOOM_MIMO_V26_SPLITKEY_QK` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26SplitKeyAttention.swift` (`requested`); isolated helper, not wired to managed attention |
+| `DARKBLOOM_MIMO_V26_NAX_ATTENTION` | trimmed, case-insensitive `1`, `true`, `yes`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26NAXAttention.swift` (`requested`); three score passes preserve native Q/score/probability rounding and existing q128 visibility |
+| `DARKBLOOM_MIMO_BLOCK_BATCH_PREFILL` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26BlockBatchAttention.swift` (`requested`); separately admitted grouping of existing exact query blocks; also requires the NAX attention path |
+| `DARKBLOOM_MIMO_V26_SPLITKEY_QK` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26SplitKeyAttention.swift` (`requested`); isolated helper, not wired to managed attention |
 
 The ordered key-range helper
-`libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26NAXAttentionKeyRanges.swift`
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26NAXAttentionKeyRanges.swift`
 requires the genuine native process owner, bound policy, actual per-step work
 and extra allocation reservation. Source presence or requested flags do not
 prove a benchmark took that path. Neither helper flag nor grouped

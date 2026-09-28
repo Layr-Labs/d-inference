@@ -1,4 +1,4 @@
-package api
+package conformance
 
 import (
 	"bufio"
@@ -30,10 +30,10 @@ func orNextEither(t *testing.T, f *orFixture, a, b *orProvider) (*orProvider, or
 	return nil, orDispatch{}
 }
 
-func TestOpenRouterConformanceRetry(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceRetry(t *testing.T) {
 	for _, exhaust := range []bool{false, true} {
 		t.Run(fmt.Sprintf("exhaust_%t", exhaust), func(t *testing.T) {
-			f := newORFixture(t, true)
+			f := s.newORFixture(t, true)
 			a, b := f.provider("0.8.15"), f.provider("0.8.15")
 			ch, cancel := f.startChat(f.keys[orAccount], true, nil)
 			defer cancel()
@@ -81,10 +81,10 @@ func TestOpenRouterConformanceRetry(t *testing.T) {
 	}
 }
 
-func TestOpenRouterConformancePostContentFailure(t *testing.T) {
+func (s Suite) TestOpenRouterConformancePostContentFailure(t *testing.T) {
 	for _, disconnect := range []bool{false, true} {
 		t.Run(fmt.Sprintf("disconnect_%t", disconnect), func(t *testing.T) {
-			f := newORFixture(t, true)
+			f := s.newORFixture(t, true)
 			p := f.provider("0.8.15")
 			ch, cancel := f.startChat(f.keys[orAccount], true, nil)
 			defer cancel()
@@ -109,8 +109,8 @@ func TestOpenRouterConformancePostContentFailure(t *testing.T) {
 	}
 }
 
-func TestOpenRouterConformanceClientError(t *testing.T) {
-	f := newORFixture(t, true)
+func (s Suite) TestOpenRouterConformanceClientError(t *testing.T) {
+	f := s.newORFixture(t, true)
 	a, b := f.provider("0.8.15"), f.provider("0.8.15")
 	ch, cancel := f.startChat(f.keys[orAccount], true, nil)
 	defer cancel()
@@ -124,11 +124,11 @@ func TestOpenRouterConformanceClientError(t *testing.T) {
 	f.settled(orAccount, 0, 0)
 }
 
-func TestOpenRouterConformanceCancellation(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceCancellation(t *testing.T) {
 	for _, holds := range []bool{false, true} {
 		for _, content := range []bool{false, true} {
 			t.Run(fmt.Sprintf("holds_%t/content_%t", holds, content), func(t *testing.T) {
-				f := newORFixture(t, holds)
+				f := s.newORFixture(t, holds)
 				p := f.provider("0.8.15")
 				ch, cancel := f.startChat(f.keys[orAccount], true, nil)
 				defer cancel()
@@ -182,10 +182,10 @@ func TestOpenRouterConformanceCancellation(t *testing.T) {
 	}
 }
 
-func TestOpenRouterConformanceCompletionFirst(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceCompletionFirst(t *testing.T) {
 	for _, holds := range []bool{false, true} {
 		t.Run(fmt.Sprintf("holds_%t", holds), func(t *testing.T) {
-			f := newORFixture(t, holds)
+			f := s.newORFixture(t, holds)
 			p := f.provider("0.8.15")
 			ch, cancel := f.startChat(f.keys[orAccount], true, nil)
 			r := p.next()
@@ -210,10 +210,10 @@ func TestOpenRouterConformanceCompletionFirst(t *testing.T) {
 	}
 }
 
-func TestOpenRouterConformanceTools(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceTools(t *testing.T) {
 	for _, supported := range []bool{false, true} {
 		t.Run(fmt.Sprintf("supported_%t", supported), func(t *testing.T) {
-			f := newORFixture(t, true)
+			f := s.newORFixture(t, true)
 			version := "0.5.16"
 			if supported {
 				version = "0.8.15"

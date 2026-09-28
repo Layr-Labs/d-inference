@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-26 · commit `0fbdb5127`
+> Last updated: 2026-09-28 · commit `491e6e458`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -650,6 +650,14 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 the slow WebSocket integration tests; run the full set before merging.
 
 #### Offline OpenRouter caller conformance
+
+Scenarios, fixtures and observers live in `coordinator/api/conformance/`.
+The thin `coordinator/api/conformance_test.go` adapter retains the existing
+22 test entry points and binds package-private server/ledger observations
+without adding production exports. Run the parent API tests below: the helper
+subpackage is not itself a test entry point and is not imported by production.
+Streaming providers emit the concrete build ID; the HTTP assertions require
+the caller's alias, so bypassing the coordinator's model rewrite fails.
 
 `TestOpenRouterConformance` exercises `Server.Handler` with synthetic catalog
 records, account-owned API keys, memory storage and encrypted loopback provider

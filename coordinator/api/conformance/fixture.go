@@ -1,4 +1,4 @@
-package api
+package conformance
 
 import (
 	"context"
@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/billing"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -30,7 +28,8 @@ const (
 
 type orFixture struct {
 	t            *testing.T
-	srv          *Server
+	srv          Backend
+	suite        Suite
 	st           *store.MemoryStore
 	ts           *httptest.Server
 	client       *http.Client
@@ -41,22 +40,17 @@ type orFixture struct {
 	model, alias string
 }
 
-func newORFixture(t *testing.T, holds bool) *orFixture {
-	return newORModelFixture(t, holds, orModel, orAlias)
+func (s Suite) newORFixture(t *testing.T, holds bool) *orFixture {
+	return s.newORModelFixture(t, holds, orModel, orAlias)
 }
 
 // Model strings here label synthetic catalog/transport state, never loaded artifacts.
-func newORModelFixture(t *testing.T, holds bool, model, alias string) *orFixture {
+func (s Suite) newORModelFixture(t *testing.T, holds bool, model, alias string) *orFixture {
 	t.Helper()
 	st := store.NewMemory(store.Config{})
-	logger := quietLogger()
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{ServiceReservations: holds, FirstContentSLAAccounts: []string{orAccount}, FirstContentDeadlineBase: 3 * time.Second}, logger)
-	srv.challengeInterval = time.Hour
-	reg.SetQueue(registry.NewRequestQueue(10, 100*time.Millisecond))
-	srv.SetBilling(billing.NewService(st, srv.ledger, logger, billing.Config{MockMode: true}))
+	srv := s.NewServer(t, st, holds, orAccount)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	f := &orFixture{t: t, srv: srv, st: st, ctx: ctx, cancel: cancel, keys: make(map[string]string), model: model, alias: alias}
+	f := &orFixture{t: t, srv: srv, suite: s, st: st, ctx: ctx, cancel: cancel, keys: make(map[string]string), model: model, alias: alias}
 	for _, acct := range []string{orAccount, "conformance-exempt", "conformance-other-service"} {
 		role := store.RoleService
 		if acct == "conformance-exempt" {
@@ -84,7 +78,7 @@ func newORModelFixture(t *testing.T, holds bool, model, alias string) *orFixture
 		if id == "conformance-staged" {
 			entry.Metadata["openrouter_is_ready"] = false
 		}
-		version := &store.ModelVersion{ModelID: id, Version: "v1", R2Prefix: modelR2Prefix(id, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}
+		version := &store.ModelVersion{ModelID: id, Version: "v1", R2Prefix: s.ModelR2Prefix(id, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}
 		if err := st.SetModelVersion(entry, version, []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}); err != nil {
 			t.Fatal(err)
 		}
@@ -224,14 +218,11 @@ func (f *orFixture) settled(account string, cost int64, count int) {
 		return f.st.GetBalance(account) == orInitial-cost && len(f.st.UsageByConsumer(account)) == count && f.hold(account) == 0
 	}, "balance, usage and holds settle")
 	for _, p := range f.providers {
-		orEventually(f.t, func() bool { rp := f.srv.registry.GetProvider(p.id); return rp == nil || rp.PendingCount() == 0 }, "provider pending cleanup")
+		orEventually(f.t, func() bool { rp := f.srv.Registry.GetProvider(p.id); return rp == nil || rp.PendingCount() == 0 }, "provider pending cleanup")
 	}
 }
 func (f *orFixture) hold(account string) int64 {
-	m := f.srv.serviceReservations
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.outstanding[account]
+	return f.srv.Outstanding(account)
 }
 func orEventually(t *testing.T, predicate func() bool, what string) {
 	t.Helper()

@@ -42,6 +42,7 @@ extension ProviderLoop {
             startedAt: startedAtEpoch,
             attestationPublicKey: signer?.publicKeyBase64,
             trust: lastTrustStatus,
+            runtimeIntegrity: lastRuntimeIntegrity,
             coordinatorURL: loopConfig.coordinatorURL,
             currentModel: state.currentModel,
             warmModels: state.warmModels,
@@ -133,6 +134,21 @@ extension ProviderLoop {
         // Clear even the legacy diagnostic so a fresh snapshot cannot make a
         // previous connection's readiness look current.
         lastTrustStatus = nil
+        lastRuntimeIntegrity = nil
+        writeDaemonState()
+    }
+
+    /// Records a coordinator `runtime_status{verified:false}` mismatch for
+    /// `status`/`doctor`, mirroring `handleTrustStatus`'s cache + persist
+    /// pattern. The coordinator never sends `verified:true`; a recorded
+    /// mismatch is cleared only by `clearConnectionAuthorization()` or by
+    /// aging out (`StatusCommand.runtimeIntegrityStatusLine`).
+    internal func recordRuntimeOutdated(mismatches: [RuntimeMismatch]) {
+        lastRuntimeIntegrity = DaemonState.RuntimeIntegrity(
+            status: "outdated",
+            mismatchCount: mismatches.count,
+            mismatches: mismatches,
+            receivedAt: Date().timeIntervalSince1970)
         writeDaemonState()
     }
 

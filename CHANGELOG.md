@@ -3,6 +3,7 @@
 ## Unreleased — provider readiness diagnostics
 
 - Explain cold model-load memory failures in `darkbloom status`, a color-coded `darkbloom doctor` readiness summary, and the owner My Macs page. The provider reports live no-eviction usable memory and serving headroom separately from the eviction-aware routing capacity; older providers remain compatible and show unknown rather than a guessed verdict.
+- Act on `runtime_status{verified:false}` instead of only logging it: `darkbloom status` now shows when the coordinator has excluded this provider from routing for a runtime-hash mismatch, with the fix (`darkbloom update`), and an enabled auto-update runs one immediate check (at most once per 10 minutes) through the existing background updater. The recorded mismatch clears after 15 minutes without a fresh one, since the coordinator only ever re-sends the failing status while it lasts.
 
 ## Release candidate v0.9.12 — model download cache recovery (not shipped; 2026-09-27)
 

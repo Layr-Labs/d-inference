@@ -619,6 +619,16 @@ public actor ProviderLoop {
     /// operator WHY they are / aren't earning. Start time uses wall-clock epoch
     /// (not ContinuousClock) so it survives across the CLI process boundary.
     internal var lastTrustStatus: DaemonState.Trust?
+    /// Most recent `runtime_status{verified:false}` from the coordinator.
+    /// Cleared by `clearConnectionAuthorization()`; a stale record ages out
+    /// separately in `StatusCommand.runtimeIntegrityStatusLine`. See
+    /// `recordRuntimeOutdated` in `ProviderLoop+Trust.swift`.
+    internal var lastRuntimeIntegrity: DaemonState.RuntimeIntegrity?
+    /// When the last coordinator-triggered update check (from
+    /// `runtime_status{verified:false}`) started, for
+    /// `RuntimeOutdatedUpdateTrigger`'s 10-minute spacing. nil before the
+    /// first trigger.
+    internal var lastRuntimeUpdateCheckAt: Double?
     internal var lastModelLoadError: DaemonState.ModelLoadError?
     /// Live per-slot KV-backend + MTP posture, resampled once per capacity
     /// refresh (`updateAggregateCapacity`) because `mtpStatusSnapshot()` is
@@ -647,6 +657,17 @@ public actor ProviderLoop {
     /// applies them automatically. nil when auto-update is disabled or
     /// before `run()` starts it.
     internal var autoUpdateTask: Task<Void, Never>?
+
+    /// Tracked handle for the immediate update check `handleRuntimeOutdatedEvent`
+    /// starts on `runtime_status{verified:false}`. Cancelled alongside
+    /// `autoUpdateTask` at every stop/shutdown site so a coordinator-triggered
+    /// check cannot outlive the loop. A trigger while this is still non-nil
+    /// does not replace it (`triggerRuntimeOutdatedUpdateCheckIfDue`).
+    internal var runtimeOutdatedUpdateTask: Task<Void, Never>?
+    /// Identity token for `runtimeOutdatedUpdateTask`: the task clears its own
+    /// tracked handle on exit only when this still matches, so a handle a
+    /// teardown site already cleared is never clobbered.
+    internal var runtimeOutdatedUpdateTaskID: UUID?
 
     /// Reacts to kernel memory pressure (reclaim MLX cache, mark an imminent
     /// OOM). Held for the loop's lifetime so the DispatchSource isn't

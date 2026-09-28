@@ -76,7 +76,13 @@ extension ProviderLoop {
     /// drain → commit → restart. All side effects below are actor-isolated so
     /// the phase transitions, staged-bundle handoff, and drain bookkeeping
     /// stay race-free.
-    private func performAutoUpdateCheck(coordinatorURL: String) async {
+    ///
+    /// Also the target of the coordinator-triggered check on
+    /// `runtime_status{verified:false}` (`ProviderLoop+Serve.swift`, gated by
+    /// `RuntimeOutdatedUpdateTrigger`) -- internal rather than private so that
+    /// caller can reach it; the cross-process lease `claimUpdateStart` takes
+    /// still makes concurrent callers single-flight.
+    internal func performAutoUpdateCheck(coordinatorURL: String) async {
         let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
         let me = self
         let logger = self.logger
@@ -146,6 +152,64 @@ extension ProviderLoop {
         case .restartFailed(let reason):
             logger.warning("Auto-update: restart failed: \(reason)")
         }
+    }
+
+    /// Coordinator event-path entry point for `.runtimeOutdated`: records the
+    /// mismatch, then consults the trigger for an immediate, tracked update
+    /// check.
+    internal func handleRuntimeOutdatedEvent(mismatches: [RuntimeMismatch]) {
+        recordRuntimeOutdated(mismatches: mismatches)
+        triggerRuntimeOutdatedUpdateCheckIfDue()
+    }
+
+    /// Immediate update check triggered by `runtime_status{verified:false}`
+    /// (`handleRuntimeOutdatedEvent`, `ProviderLoop+Serve.swift`'s
+    /// `.runtimeOutdated` case). A still-tracked `runtimeOutdatedUpdateTask`
+    /// short-circuits this before the trigger is consulted or the spacing
+    /// clock is stamped, so a second trigger while the first check is still
+    /// outstanding neither starts a second task nor re-stamps
+    /// `lastRuntimeUpdateCheckAt`; the started task clears its own tracked
+    /// handle on exit, identity-checked against `runtimeOutdatedUpdateTaskID`
+    /// so a handle a teardown site already cancelled and cleared is never
+    /// clobbered. Otherwise gated by `RuntimeOutdatedUpdateTrigger` -- the
+    /// same `auto_update`/`DARKBLOOM_NO_UPDATE_CHECK` opt-outs as the
+    /// background poll, plus a 10-minute minimum spacing since the
+    /// coordinator re-sends this status on every ~5-minute attestation
+    /// challenge while unverified. Never blocks the coordinator event loop:
+    /// fires `performAutoUpdateCheck` as a TRACKED task
+    /// (`runtimeOutdatedUpdateTask`) so stop/shutdown can cancel it alongside
+    /// `autoUpdateTask`. Its existing cross-process lease
+    /// (`claimUpdateStart`) keeps this and the 30-minute poll single-flight.
+    /// Does not touch `autoUpdateTask` or its interval.
+    internal func triggerRuntimeOutdatedUpdateCheckIfDue() {
+        guard runtimeOutdatedUpdateTask == nil else { return }
+        let now = Date().timeIntervalSince1970
+        guard RuntimeOutdatedUpdateTrigger.shouldCheck(
+            autoUpdateEnabled: loopConfig.config.provider.autoUpdate,
+            envDisabled: ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] != nil,
+            lastCheckAt: lastRuntimeUpdateCheckAt,
+            now: now
+        ) else { return }
+        lastRuntimeUpdateCheckAt = now
+        let coordinatorURL = loopConfig.coordinatorURL
+        let me = self
+        let taskToken = UUID()
+        runtimeOutdatedUpdateTaskID = taskToken
+        runtimeOutdatedUpdateTask = Task {
+            await me.performAutoUpdateCheck(coordinatorURL: coordinatorURL)
+            await me.clearRuntimeOutdatedUpdateTaskIfCurrent(taskID: taskToken)
+        }
+    }
+
+    /// Clears the tracked handle once its task body finishes, only when
+    /// `taskID` still matches `runtimeOutdatedUpdateTaskID`: a handle a
+    /// teardown site (`ProviderLoop+Serve.swift`, `performLifecycleDrain`)
+    /// already cancelled and cleared is left untouched instead of being
+    /// clobbered by the finishing task.
+    private func clearRuntimeOutdatedUpdateTaskIfCurrent(taskID: UUID) {
+        guard runtimeOutdatedUpdateTaskID == taskID else { return }
+        runtimeOutdatedUpdateTask = nil
+        runtimeOutdatedUpdateTaskID = nil
     }
 
     // MARK: - Auto-Update Phase Transitions

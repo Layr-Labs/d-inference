@@ -331,6 +331,7 @@ extension ProviderLoop {
                     for m in mismatches {
                         logger.warning("  \(m.component): expected=\(m.expected), got=\(m.got)")
                     }
+                    handleRuntimeOutdatedEvent(mismatches: mismatches)
 
                 case .loadModel(let modelId):
                     handleLoadModelRequest(modelId: modelId, send: send)
@@ -376,6 +377,8 @@ extension ProviderLoop {
         capacityRefreshTask = nil
         autoUpdateTask?.cancel()
         autoUpdateTask = nil
+        runtimeOutdatedUpdateTask?.cancel()
+        runtimeOutdatedUpdateTask = nil
         // Cancel any scheduled desired-build prefetch retries before tearing
         // the prefetch subsystem down.
         for task in desiredPrefetchRetryTasks.values { task.cancel() }

@@ -36,6 +36,12 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// Optional so state files written by older daemons continue to decode.
     public var attestationPublicKey: String?
     public var trust: Trust?
+    /// The coordinator's most recent `runtime_status{verified:false}` --
+    /// otherwise only logged. Cleared when connection authorization is
+    /// cleared, or ages out on read (see `StatusCommand.runtimeIntegrityStatusLine`).
+    /// Optional so state files written before this field existed keep
+    /// decoding.
+    public var runtimeIntegrity: RuntimeIntegrity?
     /// Coordinator whose live trust status is recorded; a different CLI config
     /// must not use it to offer removal of another enrollment.
     public var coordinatorUrl: String?
@@ -94,6 +100,22 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.reason = reason
             self.receivedAt = receivedAt
             self.authorization = authorization
+        }
+    }
+
+    /// The coordinator's runtime-hash verdict for this connection, recorded
+    /// so `status`/`doctor` can show "excluded from routing" and the fix
+    /// without waiting on the logs.
+    public struct RuntimeIntegrity: Codable, Sendable, Equatable {
+        public var status: String
+        public var mismatchCount: Int
+        public var mismatches: [RuntimeMismatch]
+        public var receivedAt: Double
+        public init(status: String, mismatchCount: Int, mismatches: [RuntimeMismatch], receivedAt: Double) {
+            self.status = status
+            self.mismatchCount = mismatchCount
+            self.mismatches = mismatches
+            self.receivedAt = receivedAt
         }
     }
 
@@ -244,6 +266,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         startedAt: Double,
         attestationPublicKey: String? = nil,
         trust: Trust? = nil,
+        runtimeIntegrity: RuntimeIntegrity? = nil,
         coordinatorURL: String? = nil,
         currentModel: String? = nil,
         warmModels: [String] = [],
@@ -272,6 +295,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.startedAt = startedAt
         self.attestationPublicKey = attestationPublicKey
         self.trust = trust
+        self.runtimeIntegrity = runtimeIntegrity
         self.coordinatorUrl = coordinatorURL
         self.currentModel = currentModel
         self.warmModels = warmModels

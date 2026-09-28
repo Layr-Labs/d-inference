@@ -55,6 +55,9 @@ extension ProviderLoop {
         let update = autoUpdateTask
         autoUpdateTask = nil
         update?.cancel()
+        let runtimeOutdatedUpdate = runtimeOutdatedUpdateTask
+        runtimeOutdatedUpdateTask = nil
+        runtimeOutdatedUpdate?.cancel()
         if let client = coordinatorClient {
             await client.sendEventHeartbeat()
             if !request.force && request.timeoutSeconds > 0 {

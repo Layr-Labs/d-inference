@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "model_id": "bench-large-2026-09-01-r1",
+  "version": "2026-09-01-r1",
+  "r2_prefix": "runs/2026-09-01-r1/large",
+  "aggregate_sha256": "022c51cdca0fdb1f9a34a8bbab6df55b34999072580eecf05ceff1ba7a41c5a6",
+  "total_size_bytes": 4294967296,
+  "file_count": 4,
+  "files": [
+    {
+      "path": "shard-01.bin",
+      "size_bytes": 1073741824,
+      "sha256": "b49fdd6d74ea428515a62699329dfe03ed759864f5c26d1ffcf46d5f5021d10a",
+      "role": "weight"
+    },
+    {
+      "path": "shard-02.bin",
+      "size_bytes": 1073741824,
+      "sha256": "d0ad316ddc49e6be4f152a1690aa5c5d30c2c68aa5da50e69e94238efcf2b4dd",
+      "role": "weight"
+    },
+    {
+      "path": "shard-03.bin",
+      "size_bytes": 1073741824,
+      "sha256": "128beda5d15290b516e69e0506cd95058f64a869732e30707c0bec9c892d6329",
+      "role": "weight"
+    },
+    {
+      "path": "shard-04.bin",
+      "size_bytes": 1073741824,
+      "sha256": "819e3f66e583a878e7326ae55c9df1d87d93d1d582a50b2b9a2fb87702d8285f",
+      "role": "weight"
+    }
+  ],
+  "created_at": "2026-09-01T00:00:00Z"
+}

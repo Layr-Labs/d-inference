@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-27 · commit `0bd16a9fa`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -727,3 +727,12 @@ and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
 opt-in encrypted transport gate.
+
+
+## Model download experiment tools
+
+The [model-download experiment checks](test.md#model-download-experiments) use Node
+22 or newer and need no dependency install. Reproducing the historical storage
+benchmark additionally builds the Docker harness and uses a published macOS provider
+bundle; follow the [experiment prerequisites](../spikes/model-download-benchmark/README.md#reproducing)
+for those separate, resource-creating steps.

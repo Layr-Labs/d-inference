@@ -1,0 +1,8 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "transparent-reconstruction-local-only",
+  "main": "worker.mjs",
+  // Newest date supported by workerd bundled with Wrangler 4.124.0.
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat"]
+}

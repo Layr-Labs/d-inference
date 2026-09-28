@@ -1,0 +1,14 @@
+{
+  "name": "transparent-reconstruction-local-only",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --local --port 8791",
+    "dev:benchmark-local": "wrangler dev --local --config wrangler.benchmark.local.jsonc --port 8792",
+    "test": "node --test reconstructor.test.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260820.1",
+    "@types/node": "^26.2.0",
+    "wrangler": "^4.127.0"
+  }
+}

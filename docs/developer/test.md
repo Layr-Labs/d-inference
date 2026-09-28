@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-27 · commit `c2fa18e02`
+> Last updated: 2026-09-27 · commit `0bd16a9fa`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2356,3 +2356,23 @@ against a mock WebSocket coordinator while accepted work is held open.
 `ProcessLifecycleTests` verifies that lock acquisition cannot kill a live PID owner.
 `TestRestartStatusReportsOwnerAuthorizationWithoutPublicGrant` checks explicit
 owner authorization while retaining runtime/security denials.
+
+
+## Model download experiments
+
+Run the [storage benchmark](../spikes/model-download-benchmark/README.md) harness
+regressions and [transparent reconstruction spike](../spikes/transparent-reconstruction-poc/README.md)
+with Node's built-in runner:
+
+```sh
+node --test docs/spikes/model-download-benchmark/harness/*.test.mjs docs/spikes/transparent-reconstruction-poc/reconstructor.test.mjs
+bash -n docs/spikes/model-download-benchmark/harness/run-bench.sh
+node docs/spikes/model-download-benchmark/harness/summarize.mjs docs/spikes/model-download-benchmark/results
+```
+
+The harness tests use temporary fixtures and mocked external commands; they do not
+contact Cloudflare, invoke a real provider, or remove installed model caches.
+They check failure propagation, sampler cleanup, verification and summary outcomes.
+The reconstruction tests check bytes, range handling, interruption and cancellation.
+The committed September 1 measurements are historical; local regression checks do
+not generate a new throughput measurement. These Node checks are run manually.

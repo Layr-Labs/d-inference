@@ -6,6 +6,8 @@
 
 - Restore missing or damaged revision receipts only after re-verifying cached bytes, avoiding repeated activation of an already-selected revision. Preserve rollback through valid linked model cache directories.
 
+- Keep a revision's stored download source on `publish-revision` retries, including retries after a committed promotion returns 503. Explicit mirror edits through normal registration remain supported.
+
 - Let each revision declare a different pinned Hugging Face repo, commit and subdirectory through publishing flags or the API, with checksum-verified R2 fallback. Preserve retirement and original upload attribution across registration retries, report failed live refreshes or provider desired-state sends as retryable errors, and retain updates for eligible alias lineage builds.
 
 - Add automatic artifact revisions for existing model IDs: publish immutable R2 bytes and a manifest once, then supporting providers resume/verify downloads, drain accepted requests and activate with rollback. Retain approved older hashes during convergence; add explicit inactive-revision retirement. Share the idle-upgrade lifecycle with Gemma MTP.

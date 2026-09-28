@@ -50,8 +50,9 @@ func (s *Server) handlePublishModelRevision(w http.ResponseWriter, r *http.Reque
 		FileCount: manifest.FileCount, Status: "ready", Metadata: record.Metadata,
 		UploadedBy: actor.Name, HuggingFaceArtifact: req.HuggingFaceArtifact,
 	}
-	// Each revision declares its own pinned HF source. Omission selects R2-only;
-	// never inherit a previous revision's locator for different model bytes.
+	// New versions declare their own pinned HF source; omission selects R2-only
+	// instead of inheriting another version's locator. Identical-version retries
+	// retain the currently stored locator, including explicit registration edits.
 	files := make([]store.ModelVersionFile, len(manifest.Files))
 	for i, f := range manifest.Files {
 		files[i] = store.ModelVersionFile{Path: f.Path, SizeBytes: f.SizeBytes, SHA256: f.SHA256, Role: f.Role}

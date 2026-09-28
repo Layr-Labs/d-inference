@@ -76,8 +76,9 @@ func TestPublishRevisionPinsOwnHFArtifactAndPublisher(t *testing.T) {
 				t.Fatal(err)
 			}
 			oldSource := &store.HuggingFaceArtifact{RepoID: "EigenLabs/old-weights", Revision: strings.Repeat("a", 40)}
+			// Full registration can intentionally configure the rollback mirror.
 			original.ActiveVersion.HuggingFaceArtifact = oldSource
-			if err := st.SetExistingModelVersion(original.ActiveVersion, original.Files); err != nil {
+			if err := st.SetModelVersion(registryEntryFromRecord(original), original.ActiveVersion, original.Files); err != nil {
 				t.Fatal(err)
 			}
 			body := map[string]any{"version": manifest.Version}

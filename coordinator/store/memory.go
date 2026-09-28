@@ -1581,7 +1581,7 @@ func (s *MemoryStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) error 
 func (s *MemoryStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.setModelVersionLocked(entry, version, files)
+	return s.setModelVersionLocked(entry, version, files, false)
 }
 
 func (s *MemoryStore) SetExistingModelVersion(version *ModelVersion, files []ModelVersionFile) error {
@@ -1591,10 +1591,10 @@ func (s *MemoryStore) SetExistingModelVersion(version *ModelVersion, files []Mod
 	if entry == nil || s.modelRegistryRecordLocked(version.ModelID) == nil {
 		return ErrNotFound
 	}
-	return s.setModelVersionLocked(entry, version, files)
+	return s.setModelVersionLocked(entry, version, files, true)
 }
 
-func (s *MemoryStore) setModelVersionLocked(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile) error {
+func (s *MemoryStore) setModelVersionLocked(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile, preserveExistingSource bool) error {
 
 	if old := s.modelVersions[modelVersionKey(version.ModelID, version.Version)]; old != nil &&
 		(old.AggregateSHA256 != version.AggregateSHA256 || old.R2Prefix != version.R2Prefix ||
@@ -1628,6 +1628,11 @@ func (s *MemoryStore) setModelVersionLocked(entry *ModelRegistryEntry, version *
 		// identity, even when a different credential replays the manifest.
 		versionCopy.UploadedBy = existing.UploadedBy
 		versionCopy.UploadedAt = existing.UploadedAt
+		if preserveExistingSource {
+			// A revision replay must not undo a later explicit mirror edit via
+			// full registration, which still supports add/change/clear.
+			versionCopy.HuggingFaceArtifact = cloneHuggingFaceArtifact(existing.HuggingFaceArtifact)
+		}
 		versionCopy.PromotedAt = cloneTimePtr(existing.PromotedAt)
 	} else {
 		s.modelVersionSeq++
@@ -1642,6 +1647,7 @@ func (s *MemoryStore) setModelVersionLocked(entry *ModelRegistryEntry, version *
 	version.UploadedBy = versionCopy.UploadedBy
 	version.UploadedAt = versionCopy.UploadedAt
 	version.Status = versionCopy.Status
+	version.HuggingFaceArtifact = cloneHuggingFaceArtifact(versionCopy.HuggingFaceArtifact)
 
 	fileCopies := make([]ModelVersionFile, len(files))
 	for i := range files {

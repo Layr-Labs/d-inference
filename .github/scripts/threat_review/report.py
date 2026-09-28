@@ -20,7 +20,7 @@ def render(repository, head, base, model, findings, evidence, limits, error=None
     if error:
         lines += ["**Review not completed for this head.** Previous findings are superseded, not confirmed resolved.",
                   plain(error)]
-    elif findings:
+    if findings:
         for finding in findings:
             path = finding["file"]
             sha = head if finding["side"] == "head" else (diff_base or base)
@@ -30,9 +30,12 @@ def render(repository, head, base, model, findings, evidence, limits, error=None
             lines += [f"### {finding['severity'].upper()}: {plain(finding['title'])}",
                       f"[{plain(path)}:{finding['line']}]({url}) · {refs}", "",
                       plain(finding["detail"]), ""]
-    else:
+    elif not error and not limits:
         lines += ["No actionable findings in the reviewed text. This is not a security approval."]
     if limits:
-        lines += ["", f"**Coverage limited:** {len(limits)} file(s) had missing or truncated patches."]
+        lines += ["", f"**Scan incomplete:** {len(limits)} file(s) could not be fully read as text. Binary/submodule changes require manual review."]
+        lines += ["Affected files: " + ", ".join(plain(path) for path in limits)]
+    elif not error:
+        lines += ["", f"Coverage: {len(evidence)} changed file(s), complete before/after text, and a cross-file threat-model review."]
     lines += ["", f"Model: {plain(model)}. Findings require human validation; this review never requests changes or blocks merging."]
     return "\n".join(lines)

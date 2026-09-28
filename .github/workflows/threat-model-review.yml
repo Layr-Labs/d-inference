@@ -17,7 +17,7 @@ jobs:
   review:
     name: Threat Model Review (advisory)
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
+    timeout-minutes: 60
     # Operational failures as well as findings must never become merge gates.
     continue-on-error: true
     if: ${{ !github.event.pull_request.draft }}

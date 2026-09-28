@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-28 · commit `9287c2454`
+> Last updated: 2026-09-28 · commit `45f5ef178`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -733,4 +733,5 @@ opt-in encrypted transport gate.
 The [threat-model PR review](threat-model-review.md) uses Python 3.9+ standard-library
 HTTP/JSON modules and requires no package installation. CI runs its regression
 tests against local HTTP fixtures; the live workflow uses a repository Actions
-secret and the trusted base checkout.
+secret and the trusted base checkout. Full PR scans read immutable Git blobs as
+data and batch complete changed-file text; they never build or execute PR code.

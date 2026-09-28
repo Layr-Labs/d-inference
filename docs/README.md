@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-28 · commit `9287c2454`
+> Last updated: 2026-09-28 · commit `45f5ef178`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -104,7 +104,7 @@
 - [`developer/navigation.md`](developer/navigation.md): find implementation and tests, choose descriptive filenames, and check path dependencies when moving files.
 - [`developer/build.md`](developer/build.md): build the coordinator, sidecar, provider, and UIs; toolchain pins.
 - [`developer/test.md`](developer/test.md): every test suite, what CI runs, how to run the e2e suite.
-- [`developer/threat-model-review.md`](developer/threat-model-review.md): configure OpenRouter advisory PR findings without a merge gate.
+- [`developer/threat-model-review.md`](developer/threat-model-review.md): configure full PR text scans against the threat model and non-blocking author feedback.
 
 ## Operations runbooks (production; human approval per mutation)
 

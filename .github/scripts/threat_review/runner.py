@@ -1,8 +1,9 @@
 """Trusted-base orchestration. Fetch PR patches as data; never check out PR code."""
 import re
-from .client import GitHub, ReviewUnavailable
+from .client import GitHub, ReviewUnavailable, ScanTimeout
 from .report import MARKER, LEGACY_MARKER, render
 from .review import DEFAULT_MODEL, review
+from .source import complete_files
 
 
 def same_revision(pull, head, base):
@@ -35,23 +36,32 @@ def run(event, root, env, github=None, reviewer=review):
             raise ReviewUnavailable("OPENROUTER_API_KEY is not configured")
         diff_base = github.comparison_base(base, head)
         files = github.files(current["changed_files"])
+        files = complete_files(github, files, diff_base, head)
         if files:
             # root is the trusted base checkout, not the PR branch.
             threat_model = (root / "docs/threat-model.yaml").read_text()
             findings, evidence, limits = reviewer(threat_model, files, key, model)
+    except ScanTimeout:
+        error = "Scan incomplete: runtime limit reached; no complete review was produced"
     except ReviewUnavailable:
-        error = "Review unavailable; check credentials, service availability, and response validity"
+        error = "Scan incomplete / Review unavailable; check source availability, credentials, service capacity, and response validity"
     except Exception:
         # Exception reprs from libraries can include request data or credentials.
         error = "Unexpected review error; no review was completed"
     if not same_revision(github.pull(), head, base):
         return "Skipped: PR revision changed during review; no stale comment published."
-    # Quiet when clean/unavailable unless an earlier finding needs superseding.
-    if findings or existing:
-        github.publish(existing, render(repository, head, base, model, findings, evidence, limits, error, diff_base))
+    # Clean first scans stay quiet; incomplete scans always notify the author.
+    if findings or existing or error or limits:
+        body = render(repository, head, base, model, findings, evidence, limits, error, diff_base)
+        if len(body) > 60000:
+            error = "Scan incomplete: findings exceed the PR comment capacity; split the PR for complete feedback"
+            body = render(repository, head, base, model, [], {}, [], error, diff_base)
+        github.publish(existing, body)
     if error:
         return f"Review unavailable (non-blocking): {error}."
-    return f"Advisory review completed: {len(findings)} finding(s); {len(limits)} file(s) with limited coverage."
+    if limits:
+        return f"Scan incomplete (non-blocking): {len(limits)} file(s) lack complete text source."
+    return f"Full PR scan completed: {len(findings)} finding(s); {len(limits)} file(s) with limited coverage."
 
 
 def summarize(message, env):

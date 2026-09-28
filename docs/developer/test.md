@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `9287c2454`
+> Last updated: 2026-09-28 · commit `45f5ef178`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2398,6 +2398,9 @@ owner authorization while retaining runtime/security denials.
 Run `python3 .github/scripts/test-threat-model-review.py` for the review input,
 OpenRouter response validation, credential isolation, pagination, stale-head and
 comment lifecycle tests. The suite opens a temporary loopback HTTP server and
-uses no external service or real key. Release Integrity runs it in normal CI.
+uses no external service or real key. Also run
+`python3 .github/scripts/test-threat-full-scan.py` for full-source retrieval,
+batching beyond the former cutoffs, cross-file review, and explicit incomplete
+coverage. Release Integrity runs both suites in normal CI.
 Model findings and live API failures remain non-blocking in the separate
 [advisory review workflow](threat-model-review.md).

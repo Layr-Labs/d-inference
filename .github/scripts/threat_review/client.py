@@ -9,6 +9,10 @@ class ReviewUnavailable(Exception):
     """Safe, credential-free failure suitable for an Actions summary."""
 
 
+class ScanTimeout(Exception):
+    """Whole-scan deadline; must bypass per-file API error recovery."""
+
+
 class NoRedirects(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -51,10 +55,10 @@ class GitHub:
         return sha
 
     def files(self, count):
-        if count > 500:
-            raise ReviewUnavailable("PR exceeds the 500-file review limit")
+        if count > 3000:
+            raise ReviewUnavailable("GitHub cannot enumerate more than 3000 PR files; scan incomplete")
         files = []
-        for page in range(1, 6):
+        for page in range(1, 31):
             batch = self.call(f"/pulls/{self.number}/files?per_page=100&page={page}")
             files.extend(batch)
             if len(batch) < 100:

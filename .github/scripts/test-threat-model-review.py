@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Cloud-free regressions for advisory outcomes and trusted-data boundaries."""
+import base64
 import copy
 import json
 import os
@@ -29,8 +30,26 @@ EVENT = {"repository": {"full_name": "example/repo"}, "pull_request": {
     "number": 12, "head": {"sha": HEAD}, "base": {"sha": BASE}, "draft": False}}
 
 
-def completion(findings, reason="stop"):
-    return {"choices": [{"finish_reason": reason, "message": {"content": json.dumps({"findings": findings})}}]}
+def completion(findings, reason="stop", body=None):
+    sent = json.loads(body["messages"][1]["content"]) if body else {"units": []}
+    result = {"findings": findings, "covered_units": [unit["id"] for unit in sent["units"]],
+              "analysis": "Review authorization flow and T-001 across coordinator/auth.go."}
+    return {"choices": [{"finish_reason": reason, "message": {"content": json.dumps(result)}}]}
+
+
+def source_response(path):
+    if "/git/commits/" in path:
+        return {"tree": {"sha": ("1" if path.endswith(BASE) else "2") * 40}}
+    if "/git/trees/" in path:
+        sha = path.rsplit("/", 1)[-1]
+        if sha[0] in "12":
+            return {"tree": [{"path": "coordinator", "type": "tree", "sha": ("3" if sha[0] == "1" else "4") * 40}]}
+        return {"tree": [{"path": "auth.go", "type": "blob", "mode": "100644", "sha": ("5" if sha[0] == "3" else "6") * 40}]}
+    if "/git/blobs/" in path:
+        raw = b"1\n2\n3\n" + (b"checkAuth()" if path.endswith("5" * 40) else b"allowAll()") + b"\nnext()\n"
+        return {"encoding": "base64", "content": base64.b64encode(raw).decode(), "size": len(raw)}
+    raise AssertionError(path)
+
 
 
 class ReviewTests(unittest.TestCase):
@@ -59,19 +78,16 @@ class ReviewTests(unittest.TestCase):
         self.assertIn(f"/blob/{merge_base}/coordinator/auth.go#L4", body)
         self.assertNotIn(f"/blob/{BASE}/", body)
 
-    def test_truncation_limits_evidence_and_is_explicit(self):
+    def test_large_patch_is_preserved_in_full(self):
         files = copy.deepcopy(FILES)
         files[0]["patch"] = "@@ -1,0 +1,9999 @@\n" + "+x\n" * 9999
-        files[0]["additions"] = 9999
-        files[0]["deletions"] = 0
+        files[0]["additions"], files[0]["deletions"] = 9999, 0
         text, evidence, limits = prepare(THREAT, files)
-        self.assertLess(len(json.loads(text)["files"][0]["patch"]), 12001)
-        self.assertEqual(limits, [files[0]["filename"]])
-        self.assertNotIn(9999, evidence[files[0]["filename"]]["lines"]["head"])
+        self.assertEqual(json.loads(text)["files"][0]["patch"], files[0]["patch"])
+        self.assertEqual(limits, [])
+        self.assertIn(9999, evidence[files[0]["filename"]]["lines"]["head"])
 
     def test_missing_patch_is_not_treated_as_clean(self):
-        with self.assertRaises(ReviewUnavailable):
-            prepare(THREAT, [dict(FILES[0], patch="")])
         text, _, limits = prepare(THREAT, FILES + [dict(FILES[0], filename="binary.bin", patch="")])
         self.assertIn("binary.bin", limits)
         self.assertIn("binary.bin", text)
@@ -93,14 +109,14 @@ class ReviewTests(unittest.TestCase):
         calls = []
         def transport(url, key, body):
             calls.append((url, key, body))
-            return completion([FINDING])
+            return completion([FINDING], body=body)
         findings, _, _ = review(THREAT, FILES, "private-test-key", "chosen/model", transport)
         url, key, body = calls[0]
         self.assertEqual(url, "https://openrouter.ai/api/v1/chat/completions")
         self.assertEqual(key, "private-test-key")
         self.assertNotIn(key, json.dumps(body))
         self.assertEqual(body["model"], "chosen/model")
-        self.assertEqual(body["max_tokens"], 4096)
+        self.assertEqual(body["max_tokens"], 16384)
         self.assertTrue(body["provider"]["require_parameters"])
         self.assertTrue(body["response_format"]["json_schema"]["strict"])
         self.assertEqual(findings, [FINDING])
@@ -125,6 +141,9 @@ class ReviewTests(unittest.TestCase):
 class FakeGitHub:
     def __init__(self, existing=None, stale=False):
         self.existing, self.stale, self.reads, self.posts = existing, stale, 0, []
+
+    def call(self, path):
+        return source_response(path)
 
     def pull(self):
         self.reads += 1
@@ -189,6 +208,8 @@ class RunnerTests(unittest.TestCase):
                     if method:
                         writes.append((url, method, payload))
                         return {}
+                    if "/git/" in url:
+                        return source_response(url)
                     if "/comments?" in url:
                         return [
                             {"id": 5, "user": {"login": "attacker"}, "body": LEGACY_MARKER},
@@ -208,12 +229,12 @@ class RunnerTests(unittest.TestCase):
                 self.assertTrue(payload["body"].startswith(MARKER))
                 self.assertIn("Missing authorization" if findings else "No actionable findings", payload["body"])
 
-    def test_missing_key_skips_model_and_does_not_post_new_comment(self):
+    def test_missing_key_skips_model_and_posts_incomplete_comment(self):
         github = FakeGitHub()
         result = run(EVENT, self.root, {"GH_TOKEN": "token"}, github,
                      lambda *args: self.fail("model must not be called"))
         self.assertIn("Review unavailable", result)
-        self.assertEqual(github.posts, [])
+        self.assertIn("Review not completed", github.posts[0][1])
 
     def test_outage_marks_old_comment_unreviewed_not_clean(self):
         github = FakeGitHub({"id": 17})
@@ -231,6 +252,18 @@ class RunnerTests(unittest.TestCase):
                     raise error_type("private-test-key")
                 result = run(EVENT, self.root, self.env, github, fail)
                 self.assertNotIn("private-test-key", result + github.posts[0][1])
+
+    def test_incomplete_source_never_posts_clean(self):
+        github = FakeGitHub()
+        def call(path):
+            if "/blobs/" in path:
+                return {"encoding": "base64", "content": "AA==", "size": 1}
+            return source_response(path)
+        github.call = call
+        result = run(EVENT, self.root, self.env, github, self.reviewer([]))
+        self.assertIn("Scan incomplete", result)
+        self.assertIn("Scan incomplete", github.posts[0][1])
+        self.assertNotIn("No actionable findings", github.posts[0][1])
 
     def test_stale_head_does_not_publish(self):
         github = FakeGitHub(stale=True)
@@ -289,7 +322,7 @@ class TransportTests(unittest.TestCase):
 
     def test_large_or_inconsistent_file_list_fails_closed(self):
         github = GitHub("example/repo", 12, "token", lambda *args: [])
-        for count in (501, 1):
+        for count in (3001, 1):
             with self.assertRaises(ReviewUnavailable):
                 github.files(count)
 
@@ -304,7 +337,7 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertNotIn("head.ref", source)
         self.assertIn("persist-credentials: false", source)
         self.assertIn("continue-on-error: true", source)
-        self.assertIn("timeout-minutes: 10", source)
+        self.assertIn("timeout-minutes: 60", source)
         self.assertIn("pull-requests: write", source)
         self.assertNotIn("THREAT_REVIEW_ADVISORY_TOKEN", source)
         self.assertNotIn("checks: write", source)
@@ -331,6 +364,8 @@ class LocalHTTPIntegrationTests(unittest.TestCase):
                 calls.append((self.command, self.path, payload, self.headers.get("Authorization")))
                 if self.path == "/repos/example/repo/pulls/12":
                     response = FakeGitHub().pull()
+                elif "/git/" in self.path:
+                    response = source_response(self.path)
                 elif "/compare/" in self.path:
                     response = {"merge_base_commit": {"sha": BASE}}
                 elif "/files?" in self.path:
@@ -338,7 +373,7 @@ class LocalHTTPIntegrationTests(unittest.TestCase):
                 elif "/comments?" in self.path:
                     response = []
                 elif self.path == "/api/v1/chat/completions":
-                    response = completion([FINDING])
+                    response = completion([FINDING], body=payload)
                 elif self.path == "/repos/example/repo/issues/12/comments":
                     response = {"id": 1}
                 else:

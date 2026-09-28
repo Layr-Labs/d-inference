@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `de4e28825`
+> Last updated: 2026-09-28 · commit `b3dc525e2`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -29,6 +29,57 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 The dependency repositories are Git submodules under `libs/`, declared in
 `.gitmodules`. The [docs index](../README.md) separates current instructions
 from historical designs and reports.
+
+### Follow distributed serving through its owners
+
+The cluster implementation lives in first-party Swift packages under `libs/`.
+The targets keep their existing names; folders inside a target separate concerns
+without creating another module or changing imports.
+
+| Investigation | Start here |
+|---|---|
+| Provider admission, deadlines, capacity and events | [Distributed engine](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Engine/) — `DistributedCBv2Engine`, with separate Admission, Submission, Deadlines and Events extensions |
+| Provider request state and trusted time origins | [Requests](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/) |
+| Paired worker ownership and retirement | [Execution owner](../../provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift) and [contract](../../provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift) — stable entry points at the subsystem root |
+| Saved installation and model pins | [Installed](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/) |
+| Member registration and model integrity scan | [Membership](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Membership/) — `ClusterMemberPreparation` |
+| Request timing and logging | [Observability](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Observability/); installed status and doctor observations stay in [Diagnostics](../../provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/) |
+| Native worker command dispatch | [WorkerMain.swift](../../libs/darkbloom-cluster-worker/Sources/DarkbloomClusterWorker/WorkerMain.swift) — delegates to `Startup/`, `Capabilities/`, `Execution/` and `Transport/` |
+| Native model lifetime, reservation and generation | [Qwen resident runtime](../../libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/) — `QwenResidentRuntime` owns the lock, lifecycle and publication; `QwenResidentRequestExecution` runs the reserved request |
+
+The shared native target has this layout:
+
+```text
+DarkbloomClusterRuntime/
+├── Checkpoints/           manifest schema, verified descriptors and aligned IO
+├── Transport/             collectives, JACCL bootstrap and authenticated records
+├── State/                 owned request state, snapshots, geometry and tracing
+├── Support/               bounded JSON, hashing, errors and observation timestamps
+└── Models/
+    ├── Metadata/          shared stage tensor metadata and storage conservation
+    ├── Gemma/             Gemma artifact, tensor and stage metadata
+    └── Qwen/
+        ├── Metadata/      registered profiles, configuration and partition plans
+        ├── Loading/       source verification, selected tensors and load receipts
+        ├── Resources/     allocator, OS, state and tensor budgets
+        ├── Resident/      model ownership, reservation and request execution
+        ├── Generation/    agreement, frames, session, wire exchange and token control
+        ├── Prefill/       schedules, readiness and lookahead
+        └── Diagnostics/   bounded recording, captures and numerical evidence
+```
+
+For a serving request, follow `DistributedCBv2Engine` →
+`DistributedPipeExecutionOwner` → `WorkerCoordinator` → `QwenResidentRuntime` →
+`QwenResidentRequestExecution` → `runQwenLayerStageGenerationRequest`.
+Cancellation and capacity release must still follow actual retirement, not just
+stream completion. The focused [test commands](test.md#distributed-provider-lifecycle)
+exercise those contracts.
+
+The small control targets (`DarkbloomClusterProtocol`, `Process`, `Remote`,
+`Bootstrap` and `Security`) remain focused modules alongside the native runtime.
+Retained research snapshots belong to their archive branches; their historical
+paths are not the current implementation map. When porting one, find its owning
+subsystem and symbol here instead of copying the old directory layout.
 
 ### 2. Search filenames, then symbols
 

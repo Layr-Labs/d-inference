@@ -22,30 +22,36 @@ def prepare_snapshot(output):
         raw = (BASE / row['path']).read_bytes()
         if len(raw) != row['sizeBytes'] or hashlib.sha256(raw).hexdigest() != row['sha256']:
             raise ValueError('Retained fixture changed: ' + row['path'])
-    baseline = ['WorkerJSONScanner', 'BoundedProbeInput', 'QwenLayerStageMetadata',
-                'QwenLayerStagePlan', 'QwenDenseProfileTypes', 'QwenLongPrefillTensorBudget',
-                'CanonicalJSON', 'ClusterMetadataHashing', 'ClusterRuntimeError']
-    additions = ['LayerStageTensorMetadata', 'LayerStageStorageConservation',
-                 'LayerStageCapturedTensorHeaders', 'Gemma4TextMetadata', 'Gemma4TensorInventory',
-                 'Gemma4ArtifactMetadata', 'Gemma4StageConstructionDescriptor', 'Gemma4LayerStagePlan']
-    sources = [RUNTIME / (name + '.swift') for name in baseline + additions]
-    original_manifest = RUNTIME / 'VerifiedCheckpoint.swift'
-    content = original_manifest.read_text()
-    start = content.index('struct CheckpointManifest: Codable {')
-    end = content.index('\n}\n', start) + 3
-    declaration = content[start:end]
-    extracted = output / 'CheckpointManifest.swift'
-    extracted.write_text('import Foundation\n\n' + declaration + '\n')
-    sources += [extracted] + sorted(BASE.glob('*.swift'))
+    # Compile the same model-free closure with the production manifest schema.
+    runtime_sources = [
+        'Support/WorkerJSONScanner.swift',
+        'Support/BoundedProbeInput.swift',
+        'Models/Qwen/Metadata/QwenLayerStageMetadata.swift',
+        'Models/Qwen/Metadata/QwenLayerStagePlan.swift',
+        'Models/Qwen/Metadata/QwenDenseProfileTypes.swift',
+        'Models/Qwen/Resources/QwenLongPrefillTensorBudget.swift',
+        'Support/CanonicalJSON.swift',
+        'Support/ClusterMetadataHashing.swift',
+        'Support/ClusterRuntimeError.swift',
+        'Models/Metadata/LayerStageTensorMetadata.swift',
+        'Models/Metadata/LayerStageStorageConservation.swift',
+        'Models/Metadata/LayerStageCapturedTensorHeaders.swift',
+        'Models/Gemma/Gemma4TextMetadata.swift',
+        'Models/Gemma/Gemma4TensorInventory.swift',
+        'Models/Gemma/Gemma4ArtifactMetadata.swift',
+        'Models/Gemma/Gemma4StageConstructionDescriptor.swift',
+        'Models/Gemma/Gemma4LayerStagePlan.swift',
+        'Checkpoints/CheckpointManifest.swift',
+    ]
+    sources = [RUNTIME / path for path in runtime_sources] + sorted(BASE.glob('*.swift'))
     if len(sources) != 24:
         raise ValueError('Unexpected Swift fixture closure')
-    files = sources + [original_manifest, BASE / 'run.py', BASE / 'owned_process.py',
+    files = sources + [BASE / 'run.py', BASE / 'owned_process.py',
                        BASE / 'fixture-inputs.json'] + sorted((BASE / 'Inputs').glob('*.json'))
     snapshot = {'swiftSources': [str(p) for p in sources],
                 'files': [{'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
                            'sizeBytes': p.stat().st_size} for p in files],
-                'extraction': 'Exact existing CheckpointManifest declaration; fixture only',
-                'declarationSHA256': hashlib.sha256(declaration.encode()).hexdigest()}
+                'manifestSource': 'Checkpoints/CheckpointManifest.swift'}
     (output / 'source-snapshot.json').write_text(json.dumps(snapshot, indent=2, sort_keys=True) + '\n')
     return snapshot
 

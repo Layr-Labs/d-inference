@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `5719ebd3a`
+> Last updated: 2026-09-28 · commit `b3dc525e2`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -165,6 +165,13 @@ DARKBLOOM_RETAINED_PROFILE_FIXTURE="$PWD/libs/darkbloom-cluster/Tests/StageMetad
   swift test --package-path libs/darkbloom-cluster --jobs 2 \
   --triple arm64-apple-macosx26.2 -Xcc -target -Xcc arm64-apple-macosx26.2
 ```
+
+The [organized sources](navigation.md#follow-distributed-serving-through-its-owners)
+remain in their original SwiftPM targets, so existing package tests discover the
+same cases. Standalone runners list the relocated source files explicitly. The
+metadata runner compiles the production `CheckpointManifest` schema directly.
+Member registration lives in `Membership/`; the isolated installed-file and
+diagnostics runners compile `Installed/` without pulling in the model scanner.
 
 The runtime tests cover resident admission, recording/accounting, and generation
 frontiers: rejected or replayed frames cannot advance the schedule, and EOS,

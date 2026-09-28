@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-28 · commit `5719ebd3a`
+> Last updated: 2026-09-28 · commit `b3dc525e2`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -22,7 +22,8 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
 
 Distributed serving uses the shared cluster modules and the separate native
-worker described below. The retired standalone probe, its copied runtime and
+worker described below. Their [folder and entry-point map](navigation.md#follow-distributed-serving-through-its-owners)
+keeps native loading, generation and transport within the existing SwiftPM targets. The retired standalone probe, its copied runtime and
 offline planning harness remain recoverable at
 [the source import commit](https://github.com/Layr-Labs/d-inference/tree/39ab57dc66da7d15dfeb4ba41fc4ceaf25e24433/experiments/cluster).
 
@@ -36,7 +37,7 @@ compile the current JACCL headers against simulated verbs with sanitizers; they
 are independent of the full MLX build and physical RDMA qualification.
 The shared runtime owns selected-weight loading and resident stage execution.
 Its aligned reader requires a 16 KiB OS page size and bounds scratch storage
-(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CheckpointAlignedReader.swift`,
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Checkpoints/CheckpointAlignedReader.swift`,
 `CheckpointAlignedReader`).
 The [completed two-Mac cohort](../reports/2026-09-15-cluster-rdma-prefill-baseline.md)
 records physical execution separately from these build checks; the

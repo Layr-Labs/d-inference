@@ -3,19 +3,6 @@ import Foundation
 import MLX
 import MLXNN
 
-public struct QwenResidentGenerationCompletion: Sendable {
-    public let requestID: UUID
-    public let finishReason: ClusterWorkerFinishReason
-    public let selectedTokenIDs: [Int]
-    public let completedFrames: Int
-    public let committedTokens: Int
-    public let tokenChainSHA256: String
-    public let bothRequestStatesRetired: Bool
-    public let physicalTransferQualified = false
-    public let independentNumericalComparisonPerformed = false
-    public let externalTTFTMeasured = false
-}
-
 /// Synchronous, process-local native owner for the worker's private executor.
 /// Only cancel/readiness may run on its separate control thread. Concurrent
 /// reserve/start/shutdown calls refuse instead of overlapping MLX work.
@@ -34,16 +21,7 @@ public final class QwenResidentRuntime {
     private let lifecycle: QwenLayerStageResidentLifecycle
     private var stage: QwenResidentLoadedStage?
     private weak var model: Module?
-    private struct Reservation {
-        let request: QwenLayerStageGenerationRequest
-        let allowance: QwenResidentRequestAllowance
-        let deadline: UInt64
-        let mode: QwenResidentRequestMode
-        let recordingCharge: QwenResidentRecordingCharge?
-        let prefillPolicy: QwenResidentPrefillPolicy
-        let prefillAllowance: QwenGenerationPrefillAllowance?
-    }
-    private var reservation: Reservation?
+    private var reservation: QwenResidentReservation?
     private var processLeaseOwned = true
 
     init(admission: QwenResidentAdmission, control: QwenResidentControl, collective: Collective,
@@ -157,15 +135,12 @@ public final class QwenResidentRuntime {
                 }
                 charge = nil
             }
-            if let prefill {
-                try allowance.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
-                    prefill.extraNativeBytes, charge?.capture.extraNativeBytes ?? 0]),
-                    additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
-                        prefill.extraHostBytes, charge?.capture.extraHostBytes ?? 0]))
-            } else { try allowance.requireLive() }
+            let reserved = QwenResidentReservation(request: request, allowance: allowance,
+                deadline: value.deadlineUptimeNanoseconds, mode: mode, recordingCharge: charge,
+                prefillPolicy: prefillPolicy, prefillAllowance: prefill)
+            try reserved.requireLive()
             try control.check(deadline: value.deadlineUptimeNanoseconds)
-            reservation = .init(request: request, allowance: allowance, deadline: value.deadlineUptimeNanoseconds,
-                mode: mode, recordingCharge: charge, prefillPolicy: prefillPolicy, prefillAllowance: prefill)
+            reservation = reserved
             return try QwenLongPrefillCheckedBytes.sum([charge?.reservedBytes ?? allowance.reservedBytes,
                 prefill?.reservedBytes ?? 0])
         } catch { control.fail(); throw error }
@@ -209,66 +184,9 @@ public final class QwenResidentRuntime {
                     recordedRequestFingerprint: reserved.request.fingerprint), deadline: reserved.deadline, body: {
                 try autoreleasepool {
                     guard let stage else { throw ProbeError("Resident model already released") }
-                    let receipt = stage.loaded.receipt
-                    let source = try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
-                        artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
-                        storageCommitmentSHA256: receipt.storageCommitmentSHA256,
-                        planFingerprint: admission.plan.fingerprint,
-                        producerStageFingerprint: admission.plan.stages[0].fingerprint)
-                    let agreement = try QwenLayerStageGenerationAgreement(request: reserved.request,
-                        membershipEpoch: admission.configuration.identity.membershipEpoch,
-                        source: source, consumerStageFingerprint: admission.plan.stages[1].fingerprint,
-                        rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
-                        numericalPolicySHA256: admission.arithmeticSHA256, prefillPolicy: reserved.prefillPolicy)
-                    var lastResourceCheck: UInt64 = 0, ordinal = 0
-                    func check() throws {
-                        try control.check(deadline: reserved.deadline)
-                        let now = DispatchTime.now().uptimeNanoseconds
-                        if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                            if let prefill = reserved.prefillAllowance {
-                                try reserved.allowance.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
-                                    prefill.extraNativeBytes, reserved.recordingCharge?.capture.extraNativeBytes ?? 0]),
-                                    additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
-                                        prefill.extraHostBytes, reserved.recordingCharge?.capture.extraHostBytes ?? 0]))
-                            } else { try reserved.allowance.requireLive() }
-                            lastResourceCheck = DispatchTime.now().uptimeNanoseconds
-                        }
-                        try control.check(deadline: reserved.deadline)
-                    }
-                    try check()
-                    func committedToken(_ token: Int) throws -> Bool {
-                        let current = ordinal; ordinal += 1
-                        return try onCommittedToken(current, token, reserved.request.promptCount + current)
-                    }
-                    let result: QwenLayerStageGenerationResult
-                    let evidence: QwenGenerationDiagnosticEvidence?
-                    if mode == .recording {
-                        guard let charge = reserved.recordingCharge else { throw ProbeError("Recording capture was not reserved") }
-                        let actual = try QwenResidentRecordingCharge.derive(base: reserved.allowance, rank: collective.rank,
-                            vocabularySize: reserved.request.profile.vocabularySize,
-                            activationDType: reserved.request.profile.activationDType,
-                            bound: QwenResidentResourceEnvironment.allocationBound)
-                        try charge.requireCapture(actual.capture)
-                        let recorded = try recordQwenLayerStageGenerationRequest(loaded: stage.loaded,
-                            profile: stage.profile, plan: admission.plan, agreement: agreement, collective: collective,
-                            requestAllowance: reserved.allowance, onCommittedToken: committedToken, check: check)
-                        try charge.requireCapture(recorded.captureBudget)
-                        evidence = recorded; result = recorded.execution
-                    } else {
-                        result = try runQwenLayerStageGenerationRequest(loaded: stage.loaded,
-                            plan: admission.plan, agreement: agreement, collective: collective,
-                            onCommittedToken: committedToken, check: check)
-                        evidence = nil
-                    }
-                    guard result.bothRequestStatesRetired,
-                          let reason = ClusterWorkerFinishReason(rawValue: result.finishReason.rawValue) else {
-                        throw ProbeError("Resident generation returned without clean bilateral retirement")
-                    }
-                    let completion = QwenResidentGenerationCompletion(requestID: requestID, finishReason: reason,
-                        selectedTokenIDs: result.selectedTokenIDs, completedFrames: result.completedFrames,
-                        committedTokens: result.committedTokens, tokenChainSHA256: result.tokenChainSHA256,
-                        bothRequestStatesRetired: true)
-                    return (completion, evidence)
+                    return try QwenResidentRequestExecution.run(stage: stage, admission: admission,
+                        collective: collective, control: control, reserved: reserved,
+                        onCommittedToken: onCommittedToken)
                 }
             }, prepare: { try prepare($0.0, $0.1) })
             // Output is fully prepared and control completed before this slot

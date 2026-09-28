@@ -6,7 +6,7 @@ Run from any working directory on macOS; choose a fresh output directory whose p
 python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py --output /private/tmp/darkbloom-stage-metadata-checks
 ```
 
-This compiles the current checkout's 17 Foundation Runtime sources, six retained fixtures, and the exact CheckpointManifest declaration extracted from current VerifiedCheckpoint.swift into the private output directory. No installed model, research directory, MLX module, payload read or network is required. The fixture retains the captured Gemma configuration/index/header bytes and Qwen metadata-only golden identities under Inputs.
+This compiles the current checkout's 18 Foundation runtime sources (including the production CheckpointManifest schema) and six retained fixtures. No installed model, research directory, MLX module, payload read or network is required. The fixture retains the captured Gemma configuration/index/header bytes and Qwen metadata-only golden identities under Inputs.
 
 The checks cover all29 Gemma cuts, exact selected/excluded/replica conservation, full source-to-local mapping, global attention phase and quantization relocation, malformed/refusal cases and three unchanged Qwen Plan/stage fingerprints. The first reviewed research execution passed191 accepted and36 refused cases. That result does not claim this relocatable launcher was executed; its initial repository integration is source-only until run.
 

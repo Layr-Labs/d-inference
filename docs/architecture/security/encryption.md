@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-17 · commit `605651bb9`
+> Last updated: 2026-09-28 · commit `b3dc525e2`
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -185,7 +185,7 @@ prove membership or establish that key.
 (`ClusterAuthenticatedRecordTransport`) uses one sealed frame for exact-length
 payloads and a bounded prefix/body pair for variable controls. It authenticates
 received data and rechecks cancellation before returning plaintext. The native
-bridge in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAuthenticatedRecords.swift`
+bridge in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Transport/CollectiveAuthenticatedRecords.swift`
 (`CollectiveAuthenticatedRecords`) preserves array dtype bytes and reconstructs
 arrays only after authentication.
 

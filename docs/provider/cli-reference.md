@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-17 · commit `605651bb9`
+> Last updated: 2026-09-28 · commit `b3dc525e2`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -212,7 +212,7 @@ and startup requires both native ranks to agree before loading their stages.
 There is no serving environment override for this choice
 (`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift`,
 `ClusterConfigurationStore.save`;
-`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentAdmission.swift`,
 `QwenResidentAdmission.loadAgreementFingerprint`).
 The [configuration schema](../reference/configuration.md#saved-distributed-setup-experimental)
 defines the required pins, installed paths and bounded session behavior.

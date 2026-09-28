@@ -33,6 +33,13 @@ directly. Registered source validation precedes loading, and each selected tenso
 read requires the resident resource gate. Legacy probe request modes and the
 standalone owner qualification executable have been retired.
 
+Use the [distributed source map](../../docs/developer/navigation.md#follow-distributed-serving-through-its-owners)
+to find checkpoint IO, transport, owned state, model loading, generation and
+recording. `QwenResidentRuntime` keeps model ownership and publication together;
+`QwenResidentRequestExecution` handles a reserved request and
+`QwenResidentReservation` owns its live resource check. Source folders remain
+inside the existing SwiftPM targets.
+
 From the repository root, run the focused control checks:
 
 ```sh

@@ -29,7 +29,7 @@ private func makeGateLoop(models: [ModelInfo]) throws -> ProviderLoop {
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    return try ProviderLoop(config: config, attestationSigner: nil)
 }
 
 private func modelInfo(id: String, modelType: String?) -> ModelInfo {

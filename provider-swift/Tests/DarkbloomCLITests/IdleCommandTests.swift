@@ -150,7 +150,7 @@ struct IdleCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        let result = try setIdleUnloadMinutes(0, configPath: url.path, migrateOnDisk: false)
+        let result = try setIdleUnloadMinutes(0, configPath: url.path)
         #expect(result.changed)
         #expect(result.path == url)
         let written = try String(contentsOf: url, encoding: .utf8)
@@ -171,11 +171,11 @@ struct IdleCommandTests {
 
         // Decodes to 60 already, but "Free when idle" must be pinned so a
         // future default flip cannot silently move this provider.
-        let first = try setIdleUnloadMinutes(60, configPath: url.path, migrateOnDisk: false)
+        let first = try setIdleUnloadMinutes(60, configPath: url.path)
         #expect(first.changed)
         // Now pinned at the requested value: a true no-op, no rewrite.
         let pinned = try String(contentsOf: url, encoding: .utf8)
-        let second = try setIdleUnloadMinutes(60, configPath: url.path, migrateOnDisk: false)
+        let second = try setIdleUnloadMinutes(60, configPath: url.path)
         #expect(second.changed == false)
         let after = try String(contentsOf: url, encoding: .utf8)
         #expect(after == pinned)
@@ -190,7 +190,7 @@ struct IdleCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        let result = try setIdleUnloadMinutes(45, configPath: url.path, migrateOnDisk: false)
+        let result = try setIdleUnloadMinutes(45, configPath: url.path)
         #expect(result.changed)
         let config = try ConfigManager.load(from: url)
         #expect(config.backend.idleTimeoutMins == 45)
@@ -208,7 +208,7 @@ struct IdleCommandTests {
         let before = try String(contentsOf: url, encoding: .utf8)
 
         #expect(throws: (any Error).self) {
-            try setIdleUnloadMinutes(IdleUnloadPolicy.maxMinutes + 1, configPath: url.path, migrateOnDisk: false)
+            try setIdleUnloadMinutes(IdleUnloadPolicy.maxMinutes + 1, configPath: url.path)
         }
         #expect(try String(contentsOf: url, encoding: .utf8) == before)
     }
@@ -225,18 +225,22 @@ struct IdleCommandTests {
 
     // MARK: - status
 
-    @Test("status lists advertised-but-unloaded models with the policy's reason")
-    func statusNotLoadedLine() {
-        #expect(Status.notLoadedLine(
-            advertised: nil, warmModels: [], currentModel: nil, idleTimeoutMins: 60) == nil)
-        #expect(Status.notLoadedLine(
-            advertised: ["a", "b"], warmModels: ["a"], currentModel: "b", idleTimeoutMins: 60) == nil)
+    @Test("status distinguishes pending startup loads from request-time loads")
+    func statusNotLoadedLines() {
+        #expect(Status.notLoadedLines(
+            advertised: nil, warmModels: [], currentModel: nil,
+            startupPreloadPendingModels: nil).isEmpty)
+        #expect(Status.notLoadedLines(
+            advertised: ["a", "b"], warmModels: ["a"], currentModel: "b",
+            startupPreloadPendingModels: []).isEmpty)
 
-        #expect(Status.notLoadedLine(
-            advertised: ["a", "b"], warmModels: ["a"], currentModel: nil, idleTimeoutMins: 60)
-            == "Not loaded (unloaded when idle; reloads on demand): b")
-        #expect(Status.notLoadedLine(
-            advertised: ["a", "b"], warmModels: [], currentModel: nil, idleTimeoutMins: 0)
-            == "Not loaded (loads on first request): a, b")
+        #expect(Status.notLoadedLines(
+            advertised: ["a", "b", "c"], warmModels: ["a"], currentModel: nil,
+            startupPreloadPendingModels: ["b"])
+            == ["Startup preload pending: b", "Not loaded (loads on request): c"])
+        #expect(Status.notLoadedLines(
+            advertised: ["a", "b"], warmModels: [], currentModel: nil,
+            startupPreloadPendingModels: nil)
+            == ["Not loaded (loads on request): a, b"])
     }
 }

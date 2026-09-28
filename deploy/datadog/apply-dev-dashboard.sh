@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PAYLOAD="${ROOT}/deploy/datadog/dev-network-dashboard.json"
-GCP_PROJECT="${DD_GCP_PROJECT:-${GCP_PROJECT:-sepolia-ai}}"
+GCP_PROJECT="${DD_GCP_PROJECT:-${GCP_PROJECT:-darkbloom-dev}}"
 DASHBOARD_ID="${DD_DASHBOARD_ID:-vij-8u7-xhf}"
 
 fetch_secret() {

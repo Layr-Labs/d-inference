@@ -261,6 +261,7 @@ func preflightScanWait(deadline time.Duration) time.Duration {
 // the (possibly fallback-updated) build model and handled=false. Self-route and
 // prefer modes short-circuit the public capacity gate exactly as before.
 func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, parsed map[string]any, p inferenceAdmissionParams) (string, bool) {
+	markPublicModelDemand(r, p)
 	model := p.model
 	publicModel := p.publicModel
 	refundReservation := p.refundReservation
@@ -578,8 +579,8 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	}
 	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge == 0 {
 		// No provider is even structurally eligible right now: the model's
-		// whole pool is offline/untrusted, trait-gated (below the tools floor
-		// / render-broken), or — the case the shape-keyed breaker introduces —
+		// whole pool is offline/untrusted, trait-gated (e.g. render-broken),
+		// or — the case the shape-keyed breaker introduces —
 		// every serving provider is in inference-error cooldown for THIS
 		// request shape.
 		//

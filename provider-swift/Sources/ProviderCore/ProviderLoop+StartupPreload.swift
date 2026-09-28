@@ -7,7 +7,8 @@
 /// was cold at once (first_chunk_timeout storm).
 ///
 /// Now `run()` calls `runStartupPreloadGate()` BEFORE the coordinator client
-/// is created: the previously-served (or operator-configured) model set is
+/// is created: the previously-served (or operator-configured) model set, plus
+/// newly selected models, is
 /// loaded via the normal `ensureModelLoaded` path (weights + EngineV2 bridge),
 /// optionally followed by a 1-token greedy
 /// decode through the real serving path so Metal JIT, compiled buckets, and
@@ -39,13 +40,16 @@ extension ProviderLoop {
     internal enum StartupPreloadGateOutcome: Sendable, Equatable {
         /// `startup_preload = false`.
         case disabled
-        /// Nothing to preload (no config list, no persisted set, or nothing
-        /// advertised) — legacy register-immediately timing.
+        /// Nothing to preload (no configured, previously-served or selected
+        /// model) — legacy register-immediately timing.
         case nothingToPreload
         /// Preload finished within the timeout — registering fully warm.
         case warm
         /// Timeout hit — registering now; loads continue in the background.
         case timedOut
+        /// The serving task was cancelled (for example, a scheduled window
+        /// closed) — the preload driver is cancelled and registration stops.
+        case cancelled
     }
 
     /// Upper bound on one startup self-test decode so a wedged decode can
@@ -107,12 +111,15 @@ extension ProviderLoop {
     /// Build the ordered startup preload plan:
     ///   * `preload_models` non-empty → that list, in operator order;
     ///   * otherwise → the persisted previously-served set, biggest first
-    ///     (the largest model loads while memory is emptiest).
-    /// Ids not in the advertised set are skipped with a WARN; the plan is
-    /// de-duplicated and capped at `maxModelSlots`.
+    ///     (the largest model loads while memory is emptiest);
+    ///   * append newly selected models so a fresh start warms them without
+    ///     waiting for their first request, regardless of idle-unload policy.
+    /// Ids not in the advertised set are skipped with a WARN. Retain every
+    /// candidate so a later small model can fill a slot when an earlier load
+    /// is skipped or fails; the driver checks the live slot cap before each.
     internal func startupPreloadPlan() -> [StartupPreloader.Candidate] {
         let backend = loopConfig.config.backend
-        let ids: [String]
+        var ids: [String]
         if !backend.preloadModels.isEmpty {
             ids = backend.preloadModels
         } else {
@@ -120,6 +127,7 @@ extension ProviderLoop {
                 (advertisedModels[$0]?.estimatedMemoryGb ?? 0)
                     > (advertisedModels[$1]?.estimatedMemoryGb ?? 0)
             }
+            ids.append(contentsOf: loopConfig.models.map(\.id))
         }
 
         var seen = Set<String>()
@@ -128,11 +136,6 @@ extension ProviderLoop {
             guard seen.insert(id).inserted else { continue }
             guard let info = advertisedModels[id] else {
                 logger.warning("Startup preload: '\(id)' is not in the advertised model set — skipping")
-                continue
-            }
-            guard plan.count < maxModelSlots else {
-                logger.warning(
-                    "Startup preload: plan exceeds max_model_slots=\(self.maxModelSlots) — skipping '\(id)'")
                 continue
             }
             plan.append(
@@ -165,6 +168,7 @@ extension ProviderLoop {
     /// the background (`startupPreloadTask`); shutdown cancels it.
     @discardableResult
     internal func runStartupPreloadGate() async -> StartupPreloadGateOutcome {
+        guard !Task.isCancelled, !servingDrain.refusing else { return .cancelled }
         let backend = loopConfig.config.backend
         guard backend.startupPreload else {
             logger.info("Startup preload disabled (startup_preload=false)")
@@ -175,6 +179,8 @@ extension ProviderLoop {
             logger.info("Startup preload: nothing to preload — registering immediately")
             return .nothingToPreload
         }
+        startupPreloadPendingModels = plan.map(\.modelId)
+        writeDaemonState()
 
         let timeout = Duration.seconds(Int64(max(1, backend.startupPreloadTimeoutSecs)))
         logger.info(
@@ -208,7 +214,9 @@ extension ProviderLoop {
             retire: { modelId in await me.retireModelAfterFailedSelfTest(modelId: modelId) },
             onSelfTestFailed: onSelfTestFailed,
             log: { line in log.info("\(line)") },
-            currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) }
+            currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) },
+            canLoadMore: { await me.startupPreloadHasFreeSlot() },
+            onCandidateStarted: { modelId in await me.markStartupPreloadReached(modelId) }
         )
 
         let preloader = StartupPreloader(deps: deps)
@@ -220,7 +228,17 @@ extension ProviderLoop {
         }
         startupPreloadTask = driver
 
-        let finishedInTime = await waitForPreloads([driver], timeout: timeout)
+        let gateWaiter = OneShotBoolContinuation()
+        startupPreloadGateWaiter = gateWaiter
+        defer { startupPreloadGateWaiter = nil }
+        let finishedInTime = await waitForPreloads(
+            [driver], timeout: timeout, returnOnCancellation: true,
+            wake: gateWaiter)
+        if Task.isCancelled || servingDrain.refusing {
+            driver.cancel()
+            logger.info("Startup preload gate: serving stopped — cancelling before registration")
+            return .cancelled
+        }
         if finishedInTime {
             logger.info(
                 "Startup preload gate: warm after \(StartupPreloader.secs(clock.now - started)) — registering")
@@ -236,6 +254,7 @@ extension ProviderLoop {
     /// actor whether the gate was still waiting or had already timed out.
     private func finishStartupPreload(summary: StartupPreloader.Summary, elapsed: Duration) {
         startupPreloadTask = nil
+        startupPreloadPendingModels = []
         var parts = ["loaded=\(summary.loaded.count)"]
         if !summary.skippedInsufficientMemory.isEmpty {
             parts.append("skipped_memory=[\(summary.skippedInsufficientMemory.joined(separator: ", "))]")
@@ -251,6 +270,17 @@ extension ProviderLoop {
         }
         logger.info(
             "Startup preload complete in \(StartupPreloader.secs(elapsed)): \(parts.joined(separator: " "))")
+        writeDaemonState()
+    }
+
+    private func startupPreloadHasFreeSlot() -> Bool {
+        modelSlots.count < maxModelSlots
+    }
+
+    private func markStartupPreloadReached(_ modelID: String) {
+        if let index = startupPreloadPendingModels.firstIndex(of: modelID), index > 0 {
+            startupPreloadPendingModels.removeFirst(index)
+        }
         writeDaemonState()
     }
 
@@ -305,8 +335,8 @@ extension ProviderLoop {
     ///
     /// Post-registration retirement (the gate timed out, so the coordinator
     /// client is already live and the initial `register` carried this model):
-    /// registration is the only wire mechanism that communicates a REMOVAL
-    /// from the advertised set (`models_update` is additive), so mirror the
+    /// this automatic retirement path communicates removal by registration
+    /// (`models_update` is additive; operator switches use `models_replace`), so mirror the
     /// hard-swap drop (`dropAdvertisedBuild`) — remove it from the client's
     /// advertised store — and force a reconnect so a fresh `register`
     /// announces the shrunken set. Pre-registration (the common case:
@@ -396,38 +426,7 @@ extension ProviderLoop {
     }
 
     private func scheduleRetirementReconnect() {
-        guard pendingRetirementReconnect == nil else { return }
-        pendingRetirementReconnect = Task { [weak self] in
-            guard let self else { return }
-            _ = await self.waitForInflightDrain(
-                timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
-            // Shutdown cancels this task (`beginShutdown`); a cancelled
-            // reconnect must not re-register a session shutdown is closing.
-            guard !Task.isCancelled else { return }
-            await self.fireRetirementReconnect()
-        }
-    }
-
-    private func fireRetirementReconnect() async {
-        pendingRetirementReconnect = nil
-        guard !isShuttingDown, coordinatorClient != nil else { return }
-        // Admission barrier across the reconnect: between the drain's last
-        // observation and the socket closing there is an actor hop, and a
-        // routed request admitted in it would only be cancelled by the
-        // `.disconnected` handler. Raised here, actor-isolated, before any
-        // suspension; lifted by the `.connected` event of the new session.
-        setRetirementReconnectBarrier(true)
-        if hasInflightWork {
-            // Work landed in the hop after the drain observed empty: let it
-            // ride out under the barrier (nothing new is admitted), then close.
-            _ = await waitForInflightDrain(
-                timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
-            if isShuttingDown || Task.isCancelled {
-                setRetirementReconnectBarrier(false)
-                return
-            }
-        }
-        await coordinatorClient?.forceReconnect()
+        requestPlannedReconnect()
     }
 
     // MARK: - Self-test decode (the serving path)
@@ -451,6 +450,7 @@ extension ProviderLoop {
         let tokenizer = slot.tokenizer
         let modelType = slot.modelType
         let slotContainer = slot.container
+        let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
         let slotEngineV2 = slot.engineV2
         let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
@@ -468,7 +468,7 @@ extension ProviderLoop {
             registryProvider: { @Sendable in
                 [modelId: .init(
                     tokenizer: tokenizer, modelType: modelType,
-                    container: slotContainer, isVLM: slotIsVLM,
+                    container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
                     engineV2Bridge: slotEngineV2,
                     visionGate: slotVisionGate)]
             },

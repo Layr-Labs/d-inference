@@ -12,7 +12,8 @@ extension PrefixCachePolicy {
         binaryHash: String?, loadedMetallibHash: String?, osVersion: String,
         mtpConfig: CBv2MTPConfig, assistantCodecID: String?,
         environment: [String: String], processEnvironment: [String: String],
-        storage: CompleteCheckpointStorageIdentity? = nil
+        storage: CompleteCheckpointStorageIdentity? = nil,
+        additionalNumerics: [String: String] = [:]
     ) -> CBv2CompleteCheckpointIdentity? {
         guard let modelHash = checkpointIdentityHash(modelAggregateHash),
             let promptHash = checkpointIdentityHash(promptContractID),
@@ -35,6 +36,7 @@ extension PrefixCachePolicy {
             "mtp.maxAutomaticRectangularTokens": String(mtpConfig.maxAutomaticRectangularTokens),
         ]
         if let storage { numerics.merge(storage.fingerprintFields) { _, actual in actual } }
+        for (key, value) in additionalNumerics { numerics["native." + key] = value }
         // Include both the actual process switches used by MLX/model kernels
         // and slot overrides used by provider assembly. Extra invalidations are
         // safe; missing a numerics switch could restore incompatible state.
@@ -44,7 +46,8 @@ extension PrefixCachePolicy {
                     || key.hasPrefix("DARKBLOOM_QWEN_") || key.hasPrefix("DARKBLOOM_MTP_")
                     || key.hasPrefix("DARKBLOOM_QWEN4_")
                     || key.hasPrefix("DARKBLOOM_NEMOTRON35_")
-                    || key.hasPrefix("DARKBLOOM_GPTOSS_") || key.hasPrefix("DARKBLOOM_GEMMA4_") {
+                    || key.hasPrefix("DARKBLOOM_GPTOSS_") || key.hasPrefix("DARKBLOOM_GEMMA4_")
+                    || key.hasPrefix("DARKBLOOM_DIFFUSION_") {
                 numerics[scope + "." + key] = value
             }
         }

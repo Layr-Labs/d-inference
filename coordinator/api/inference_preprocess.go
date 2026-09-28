@@ -135,8 +135,8 @@ type inferencePrelude struct {
 
 // parseInferencePrelude runs the request prelude shared verbatim by
 // handleChatCompletions and handleGenericInference: read the body, parse JSON
-// (once), normalize tool JSON-Schemas on the decoded map (so pre-0.6.3
-// providers never see chat-template-crashing shapes), require a model, and
+// (once), normalize tool JSON-Schemas on the decoded map (so no provider sees
+// chat-template-crashing shapes), require a model, and
 // enforce the per-key model allowlist. On any failure it writes the exact
 // OpenAI-compatible error response and returns ok=false; the caller must then
 // return immediately.
@@ -172,12 +172,12 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 		o.mu.Unlock()
 	}
 
-	// Normalize tool JSON-Schemas before dispatch so providers running binaries
-	// older than 0.6.3 (which normalize provider-side, #310) never see the
+	// Normalize tool JSON-Schemas before dispatch so no provider sees the
 	// schema shapes that crash Gemma-style chat templates ("upper filter
-	// requires string" — nullable array types, missing types). Centralizing
-	// this in the coordinator covers the whole fleet the moment the
-	// coordinator deploys, instead of waiting out provider update lag. The
+	// requires string" — nullable array types, missing types). The Swift
+	// provider repairs only tools[].function.parameters, after media inlining
+	// may have pushed the body past its size gate, so flat and input_schema
+	// tools and large bodies depend on this pass (see toolschema.go). The
 	// repair runs on the decoded map (one parse per request); the caller's
 	// original tools are kept for constraint validation.
 	originalTools, _ := normalizeParsedToolSchemas(parsed, rawBody)
@@ -196,6 +196,13 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 	if !s.keyModelAllowed(r.Context(), model) {
 		writeJSON(w, http.StatusForbidden, errorResponse("model_not_allowed",
 			fmt.Sprintf("this API key is not permitted to use model %q", model), withParam("model")))
+		return inferencePrelude{}, false
+	}
+	// Reject an invalid caller budget before runtime defaults, alias lowering or
+	// reservation accounting can replace it with an executable positive bound.
+	if field := invalidOutputTokenField(parsed); field != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			field+" must be a non-negative integer", withParam(field)))
 		return inferencePrelude{}, false
 	}
 
@@ -304,15 +311,15 @@ func (s *Server) candidateProviderBody(
 		return nil, err
 	}
 	if isResponsesAPI {
-		return promptcontract.LowerProviderBody(promptcontract.EndpointResponses, candidateBody)
+		return promptcontract.LowerResponsesInferenceBody(candidateBody)
 	}
 	return candidateBody, nil
 }
 
 // visionToolsFailFast is the shared media/tools capability fast-fail (mirrored
 // between the two handlers). A media request must land on a constraint-eligible
-// vision-capable provider, and a tool-bearing request on a provider past the
-// tools version floor with a healthy chat-template render; otherwise the request
+// vision-capable provider, and a tool-bearing request on a provider with a
+// healthy chat-template render; otherwise the request
 // can never route and must fail fast with a clear model_unavailable rather than
 // queue for 120s into a misleading capacity 429. Both gates are constrained to
 // allowedProviderSerials (a public capable provider must not satisfy an
@@ -320,33 +327,16 @@ func (s *Server) candidateProviderBody(
 // matched by ownerAccountID, not serials — those paths handle availability
 // themselves and must never be wrongly blocked).
 //
-// rejectResponsesMedia is the chat-completions-only guard: media via the
-// Responses API (`input` with no `messages`) is rejected outright because the
-// Responses→chat lowering does not carry image/video parts through. Generic
-// (completions/Anthropic) passes false.
-//
 // Returns handled=true when a terminal response was written (caller must return).
 func (s *Server) visionToolsFailFast(
 	w http.ResponseWriter,
 	model, publicModel string,
 	requiresVision, hasTools, requiresToolConstraint bool,
 	toolChoiceMode string,
-	rejectResponsesMedia bool,
 	policy selfRoutePolicy,
 	allowedProviderSerials []string,
 ) (handled bool) {
 	if requiresVision {
-		// The Responses API path lowers `input` to chat messages via
-		// responsesRequestToChatCompletions, which does NOT carry image/video parts
-		// through — so a media request there would be routed and then silently
-		// stripped (image-blind). Reject it cleanly until that conversion preserves
-		// media (tracked follow-up); the console uses /v1/chat/completions for images.
-		if rejectResponsesMedia {
-			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-				"image/video input via the Responses API is not supported yet; use /v1/chat/completions",
-				withParam("input")))
-			return true
-		}
 		// Constrain the capability check to the eligible provider set: a public
 		// vision-capable provider must not satisfy a request pinned to an
 		// allowlist whose members are all vision-blind. Self-route/prefer owned
@@ -361,10 +351,9 @@ func (s *Server) visionToolsFailFast(
 		}
 	}
 	// Tools fail-fast (mirrors the vision gate): when every constraint-eligible
-	// provider serving this model is trait-gated — below the tools version floor,
-	// below the mode-specific floor (tool_choice "none" needs the v0.7.10
-	// prompt-side policy that hides declared tools), or advertising a broken
-	// chat-template render — the request can never route. Without this gate it
+	// provider serving this model is trait-gated — chiefly by advertising a
+	// broken chat-template render (template_render_ok=false) — the request can
+	// never route. Without this gate it
 	// passes the trait-blind QuickCapacityCheck preflight, queues for up to 120s,
 	// and dies with a misleading capacity 429. The traits here must match what
 	// the scheduler enforces at dispatch or the fail-fast and the queue disagree.
@@ -379,7 +368,7 @@ func (s *Server) visionToolsFailFast(
 			allowedProviderSerials...,
 		) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-			fmt.Sprintf("no online provider for model %q supports tool calls (requires provider >= 0.6.3 with a healthy chat template) — providers may still be updating", publicModel),
+			fmt.Sprintf("no online provider for model %q supports tool calls with a healthy chat template right now", publicModel),
 			withParam("model")))
 		return true
 	}

@@ -56,9 +56,9 @@ func TestSanitizeProviderInferenceErrorDiscardsUntrustedStrings(t *testing.T) {
 	}
 }
 
-func TestSanitizeProviderInferenceErrorLegacyFailsClosed(t *testing.T) {
+func TestSanitizeProviderInferenceErrorMissingCodeFailsClosed(t *testing.T) {
 	safe, invalidCode, invalidCause := sanitizeProviderInferenceError(&protocol.InferenceErrorMessage{
-		RequestID:     "req-legacy",
+		RequestID:     "req-missing-code",
 		Error:         "prompt contents and /Users/provider/private/path",
 		StatusCode:    http.StatusOK,
 		ErrorReason:   "prompt-derived-reason",
@@ -68,15 +68,15 @@ func TestSanitizeProviderInferenceErrorLegacyFailsClosed(t *testing.T) {
 		t.Fatalf("invalidCode=%v invalidCause=%v", invalidCode, invalidCause)
 	}
 	if safe.FailureCode != protocol.FailureCodeGenerationFailure || safe.Error != "inference generation failed" {
-		t.Fatalf("legacy frame did not fail closed: %+v", safe)
+		t.Fatalf("code-less frame did not fail closed: %+v", safe)
 	}
 	// A valid bounded cause may retain its health semantics; it still cannot
-	// preserve legacy prose or choose an arbitrary status.
+	// preserve provider prose or choose an arbitrary status.
 	if safe.TerminalCause != terminalCauseSafetyDeadline || safe.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("bounded terminal semantics lost: %+v", safe)
 	}
 	if safe.ErrorReason != errorReasonProviderError {
-		t.Fatalf("legacy reason must not override fail-closed classification: %+v", safe)
+		t.Fatalf("untrusted reason must not override fail-closed classification: %+v", safe)
 	}
 }
 
@@ -136,55 +136,34 @@ func TestSanitizeProviderInferenceErrorDerivesStatusFromClosedFields(t *testing.
 	}
 }
 
-func TestSanitizeProviderInferenceErrorLegacyModelLoadCategories(t *testing.T) {
-	cases := []struct {
-		status int
-		code   protocol.InferenceFailureCode
-	}{
-		{http.StatusNotFound, protocol.FailureCodeModelUnavailable},
-		{http.StatusServiceUnavailable, protocol.FailureCodeCapacity},
-		{http.StatusInternalServerError, protocol.FailureCodeInternalFailure},
-	}
-	for _, tc := range cases {
-		safe, invalidCode, _ := sanitizeProviderInferenceError(&protocol.InferenceErrorMessage{
-			StatusCode:  tc.status,
-			ErrorReason: errorReasonModelLoad,
-		})
+// TestSanitizeProviderInferenceErrorMissingCodeIgnoresBoundedHints pins the
+// removal of the mixed-fleet classifier: every routable provider sends
+// failure_code, so a frame without one is drift and fails closed as
+// generation_failure no matter which bounded status, reason or cause it
+// carries. None of them may promote it to capacity, cancellation, a client
+// fault or model_unavailable, and a bare 429 no longer means queue_full.
+func TestSanitizeProviderInferenceErrorMissingCodeIgnoresBoundedHints(t *testing.T) {
+	for _, input := range []protocol.InferenceErrorMessage{
+		{StatusCode: http.StatusNotFound, ErrorReason: errorReasonModelLoad},
+		{StatusCode: http.StatusServiceUnavailable, ErrorReason: errorReasonModelLoad},
+		{StatusCode: http.StatusTooManyRequests},
+		{StatusCode: http.StatusServiceUnavailable, ErrorReason: errorReasonDeadlineUnreachable},
+		{StatusCode: http.StatusBadRequest, ErrorReason: errorReasonClientError},
+		{StatusCode: 499, ErrorReason: errorReasonCancelled},
+		{StatusCode: http.StatusInternalServerError, ErrorReason: errorReasonJinjaTemplate},
+		{StatusCode: http.StatusRequestEntityTooLarge},
+		{StatusCode: http.StatusServiceUnavailable, TerminalCause: terminalCauseAdmissionTimeout},
+	} {
+		safe, invalidCode, _ := sanitizeProviderInferenceError(&input)
 		if !invalidCode {
-			t.Fatal("legacy frame without failure_code was not reported as drift")
+			t.Fatalf("%+v: frame without failure_code was not reported as drift", input)
 		}
-		if safe.FailureCode != tc.code ||
-			safe.StatusCode != tc.status ||
-			safe.ErrorReason != errorReasonModelLoad {
-			t.Fatalf("legacy status %d normalized to %+v, want code=%q reason=%q",
-				tc.status, safe, tc.code, errorReasonModelLoad)
+		if safe.FailureCode != protocol.FailureCodeGenerationFailure {
+			t.Fatalf("%+v: code = %q, want generation_failure", input, safe.FailureCode)
 		}
-	}
-}
-
-func TestSanitizeProviderInferenceErrorPreservesLegacyBare429(t *testing.T) {
-	input := protocol.InferenceErrorMessage{
-		RequestID:  "req-legacy-429",
-		Error:      "PROVIDER_QUEUE_DETAIL_LEAK_SENTINEL",
-		StatusCode: http.StatusTooManyRequests,
-	}
-	safe, invalidCode, invalidCause := sanitizeProviderInferenceError(&input)
-	if !invalidCode || invalidCause {
-		t.Fatalf("legacy drift flags = (%v, %v), want (true, false)", invalidCode, invalidCause)
-	}
-	if safe.FailureCode != protocol.FailureCodeCapacity ||
-		safe.ErrorReason != errorReasonQueueFull ||
-		safe.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("bare legacy 429 lost queue-full semantics: %+v", safe)
-	}
-	if safe.Error != "request rejected: provider capacity unavailable" ||
-		strings.Contains(safe.Error, "LEAK_SENTINEL") {
-		t.Fatalf("legacy 429 did not receive fixed capacity message: %q", safe.Error)
-	}
-
-	second, _, _ := sanitizeProviderInferenceError(&safe)
-	if !reflect.DeepEqual(safe, second) {
-		t.Fatalf("legacy 429 sanitizer result is not idempotent:\nfirst:  %+v\nsecond: %+v", safe, second)
+		if safe.ErrorReason == errorReasonQueueFull {
+			t.Fatalf("%+v: code-less frame was promoted to queue_full", input)
+		}
 	}
 }
 
@@ -226,8 +205,7 @@ func TestSanitizeProviderInferenceErrorPreservesDeadlineUnreachable(t *testing.T
 			ErrorReason: errorReasonDeadlineUnreachable,
 		},
 		{
-			// Mixed-fleet compatibility: a provider may add the closed reason
-			// before it adds failure_code.
+			FailureCode: protocol.FailureCodeCapacity,
 			StatusCode:  http.StatusServiceUnavailable,
 			ErrorReason: errorReasonDeadlineUnreachable,
 		},
@@ -244,22 +222,24 @@ func TestSanitizeProviderInferenceErrorPreservesDeadlineUnreachable(t *testing.T
 	}
 }
 
-func TestLegacyBare429RemainsTransientAndHealthNeutral(t *testing.T) {
+func TestQueueFull429RemainsTransientAndHealthNeutral(t *testing.T) {
 	safe, _, _ := sanitizeProviderInferenceError(&protocol.InferenceErrorMessage{
-		StatusCode: http.StatusTooManyRequests,
+		FailureCode: protocol.FailureCodeCapacity,
+		ErrorReason: errorReasonQueueFull,
+		StatusCode:  http.StatusTooManyRequests,
 	})
 
 	dispatch := &dispatchState{s: newTestServerForDispatch(t), model: "test-model"}
 	dispatch.setLastInferenceError(nil, safe)
 	if dispatch.shouldStopFailover() {
-		t.Fatal("legacy bare 429 must remain transient below the bounded capacity retry limit")
+		t.Fatal("queue-full 429 must remain transient below the bounded capacity retry limit")
 	}
 	if dispatch.capacityRetries != 1 || dispatch.terminalClientError {
-		t.Fatalf("legacy bare 429 failover state = retries:%d terminalClientError:%v",
+		t.Fatalf("queue-full 429 failover state = retries:%d terminalClientError:%v",
 			dispatch.capacityRetries, dispatch.terminalClientError)
 	}
 
-	srv, reg, provider, pr := newBreakerExemptionHarness(t, "legacy-bare-429")
+	srv, reg, provider, pr := newBreakerExemptionHarness(t, "queue-full-429")
 	dispatch = &dispatchState{s: srv, model: pr.Model}
 	for range breakerStrikeRounds {
 		dispatch.noteProviderError(provider, pr,
@@ -267,7 +247,7 @@ func TestLegacyBare429RemainsTransientAndHealthNeutral(t *testing.T) {
 	}
 	assertBreakerStates(t, reg, provider, pr, false)
 	if !reg.CapacityCooldownActive(provider.ID, pr.Model) {
-		t.Fatal("repeated legacy queue-full sheds must feed only the capacity cooldown")
+		t.Fatal("repeated queue-full sheds must feed only the capacity cooldown")
 	}
 }
 
@@ -509,15 +489,16 @@ func TestSanitizeProviderInferenceErrorCarriesProfileNeverErrorText(t *testing.T
 		t.Fatalf("closed fields changed by profile carry-through: %+v", safe)
 	}
 
-	// Idempotent with the profile attached, and nil stays nil (legacy frame).
+	// Idempotent with the profile attached, and a frame without one stays nil.
 	second, _, _ := sanitizeProviderInferenceError(&safe)
 	if !reflect.DeepEqual(safe, second) {
 		t.Fatalf("sanitizer not idempotent with profile:\nfirst:  %+v\nsecond: %+v", safe, second)
 	}
-	legacy, _, _ := sanitizeProviderInferenceError(&protocol.InferenceErrorMessage{
-		Error: "LEGACY_LEAK_SENTINEL", StatusCode: http.StatusTooManyRequests,
+	bare, _, _ := sanitizeProviderInferenceError(&protocol.InferenceErrorMessage{
+		Error: "BARE_LEAK_SENTINEL", StatusCode: http.StatusTooManyRequests,
+		FailureCode: protocol.FailureCodeCapacity, ErrorReason: errorReasonQueueFull,
 	})
-	if legacy.Profile != nil {
-		t.Fatalf("legacy frame grew a profile: %s", legacy.Profile)
+	if bare.Profile != nil {
+		t.Fatalf("profile-less frame grew a profile: %s", bare.Profile)
 	}
 }

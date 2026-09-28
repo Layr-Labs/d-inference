@@ -753,7 +753,7 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if r.providerHasPendingLoad(p.ID) || r.gateOf(p).dispatchLoadCooled(model, now) {
 		return warmPoolCandidate{}, warmColdPendingLoad
 	}
-	if p.pendingCount() != 0 || warmPoolBackendSlotBusyLocked(p) {
+	if providerDrainingLocked(p, now) || p.pendingCount() != 0 || warmPoolBackendSlotBusyLocked(p) {
 		return warmPoolCandidate{}, warmColdNotIdle
 	}
 	if p.SystemMetrics.ThermalState == "critical" {

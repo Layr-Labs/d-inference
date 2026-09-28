@@ -153,8 +153,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		globalPayoutSchema,
 		// schema_migrations records one-time data migrations that must run at most
 		// once rather than on every boot. Idempotent DDL (CREATE/ALTER ... IF [NOT]
-		// EXISTS) does not need this; it exists to gate destructive one-shot DML
-		// cleanups (see the model_prices cleanup below) behind a marker id.
+		// EXISTS) does not need this; it gates destructive one-shot DML scrubs
+		// (the cache-affinity and log-report serial scrubs) behind a marker id,
+		// and keeps the markers checkRetiredBackfills requires.
 		`CREATE TABLE IF NOT EXISTS schema_migrations (
 			id TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -298,10 +299,14 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			memo TEXT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		// withdrawable_micro_usd trails updated_at: existing databases gained
+		// it through the retired backfill_withdrawable_balance_v1 migration,
+		// which added it with this exact definition and physical position.
 		`CREATE TABLE IF NOT EXISTS balances (
 			account_id TEXT PRIMARY KEY,
 			balance_micro_usd BIGINT NOT NULL DEFAULT 0,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			withdrawable_micro_usd BIGINT NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS ledger_entries (
 			id BIGSERIAL PRIMARY KEY,
@@ -349,10 +354,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_account ON billing_sessions(account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_external ON billing_sessions(external_id)`,
-		`DO $$ BEGIN
-			ALTER TABLE billing_sessions DROP COLUMN IF EXISTS chain;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
 
 		// Custom pricing — per-account model price overrides
 		`CREATE TABLE IF NOT EXISTS model_prices (
@@ -363,32 +364,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (account_id, model)
 		)`,
-
-		// Clean up wallet-keyed custom prices: with the removal of wallet-based
-		// payouts, model_prices rows keyed by Solana wallet addresses are
-		// unreachable. Providers must re-enter custom prices under their Stripe
-		// Connect account ID.
-		//
-		// This is a one-time, destructive cleanup, so it is gated on a
-		// schema_migrations marker and runs at most once instead of on every boot.
-		// Two further guards:
-		//   - Exclude the synthetic "platform" account. Platform-default per-model
-		//     pricing (set via PUT /v1/admin/pricing and at model registration) is
-		//     stored under account_id='platform', which is NEVER a row in users.
-		//     Without this guard the cleanup would wipe all platform pricing,
-		//     silently reverting billing to the fallback defaults.
-		//   - The marker is written only after a successful DELETE within the same
-		//     block, so a run that errors (e.g. users not yet created on a brand-new
-		//     DB) rolls back and is retried on the next boot.
-		`DO $$ BEGIN
-			IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE id = 'cleanup_wallet_model_prices_v1') THEN
-				DELETE FROM model_prices
-				WHERE account_id NOT IN (SELECT account_id FROM users)
-				  AND account_id <> 'platform';
-				INSERT INTO schema_migrations (id) VALUES ('cleanup_wallet_model_prices_v1');
-			END IF;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
 
 		// Users — Privy identity → internal account mapping
 		`CREATE TABLE IF NOT EXISTS users (
@@ -401,14 +376,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`DO $$ BEGIN
 			ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE users DROP COLUMN IF EXISTS solana_wallet_address;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE users DROP COLUMN IF EXISTS solana_wallet_id;
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy ON users(privy_user_id)`,
@@ -601,13 +568,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			ALTER TABLE releases ADD COLUMN IF NOT EXISTS grpc_binary_hash TEXT NOT NULL DEFAULT '';
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
-		// Drop deprecated image_bridge_hash column. Image generation is no longer
-		// a first-class capability; the hash is meaningless. The DROP is wrapped
-		// in a DO block so it's safe to re-run on databases that already lack it.
-		`DO $$ BEGIN
-			ALTER TABLE releases DROP COLUMN IF EXISTS image_bridge_hash;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
 
 		// Device authorization (RFC 8628-style)
 		`CREATE TABLE IF NOT EXISTS device_codes (
@@ -663,8 +623,11 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_provider_earnings_account ON provider_earnings(account_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_earnings_provider ON provider_earnings(provider_key, created_at DESC)`,
 
-		// Materialized earnings summaries — atomically maintained by CreditProviderAccount.
-		// Eliminates full-table SUM scans on /v1/provider/account-earnings.
+		// Materialized per-account earnings summaries (key_type 'account') —
+		// atomically maintained by CreditProviderAccount, RecordProviderEarning
+		// and floor-draw settlement. Eliminates full-table SUM scans on
+		// /v1/provider/account-earnings. Rows with key_type 'provider' are no
+		// longer written or read; they stay so an older binary still boots.
 		`CREATE TABLE IF NOT EXISTS earnings_summary (
 			key TEXT NOT NULL,
 			key_type TEXT NOT NULL,
@@ -675,8 +638,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (key, key_type)
 		)`,
-
-		earningsSummaryBackfillPendingDDL,
 
 		// Provider payouts — wallet-based payout history for unlinked providers
 		`CREATE TABLE IF NOT EXISTS provider_payouts (
@@ -744,6 +705,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
 			total_completion_tokens BIGINT NOT NULL DEFAULT 0
 		)`,
+		// The single counter row is seeded after this loop, by
+		// checkRetiredBackfills, and only while usage is empty.
 
 		// Partial index for UsageLocationBuckets — only rows with a
 		// non-null request_location are ever queried.
@@ -1145,6 +1108,13 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// index on these tables must be built CONCURRENTLY outside this loop
 		// (see ensureProviderEarningsJobIndex). The request_waterfall view is NOT
 		// here — it is applied by hand from store/migrations/request_waterfall.sql.
+		modelDemandTableDDL,
+		modelDemandHourlyDDL,
+		modelDemandRollupFunctionDDL,
+		modelDemandRollupTriggerDDL,
+		`CREATE INDEX IF NOT EXISTS idx_model_demand_received ON model_demand_requests (received_at)`,
+		`CREATE TABLE IF NOT EXISTS model_demand_collection (singleton BOOLEAN PRIMARY KEY CHECK(singleton), started_at TIMESTAMPTZ NOT NULL)`,
+		`INSERT INTO model_demand_collection (singleton,started_at) VALUES (TRUE,NOW()) ON CONFLICT DO NOTHING`,
 		requestOutcomesTableDDL,
 		`CREATE INDEX IF NOT EXISTS idx_request_outcomes_received ON request_outcomes (received_at, coord_request_id)`,
 		requestProfilesTableDDL,
@@ -1175,7 +1145,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	}
 
 	migrations = append(migrations, appAttestShadowDDL, machineInventoryDDL, appAttestArchiveDDL, appAttestEnrollmentDDL, appAttestReceiptDDL)
-	migrations = append(migrations, appAttestRevocationDDL, appAttestBuildDDL, modelTokenPromotionDDL)
+	migrations = append(migrations, appAttestRevocationDDL, appAttestBuildDDL, appAttestKeyRotationDDL, modelTokenPromotionDDL)
 	for i, m := range migrations {
 		started := time.Now()
 		_, err := s.pool.Exec(ctx, m)
@@ -1185,18 +1155,14 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		}
 	}
 
-	if err := s.migrateEarningsSummary(ctx); err != nil {
-		return err
+	retiredStarted := time.Now()
+	retiredErr := s.checkRetiredBackfills(ctx)
+	logStartupMigration("retired_backfills", retiredStarted, retiredErr)
+	if retiredErr != nil {
+		return retiredErr
 	}
+
 	if err := s.ensureProviderRestoreIndexes(ctx); err != nil {
-		return err
-	}
-
-	if err := s.migrateUsageTotals(ctx); err != nil {
-		return err
-	}
-
-	if err := s.migrateWithdrawableBalance(ctx); err != nil {
 		return err
 	}
 
@@ -1365,13 +1331,6 @@ func (s *PostgresStore) insertAPIKey(ctx context.Context, rec *APIKey, onConflic
 	return err
 }
 
-// CreateKey generates a cryptographically random API key, hashes it, stores
-// the hash, and returns the raw key (the only time it's available in plaintext).
-func (s *PostgresStore) CreateKey() (string, error) {
-	raw, _, err := s.CreateAPIKey("", APIKeyCreate{})
-	return raw, err
-}
-
 // CreateKeyForAccount generates a new API key linked to a specific account.
 func (s *PostgresStore) CreateKeyForAccount(accountID string) (string, error) {
 	raw, _, err := s.CreateAPIKey(accountID, APIKeyCreate{})
@@ -1452,49 +1411,6 @@ func (s *PostgresStore) GetKeyAccount(key string) string {
 		return ""
 	}
 	return accountID
-}
-
-// ValidateKey returns true if the given key exists, is active, and is not
-// expired. Expiry is enforced here (not just in AuthenticateKey) so callers
-// like telemetry attribution don't treat an expired key as a live account.
-func (s *PostgresStore) ValidateKey(key string) bool {
-	h := hashKey(key)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var active bool
-	var expiresAt *time.Time
-	err := s.pool.QueryRow(ctx,
-		`SELECT active, expires_at FROM api_keys WHERE key_hash = $1`,
-		h,
-	).Scan(&active, &expiresAt)
-	if err != nil {
-		return false
-	}
-	if expiresAt != nil && time.Now().After(*expiresAt) {
-		return false
-	}
-	return active
-}
-
-// ValidateKeyFull returns the active status and owner account ID for an
-// API key in a single query. Returns an error if the key does not exist.
-func (s *PostgresStore) ValidateKeyFull(key string) (bool, string, error) {
-	h := hashKey(key)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var active bool
-	var ownerAccountID string
-	err := s.pool.QueryRow(ctx,
-		`SELECT active, owner_account_id FROM api_keys WHERE key_hash = $1`, h,
-	).Scan(&active, &ownerAccountID)
-	if err != nil {
-		return false, "", err
-	}
-	return active, ownerAccountID, nil
 }
 
 // AuthenticateKey resolves a raw key to its active record for request auth.
@@ -1752,11 +1668,6 @@ func (s *PostgresStore) UsageByConsumer(consumerKey string) []UsageRecord {
 		records = append(records, r)
 	}
 	return records
-}
-
-// RecordUsageWithCost inserts a usage record with request ID and cost.
-func (s *PostgresStore) RecordUsageWithCost(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64) {
-	s.RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID, promptTokens, completionTokens, costMicroUSD, nil)
 }
 
 // RecordUsageWithCostAndLocation inserts a usage record with request ID, cost,
@@ -2049,22 +1960,6 @@ func nullSince(since time.Time) any {
 	return since
 }
 
-// RecordPayment inserts a payment record into PostgreSQL.
-func (s *PostgresStore) RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO payments (tx_hash, consumer_address, provider_address, amount_usd, model, prompt_tokens, completion_tokens, memo)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		txHash, consumerAddr, providerAddr, amountUSD, model, promptTokens, completionTokens, memo,
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert payment: %w", err)
-	}
-	return nil
-}
-
 // UsageCountSince returns the number of usage records created at or after the
 // given time. Uses idx_usage_created for an index-only count. A statement that
 // cannot complete is reported as an error, never as a zero count.
@@ -2086,8 +1981,10 @@ func (s *PostgresStore) UsageCountSince(since time.Time) (int64, error) {
 // UsageTotals returns aggregated lifetime totals from the materialized
 // usage_totals counter row. This is a single PK lookup — O(1) regardless
 // of how many rows exist in the usage table. A statement that cannot complete
-// is reported as an error, never as zero totals; a database with no counter
-// row yet (before the usage_totals migration) genuinely has zero totals.
+// is reported as an error, never as zero totals. Boot guarantees the row
+// (checkRetiredBackfills seeds it on an empty usage table and refuses to
+// start without it), so the no-row case reads as zero only if the row is
+// deleted while the coordinator runs.
 func (s *PostgresStore) UsageTotals() (UsageTotals, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2537,48 +2434,6 @@ func (s *PostgresStore) MigrateAccountBalance(from, to string) (bool, error) {
 	return true, nil
 }
 
-// DebitWithdrawable subtracts micro-USD from both the total balance and the
-// withdrawable balance atomically. Returns error if the withdrawable balance
-// is insufficient. This ensures withdrawal debits are symmetric with
-// CreditWithdrawable refunds — both touch the same columns.
-func (s *PostgresStore) DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	var balanceAfter int64
-	err = tx.QueryRow(ctx,
-		`UPDATE balances
-		 SET balance_micro_usd = balance_micro_usd - $2,
-		     withdrawable_micro_usd = withdrawable_micro_usd - $2,
-		     updated_at = NOW()
-		 WHERE account_id = $1
-		   AND balance_micro_usd >= $2
-		   AND withdrawable_micro_usd >= $2
-		 RETURNING balance_micro_usd`,
-		accountID, amountMicroUSD,
-	).Scan(&balanceAfter)
-	if err != nil {
-		return errors.New("insufficient withdrawable balance or account not found")
-	}
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		accountID, string(entryType), -amountMicroUSD, balanceAfter, reference,
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert ledger entry: %w", err)
-	}
-
-	return tx.Commit(ctx)
-}
-
 // LedgerHistory returns ledger entries for an account, newest first.
 func (s *PostgresStore) LedgerHistory(accountID string) []LedgerEntry {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2611,21 +2466,6 @@ func (s *PostgresStore) LedgerHistory(accountID string) []LedgerEntry {
 		return []LedgerEntry{}
 	}
 	return entries
-}
-
-// KeyCount returns the number of active API keys.
-func (s *PostgresStore) KeyCount() int {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var count int
-	err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM api_keys WHERE active = TRUE`,
-	).Scan(&count)
-	if err != nil {
-		return 0
-	}
-	return count
 }
 
 // --- Referral System ---
@@ -2793,19 +2633,6 @@ func (s *PostgresStore) CompleteBillingSession(sessionID string) error {
 		return fmt.Errorf("store: billing session %q not found or already completed", sessionID)
 	}
 	return nil
-}
-
-// IsExternalIDProcessed returns true if a completed billing session with this external ID exists.
-func (s *PostgresStore) IsExternalIDProcessed(externalID string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var count int
-	_ = s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM billing_sessions WHERE external_id = $1 AND status = 'completed'`,
-		externalID,
-	).Scan(&count)
-	return count > 0
 }
 
 // --- Custom Pricing ---
@@ -3089,37 +2916,6 @@ func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
 
 // --- Stripe Withdrawals ---
 
-func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
-	if w == nil || w.ID == "" {
-		return errors.New("stripe withdrawal id is required")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	now := time.Now()
-	if w.CreatedAt.IsZero() {
-		w.CreatedAt = now
-	}
-	if w.UpdatedAt.IsZero() {
-		w.UpdatedAt = w.CreatedAt
-	}
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO stripe_withdrawals
-		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
-		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-		  failure_reason, refunded, fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
-		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
-		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt,
-	)
-	if err != nil {
-		return fmt.Errorf("store: create stripe withdrawal: %w", err)
-	}
-	return nil
-}
-
 // CreateStripeWithdrawalWithDebit atomically debits both balance columns
 // (recording the ledger entry) and inserts the withdrawal row in a single
 // transaction — a crash can no longer leave a debited balance with no
@@ -3149,8 +2945,9 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 	}
 	defer tx.Rollback(ctx)
 
-	// Same guarded dual-column debit as DebitWithdrawable: both the total
-	// and withdrawable balances must cover the amount.
+	// Guarded dual-column debit: both the total and withdrawable balances
+	// must cover the amount, so the debit is symmetric with CreditWithdrawable
+	// refunds.
 	var balanceAfter int64
 	err = tx.QueryRow(ctx,
 		`UPDATE balances
@@ -3456,7 +3253,7 @@ func (s *PostgresStore) SetRelease(release *Release) error {
 		 ON CONFLICT (version, platform) DO UPDATE SET
 		   backend = $3, binary_hash = $4, bundle_hash = $5, metallib_hash = $6, python_hash = $7, runtime_hash = $8, template_hashes = $9, url = $10, changelog = $11, active = TRUE`,
 		release.Version, release.Platform, release.Backend, release.BinaryHash, release.BundleHash,
-		release.MetallibHash, release.PythonHash, release.RuntimeHash, release.TemplateHashes,
+		release.MetallibHash, "", "", release.TemplateHashes, // retired python_hash, runtime_hash columns
 		release.URL, release.Changelog,
 	)
 	if err != nil {
@@ -3476,7 +3273,7 @@ func (s *PostgresStore) ListReleasesWithError() ([]Release, error) {
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT version, platform, COALESCE(backend, ''), binary_hash, bundle_hash, COALESCE(metallib_hash, ''),
-		        COALESCE(python_hash, ''), COALESCE(runtime_hash, ''), COALESCE(template_hashes, ''),
+		        COALESCE(template_hashes, ''),
 		        url, changelog, active, created_at
 		 FROM releases ORDER BY created_at DESC`,
 	)
@@ -3489,7 +3286,7 @@ func (s *PostgresStore) ListReleasesWithError() ([]Release, error) {
 	for rows.Next() {
 		var r Release
 		if err := rows.Scan(&r.Version, &r.Platform, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
-			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
+			&r.TemplateHashes,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("store: scan release: %w", err)
 		}
@@ -3507,7 +3304,7 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT version, platform, COALESCE(backend, ''), binary_hash, bundle_hash, COALESCE(metallib_hash, ''),
-		        COALESCE(python_hash, ''), COALESCE(runtime_hash, ''), COALESCE(template_hashes, ''),
+		        COALESCE(template_hashes, ''),
 		        url, changelog, active, created_at
 		 FROM releases WHERE platform = $1 AND active = TRUE`, platform,
 	)
@@ -3520,7 +3317,7 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 	for rows.Next() {
 		var r Release
 		if err := rows.Scan(&r.Version, &r.Platform, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
-			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
+			&r.TemplateHashes,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
 			return nil
 		}
@@ -3801,18 +3598,6 @@ func (s *PostgresStore) RedeemInviteCode(code string, accountID string) error {
 	return tx.Commit(ctx)
 }
 
-func (s *PostgresStore) HasRedeemedInviteCode(code, accountID string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var count int
-	_ = s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM invite_redemptions WHERE code = $1 AND account_id = $2`,
-		code, accountID,
-	).Scan(&count)
-	return count > 0
-}
-
 // --- Provider Earnings ---
 
 // RecordProviderEarning stores an earning record for a specific provider node.
@@ -3828,16 +3613,12 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 		`WITH earning AS (INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
-		 RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
-		), summaries AS (
-		 SELECT account_id AS key, 'account' AS key_type, model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE account_id <> ''
-		 UNION ALL
-		 SELECT provider_key, 'provider', model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE provider_key <> ''
+		 RETURNING account_id, model, amount_micro_usd, prompt_tokens, completion_tokens
 		)
 		INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		SELECT key, key_type, CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+		SELECT account_id, 'account', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
 		 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
-		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM summaries
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM earning WHERE account_id <> ''
 		ON CONFLICT (key, key_type) DO UPDATE SET
 		 total_count = earnings_summary.total_count + EXCLUDED.total_count,
 		 total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
@@ -3852,39 +3633,6 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 		return fmt.Errorf("store: insert provider earning: %w", err)
 	}
 	return nil
-}
-
-// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
-func (s *PostgresStore) GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
-		 FROM provider_earnings
-		 WHERE provider_key = $1
-		 ORDER BY created_at DESC
-		 LIMIT $2`,
-		providerKey, limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: query provider earnings: %w", err)
-	}
-	defer rows.Close()
-
-	var results []ProviderEarning
-	for rows.Next() {
-		var e ProviderEarning
-		if err := rows.Scan(&e.ID, &e.AccountID, &e.ProviderID, &e.ProviderKey, &e.JobID,
-			&e.Model, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
-			continue
-		}
-		results = append(results, e)
-	}
-	if results == nil {
-		return []ProviderEarning{}, nil
-	}
-	return results, nil
 }
 
 // GetAccountEarnings returns all earnings across all nodes for an account, newest first.
@@ -3920,28 +3668,6 @@ func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]Provi
 	return results, nil
 }
 
-// GetProviderEarningsSummary returns lifetime aggregates for a provider node.
-// Reads from the materialized earnings_summary table (PK lookup) instead of
-// scanning all provider_earnings rows.
-func (s *PostgresStore) GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var summary ProviderEarningsSummary
-	err := s.pool.QueryRow(ctx,
-		`SELECT total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens
-		 FROM earnings_summary
-		 WHERE key = $1 AND key_type = 'provider'`,
-		providerKey,
-	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
-	if err != nil {
-		// No rows = no earnings yet, return zeros (not an error).
-		return ProviderEarningsSummary{}, nil
-	}
-
-	return summary, nil
-}
-
 // GetAccountEarningsSummary returns lifetime aggregates for an account.
 // Reads from the materialized earnings_summary table (PK lookup) instead of
 // scanning all provider_earnings rows.
@@ -3964,74 +3690,6 @@ func (s *PostgresStore) GetAccountEarningsSummary(accountID string) (ProviderEar
 	return summary, nil
 }
 
-// RecordProviderPayout stores a payout record for a provider wallet.
-func (s *PostgresStore) RecordProviderPayout(payout *ProviderPayout) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_payouts (provider_address, amount_micro_usd, model, job_id, settled, created_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
-		payout.ProviderAddress, payout.AmountMicroUSD, payout.Model, payout.JobID, payout.Settled, nullableCreatedAt(payout.Timestamp),
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert provider payout: %w", err)
-	}
-
-	return nil
-}
-
-// ListProviderPayouts returns all provider payout records in creation order.
-func (s *PostgresStore) ListProviderPayouts() ([]ProviderPayout, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, provider_address, amount_micro_usd, model, job_id, settled, created_at
-		 FROM provider_payouts
-		 ORDER BY id ASC`,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: query provider payouts: %w", err)
-	}
-	defer rows.Close()
-
-	var results []ProviderPayout
-	for rows.Next() {
-		var payout ProviderPayout
-		if err := rows.Scan(&payout.ID, &payout.ProviderAddress, &payout.AmountMicroUSD, &payout.Model, &payout.JobID, &payout.Settled, &payout.Timestamp); err != nil {
-			continue
-		}
-		results = append(results, payout)
-	}
-	if results == nil {
-		return []ProviderPayout{}, nil
-	}
-
-	return results, nil
-}
-
-// SettleProviderPayout marks a provider payout as settled.
-func (s *PostgresStore) SettleProviderPayout(id int64) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE provider_payouts
-		 SET settled = TRUE
-		 WHERE id = $1 AND settled = FALSE`,
-		id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: settle provider payout: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("provider payout %d not found or already settled", id)
-	}
-
-	return nil
-}
-
 // CreditProviderAccount atomically credits a linked provider account and records
 // the corresponding per-node earning.
 //
@@ -4050,46 +3708,6 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	defer cancel()
 
 	return creditProviderAccount(ctx, s.pool, earning)
-}
-
-// CreditProviderWallet atomically credits an unlinked provider wallet and
-// records the corresponding payout history row.
-func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
-	if payout == nil {
-		return errors.New("provider payout is required")
-	}
-	if payout.ProviderAddress == "" {
-		return errors.New("provider payout address is required")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if err := creditWithdrawableBalance(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
-		return err
-	}
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO provider_payouts (provider_address, amount_micro_usd, model, job_id, settled, created_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
-		payout.ProviderAddress,
-		payout.AmountMicroUSD,
-		payout.Model,
-		payout.JobID,
-		payout.Settled,
-		nullableCreatedAt(payout.Timestamp),
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert provider payout: %w", err)
-	}
-
-	return tx.Commit(ctx)
 }
 
 // --- Provider Fleet Persistence ---
@@ -4168,7 +3786,7 @@ func upsertProviderRecord(ctx context.Context, db providerRecordDB, p ProviderRe
 		p.TrustLevel, p.Attested,
 		p.AttestationResult, p.SEPublicKey, p.SerialNumber,
 		p.MDAVerified, p.MDACertChain,
-		p.Version, p.RuntimeVerified, p.PythonHash, p.RuntimeHash,
+		p.Version, p.RuntimeVerified, "", "", // retired python_hash, runtime_hash columns
 		p.LastChallengeVerified, p.FailedChallenges, p.AccountID,
 		p.LifetimeRequestsServed, p.LifetimeTokensGenerated,
 		p.LastSessionRequestsServed, p.LastSessionTokensGenerated,
@@ -4205,58 +3823,6 @@ func (s *PostgresStore) GetMDAChainBySerial(ctx context.Context, serial string) 
 	return chain, nil
 }
 
-func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, hardware, models, backend, location, trust_level, attested,
-			attestation_result, se_public_key, serial_number,
-			mda_verified, mda_cert_chain,
-			version, runtime_verified, python_hash, runtime_hash,
-			last_challenge_verified, failed_challenges, account_id,
-			lifetime_requests_served, lifetime_tokens_generated,
-			last_session_requests_served, last_session_tokens_generated,
-			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
-		 FROM providers ORDER BY last_seen DESC`,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list providers: %w", err)
-	}
-	defer rows.Close()
-
-	var records []ProviderRecord
-	for rows.Next() {
-		var p ProviderRecord
-		var locationRaw []byte
-		if err := rows.Scan(
-			&p.ID, &p.Hardware, &p.Models, &p.Backend,
-			&locationRaw,
-			&p.TrustLevel, &p.Attested,
-			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
-			&p.MDAVerified, &p.MDACertChain,
-			&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
-			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
-			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
-			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-			&p.LifetimeStats, &p.LastSessionStats,
-			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
-		); err != nil {
-			return nil, fmt.Errorf("store: scan provider: %w", err)
-		}
-		p.Location = unmarshalProviderLocation(locationRaw)
-		records = append(records, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate providers: %w", err)
-	}
-	if records == nil {
-		return []ProviderRecord{}, nil
-	}
-	return records, nil
-}
-
 func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error) {
 	if accountID == "" {
 		return []ProviderRecord{}, nil
@@ -4278,7 +3844,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 		 id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain,
-			version, runtime_verified, python_hash, runtime_hash,
+			version, runtime_verified,
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
@@ -4307,7 +3873,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			&p.TrustLevel, &p.Attested,
 			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
 			&p.MDAVerified, &p.MDACertChain,
-			&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+			&p.Version, &p.RuntimeVerified,
 			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
@@ -4390,64 +3956,6 @@ func (s *PostgresStore) DeleteProvidersBySerial(ctx context.Context, ownerAccoun
 		return 0, fmt.Errorf("store: delete providers commit: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
-}
-
-func (s *PostgresStore) UpdateProviderLastSeen(ctx context.Context, id string) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`UPDATE providers SET last_seen = NOW() WHERE id = $1`, id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update provider last_seen: %w", err)
-	}
-	return nil
-}
-
-func (s *PostgresStore) UpdateProviderTrust(ctx context.Context, id string, trustLevel string, attested bool, attestationResult json.RawMessage) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`UPDATE providers SET trust_level = $2, attested = $3, attestation_result = $4
-		 WHERE id = $1`,
-		id, trustLevel, attested, attestationResult,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update provider trust: %w", err)
-	}
-	return nil
-}
-
-func (s *PostgresStore) UpdateProviderChallenge(ctx context.Context, id string, lastVerified time.Time, failedCount int) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`UPDATE providers SET last_challenge_verified = $2, failed_challenges = $3
-		 WHERE id = $1`,
-		id, lastVerified, failedCount,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update provider challenge: %w", err)
-	}
-	return nil
-}
-
-func (s *PostgresStore) UpdateProviderRuntime(ctx context.Context, id string, verified bool, pythonHash, runtimeHash string) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`UPDATE providers SET runtime_verified = $2, python_hash = $3, runtime_hash = $4
-		 WHERE id = $1`,
-		id, verified, pythonHash, runtimeHash,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update provider runtime: %w", err)
-	}
-	return nil
 }
 
 // --- Provider Reputation Persistence ---

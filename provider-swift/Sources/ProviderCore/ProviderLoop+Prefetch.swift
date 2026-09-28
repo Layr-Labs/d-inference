@@ -24,6 +24,7 @@ extension ProviderLoop {
     /// `installPrefetchCoordinatorForTesting`.
     internal func makePrefetchCoordinator() -> ModelPrefetchCoordinator {
         let me = self
+        let selectionRevision = modelSelectionRevision
         let prefetcher: any ModelPrefetcher =
             CatalogModelPrefetcher(
                 coordinatorURL: loopConfig.coordinatorURL,
@@ -31,7 +32,9 @@ extension ProviderLoop {
         return ModelPrefetchCoordinator(
             prefetcher: prefetcher,
             preCheck: { modelId in await me.prefetchPreCheck(modelId: modelId) },
-            onVerified: { modelId in await me.applyVerifiedPrefetch(modelId: modelId) }
+            onVerified: { modelId in
+                await me.applyVerifiedPrefetch(modelId: modelId, selectionRevision: selectionRevision)
+            }
         )
     }
 
@@ -60,7 +63,7 @@ extension ProviderLoop {
                 error: "provider is shutting down"))
             return
         }
-        if isDrainingForUpdate {
+        if isDraining {
             sendDrainingPrefetchFailure(modelId: modelId, send: send)
             return
         }
@@ -288,7 +291,11 @@ extension ProviderLoop {
         return failed.isEmpty || failed == hash
     }
 
-    func applyVerifiedPrefetch(modelId: String) async {
+    func applyVerifiedPrefetch(modelId: String, selectionRevision: UInt64? = nil) async {
+        guard servingDrain.owner != .modelSwitch,
+              selectionRevision == nil || selectionRevision == modelSelectionRevision else { return }
+        modelAdvertisementsInFlight += 1
+        defer { modelAdvertisementsInFlight -= 1 }
         guard ModelRuntimeRequirements.isEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         else {
@@ -530,7 +537,7 @@ extension ProviderLoop {
                 // coordinator's registered inventory converges on the
                 // corrected store — rare double-race path; the disruption is
                 // bounded and correctness-restoring.
-                await coordinatorClient.forceReconnect()
+                requestPlannedReconnect()
                 logger.warning(
                     "Prefetch announcement for \(modelId) aborted: retirement removed it "
                         + "mid-announce; client store restored and re-registered")
@@ -573,6 +580,21 @@ extension ProviderLoop {
         await resliceGrowSurvivors()
         await updateAggregateCapacity()
         logger.info("Hard swap: dropped superseded build \(buildID) from advertised set (\(advertisedModels.count) remaining)")
+    }
+
+    internal func handleDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
+        if isDraining || prefetchCoordinator == nil {
+            // Declarative state: keep only the latest snapshot until a switch
+            // restores prefetching or an update aborts. A reconnect gets a
+            // fresh snapshot. Never consume it with an absent subsystem.
+            deferredDesiredModels = entries
+            logger.info("Deferring desired_models until prefetch is ready (\(entries.count) entr(ies))")
+        } else {
+            // A newly delivered snapshot supersedes anything deferred while
+            // the prefetch subsystem was unavailable during the switch.
+            deferredDesiredModels = nil
+            await reconcileDesiredModels(entries, send: send)
+        }
     }
 
     /// Reconcile the coordinator's declarative desired-state: for each public model

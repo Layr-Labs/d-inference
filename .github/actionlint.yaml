@@ -1,7 +1,9 @@
-# External runner labels and GitHub SDK 27 preview label.
+# Tenki PR checks and Blacksmith release/credential runner labels.
 self-hosted-runner:
   labels:
     - tenki-standard-medium-4c-8g
     - tenki-macos-26-large
     - blacksmith-12vcpu-macos-latest
-    - xcode-27
+    - blacksmith-12vcpu-macos-26
+    - blacksmith-12vcpu-macos-27
+    - blacksmith-4vcpu-ubuntu-2404

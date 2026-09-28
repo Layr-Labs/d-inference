@@ -23,14 +23,12 @@ var testProviderKeys sync.Map
 
 func testPrivacyCaps() *protocol.PrivacyCapabilities {
 	return &protocol.PrivacyCapabilities{
-		TextBackendInprocess:    true,
-		TextProxyDisabled:       true,
-		PythonRuntimeLocked:     true,
-		DangerousModulesBlocked: true,
-		SIPEnabled:              true,
-		AntiDebugEnabled:        true,
-		CoreDumpsDisabled:       true,
-		EnvScrubbed:             true,
+		TextBackendInprocess: true,
+		TextProxyDisabled:    true,
+		SIPEnabled:           true,
+		AntiDebugEnabled:     true,
+		CoreDumpsDisabled:    true,
+		EnvScrubbed:          true,
 	}
 }
 

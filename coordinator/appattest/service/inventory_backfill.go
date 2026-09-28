@@ -28,7 +28,11 @@ func (s *Service) startMachineInventoryBackfill(ctx context.Context) {
 					continue
 				}
 				if n == 0 {
-					return
+					// Recent/open sessions were intentionally skipped. Recheck
+					// later after they either capture live or become historical.
+					ticker.Reset(time.Minute)
+				} else {
+					ticker.Reset(5 * time.Second)
 				}
 			}
 		}

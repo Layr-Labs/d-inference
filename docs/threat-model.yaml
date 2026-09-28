@@ -1,11 +1,20 @@
 version: "1.0"
 created: "2026-05-14"
+# Optional App Attest diagnostic boundary re-checked 2026-09-26 against cf5982227:
+# the added TB-002 paragraph covers diagnostic metadata only; it does not
+# re-verify the older threat entries or change the serving-trust assumptions.
 # Partially re-verified 2026-09-03 against commit 5d400cf75: A-001, A-003, T-003
 # and T-011 were corrected to the shipped design (the coordinator is a plaintext
 # endpoint on every request; the provider X25519 key is per-process and never on
 # disk) — see docs/architecture/security/encryption.md and identity-binding.md.
 # Every other entry still reflects the 2026-05-14 review and has not been
 # re-verified.
+# Public attestation roster privacy re-checked 2026-09-22 against 736911a19:
+# the 0.9.9 candidate excludes private-only rows before shared caching. Public
+# legacy SE keys still link public sessions; this is not an identifier-free API.
+# App Attest account/machine/credential IDs also enter operational logs and
+# configured Datadog, while raw evidence remains in the private archive.
+# See docs/reports/2026-09-22-app-attest-recovery.md for scope and residuals.
 # SSD disk policy re-checked 2026-09-08 against PR #866 (base 4be02331e):
 # default available-disk/2 without a fixed ceiling, 20 GiB unknown-space
 # budget fallback, and a fixed 20 GiB pre-write reserve including the pending
@@ -29,6 +38,10 @@ created: "2026-05-14"
 # prospective mismatches against registration. The app also binds its existing
 # verification public key, preventing substitution of model/runtime signature
 # credentials during the later trust transition. Reward rules are unchanged.
+# 2026-09-27: the coordinator serves App Attest protocol 3 only. It replaces the
+# fixed 0.9.4 version gate (protocol 3 was introduced in 0.9.4, which never
+# shipped, and first shipped in 0.9.5; protocol 2 only in 0.9.3). Protocol 1/2 registrations get no frames and are counted as
+# rollout/provider_upgrade_required; pre-v3 stored enrollments never resume.
 # MDM-optional authorization added 2026-09-15: explicit serving opt-in consumes
 # qualified protocol3 evidence; it never sets legacy MDA/APNs flags. Fresh
 # connection/endpoint/policy-bound permission is checked at every final dispatch.
@@ -46,6 +59,9 @@ created: "2026-05-14"
 # Durable build qualification added 2026-09-20: an independently authenticated
 # operator approves the exact signed binary, full CodeDirectory, bundle/runtime,
 # source and CI provenance. CI release keys cannot grant approval. Publication
+# Apple's signed 20-byte CandidateCDHash must uniquely bind to that same
+# approved full 32-byte hash across all durable rows, including revocations;
+# it cannot use a reported hash or environment-only bootstrap as approval.
 # atomically checks the approval under the revocation row lock; stale cached
 # authorization cannot extend beyond a 30s qualification snapshot or survive a
 # local qualification-generation change. Revocation tombstones override legacy
@@ -60,6 +76,32 @@ created: "2026-05-14"
 # locked authorization observation as their diagnostic verdicts, avoiding
 # mixed states during revocation or connection replacement. This changes
 # presentation, not serving or revocation policy.
+# Enrollment recovery and snapshot presentation reviewed 2026-09-22:
+# uncertain/failed one-time Apple enrollment keys retire under persistent
+# generation budgets; only serverUnavailable permits same-key enrollment retry.
+# Persisted retry hashes are enrollment-only; the original server transaction
+# must validate and a fresh current-endpoint assertion is still required.
+# Accepted assertion credentials do not rotate on generic API errors. Native
+# diagnostic domain buckets and signed numeric codes are untrusted metadata;
+# arbitrary strings/userInfo and raw Apple evidence are not published.
+# If a completed Apple generateKey callback reports failure without a usable ID,
+# a persisted one-minute cooldown may retry within the normal single-provider
+# shared generation budget, which bounds internally created but inaccessible
+# keys. Busy, timeout, cancellation and crash-before-return remain uncertain
+# and keep the one-hour key cooldown; no accepted key rotates
+# merely because a later assertion reports a generic Apple failure.
+# First-grant recovery may reassert after 1m/5m/10m while an initial receipt is
+# unverified or lacks a risk metric. Receipt renewal remains independent;
+# every serving grant still needs a fresh verified risk receipt, new assertion,
+# qualified build, nonrevoked key and current connection binding.
+# Authenticated macOS attestation CDhash extensions without ED are parsed only
+# after chain/nonce/exact-ACL verification; the follow-up also accepts only a
+# fully signed, measured Developer ID assertion with the same ED-clear shape.
+# Arbitrary unflagged assertion tails still fail.
+# Expired enrollment transactions reject their proof but permit bounded recovery;
+# binding mismatches are checked first and remain terminal.
+# Network stats describe source snapshots; owner controls and all dispatch paths
+# retain live expiry/revocation. Historical display is never authorization.
 methodology: STRIDE
 # Apple API recovery reviewed 2026-09-21: generic apple_error is an unknown
 # exchange outcome retried with bounded backoff. Retry does not authorize,
@@ -261,7 +303,7 @@ trust_boundaries:
       verification key (PRIVY_VERIFICATION_KEY; no JWKS fetch) with pinned issuer
       "privy.io", audience = the Privy app ID, and a required exp claim
       (auth/privy.go NewPrivyAuth / VerifyToken); all others are looked up in the
-      store via ValidateKey(). On first
+      store via AuthenticateKey(). On first
       Privy login the coordinator auto-provisions a user account by calling the Privy
       REST API. API keys are hashed before storage; raw tokens are never persisted.
 
@@ -332,8 +374,9 @@ trust_boundaries:
       a release policy is enforced, CodeAttested once code-attestation enforcement is
       active, and five PrivacyCapabilities fields (text_backend_inprocess,
       text_proxy_disabled, anti_debug_enabled, core_dumps_disabled, env_scrubbed).
-      The python_runtime_locked and dangerous_modules_blocked fields are
-      wire-compatibility only and are not consulted. ChallengeVerifiedSIP is set by
+      The retired Python-runtime flags (python_runtime_locked,
+      dangerous_modules_blocked) are no longer sent by the Swift provider and are
+      never consulted. ChallengeVerifiedSIP is set by
       the coordinator after verifying a signed challenge response — not trusted from
       the provider. The gate is evaluated inside providerLivenessGateReasonLocked
       (routing_eligibility.go), which also requires a challenge verified within the
@@ -347,10 +390,28 @@ trust_boundaries:
       mark the provider permanently untrusted; SIP=false or SecureBoot=false in any
       response triggers immediate untrust without the 3-strike rule.
 
-      Status fields (SIPEnabled, BinaryHash, ActiveModelHash, etc.) may optionally be
-      covered by a separate status_signature over a canonical JSON payload. For providers
-      that omit status_signature, negative reports (SIP=false) are still acted on
-      immediately, but positive reports are treated as advisory only.
+      Status fields (SIPEnabled, SecureBootEnabled, BinaryHash, ActiveModelHash, etc.)
+      are covered by a separate status_signature over a canonical JSON payload. Since
+      2026-09-27 a provider with an attested SE key must send it: a missing or empty
+      status_signature fails the challenge, as does an omitted SIP or Secure Boot
+      status. Only a provider without an attested key (trust none) has advisory
+      status fields.
+
+      Optional App Attest ready/proof diagnostics (process and boot history,
+      signing preflight, local SIP/root observations, key/push history and native
+      error chains) are untrusted context, excluded from AppAttestShadowHash and
+      the provider clientHash. A provider may forge or omit them. The coordinator
+      strips invalid optional members independently; they do not grant, extend,
+      revoke or fence serving authorization and are distinct from verified status
+      evidence. Private diagnostic events/archives and admin views must not be
+      treated as consumer verification. Local marker files and doctor verdicts
+      are also not trust evidence. Operator-initiated reports retain OS log
+      redaction and bounded, closed-pattern device-wide DeviceCheck observations;
+      those observations cannot be attributed to this provider's key. No new
+      consumer trust claim or attestation-policy exception follows from this data.
+      Code: coordinator/protocol/app_attest_deep_diagnostic.go,
+      coordinator/appattest/service/ready_diagnostics.go; contract:
+      docs/reference/app-attest-shadow.md, docs/consumer/verification.md.
     current_limitations:
       - "No pre-authentication rate limiting or per-IP connection caps before WebSocket
         upgrade. Any client can open arbitrary connections and attempt registration
@@ -361,10 +422,6 @@ trust_boundaries:
       - "Weight hash enforcement is fail-open: a provider can omit weight_hash entirely
         and still be admitted, even for models with a known expected hash in the catalog
         (registry.go, SEC-007)."
-      - "status_signature is optional for pre-v0.3.11 providers. Positive status claims
-        (SIP=true, BinaryHash=X) are not cryptographically bound for older providers,
-        creating a rollout window where a compromised OS can echo a valid nonce while
-        lying about its security posture (provider.go)."
       - "WebSocket frames after registration are not individually authenticated. Trust
         for the session is based entirely on the connection identity established at
         registration."
@@ -406,9 +463,11 @@ trust_boundaries:
       the Security framework (PersistentEnclaveKey.swift). On first launch the key is
       created with kSecAttrIsPermanent=true, bound to the keychain access group
       SLDQ2GJ6TL.io.darkbloom.provider (team-scoped), and labeled
-      io.darkbloom.provider.attestation-signing.v2 (the current defaultLabel; a
-      legacy v1 key from earlier builds is auto-migrated to v2 on load). Subsequent
-      launches load the existing key by access group and label query. The private key
+      io.darkbloom.provider.attestation-signing.v2 (the current defaultLabel). A
+      legacy v1 keychain item is never read: releases after v0.9.10 dropped the
+      v1-to-v2 migration, so a host that holds only a v1 key creates a fresh v2
+      key, and with it a new SE identity. Subsequent launches load the existing
+      key by access group and label query. The private key
       never leaves the SE silicon. Two operations are performed with it: (1) ECDSA
       signing of attestation blobs, and (2) ECIES unwrap/decryption — when the
       default EngineV2 SSD cache is active (unless the single
@@ -425,9 +484,9 @@ trust_boundaries:
       restarts and is disabled rather than using a non-persistent key.
 
       The X25519 encryption key pair is generated ephemerally in memory using libsodium
-      (NodeKeyPair.swift). It is NOT persisted to disk. Legacy on-disk key paths
-      (~/.darkbloom/node_key and equivalents) are actively purged via purgeLegacyFiles()
-      on startup. The secret key exists only in process memory, protected by Hardened
+      (NodeKeyPair.swift). It is NOT persisted to disk (the pre-v0.5 on-disk
+      node_key files were purged by every release through v0.9.10; later releases
+      drop that sweep). The secret key exists only in process memory, protected by Hardened
       Runtime (kernel denies task_for_pid).
 
       The provider config file (~/.config/darkbloom/provider.toml) stores only
@@ -768,8 +827,9 @@ trust_boundaries:
       SE key lifecycle: PersistentEnclaveKey.swift creates or loads a persistent
       SecureEnclave P-256 signing key stored in the macOS keychain under access group
       SLDQ2GJ6TL.io.darkbloom.provider (team ID prefix) with label
-      io.darkbloom.provider.attestation-signing.v2 (legacy v1 keys are migrated to v2
-      on load) and kSecAttrIsPermanent=true.
+      io.darkbloom.provider.attestation-signing.v2 and kSecAttrIsPermanent=true. A
+      legacy v1 key is never read or migrated; a host that holds only a v1 key
+      creates a fresh v2 key.
       The same public key is reused across restarts, giving the provider a stable
       hardware-bound identity. The private key never leaves the SE silicon. The public
       key (raw 64-byte X||Y without 0x04 prefix, base64-encoded) is bound to the X25519
@@ -789,11 +849,9 @@ trust_boundaries:
       to verify the DER ECDSA signature over SHA-256(canonical_json_bytes). Three checks
       are mandatory and will fail the attestation: SecureEnclave not available, SIP
       disabled, SecureBoot disabled. ARV and RDMA are parsed and logged but not enforced.
-      For providers >= 0.8.15 (minProviderVersionForReconnectAttestation) the blob
-      timestamp must be within ±2 minutes of coordinator time
+      The blob timestamp must be within ±2 minutes of coordinator time
       (RegistrationAttestationMaxAge, CheckTimestamp()) or the provider is marked
-      untrusted; older providers' blobs are accepted with ChipFamily,
-      RuntimeCapabilities, and MetallibHash stripped.
+      untrusted; providers re-sign the blob on every reconnect.
 
       Challenge-response: every 5 minutes the coordinator generates a 32-byte random
       nonce (base64), stores it in a one-time-use map keyed by nonce string, and sends
@@ -822,22 +880,18 @@ trust_boundaries:
       fixes false signature failures without changing the signed field set or trust
       policy. Malformed or mismatching signatures remain challenge failures in
       coordinator/api/provider.go (verifyChallengeResponse). If status_signature is
-      absent, ErrStatusSignatureMissing is returned; the caller treats the fields as
-      advisory for compatibility with providers older than v0.3.11. Negative status
-      reports (SIP=false) are still acted on regardless of whether the status_signature
-      is present. Canonical mechanism: docs/architecture/security/attestation.md.
+      absent or empty, ErrStatusSignatureMissing is returned and the challenge fails
+      (outcome status_sig_missing); every Swift provider signs the status in every
+      challenge response. Canonical mechanism: docs/architecture/security/attestation.md.
     current_limitations:
-      - "status_signature is optional for pre-v0.3.11 providers. A compromised provider
-        running OS-level code can report a valid (nonce, timestamp) signature from the
-        SE while reporting SIP=true in unsigned status fields, avoiding untrust during
-        the rollout window (provider.go)."
       - "Nonce and timestamp are concatenated without a delimiter for the challenge
         signature (nonce + timestamp). A crafted nonce ending with a partial timestamp
         string could theoretically produce the same signed bytes as a different
         (nonce, timestamp) pair, though in practice base64 nonces (44 chars) and RFC3339
         timestamps are statistically non-overlapping."
       - "MDA freshness code is sha256(SE_public_key_bytes). The SE public key remains
-        visible in the privacy-redacted GET /v1/providers/attestation status response.
+        visible for public connections in GET /v1/providers/attestation and can link
+        successive sessions. Private-only providers are excluded before shared caching.
         An attacker can pre-compute the expected freshness code for any known provider."
       - "No OCSP or CRL checks on the Apple Enterprise Attestation Root CA chain. A
         compromised or revoked Apple intermediate CA certificate would be accepted by the
@@ -1129,7 +1183,7 @@ threats:
       providerSupportsPrivateTextLocked now requires only the five backend-neutral
       PrivacyCapabilities (text_backend_inprocess, text_proxy_disabled,
       anti_debug_enabled, core_dumps_disabled, env_scrubbed) plus backend mlx-swift;
-      the two Python fields remain on the wire for compatibility and are not consulted.
+      the Swift provider no longer sends the two Python fields at all.
     adversaries: [ADV-001]
     affected_assets: [A-001]
     affected_files:
@@ -1138,7 +1192,7 @@ threats:
     mitigations:
       - description: Routing gate exists and enforces the five backend-neutral privacy flags.
         status: implemented
-      - description: Python-only flags are wire-compatibility fields, not gate inputs.
+      - description: Python-only flags are retired from the provider wire and are not gate inputs.
         status: implemented
     open_findings: []
     resolved_findings:
@@ -1197,7 +1251,7 @@ threats:
       - provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift
       - provider-swift/Sources/ProviderCore/ProviderLoop.swift
     mitigations:
-      - description: Key is process-scoped and never persisted (NodeKeyPair.generate(), NodeKeyPair.purgeLegacyFiles()).
+      - description: Key is process-scoped and never persisted (NodeKeyPair.generate()).
         status: implemented
       - description: XSalsa20-Poly1305 provides no forward secrecy within a process lifetime; a new key per process bounds exposure to that lifetime.
         status: implemented
@@ -1338,7 +1392,7 @@ threats:
     adversaries: [ADV-001]
     affected_assets: []
     affected_files:
-      - provider-swift/Sources/ProviderCore/InferenceFoundation/LocalMLXModelFoundation.swift
+      - provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift
     mitigations:
       - description: Model load failure reported to coordinator; provider marked unavailable and re-queued.
         status: implemented
@@ -1670,11 +1724,8 @@ threats:
           No hardware memory isolation exists for inference memory. Hypervisor
           Stage 2 page-table isolation was never implemented; the
           hypervisor_active attestation field was a hardcoded-false stub and is
-          retired from every trust decision. The coordinator still decodes it when
-          a provider sends it (AttestationResponseMessage.HypervisorActive) and
-          includes it in the status canonical only in that case
-          (attestation.go BuildStatusCanonical), so legacy signed payloads keep
-          verifying; current providers do not send it.
+          retired: the coordinator no longer decodes it or includes it in the
+          status canonical (attestation.go BuildStatusCanonical).
         status: open
     open_findings: []
     severity: medium
@@ -1746,7 +1797,7 @@ threats:
       (bound 1,536) therefore skips never-adoptable sub-~2.5k donations
       (pure wear savings); gemma-4 (bound 25,600) caches exactly its
       >26.6k long-context tail — at-rest exposure UNCHANGED IN KIND
-      (same HMAC names, same 15-min TTL, same crypto), merely extended to
+      (same HMAC names, same sliding TTL — 30 minutes since 2026-09-26 — same crypto), merely extended to
       gemma's long-context traffic. SSD construction can be disabled by the
       single DARKBLOOM_PREFIX_CACHE kill switch or an unavailable KEK; when
       active, individual donations
@@ -1763,8 +1814,10 @@ threats:
             observer cannot test a guessed prefix against anything. The
             long-open HMAC mitigation ships IMPLEMENTED with the tier that
             re-opened it.
-        (b) The at-rest window is bounded by a 15-MINUTE sliding TTL
-            (DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS can only shorten it;
+        (b) The at-rest window is bounded by a 30-MINUTE sliding TTL
+            (raised from 15 minutes on 2026-09-26 by operator decision, the
+            SEC-035 re-acceptance recorded in detection_hint below;
+            DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS can only shorten it;
             sliding on hit; opportunistic sweep on write + periodic task);
             a default box-wide LRU disk budget of half the currently available
             disk space, with no fixed ceiling, unlinks oldest-by-last-hit.
@@ -1799,18 +1852,17 @@ threats:
       SEC-035 (leak #1, the in-process TTFT oracle) is UNCHANGED IN KIND
       and stays the accepted risk — with one extension for this sign-off:
       durability extends the oracle across restarts/idle-unloads within
-      the 15-minute TTL window (a co-tenant can probe whether a prefix was
-      cached earlier the same quarter-hour). Cache scope is coordinator-authored
+      the 30-minute TTL window (a co-tenant can probe whether a prefix was
+      cached earlier the same half-hour). Cache scope is coordinator-authored
       from authenticated account, model build, and prompt-contract identity;
       callers cannot choose or override it.
     adversaries: [ADV-002]
     affected_assets: [A-001]
     affected_files:
       # (BatchScheduler / PrefixCacheManager / EncryptedPrefixCachePersistence
-      # were deleted with the legacy engine in v0.7.5; EncryptedKVStore is
-      # PRESERVED as the chunked AES-GCM store the SSD-offload successor
-      # reuses.)
-      - provider-swift/Sources/ProviderCore/KVCache/EncryptedKVStore.swift
+      # were deleted with the legacy engine in v0.7.5; the v1 EncryptedKVStore
+      # followed once its chunked AES-GCM scheme lived on only in the DBK3
+      # SSDBlockStore.)
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLookupKeys.swift
@@ -1846,7 +1898,7 @@ threats:
           outside that scope. Caller prompt_cache_key/user values are ignored.
         status: implemented
       - description: >
-          SSD tier at-rest window bound: 15-minute sliding TTL (env can only
+          SSD tier at-rest window bound: 30-minute sliding TTL (env can only
           shorten), default available-disk/2 box-wide LRU disk budget without
           a fixed ceiling (20 GiB fallback when unavailable;
           DARKBLOOM_PREFIX_CACHE_DISK_GB overrides), a fixed 20 GiB pre-write
@@ -1878,7 +1930,7 @@ threats:
           closes cross-account reuse, per-donation gating caches only adoptable
           long prefixes, and DARKBLOOM_PREFIX_CACHE=0 survives restarts. The
           residual same-account in-process TTFT oracle can extend across
-          restarts within the 15-minute TTL, as accepted in the description.
+          restarts within the 30-minute TTL, as accepted in the description.
         status: open
       - description: >
           Per-deployment gating by trust level (e.g. force-off for shared/untrusted
@@ -1891,9 +1943,10 @@ threats:
           IMPLEMENTED for the v2 SSD tier (v0.7.5): file names, index keys, and
           metadata carry only HMAC-SHA256 tags under K_lookup =
           HKDF(SE-rooted KEK, "dbkv3-lookup-v1"), with the request salt
-          length-prefix-folded into the tag input (SSDLookupKeys). The v0.7.5
-          startup sweep deletes the retired tier's old files, and the new tier
-          never reads them.
+          length-prefix-folded into the tag input (SSDLookupKeys). The new tier
+          never reads the retired tier's files under darkbloom/kv/. Releases
+          through v0.9.10 deleted them in a startup sweep; later releases leave
+          any remaining ones in place (KEK wipe is the crypto purge).
         status: implemented
     open_findings: [SEC-035]
     severity: medium
@@ -1904,21 +1957,29 @@ threats:
       the SSD tier is default-on with a PER-DONATION gate: adoption bound +
       benefit floor in SSDPrefixCache.donate; loosening it widens the
       at-rest surface), to the TTL or disk-budget
-      policy (SSDPrefixCachePolicy.ttlSeconds 15-min max,
+      policy (SSDPrefixCachePolicy.ttlSeconds, 30-min max since 2026-09-26,
       PrefixCachePolicy.ssdDiskBudgetBytes), to the NAME DERIVATION
       (SSDLookupKeys: HKDF info string, HMAC domain tag, salt length-prefix,
       tag truncation), to the DBK3 metadata fields or AAD construction
       (SSDBlockStore — nothing prompt-derived beyond the keyed lookupTag may
       ever be added), to the purge points or the tier's own on-disk root
-      (darkbloom/kv3 — deliberately OUTSIDE the legacy kv/ root that the
-      upgrade sweeper sheds; KEK wipe remains the crypto purge), or to the
+      (darkbloom/kv3 — deliberately OUTSIDE the retired kv/ root, which is
+      never read or written; KEK wipe remains the crypto purge), or to the
       staging-reservation release paths
       (SSDPrefixCache.endAdoption/completeStaging, EngineV2Bridge backstops).
       Also still: coordinator-authenticated scope derivation
       (coordinator/registry/cache_route_keys.go), cacheScope →
       CBv2Request.cacheSalt plumbing, and EngineV2Factory production SSD
-      construction. Raising the TTL past 15 minutes or weakening authenticated
-      account isolation needs a fresh SEC-035 sign-off.
+      construction. Raising the TTL past 30 minutes or weakening authenticated
+      account isolation needs a fresh SEC-035 sign-off. Sign-off history:
+      15 minutes at the tier's introduction; 30 minutes on 2026-09-26
+      (operator decision, SSDPrefixCachePolicy.defaultTTLSeconds =
+      maxTTLSeconds = 1800, so the environment override still only
+      shortens). The same change set stops per-file eviction, TTL expiry
+      and corrupt-file removal from rotating the cache epoch; the epoch is
+      a coordinator routing-evidence generation, not an at-rest purge
+      primitive, so that leaves the mitigations above unchanged (the KEK
+      wipe and per-file AES-GCM authentication are untouched).
 
   # ── TB-008: Coordinator → Payments ───────────────────────────
 
@@ -1951,17 +2012,24 @@ threats:
     stride: Information_Disclosure
     title: Provider earnings enumerable by wallet address without authentication
     description: >
-      The legacy /v1/provider/earnings endpoint returns balance and payment history
-      by wallet address with no authentication. Any party who knows or can guess
-      a provider's wallet address can retrieve their earnings history.
+      The legacy /v1/provider/earnings endpoint returned balance, ledger and
+      payout history for any `?wallet=` value with no authentication, and the
+      value it accepted was an account ID, so anyone holding an account UUID
+      could read that account's balance and ledger. Resolved 2026-09-27: the
+      endpoint and the Solana-era wallet payout chain behind it were removed.
+      Earnings are now served only by authenticated account-scoped endpoints
+      (GET /v1/provider/account-earnings, GET /v1/me/*).
     adversaries: [ADV-002, ADV-003]
     affected_assets: [A-009]
     affected_files:
-      - coordinator/api/consumer.go
+      - coordinator/api/server.go
+      - coordinator/api/billing_handlers.go
     mitigations:
-      - description: Endpoint is unauthenticated by design for legacy reasons.
-        status: open
-    open_findings: [SEC-030]
+      - description: >
+          The unauthenticated /v1/provider/earnings route, its handler, and the
+          wallet payout store methods were deleted; the route now returns 404.
+        status: implemented
+    open_findings: []
     severity: low
     detection_hint: >
       Changes to earnings or balance endpoints should require account authentication

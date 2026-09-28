@@ -67,10 +67,10 @@ func (r *Registry) cacheRoutingHintsWithObservation(
 	// routing. Later changes are fenced again by the revision at selection and
 	// reservation; the rejected-capability check must not be skipped here.
 	for providerID, candidate := range capabilities {
-		if tracker.capabilityRejected(providerID, model, "ssd", candidate.Capability) {
+		if tracker.capabilityRejected(providerID, model, "ssd", candidate.Capability, now) {
 			candidate.Capability.Enabled = false
 		}
-		if tracker.capabilityRejected(providerID, model, "memory", candidate.MemoryCapability) {
+		if tracker.capabilityRejected(providerID, model, "memory", candidate.MemoryCapability, now) {
 			candidate.MemoryCapability.Enabled = false
 		}
 		capabilities[providerID] = candidate

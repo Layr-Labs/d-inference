@@ -2,7 +2,7 @@ package registry
 
 // pooled_kv_rates.go — the per-slot KV-rate table inside pooledTokenBudget.
 //
-// providerPooledTokenBudgetWithLayout used to allocate a map[string]int64 for
+// providerPooledTokenBudget used to allocate a map[string]int64 for
 // every provider on every routing scan (~11% of the fleet-scale scan's
 // allocation volume) to remember each budget slot's KVBytesPerToken. A box
 // serves a handful of co-resident models, so the table is a fixed inline

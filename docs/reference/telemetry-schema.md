@@ -1,20 +1,18 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-13 · commit `ec73023e4`
+> Last updated: 2026-09-28 · commit `0bd16a9fa`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
-TypeScript), the closed enums it carries, the field allowlist, and the tests
-that keep the mirrors identical. Only one producer of this shape is live today:
-the coordinator's own emitter, which forwards to Datadog. Client ingestion is
-switched off — `POST /v1/telemetry/events` answers `telemetry_ingest_disabled`
-([`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1)) without reading
-the body — but the allowlist still governs what the Swift and console filters
-let through and what the coordinator emits about itself. What each live datum
-is and where it goes: [`telemetry-inventory.md`](telemetry-inventory.md);
-design and failure modes: [`../architecture/telemetry.md`](../architecture/telemetry.md).
+TypeScript), the closed enums it carries, and the tests that keep the mirrors
+identical. Only one producer of this shape is live today: the coordinator's own
+emitter, which forwards to Datadog. The coordinator has no client ingestion
+route; the retired `POST /v1/telemetry/events` is not registered and gets a
+plain 404. What each live datum is and where it goes:
+[`telemetry-inventory.md`](telemetry-inventory.md); design and failure modes:
+[`../architecture/telemetry.md`](../architecture/telemetry.md).
 
 The terminal-profile [prediction decision fields](prediction-decision-telemetry.md)
-use the separate Go/Swift profiler protocol, not this event allowlist or its
+use the separate Go/Swift profiler protocol, not this event shape or its
 TypeScript mirror.
 
 Durable cache statistics use optional typed heartbeat objects, not event
@@ -28,6 +26,9 @@ Cache donation outcomes also use the separate typed heartbeat protocol:
 reason and a cumulative count. Complete-checkpoint providers distinguish host
 memory refusal, epoch invalidation, maintenance contention, insufficient disk
 space, unsafe roots, write I/O failure, unreadable existing files and eviction.
+`skipped_novel` identifies a complete checkpoint declined before any write
+budget was charged because neither the coordinator's
+`cache_repeated_prefix_tokens` nor local tag history showed repeat demand.
 `write_priority_limited` identifies exhaustion of the novel-checkpoint write
 share; `write_rate_limited` identifies exhaustion of the total write budget.
 See the [SSD write policy](ssd-kv-cache.md#size-and-eviction-rules) for admission
@@ -39,7 +40,7 @@ and do not add fields to the TypeScript event mirror.
 Paged allocator observations use the separate optional
 [`slots[].paged_storage`](protocol-messages.md#slotspaged_storage) heartbeat
 object (`coordinator/protocol/paged_storage_telemetry.go`, `PagedStorageTelemetry`).
-They add no event fields or allowlist entries. The native queue captures
+They add no event fields. The native queue captures
 `PagedKVStorageSnapshot`; `PagedStorageTelemetryAdapter` copies its scalars and
 computes age for the heartbeat without traversing allocator ownership. Optional
 `allocator_padding_bytes` and `last_allocation_allowance_bytes` distinguish
@@ -52,130 +53,82 @@ Process ownership uses optional
 (`coordinator/protocol/process_memory_telemetry.go`, `ProcessMemoryTelemetry`).
 The Swift producer, Go consumer and TypeScript mirror share the canonical
 `coordinator/protocol/testdata/process_memory_wire.json` fixture. These scalar
-observations add no event fields or allowlist entries.
+observations add no event fields.
+
+## Local provider drain events
+
+`provider-swift/Sources/ProviderCore/Service/ProviderDrainTelemetry.swift`
+(`ProviderDrainTelemetry`) writes a local stderr JSON event when phase or
+remaining-work count changes. It contains only `operation = provider_drain`,
+`reason` (`serving`, `draining`, `drained`, `timedOut`, `forced`, `busy`),
+`in_flight`, and `coordinator_acknowledged`. It has no inference/control IDs,
+models, credentials, prompts or responses. These local records are not uploaded;
+the privacy-disabled `TelemetryClient` and the wire enums remain unchanged. A startup/scheduled-idle process with no coordinator connection can
+be drained without claiming `coordinator_acknowledged = true`. The daemon state and CLI also report the drain deadline and outcome.
+
 
 ## Mirrors
 
 | Mirror | File | Types | Role today |
 |---|---|---|---|
-| Go (canon) | `coordinator/protocol/telemetry.go` | `TelemetryEvent`, `TelemetryBatch`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | shape and enums |
-| Go allowlist | `coordinator/api/telemetry_handlers.go` | `telemetryFieldAllowlist`, `sanitizeTelemetryEvent`, `handleTelemetryIngest` | allowlist of record; the sanitizer is retained but no route reaches it |
-| Go emitter | `coordinator/telemetry/emitter.go` | `Emitter.Emit`, `Event` | the only live producer; source forced to `coordinator` |
-| Go store mirror | `coordinator/store/interface.go` | `TelemetryEventRecord` | `TelemetryEvent` + `received_at`; nothing persists it — Datadog is the sole sink |
-| Swift | `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind`, `TelemetryFieldFilter` | client-side pre-filter; `TelemetryClient.swift` is a no-op facade (`emit` discards, `configure`/`shutdown` do nothing) |
-| TypeScript | `console-ui/src/lib/telemetry-types.ts` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind`, `TELEMETRY_ALLOWED_FIELDS` | console filter types |
+| Go (canon) | `coordinator/protocol/telemetry.go` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | shape and enums |
+| Go emitter | `coordinator/telemetry/emitter.go` | `Emitter.Emit`, `Event` | the only live producer; source forced to `coordinator`; Datadog is the sole durable sink |
+| Swift | `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | inert: `TelemetryClient.swift` is a no-op facade (`emit` discards, `configure`/`shutdown` do nothing) |
+| TypeScript | `console-ui/src/lib/telemetry-types.ts` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | types for the no-op `console-ui/src/lib/telemetry.ts` facade |
 
 ## Event fields
 
 | JSON key | Go | Swift | TS | Presence | Notes |
 |---|---|---|---|---|---|
-| `id` | `string` | `String` | `string` | req | UUIDv4 minted by the producer; the sanitizer re-mints anything `uuid.Parse` rejects |
-| `timestamp` | `time.Time` (RFC 3339) | `String` (ISO 8601) | `string` | req | producer wall clock; the sanitizer clamps to `[now − 7 d, now + 5 min]`, else `now` |
-| `source` | `TelemetrySource` | `TelemetrySource` | union | req | see enums; the emitter overwrites it with `coordinator` |
-| `severity` | `TelemetrySeverity` | `TelemetrySeverity` | union | req | unknown → `info` |
-| `kind` | `TelemetryKind` | `TelemetryKind` | union | req | unknown → `custom` |
-| `version` | `string` | `String?` | `string?` | opt | component version, ≤ 64 chars after sanitising |
-| `machine_id` | `string` | `String?` | `string?` | opt | ≤ 128 chars |
-| `account_id` | `string` | `String?` | `string?` | opt | ≤ 128 chars; server-stamped from auth when a route existed |
-| `request_id` | `string` | `String?` | `string?` | opt | ≤ 128 chars; correlation with an inference job |
-| `session_id` | `string` | `String?` | `string?` | opt | ≤ 64 chars; per-process UUID (`TelemetrySession.id` in Swift, `telemetry.SessionID` in Go) |
-| `message` | `string` | `String` | `string` | req | developer-authored; empty → event rejected; > `telemetryMaxMessage = 4096` bytes → truncated with `…` |
-| `fields` | `map[string]any` | `[String: AnyCodableValue]?` | `Record<string, unknown>?` | opt | allowlist-filtered; serialised size > `telemetryMaxFieldsKB = 8 KiB` → `{}` |
-| `stack` | `string` | `String?` | `string?` | opt | > `telemetryMaxStack = 32 KiB` → truncated with `… [truncated]` |
-| `received_at` | `time.Time` | — | — | store mirror only | `TelemetryEventRecord` |
+| `id` | `string` | `String` | `string` | req | UUIDv4 minted by the producer |
+| `timestamp` | `time.Time` (RFC 3339) | `String` (ISO 8601) | `string` | req | producer wall clock |
+| `source` | `TelemetrySource` | `TelemetrySource` | union | req | see enums; the emitter writes `coordinator` |
+| `severity` | `TelemetrySeverity` | `TelemetrySeverity` | union | req | see enums |
+| `kind` | `TelemetryKind` | `TelemetryKind` | union | req | see enums |
+| `version` | `string` | `String?` | `string?` | opt | component version |
+| `machine_id` | `string` | `String?` | `string?` | opt | stable per-machine identifier |
+| `account_id` | `string` | `String?` | `string?` | opt | account the event concerns |
+| `request_id` | `string` | `String?` | `string?` | opt | correlation with an inference job |
+| `session_id` | `string` | `String?` | `string?` | opt | per-process UUID (`TelemetrySession.id` in Swift, `telemetry.SessionID` in Go) |
+| `message` | `string` | `String` | `string` | req | developer-authored |
+| `fields` | `map[string]any` | `[String: AnyCodableValue]?` | `Record<string, unknown>?` | opt | structured operational fields fixed by the emitting call site |
+| `stack` | `string` | `String?` | `string?` | opt | backtrace (panics) |
 
 Casing and omission rules: every key is snake_case and identical across the
 three mirrors (`TelemetrySymmetryTests.swift` pins the exact encoded string).
 Go optional fields are `omitempty`; Swift uses `encodeIfPresent`; TS marks them
-`?`. The six required keys are always present in every mirror. `TelemetryBatch`
-is `{"events": [TelemetryEvent, …]}`, at most `telemetryMaxBatch = 100` events
-in `telemetryMaxBodyBytes = 64 KiB`.
+`?`. The six required keys are always present in every mirror. There is no
+batch wire type: nothing sends or accepts events.
 
 ## Enums
 
 Every raw value is lowercase snake_case. Swift cases are camelCase with an
 explicit raw value where the two differ; TS uses string-literal unions.
 
-| Enum | Values | Fallback |
-|---|---|---|
-| `source` | `coordinator`, `provider`, `app`, `console`, `bridge` | `custom` (`TelemetrySourceCustomValue`) for anything outside `KnownSources()`; authenticated providers were always rewritten to `provider` |
-| `severity` | `debug`, `info`, `warn`, `error`, `fatal` | `info` |
-| `kind` | `panic`, `http_error`, `protocol_error`, `backend_crash`, `attestation_failure`, `inference_error`, `runtime_mismatch`, `connectivity`, `oom`, `engine_health`, `log`, `custom` | `custom` |
+| Enum | Values |
+|---|---|
+| `source` | `coordinator`, `provider`, `app`, `console`, `bridge`; the coordinator emitter writes `coordinator` |
+| `severity` | `debug`, `info`, `warn`, `error`, `fatal` |
+| `kind` | `panic`, `http_error`, `protocol_error`, `backend_crash`, `attestation_failure`, `inference_error`, `runtime_mismatch`, `connectivity`, `oom`, `engine_health`, `log`, `custom` |
 
 The emitter maps severity to `slog` level: `fatal`/`error` → `Error`, `warn` →
 `Warn`, `debug` → `Debug`, else `Info`.
 
-## Field allowlist
+## Event fields are fixed at the call site
 
-`telemetryFieldAllowlist` (`coordinator/api/telemetry_handlers.go`) has 90 keys.
-`sanitizeTelemetryEvent` drops any other key silently. The Swift
-`TelemetryFieldFilter.allowed` set and the TS `TELEMETRY_ALLOWED_FIELDS` set are
-mirrors of it, minus the [known gaps](#known-mirror-gaps). Values are bounded
-enums, counters, byte counts and durations; prompt, completion, media and cache
-content are never admitted.
-
-| Group | Keys |
-|---|---|
-| Generic | `component`, `operation`, `duration_ms`, `attempt`, `endpoint`, `status_code`, `error_class`, `error`, `target` |
-| Provider / backend | `model`, `backend`, `exit_code`, `signal`, `hardware_chip`, `memory_gb`, `macos_version` |
-| Boot-security posture | `boot_macos_major`, `boot_sip_status` |
-| Coordinator | `handler`, `provider_id`, `trust_level`, `queue_depth`, `reason`, `runtime_component` |
-| Connectivity | `reconnect_count`, `last_error`, `ws_state`, `network_reachable`, `coordinator_url` |
-| Billing (booleans/enums only) | `billing_method`, `payment_failed` |
-| OOM / memory pressure | `detect_source`, `peak_memory_bytes`, `report`, `pressure`, `available_bytes`, `mlx_active_bytes`, `memory_pressure`, `in_flight` |
-| Engine health / first-token wedge | `steps_executed`, `admits`, `first_tokens_emitted`, `consecutive_admits_without_first_token`, `seconds_since_last_step`, `seconds_since_last_first_token`, `num_running`, `wedge_suspected` |
-| Eval / idle-clear / prefill sampling | `eval_in_flight_ms`, `longest_eval_ms`, `evals_completed`, `idle_clear_in_flight_ms`, `idle_clears_completed`, `prefill_samples_accepted`, `prefill_samples_dropped_floor`, `prefill_samples_dropped_ceiling`, `last_prefill_sample_tps`, `observed_prefill_tps_ewma` |
-| KV-budget sustained-rejection audit (legacy drop-event keys remain accepted) | `streak_seconds`, `reservation_count`, `reserved_bytes`, `mlx_cache_bytes`, `system_available_bytes`, `reservations`, `request_id`, `age_seconds` |
-| Media through engine_v2 | `multimodal`, `media_kind` (`image`/`video`/`mixed`) |
-| Exact-prefix replay | `prefix_reuse_strategy`, `prefix_matched_tokens`, `prefix_replay_tokens`, `prefix_saved_tokens`, `prefix_boundary_splits`, `prefix_construction_failure`, `prefix_capacity_refusal`, `prefix_cold_fallback` |
-| KV-backend discriminator | `kv_backend` (`paged`/`contiguous`, same key as `BackendSlotCapacity.KVBackend` on the heartbeat), `prefix_reuse_backend` (`contiguous_unquantized`/`contiguous_quantized`/`paged_fp16`/`unknown`) |
-| Paged KV pool | `pool_utilization` (occupancy ratio), `pool_bytes`, `pool_deferred_growth_bytes`, `pool_stranded_bytes` (raw bytes; `pages_pinned` and `cow_events` are deliberately absent because neither mechanism exists) |
-| Multi-token prediction | `mtp_enabled`, `mtp_active`, `mtp_inactive_reason` (`MTPFallbackReason` values plus `inert_kv_unsupported`), `mtp_acceptance_rate`, `mtp_proposed_tokens`, `mtp_accepted_tokens` |
-| Console UI context | `url`, `user_agent`, `route` |
-
-`GlobalKVCacheBudget.recordCommitRejection` reports ownership during sustained
-capacity rejection without releasing reservations by age. Older provider drop
-events remain decodable through the existing `request_id` and `age_seconds`
-allowlist; the current producer emits only the diagnostic table.
-
-### Known mirror gaps
-
-`telemetryKnownMirrorGaps` (`coordinator/api/telemetry_allowlist_parity_test.go`)
-lists the drift that ships. Each entry is a client-side completeness gap, not a
-wire incompatibility: Go accepts the key, the named client never sends it.
-
-| Key | Missing from | Why |
-|---|---|---|
-| `network_reachable`, `coordinator_url` | Swift, TS | coordinator-side connectivity bookkeeping only |
-| `url`, `user_agent`, `route` | Swift | browser context; TS has them |
-
-### Adding a field: one key, one meaning
-
-Add the key to all three mirrors in one change, with its producer. A key with
-no producer reads as a legitimate zero on a dashboard. Do not add a second
-ratio under a name that collides with an existing one (`pool_utilization` is
-occupancy; `pool_bytes` is emitted so share-of-pool stays derivable). Retiring
-a gap means deleting its `telemetryKnownMirrorGaps` entry and adding the key to
-the mirror in the same change; `TestTelemetryAllowlistKnownGapsAreStillReal`
-fails on stale entries.
-
-## Ingestion endpoint
-
-| Route | Handler | Behaviour |
-|---|---|---|
-| `POST /v1/telemetry/events` | `handleTelemetryIngest` (`coordinator/api/telemetry_handlers.go`) | Always the `telemetry_ingest_disabled` error (status and route-table entry: [`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1)), without reading, decoding, logging or forwarding the request body. The route stays registered so old providers get a terminal answer; `TelemetryClient.swift` no longer posts at all |
-
-Retained but unreachable from any route: `sanitizeTelemetryEvent`,
-`telemetryLimiter` (`newTelemetryLimiter`: burst 200 / 100 events per minute per
-machine or account, burst 30 / 10 per minute anonymous), and the batch and body
-limits above. `TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody` pins
-the `telemetry_ingest_disabled` response.
+No server-side field allowlist exists: nothing ingests client events, and the
+coordinator emitter does not filter. Each emitting call site passes a fixed set
+of operational keys (bounded enums, counters, byte counts and durations; never
+prompt, completion, media or cache content), enumerated in
+[`telemetry-inventory.md`](telemetry-inventory.md#coordinator-emitted-events).
+No mirror carries a field filter. To add a field, add it at the call site with a bounded value and
+list it in the inventory.
 
 ## Coordinator emitter
 
 `Emitter.Emit` (`coordinator/telemetry/emitter.go`) is the one live path that
-builds this shape. It does not run the allowlist; every call site passes
-allowlisted keys by construction. Each event goes to three places in order:
+builds this shape. It does not filter fields; every call site passes its fixed
+keys. Each event goes to three places in order:
 
 | Sink | What |
 |---|---|
@@ -193,13 +146,11 @@ and their fields are enumerated in
 |---|---|---|
 | `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` | `coordinator/protocol/telemetry_symmetry_test.go` | canonical event encodes to the exact JSON string; the kind set |
 | `telemetryEventJSONSymmetry`, `telemetryKindsMatch`, `sourceAndSeverityRawValues` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` | the Swift mirror of the two Go tests plus the source/severity raw values |
-| `TestTelemetryAllowlistThreeWayParity`, `TestTelemetryAllowlistKnownGapsAreStillReal`, `TestTelemetryAllowlistDiffDetectsNewDrift` | `coordinator/api/telemetry_allowlist_parity_test.go` | Go ↔ Swift ↔ TS allowlist sets, parsed from source; known gaps stay real |
-| `TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody`, `TestTelemetryFieldAllowlistHasKnownKeys`, `TestSanitizeTruncatesLongMessage` | `coordinator/api/telemetry_handlers_test.go` | the `telemetry_ingest_disabled` response, allowlist membership, message truncation |
-| `TelemetryClientTests.swift`, `TelemetryOverflowQueueTests.swift` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryClientTests.swift`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryOverflowQueueTests.swift` | the facade stays inert |
+| `TestTelemetryE2E_NoClientIngestionRoute` | `coordinator/api/telemetry_e2e_test.go` | the retired ingest route is gone: 404, body not reflected, nothing counted |
+| `TelemetryClientTests.swift`, `TelemetryOverflowQueueTests.swift` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryClientTests.swift`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryOverflowQueueTests.swift` | the client facade stays inert and the legacy queue purge removes only regular files |
 
 ## Related
 
 - [`telemetry-inventory.md`](telemetry-inventory.md) — every datum, producer, sink, cadence, retention
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — mechanism, invariants, failure modes, Datadog metric names
 - [`protocol-messages.md`](protocol-messages.md) — the heartbeat fields the coordinator turns into metrics
-- [`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1) — the route table entry for `/v1/telemetry/events` (`telemetry_ingest_disabled`)

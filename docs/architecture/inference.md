@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-20 · commit `0cb0c6310`
+> Last updated: 2026-09-21 · commit `b581bfd21`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -8,6 +8,18 @@ ContinuousBatchingV2, "CBv2"), one `EngineV2Bridge` per resident model, no
 legacy engine and no subprocess. For the memory model see
 [`hardware-support.md`](hardware-support.md); for KV/prefix caching see
 [`prefix-cache.md`](prefix-cache.md).
+The [native block adapter](native-block-inference.md) reuses this bridge boundary
+for committed diffusion output and explicit native-container slot ownership.
+
+Native DiffusionGemma also retains image/video assets on tool-result turns.
+`EngineV2VisionPrefill.prepareDiffusionUserInput` validates tool history and
+orders typed results by their actual call IDs before media decoding, using
+`Gemma4TurnStructure.orderTypedToolResults`. `MediaIngest.buildUserInput` keeps
+decoded assets and symbolic template parts aligned in that order. System and
+assistant media remain unsupported; legacy model ingestion is unchanged. Sources:
+`provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2DiffusionVisionPrefill.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/Gemma4TurnStructure.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`.
 
 ## Context
 
@@ -432,6 +444,7 @@ records tiny-model correctness and remaining release gates.
 | `gpt_oss` | GPT-OSS | Harmony tool format; loaded paged historical complete checkpoints [default on for exact `gpt-oss-20b`](prefix-cache.md#kv-layouts); contiguous fallback serves cold; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
 | `gemma4` | Gemma 4 VLM wrapper | Served through its text tower + vision prefill; historical complete SSD is text-only and requires the loaded paged capability |
 | `gemma4_text` | Gemma 4 text target | Assistant checkpoints share the prefix; never advertised |
+| `diffusion_gemma` | Native DiffusionGemma wrapper | Committed-block generation with native image/video-frame processing; see the [native adapter and qualification boundaries](native-block-inference.md) |
 | `qwen3_5` | Dense Qwen 3.5/3.8, recurrent state | Embedded MTP head; complete streamed SSD checkpoints on native contiguous or segmented paged KV; explicit paging requires observed native types; resident bank is opt-in |
 | `qwen3_5_moe` | Qwen 3.5/3.6 MoE, recurrent state | Same complete-checkpoint and segmented-native paging gates as dense Qwen |
 | `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; `cbv2Capabilities` all `false` (no prefix reuse, paged, compiled decode, packed prefill or MTP) |

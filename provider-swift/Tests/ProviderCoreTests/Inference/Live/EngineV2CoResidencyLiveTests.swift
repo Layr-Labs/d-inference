@@ -83,7 +83,7 @@ struct EngineV2CoResidencyLiveTests {
             )
         )
         let loop = try ProviderLoop(
-            config: config, purgeLegacyFiles: false, attestationSigner: nil)
+            config: config, attestationSigner: nil)
         let runtime = EngineV2Runtime()
         return (loop, runtime)
     }

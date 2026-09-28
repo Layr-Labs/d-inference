@@ -21,14 +21,9 @@ public enum WatchdogProbe {
     }
 
     public static func probeProvider(now: Double = Date().timeIntervalSince1970) -> ProviderLiveness {
-        var loaded = false
-        var running = false
-        for label in LaunchAgent.supportedLabels {
-            let result = LaunchctlControl.printOutput(label: label)
-            guard result.succeeded else { continue }
-            loaded = true
-            if parseRunning(result.stdout) { running = true; break }
-        }
+        let result = LaunchctlControl.printOutput(label: LaunchAgent.label)
+        let loaded = result.succeeded
+        var running = loaded && parseRunning(result.stdout)
         if !running,
            let state = DaemonStateFile.read(),
            !state.isStale(now: now),

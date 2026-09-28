@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-22 · commit `b1bebd54b`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -47,58 +47,37 @@ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its 
 
 Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
 
-## CI runner and credential boundary
+## CI runner trust boundary
 
-Unsigned builds and tests generally use Tenki: Linux jobs run on
-`tenki-standard-medium-4c-8g` (4 vCPU, 8 GB), and Apple Silicon jobs on
-`tenki-macos-26-large` (8 vCPU, 32 GB). Tenki compiling Mac jobs select
-`DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer`.
-Tenki Mac CI selects SwiftPM's native build system with
-`scripts/prepare-provider-release-toolchain.sh` before compiling tests or
-provider binaries. This keeps copied Metal resource bundles in the layout
-that the provider's paged-kernel preflight searches. The manual unsigned
-signing-validation build selects the same build system and SDK explicitly.
-Runner specifications: [Tenki labels](https://tenki.cloud/docs/runners/sizes).
-The Tenki Runners GitHub App must already have access to this repository;
-runner labels alone do not install or authorize it.
+Routine PR and push checks run on Tenki: Linux jobs use
+`tenki-standard-medium-4c-8g`, and provider and E2E tests use
+`tenki-macos-26-large` with
+`DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer`. These jobs
+have read-only GitHub permissions, do not reference GitHub secrets or attach
+protected environments, and discard checkout credentials. Public E2E models
+download anonymously. `scripts/check-ci-runner-policy.py` checks this boundary.
 
-The benchmark is the one compute exception. `e2e/benchmark_test.go`
-(`TestBenchmark_MultiModelMultiProvider`) starts two GPT-OSS providers and one
-Gemma provider on a shared 48 GB Mac; their model weights alone exceed Tenki's
-largest published 32 GB Mac. `.github/workflows/benchmarks.yml` therefore
-retains `blacksmith-12vcpu-macos-latest` for that read-only job until a larger
-Tenki Mac is available. Its approval and report-posting jobs run on GitHub.
+Release preparation, unsigned build, SDK qualification, signing, notarization,
+R2 staging, publication and signed-artifact compatibility checks all execute on
+Blacksmith. `.github/workflows/release-swift.yml` and
+`.github/workflows/provider-release-cache.yml` pin macOS 27 with Xcode 27 for
+build and signing, and macOS 26 for the older-OS smoke. Their Linux jobs use
+`blacksmith-4vcpu-ubuntu-2404`. Signing validation, model registration,
+credentialed review automation, and benchmark approval/reporting also run on
+Blacksmith. The three-provider benchmark retains its 48 GB Blacksmith Mac; its
+model weights alone exceed Tenki's 32 GB Mac.
 
-Signing and notarization use GitHub's `xcode-27` runner. R2 staging, release
-publication, model registration and credentialed review automation use
-GitHub's `ubuntu-24.04`. Coordinator container builds/deploys retain their
-existing GCP workflow. No production deployment is triggered by this migration.
-
-Tenki and Blacksmith compute jobs have explicit read-only GitHub permissions, no `secrets` expressions,
-no GitHub environment, and `persist-credentials: false` on checkout. They still
-receive the short-lived read-only GitHub job token and Actions runtime tokens
-needed for checkout, caches and artifacts; this is not a token-free runner.
-Integration and benchmark checkpoints download anonymously with `token=False`.
-No Apple, Hugging Face, R2, coordinator, or AI API credentials reach these jobs.
-
-Tenki operates the machines compiling unsigned release inputs and therefore
-remains part of the build supply chain. The signing job checks the same-run
-artifact inventory and source identity before importing credentials; those
-checks do not independently prove compiler or runner integrity. Signing jobs do
-not restore Tenki build caches. Tenki's [cache service](https://tenki.cloud/docs/runners/caching)
-handles unsigned build caches; the generic Swift cache uses a Tenki/Xcode 27
-namespace, and release caches retain exact compiler/SDK/path identities.
-
-`scripts/check-ci-runner-policy.py` checks workflow and local composite-action
-credential references, effective token permissions, checkout cleanup, approved
-static labels and placement of privileged jobs. CI runs its mutation tests on
-GitHub in **CI Runner Policy**. This is a regression guard for reviewed YAML,
-not a sandbox for arbitrary workflow or source changes.
+Release artifacts pass through GitHub Actions, but Tenki does not compile or
+cache their release inputs. Blacksmith is trusted to execute the release and
+receive its credentials; source and artifact-identity checks do not prove a
+runner's compiler integrity. Production coordinator container builds and
+deployments retain the separate GCP procedure in
+[the coordinator runbook](../operations/coordinator-deploy.md).
 
 ## SDK 27 release builds and caches
 
 The release pipeline runs optimized products and SDK qualification on separate
-`tenki-macos-26-large` runners. Both call `.github/actions/provider-release-build/action.yml`;
+`blacksmith-12vcpu-macos-27` runners. Both call `.github/actions/provider-release-build/action.yml`;
 only the optimized lane transfers an unsigned app and its file inventory to
 signing. All binaries, SwiftPM resource bundles and the source-matched Metal
 library travel together. Signing verifies the same-run artifact's source commit,
@@ -295,8 +274,6 @@ lease used after launch. See the [test procedure](test.md#connected-coordinatorp
 
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
-The [provider config cleanup tests](test.md#provider-config-cleanup) run with
-temporary home directories and need no provider build or model.
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator
@@ -729,10 +706,13 @@ from `coordinator/`, using a disposable local `DATABASE_URL` for the store
 contracts (the test harness truncates tables). Add `-race` for concurrency checks.
 Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
 The private admin queries have PostgreSQL coverage in
-`admin-ui/src/lib/queries/app-attest.test.ts`.
+`admin-ui/src/lib/queries/app-attest.test.ts` and
+`admin-ui/src/lib/queries/app-attest-diagnostics.test.ts`.
 
 After the optimized provider is packaged with its resources, run
-`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all four markers:
+`DARKBLOOM_NO_UPDATE_CHECK=1 DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=1 Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`
+(the child validates retained latches that MLX reads at its first Metal touch,
+so the caller seeds them, exactly as `SelfUpdater` and `install.sh` do). Require all four markers:
 `app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
 `paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. Callback completion and expiry are exercised
 without Apple service calls or a Keychain item. This linked-binary check catches
@@ -763,3 +743,14 @@ Provider Tests also runs `python3 scripts/test-profile-inventory-auth.py` on mac
 ## Promotion payload helper
 
 `python3 scripts/model-token-promotion.py --help` prepares a model-specific, calendar-day grant payload without making API calls. It requires Python with `zoneinfo` and timezone data. The [promotion runbook](../operations/model-token-promotions.md) covers review and approved application; the [test guide](test.md) covers calendar and settlement validation.
+
+## Source-matched test libraries
+
+After `swift build --build-tests`, run `scripts/stage-test-metallib.sh` with the
+package's `swift build --show-bin-path` directory. The helper builds or verifies
+the matching MLX library and stages it beside each test executable and in the
+nested resource bundle used by native checkpoint identity tests. `make provider-test`
+and the provider/nested CI jobs invoke this helper. A missing test runner or
+failed source verification is an error; an existing library is always replaced.
+See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
+opt-in encrypted transport gate.

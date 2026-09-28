@@ -48,7 +48,7 @@ afterEach(() => {
 });
 
 describe("useNetworkStats", () => {
-  it("keeps the fleet snapshot stable between verification boundaries and expires it on time", async () => {
+  it("retains source verification when its cached lease expires", async () => {
     const observed = Date.parse(SNAPSHOT_AT) / 1000;
     const timed = { ...stats, providers: [{ id: "provider", verification: {
       observed_at: observed,
@@ -65,12 +65,12 @@ describe("useNetworkStats", () => {
     await act(async () => { vi.advanceTimersByTime(4_999); });
     expect(result.current.stats).toBe(before);
     await act(async () => { vi.advanceTimersByTime(1); });
-    expect(result.current.stats).not.toBe(before);
-    expect(result.current.stats?.providers[0].verification?.app_attest.state).toBe("expired");
+    expect(result.current.stats).toBe(before);
+    expect(result.current.stats?.providers[0].verification?.app_attest.state).toBe("verified");
     expect(requestsTo("/api/stats")).toHaveLength(1);
   });
 
-  it("evaluates a refreshed snapshot with the current time after an idle clock", async () => {
+  it("replaces the source verdict with a newly fetched observation", async () => {
     const observed = Date.parse(SNAPSHOT_AT) / 1000;
     let latest: object = { ...stats, providers: [{ id: "provider", verification: {
       observed_at: observed,

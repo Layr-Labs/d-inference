@@ -67,17 +67,19 @@ func TestTerminalCauseHealthClassification(t *testing.T) {
 		wantFaultBreakers bool
 		// wantCapacityCooldown: the black-hole capacity cooldown tripped.
 		wantCapacityCooldown bool
+		// failure is the failure code the provider sends with the cause.
+		failure protocol.InferenceFailureCode
 	}{
-		{"admission_timeout", terminalCauseAdmissionTimeout, false, false, true},
-		{"prefill_stall", terminalCausePrefillStall, true, true, false},
-		{"decode_stall", terminalCauseDecodeStall, true, true, false},
-		{"safety_deadline", terminalCauseSafetyDeadline, false, false, false},
-		{"backpressure_timeout", terminalCauseBackpressureTimeout, false, false, false},
-		{"watchdog", terminalCauseWatchdog, true, true, false},
-		{"cancelled", terminalCauseCancelled, false, false, false},
-		{"engine_error", terminalCauseEngineError, true, true, false},
-		{"legacy_absent", "", true, true, false},
-		{"unknown_drift_value", "lease_reaped", true, true, false},
+		{"admission_timeout", terminalCauseAdmissionTimeout, false, false, true, protocol.FailureCodeCapacity},
+		{"prefill_stall", terminalCausePrefillStall, true, true, false, protocol.FailureCodeGenerationFailure},
+		{"decode_stall", terminalCauseDecodeStall, true, true, false, protocol.FailureCodeGenerationFailure},
+		{"safety_deadline", terminalCauseSafetyDeadline, false, false, false, protocol.FailureCodeGenerationFailure},
+		{"backpressure_timeout", terminalCauseBackpressureTimeout, false, false, false, protocol.FailureCodeGenerationFailure},
+		{"watchdog", terminalCauseWatchdog, true, true, false, protocol.FailureCodeGenerationFailure},
+		{"cancelled", terminalCauseCancelled, false, false, false, protocol.FailureCodeCancelled},
+		{"engine_error", terminalCauseEngineError, true, true, false, protocol.FailureCodeGenerationFailure},
+		{"legacy_absent", "", true, true, false, protocol.FailureCodeGenerationFailure},
+		{"unknown_drift_value", "lease_reaped", true, true, false, protocol.FailureCodeGenerationFailure},
 	}
 
 	for _, tc := range cases {
@@ -93,6 +95,7 @@ func TestTerminalCauseHealthClassification(t *testing.T) {
 						Error:         "engine failure: generation aborted",
 						StatusCode:    500,
 						TerminalCause: tc.cause,
+						FailureCode:   tc.failure,
 					})
 			}
 
@@ -129,19 +132,28 @@ func TestNeutralTerminalCauseDoesNotClearBreakers(t *testing.T) {
 	for i := range breakerStrikeRounds {
 		lastPR = deliverTypedError(t, srv, provider, model,
 			fmt.Sprintf("req-open-%d", i), protocol.InferenceErrorMessage{
-				Error:      "engine failure: generation aborted",
-				StatusCode: 500,
+				Error:       "engine failure: generation aborted",
+				StatusCode:  500,
+				FailureCode: protocol.FailureCodeGenerationFailure,
 			})
 	}
 	assertBreakerStates(t, reg, provider, lastPR, true)
 
 	// Neutral terminals of every neutral flavor must leave them open.
-	for i, cause := range []string{terminalCauseSafetyDeadline, terminalCauseBackpressureTimeout, terminalCauseCancelled} {
+	for i, neutral := range []struct {
+		cause   string
+		failure protocol.InferenceFailureCode
+	}{
+		{terminalCauseSafetyDeadline, protocol.FailureCodeGenerationFailure},
+		{terminalCauseBackpressureTimeout, protocol.FailureCodeGenerationFailure},
+		{terminalCauseCancelled, protocol.FailureCodeCancelled},
+	} {
 		lastPR = deliverTypedError(t, srv, provider, model,
 			fmt.Sprintf("req-neutral-%d", i), protocol.InferenceErrorMessage{
 				Error:         "request exceeded safety deadline",
 				StatusCode:    504,
-				TerminalCause: cause,
+				TerminalCause: neutral.cause,
+				FailureCode:   neutral.failure,
 			})
 	}
 	assertBreakerStates(t, reg, provider, lastPR, true)
@@ -171,6 +183,7 @@ func TestSafetyDeadline500IsFullyNeutral(t *testing.T) {
 				Error:         "generation error: request exceeded 120s deadline",
 				StatusCode:    500,
 				TerminalCause: terminalCauseSafetyDeadline,
+				FailureCode:   protocol.FailureCodeGenerationFailure,
 			})
 	}
 	provider.Mu().Lock()
@@ -201,6 +214,7 @@ func TestAdmissionTimeoutAcceptResetsCapacityStreak(t *testing.T) {
 					Error:         "admission timeout: engine did not admit request",
 					StatusCode:    503,
 					TerminalCause: terminalCauseAdmissionTimeout,
+					FailureCode:   protocol.FailureCodeCapacity,
 				})
 		}
 		reg.RecordCapacityAccept(provider.ID, model)
@@ -229,9 +243,11 @@ func TestLegacyAbsentCauseKeepsExistingCarveouts(t *testing.T) {
 	// Legacy capacity rejection (503) and cancel (499): no reputation failure.
 	deliverTypedError(t, srv, provider, model, "req-legacy-503", protocol.InferenceErrorMessage{
 		Error: "token_budget_exhausted", StatusCode: 503,
+		FailureCode: protocol.FailureCodeCapacity,
 	})
 	deliverTypedError(t, srv, provider, model, "req-legacy-499", protocol.InferenceErrorMessage{
 		Error: "request cancelled by consumer", StatusCode: 499,
+		FailureCode: protocol.FailureCodeCancelled,
 	})
 	provider.Mu().Lock()
 	failed := provider.Reputation.FailedJobs
@@ -243,6 +259,7 @@ func TestLegacyAbsentCauseKeepsExistingCarveouts(t *testing.T) {
 	// Legacy plain fault: reputation failure recorded.
 	deliverTypedError(t, srv, provider, model, "req-legacy-500", protocol.InferenceErrorMessage{
 		Error: "model crashed during generation", StatusCode: 500,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 	provider.Mu().Lock()
 	failed = provider.Reputation.FailedJobs
@@ -303,12 +320,15 @@ func TestTypedTerminalMetrics(t *testing.T) {
 
 	deliverTypedError(t, srv, provider, "test-model", "req-metric-typed", protocol.InferenceErrorMessage{
 		Error: "deadline", StatusCode: 504, TerminalCause: terminalCauseSafetyDeadline,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 	deliverTypedError(t, srv, provider, "test-model", "req-metric-unknown", protocol.InferenceErrorMessage{
 		Error: "??", StatusCode: 500, TerminalCause: "lease_reaped",
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 	deliverTypedError(t, srv, provider, "test-model", "req-metric-legacy", protocol.InferenceErrorMessage{
 		Error: "boom", StatusCode: 500,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 
 	_ = dd.Statsd.Flush()

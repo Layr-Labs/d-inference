@@ -1290,10 +1290,9 @@ func (s *Server) dispatchWithReserver(
 		cleanupPending()
 		return nil, nil, decision, plan, "failed to prepare cache-safe request", http.StatusInternalServerError
 	}
-	// Pre-fix providers crash on a vision request carrying sampling penalties;
-	// strip them for those providers only. Protocol-0 providers additionally get
-	// a coordinator-authored prompt_cache_key only inside this sealed body.
-	sealedBody, err := bodyForCacheAttempt(rawBody, requiresVision, provider, pr)
+	// Protocol-0 providers get a coordinator-authored prompt_cache_key only
+	// inside this sealed body.
+	sealedBody, err := bodyForCacheAttempt(rawBody, pr)
 	if err != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
@@ -1356,6 +1355,9 @@ func (s *Server) dispatchWithReserver(
 			s.sendProviderCancel(provider, requestID)
 			return nil, nil, decision, plan, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
 		}
+		if errors.Is(writeErr, registry.ErrProviderDraining) {
+			return nil, nil, decision, plan, protocol.ProviderDrainingForUpdate, http.StatusServiceUnavailable
+		}
 		return nil, nil, decision, plan, "failed to send request to provider", http.StatusBadGateway
 	}
 	pendingCleanup = false
@@ -1377,54 +1379,6 @@ func (s *Server) releaseUnsentDispatch(
 	pr.ResolveSpeculativeEmptyCompletion(false)
 	provider.RemovePending(pr.RequestID)
 	s.registry.SetProviderIdle(provider.ID)
-}
-
-// penaltySafeProviderVersion is the first provider release whose VLM penalty
-// path handles repetition/presence/frequency penalties without crashing (the
-// TokenRing 2D-prompt fix). Providers below it crash on a vision request that
-// carries any of these fields, so the coordinator strips them before sealing
-// for such a provider. Keep in sync with the release that ships the fix.
-const penaltySafeProviderVersion = "0.6.7"
-
-// visionPenaltyFields crash the pre-fix VLM penalty path on image requests.
-var visionPenaltyFields = []string{"repetition_penalty", "presence_penalty", "frequency_penalty"}
-
-// bodyForProvider returns the request body to seal for `provider`. It equals
-// rawBody, except a vision request routed to a pre-fix provider has the
-// crash-inducing penalty fields stripped. Fixed providers receive the penalties
-// unchanged. Per-provider (not pre-routing) so a retry on a fixed provider keeps
-// them. Remove once MIN_PROVIDER_VERSION clears all pre-fix builds.
-func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Provider) []byte {
-	if !requiresVision {
-		return rawBody
-	}
-	if provider.Version != "" && !semverLess(provider.Version, penaltySafeProviderVersion) {
-		return rawBody // fixed provider — pass penalties through
-	}
-	// A body carrying none of the penalty fields at its top level is returned
-	// unchanged without decoding it — the same outcome the decode path reaches
-	// through changed=false, minus a full-body parse per sizing probe.
-	if has, ok := topLevelObjectHasAnyKey(rawBody, visionPenaltyFields); ok && !has {
-		return rawBody
-	}
-	parsed, err := decodeInferenceJSONObject(rawBody)
-	if err != nil {
-		return rawBody
-	}
-	changed := false
-	for _, key := range visionPenaltyFields {
-		if _, ok := parsed[key]; ok {
-			delete(parsed, key)
-			changed = true
-		}
-	}
-	if !changed {
-		return rawBody
-	}
-	if stripped, err := marshalForwardBody(parsed); err == nil {
-		return stripped
-	}
-	return rawBody
 }
 
 var errProviderBodyTooLarge = errors.New("provider request body too large")
@@ -1450,22 +1404,8 @@ func oversizedProviderBodyBytes(err error) int {
 	return 0
 }
 
-func legacyCacheBustBodyBytes(
-	rawBody []byte,
-	requiresVision bool,
-	provider *registry.Provider,
-) (int, error) {
-	if provider == nil {
-		return 0, nil
-	}
-	return cacheAttemptSizeError(
-		bodyForProvider(rawBody, requiresVision, provider),
-		strings.Repeat("x", registry.LegacyCacheBustKeyLength))
-}
-
 func providerBodySizeError(
 	rawBody []byte,
-	requiresVision bool,
 	provider *registry.Provider,
 ) (int, error) {
 	if provider == nil {
@@ -1478,24 +1418,23 @@ func providerBodySizeError(
 	if usesLegacyCacheBust {
 		legacyKey = strings.Repeat("x", registry.LegacyCacheBustKeyLength)
 	}
-	return cacheAttemptSizeError(
-		bodyForProvider(rawBody, requiresVision, provider), legacyKey)
+	return cacheAttemptSizeError(rawBody, legacyKey)
 }
 
-func minimumLegacyCacheBustOverflow(rawBody []byte, requiresVision bool) (int, error) {
-	// An empty-version provider exercises the only provider-specific shrinking
-	// transform: legacy vision penalty removal. Raise a fleet-wide protocol floor
-	// only when even that smallest valid protocol-0 body exceeds the cap.
-	return legacyCacheBustBodyBytes(rawBody, requiresVision, &registry.Provider{})
+// minimumLegacyCacheBustOverflow sizes rawBody as a protocol-0 attempt would
+// seal it (with a cache-bust key). Raise a fleet-wide protocol floor only when
+// that body exceeds the cap.
+func minimumLegacyCacheBustOverflow(rawBody []byte) (int, error) {
+	return cacheAttemptSizeError(
+		rawBody, strings.Repeat("x", registry.LegacyCacheBustKeyLength))
 }
 
 func routingTraitsForProviderBody(
 	hasTools bool,
 	providerBody []byte,
-	requiresVision bool,
 ) (registry.RequestTraits, error) {
 	traits := registry.RequestTraits{HasTools: hasTools}
-	_, err := minimumLegacyCacheBustOverflow(providerBody, requiresVision)
+	_, err := minimumLegacyCacheBustOverflow(providerBody)
 	if errors.Is(err, errProviderBodyTooLarge) {
 		traits.MinPrefixCacheProtocol = 1
 	}
@@ -1503,11 +1442,9 @@ func routingTraitsForProviderBody(
 }
 
 // bodyForCacheAttempt returns the body to seal for one dispatch attempt: the
-// provider-specific body (bodyForProvider) with the protocol-0 cache-bust key
-// added as prompt_cache_key when the attempt carries one, size-checked
-// against the sealed-frame cap.
-func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry.Provider, pr *registry.PendingRequest) ([]byte, error) {
-	body := bodyForProvider(rawBody, requiresVision, provider)
+// provider body with the protocol-0 cache-bust key added as prompt_cache_key
+// when the attempt carries one, size-checked against the sealed-frame cap.
+func bodyForCacheAttempt(body []byte, pr *registry.PendingRequest) ([]byte, error) {
 	if pr == nil || pr.LegacyCacheBustKey == "" {
 		if len(body) > maxInferenceBodyBytes {
 			return nil, &providerBodyTooLargeError{size: len(body)}
@@ -1894,8 +1831,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var validatedPolicy validatedToolConstraintPolicy
 	var validationErr error
 	if isResponsesAPI {
-		loweredConstraintBody, err := promptcontract.LowerProviderBody(
-			promptcontract.EndpointResponses, originalRawBody)
+		loweredConstraintBody, err := promptcontract.LowerResponsesInferenceBody(originalRawBody)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errorResponse(
 				"invalid_request_error", err.Error()))
@@ -1926,19 +1862,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	parallelToolCalls := validatedPolicy.parallel
 	s.recordToolConstraintMetric(validatedMode, "requested")
 	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
-	if requiresToolConstraint && requiresVision {
-		writeJSON(w, http.StatusBadRequest, errorResponse(
-			"invalid_request_error",
-			"inference-enforced tool_choice is not supported for multimodal requests",
-			withParam("tool_choice")))
-		return
-	}
+	requiresNativeMediaTools := requiresVision && (requiresToolConstraint || requestHasMediaToolResults(parsed))
 	aliasTraits := registry.RequestTraits{
-		HasTools:               hasTools,
-		RequiresToolConstraint: requiresToolConstraint,
-		ToolChoiceMode:         string(validatedMode),
-		ToolChoiceName:         toolChoiceName,
-		ParallelToolCalls:      parallelToolCalls,
+		HasTools:                 hasTools,
+		RequiresToolConstraint:   requiresToolConstraint,
+		RequiresNativeMediaTools: requiresNativeMediaTools,
+		ToolChoiceMode:           string(validatedMode),
+		ToolChoiceName:           toolChoiceName,
+		ParallelToolCalls:        parallelToolCalls,
 	}
 
 	// Resolve a public alias (e.g. "gemma-4-26b") to a concrete build id, now
@@ -1974,12 +1905,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		body.markDirty()
 	}
 
-	// Shared media/tools fail-fast. Chat completions additionally rejects media
-	// sent via the Responses API surface (input-without-messages), because the
-	// Responses→chat lowering doesn't carry image/video parts through.
+	// The serving lowerer has already validated Responses media without dropping
+	// content. Keep the ordinary vision/provider capability gates on both APIs.
+	if requiresNativeMediaTools && s.nativeMediaToolsFailFast(w, model, publicModel, policy, allowedProviderSerials) {
+		return
+	}
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
 		requiresToolConstraint, string(validatedMode),
-		input != nil && len(messages) == 0, policy, allowedProviderSerials) {
+		policy, allowedProviderSerials) {
 		return
 	}
 	// Remote media URL gate (phase 1, pre-billing). With the media resolver
@@ -2063,7 +1996,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	providerBody := rawBody
 	if isResponsesAPI {
-		loweredProviderBody, err := promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rawBody)
+		loweredProviderBody, err := promptcontract.LowerResponsesInferenceBody(rawBody)
 		if err != nil {
 			s.recordRejection(rejectionInfo{
 				r:                     r,
@@ -2098,7 +2031,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	bodies := newProviderBodyMemo(func(candidateModel string) ([]byte, error) {
 		return s.candidateProviderBody(parsed, runtimeDefaults, candidateModel,
 			serviceChatConsumer, reasoningProvided, isResponsesAPI)
-	}, hasTools, requiresVision)
+	}, hasTools)
 	if body.serialized {
 		bodies.seed(model, providerBody)
 	}
@@ -2108,6 +2041,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			traits = registry.RequestTraits{HasTools: hasTools}
 		}
 		traits.RequiresToolConstraint = requiresToolConstraint
+		traits.RequiresNativeMediaTools = requiresNativeMediaTools
 		traits.ToolChoiceMode = string(validatedMode)
 		traits.ToolChoiceName = toolChoiceName
 		traits.ParallelToolCalls = parallelToolCalls
@@ -2230,7 +2164,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return true
 		}
 		var err error
-		providerBody, err = promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rawBody)
+		providerBody, err = promptcontract.LowerResponsesInferenceBody(rawBody)
 		if err != nil {
 			refundReservation()
 			s.recordRejection(rejectionInfo{
@@ -2595,72 +2529,6 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleProviderEarnings handles GET /v1/provider/earnings?wallet=0x...
-//
-// Returns the provider's balance and payout history.
-// No API key auth required — providers identify by provider address.
-func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) {
-	wallet := r.URL.Query().Get("wallet")
-	if wallet == "" {
-		wallet = r.Header.Get("X-Provider-Wallet")
-	}
-	if wallet == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "wallet address required (query param ?wallet=0x... or X-Provider-Wallet header)"))
-		return
-	}
-
-	// Look up balance by provider address
-	balance := s.ledger.Balance(wallet)
-	history := s.ledger.LedgerHistory(wallet)
-	payouts := s.ledger.AllPayouts()
-
-	// Filter payouts to this wallet
-	var walletPayouts []payments.Payout
-	var totalEarned int64
-	var totalJobs int
-	for _, p := range payouts {
-		if p.ProviderAddress == wallet {
-			walletPayouts = append(walletPayouts, p)
-			totalEarned += p.AmountMicroUSD
-			totalJobs++
-		}
-	}
-
-	// If no explicit payout records exist (for example, legacy rows created
-	// before provider_payouts was introduced), reconstruct from persisted
-	// ledger entries with payout type and the wallet as account ID.
-	if len(walletPayouts) == 0 {
-		ledgerEntries := s.store.LedgerHistory(wallet)
-		for _, le := range ledgerEntries {
-			if le.Type == store.LedgerPayout && le.Reference != "" {
-				walletPayouts = append(walletPayouts, payments.Payout{
-					ProviderAddress: wallet,
-					AmountMicroUSD:  le.AmountMicroUSD,
-					JobID:           le.Reference,
-					Timestamp:       le.CreatedAt,
-					Settled:         true,
-				})
-				totalEarned += le.AmountMicroUSD
-				totalJobs++
-			}
-		}
-	}
-
-	if walletPayouts == nil {
-		walletPayouts = []payments.Payout{}
-	}
-
-	writeJSON(w, http.StatusOK, types.ProviderEarningsResponse{
-		BalanceMicroUSD:     balance,
-		BalanceUSD:          fmt.Sprintf("%.6f", float64(balance)/1_000_000),
-		TotalEarnedMicroUSD: totalEarned,
-		TotalEarnedUSD:      fmt.Sprintf("%.6f", float64(totalEarned)/1_000_000),
-		TotalJobs:           totalJobs,
-		Payouts:             walletPayouts,
-		Ledger:              history,
-	})
-}
-
 // --- helpers ---
 
 // handleCompletions handles POST /v1/completions.
@@ -2747,12 +2615,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
 	requiresVision := detectMediaRequirement(parsed)
 	hasTools := requestHasTools(parsed)
+	requiresNativeMediaTools := requiresVision && (requiresToolConstraint || requestHasMediaToolResults(parsed))
 	aliasTraits := registry.RequestTraits{
-		HasTools:               hasTools,
-		RequiresToolConstraint: requiresToolConstraint,
-		ToolChoiceMode:         string(validatedMode),
-		ToolChoiceName:         toolChoiceName,
-		ParallelToolCalls:      parallelToolCalls,
+		HasTools:                 hasTools,
+		RequiresToolConstraint:   requiresToolConstraint,
+		RequiresNativeMediaTools: requiresNativeMediaTools,
+		ToolChoiceMode:           string(validatedMode),
+		ToolChoiceName:           toolChoiceName,
+		ParallelToolCalls:        parallelToolCalls,
 	}
 
 	// Resolve a public alias to a concrete build id, constraint-aware (after
@@ -2794,12 +2664,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
 	}
-	// Shared media/tools fail-fast (see visionToolsFailFast). Completions and
-	// Anthropic bodies share the top-level "tools" field; neither has the
-	// Responses-API media surface, so rejectResponsesMedia is false here.
+	// Shared media/tools fail-fast (see visionToolsFailFast).
+	if requiresNativeMediaTools && s.nativeMediaToolsFailFast(w, model, publicModel, policy, allowedProviderSerials) {
+		return
+	}
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
 		requiresToolConstraint, string(validatedMode),
-		false, policy, allowedProviderSerials) {
+		policy, allowedProviderSerials) {
 		return
 	}
 	if s.rejectRemoteMediaURLs(w, r, parsed, model, publicModel, requiresVision, hasTools) {
@@ -2899,8 +2770,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
 		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
 		traits, _ := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
+			hasTools, candidateBody)
 		traits.RequiresToolConstraint = requiresToolConstraint
+		traits.RequiresNativeMediaTools = requiresNativeMediaTools
 		traits.ToolChoiceMode = string(validatedMode)
 		traits.ToolChoiceName = toolChoiceName
 		traits.ParallelToolCalls = parallelToolCalls
@@ -2909,7 +2781,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	providerBodyErrorForModel := func(candidateModel string) error {
 		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
 		_, sizeErr := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
+			hasTools, candidateBody)
 		return sizeErr
 	}
 	var endpointBody, inferenceBody []byte
@@ -2934,8 +2806,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
 		routingTraits, _ = routingTraitsForProviderBody(
-			hasTools, inferenceBody, requiresVision)
+			hasTools, inferenceBody)
 		routingTraits.RequiresToolConstraint = requiresToolConstraint
+		routingTraits.RequiresNativeMediaTools = requiresNativeMediaTools
 		routingTraits.ToolChoiceMode = string(validatedMode)
 		routingTraits.ToolChoiceName = toolChoiceName
 		routingTraits.ParallelToolCalls = parallelToolCalls

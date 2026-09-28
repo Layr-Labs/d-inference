@@ -115,6 +115,9 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     /// capability is advertised only when this equals the code-pinned Gemma
     /// contract hash; ordinary template rendering remains independently gated.
     public var toolConstraintTemplateHash: String?
+    /// Native forced media tools and media-bearing tool results. Missing means
+    /// unsupported; only the qualified native family advertises this capability.
+    public var nativeMediaTools: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -129,6 +132,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case isVision = "is_vision"
         case templateRenderOK = "template_render_ok"
         case toolConstraintTemplateHash = "tool_constraint_template_hash"
+        case nativeMediaTools = "native_media_tools"
     }
 
     public init(
@@ -143,7 +147,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         templateRenderOK: Bool? = nil,
         toolConstraintTemplateHash: String? = nil,
         ssdOffloadedWeightBytes: UInt64? = nil,
-        nativeLoadTransientBytes: UInt64? = nil
+        nativeLoadTransientBytes: UInt64? = nil,
+        nativeMediaTools: Bool? = nil
     ) {
         self.id = id
         self.modelType = modelType
@@ -157,6 +162,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.isVision = isVision
         self.templateRenderOK = templateRenderOK
         self.toolConstraintTemplateHash = toolConstraintTemplateHash
+        self.nativeMediaTools = nativeMediaTools
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -184,6 +190,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         try container.encodeIfPresent(templateRenderOK, forKey: .templateRenderOK)
         try container.encodeIfPresent(
             toolConstraintTemplateHash, forKey: .toolConstraintTemplateHash)
+        try container.encodeIfPresent(nativeMediaTools, forKey: .nativeMediaTools)
     }
 }
 
@@ -449,8 +456,6 @@ public struct EncryptedPayload: Codable, Sendable, Equatable {
 public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public var textBackendInprocess: Bool
     public var textProxyDisabled: Bool
-    public var pythonRuntimeLocked: Bool
-    public var dangerousModulesBlocked: Bool
     public var sipEnabled: Bool
     public var antiDebugEnabled: Bool
     public var coreDumpsDisabled: Bool
@@ -459,8 +464,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     enum CodingKeys: String, CodingKey {
         case textBackendInprocess = "text_backend_inprocess"
         case textProxyDisabled = "text_proxy_disabled"
-        case pythonRuntimeLocked = "python_runtime_locked"
-        case dangerousModulesBlocked = "dangerous_modules_blocked"
         case sipEnabled = "sip_enabled"
         case antiDebugEnabled = "anti_debug_enabled"
         case coreDumpsDisabled = "core_dumps_disabled"
@@ -470,8 +473,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public init(
         textBackendInprocess: Bool,
         textProxyDisabled: Bool,
-        pythonRuntimeLocked: Bool,
-        dangerousModulesBlocked: Bool,
         sipEnabled: Bool,
         antiDebugEnabled: Bool,
         coreDumpsDisabled: Bool,
@@ -479,8 +480,6 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     ) {
         self.textBackendInprocess = textBackendInprocess
         self.textProxyDisabled = textProxyDisabled
-        self.pythonRuntimeLocked = pythonRuntimeLocked
-        self.dangerousModulesBlocked = dangerousModulesBlocked
         self.sipEnabled = sipEnabled
         self.antiDebugEnabled = antiDebugEnabled
         self.coreDumpsDisabled = coreDumpsDisabled

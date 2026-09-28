@@ -63,9 +63,6 @@ public struct StandaloneServerConfig: Sendable {
     /// Bearer token required on every inference route (direct/local mode).
     /// nil = no auth (library default / explicit `--no-auth`).
     public let authToken: String?
-    /// Detected local hardware. Was the adaptive-prefill ladder seed;
-    /// retained for CLI compatibility, currently unused on the v2 path.
-    public let hardware: HardwareInfo?
     public let runtimeCapabilities: Set<ProviderRuntimeCapability>
     /// Box-wide concurrent-decode cap per v2 engine
     /// (`[backend] engine_v2_max_concurrent`), clamped to [1, 8]. Defaults to
@@ -84,8 +81,6 @@ public struct StandaloneServerConfig: Sendable {
     /// MTP policy inherited from provider config, including exact Gemma QAT.
     /// External assistants download asynchronously through the configured catalog.
     public let mtpMode: MTPMode
-    /// Source-compatible view for callers that still inspect the old boolean.
-    public var mtp: Bool { mtpMode == .on }
     public let mtpDrafterPath: String?
     public let coordinatorURL: String
 
@@ -94,14 +89,12 @@ public struct StandaloneServerConfig: Sendable {
         host: String = "127.0.0.1",
         maxCachedModels: Int = 3,
         authToken: String? = nil,
-        hardware: HardwareInfo? = nil,
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         engineV2MaxConcurrent: UInt64 = BackendSettings.defaultEngineV2MaxConcurrent,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
-        mtp: Bool? = nil,
         mtpMode: MTPMode = .auto,
         mtpDrafterPath: String? = nil,
         coordinatorURL: String = CoordinatorSettings().url
@@ -110,14 +103,13 @@ public struct StandaloneServerConfig: Sendable {
         self.host = host
         self.maxCachedModels = max(1, maxCachedModels)
         self.authToken = authToken
-        self.hardware = hardware
         self.runtimeCapabilities = runtimeCapabilities
         self.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
         self.prefillDeadlineMode = prefillDeadlineMode
-        self.mtpMode = mtp.map { $0 ? .on : .off } ?? mtpMode
+        self.mtpMode = mtpMode
         self.mtpDrafterPath = mtpDrafterPath
         self.coordinatorURL = coordinatorURL
     }
@@ -129,6 +121,12 @@ let standaloneLogger = Logger(
 )
 
 public actor StandaloneServer {
+    nonisolated let responseTracker = LocalResponseTracker()
+    var lifecycleDraining = false
+    var lifecycleControlTask: Task<Void, Never>?
+    var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
+    var lifecycleCommandID: String?
+    var lifecycleStatus = ProviderDrainStatus()
 
     /// One resident model: its v2 bridge, loaded container (the VLM owns both
     /// vision and the exact text tower served by the bridge), and KV sizing
@@ -136,7 +134,8 @@ public actor StandaloneServer {
     struct CachedSlot {
         let bundle: ProviderEngineBundle
         var bridge: EngineV2Bridge { bundle.bridge }
-        let container: MLXLMCommon.ModelContainer
+        let modelContainer: ProviderModelContainer
+        var container: MLXLMCommon.ModelContainer? { modelContainer.autoregressive }
         let tokenizer: TokenizerHandle
         let modelType: String?
         let isVLM: Bool
@@ -154,8 +153,23 @@ public actor StandaloneServer {
             lastUsedAt: ContinuousClock.Instant,
             cacheEligibleWeightHash: String? = nil
         ) {
+            self.init(bundle: bundle, modelContainer: .autoregressive(container), tokenizer: tokenizer,
+                modelType: modelType, isVLM: isVLM, sizing: sizing, lastUsedAt: lastUsedAt,
+                cacheEligibleWeightHash: cacheEligibleWeightHash)
+        }
+
+        init(
+            bundle: ProviderEngineBundle,
+            modelContainer: ProviderModelContainer,
+            tokenizer: TokenizerHandle,
+            modelType: String?,
+            isVLM: Bool,
+            sizing: SlotSizingSnapshot,
+            lastUsedAt: ContinuousClock.Instant,
+            cacheEligibleWeightHash: String? = nil
+        ) {
             self.bundle = bundle
-            self.container = container
+            self.modelContainer = modelContainer
             self.tokenizer = tokenizer
             self.modelType = modelType
             self.isVLM = isVLM
@@ -317,9 +331,6 @@ public actor StandaloneServer {
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
             catalog: SpecDecCatalogLookup(coordinatorURL: config.coordinatorURL))
-        // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
-        // EngineV2 SSD data lives under the separate `darkbloom/kv3` root.
-        LegacyKVCacheSweeper.sweep()
         // Pin the MLX memory ceiling before any model weights load on this path
         // (the coordinator path does this in ProviderLoop.startMemoryProtection).
         MLXMemoryGuard.configureOnce()
@@ -357,30 +368,6 @@ public actor StandaloneServer {
     /// Internal access so the +HTTP extension can pass the same
     /// default through to ``MultiModelBatchSchedulerEngine``.
     static let slotDefaultMaxTokens = 4096
-
-    /// Map an engine-side admission error message to an HTTP status. Used
-    /// by tests and by any custom error-mapping middleware. The keyword set
-    /// matches the canonical `token_budget_exhausted:` message contract the
-    /// v2 bridge preserves from the legacy scheduler.
-    static func schedulerErrorStatus(for message: String) -> HTTPResponse.Status {
-        let lowercased = message.lowercased()
-        if lowercased.contains("invalid token")
-            || lowercased.contains("duplicate request")
-            || lowercased.contains("batch token budget")
-        {
-            return .badRequest
-        }
-        if lowercased.contains("queue full") {
-            return .tooManyRequests
-        }
-        if lowercased.contains("token_budget_exhausted")
-            || lowercased.contains("timed out waiting for capacity")
-            || lowercased.contains("insufficient global kv cache headroom")
-        {
-            return .serviceUnavailable
-        }
-        return .internalServerError
-    }
 
     /// Update the advertised model list (e.g. after a rescan). Applies the
     /// same CBv2 supported-set filter as init. The serving set is part of
@@ -470,6 +457,8 @@ public actor StandaloneServer {
     public func start() throws {
         guard lifecycleState == .stopped else { return }
 
+        responseTracker.setAccepting(true)
+        lifecycleDraining = false
         didBind = false
         bindFailed = false
         let app = makeApplication()
@@ -540,6 +529,8 @@ public actor StandaloneServer {
     /// Stop the server and fully release resident serving resources. Concurrent
     /// callers and `waitUntilStopped()` join one teardown task.
     public func stop() async {
+        lifecycleControlTask?.cancel()
+        lifecycleControlTask = nil
         switch lifecycleState {
         case .stopped:
             return
@@ -565,6 +556,8 @@ public actor StandaloneServer {
     }
 
     private func finishShutdown(serviceTask: Task<Void, Never>?) async {
+        lifecycleControlTask?.cancel()
+        lifecycleControlTask = nil
         kvSweepTask?.cancel()
         kvSweepTask = nil
         serviceTask?.cancel()
@@ -598,6 +591,8 @@ public actor StandaloneServer {
             MLX.Memory.clearCache()
         }
         serverTask = nil
+        responseTracker.setAccepting(true)
+        lifecycleDraining = false
         didBind = false
         bindFailed = false
         lifecycleState = .stopped
@@ -951,13 +946,13 @@ public actor StandaloneServer {
         specDecPreparation: SpecDecPreparation,
         cacheEligibleWeightHash: String? = nil
     ) async throws -> SlotBuild {
-        var prepared: EngineV2PreparedModel
+        var prepared: EngineV2ServingPreparation
         do {
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory,
-                container: newcomerBox.borrow(),
+                container: newcomerBox.borrowModel(),
                 specDecPreparation: specDecPreparation,
                 assistantLoader: v2TestHooks?.assistantLoader
                     ?? ProductionProviderMTPAssistantLoader(),
@@ -1057,7 +1052,7 @@ public actor StandaloneServer {
                 modelType: modelType,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory,
-                container: newcomerBox.borrow(),
+                container: newcomerBox.borrowModel(),
                 tokenizer: tokenizer,
                 sizing: sizing,
                 kvBytesCapacity: targets[modelId] ?? 0,
@@ -1240,10 +1235,10 @@ public actor StandaloneServer {
         return true
     }
 
-    private func evictIfNeededForLoad() async throws {
+    private func evictIfNeededForLoad(allowEviction: Bool) async throws {
         guard slots.count >= config.maxCachedModels else { return }
 
-        guard await evictLRUIdleSlot() else {
+        guard allowEviction, await evictLRUIdleSlot() else {
             throw StandaloneServerError.capacityUnavailable(
                 "All \(config.maxCachedModels) cached model slot(s) are active; try again when a request finishes"
             )
@@ -1251,7 +1246,8 @@ public actor StandaloneServer {
     }
 
     private func ensureMemoryHeadroomForLoad(
-        requiredGb: Double, waitForQwen4Retirement: Bool = false
+        requiredGb: Double, waitForQwen4Retirement: Bool = false,
+        allowEviction: Bool = true
     ) async throws {
         guard requiredGb.isFinite, requiredGb > 0 else { return }
 
@@ -1259,7 +1255,7 @@ public actor StandaloneServer {
             try Task.checkCancellation()
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
                 try await retirement.pauseForRecheck() { continue }
-            guard await evictLRUIdleSlot() else {
+            guard allowEviction, await evictLRUIdleSlot() else {
                 throw StandaloneServerError.capacityUnavailable(
                     String(format: "Insufficient memory headroom to load model (needs %.1f GB available)", requiredGb)
                 )
@@ -1271,7 +1267,7 @@ public actor StandaloneServer {
     /// clamped to real OS-available memory (`SystemMemory`) and minus any KV
     /// already promised to in-flight requests (`kvBudget`). See
     /// `ModelLoadAdmission` for the rationale.
-    private func availableMemoryGb() async -> Double {
+    func availableMemoryGb() async -> Double {
         kvBudget.availableForLoadGb()
     }
 
@@ -1313,6 +1309,7 @@ public actor StandaloneServer {
     /// reservation if the lookup somehow fails so a partial-acquire
     /// doesn't pin a missing model forever.
     func acquireModel(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        if lifecycleDraining { throw MultiModelBatchSchedulerEngineError.queueFull("provider draining") }
         try throwIfMTPUpgradeDraining(modelId)
         do {
             try await ensureModelLoaded(modelId)
@@ -1334,6 +1331,7 @@ public actor StandaloneServer {
         }
         await waitForMTPUpgrade(modelId)
         try Task.checkCancellation()
+        if lifecycleDraining { throw MultiModelBatchSchedulerEngineError.queueFull("provider draining") }
         try throwIfMTPUpgradeDraining(modelId)
         reserveSlot(modelId)
         guard let slot = slots[modelId], !evictingModels.contains(modelId) else {
@@ -1357,6 +1355,7 @@ public actor StandaloneServer {
             releaseToken: token,
             modelType: slot.modelType,
             container: slot.container,
+            diffusionContainer: slot.modelContainer.diffusion,
             isVLM: slot.isVLM,
             engineV2Bridge: slot.bridge,
             visionGate: VisionMemoryGate(
@@ -1441,10 +1440,10 @@ public actor StandaloneServer {
         }.value
     }
 
-    /// Lazy-load a model if it isn't already resident. Serializes loads and
-    /// applies LRU + memory-headroom eviction, then builds the v2 slot
-    /// through the shared sizing → re-slice → bridge path.
-    func ensureModelLoaded(_ modelId: String) async throws {
+    /// Load a model if it isn't already resident. Request loads may evict idle
+    /// slots; startup preloads pass `allowEviction = false` to preserve earlier
+    /// warm models while still using the authoritative memory gate.
+    func ensureModelLoaded(_ modelId: String, allowEviction: Bool = true) async throws {
         await waitForMTPUpgrade(modelId)
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: config.runtimeCapabilities)
@@ -1463,7 +1462,7 @@ public actor StandaloneServer {
                 touchSlot(modelId)
                 return
             }
-            try await ensureModelLoaded(modelId)
+            try await ensureModelLoaded(modelId, allowEviction: allowEviction)
             return
         }
 
@@ -1497,7 +1496,7 @@ public actor StandaloneServer {
             return
         }
         if modelsLoading.contains(modelId) {
-            try await ensureModelLoaded(modelId)
+            try await ensureModelLoaded(modelId, allowEviction: allowEviction)
             return
         }
 
@@ -1536,7 +1535,7 @@ public actor StandaloneServer {
         await pushActivationReserve()
         do {
             try Task.checkCancellation()
-            try await evictIfNeededForLoad()
+            try await evictIfNeededForLoad(allowEviction: allowEviction)
             let targetRequiredGb = ModelLoadAdmission.requiredToLoadGb(
                     // Includes the validated native load-copy envelope or
                     // legacy padding; never substitute bare steady residency.
@@ -1549,7 +1548,8 @@ public actor StandaloneServer {
                         / (1024.0 * 1024.0 * 1024.0))
             try await ensureMemoryHeadroomForLoad(
                 requiredGb: targetRequiredGb,
-                waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
+                waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType),
+                allowEviction: allowEviction)
             // Inline assistants ride the target checkpoint's own shards,
             // already counted in estimatedMemoryGb -> targetRequiredGb; only
             // separately staged assistants add bytes on top
@@ -1616,7 +1616,7 @@ public actor StandaloneServer {
             // `borrow()` to a long-lived local — that would keep the weights
             // alive past `release()`.
             let newcomer = EngineV2NewcomerBox(
-                try await ModelContainerLoading.loadContainer(from: modelPath, modelID: modelId))
+                try await ModelContainerLoading.loadServingContainer(from: modelPath, modelID: modelId))
             try Task.checkCancellation()
             let postLoadCacheHash = await computeStandaloneWeightHash(
                 modelPath: modelPath, modelId: modelId, required: reusableSSDRequested)
@@ -1645,10 +1645,8 @@ public actor StandaloneServer {
             // Scheduler-free sizing snapshot: weight bytes + the engine-truth
             // fp16 KV rate + context window — everything the re-slice and
             // bridge need.
-            let targetSizing = try await SlotSizingSnapshot.build(
-                container: newcomer.borrow(),
-                modelPath: modelPath,
-                fallbackDefaultMaxTokens: Self.slotDefaultMaxTokens)
+            let targetSizing = try await newcomer.borrowModel().sizing(
+                modelPath: modelPath, defaultMaxTokens: Self.slotDefaultMaxTokens)
             // The loaded weights are now reflected in MLX memory, so transfer
             // accounting from the pending estimate to the live memory snapshot.
             guard await kvBudget.reducePendingLoad(
@@ -1657,14 +1655,8 @@ public actor StandaloneServer {
                 await newcomer.releaseAfterExternalResources()
                 throw StandaloneServerError.capacityUnavailable("Model load ownership changed during setup")
             }
-            let tokenizer: TokenizerHandle = try await newcomer.borrow().perform { ctx in
-                TokenizerHandle(
-                    ctx.tokenizer,
-                    toolConstraintContractVerified:
-                        Gemma4ToolConstraintContract.isVerified(
-                            modelType: modelInfo.modelType,
-                            modelDirectory: modelPath))
-            }
+            let tokenizer = try await newcomer.borrowModel().tokenizerHandle(
+                modelType: modelInfo.modelType, directory: modelPath)
             if Task.isCancelled {
                 await newcomer.releaseAfterExternalResources()
                 MLX.Memory.clearCache()
@@ -1797,7 +1789,7 @@ public actor StandaloneServer {
             }
 
             // Guards passed — NOW publish the slot.
-            guard let installContainer = newcomer.container else {
+            guard let installContainer = newcomer.modelContainer else {
                 // Unreachable (the box is drained only on failure paths) —
                 // defensive so a wiring bug can never publish a slot with no
                 // container.
@@ -1807,7 +1799,7 @@ public actor StandaloneServer {
             }
             slots[modelId] = CachedSlot(
                 bundle: bundle,
-                container: installContainer,
+                modelContainer: installContainer,
                 tokenizer: tokenizer,
                 modelType: modelInfo.modelType,
                 isVLM: slotIsVLM,

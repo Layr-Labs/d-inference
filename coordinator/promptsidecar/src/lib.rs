@@ -2,6 +2,7 @@ pub mod api;
 mod artifact_cache;
 pub mod artifacts;
 pub mod contract;
+mod diffusion;
 pub mod endpoint;
 mod gemma4;
 pub mod hash;

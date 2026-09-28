@@ -223,24 +223,6 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         return perToken
     }
 
-    /// Total fp16 KV bytes retained after `tokens` tokens of one sequence —
-    /// the EXACT `AdmissionV2.estimatedBytes` arithmetic (window plateaus
-    /// included), reproduced for sizing decisions that want the absolute
-    /// figure rather than the marginal rate.
-    public static func estimatedKVBytes(layerKinds: [CBv2LayerKind], tokens: Int) -> Int {
-        guard tokens > 0 else { return 0 }
-        var total = 0
-        for kind in layerKinds where kind.sharesKVWithLayer == nil {
-            let retained: Int
-            switch kind.attention {
-            case .full: retained = tokens
-            case .slidingWindow(let window): retained = min(tokens, window)
-            }
-            total += retained * 2 * kind.kvHeads * kind.headDim * 2
-        }
-        return total
-    }
-
     static func qwenVLMTextKVRate(modelDirectory: URL) -> Int? {
         let configURL = modelDirectory.appendingPathComponent("config.json")
         guard let configData = try? Data(contentsOf: configURL) else { return nil }

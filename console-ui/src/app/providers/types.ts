@@ -83,7 +83,6 @@ export interface MyBackendCapacity {
 }
 
 export interface MyReputation {
-  score: number;
   total_jobs: number;
   successful_jobs: number;
   failed_jobs: number;
@@ -131,8 +130,6 @@ export interface MyProvider {
   mda_sepos_version?: string;
 
   runtime_verified: boolean;
-  python_hash?: string;
-  runtime_hash?: string;
 
   last_challenge_verified?: string;
   failed_challenges: number;
@@ -154,8 +151,6 @@ export interface MyProvider {
 
   lifetime_requests_served: number;
   lifetime_tokens_generated: number;
-
-  wallet_address?: string;
 
   registered_at?: string;
   last_seen?: string;
@@ -181,7 +176,6 @@ export interface MyFleetCounts {
 
 export interface MySummaryResponse {
   account_id: string;
-  wallet_address?: string;
   available_balance_micro_usd: number;
   withdrawable_balance_micro_usd?: number;
   payout_ready?: boolean;
@@ -199,6 +193,9 @@ export interface MySummaryResponse {
 export interface PrefixCacheTelemetry {
   kind: "attention_blocks" | "complete_checkpoint";
   ttl_expired_total?: number;
+  // complete_checkpoint only: recurrent donors whose capture stopped because
+  // a prompt range ran in a packed prefill cohort, once per request.
+  recurrent_capture_disarmed_packed_total?: number;
   io?: PrefixCacheIOTelemetry;
   generation: number;
   sample_seq: number;

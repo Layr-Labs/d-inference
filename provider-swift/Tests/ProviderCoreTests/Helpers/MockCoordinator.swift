@@ -31,6 +31,7 @@ import NIOCore
 /// Captured wire messages received from the provider. Cumulative for the
 /// lifetime of the mock; tests inspect a snapshot after each interaction.
 public struct CapturedMessages: Sendable {
+    public var drainBarriers: [String] = []
     public var appAttestShadow: [AppAttestShadowPayload] = []
     public var registers: [ProviderMessage.Register] = []
     public var heartbeats: [ProviderMessage.Heartbeat] = []
@@ -43,12 +44,16 @@ public struct CapturedMessages: Sendable {
     public var loadModelStatuses: [ProviderMessage.LoadModelStatus] = []
     public var prefetchModelStatuses: [ProviderMessage.PrefetchModelStatus] = []
     public var modelsUpdates: [ProviderMessage.ModelsUpdate] = []
+    public var modelsReplacements: [ProviderMessage.ModelsReplace] = []
+    public var modelsReplacementReadiness: [ProviderMessage.ModelsReplaceReady] = []
     public var prefixCacheLookups: [ProviderMessage.PrefixCacheLookup] = []
     public var prefixCacheReady: [ProviderMessage.PrefixCacheReady] = []
     public var prefixCacheLookupsV2: [ProviderMessage.PrefixCacheLookupV2] = []
     public var prefixCacheReadyV2: [ProviderMessage.PrefixCacheReadyV2] = []
     public var capacityQuotes: [ProviderMessage.CapacityQuote] = []
-    public var telemetryBatches: [TelemetryBatch] = []
+    /// Raw bodies POSTed to the retired `/v1/telemetry/events` route. The
+    /// provider never sends telemetry; this only catches a regression.
+    public var telemetryPosts: [Data] = []
 
     public init() {}
 }
@@ -61,8 +66,8 @@ public enum MockEvent: Sendable {
     case wsConnected
     /// A wire message was received from the provider.
     case providerMessage(ProviderMessage)
-    /// A telemetry batch was POSTed to `/v1/telemetry/events`.
-    case telemetryBatchReceived(TelemetryBatch)
+    /// Something was POSTed to the retired `/v1/telemetry/events` route.
+    case telemetryPosted(Data)
     /// The active WebSocket connection ended (cleanly or otherwise).
     case wsClosed
 }
@@ -176,6 +181,7 @@ public final class MockCoordinator: @unchecked Sendable {
 
     private let lock = NSLock()
     private var captured = CapturedMessages()
+    private var acknowledgedReadiness = Set<String>()
     private var activeOutbound: WebSocketOutboundWriter?
     private var bound: BoundServer?
 
@@ -191,9 +197,20 @@ public final class MockCoordinator: @unchecked Sendable {
         let serverTask: Task<Void, Never>
     }
 
+    private let acknowledgeDrains: Bool
+    private let acknowledgeModelReplacements: Bool
+    private let acknowledgeModelReadiness: Bool
+    private let modelReplacementRejection: String?
+    private let rejectedReplacementModelIDs: Set<String>
+
     // MARK: Init
 
     public init(
+        acknowledgeDrains: Bool = true,
+        acknowledgeModelReplacements: Bool = true,
+        acknowledgeModelReadiness: Bool = true,
+        modelReplacementRejection: String? = nil,
+        rejectedReplacementModelIDs: Set<String> = [],
         catalog: [CatalogModel] = MockCoordinator.defaultCatalog,
         release: MockReleaseFixture = MockReleaseFixture(),
         releaseArtifact: Data? = nil,
@@ -201,6 +218,11 @@ public final class MockCoordinator: @unchecked Sendable {
         mobileConfig: Data = MockCoordinator.defaultMobileConfig,
         deviceCode: MockDeviceCodeFixture = MockDeviceCodeFixture()
     ) {
+        self.acknowledgeDrains = acknowledgeDrains
+        self.acknowledgeModelReplacements = acknowledgeModelReplacements
+        self.acknowledgeModelReadiness = acknowledgeModelReadiness
+        self.modelReplacementRejection = modelReplacementRejection
+        self.rejectedReplacementModelIDs = rejectedReplacementModelIDs
         self.catalog = catalog
         self.release = release
         self.releaseArtifact = releaseArtifact
@@ -364,7 +386,6 @@ public final class MockCoordinator: @unchecked Sendable {
         )
         let msg = CoordinatorMessage.inferenceRequest(.init(
             requestId: requestId,
-            body: .null,
             encryptedBody: payload,
             firstContentBudgetMs: firstContentBudgetMs,
             cacheReceiptNonce: cacheReceiptNonce,
@@ -376,6 +397,18 @@ public final class MockCoordinator: @unchecked Sendable {
     public func pushCancel(requestId: String) async throws {
         let msg = CoordinatorMessage.cancel(.init(requestId: requestId))
         try await sendCoordinatorMessage(msg)
+    }
+
+    public func pushModelsReplaceAck(_ ack: CoordinatorMessage.ModelsReplaceAck) async throws {
+        try await sendCoordinatorMessage(.modelsReplaceAck(ack))
+    }
+
+    public func pushModelsReplaceResumed(_ ack: CoordinatorMessage.ModelsReplaceResumed) async throws {
+        try await sendCoordinatorMessage(.modelsReplaceResumed(ack))
+    }
+
+    public func pushDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry]) async throws {
+        try await sendCoordinatorMessage(.desiredModels(.init(models: entries)))
     }
 
     public func pushLoadModel(modelId: String) async throws {
@@ -559,7 +592,7 @@ public final class MockCoordinator: @unchecked Sendable {
             }
         }
 
-        // ----- HTTP: /v1/telemetry/events -----
+        // ----- HTTP: /v1/telemetry/events (retired; regression trap) -----
         router.post("/v1/telemetry/events") { [weak self] request, _ -> Response in
             guard let self else {
                 return MockCoordinator.makeJSONResponse(
@@ -575,19 +608,11 @@ public final class MockCoordinator: @unchecked Sendable {
                     status: .badRequest
                 )
             }
+            // Record every body, whatever its shape: any POST here is a
+            // privacy regression.
             let body = Data(buffer: buffer)
-            do {
-                let batch = try JSONDecoder().decode(TelemetryBatch.self, from: body)
-                self.lock.withLock { self.captured.telemetryBatches.append(batch) }
-                self.eventContinuation.yield(.telemetryBatchReceived(batch))
-            } catch {
-                // Treat malformed payloads as a 400 so tests can detect drift
-                // in the telemetry wire format.
-                return MockCoordinator.makeJSONResponse(
-                    body: ["error": "decode failed: \(error)"],
-                    status: .badRequest
-                )
-            }
+            self.lock.withLock { self.captured.telemetryPosts.append(body) }
+            self.eventContinuation.yield(.telemetryPosted(body))
             return MockCoordinator.makeJSONResponse(body: ["accepted": true])
         }
 
@@ -602,6 +627,7 @@ public final class MockCoordinator: @unchecked Sendable {
 
         lock.withLock {
             switch parsed {
+            case .drainBarrier(let id): captured.drainBarriers.append(id)
             case .appAttestShadow(let p): captured.appAttestShadow.append(p)
             case .register(let r):           captured.registers.append(r)
             case .heartbeat(let h):          captured.heartbeats.append(h)
@@ -614,6 +640,8 @@ public final class MockCoordinator: @unchecked Sendable {
             case .loadModelStatus(let s):    captured.loadModelStatuses.append(s)
             case .prefetchModelStatus(let s): captured.prefetchModelStatuses.append(s)
             case .modelsUpdate(let u):       captured.modelsUpdates.append(u)
+            case .modelsReplace(let r): captured.modelsReplacements.append(r)
+            case .modelsReplaceReady(let r): captured.modelsReplacementReadiness.append(r)
             case .prefixCacheLookup(let r):  captured.prefixCacheLookups.append(r)
             case .prefixCacheReady(let r):   captured.prefixCacheReady.append(r)
             case .prefixCacheLookupV2(let r): captured.prefixCacheLookupsV2.append(r)
@@ -622,6 +650,45 @@ public final class MockCoordinator: @unchecked Sendable {
             }
         }
         eventContinuation.yield(.providerMessage(parsed))
+        if acknowledgeDrains, case .drainBarrier(let id) = parsed {
+            Task { try? await self.sendCoordinatorMessage(.drainAck(id)) }
+        }
+        if acknowledgeModelReplacements, case .modelsReplace(let replacement) = parsed {
+            let rejection = modelReplacementRejection ?? (replacement.models.contains {
+                rejectedReplacementModelIDs.contains($0.id)
+            } ? "invalid_models" : nil)
+            Task {
+                try? await self.sendCoordinatorMessage(.modelsReplaceAck(.init(
+                    requestId: replacement.requestId,
+                    drainRequestId: replacement.drainRequestId,
+                    validateOnly: replacement.validateOnly,
+                    accepted: rejection == nil,
+                    error: rejection)))
+            }
+        }
+        if acknowledgeModelReadiness {
+            let readyToAck: ProviderMessage.ModelsReplaceReady? = lock.withLock {
+                switch parsed {
+                case .heartbeat, .modelsReplaceReady: break
+                default: return nil
+                }
+                guard let ready = captured.modelsReplacementReadiness.last,
+                      captured.heartbeats.contains(where: { heartbeat in
+                          (heartbeat.status == .idle || heartbeat.status == .serving) &&
+                              (heartbeat.backendCapacity?.capacitySeq ?? 0) >= ready.capacitySeq
+                      }) else { return nil }
+                let key = "\(ready.requestId):\(ready.drainRequestId):\(ready.capacitySeq)"
+                if case .heartbeat = parsed, acknowledgedReadiness.contains(key) { return nil }
+                acknowledgedReadiness.insert(key)
+                return ready
+            }
+            if let readyToAck {
+                Task { try? await self.sendCoordinatorMessage(.modelsReplaceResumed(.init(
+                    requestId: readyToAck.requestId,
+                    drainRequestId: readyToAck.drainRequestId,
+                    capacitySeq: readyToAck.capacitySeq))) }
+            }
+        }
     }
 
     // MARK: Response helpers

@@ -37,6 +37,12 @@ extension CoordinatorClient {
         }
 
         switch parsed {
+        case .modelsReplaceAck(let ack):
+            completeModelReplacement(ack)
+        case .modelsReplaceResumed(let ack):
+            completeModelReplacementReadiness(ack)
+        case .drainAck(let id):
+            if drainAcknowledgements[id] != nil { eventContinuation?.yield(.drainAck(id)) }
         case .inferenceRequest(let request):
             let requestId = request.requestId
             // The receive callback anchored this before executor scheduling,
@@ -85,6 +91,7 @@ extension CoordinatorClient {
                 cacheScope: request.cacheScope,
                 prefixCacheProtocol: request.prefixCacheProtocol,
                 cacheReceiptBoundaryMode: request.cacheReceiptBoundaryMode,
+                cacheRepeatedPrefixTokens: request.cacheRepeatedPrefixTokens,
                 toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol,
                 firstContentDeadline: firstContentDeadline,
                 receivedAt: receivedAt,

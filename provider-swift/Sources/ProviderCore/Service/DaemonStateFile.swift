@@ -1,4 +1,5 @@
 import Foundation
+import ProviderAppAttest
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -10,10 +11,9 @@ import Glibc
 /// and — critically — the coordinator's latest `trust_status` reason, which is
 /// otherwise only logged.
 ///
-/// The daemon and CLI run as separate processes with no IPC today (only a PID
-/// file). A state file is the smallest addition that fits: the daemon already
-/// assembles this exact data every heartbeat; writing it atomically lets the CLI
-/// read it with zero IPC, and it survives the daemon being asleep or wedged.
+/// The daemon assembles this data every heartbeat and writes it atomically,
+/// allowing read-only status inspection even while asleep or wedged. Lifecycle
+/// commands use a separate owner-only, process-identity-bound mailbox.
 public struct DaemonState: Codable, Sendable, Equatable {
     public static let currentSchema = 1
 
@@ -45,6 +45,13 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// memory filters) — doctor's serving-set floor basis when fresh.
     /// Optional so state files from older daemons continue to decode.
     public var advertisedModels: [String]?
+    /// Remaining startup preload plan, including the candidate currently
+    /// loading. nil means an older daemon did not report this field.
+    public var startupPreloadPendingModels: [String]?
+    public var lifecycle: ProviderDrainStatus?
+    public var modelSwitch: ProviderModelSwitchStatus?
+    public var configPath: String?
+    public var runtimeCapabilities: [String]?
     public var inferenceActive: Bool
     public var stats: Stats
     public var system: SystemInfo?
@@ -63,6 +70,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// reported and has nothing loaded.
     public var slots: [SlotPosture]?
     public var connectivity: Connectivity?
+    /// The daemon's last local App Attest observation (launch session, boot
+    /// time, key state, stalled Apple call). Diagnostic only; optional so
+    /// older daemons' files keep decoding.
+    public var appAttest: AppAttestLocalStatus?
 
     public struct Trust: Codable, Sendable, Equatable {
         public var trustLevel: String
@@ -217,13 +228,19 @@ public struct DaemonState: Codable, Sendable, Equatable {
         currentModel: String? = nil,
         warmModels: [String] = [],
         advertisedModels: [String]? = nil,
+        startupPreloadPendingModels: [String]? = nil,
         inferenceActive: Bool = false,
+        lifecycle: ProviderDrainStatus? = nil,
+        modelSwitch: ProviderModelSwitchStatus? = nil,
+        configPath: String? = nil,
+        runtimeCapabilities: [String]? = nil,
         stats: Stats = Stats(),
         system: SystemInfo? = nil,
         capacity: Capacity? = nil,
         lastModelLoadError: ModelLoadError? = nil,
         slots: [SlotPosture]? = nil,
-        connectivity: Connectivity? = nil
+        connectivity: Connectivity? = nil,
+        appAttest: AppAttestLocalStatus? = nil
     ) {
         self.schema = schema
         self.pid = pid
@@ -237,6 +254,11 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.currentModel = currentModel
         self.warmModels = warmModels
         self.advertisedModels = advertisedModels
+        self.startupPreloadPendingModels = startupPreloadPendingModels
+        self.lifecycle = lifecycle
+        self.modelSwitch = modelSwitch
+        self.configPath = configPath
+        self.runtimeCapabilities = runtimeCapabilities
         self.inferenceActive = inferenceActive
         self.stats = stats
         self.system = system
@@ -244,6 +266,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.lastModelLoadError = lastModelLoadError
         self.slots = slots
         self.connectivity = connectivity
+        self.appAttest = appAttest
     }
 
     // MARK: - Reader helpers

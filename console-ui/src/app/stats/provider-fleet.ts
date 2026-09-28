@@ -1,4 +1,4 @@
-import { currentVerification, verificationPresentation } from "@/lib/verification";
+import { verificationPresentation } from "@/lib/verification";
 
 export interface CPUCores {
   total: number;
@@ -61,7 +61,7 @@ export function hasFreshChallenge(iso?: string, now = Date.now()): boolean {
 /** Published checks are useful context, but do not include every routing gate. */
 export function passesPublishedVerificationChecks(provider: ProviderStats, now = Date.now()): boolean {
   const statusOK = provider.status === "online" || provider.status === "serving";
-  if (provider.verification) return statusOK && verificationPresentation(currentVerification(provider.verification, now)).verified;
+  if (provider.verification) return statusOK && verificationPresentation(provider.verification).verified;
   return statusOK && provider.trust_level === "hardware" && provider.runtime_verified === true && hasFreshChallenge(provider.last_challenge_verified, now);
 }
 
@@ -81,8 +81,8 @@ export function providerRouteReason(provider: ProviderStats, now = Date.now()): 
   if (provider.routable === false) return "The coordinator reports this node as excluded from public routing.";
   const unknown = "Routing eligibility is not published for this node.";
   if (provider.verification) {
-    const verdict = verificationPresentation(currentVerification(provider.verification, now));
-    return `${unknown} ${verdict.verified ? `${verdict.label}; the coordinator authorization verdict is current.` : verdict.label + "."}`;
+    const verdict = verificationPresentation(provider.verification);
+    return `${unknown} ${verdict.label} at the source snapshot. This does not establish current routing eligibility.`;
   }
   if (passesPublishedVerificationChecks(provider, now)) return `${unknown} The published hardware, runtime, and challenge checks are current.`;
   if (provider.runtime_verified === false) return `${unknown} The latest published runtime verification did not pass.`;
@@ -135,7 +135,7 @@ export function compareProviders(
 export function matchesTrustFilter(provider: ProviderStats, filter: ProviderTrustFilter): boolean {
   if (filter === "all") return true;
   if (filter === "hardware") return provider.trust_level === "hardware";
-  const v = verificationPresentation(currentVerification(provider.verification));
+  const v = verificationPresentation(provider.verification);
   if (filter === "verified") return v.verified;
   if (filter === "app_attest") return v.appAttest;
   if (filter === "legacy") return v.legacy;

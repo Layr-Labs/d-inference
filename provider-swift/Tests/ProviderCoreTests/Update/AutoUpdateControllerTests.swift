@@ -55,7 +55,6 @@ struct AutoUpdateControllerTests {
             downloadVerifyStage: { _ in recorder.record("stage"); return fakes.stageResult },
             beginDraining: { recorder.record("beginDraining") },
             waitForDrain: { _ in recorder.record("waitForDrain"); return fakes.drainReturns },
-            forceCancelInflight: { recorder.record("forceCancel") },
             commitInstall: { recorder.record("commit"); return fakes.commitResult },
             prepareInstalledRestart: {
                 recorder.record("prepareRestart")
@@ -187,8 +186,8 @@ struct AutoUpdateControllerTests {
         ])
     }
 
-    @Test("drain timeout: force-cancels stragglers, then commits and restarts anyway")
-    func drainTimeoutForceCancels() async {
+    @Test("drain timeout defers the update without cancelling work or restarting")
+    func drainTimeoutDefersUpdate() async {
         let recorder = Recorder()
         var fakes = Fakes(checkResult: .updateAvailable(current: "1.0.0", latest: Self.release))
         fakes.drainReturns = false
@@ -196,8 +195,8 @@ struct AutoUpdateControllerTests {
 
         let outcome = await controller.run()
 
-        #expect(outcome == .restarted(from: "1.0.0", to: "2.0.0", drained: false))
-        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "forceCancel", "commit", "prepareRestart", "restart"])
+        #expect(outcome == .drainTimedOut)
+        #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "resume"])
     }
 
     @Test("commit failure: resumes serving on the old binary, never restarts")
@@ -253,4 +252,27 @@ struct AutoUpdateControllerTests {
         #expect(recorder.events.contains("commit") == !alreadyInstalled)
     }
 
+}
+
+
+@Suite("Auto-update lifecycle overlap")
+struct AutoUpdateLifecycleOverlapTests {
+    @Test func cancelledDrainDoesNotForceCancelCommitOrRestart() async {
+        actor Calls {
+            var values: [String] = []
+            func add(_ value: String) { values.append(value) }
+        }
+        let calls = Calls()
+        let controller = AutoUpdateController(deps: .init(
+            claimStart: { true }, resumeServing: { await calls.add("resume") },
+            check: { .restartRequired(current: "1", installed: "2") },
+            downloadVerifyStage: { _ in .completed }, beginDraining: {},
+            waitForDrain: { _ in withUnsafeCurrentTask { $0?.cancel() }; return false },
+            commitInstall: { await calls.add("commit"); return .completed },
+            restart: { Issue.record("cancelled update restarted the provider") }, log: { _ in }
+        ), drainTimeout: .seconds(1))
+        let task = Task { await controller.run() }
+        #expect(await task.value == .cancelled)
+        #expect(await calls.values == ["resume"])
+    }
 }

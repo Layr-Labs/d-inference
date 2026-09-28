@@ -24,13 +24,18 @@ const shadowAssertionInterval = 10 * time.Minute
 // One bounded inbox/worker per negotiated connection; the read loop never waits
 // for Apple, database, or cryptography. Serving authorization is a separate opt-in.
 type Session struct {
-	attestationKey                                 string
-	hardware                                       protocol.Hardware
-	offerMu                                        sync.Mutex
-	rejectReason                                   string
-	storageSlotHeld                                bool // owned by the serialized session worker
-	closed                                         atomic.Bool
-	dropped                                        atomic.Uint64
+	attestationKey  string
+	hardware        protocol.Hardware
+	offerMu         sync.Mutex
+	rejectReason    string
+	storageSlotHeld bool // owned by the serialized session worker
+	closed          atomic.Bool
+	dropped         atomic.Uint64
+	// The cumulative counter is retained for audit. A later assertion can
+	// recover only when that new proof is durably verified without another
+	// unarchived input during or after its exchange.
+	proofDropBaseline                              uint64
+	assertionArchived                              bool
 	s                                              *Service
 	provider                                       *registry.Provider // read-only legacy comparison snapshot
 	in                                             chan protocol.AppAttestShadowPayload
@@ -49,9 +54,16 @@ type Session struct {
 	lastOutcome                                    string
 	assertionAt                                    time.Time
 	policyFields                                   map[string]any
+	authorizationResult                            string // bounded result of the last verified assertion's serving transition
 	servingIdentityReady                           bool
 	readinessRetryPending                          bool // owned by the serialized session worker
 	readinessRetryFailures                         int
+	// Worker-owned dead-key rotation state: set when this exchange sent attest
+	// for an already accepted key; cleared before every attempt.
+	rotationRequested bool
+	// Sanitized runtime diagnostics from this attempt's ready reply, retained
+	// in later proof evidence contexts of the same attempt.
+	readyDiagnostics map[string]any
 }
 
 func (s *Service) startAppAttestShadow(ctx context.Context, provider *registry.Provider, registration *protocol.RegisterMessage, authenticatedAccount ...string) *Session {
@@ -105,8 +117,14 @@ func (s *Service) startAppAttestShadow(ctx context.Context, provider *registry.P
 	_ = json.Unmarshal(registration.Attestation, &platform)
 	x.osVersion = platform.Attestation.OSVersion
 
-	if registration.AppAttestProtocol != 1 && registration.AppAttestProtocol != 2 && registration.AppAttestProtocol != 3 {
-
+	// Only protocol 3 is served. It shipped in v0.9.4 together with the
+	// callback-timer fix; protocol 2 shipped only in the unsafe v0.9.3,
+	// protocol 1 was never released, and older providers send none. A
+	// provider that announces an older protocol is a straggler to upgrade.
+	if registration.AppAttestProtocol != 3 {
+		if registration.AppAttestProtocol != 0 {
+			x.observe("rollout", "provider_upgrade_required", nil)
+		}
 		return nil
 	}
 	if s.config.Environment != "production" && s.config.Environment != "development" || s.config.AppID == "" {
@@ -141,14 +159,12 @@ func (s *Service) startAppAttestShadow(ctx context.Context, provider *registry.P
 			return
 		}
 		x.observe("registration", "observed", nil)
-		if decision := appAttestRolloutDecision(x.version, x.account, inventory.snapshot().ID, s.config.RolloutPercent); decision != "enabled" {
+		if decision := appAttestRolloutDecision(x.account, inventory.snapshot().ID, s.config.RolloutPercent); decision != "enabled" {
 			x.observe("rollout", decision, nil)
 			return
 		}
-		if x.protocolVersion >= 2 {
-			owner := sha256.Sum256([]byte("machine-owner-v1:" + x.account + ":" + inventory.snapshot().ID))
-			x.owner = hex.EncodeToString(owner[:])
-		}
+		owner := sha256.Sum256([]byte("machine-owner-v1:" + x.account + ":" + inventory.snapshot().ID))
+		x.owner = hex.EncodeToString(owner[:])
 		x.run(ctx)
 	})
 	s.sendAppAttestAuthorizationStatus(provider)
@@ -159,29 +175,61 @@ func (x *Session) offer(p protocol.AppAttestShadowPayload) {
 	x.offerMu.Lock()
 	defer x.offerMu.Unlock()
 	if x.closed.Load() {
-		x.dropped.Add(1)
+		x.markDropped()
 		return
 	}
+	// Runtime diagnostics are optional context: invalid values are stripped,
+	// never a reason to drop the frame or fence a lease.
+	p.SanitizeRuntimeDiagnostics(time.Now())
 	// Length bounds also cover decode-only fields; oversized proofs never queue.
 	if len(p.Action) > 32 || len(p.Environment) > 32 || len(p.AccountScope) > 64 || len(p.EnrollmentSession) > 64 || len(p.KeyID) > 64 || len(p.Challenge) > 64 || len(p.Session) > 64 || len(p.Proof) > 44*1024 || len(p.Result) > 64 {
-		x.dropped.Add(1)
+		x.markDropped()
 		return
 	}
-	if p.Status != nil && len(p.Status.AttestationPublicKey) > 128 {
-		x.dropped.Add(1)
+	if !p.AppleError.Valid() || !p.ValidClientDiagnostics() || (p.Status != nil && len(p.Status.AttestationPublicKey) > 128) {
+		x.markDropped()
 		return
 	}
 	for _, value := range append(p.Status.Values(), p.Status.HardwareValues()...) {
 		if len(value) > 128 {
-			x.dropped.Add(1)
+			x.markDropped()
 			return
 		}
 	}
 	select {
 	case x.in <- p:
 	default:
-		x.dropped.Add(1)
+		x.markDropped()
 	}
+}
+
+// An input we could not archive may contain a newer assertion or a negative
+// security result. Fence the prior App Attest lease immediately; only a new
+// durably verified assertion may recover it. Legacy authorization is separate.
+func (x *Session) markDropped() {
+	if x.s != nil && x.s.authorizer != nil && x.provider != nil {
+		// Serialize the counter with apply's final check and registry grant.
+		// Incrementing before acquiring a.mu would let a concurrent apply
+		// grant after the gap was already visible but before forget fenced it.
+		a := x.s.authorizer
+		a.mu.Lock()
+		x.dropped.Add(1)
+		delete(a.current, x.provider)
+		a.s.registry.ClearAppAttestServingAuthorization(x.provider)
+		a.queuePostLocked(x.provider)
+		a.mu.Unlock()
+		return
+	}
+	x.dropped.Add(1)
+}
+
+func (x *Session) proofArchiveComplete() bool {
+	return x.assertionArchived && x.dropped.Load() == x.proofDropBaseline
+}
+
+func (x *Session) beginAssertionChallenge() {
+	x.proofDropBaseline = x.dropped.Load()
+	x.assertionArchived = false
 }
 
 func (x *Session) runAttempt(ctx context.Context) {
@@ -217,12 +265,22 @@ func (x *Session) runAttempt(ctx context.Context) {
 			}
 			timer.Reset(shadowResponseTimeout)
 		case reply := <-x.in:
+			if x.expected == "" && reply.Session == x.id {
+				// During the assertion interval, archive an unsolicited
+				// duplicate without stopping or resetting the timer. A failed
+				// archive instead fences the prior lease and retries fresh.
+				if !x.archiveUnsolicitedReply(ctx, reply) {
+					return
+				}
+				continue
+			}
 			if reply.Session != x.id {
 				// A callback from a timed-out attempt cannot stop or satisfy the
-				// current exchange. Retain it without moving the current timer.
-				operation, cancel := context.WithTimeout(ctx, 2*time.Second)
-				x.handle(operation, reply)
-				cancel()
+				// current exchange. Retain it without moving the current timer;
+				// an archive failure fences the old proof and retries fresh.
+				if !x.archiveUnsolicitedReply(ctx, reply) {
+					return
+				}
 				continue
 			}
 			if !timer.Stop() {
@@ -262,4 +320,19 @@ func (x *Session) runAttempt(ctx context.Context) {
 			timer.Reset(shadowResponseTimeout)
 		}
 	}
+}
+
+// The active challenge timer belongs to the current session, so a late frame
+// only consumes archive capacity. When that archive fails, the older lease was
+// already fenced by markDropped and a new exchange must be scheduled.
+func (x *Session) archiveUnsolicitedReply(ctx context.Context, reply protocol.AppAttestShadowPayload) bool {
+	before := x.dropped.Load()
+	operation, cancel := context.WithTimeout(ctx, 2*time.Second)
+	x.handle(operation, reply)
+	cancel()
+	if x.dropped.Load() != before {
+		x.lastOutcome = "storage_error"
+		return false
+	}
+	return true
 }

@@ -118,6 +118,14 @@ fn visit(
                     } else {
                         Cow::Owned(key.nfc().collect::<String>())
                     };
+                    // Swift orders and compares keys by canonical equivalence
+                    // (NFC scalars); the planner orders the bytes it was
+                    // given. A key that is not already NFC can therefore
+                    // render in a different position, even without a
+                    // colliding sibling.
+                    if identity.as_ref() != key.as_str() {
+                        return Err(RenderError::UnsupportedInput);
+                    }
                     if !seen.insert(identity) {
                         return Err(RenderError::UnsupportedInput);
                     }

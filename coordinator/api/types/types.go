@@ -12,7 +12,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 
 	"github.com/eigeninference/d-inference/coordinator/payments"
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // ── Chat completions ────────────────────────────────────────────────
@@ -380,15 +379,4 @@ type BalanceResponse struct {
 // UsageResponse is the GET /v1/payments/usage response.
 type UsageResponse struct {
 	Usage []payments.UsageEntry `json:"usage"`
-}
-
-// ProviderEarningsResponse is the GET /v1/provider/earnings response.
-type ProviderEarningsResponse struct {
-	BalanceMicroUSD     int64               `json:"balance_micro_usd"`
-	BalanceUSD          string              `json:"balance_usd"`
-	TotalEarnedMicroUSD int64               `json:"total_earned_micro_usd"`
-	TotalEarnedUSD      string              `json:"total_earned_usd"`
-	TotalJobs           int                 `json:"total_jobs"`
-	Payouts             []payments.Payout   `json:"payouts"`
-	Ledger              []store.LedgerEntry `json:"ledger"`
 }

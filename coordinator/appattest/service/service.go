@@ -44,6 +44,8 @@ type Service struct {
 	verifierSlots        chan struct{}
 	storageOnce          sync.Once
 	storageSlots         chan struct{}
+	diagnosticOnce       sync.Once
+	diagnosticSlots      chan struct{}
 	inventorySlots       chan struct{}
 	startOnce            sync.Once
 	metrics              Metrics
@@ -98,7 +100,7 @@ func (x *Session) Offer(p protocol.AppAttestShadowPayload) { x.offer(p) }
 
 // RejectOversized preserves evidence-gap accounting for frames rejected by the
 // HTTP/WebSocket reader before the bounded feature inbox can decode them.
-func (x *Session) RejectOversized() { x.dropped.Add(1) }
+func (x *Session) RejectOversized() { x.markDropped() }
 
 func (s *Service) Status(p *registry.Provider) *protocol.ProviderServingAuthorization {
 	return s.providerServingAuthorizationStatus(p)

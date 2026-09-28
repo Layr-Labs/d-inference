@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func (s *PostgresStore) BeginAppAttestEvidence(ctx context.Context, e AppAttestEvidence) error {
@@ -105,4 +107,20 @@ func (s *PostgresStore) CompleteAppAttestEvidence(ctx context.Context, id string
 		return "", errors.New("evidence_completion_conflict")
 	}
 	return outcome, tx.Commit(ctx)
+}
+
+func (s *PostgresStore) GetAppAttestAssertionDiagnostics(ctx context.Context, keyID string) (*AppAttestAssertionDiagnostics, error) {
+	var result AppAttestAssertionDiagnostics
+	err := s.pool.QueryRow(ctx, `SELECT context->'boot_time',context->'process_started_at' FROM (
+	 SELECT id,received_at,action,outcome,context FROM app_attest_evidence
+	 WHERE key_id=$1 ORDER BY received_at DESC,id DESC LIMIT $2
+	) recent WHERE action='assertion' AND outcome='verified'
+	 ORDER BY received_at DESC,id DESC LIMIT 1`, keyID, AppAttestDiagnosticLookback).Scan(&result.BootTime, &result.ProcessStartedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
 }

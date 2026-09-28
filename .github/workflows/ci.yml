@@ -11,7 +11,7 @@ permissions:
 jobs:
   runner-policy:
     name: CI Runner Policy
-    runs-on: ubuntu-24.04
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -41,6 +41,7 @@ jobs:
           python3 scripts/test-provider-release-publication.py
           python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-test-watchdog.py
+          python3 scripts/test-stage-test-metallib.py
           python3 scripts/test-app-attest-entitlements.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
@@ -91,9 +92,12 @@ jobs:
           DATABASE_URL: postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable
         run: |
           # Word splitting is the point here: one argument per package path,
-          # and Go package paths contain no spaces.
+          # and Go package paths contain no spaces. Only the top-level e2e
+          # integration package is excluded (it needs a real Swift provider,
+          # see integration.yml); coordinator/internal/e2e and e2e/testbed/...
+          # are ordinary unit tests and run here.
           # shellcheck disable=SC2046
-          go test -race $(go list ./... | grep -v /e2e)
+          go test -race -coverprofile="$RUNNER_TEMP/coverage.out" -covermode=atomic $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
       - name: Check formatting
         run: |
           set -o pipefail
@@ -105,6 +109,29 @@ jobs:
             echo "$UNFORMATTED"
             exit 1
           fi
+      - name: Report coverage
+        run: |
+          set -o pipefail
+          # A profile with only its "mode:" line measured nothing.
+          if [ "$(wc -l < "$RUNNER_TEMP/coverage.out")" -le 1 ]; then
+            echo "coverage.out has no coverage data"
+            exit 1
+          fi
+          total=$(go tool cover -func="$RUNNER_TEMP/coverage.out" | awk '$1 == "total:" {print $NF}')
+          test -n "$total"
+          echo "Coordinator (Go) statement coverage: $total"
+          {
+            echo "| Component | Statement coverage |"
+            echo "|---|---|"
+            echo "| Coordinator (Go) | $total |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coordinator-coverage
+          path: ${{ runner.temp }}/coverage.out
+          if-no-files-found: error
+          retention-days: 14
 
   lint-coordinator:
     name: Coordinator Lint
@@ -155,6 +182,26 @@ jobs:
           chmod +x "$RUNNER_TEMP/promptsidecar-linux"
           file "$RUNNER_TEMP/promptsidecar-linux" | grep -Eq "statically linked|static-pie linked"
           ./scripts/verify-prompt-sidecar-linux.sh "$RUNNER_TEMP/promptsidecar-linux"
+      - name: Install coverage tools
+        run: |
+          rustup component add llvm-tools-preview --toolchain 1.88.0
+          cargo install cargo-llvm-cov --version 0.9.1 --locked
+      - name: Report coverage
+        working-directory: coordinator/promptsidecar
+        run: |
+          set -o pipefail
+          cargo llvm-cov --locked --all-targets --summary-only | tee "$RUNNER_TEMP/sidecar-coverage.txt"
+          # Column 10 of the TOTAL row is the line coverage percent.
+          lines=$(awk '$1 == "TOTAL" {v = $10} END {print v}' "$RUNNER_TEMP/sidecar-coverage.txt")
+          if ! [[ "$lines" =~ ^[0-9]+\.[0-9]+%$ ]]; then
+            echo "Unexpected line coverage value: '$lines'"
+            exit 1
+          fi
+          {
+            echo "| Component | Line coverage |"
+            echo "|---|---|"
+            echo "| Prompt sidecar (Rust) | $lines |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   test-provider:
     name: Provider Tests
@@ -218,25 +265,9 @@ jobs:
         run: |
           set -euo pipefail
           command -v cmake >/dev/null 2>&1 || brew install cmake
-          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
-            ./scripts/fetch-metallib.sh "$RUNNER_TEMP"
-          metallib="$RUNNER_TEMP/mlx.metallib"
-          test -s "$metallib" || { echo "::error::source-matched mlx.metallib was not produced"; exit 1; }
-
-          # MLX loads the metallib from beside the running executable. Stage the
-          # helper-authorized artifact into every provider binary and XCTest
-          # location that the preceding build created.
           provider_bin=$(cd provider-swift && swift build -c debug --show-bin-path)
-          for destination in provider-swift/.build/debug "$provider_bin"; do
-            mkdir -p "$destination"
-            cp "$metallib" "$destination/mlx.metallib"
-          done
-          while IFS= read -r macos; do
-            cp "$metallib" "$macos/mlx.metallib"
-            echo "placed source-matched metallib in $macos"
-          done < <(
-            find provider-swift/.build -type d -path '*.xctest/Contents/MacOS' -print
-          )
+          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
+            ./scripts/stage-test-metallib.sh "$provider_bin"
       - name: Run Swift tests
         working-directory: provider-swift
         # Reuse the built bundle and matched metallib. The exact allocator
@@ -277,13 +308,13 @@ jobs:
         working-directory: libs/mlx-swift-lm
         run: |
           set -euo pipefail
-          cp "$RUNNER_TEMP/mlx.metallib" .build/debug/mlx.metallib
-          for bundle in .build/debug/*PackageTests.xctest; do
-            macos="$bundle/Contents/MacOS"
-            if [ -d "$macos" ]; then
-              cp "$RUNNER_TEMP/mlx.metallib" "$macos/mlx.metallib"
-            fi
-          done
+          nested_bin=$(swift build -c debug --show-bin-path)
+          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
+            ../../scripts/stage-test-metallib.sh "$nested_bin"
+      - name: Verify DiffusionGemma artifact and expert reduction
+        if: ${{ !cancelled() && steps.build-nested-tests.outcome == 'success' && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        run: ../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel
       # NOTE (v0.8.0): the guards below exist because these gates once
       # reported GREEN while executing NOTHING. `Tests/BenchCBv2Tests`
       # depended on the BenchCBv2 EXECUTABLE target, so SwiftPM routed the
@@ -461,5 +492,7 @@ jobs:
         run: cd console-ui && npm ci
       - name: Lint
         run: cd console-ui && npx eslint src/
+      - name: Test
+        run: cd console-ui && npm test
       - name: Build
         run: cd console-ui && npm run build

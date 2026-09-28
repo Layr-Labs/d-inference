@@ -36,8 +36,8 @@ var ErrNotFound = errors.New("not found")
 // persistence surface; the full method set — and both the MemoryStore and
 // PostgresStore implementations — are unchanged.
 //
-// Telemetry events (TelemetryEventRecord) are forwarded to Datadog (Logs API +
-// DogStatsD) for durable storage and querying, not persisted via this Store.
+// Telemetry events are forwarded to Datadog (Logs API + DogStatsD) for durable
+// storage and querying, not persisted via this Store.
 type Store interface {
 	APIKeyStore
 	UsageStore
@@ -52,26 +52,6 @@ type Store interface {
 	InviteStore
 	ProviderEarningsStore
 	ProviderStore
-}
-
-// TelemetryEventRecord is the persistence-layer representation of a telemetry
-// event. It mirrors protocol.TelemetryEvent but lives in this package so the
-// store can stay free of protocol-layer dependencies.
-type TelemetryEventRecord struct {
-	ID         string          `json:"id"`
-	Timestamp  time.Time       `json:"timestamp"`
-	Source     string          `json:"source"`
-	Severity   string          `json:"severity"`
-	Kind       string          `json:"kind"`
-	Version    string          `json:"version,omitempty"`
-	MachineID  string          `json:"machine_id,omitempty"`
-	AccountID  string          `json:"account_id,omitempty"`
-	RequestID  string          `json:"request_id,omitempty"`
-	SessionID  string          `json:"session_id,omitempty"`
-	Message    string          `json:"message"`
-	Fields     json.RawMessage `json:"fields,omitempty"`
-	Stack      string          `json:"stack,omitempty"`
-	ReceivedAt time.Time       `json:"received_at"`
 }
 
 // UsageRecord captures a single inference usage event.
@@ -439,19 +419,6 @@ type LedgerEntry struct {
 	CreatedAt      time.Time       `json:"created_at"`
 }
 
-// PaymentRecord captures a settled payment.
-type PaymentRecord struct {
-	TxHash           string    `json:"tx_hash"`
-	ConsumerAddress  string    `json:"consumer_address"`
-	ProviderAddress  string    `json:"provider_address"`
-	AmountUSD        string    `json:"amount_usd"`
-	Model            string    `json:"model"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	Memo             string    `json:"memo"`
-	CreatedAt        time.Time `json:"created_at"`
-}
-
 // Referrer represents a registered referral partner.
 type Referrer struct {
 	AccountID string    `json:"account_id"`
@@ -756,12 +723,10 @@ type PublishingAPIKey struct {
 type Release struct {
 	Version        string    `json:"version"`                   // semver, e.g. "0.5.0"
 	Platform       string    `json:"platform"`                  // "macos-arm64"
-	Backend        string    `json:"backend,omitempty"`         // "mlx-swift" (post-cutover) or "vllm-mlx" (legacy)
+	Backend        string    `json:"backend,omitempty"`         // "mlx-swift"; empty on rows registered before the column existed
 	BinaryHash     string    `json:"binary_hash"`               // SHA-256 of darkbloom binary (attestation verification)
 	BundleHash     string    `json:"bundle_hash"`               // SHA-256 of the bundle tarball (install.sh download verification)
 	MetallibHash   string    `json:"metallib_hash,omitempty"`   // SHA-256 of mlx.metallib (Swift backend GPU kernel set)
-	PythonHash     string    `json:"python_hash,omitempty"`     // legacy: SHA-256 of bundled Python binary (vllm-mlx backend only)
-	RuntimeHash    string    `json:"runtime_hash,omitempty"`    // legacy: SHA-256 of vllm-mlx package (vllm-mlx backend only)
 	TemplateHashes string    `json:"template_hashes,omitempty"` // comma-separated name=hash pairs
 	URL            string    `json:"url"`                       // R2 download URL for the bundle tarball
 	Changelog      string    `json:"changelog"`                 // human-readable changes in this version
@@ -858,19 +823,6 @@ type AccountEarningsWindows struct {
 	Last7dJobs      int64 `json:"last_7d_jobs"`
 }
 
-// ProviderPayout records a provider payout event. This is separate from
-// account-linked provider earnings because some providers are paid directly
-// without being linked to a Privy account.
-type ProviderPayout struct {
-	ID              int64     `json:"id"`
-	ProviderAddress string    `json:"provider_address"`
-	AmountMicroUSD  int64     `json:"amount_micro_usd"`
-	Model           string    `json:"model"`
-	JobID           string    `json:"job_id"`
-	Timestamp       time.Time `json:"timestamp"`
-	Settled         bool      `json:"settled"`
-}
-
 // BillingSession tracks an in-progress payment via any method (Stripe).
 type BillingSession struct {
 	ID             string     `json:"id"`
@@ -905,8 +857,6 @@ type ProviderRecord struct {
 	MDACertChain               json.RawMessage `json:"mda_cert_chain,omitempty"`
 	Version                    string          `json:"version,omitempty"`
 	RuntimeVerified            bool            `json:"runtime_verified"`
-	PythonHash                 string          `json:"python_hash,omitempty"`
-	RuntimeHash                string          `json:"runtime_hash,omitempty"`
 	LastChallengeVerified      *time.Time      `json:"last_challenge_verified,omitempty"`
 	FailedChallenges           int             `json:"failed_challenges"`
 	AccountID                  string          `json:"account_id,omitempty"`

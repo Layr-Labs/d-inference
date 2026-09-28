@@ -18,7 +18,7 @@ import os
 extension ProviderLoop {
     // MARK: - Inference Request Handling
 
-    /// Whether the provider is draining for a hot-swap update and must refuse
+    /// Shared update/lifecycle admission boundary. Once draining, refuse
     /// new work. 503 is the documented no-fault reroute signal (the coordinator
     /// routes elsewhere); local requests get a 503-equivalent queue-full. We
     /// only drain AFTER the new bundle is staged and verified (`.installing`
@@ -30,19 +30,19 @@ extension ProviderLoop {
     /// the early gate is stale across the `await` between them. Each helper is
     /// synchronous + actor-isolated, so the authoritative call is atomic with the
     /// registration that follows (no suspension in between).
-    internal var isDrainingForUpdate: Bool { updatePhase == .draining }
+    internal var isDraining: Bool { servingDrain.refusing }
 
     /// Coordinator admission: sends the 503 reroute and returns true if the
     /// request must be dropped because we're draining — for the update
     /// hot-swap, or across the post-retirement reconnect (the socket is
     /// about to close; admitting now would only hand the request to the
     /// `.disconnected` cancel).
-    internal func rejectIfDrainingForUpdate(
+    internal func rejectIfDraining(
         requestId: String,
         send: SendHandle,
         lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
     ) -> Bool {
-        guard isDrainingForUpdate || isReconnectingAfterRetirement else { return false }
+        guard isDraining || isShuttingDown || isReconnectingAfterRetirement else { return false }
         lookupReceiptFinalizer.sendTerminal(
             .inferenceError(
                 requestId: requestId,
@@ -135,7 +135,7 @@ extension ProviderLoop {
         if isShuttingDown {
             throw MultiModelBatchSchedulerEngineError.queueFull("provider shutting down")
         }
-        if isDrainingForUpdate {
+        if isDraining {
             throw MultiModelBatchSchedulerEngineError.queueFull(providerDrainingForUpdateReason)
         }
         if let modelId, mtpAdmissionDrains.contains(modelId) {
@@ -177,6 +177,7 @@ extension ProviderLoop {
         authenticatedCacheScope: String?,
         prefixCacheProtocol: Int? = nil,
         cacheReceiptBoundaryMode: String? = nil,
+        cacheRepeatedPrefixTokens: Int? = nil,
         toolSchemaMetadataProtocol: Int? = nil,
         firstContentDeadline: FirstContentDeadline? = nil,
         receivedAt: ContinuousClock.Instant = .now,
@@ -210,7 +211,8 @@ extension ProviderLoop {
         // reaches EngineV2Bridge.submitTokenized.
         let remoteCache = RemotePrefixCacheContext(
             cacheScope: authenticatedCacheScope,
-            cacheReceiptNonce: cacheReceiptNonce)
+            cacheReceiptNonce: cacheReceiptNonce,
+            repeatedPrefixTokens: cacheRepeatedPrefixTokens)
         var receiptCallbacks: PrefixCacheReceiptEmitter.Callbacks = (nil, nil)
         if prefixCacheProtocol != 2 {
             receiptCallbacks = PrefixCacheReceiptEmitter.callbacks(
@@ -231,6 +233,7 @@ extension ProviderLoop {
         }
         var receiptTransferredToTask = false
         defer {
+            if !receiptTransferredToTask { acceptedLifecycleRequests.remove(requestId) }
             if !receiptTransferredToTask {
                 lookupReceiptFinalizer.finalize(failure: .policy)
                 inflightProfiles.removeValue(forKey: requestId)
@@ -262,8 +265,8 @@ extension ProviderLoop {
         }
 
         // Fast-path drain reject (skips decrypt/parse work). Re-checked
-        // authoritatively at step 4. See `rejectIfDrainingForUpdate`.
-        if rejectIfDrainingForUpdate(
+        // authoritatively at step 4. See `rejectIfDraining`.
+        if rejectIfDraining(
             requestId: requestId,
             send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer)
@@ -430,7 +433,7 @@ extension ProviderLoop {
         // registration below, so on the actor it is atomic: either we reject now,
         // or the request is counted in `hasInflightWork` before any drain
         // snapshot can miss it.
-        if rejectIfDrainingForUpdate(
+        if rejectIfDraining(
             requestId: requestId,
             send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer)
@@ -453,6 +456,7 @@ extension ProviderLoop {
             lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
 
         // 5. Send inference_accepted
+        acceptedLifecycleRequests.insert(requestId)
         send.send(.inferenceAccepted(requestId: requestId))
         profile.mark(.acceptedSent)
 
@@ -578,6 +582,7 @@ extension ProviderLoop {
         // load, so it is correct for startup, prefetched, AND dropped-resident.
         let modelType = slot.modelType
         let slotContainer = slot.container
+        let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
         // ONE ENGINE (v0.7.5): the slot's v2 bridge serves every request;
         // the scheduler-free vision gate covers media decode and generation
@@ -786,7 +791,7 @@ extension ProviderLoop {
                 registryProvider: { @Sendable in
                     [chatRequest.model: .init(
                         tokenizer: tokenizer, modelType: modelType,
-                        container: slotContainer, isVLM: slotIsVLM,
+                        container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
                         engineV2Bridge: slotEngineV2,
                         visionGate: slotVisionGate)]
                 },
@@ -797,6 +802,7 @@ extension ProviderLoop {
                 templateControls: templateControls,
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
+                donationDemand: remoteCache.donationDemand,
                 engineV2Logprobs: logprobsChannel.map {
                     EngineV2LogprobsPlumbing(
                         topLogprobs: logprobsSpec?.topLogprobs, channel: $0)

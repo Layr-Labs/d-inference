@@ -73,37 +73,10 @@ func resolveMachineFloorDraw(ctx context.Context, tx pgx.Tx, machine string, dra
 	return copy, false, nil
 }
 
-// A legacy candidate may become canonically associated while waiting for the
-// epoch lock. Resolve again under the inventory merge barrier before any raw
-// key credit, so a canonical-first settlement cannot be paid a second time.
-func (s *PostgresStore) SettleProviderFloorDrawForSession(ctx context.Context, sessionID string, draw *ProviderFloorDraw) (bool, error) {
-	if sessionID == "" || draw == nil || draw.AccountID == "" || draw.ProviderKey == "" || draw.EpochID == "" {
-		return false, errors.New("invalid_machine_floor_draw")
-	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(9952701)`); err != nil {
-		return false, err
-	}
-	resolved, already, err := resolveSessionFloorDraw(ctx, tx, sessionID, draw)
-	if err != nil || already {
-		return false, err
-	}
-	credited, err := settleProviderFloorDraw(ctx, tx, &resolved)
-	if err != nil {
-		return false, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return false, err
-	}
-	return credited, nil
-}
-
+// resolveSessionFloorDraw resolves a session's draw under the inventory merge
+// barrier before any raw-key credit: a legacy candidate may become canonically
+// associated while waiting for the epoch lock, and a canonical-first
+// settlement must not be paid a second time.
 func resolveSessionFloorDraw(ctx context.Context, tx pgx.Tx, sessionID string, draw *ProviderFloorDraw) (ProviderFloorDraw, bool, error) {
 	var account, machine, assurance string
 	err := tx.QueryRow(ctx, `SELECT s.account_id,s.machine_id,m.assurance FROM darkbloom_machine_sessions s JOIN darkbloom_machines m ON m.id=s.machine_id WHERE s.session_id=$1`, sessionID).Scan(&account, &machine, &assurance)

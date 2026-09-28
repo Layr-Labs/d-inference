@@ -86,6 +86,9 @@ func TestRequestOutcomesAllEndpointsWithoutProfiler(t *testing.T) {
 				count++
 				rows := awaitRequestOutcomes(t, st, count)
 				r := rows[len(rows)-1]
+				if r.PublicDemand == nil || r.PublicDemand.Model != model || r.PublicDemand.Outcome != "completed" {
+					t.Fatalf("public demand missing: %+v", r.PublicDemand)
+				}
 				if r.Termination != "completed" || r.ResponseTerminal != "completed" || r.ProviderOutcome != "completed" || !r.EgressCompleted || !r.ContentWriteCompleted || !r.ProviderContentObserved {
 					t.Fatalf("completion evidence missing: %+v body=%s", r, body)
 				}
@@ -105,7 +108,7 @@ func TestRequestOutcomesAllEndpointsWithoutProfiler(t *testing.T) {
 			})
 		}
 	}
-	if n := len(st.RequestProfilesSince(time.Time{})); n != 0 {
+	if n := len(st.RequestProfilesSinceFiltered(time.Time{}, store.RequestProfileFilter{})); n != 0 {
 		t.Fatalf("disabled profiler wrote %d heavy profiles", n)
 	}
 }
@@ -233,7 +236,7 @@ func TestRequestOutcomesRateLimitAllEndpoints(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/%t", endpoint, stream), func(t *testing.T) {
 				_, st, srv, ts := setupTTFTFailoverServer(t)
 				t.Cleanup(srv.Close)
-				key, err := st.CreateKey()
+				key, _, err := st.CreateAPIKey("", store.APIKeyCreate{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -284,6 +287,13 @@ func TestRequestOutcomesBalanceModelAndPreflightAllEndpoints(t *testing.T) {
 						res.Body.Close()
 						count++
 						r := awaitRequestOutcomes(t, st, count)[count-1]
+						if stage == "preflight_capacity" {
+							if r.PublicDemand == nil || r.PublicDemand.Outcome != "capacity_rejected" {
+								t.Fatalf("capacity demand missing: %+v", r.PublicDemand)
+							}
+						} else if r.PublicDemand != nil {
+							t.Fatalf("account/validation failure entered public cohort: %+v", r.PublicDemand)
+						}
 						if r.Termination != "rejected" || r.RawStage != stage || r.Stream == nil || *r.Stream != stream || r.AttemptsTotal != 0 || r.ContentWriteCompleted {
 							t.Fatalf("%s evidence %+v", stage, r)
 						}

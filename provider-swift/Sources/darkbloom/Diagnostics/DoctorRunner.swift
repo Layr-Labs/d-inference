@@ -29,6 +29,18 @@ enum DoctorRunner {
         out.append(Diagnostic(section: .attestationKey, name: "active se key",
                               level: se.level, message: se.message, fix: se.fix))
 
+        // ---- App Attest local state (from the daemon's last observation) ----
+        // Shown even when authorized: key state, launch session and a stalled
+        // Apple call explain a later lapse before the coordinator reports it.
+        let macOSMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        out.append(contentsOf: AppAttestLocalDiagnosis.evaluate(
+            daemonUp ? state?.appAttest : nil, daemonRunning: daemonUp,
+            macOSMajorVersion: macOSMajor, now: now, pushHistory: APNsPushHistoryStore().load()))
+        // Local-only devicecheckd evidence (needs an admin account to read).
+        if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajor) {
+            out.append(DeviceCheckEvidence.doctorDiagnostic(DeviceCheckEvidence.collect()))
+        }
+
         // ---- APNs code-identity readiness (local) ----
         // Will this box be able to obtain an APNs token and attest its code
         // identity? Requires a logged-in console (Aqua) session; a missing

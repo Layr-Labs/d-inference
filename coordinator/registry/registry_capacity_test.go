@@ -134,9 +134,11 @@ func TestHeartbeatBackendCapacity(t *testing.T) {
 	}
 }
 
-// TestBackwardCompatNoCapacity verifies that heartbeats WITHOUT BackendCapacity
-// (simulating old providers) work correctly with default limits.
-func TestBackwardCompatNoCapacity(t *testing.T) {
+// TestHeartbeatWithoutBackendCapacityUsesDefaultLimits verifies that a
+// heartbeat carrying no backend_capacity (the engine has not produced its
+// first snapshot yet, or encoding it failed) leaves the provider routable
+// under the default limits.
+func TestHeartbeatWithoutBackendCapacityUsesDefaultLimits(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
@@ -145,7 +147,7 @@ func TestBackwardCompatNoCapacity(t *testing.T) {
 	p.ChallengeVerifiedSIP = true
 	p.DecodeTPS = 100.0
 
-	// Send heartbeat without BackendCapacity (old provider).
+	// Send a heartbeat without BackendCapacity.
 	hb := &protocol.HeartbeatMessage{
 		Type:   protocol.TypeHeartbeat,
 		Status: "idle",
@@ -155,7 +157,7 @@ func TestBackwardCompatNoCapacity(t *testing.T) {
 
 	// BackendCapacity should remain nil.
 	if p.BackendCapacity != nil {
-		t.Error("BackendCapacity should be nil for old providers")
+		t.Error("BackendCapacity should stay nil without a reported snapshot")
 	}
 
 	// MaxConcurrency should return the default.
@@ -166,7 +168,7 @@ func TestBackwardCompatNoCapacity(t *testing.T) {
 	// Provider should be routable with default limits.
 	found := findRoutableProvider(reg, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
-		t.Error("old provider without BackendCapacity should still be routable")
+		t.Error("provider without a BackendCapacity snapshot should still be routable")
 	}
 }
 

@@ -64,13 +64,6 @@ const (
 	// windows equal while that shared validator uses a symmetric bound.
 	RegistrationAttestationMaxFutureSkew = RegistrationAttestationMaxAge
 
-	// minProviderVersionForReconnectAttestation is the first provider release
-	// that rebuilds and re-signs its registration attestation on every
-	// reconnect. The same release introduced signed protected-runtime claims;
-	// older providers retain challenge-based liveness but cannot receive
-	// effective protected capabilities.
-	minProviderVersionForReconnectAttestation = "0.8.15"
-
 	// MaxConsecutiveChallengeTimeoutsBeforeReconnect is the number of consecutive
 	// transient challenge timeouts (no response within ChallengeResponseTimeout)
 	// after which the coordinator force-closes the provider's WebSocket so it must
@@ -234,6 +227,8 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
+	var terminalWork providerCompletionBarrier
+	var drainAcks providerDrainAcker
 	var appAttestShadow *attestservice.Session
 	tracker := newChallengeTracker()
 	var schedulerSEKey string
@@ -486,7 +481,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// runtime assets such as mlx.metallib under template_hashes.
 			if s.knownRuntimeManifest != nil {
 				runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
-					regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
+					regMsg.Backend, regMsg.TemplateHashes)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
 				provider.RuntimeManifestChecked = runtimeOK
@@ -497,8 +492,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.RuntimeCapabilities = nil
 					provider.FreshCodeAttested = false
 				}
-				provider.PythonHash = regMsg.PythonHash
-				provider.RuntimeHash = regMsg.RuntimeHash
 				provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
 				provider.Mu().Unlock()
 
@@ -525,8 +518,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				} else {
 					s.logger.Info("provider runtime integrity verified",
 						"provider_id", providerID,
-						"python_hash", regMsg.PythonHash,
-						"runtime_hash", regMsg.RuntimeHash,
 					)
 				}
 			} else {
@@ -541,14 +532,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 
 			// Version cutoff check — runs AFTER runtime check so it takes precedence.
-			// If version is below minimum, override RuntimeVerified to false.
-			if s.minProviderVersion != "" && regMsg.Version != "" && semverLess(regMsg.Version, s.minProviderVersion) {
+			// If version is below minimum (or missing while a floor is set),
+			// override RuntimeVerified to false.
+			if s.belowMinProviderVersion(regMsg.Version) {
 				s.logger.Warn("provider version below minimum — excluded from routing",
 					"provider_id", providerID,
 					"version", regMsg.Version,
 					"min_version", s.minProviderVersion,
 				)
-				s.ddIncr("provider_version_below_minimum", []string{"gate:registration", "version:" + regMsg.Version})
+				s.ddIncr("provider_version_below_minimum", []string{"gate:registration", providerVersionMetricTag(regMsg.Version)})
 				provider.Mu().Lock()
 				provider.RuntimeVerified = false
 				provider.RuntimeManifestChecked = false
@@ -574,9 +566,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// reconnects (same process, prefetch state intact) after the alias it
 			// was converging to was deleted/repointed must learn that nothing is
 			// desired anymore, or its in-flight prefetch would hard-swap anyway.
-			// Gated on Swift backend + feature version: a pre-feature provider's
-			// strict decoder throws on unknown types.
-			if s.providerSupportsDesiredModels(regMsg.Backend, regMsg.Version) {
+			// Gated on the Swift backend, the only runtime that understands it.
+			if s.providerSupportsDesiredModels(regMsg.Backend) {
 				if err := s.registry.SendDesiredModels(providerID, s.registry.DesiredModelsForProvider(providerID)); err != nil {
 					s.logger.Warn("failed to send desired_models after register",
 						"provider_id", providerID, "error", err)
@@ -618,6 +609,34 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			if appAttestShadow != nil {
 				appAttestShadow.Offer(msg.Payload.(*protocol.AppAttestShadowMessage).Payload)
 			}
+
+		case protocol.TypeProviderDrain:
+			if provider == nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before drain")
+				return
+			}
+			barrier := msg.Payload.(*protocol.ProviderDrainMessage)
+			if barrier.RequestID == "" || len(barrier.RequestID) > 64 {
+				_ = conn.Close(websocket.StatusPolicyViolation, "invalid drain barrier")
+				return
+			}
+			if !drainAcks.offer(loopCtx, s, provider, &terminalWork, barrier.RequestID) {
+				return
+			}
+
+		case protocol.TypeModelsReplace:
+			if provider == nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before models_replace")
+				return
+			}
+			s.handleModelsReplace(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceMessage))
+
+		case protocol.TypeModelsReplaceReady:
+			if provider == nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before models_replace_ready")
+				return
+			}
+			s.handleModelsReplaceReady(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceReadyMessage))
 
 		case protocol.TypeHeartbeat:
 			if provider == nil {
@@ -668,7 +687,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
-			s.applyProviderHeartbeat(providerID, provider, hbMsg)
+			if s.applyProviderHeartbeat(providerID, provider, hbMsg) {
+				s.handleModelsReplaceHeartbeat(loopCtx, provider)
+			}
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)
@@ -708,13 +729,22 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// that can block for seconds under DB pressure. If the read loop is
 			// blocked, attestation challenge responses can't be read from the
 			// WebSocket, causing challenge timeouts and provider derouting.
+			terminalDone := terminalWork.begin()
 			saferun.Go(s.logger, "handleComplete", func() {
+				defer terminalDone()
 				s.handleCompleteAt(providerID, provider, completeMsg, receivedAt)
 			})
 
 		case protocol.TypeInferenceError:
 			errMsg := msg.Payload.(*protocol.InferenceErrorMessage)
+			var terminalDone func()
+			if drainAcks.latest != nil && s.registry.ProviderDraining(providerID) {
+				terminalDone = terminalWork.begin()
+			}
 			s.handleInferenceError(providerID, provider, errMsg)
+			if terminalDone != nil {
+				terminalDone()
+			}
 
 		case protocol.TypePrefixCacheLookup:
 			lookupMsg := msg.Payload.(*protocol.PrefixCacheLookupMessage)
@@ -1203,17 +1233,16 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 
 	// Verify the signature cryptographically using the provider's Secure
 	// Enclave P-256 public key. The provider signs SHA-256(nonce + timestamp)
-	// with its SE key via eigeninference-enclave CLI.
+	// with its SE key.
 	if resp.Signature == "" {
 		s.handleChallengeFailure(providerID, "empty signature")
 		return
 	}
 
 	// statusFieldsTrusted gates whether we treat resp.SIPEnabled,
-	// resp.BinaryHash etc. as authoritative. False means the provider
-	// signed only nonce+timestamp (legacy or downgrade), so the status
-	// fields are advisory and we must not act on them as if they were
-	// cryptographically bound.
+	// resp.BinaryHash etc. as authoritative. It is true only when the
+	// status signature verified against the attested SE key; a provider
+	// without an attested key (trust none) keeps advisory status fields.
 	statusFieldsTrusted := false
 
 	// If the provider has an attested SE public key, verify the signature.
@@ -1234,26 +1263,19 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			return
 		}
 
-		// Now verify the extended status signature if the provider sent
-		// one. Old providers (pre-v0.3.11) won't — log and continue with
-		// status fields untrusted. Mismatch is fatal: it means either
-		// tampering or the provider is signing a different canonical
+		// Now verify the extended status signature. Every Swift provider
+		// signs the canonical status in every challenge response, so a
+		// missing signature is as fatal as a mismatch: either tampering,
+		// a downgrade, or a provider signing a different canonical
 		// payload than this code expects.
 		statusInput := attestation.StatusCanonicalInput{
-			Nonce:     pc.nonce,
-			Timestamp: pc.timestamp,
-			// Legacy fleet compat only: old providers (< v0.6.31) sign
-			// hypervisor_active into the canonical status, so it must be
-			// carried into the reconstruction when reported. New providers
-			// omit it (nil). See attestation.StatusCanonicalInput.
-			HypervisorActive:  resp.HypervisorActive,
+			Nonce:             pc.nonce,
+			Timestamp:         pc.timestamp,
 			RDMADisabled:      resp.RDMADisabled,
 			SIPEnabled:        resp.SIPEnabled,
 			SecureBootEnabled: resp.SecureBootEnabled,
 			BinaryHash:        resp.BinaryHash,
 			ActiveModelHash:   resp.ActiveModelHash,
-			PythonHash:        resp.PythonHash,
-			RuntimeHash:       resp.RuntimeHash,
 			TemplateHashes:    resp.TemplateHashes,
 			ModelHashes:       resp.ModelHashes,
 		}
@@ -1266,9 +1288,11 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			statusFieldsTrusted = true
 		case attestation.ErrStatusSignatureMissing:
 			s.ddIncr("attestation.challenges", []string{"outcome:status_sig_missing"})
-			s.logger.Warn("provider sent no status_signature — status fields are advisory; upgrade provider to bind them",
+			s.logger.Error("provider sent no status_signature — failing the challenge",
 				"provider_id", providerID,
 			)
+			s.handleChallengeFailure(providerID, "status signature missing")
+			return
 		default:
 			// Instrumentation for the non-recovering status-sig lockout seen on
 			// a couple of nodes (cause unconfirmed). Because the plain challenge
@@ -1296,8 +1320,6 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				"status_sig_len", len(resp.StatusSignature),
 				"binary_hash_len", len(resp.BinaryHash),
 				"active_model_hash_len", len(resp.ActiveModelHash),
-				"python_hash_len", len(resp.PythonHash),
-				"runtime_hash_len", len(resp.RuntimeHash),
 				"template_hashes_count", len(resp.TemplateHashes),
 				"model_hashes_count", len(resp.ModelHashes),
 			)
@@ -1306,28 +1328,12 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Status-field enforcement policy (asymmetric, by design):
-	//
-	// The checks below act on resp.SIPEnabled / SecureBootEnabled /
-	// RDMADisabled / BinaryHash / ActiveModelHash regardless of
-	// statusFieldsTrusted. The asymmetry is intentional during the
-	// v0.3.11 rollout window:
-	//
-	//   - Negative reports (SIP=false, hash mismatch, etc.) ALWAYS mark
-	//     the provider untrusted. Acting on a negative is safe even if
-	//     the field is spoofable: the worst case is a compromised
-	//     provider DoS-ing itself, which we want anyway.
-	//
-	//   - Positive reports (SIP=true, hash matches) are accepted but
-	//     can only be fully trusted when statusFieldsTrusted is true.
-	//     A v0.3.10 provider with a compromised process (but intact SE
-	//     key) can echo a valid nonce signature while lying that
-	//     SIPEnabled=true. We accept this risk during rollout.
-	//
-	// TODO(security/v0.3.13+): Once `attestation_challenges_total{
-	// outcome="status_sig_missing"}` is zero across the fleet for a
-	// week, treat ErrStatusSignatureMissing as a hard challenge failure
-	// (target: 2 release cycles after v0.3.11 GA).
+	// Status-field enforcement policy: for a provider with an attested SE
+	// key the fields below are bound by the verified status signature.
+	// Negative reports (SIP=false, hash mismatch, etc.) mark the provider
+	// untrusted, and an omitted mandatory field fails the challenge; for a
+	// provider without an attested key the fields stay advisory and it
+	// never holds hardware trust.
 	s.logger.Debug("attestation challenge response verified",
 		"provider_id", providerID,
 		"status_fields_trusted", statusFieldsTrusted,
@@ -1351,8 +1357,13 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		return
 	}
 
-	// Verify fresh Secure Boot status.
-	if resp.SecureBootEnabled != nil && !*resp.SecureBootEnabled {
+	// Verify fresh Secure Boot status. Like SIP, it is mandatory: an omitted
+	// value is not evidence of safety, so fail closed.
+	if resp.SecureBootEnabled == nil {
+		s.handleChallengeFailure(providerID, "Secure Boot status not reported")
+		return
+	}
+	if !*resp.SecureBootEnabled {
 		s.logger.Error("provider Secure Boot disabled in challenge response — marking untrusted",
 			"provider_id", providerID,
 		)
@@ -1368,7 +1379,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	// so the security boundary is the signed runtime's buffer-registration
 	// discipline.
 	if resp.RDMADisabled == nil {
-		s.handleChallengeFailure(providerID, "RDMA status not reported — provider must update to v0.2.0+")
+		s.handleChallengeFailure(providerID, "RDMA status not reported")
 		return
 	}
 	if !*resp.RDMADisabled {
@@ -1578,7 +1589,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			"version", version,
 			"min_version", s.minProviderVersion,
 		)
-		s.ddIncr("provider_version_below_minimum", []string{"gate:challenge_revalidation", "version:" + version})
+		s.ddIncr("provider_version_below_minimum", []string{"gate:challenge_revalidation", providerVersionMetricTag(version)})
 		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
 		return
 	}
@@ -1736,18 +1747,15 @@ func (s *Server) applyChallengeRuntimePolicy(
 	var mismatches []protocol.RuntimeMismatch
 	if policyActive {
 		runtimeOK, mismatches = s.verifyRuntimeHashesForBackend(
-			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
+			provider.Backend, resp.TemplateHashes)
 	}
 
 	provider.Mu().Lock()
-	runtimeIdentityChanged :=
-		resp.PythonHash != provider.PythonHash ||
-			resp.RuntimeHash != provider.RuntimeHash ||
-			!maps.EqualFunc(
-				resp.TemplateHashes,
-				provider.TemplateHashes,
-				strings.EqualFold,
-			)
+	runtimeIdentityChanged := !maps.EqualFunc(
+		resp.TemplateHashes,
+		provider.TemplateHashes,
+		strings.EqualFold,
+	)
 
 	provider.RuntimeVerified = policyActive && runtimeOK
 	provider.RuntimeManifestChecked = policyActive && runtimeOK
@@ -1761,8 +1769,6 @@ func (s *Server) applyChallengeRuntimePolicy(
 	if runtimeIdentityChanged {
 		provider.FreshCodeAttested = false
 	}
-	provider.PythonHash = resp.PythonHash
-	provider.RuntimeHash = resp.RuntimeHash
 	provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
 	provider.Mu().Unlock()
 	return policyActive, runtimeOK, mismatches
@@ -1777,9 +1783,7 @@ func (s *Server) applyChallengeMinVersionPolicy(
 	provider.Mu().Lock()
 	defer provider.Mu().Unlock()
 	version := provider.Version
-	if s.minProviderVersion == "" ||
-		version == "" ||
-		!semverLess(version, s.minProviderVersion) {
+	if !s.belowMinProviderVersion(version) {
 		return version, true
 	}
 	provider.RuntimeVerified = false
@@ -3096,10 +3100,9 @@ func (s *Server) verifyProviderAttestation(ctx context.Context, providerID strin
 		return nil
 	}
 
-	enforceReconnectFreshness := regMsg.Version != "" &&
-		!semverLess(regMsg.Version, minProviderVersionForReconnectAttestation)
-	if enforceReconnectFreshness &&
-		!attestation.CheckTimestamp(result, RegistrationAttestationMaxAge) {
+	// Providers rebuild and re-sign their registration attestation on every
+	// reconnect, so a stale timestamp is a replay of an old signed claim.
+	if !attestation.CheckTimestamp(result, RegistrationAttestationMaxAge) {
 		result.Valid = false
 		result.Error = "attestation timestamp outside freshness window"
 		provider.SetAttestationResult(&result)
@@ -3107,18 +3110,6 @@ func (s *Server) verifyProviderAttestation(ctx context.Context, providerID strin
 		s.logger.Warn("provider registration attestation replay rejected",
 			"provider_id", providerID)
 		return nil
-	}
-
-	if !enforceReconnectFreshness {
-		// Pre-0.8.15 providers reuse their signed registration blob across
-		// reconnects. Preserve that legacy identity proof, but discard the
-		// protected-runtime fields before storing it so no later trust or
-		// challenge transition can promote apple_m5/mlx_nax from a replayable
-		// claim. Their periodic nonce challenges remain the liveness proof.
-		result.ChipFamily = ""
-		result.RuntimeCapabilities = nil
-		result.MetallibHash = ""
-		provider.SetAttestationResult(&result)
 	}
 
 	// Bind the WebSocket X25519 key used for E2E text encryption to the
@@ -3230,9 +3221,15 @@ func (s *Server) verifyProviderAttestation(ctx context.Context, providerID strin
 	// Independently recover the newest non-empty durable MDA chain. A newer
 	// empty record must not shadow a chain earned by an earlier session. The
 	// hardware-grant path still re-verifies the certificate and SE-key binding.
-	if !identityCandidate {
-		s.stageDurableMDAChain(provider, result.SerialNumber)
-	}
+	//
+	// Identity candidates stage it too, although their self-reported serial
+	// restores no history and evicts no duplicate: the serial only selects a
+	// CANDIDATE chain, never a grant. attachCachedMDAProof attaches it only
+	// after this connection holds hardware trust, the chain re-verifies to
+	// Apple's pinned root, its FreshnessCode equals SHA-256 of THIS
+	// connection's SE key, and any Apple serial matches the attested one. A
+	// chain earned by another machine's SE key can never bind here.
+	s.stageDurableMDAChain(provider, result.SerialNumber)
 
 	// Deduplicate: if another provider connection exists from the same physical
 	// device (same serial number), disconnect it. This prevents multiple
@@ -3690,9 +3687,10 @@ const providerAttestationCacheTTL = 2 * time.Second
 
 const providerAttestationCacheKey = "providers:attestation:v1"
 
-// handleProviderAttestation returns privacy-redacted trust status for all providers.
-// Device identity and raw MDA certificates stay coordinator-private because
-// Apple's leaf certificate embeds the hardware serial number and UDID.
+// handleProviderAttestation returns trust status for public providers only.
+// Serial numbers, UDIDs and raw MDA certificates stay coordinator-private.
+// The legacy SE public key remains public for response signature verification;
+// unlike the connection ID, that key can link successive public sessions.
 func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Request) {
 	if body, ok := s.readCacheGet(providerAttestationCacheKey); ok {
 		writeCachedJSON(w, body)
@@ -3742,6 +3740,11 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	// The registry holds membership and provider locks for the whole row:
 	// verification and compatibility fields cannot observe different grants.
 	s.registry.ForEachProviderVerification(func(p *registry.Provider, verification registry.Verification, models registry.PublicProviderModelSnapshot) {
+		// Match the public stats roster. Private connections must never enter
+		// this unauthenticated response or its shared cache.
+		if p.PrivateOnly {
+			return
+		}
 		trustLevel := p.TrustLevel
 		status := p.Status
 		mdaVerified := p.MDAVerified

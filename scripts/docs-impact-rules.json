@@ -56,7 +56,8 @@
         "coordinator/api/warm_pool*.go"
       ],
       "docs_any_of": [
-        "docs/architecture/scheduling.md"
+        "docs/architecture/scheduling.md",
+        "docs/architecture/routing.md"
       ]
     },
     {
@@ -91,6 +92,17 @@
       ],
       "docs_any_of": [
         "docs/operations/provider-release.md"
+      ]
+    },
+    {
+      "name": "provider SSD prefix cache",
+      "source_patterns": [
+        "provider-swift/Sources/ProviderCore/KVCacheSSD/**",
+        "provider-swift/Sources/ProviderCore/Inference/PrefixCache/**"
+      ],
+      "docs_any_of": [
+        "docs/reference/ssd-kv-cache.md",
+        "docs/architecture/prefix-cache.md"
       ]
     }
   ]

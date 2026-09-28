@@ -1,6 +1,6 @@
 # Architecture — how Darkbloom works
 
-> Last updated: 2026-09-21 · commit `ce809b792`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 Explanation pages: context, mechanism, invariants, failure modes, and a code
 map for each part of the system. The code in `coordinator/`,
@@ -52,6 +52,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | Page | Concern |
 |---|---|
 | [inference.md](inference.md) | CBv2 request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families and quantization |
+| [native-block-inference.md](native-block-inference.md) | Native diffusion block execution, commit boundaries, memory-estimator reuse and honest first-block timing; separate from model advertisement |
 | [prefix-cache.md](prefix-cache.md) | KV layouts (contiguous default, paged), block hashing, prefix-reuse plan per family, RAM staging and the encrypted SSD tier; why a default box builds no SSD cache |
 | [hardware-support.md](hardware-support.md) | Memory model: unified-memory cap, activation floors, load gate, KV budget and re-slice; platform and hardware gates |
 | [model-registry.md](model-registry.md) | Model manifests, aliases, publishing to R2, registration, provider downloads |
@@ -62,7 +63,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 |---|---|
 | [storage.md](storage.md) | Coordinator persistence: Postgres tables and migrations, memory store, retention jobs |
 | [billing.md](billing.md) | Pricing, reservations, ledger, Stripe deposits and Connect payouts, referrals, base rewards |
-| [telemetry.md](telemetry.md) | What telemetry exists, Go/Swift/TS symmetry, ingestion allowlist, Datadog |
+| [telemetry.md](telemetry.md) | What telemetry exists, Go/Swift/TS symmetry, retired client ingestion, Datadog |
 | [request-outcome-observability.md](request-outcome-observability.md) | Closed outcome taxonomy across client, provider, and billing dimensions |
 | [system-profiler.md](system-profiler.md) | Per-attempt request profiles and fleet snapshots: schema, clocks, validation |
 

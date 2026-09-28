@@ -1,6 +1,6 @@
 # Beta features
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-27 · commit `c2fa18e02`
 
 Turn experimental engine behaviour on or off per machine with `darkbloom beta`,
 which writes keys into `provider.toml` so every serve path (LaunchAgent daemon,
@@ -51,8 +51,8 @@ so an environment-variable toggle would silently no-op for the normal daemon
    is always written on an explicit toggle, so a future default flip cannot
    silently move your provider; `… is already enabled.` is printed only when
    the file already pins the requested value. Without `--config`, the write
-   goes to the canonical `~/.config/darkbloom/provider.toml` even if the
-   snapshot was just migrated from a legacy location. Unknown ids exit with
+   goes to `~/.config/darkbloom/provider.toml`, the only config path read by
+   default. Unknown ids exit with
    `Unknown beta feature '<id>'. Available: …`.
 
 4. Restart when told to. Every current feature is a process-start latch:
@@ -121,8 +121,11 @@ tier re-adopted them. Their semantics are in
 `provider.toml` keys (`BackendSettings.RetiredCodingKeys`,
 `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`): `[backend]
 continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`,
-`kv_quant`. Delete them from the file to silence the warnings. The former beta
-ids `adaptive-prefill` and `kv-quant` no longer exist.
+`kv_quant`, `mtp`. Delete them from the file to silence the warnings. The
+boolean `mtp` key is superseded by `mtp_mode`: a bare `mtp = true` or
+`mtp = false` is ignored and MTP follows `mtp_mode` (default `auto`), so set
+`mtp_mode = "off"` to keep MTP off or `mtp_mode = "on"` to force it on. The
+former beta ids `adaptive-prefill` and `kv-quant` no longer exist.
 
 ## Verify
 

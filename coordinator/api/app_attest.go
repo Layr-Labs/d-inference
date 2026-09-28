@@ -46,7 +46,20 @@ func (s *Server) appAttestIdentityCandidate(r *protocol.RegisterMessage, account
 }
 
 func (s *Server) providerServingAuthorizationStatus(p *registry.Provider) *protocol.ProviderServingAuthorization {
-	return s.appAttestFeature().Status(p)
+	status := s.appAttestFeature().Status(p)
+	if status != nil && status.Path != "none" {
+		return status
+	}
+	if p != nil && s.registry.ProviderLegacyServingAuthorized(p) {
+		return &protocol.ProviderServingAuthorization{Protocol: 1, Path: "legacy", Reason: "legacy_verification_active", SessionID: p.ID}
+	}
+	if s.registry.ProviderOwnerServingAuthorized(p) {
+		if status == nil {
+			status = &protocol.ProviderServingAuthorization{Protocol: 1, SessionID: p.ID}
+		}
+		status.Path, status.Reason = "self_route", "owner_serving_authorized"
+	}
+	return status
 }
 
 // Approval and generation close over the same immutable shared release view.

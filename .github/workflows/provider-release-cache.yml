@@ -51,7 +51,7 @@ jobs:
   warm:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     name: SDK 27 ${{ matrix.lane }}
-    runs-on: tenki-macos-26-large
+    runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
     strategy:
       fail-fast: false

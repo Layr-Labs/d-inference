@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-26 · commit `10fb4b7c1`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -32,9 +32,41 @@ and the [wire contract](../reference/api-contracts.md#verification-presentation-
 
 ## App Attest without Darkbloom MDM
 
-If Apple's API returns a generic error during setup, the coordinator retries after one minute, then five minutes, then hourly while the provider stays connected. Retrying cannot approve the machine without a successful qualified proof. Keep the provider running and inspect `darkbloom status` or `darkbloom doctor`; the [recovery policy](../reference/provider-authorization.md#controls) does not require deleting credentials or management profiles.
+A failed initial enrollment can leave an Apple key unusable even when its identifier is still in Keychain. Darkbloom replaces that identifier after non-service-unavailable failures or interrupted attempts, subject to the persisted one-hour replacement cooldown and shared hourly generation budget. Service-unavailable failures keep the same key, and already saved enrollment proofs are retained for retry. Do not delete account, machine, Keychain or employer-management state to force retries. This recovery is not proof that the Mac is authorized; check the coordinator verdict before removing Darkbloom MDM. See the [key lifecycle](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
 
-After first enrollment, Apple may provide a verified receipt without its risk metric. The coordinator keeps the connection pending and requests another signed assertion on a bounded schedule while receipt renewal completes. Continue checking `darkbloom status`; the absence of the metric cannot be treated as approval.
+After a macOS upgrade, the running signed app checks App Attest again on its next coordinator connection. If a completed Apple callback reports key-generation failure without a usable ID, Darkbloom can retry after one minute within its persisted hourly budget; timeout, cancellation and busy admission retain the safer one-hour cooldown. A definite Apple service-unavailable assertion gets one local retry using the same key and challenge. These attempts cannot grant access without Apple's verified proof and the coordinator's current receipt, build and security checks.
+
+
+If Apple's API returns a generic error during setup, the coordinator retries after one minute, then five minutes, then every ten minutes while the provider stays connected. Retrying cannot approve the machine without a successful qualified proof. Persistent generic errors can still require a signed provider update and diagnosis from the bounded native Apple error code; `darkbloom status` or `darkbloom doctor` reports current authorization. The [recovery policy](../reference/provider-authorization.md#controls) does not require deleting credentials or management profiles.
+
+When the coordinator asks the provider to enroll a key that this Mac already enrolled, the provider clears that key and answers `key_unregistered`; the next exchange generates a replacement within the one-hour cooldown and shared hourly generation budget. The replacement goes through the full enrollment checks. Do not delete the Keychain item yourself.
+
+`darkbloom doctor` shows the provider's local App Attest state in the `APP ATTEST` section: whether a key is stored and enrolled, any remaining key-generation cooldown, whether the provider runs in the logged-in GUI session, and a stalled Apple call. The daemon records this on each coordinator App Attest exchange (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`). If Apple reports App Attest as unsupported (`is_supported_false`), log in at the console and run `darkbloom restart` so the provider runs inside the GUI session, and confirm SIP is enabled and Startup Security Utility is set to Full Security.
+
+Local key/history observations refresh after every proof exchange, including repeated assertions without another `prepare`. `doctor` and `report` advance displayed ages between exchanges while retaining the original observation metadata.
+
+Each `ready` reply carries bounded diagnostics about process start and previous exit, console-user presence, SIP/authenticated root, signing preflight, key history and APNs push history. Failed attestation/assertion replies can additionally carry the native NSError chain. These optional fields are outside the signed transcript and never used for authorization. [`app-attest-shadow.md`](../reference/app-attest-shadow.md) defines them. `darkbloom doctor` explains the available observations with targeted advice ([doctor checks](./troubleshooting.md#doctor-checks)):
+
+- `gui session`: a user is logged in, but the provider runs outside that session. Run `darkbloom restart` from the desktop session.
+- `boot security` / `app signing`: Apple needs Full Security and an intact signed install. Known-invalid checks call for repair in Recovery or reinstallation. Missing signing data or unknown profile expiry produces an indeterminate warning, not a pass.
+- `key history` / `last apple failure`: repeated `invalidKey` on brand-new keys, or a CryptoTokenKit `-3` key loss after a restart.
+
+For the last two, run `darkbloom report` from an administrator account; macOS lets only administrator accounts read the system log. Use `sudo darkbloom report` instead if this account is allowed to use sudo. The report adds device-wide `devicecheckd` observations reduced to closed failure patterns and numeric codes. They can originate from other apps and are not attributable to Darkbloom, so they do not independently diagnose this provider's key. System-log evidence is never collected or sent automatically.
+
+If an Apple DeviceCheck call never answers, every later App Attest call answers `busy` until the provider process restarts. The provider reports the stall and restarts itself through the normal drain when it is idle; the thresholds and limits are in the [App Attest reference](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle). The log line starts with `App Attest: Apple operation stalled`. Run `darkbloom restart` to recover immediately.
+
+After first enrollment, Apple may provide a receipt that is not yet a verified risk receipt or lacks its risk metric. The coordinator keeps the connection pending and requests another signed assertion after one minute, five minutes, then at the normal ten-minute interval while receipt renewal completes. Continue checking `darkbloom status`; the absence of a verified risk metric cannot be treated as approval.
+
+A verified assertion is one step toward authorization. Current serving also
+requires the complete proof archive, the same authenticated account and
+machine identity on this connection, a qualified signed build and the current
+runtime checks. A transient identity or storage refusal remains pending; the
+coordinator requests another fresh assertion on its bounded retry schedule.
+Keep the provider running and inspect the current authorization reported by
+`darkbloom status` or `darkbloom doctor`. A historical `eligible` observation
+cannot authorize serving or MDM removal by itself. A missing or mismatched
+Apple code measurement remains ineligible until an exact signed build is
+qualified; do not delete a working credential to bypass that check.
 
 New setup on macOS 27 or later skips MDM profile download in both the installer and `darkbloom enroll`. Darkbloom MDM will be deactivated soon; upgrade to macOS 27 to avoid legacy enrollment. A qualified macOS 27 provider can use [App Attest authorization](../reference/provider-authorization.md) when the coordinator explicitly enables it. Start the signed provider and check `darkbloom status` / `darkbloom doctor` for current App Attest authorization. Company-managed Macs keep their employer profile; they do not enroll into Darkbloom MDM for this path.
 
@@ -223,6 +255,9 @@ For local diagnostics use `darkbloom doctor` and `darkbloom logs --last 1h`.
 Provider logs are never uploaded automatically; `darkbloom report` uploads a
 unified-log excerpt to `POST /v1/provider/log-report` only when you run it
 (`--dry-run` prints it first; [`cli-reference.md`](./cli-reference.md#darkbloom-report)).
+On macOS 27 the report also carries the App Attest snapshot and the APNs push
+history. Run from an administrator account (or with `sudo` where allowed), it
+also carries closed, device-wide `devicecheckd` pattern matches, not provider-specific proof.
 
 ## Related
 

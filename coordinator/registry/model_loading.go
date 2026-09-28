@@ -185,7 +185,7 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	// private-only machine that happens to hold a queued public model warm makes
 	// the planner believe the model is already served and skip load_model to an
 	// eligible public node, stranding public requests until queue timeout.
-	if !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
+	if providerDrainingLocked(p, now) || !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
 		return false
 	}
 	// Catalog membership + dedicated-box isolation: for a dedicated-family model
@@ -263,7 +263,7 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	// model (e.g. Gemma 4) may only be loaded onto a provider dedicated to it,
 	// never a mixed-catalog box (routing would never use it). Mirrors
 	// providerHasWarmModelLocked.
-	if !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
+	if providerDrainingLocked(p, now) || !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
 		return 0, false
 	}
 	if !r.providerServesRoutableModelLocked(p, model, false) {

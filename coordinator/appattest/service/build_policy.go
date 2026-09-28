@@ -53,3 +53,11 @@ func appAttestSHA256Hex(hash string) bool {
 	_, err := hex.DecodeString(hash)
 	return err == nil
 }
+
+func appAttestSHA256PrefixHex(hash string) bool {
+	if len(hash) != 40 || strings.ToLower(hash) != hash {
+		return false
+	}
+	_, err := hex.DecodeString(hash)
+	return err == nil
+}

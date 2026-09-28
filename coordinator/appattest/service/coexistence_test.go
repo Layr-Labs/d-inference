@@ -34,7 +34,7 @@ func TestShadowProofsNeverMutateLegacyTrust(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	x := &Session{s: s, provider: p, in: make(chan protocol.AppAttestShadowPayload, 2), id: "test-session", owner: "test-owner", publicKey: p.PublicKey, version: "0.9.0", key: record, challenge: "fresh", expected: "assertion", store: st, verifier: appattest.New(appattest.Policy{AppID: "TEST.app", Environment: "production"})}
+	x := &Session{s: s, provider: p, in: make(chan protocol.AppAttestShadowPayload, 2), id: "test-session", owner: "test-owner", publicKey: p.PublicKey, version: "0.9.0", protocolVersion: 3, key: record, challenge: "fresh", expected: "assertion", store: st, verifier: appattest.New(appattest.Policy{AppID: "TEST.app", Environment: "production"})}
 	snapshot := func() []any {
 		p.Mu().Lock()
 		defer p.Mu().Unlock()
@@ -59,12 +59,13 @@ func TestShadowProofsNeverMutateLegacyTrust(t *testing.T) {
 	// is test evidence; production enrolls it through Apple's certificate verifier.
 	rp := sha256.Sum256([]byte("TEST.app"))
 	auth := append(append([]byte{}, rp[:]...), 0, 0, 0, 0, 1)
-	hash := protocol.AppAttestShadowHash("assert", x.id, "production", record.KeyID, x.challenge, x.publicKey)
+	status := testShadowStatus()
+	hash := testAssertionHash(x, record.KeyID, status)
 	signed := sha256.Sum256(append(auth, hash[:]...))
 	signed = sha256.Sum256(signed[:])
 	signature, _ := ecdsa.SignASN1(rand.Reader, key, signed[:])
 	proof, _ := cbor.Marshal(map[string]any{"signature": signature, "authenticatorData": auth})
-	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof)}); next != "wait" {
+	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof), ProtocolVersion: 3, Status: status}); next != "wait" {
 		t.Fatalf("valid assertion: %s", next)
 	}
 	stored, _ := st.GetAppAttestShadowKey(ctx, record.KeyID)
@@ -80,16 +81,72 @@ func TestShadowProofsNeverMutateLegacyTrust(t *testing.T) {
 	before = snapshot()
 	x.challenge = "another-fresh-challenge"
 	auth[len(auth)-1] = 2
-	hash = protocol.AppAttestShadowHash("assert", x.id, "production", record.KeyID, x.challenge, x.publicKey)
+	hash = testAssertionHash(x, record.KeyID, status)
 	signed = sha256.Sum256(append(auth, hash[:]...))
 	signed = sha256.Sum256(signed[:])
 	signature, _ = ecdsa.SignASN1(rand.Reader, key, signed[:])
 	proof, _ = cbor.Marshal(map[string]any{"signature": signature, "authenticatorData": auth})
-	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof)}); next != "wait" {
+	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof), ProtocolVersion: 3, Status: status}); next != "wait" {
 		t.Fatal(next)
 	}
 	if !reflect.DeepEqual(before, snapshot()) {
 		t.Fatal("shadow pass promoted legacy trust")
 	}
 
+}
+
+func TestUnsignedChallengeMismatchCannotRevokeIndependentLegacyTrust(t *testing.T) {
+	s, p, record, _ := newAuthorizationFixture(t)
+	makeLegacyAuthorized(p)
+	if !s.registry.ProviderLegacyServingAuthorized(p) {
+		t.Fatal("fixture lacks legacy authorization")
+	}
+	x := sessionForAuthorization(s, p, record)
+	x.expected, x.challenge, x.publicKey = "assertion", "current-challenge", p.PublicKey
+	archive := &capturedProofArchive{}
+	x.archive = archive
+	reply := protocol.AppAttestShadowPayload{
+		Session: x.id, Action: "assertion", Result: "ok", KeyID: x.key.KeyID,
+		Challenge: "unsigned-wrong-challenge", Proof: "AQID",
+	}
+	if next := x.handle(context.Background(), reply); next != "stop" || x.lastOutcome != "challenge_mismatch" {
+		t.Fatalf("unexpected mismatch result: next=%s outcome=%s", next, x.lastOutcome)
+	}
+	x.observeFailedPolicy(x.lastOutcome) // Same post-attempt policy path as runRecovering.
+	if archive.evidence.ProofField != reply.Proof || archive.evidence.SessionID != p.ID {
+		t.Fatal("unsigned failed proof was not archived")
+	}
+	if confirmedAppAttestViolation("challenge_mismatch") || !s.registry.ProviderLegacyServingAuthorized(p) {
+		t.Fatal("unsigned reply fields hard-denied a valid MDM/APNs provider")
+	}
+	if _, ok := s.registry.ProviderServingAuthorization(p); ok || s.authorizer.current[p] != nil {
+		t.Fatal("unsigned mismatch created an App Attest grant")
+	}
+	firstSession := x.id
+	attempts, retries := 0, 0
+	x.runRecovering(context.Background(), func(ctx context.Context) {
+		attempts++
+		if attempts == 1 {
+			if next := x.handle(ctx, reply); next != "stop" {
+				t.Fatalf("mismatch unexpectedly advanced exchange: %s", next)
+			}
+		} else {
+			if x.id == firstSession || x.key != nil {
+				t.Fatal("retry reused the old challenge session or cached key")
+			}
+			x.lastOutcome = "unsupported"
+		}
+	}, func(_ context.Context, delay time.Duration) bool {
+		retries++
+		if delay != time.Minute || !s.registry.ProviderLegacyServingAuthorized(p) {
+			t.Fatal("mismatch did not schedule bounded recovery while preserving legacy")
+		}
+		if _, ok := s.registry.ProviderServingAuthorization(p); ok {
+			t.Fatal("mismatch retry granted App Attest without a fresh proof")
+		}
+		return true
+	})
+	if attempts != 2 || retries != 1 {
+		t.Fatalf("mismatch retry attempts=%d waits=%d", attempts, retries)
+	}
 }

@@ -23,8 +23,8 @@ func TestProductionInventoryCoversSevenModelsAndEverySupportedVector(t *testing.
 	if len(inventory.Contracts) != 6 {
 		t.Fatalf("deduplicated contracts = %d, want 6", len(inventory.Contracts))
 	}
-	if len(inventory.Vectors) != 126 {
-		t.Fatalf("supported vectors = %d, want 126", len(inventory.Vectors))
+	if len(inventory.Vectors) != 154 {
+		t.Fatalf("supported vectors = %d, want 154", len(inventory.Vectors))
 	}
 	coveredModels := make(map[string]bool)
 	coveredCases := make(map[string]bool)

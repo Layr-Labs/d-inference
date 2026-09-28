@@ -8,18 +8,37 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 TENKI = {'tenki-standard-medium-4c-8g', 'tenki-macos-26-large'}
-GITHUB = {'ubuntu-24.04', 'xcode-27'}
-BLACKSMITH = {'blacksmith-12vcpu-macos-latest'}
-EXTERNAL = TENKI | BLACKSMITH
-# Jobs entrusted with credentials or writes must never drift to a third party.
-PROTECTED = {
-    'release-swift.yml': {'resolve-env', 'build-and-release', 'stage-release', 'publish-release'},
-    'provider-signing-validation.yml': {'signing'},
-    'register-model.yml': {'register'},
-    'claude.yml': {'claude'},
-    'codex.yml': {'codex', 'post_feedback'},
-    'benchmarks.yml': {'approve', 'report'},
-    'ci.yml': {'runner-policy'},
+BLACKSMITH_LINUX = 'blacksmith-4vcpu-ubuntu-2404'
+BLACKSMITH_MAC_27 = 'blacksmith-12vcpu-macos-27'
+BLACKSMITH_MAC_26 = 'blacksmith-12vcpu-macos-26'
+BLACKSMITH_BENCHMARK = 'blacksmith-12vcpu-macos-latest'
+BLACKSMITH = {BLACKSMITH_LINUX, BLACKSMITH_MAC_27, BLACKSMITH_MAC_26,
+              BLACKSMITH_BENCHMARK}
+# Release inputs, credentials and write-capable jobs must stay on the reviewed
+# Blacksmith images. The signed older-OS proof uses a separate macOS 26 image.
+BLACKSMITH_JOBS = {
+    'release-swift.yml': {
+        'resolve-env': BLACKSMITH_LINUX,
+        'build-provider': BLACKSMITH_MAC_27,
+        'qualify-sdk': BLACKSMITH_MAC_27,
+        'build-and-release': BLACKSMITH_MAC_27,
+        'stage-release': BLACKSMITH_LINUX,
+        'publish-release': BLACKSMITH_LINUX,
+        'validate-older-macos': BLACKSMITH_MAC_26,
+    },
+    'provider-release-cache.yml': {'warm': BLACKSMITH_MAC_27},
+    'provider-signing-validation.yml': {
+        'build': BLACKSMITH_MAC_27,
+        'signing': BLACKSMITH_MAC_27,
+    },
+    'register-model.yml': {'register': BLACKSMITH_LINUX},
+    'claude.yml': {'claude': BLACKSMITH_LINUX},
+    'codex.yml': {'codex': BLACKSMITH_LINUX, 'post_feedback': BLACKSMITH_LINUX},
+    'benchmarks.yml': {
+        'approve': BLACKSMITH_LINUX,
+        'benchmark': BLACKSMITH_BENCHMARK,
+        'report': BLACKSMITH_LINUX,
+    },
 }
 SECRET = re.compile(r'\$\{\{[^}]*\bsecrets\b', re.S)
 
@@ -45,20 +64,22 @@ def check(workflows, root=ROOT):
     errors = []
     for filename, workflow in workflows.items():
         jobs = workflow.get('jobs', {})
-        for required in PROTECTED.get(filename, set()):
-            if required not in jobs:
-                errors.append(f'{filename}: missing protected job {required}')
+        for name, expected in BLACKSMITH_JOBS.get(filename, {}).items():
+            if name not in jobs:
+                errors.append(f'{filename}: missing Blacksmith job {name}')
+            elif jobs[name].get('runs-on') != expected:
+                errors.append(f'{filename}/{name}: must run on {expected}')
         for name, job in jobs.items():
             label = f'{filename}/{name}'
             runner = job.get('runs-on')
-            if not isinstance(runner, str) or runner not in EXTERNAL | GITHUB:
+            if not isinstance(runner, str) or runner not in TENKI | BLACKSMITH:
                 errors.append(f'{label}: runner must be an approved static label')
                 continue
-            if runner in BLACKSMITH and (filename, name) != ('benchmarks.yml', 'benchmark'):
-                errors.append(f'{label}: Blacksmith is allowed only for the 48 GB benchmark')
-            if name in PROTECTED.get(filename, set()) and runner not in GITHUB:
-                errors.append(f'{label}: privileged job must use GitHub')
-            if runner not in EXTERNAL:
+            if runner in BLACKSMITH and name not in BLACKSMITH_JOBS.get(filename, {}):
+                errors.append(f'{label}: Blacksmith placement requires a policy entry')
+            # Benchmark compute remains read-only even though it needs a 48 GB
+            # Blacksmith Mac. Every Tenki job has the same credential boundary.
+            if runner not in TENKI and (filename, name) != ('benchmarks.yml', 'benchmark'):
                 continue
             permissions = job.get('permissions', workflow.get('permissions'))
             if not isinstance(permissions, dict) or any(
@@ -70,8 +91,8 @@ def check(workflows, root=ROOT):
                 errors.append(f'{label}: environments, secret inheritance and reusable jobs are forbidden')
             scopes = [job, workflow.get('env', {}), workflow.get('defaults', {})]
             if any(SECRET.search(text) for scope in scopes for text in strings(scope)):
-                errors.append(f'{label}: secrets context must not reach external runners')
-            if runner == 'tenki-macos-26-large' and name != 'validate-older-macos':
+                errors.append(f'{label}: secrets context must not reach read-only runners')
+            if runner == 'tenki-macos-26-large':
                 env = {**workflow.get('env', {}), **job.get('env', {})}
                 if env.get('DEVELOPER_DIR') != '/Applications/Xcode_27.0.app/Contents/Developer':
                     errors.append(f'{label}: explicitly select Xcode 27')
@@ -108,4 +129,4 @@ if __name__ == '__main__':
         print(problem, file=sys.stderr)
     if problems:
         sys.exit(1)
-    print('CI runner policy: external jobs are read-only and contain no secret references; privileged jobs use GitHub.')
+    print('CI runner policy: Tenki jobs are read-only; release and credentialed jobs use pinned Blacksmith runners.')

@@ -15,7 +15,7 @@ import Foundation
 ///      are refused (the caller's gate returns 503 so the coordinator
 ///      reroutes) while in-flight requests are allowed to finish.
 ///   4. **wait for the drain** to reach zero (bounded). On timeout we
-///      force-cancel the stragglers rather than block the update forever.
+///      defer the update without cancelling accepted work.
 ///   5. **commit** the staged bundle into the live layout. This is the only
 ///      step that mutates the running install, and it happens strictly after
 ///      admission is closed and in-flight work has drained, so no request can
@@ -69,10 +69,8 @@ public struct AutoUpdateController: Sendable {
         /// Wait until in-flight work reaches zero or `timeout` elapses.
         /// Returns `true` if fully drained, `false` on timeout.
         public var waitForDrain: @Sendable (Duration) async -> Bool
-        /// Cancel any remaining in-flight requests (drain-timeout fallback).
-        public var forceCancelInflight: @Sendable () async -> Void
         /// Swap the staged bundle into the live layout. Runs only after the
-        /// drain (admission closed, in-flight work finished or cancelled).
+        /// drain (admission closed, accepted work finished).
         public var commitInstall: @Sendable () async -> StepOutcome
         /// Arm the already-installed candidate before retrying a restart after
         /// a prior restart command or process died.
@@ -93,7 +91,6 @@ public struct AutoUpdateController: Sendable {
             waitBeforeInstall: @escaping @Sendable () async -> Void = {},
             beginDraining: @escaping @Sendable () async -> Void,
             waitForDrain: @escaping @Sendable (Duration) async -> Bool,
-            forceCancelInflight: @escaping @Sendable () async -> Void,
             commitInstall: @escaping @Sendable () async -> StepOutcome,
             prepareInstalledRestart: @escaping @Sendable () async -> StepOutcome = { .completed },
             restart: @escaping @Sendable () throws -> Void,
@@ -107,7 +104,6 @@ public struct AutoUpdateController: Sendable {
             self.waitBeforeInstall = waitBeforeInstall
             self.beginDraining = beginDraining
             self.waitForDrain = waitForDrain
-            self.forceCancelInflight = forceCancelInflight
             self.commitInstall = commitInstall
             self.prepareInstalledRestart = prepareInstalledRestart
             self.restart = restart
@@ -120,6 +116,9 @@ public struct AutoUpdateController: Sendable {
     public enum Outcome: Sendable, Equatable {
         /// A cycle was already in progress; this call did nothing.
         case alreadyRunning
+        /// No forced cancellation or restart. The owner releases staged state
+        /// and resumes only if a permanent coordinator fence is not pending.
+        case drainTimedOut
         /// The cycle was cancelled (provider shutdown / monitor teardown)
         /// during the pre-install rollover-jitter wait. Nothing was drained,
         /// committed, or restarted; the staged bundle is discarded by
@@ -137,9 +136,8 @@ public struct AutoUpdateController: Sendable {
         /// The staged bundle could not be swapped into the live layout; the
         /// provider resumed serving the old version after the drain.
         case commitFailed(String)
-        /// The new binary was installed and a restart was issued. `drained`
-        /// indicates whether in-flight work finished cleanly (`true`) or was
-        /// force-cancelled on timeout (`false`).
+        /// The new binary was installed and a restart was issued only after
+        /// accepted work and terminal delivery drained. `drained` is true.
         case restarted(from: String, to: String, drained: Bool)
         /// Install succeeded but the restart call itself failed.
         case restartFailed(String)
@@ -162,6 +160,7 @@ public struct AutoUpdateController: Sendable {
         }
 
         let checkResult = await deps.check()
+        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         switch checkResult {
         case .upToDate:
             await deps.resumeServing()
@@ -177,8 +176,10 @@ public struct AutoUpdateController: Sendable {
                 "auto-update: v\(installed) is already installed but not running; draining before restart")
             await deps.beginDraining()
             let drained = await deps.waitForDrain(drainTimeout)
+            if Task.isCancelled { await deps.resumeServing(); return .cancelled }
             if !drained {
-                await deps.forceCancelInflight()
+                await deps.resumeServing()
+                return .drainTimedOut
             }
             return await restartInstalled(from: current, to: installed, drained: drained)
 
@@ -212,15 +213,18 @@ public struct AutoUpdateController: Sendable {
         deps.log("auto-update: v\(release.version) staged; draining in-flight requests before install + restart")
         await deps.beginDraining()
         let drained = await deps.waitForDrain(drainTimeout)
+        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         if !drained {
-            deps.log("auto-update: drain timed out after \(drainTimeout.components.seconds)s; cancelling remaining requests")
-            await deps.forceCancelInflight()
+            deps.log("auto-update: drain timed out; deferring update without cancelling requests")
+            await deps.resumeServing()
+            return .drainTimedOut
         }
         if case .failed(let reason) = await deps.commitInstall() {
             deps.log("auto-update: installing staged v\(release.version) failed, staying on v\(current): \(reason)")
             await deps.resumeServing()
             return .commitFailed(reason)
         }
+        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         deps.log("auto-update: restarting into v\(release.version)")
         return await restartInstalled(from: current, to: release.version, drained: drained, logFailure: true)
     }
@@ -234,6 +238,7 @@ public struct AutoUpdateController: Sendable {
             await deps.resumeServing()
             return .restartFailed(reason)
         }
+        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         do {
             try deps.restart()
             return .restarted(from: current, to: installed, drained: drained)

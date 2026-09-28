@@ -12,11 +12,6 @@ import Foundation
 public enum LaunchAgent: Sendable {
 
     public static let label = "io.darkbloom.provider"
-    private static let legacyLabels = ["dev.darkbloom.provider"]
-
-    /// Canonical + legacy labels the provider may be registered under (the
-    /// watchdog probes all of them).
-    public static var supportedLabels: [String] { [label] + legacyLabels }
 
     // MARK: - Paths
 
@@ -43,14 +38,6 @@ public enum LaunchAgent: Sendable {
     /// Whether the launchd service is currently loaded (registered with launchd).
     public static func isLoaded() -> Bool {
         isLoaded(label: label)
-    }
-
-    /// Whether any supported launchd label is currently loaded. Prefer this for
-    /// process-lifecycle decisions where legacy installations should still be
-    /// treated as launchd-managed.
-    public static func isAnySupportedLabelLoaded() -> Bool {
-        if isLoaded() { return true }
-        return legacyLabels.contains { isLoaded(label: $0) }
     }
 
     private static func isLoaded(label: String) -> Bool {
@@ -108,9 +95,6 @@ public enum LaunchAgent: Sendable {
             try unloadService()
             Thread.sleep(forTimeInterval: 0.5)
         }
-        for legacyLabel in legacyLabels where isLoaded(label: legacyLabel) {
-            try unloadService(label: legacyLabel)
-        }
 
         try writePlist(
             binaryPath: binaryPath,
@@ -137,19 +121,17 @@ public enum LaunchAgent: Sendable {
     /// If the service is not loaded, the unload is a no-op but the disable
     /// still applies (covers a stop issued after a crash or partial install).
     public static func stop() throws {
+        try disableAutomaticStartup()
         if isLoaded() {
             try unloadService()
         }
-        for legacyLabel in legacyLabels where isLoaded(label: legacyLabel) {
-            try unloadService(label: legacyLabel)
-        }
-        // Disable every supported label: a not-yet-migrated legacy plist on
-        // disk would otherwise RunAtLoad under its old label at next login.
-        for serviceLabel in supportedLabels {
-            let result = LaunchctlControl.setEnabled(false, label: serviceLabel)
-            if !result.succeeded {
-                throw LaunchAgentError.disableFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
+    }
+
+    /// Fence login/reboot resurrection while the current process drains.
+    public static func disableAutomaticStartup() throws {
+        let result = LaunchctlControl.setEnabled(false, label: label)
+        if !result.succeeded {
+            throw LaunchAgentError.disableFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
@@ -165,17 +147,8 @@ public enum LaunchAgent: Sendable {
     ///   - installed: (plist on disk but not loaded) bootstrap + kickstart.
     ///   - neither:   throws — there is nothing to restart.
     public static func restart() throws {
-        // Canonical label first.
         if isLoaded() {
             try kickstartInPlace(label: label)
-            return
-        }
-        // An upgraded machine may still be running under a legacy label; bounce
-        // whichever is actually loaded. Mirrors `stop()`/`installAndStart()`,
-        // which both iterate `legacyLabels`, so `restart` can preserve a running
-        // provider that hasn't been migrated to the current label yet.
-        for legacyLabel in legacyLabels where isLoaded(label: legacyLabel) {
-            try kickstartInPlace(label: legacyLabel)
             return
         }
         if isInstalled() {
@@ -186,27 +159,45 @@ public enum LaunchAgent: Sendable {
         throw LaunchAgentError.notInstalled
     }
 
+    /// Called by the separate CLI only AFTER a successful drain (or explicit
+    /// force). Reload the original plist so installed jobs pick up the longer
+    /// termination allowance without changing model/config arguments.
+    public static func restartAfterDrain() throws {
+        let path = plistPath()
+        guard FileManager.default.fileExists(atPath: path.path) else { throw LaunchAgentError.notInstalled }
+        try refreshTerminationAllowance(at: path)
+        if isLoaded() { try unloadService() }
+        try loadService()
+    }
+
+    static func refreshTerminationAllowance(at path: URL) throws {
+        let data = try Data(contentsOf: path)
+        guard var plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+            throw LaunchAgentError.bootstrapFailed("invalid provider plist")
+        }
+        plist["ExitTimeOut"] = 3660
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: path, options: .atomic)
+    }
+
     /// Restart in place ONLY if currently loaded (`reloadIfMissing: false`), so
     /// the watchdog recovers a crashed (loaded-but-dead) provider but never
     /// revives one the user stopped (`bootout` unloads it). Returns false if not
-    /// loaded under any supported label.
+    /// loaded.
     @discardableResult
     public static func kickstartIfLoaded() throws -> Bool {
-        if isLoaded() {
-            try kickstartInPlace(label: label, reloadIfMissing: false)
-            return true
-        }
-        for legacyLabel in legacyLabels where isLoaded(label: legacyLabel) {
-            try kickstartInPlace(label: legacyLabel, reloadIfMissing: false)
-            return true
-        }
-        return false
+        guard isLoaded() else { return false }
+        try kickstartInPlace(label: label, reloadIfMissing: false)
+        return true
     }
 
     /// `launchctl kickstart -k` — kill + relaunch the loaded service in place.
     /// `reloadIfMissing`: `restart()` wants it (bring up an unloaded-but-installed
     /// job); the watchdog passes false so it never loads a job the user stopped.
     private static func kickstartInPlace(label serviceLabel: String, reloadIfMissing: Bool = true) throws {
+        if reloadIfMissing {
+            let enabled = LaunchctlControl.setEnabled(true, label: serviceLabel)
+            guard enabled.succeeded else { throw LaunchAgentError.kickstartFailed(enabled.stderr) }
+        }
         let result = try LaunchctlControl.runThrowing(
             ["kickstart", "-k", LaunchctlControl.target(label: serviceLabel)], captureStderr: true)
         if !result.succeeded {
@@ -273,6 +264,7 @@ public enum LaunchAgent: Sendable {
     ]
 
     static let passthroughEnvKeys = [
+        "DARKBLOOM_DRAIN_TIMEOUT_SECONDS",
         "DARKBLOOM_PREFIX_CACHE",
         "DARKBLOOM_PREFIX_CACHE_MEMORY",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
@@ -345,7 +337,7 @@ public enum LaunchAgent: Sendable {
 
     /// Build the child argv without touching launchd or the filesystem.
     /// A custom config is explicit so every relaunch reads the same TOML;
-    /// the canonical default remains implicit and follows normal migration.
+    /// the canonical default path stays implicit.
     static func serviceProgramArguments(
         binaryPath: String,
         coordinatorURL: String,
@@ -406,6 +398,7 @@ public enum LaunchAgent: Sendable {
             "StandardErrorPath": logPath,
             "ProcessType": "Interactive",
             "Nice": -5,
+            "ExitTimeOut": 3660,
         ]
 
         // launchd does NOT inherit the installing shell's environment, so any
@@ -421,16 +414,16 @@ public enum LaunchAgent: Sendable {
         return plistDict
     }
 
-    private static func loadService() throws {
+    private static func loadService(label serviceLabel: String = LaunchAgent.label, path: URL = LaunchAgent.plistPath()) throws {
         // Clear any persistent disable left by `stop()` (launchctl disable
         // survives reboots). Without this, bootstrap fails and RunAtLoad stays
         // suppressed. Best-effort: if it fails while the service is actually
         // disabled, the bootstrap below surfaces the error.
-        LaunchctlControl.setEnabled(true, label: label)
+        LaunchctlControl.setEnabled(true, label: serviceLabel)
 
         // Bootstrap registers the service with launchd.
         let bootstrap = try LaunchctlControl.runThrowing(
-            ["bootstrap", LaunchctlControl.guiDomain(), plistPath().path], captureStderr: true)
+            ["bootstrap", LaunchctlControl.guiDomain(), path.path], captureStderr: true)
         if !bootstrap.succeeded {
             let stderr = bootstrap.stderr
             // Error 37 = "already loaded" -- not a real failure.
@@ -447,7 +440,7 @@ public enum LaunchAgent: Sendable {
         let kickstart: LaunchctlControl.Output
         do {
             kickstart = try LaunchctlControl.runThrowing(
-                ["kickstart", LaunchctlControl.target(label: label)], captureStderr: true)
+                ["kickstart", LaunchctlControl.target(label: serviceLabel)], captureStderr: true)
         } catch {
             throw LaunchAgentError.kickstartFailed("could not run launchctl kickstart: \(error.localizedDescription)")
         }

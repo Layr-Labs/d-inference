@@ -93,8 +93,13 @@ func TestIdentityCohortControlsLegacyRecoveryAndDuplicateEviction(t *testing.T) 
 				t.Fatal("attestation phase reloaded an already validated token")
 			}
 			if tc.candidate {
-				if st.serial != "" || st.mdaReads != 0 || reg.GetProvider("old") == nil {
+				// Serial restore and duplicate eviction stay skipped; the durable
+				// MDA chain is staged as an SE-key-bound candidate only.
+				if st.serial != "" || reg.GetProvider("old") == nil {
 					t.Fatal("candidate used unverified serial identity")
+				}
+				if st.mdaReads != 1 || len(p.StagedMDAChain()) == 0 {
+					t.Fatalf("candidate MDA chain not staged: reads=%d", st.mdaReads)
 				}
 			} else if st.serial != "same-serial" || st.mdaReads != 1 || reg.GetProvider("old") != nil || len(p.StagedMDAChain()) == 0 {
 				t.Fatalf("legacy recovery lost: serial=%q MDA reads=%d duplicate=%v staged=%d", st.serial, st.mdaReads, reg.GetProvider("old") != nil, len(p.StagedMDAChain()))

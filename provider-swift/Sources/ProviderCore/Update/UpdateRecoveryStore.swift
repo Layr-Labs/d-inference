@@ -29,7 +29,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             case .corruptTransaction(let reason):
                 return "update transaction journal is unreadable: \(reason)"
             case .missingLiveInstall:
-                return "current provider install is incomplete; no signed app or flat binary layout found"
+                return "current provider install is incomplete; no signed Darkbloom.app found"
             case .missingPredecessor(let reason):
                 return "verified predecessor unavailable: \(reason)"
             case .predecessorVerificationFailed(let reason):
@@ -163,8 +163,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         let transaction = try readTransaction()
         var state = try loadState()
 
-        if try liveMatches(transaction.target, layout: transaction.layout) {
-            try ensureCanonicalLinks(layout: transaction.layout)
+        if try liveMatches(transaction.target) {
+            try ensureCanonicalLinks()
             try finalizeRecovered(transaction, state: &state, now: now)
             try cleanupTransaction(transaction)
             return
@@ -177,17 +177,13 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             throw StoreError.corruptTransaction("staging path escapes install root")
         }
 
-        if try stagingContainsTarget(
-            stagingRoot,
-            target: transaction.target,
-            layout: transaction.layout
-        ) {
-            try installFromStaging(stagingRoot, layout: transaction.layout)
-            guard try liveMatches(transaction.target, layout: transaction.layout) else {
+        if try stagingContainsTarget(stagingRoot, target: transaction.target) {
+            try installFromStaging(stagingRoot)
+            guard try liveMatches(transaction.target) else {
                 throw StoreError.interruptedRecoveryFailed(
                     "target hashes do not match after replay")
             }
-            try ensureCanonicalLinks(layout: transaction.layout)
+            try ensureCanonicalLinks()
             try finalizeRecovered(transaction, state: &state, now: now)
             try cleanupTransaction(transaction)
             return
@@ -202,7 +198,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             predecessor,
             stagingName: ".recovery-restore-\(UUID().uuidString)"
         )
-        guard try liveMatches(predecessor.release, layout: predecessor.layout) else {
+        guard try liveMatches(predecessor.release) else {
             throw StoreError.interruptedRecoveryFailed(
                 "predecessor hashes do not match after restore")
         }
@@ -232,8 +228,6 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             now: now
         )
 
-        let layout: VerifiedPredecessor.Layout =
-            staged.extractedApp == nil ? .flat : .app
         let (nextGeneration, overflow) =
             state.installGeneration.addingReportingOverflow(1)
         guard !overflow else {
@@ -249,7 +243,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
             kind: .install,
             phase: .prepared,
             target: candidate,
-            layout: layout,
+            layout: .app,
             stagingRoot: staged.stagingRoot.standardizedFileURL.path,
             createdAt: now
         )
@@ -305,8 +299,8 @@ final class UpdateRecoveryStore: @unchecked Sendable {
         try persist(transaction)
         try faultInjector(.transactionPersisted)
 
-        try installFromStaging(stagingRoot, layout: predecessor.layout)
-        try ensureCanonicalLinks(layout: predecessor.layout)
+        try installFromStaging(stagingRoot)
+        try ensureCanonicalLinks()
         try faultInjector(.liveLayoutExchanged)
         transaction.phase = .liveReplaced
         try persist(transaction)
@@ -354,11 +348,7 @@ final class UpdateRecoveryStore: @unchecked Sendable {
                 throw StoreError.predecessorVerificationFailed(
                     "metallib hash mismatch (expected \(predecessor.release.metallibHash), got \(metallibHash))")
             }
-            try verifySignature(
-                layout: predecessor.layout,
-                bundle: bundle,
-                binary: binary
-            )
+            try verifySignature(bundle: bundle, binary: binary)
         } catch let error as StoreError {
             throw error
         } catch {

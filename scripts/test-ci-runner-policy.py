@@ -100,8 +100,19 @@ class RunnerPolicyTests(unittest.TestCase):
     def test_privileged_job_cannot_move_to_tenki_even_without_secret_expression(self):
         self.workflow['jobs'] = {'register': self.job}
         self.assertTrue(self.errors('register-model.yml'))
-        self.job['runs-on'] = 'ubuntu-24.04'
+        self.job['runs-on'] = 'blacksmith-4vcpu-ubuntu-2404'
         self.assertEqual(self.errors('register-model.yml'), [])
+
+    def test_release_supply_chain_is_pinned_to_blacksmith(self):
+        for filename, placements in policy.BLACKSMITH_JOBS.items():
+            workflow = policy.load(policy.ROOT / '.github/workflows' / filename)
+            for job_name, expected in placements.items():
+                with self.subTest(job=f'{filename}/{job_name}'):
+                    job = workflow['jobs'][job_name]
+                    self.assertEqual(job['runs-on'], expected)
+                    job['runs-on'] = 'tenki-macos-26-large'
+                    self.assertTrue(policy.check({filename: workflow}))
+                    job['runs-on'] = expected
 
     def test_secrets_in_local_composite_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

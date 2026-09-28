@@ -79,11 +79,21 @@ export function hasUsableVerification(v: Verification | undefined, now = Date.no
 }
 
 export function summarizeVerification(providers: { verification?: Verification }[], now = Date.now()) {
-  const counts = { authorized: 0, appAttest: 0, legacy: 0, overlap: 0, total: providers.length, known: 0, unknown: 0 };
-  for (const p of providers) {
-    if (!hasUsableVerification(p.verification, now)) { counts.unknown++; continue; }
+  return summarizeVerdicts(providers.map((p) => hasUsableVerification(p.verification, now) ? currentVerification(p.verification, now) : undefined));
+}
+
+/** Public network statistics describe a source snapshot, not today's leases.
+ * Live serving controls must keep using currentVerification/summarizeVerification. */
+export function summarizeSnapshotVerification(providers: { verification?: Verification }[]) {
+  return summarizeVerdicts(providers.map((p) => isVerification(p.verification) ? p.verification : undefined));
+}
+
+function summarizeVerdicts(verdicts: (Verification | undefined)[]) {
+  const counts = { authorized: 0, appAttest: 0, legacy: 0, overlap: 0, total: verdicts.length, known: 0, unknown: 0 };
+  for (const verdict of verdicts) {
+    const v = verificationPresentation(verdict);
+    if (!verdict || (!v.verified && (verdict.app_attest.state === "unknown" || verdict.legacy.state === "unknown"))) { counts.unknown++; continue; }
     counts.known++;
-    const v = verificationPresentation(currentVerification(p.verification, now));
     if (v.verified) counts.authorized++;
     if (v.appAttest) counts.appAttest++;
     if (v.legacy) counts.legacy++;

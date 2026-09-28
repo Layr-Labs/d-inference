@@ -5,6 +5,19 @@ import (
 	"testing"
 )
 
+// seedStripeWithdrawal inserts wd through the production path: it credits the
+// gross amount as withdrawable, then CreateStripeWithdrawalWithDebit debits it
+// and inserts the row, leaving the account's balances where they were.
+func seedStripeWithdrawal(t *testing.T, s Store, wd *StripeWithdrawal) {
+	t.Helper()
+	if err := s.CreditWithdrawable(wd.AccountID, wd.AmountMicroUSD, LedgerPayout, "seed:"+wd.ID); err != nil {
+		t.Fatalf("seed withdrawable for %s: %v", wd.ID, err)
+	}
+	if err := s.CreateStripeWithdrawalWithDebit(wd, LedgerStripePayout, "stripe_withdraw:"+wd.ID); err != nil {
+		t.Fatalf("create withdrawal %s: %v", wd.ID, err)
+	}
+}
+
 // TestMemoryStripeWithdrawalFeeRefundedRoundTrip pins the FeeRefunded flag —
 // the idempotency key for instant-fee refunds — through create/update/get.
 func TestMemoryStripeWithdrawalFeeRefundedRoundTrip(t *testing.T) {
@@ -14,9 +27,7 @@ func TestMemoryStripeWithdrawalFeeRefundedRoundTrip(t *testing.T) {
 		AmountMicroUSD: 5_000_000, FeeMicroUSD: 500_000, NetMicroUSD: 4_500_000,
 		Method: "instant", Status: "transferred", PayoutID: "po_rt",
 	}
-	if err := s.CreateStripeWithdrawal(wd); err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	seedStripeWithdrawal(t, s, wd)
 
 	got, err := s.GetStripeWithdrawal("wd-fee-rt")
 	if err != nil {
@@ -150,13 +161,11 @@ func TestMemoryCreateStripeWithdrawalWithDebit(t *testing.T) {
 func TestMemoryMarkStripeWithdrawalPaidGuards(t *testing.T) {
 	s := NewMemory(Config{})
 	mk := func(id, status string, refunded bool) {
-		if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+		seedStripeWithdrawal(t, s, &StripeWithdrawal{
 			ID: id, AccountID: "acct-mp", StripeAccountID: "acct_mp",
 			AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
 			Method: "standard", Status: status, Refunded: refunded,
-		}); err != nil {
-			t.Fatal(err)
-		}
+		})
 	}
 
 	mk("wd-mp-ok", "transferred", false)
@@ -182,13 +191,11 @@ func TestMemoryMarkStripeWithdrawalPaidGuards(t *testing.T) {
 
 	// Payout-ID condition: a row whose in-flight payout was detached (or
 	// replaced) concurrently must not flip for the stale event.
-	if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+	seedStripeWithdrawal(t, s, &StripeWithdrawal{
 		ID: "wd-mp-detached", AccountID: "acct-mp", StripeAccountID: "acct_mp",
 		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
 		Method: "instant", Status: "transferred",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if applied, _ := s.MarkStripeWithdrawalPaid("wd-mp-detached", "po_gone", ""); applied {
 		t.Error("row without the expected payout ID must not flip to paid")
 	}
@@ -209,13 +216,11 @@ func TestMemoryMarkStripeWithdrawalPaidGuards(t *testing.T) {
 func TestMemoryReopenStripeWithdrawalAfterPayoutFailureGuards(t *testing.T) {
 	s := NewMemory(Config{})
 	mk := func(id, status, payoutID string, refunded bool) {
-		if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+		seedStripeWithdrawal(t, s, &StripeWithdrawal{
 			ID: id, AccountID: "acct-ro", StripeAccountID: "acct_ro",
 			AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
 			Method: "instant", Status: status, PayoutID: payoutID, Refunded: refunded,
-		}); err != nil {
-			t.Fatal(err)
-		}
+		})
 	}
 
 	mk("wd-ro-ok", "paid", "po_ro1", false)

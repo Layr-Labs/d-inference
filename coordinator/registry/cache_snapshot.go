@@ -144,6 +144,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 		} else {
 			tracker.invalidateProviderModels(providerID, changedModels)
 		}
+		tracker.reconcileFences(providerID, resultCapabilities, resultMemoryCapabilities)
 	}
 	provider.mu.Unlock()
 	if tracker != nil {

@@ -105,38 +105,33 @@ func TestInferenceErrorMarshal(t *testing.T) {
 
 func TestInferenceRequestMarshal(t *testing.T) {
 	msg := InferenceRequestMessage{
-		Type:      TypeInferenceRequest,
-		RequestID: "req-abc",
-		Body: InferenceRequestBody{
-			Model: "qwen3.5-9b",
-			Messages: []ChatMessage{
-				{Role: "user", Content: "hello"},
-			},
-			Stream: true,
-		},
+		Type:          TypeInferenceRequest,
+		RequestID:     "req-abc",
+		EncryptedBody: &EncryptedPayload{EphemeralPublicKey: "ephemeral", Ciphertext: "sealed"},
 	}
 
 	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
+	// The request body travels only sealed; the frame has no plaintext body.
+	var outer map[string]any
+	if err := json.Unmarshal(data, &outer); err != nil {
+		t.Fatal(err)
+	}
+	if _, plaintext := outer["body"]; plaintext {
+		t.Fatalf("inference_request carries a plaintext body: %s", data)
+	}
 
 	var decoded InferenceRequestMessage
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-
 	if decoded.RequestID != "req-abc" {
 		t.Errorf("request_id = %q", decoded.RequestID)
 	}
-	if decoded.Body.Model != "qwen3.5-9b" {
-		t.Errorf("model = %q", decoded.Body.Model)
-	}
-	if !decoded.Body.Stream {
-		t.Error("stream should be true")
-	}
-	if len(decoded.Body.Messages) != 1 || decoded.Body.Messages[0].Content != "hello" {
-		t.Errorf("messages = %+v", decoded.Body.Messages)
+	if decoded.EncryptedBody == nil || decoded.EncryptedBody.Ciphertext != "sealed" || decoded.EncryptedBody.EphemeralPublicKey != "ephemeral" {
+		t.Errorf("encrypted_body = %+v", decoded.EncryptedBody)
 	}
 }
 
@@ -157,12 +152,8 @@ func TestInferenceRequestFirstContentBudgetIsOptionalOuterAndCompatible(t *testi
 	if got := outer["first_content_budget_ms"]; got != float64(2750) {
 		t.Fatalf("first_content_budget_ms = %#v, want 2750", got)
 	}
-	body, ok := outer["body"].(map[string]any)
-	if !ok {
-		t.Fatalf("body = %#v, want JSON object", outer["body"])
-	}
-	if _, nested := body["first_content_budget_ms"]; nested {
-		t.Fatalf("first_content_budget_ms must be outer wire metadata: %s", data)
+	if _, plaintext := outer["body"]; plaintext {
+		t.Fatalf("first_content_budget_ms frame grew a plaintext body: %s", data)
 	}
 
 	var decoded InferenceRequestMessage

@@ -570,6 +570,179 @@
           }
         ]
       }
+    },
+    {
+      "id": "tool_call_arguments_bridge",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Write the file, then confirm."
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_w",
+                "type": "function",
+                "function": {
+                  "name": "write_file",
+                  "arguments": "{\"path\":\"/tmp/report.txt\",\"content\":\"line one\\nline two\",\"append\":false,\"retries\":2.0,\"timeout\":1e3,\"ratio\":0.5,\"meta\":{\"z\":1.0,\"a\":[3.0]}}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_w",
+            "content": "written"
+          },
+          {
+            "role": "user",
+            "content": "Confirmed?"
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29",
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "write_file",
+              "description": "Write a file",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Path"
+                  },
+                  "content": {
+                    "type": "string",
+                    "description": "Content"
+                  },
+                  "append": {
+                    "type": "boolean",
+                    "description": "Append"
+                  }
+                },
+                "required": [
+                  "path",
+                  "content"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "tool_function_extra_keys",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Write a file."
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29",
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "write_file",
+              "description": "Write a file",
+              "strict": true,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              },
+              "response": {
+                "type": "object",
+                "properties": {
+                  "bytes": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "examples": [
+                "/tmp/a"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "assistant_output_text_part",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Summarize the plan."
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "The plan has three steps."
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "Expand step two."
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "assistant_harmony_framing",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is the total?"
+          },
+          {
+            "role": "assistant",
+            "content": "<|channel|>analysis<|message|>The user wants the total; add the two figures.<|end|><|start|>assistant<|channel|>final<|message|>The total is 42.<|end|>",
+            "reasoning_content": "<|channel|>analysis<|message|>hidden reasoning<|end|>"
+          },
+          {
+            "role": "user",
+            "content": "And doubled?"
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
     }
   ],
   "artifact_gate": "scripts/verify-prompt-parity.sh snapshots the public manifest-backed production catalog, provisions every declared prompt-role artifact by immutable hash, regenerates vectors, and fails on any catalog/vector mismatch.",

@@ -1,8 +1,8 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-22 · commit `32824d734`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
-The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 115 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -13,6 +13,26 @@ provider downloads; the admin registration accepts the same object. See the
 Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
+
+## Graceful provider lifecycle
+
+Lifecycle drains preserve the existing public inference protocol. A reservation
+that reaches a newly draining provider's final writer is retried as transient
+503 capacity, with no sent frame or new usage debit. Already accepted requests
+continue through their normal streaming/non-streaming terminal and settlement
+paths. The additive [provider WebSocket barrier](protocol-messages.md#provider-lifecycle-drain)
+is connection-scoped and never exposed as an unauthenticated HTTP stop endpoint.
+The unified local API refuses new admissions with 503 during drain and tracks
+accepted response bodies until their final write. This applies to local-only
+CLI replacement as well as coordinator-connected providers; CLI lifecycle
+control remains private to the local OS user.
+
+The `trust_status.authorization` readiness diagnostic can use `self_route` for
+an account-owned connection that passes existing self/preferred-owner liveness
+and privacy gates below the public trust floor. It does not grant public-fleet
+eligibility or bypass per-model dispatch checks. Code:
+`coordinator/registry/owner_authorization.go` (`ProviderOwnerServingAuthorized`)
+and `coordinator/api/app_attest.go` (`providerServingAuthorizationStatus`).
 
 ## Verification presentation contract
 
@@ -37,7 +57,7 @@ provider-hop encryption headers; it does not construct them from provider output
 The server decides `verified` with precise time before dispatch; Unix-second
 serialization can make a valid final fractional second show equal `observed_at`
 and `expires_at`. Historical display preserves that frozen server verdict,
-while live views still expire grants at the recorded deadline.
+while live views still expire grants at the recorded deadline. Public network statistics are explicitly historical source observations: `summarizeSnapshotVerification` in `console-ui/src/lib/verification.ts` keeps those method counts stable until the next snapshot, while the stats header exposes age. Directory filters and proof details use that same observation. Owner dashboard/removal controls continue to use live expiry; a stale statistics snapshot never grants permission to serve.
 
 `GET /v1/me/providers`, `GET /v1/providers/attestation`, and individual public
 `GET /v1/stats` provider rows include the same `verification` object evaluated
@@ -83,7 +103,7 @@ telemetry wire enums or authorization gates change.
 | Surface | Contract | Code |
 |---|---|---|
 | `POST /v1/admin/app-attest/revoke` | Admin authenticated; account/key/reason body, durable idempotent revocation and immediate local dispatch fencing; [exact response and errors](provider-authorization.md#admin-revocation) | `coordinator/api/app_attest_revocation.go` (`handleAdminAppAttestRevoke`) |
-| `GET /v1/providers/attestation` | Additive `app_attest_authorized` boolean and `authorization_expires_at` Unix deadline; no account, credential, canonical machine IDs or raw evidence exposed | `coordinator/api/provider.go` (`handleProviderAttestation`) |
+| `GET /v1/providers/attestation` | Public connections only; private-only providers are excluded before shared caching. Additive `app_attest_authorized` boolean and `authorization_expires_at` Unix deadline; no account, App Attest credential, canonical machine IDs or raw evidence exposed. The existing persistent legacy `se_public_key` remains linkable across public sessions. | `coordinator/api/provider.go` (`handleProviderAttestation`) |
 
 `GET /v1/me/providers` adds account-scoped `app_attest_authorized` and optional
 `authorization_expires_at` (exclusive Unix seconds), computed from the current
@@ -133,6 +153,15 @@ Both tiers set `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `
 
 All four share the chain `drainGate → requireAuth → rateLimitConsumer → sealedTransport → handler` and the pipeline in `coordinator/api/consumer.go`.
 
+After authentication, shared preprocessing rejects negative or malformed
+top-level `max_tokens`, `max_completion_tokens` and `max_output_tokens` with
+HTTP400 `invalid_request_error` naming the field, before budget defaulting or
+inference admission (`invalidOutputTokenField`,
+`coordinator/api/output_budget_validation.go`). Omitted, null and zero retain
+their existing default-bound behavior; valid positive integer bounds and alias
+precedence are unchanged. Nested tool arguments and schemas are not inspected
+as inference budgets.
+
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
 | POST | `/v1/chat/completions` | `handleChatCompletions` (`coordinator/api/consumer.go`) | `key` | `drain`, `rpm`, token limits | OpenAI Chat Completions, streaming and non-streaming |
@@ -151,7 +180,7 @@ All four share the chain `drainGate → requireAuth → rateLimitConsumer → se
 | GET | `/v1/models/catalog` | `handleModelCatalog` (`coordinator/api/billing_handlers.go`) | `—` | — | Registry catalog; `?type=` selects the catalog kind, unknown → 400 |
 | GET | `/v1/models/catalog/manifest/` | `handleModelCatalogManifest` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Per-model manifest by path suffix |
 | GET | `/v1/models/catalog/` | `handleModelCatalogItem` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Single catalog item by path suffix |
-| GET | `/v1/runtime/manifest` | `handleRuntimeManifest` | `—` | — | Hashes the coordinator accepts from provider runtimes: `{"configured":false}` or `{"configured":true,"python_hashes":{…},"runtime_hashes":{…},"template_hashes":{"<name>":[<sorted hashes accepted across active releases>]}}`; cached 1 min ([runtime manifest](../architecture/security/attestation.md#runtime-manifest)) |
+| GET | `/v1/runtime/manifest` | `handleRuntimeManifest` | `—` | — | Hashes the coordinator accepts from provider runtimes: `{"configured":false}` or `{"configured":true,"template_hashes":{"<name>":[<sorted hashes accepted across active releases>]}}`; cached 1 min ([runtime manifest](../architecture/security/attestation.md#runtime-manifest)) |
 | GET | `/v1/cache/status` | `handleExactCacheStatus` (`coordinator/api/exact_cache_status.go`) | `—` | — | Exact-cache status, cached for [`exactCacheStatusCacheTTL`](#timeouts-and-constants) |
 
 ### Authentication and API keys (10)
@@ -189,7 +218,6 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/payments/usage` | `handleUsage` (`coordinator/api/consumer.go`) | `key` | — | `UsageResponse` `{usage: [...]}`; recent history only ([retention](pricing-model.md#constants)) |
 | GET | `/v1/billing/wallet/balance` | `handleWalletBalance` (`coordinator/api/billing_handlers.go`) | `key` | — | Wallet view of the ledger balance |
 | GET | `/v1/billing/methods` | `handleBillingMethods` (`coordinator/api/billing_handlers.go`) | `—` | — | Which top-up methods are enabled |
-| GET | `/v1/provider/earnings` | `handleProviderEarnings` (`coordinator/api/consumer.go`) | `—` | — | Legacy lookup by `?wallet=` query or `X-Provider-Wallet` header; `ProviderEarningsResponse` |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
 | GET | `/v1/me/token-promotions` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | — | Account-scoped grants and eligible offers |
 | POST | `/v1/me/token-promotions/claim` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | `fin` | Claim a capped grant; [campaign procedure](../operations/model-token-promotions.md) |
@@ -234,13 +262,16 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 | POST | `/v1/invite/redeem` | `handleRedeemInviteCode` (`coordinator/api/invite_handlers.go`) | `key` | `fin` | Redeem an invite code |
 | GET | `/v1/providers/attestation` | `handleProviderAttestation` (`coordinator/api/provider.go`) | `—` | — | Public attestation roster; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md) |
 
-### Public stats and health (5)
+<a id="public-stats-and-health-5"></a>
+
+### Public stats and health (6)
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
 | GET | `/v1/stats` | `handleStats` (`coordinator/api/stats.go`) | `—` | Refresh every 30 s; preserve the UTC source observation time in `snapshot_at` (`time.RFC3339Nano`). Geography refreshes independently and reports availability per section. Retain a successful core body up to 5 min on core refresh failure; 503 `service_unavailable` without an unexpired success |
 | GET | `/v1/leaderboard` | `handleLeaderboard` (`coordinator/api/leaderboard.go`) | `—` | Cached 5 min (full) / 1 min (recent window) |
 | GET | `/v1/network/totals` | `handleNetworkTotals` (`coordinator/api/network_totals.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
+| GET | `/v1/network/model-demand` | `handleModelDemand` (`coordinator/api/model_demand.go`) | `—` | Recorded public model demand; `window=24h` (default), `7d`, `30d`; cached up to 5 min; 400 for other windows; 503 on unavailable aggregation |
 | GET | `/v1/network/series` | `handleNetworkSeries` (`coordinator/api/network_series.go`) | `—` | Time series, cached 1 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
 | GET | `/health` | `handleHealth` (`coordinator/api/consumer.go`) | `—` | `HealthResponse` `{status: "ok", draining, providers, version, build_commit, build_date}` |
 
@@ -265,6 +296,55 @@ Cache behavior is implemented by `coordinator/api/cache_refresher.go`
 The stats, totals, and series handlers emit the 503 `service_unavailable` error
 envelope when their required data is unavailable.
 
+### Model demand response
+
+`coordinator/api/model_demand.go` (`handleModelDemand`) serves a fixed receipt-time
+window ending at the preceding UTC hour (at least one hour behind now). The
+JSON has `window`, `start_at`, `end_at`, `updated_at`, `collection_started_at`,
+`coverage: "published_hourly_cohorts"`, `bucket_seconds`, and `models`. Each model object has `model`,
+`requests`, `completed`, `capacity_rejected`, `latency_rejected`, `timed_out`,
+`failed`, `cancelled`, `unknown`, and `http_429` (all counts are integers).
+Each model also contains `time_series`: fixed display intervals with `timestamp`
+and `counts` (the same outcome counters, or `null` when no hours are publishable).
+Intervals are 1 hour for `24h`, 6 hours for `7d`, and 24 hours for `30d`.
+Publication eligibility is always evaluated per model and UTC clock hour:
+at least 20 non-excluded recorded requests from 3 consumer accounts. Larger
+display intervals sum only eligible hours and may cover only part of their
+duration. They never restore suppressed hours. Each model's totals equal the
+fieldwise sum of its non-null interval counts; no complete-window totals or
+suppressed residuals are exposed. Models without an eligible hour are omitted.
+Null intervals are gaps, not measured zeros. All counts share one repeatable-read
+transaction and the same hourly publication rule across all three windows.
+
+The seven outcome counts sum to `requests`; `http_429` overlaps that partition.
+`capacity_rejected` includes provider or coordinator saturation and a 503
+`model_too_large` supply shortfall. A preflight `context_exceeded` request is
+excluded from `requests`; `dispatch_exhausted` is counted as capacity only when
+the terminal capacity check supports its HTTP 429 response. Other 429 reasons
+are not assumed to be capacity rejections.
+No token estimates, identifiers, provider details, raw reasons, or suppressed
+counts are exposed. `ModelDemandCounts` in `coordinator/store/model_demand.go`
+is the response shape.
+
+Only new, explicitly scoped requests reaching public routing admission are
+counted. Owner-preferred, exclusive self-route and machine-restricted requests
+are excluded; validation and account failures are outside the denominator.
+Requests rejected before this point (including early model shedding) are not
+covered. Admin-key traffic is excluded. Ordinary authenticated load tests cannot be separated from organic
+traffic. Public aliases retain their requested identity through build fallback.
+Client retries count separately; internal dispatch attempts do not.
+
+`ModelDemandMinRequests = 20` and `ModelDemandMinConsumers = 3` suppress sparse
+hourly model cohorts. A gateway is one authenticated consumer, not a count of
+its downstream users. A successful empty list means no hour qualifies for
+publication, not zero traffic. Counts and percentages describe published hours
+only, not the complete selected window. Collection may also have partial history;
+recording remains best-effort, not an independently reconciled network-wide
+denominator. Completion establishes
+coordinator-observed provider completion and successful terminal writes, not
+client receipt. See [incoming request accounting](../architecture/request-accounting.md).
+
+
 ### Release and install (5)
 
 | Method | Path | Handler | Auth | Notes |
@@ -275,7 +355,7 @@ envelope when their required data is unavailable.
 | GET | `/v1/releases/latest` | `handleLatestRelease` (`coordinator/api/release_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `handleReadyz` (`coordinator/api/drain.go`) | `—` | 200 normally; 503 while draining |
 
-The 0.9.7 candidate sets `LatestProviderVersion = "0.9.7"` in
+The 0.9.10 candidate sets `LatestProviderVersion = "0.9.10"` in
 `coordinator/api/server.go`. A registered active release still takes precedence
 for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none
@@ -294,12 +374,6 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | POST | `/v1/enroll` | `handleEnroll` (`coordinator/api/enroll.go`) | `—` (enrollment token in body) | Exchanges an enrollment token for provider credentials; see [`../architecture/security/enrollment.md`](../architecture/security/enrollment.md) |
 | GET | `/ws/provider` | `handleProviderWS` (`coordinator/api/provider.go`) | `ws` | Provider WebSocket; message catalogue in [`protocol-messages.md`](protocol-messages.md) |
 | POST | `/v1/provider/log-report` | `handleUploadLogReport` (`coordinator/api/log_report_handlers.go`) | `key` | Body capped at [`maxLogReportBodySize`](#timeouts-and-constants); 426 `upgrade_required` when `?serial=` names a provider below the minimum version |
-
-### Telemetry (1)
-
-| Method | Path | Handler | Auth | Notes |
-|---|---|---|---|---|
-| POST | `/v1/telemetry/events` | `handleTelemetryIngest` (`coordinator/api/telemetry_handlers.go`) | `—` | Always **410 Gone** `telemetry_ingest_disabled`. Live telemetry is described in [`../architecture/telemetry.md`](../architecture/telemetry.md) |
 
 ### Admin (41)
 
@@ -344,7 +418,8 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 |---|---|---|
 | `/v1/` | `handleUnimplementedEndpoint` | Any `/v1/*` request matching no registered method+path — including a wrong method on a real path — gets 404 `invalid_request_error` with message `endpoint <METHOD> <path> is not implemented` |
 
-Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 5 + 5 + 3 + 1 + 41 + 1 = **116 registrations**, matching `routes()`.
+Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 6 + 5 + 3 + 1 + 41 + 1 = **117 registrations**, matching `routes()`.
+
 
 ## Exact cache status
 
@@ -359,6 +434,11 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `artifact_allowlist.count` | Number of configured exact tuples; never returns their model IDs or hashes | Same |
 | `providers.v2_ready_models` | Ready durable SSD capabilities; preserves the existing meaning | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `providers.memory_ready_models` | Ready resident capabilities, counted separately from SSD readiness | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
+| `lifecycle.fences_applied` | Proof-fence windows opened or escalated | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/registry/cache_proof_fence.go` (`rejectCapability`) |
+| `lifecycle.fences_expired` | Windows that lifted by time, each counted once | Same; `coordinator/registry/cache_proof_fence.go` (`countLapseLocked`) |
+| `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | Same; `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
+| `lifecycle.demand_entries` | Entries currently in the observed-demand index | `coordinator/registry/cache_demand.go` (`stats`) |
+| `lifecycle.demand_cap_evictions` | Demand entries evicted by the cap inside their TTL; a growing count means repeated prefixes are being reported as novel | Same |
 
 The artifact-list fields have Prometheus gauges
 `exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`
@@ -369,12 +449,22 @@ and Datadog gauges `exact_cache.artifact_allowlist.configured`,
 The additive resident count has Prometheus gauge
 `exact_cache_memory_ready_models` and Datadog gauge
 `exact_cache.memory_ready_models` (`coordinator/api/exact_cache_metrics.go`).
+The fence fields have Prometheus gauges `exact_cache_fence{event}`
+(`event` ∈ `applied`, `expired`) and `exact_cache_fenced_capabilities`, and
+Datadog gauges `exact_cache.fence` tagged `event:applied|expired` and
+`exact_cache.fenced_capabilities` (same file).
 The existing `prefix_cache_statuses` state/reason aggregates retain their SSD
 meaning; resident routing uses the separate memory capability and bounded holder
 receipts described in [cache-aware routing](../architecture/cache-aware-routing.md).
 
 The exact-cache lifecycle `holder_removed` map includes `proof_mismatch`, separate
-from `capability_change`. Updating one model preserves unchanged models' holders,
+from `capability_change`, and `shorter_hit`, separate from `miss_invalidation`: a
+provider that proves a hit below a boundary it was recorded at loses its deeper
+holders for that prompt in that tier, without a fence. `proof_mismatch` counts plan-scoped drops (anchor
+mismatches, `invalidateProviderPlan`) and whole provider/model drops (identity
+mismatches, `invalidateProviderModel`); the fence windows themselves are
+defined in [cache-aware routing](../architecture/cache-aware-routing.md#protocol-v2-proof).
+Updating one model preserves unchanged models' holders,
 pending receipts and proof fences. See `coordinator/registry/cache_model_changes.go`
 and `coordinator/registry/cache_receipt_result.go`.
 
@@ -383,6 +473,21 @@ through the existing authenticated `GET /v1/admin/metrics` endpoint and Datadog.
 They add no model identifiers or fields to `GET /v1/cache/status`. See the
 [internal cache metric inventory](telemetry-inventory.md#cache-results-by-model-internal)
 for `cache_model_*` labels and populations (`coordinator/api/cache_model_telemetry.go`).
+
+## Provider operational metrics
+
+`GET /v1/me/providers` returns a `reputation` object on each machine with
+`total_jobs`, `successful_jobs`, `failed_jobs`, `total_uptime_seconds`,
+`avg_response_time_ms`, `challenges_passed`, and `challenges_failed`
+(`coordinator/api/me_handlers.go`, `myReputation`). The legacy object name is
+retained for the raw metrics; its former `score` field has been removed.
+Live and stored/offline snapshots have the same shape. The console displays
+job counts, tokens, uptime, and response timing without a reputation rating.
+
+Deploy the updated console before the coordinator field removal: older console
+bundles dereference `reputation.score` and cannot consume the new response.
+Existing tabs running an older bundle must reload. The updated console also
+accepts older responses containing the extra field.
 
 ## Provider capacity observations
 
@@ -418,7 +523,6 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | `X-Darkbloom-Metadata-Details` | `applyMetadataDetailsRequest` (`coordinator/api/response_metadata.go`) | Requests the extended `metadata` object (`timing`, `location`) on chat completions; `?metadata=details` does the same |
 | `X-Darkbloom-Route: self` / `prefer` | `resolveSelfRoutePolicy` (`coordinator/api/self_route.go`) | `self` restricts dispatch to the account's own machines; `prefer` tries them first and falls back to the fleet; see [`../provider/self-route.md`](../provider/self-route.md) |
 | `X-Darkbloom-Publishing-Key` | `requirePublishingAPIKey` | Publishing credential for `/v1/admin/models/*` |
-| `X-Provider-Wallet` | `handleProviderEarnings` | Wallet address for the legacy earnings lookup (fallback when `?wallet=` is absent) |
 | `Stripe-Signature` | `handleStripeWebhook`, `handleStripeConnectWebhook` | Stripe webhook signature |
 | `X-Webhook-Token` | `HandleMDMWebhook` | MDM webhook secret (or `?token=`) |
 | `Origin` | `corsMiddleware` | Allowed origins default to `https://console.darkbloom.dev` plus localhost dev ports unless `EIGENINFERENCE_CONSOLE_URL` overrides |
@@ -459,13 +563,13 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 
 | Status | `type` values | Raised by |
 |---|---|---|
-| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, inference-enforced `tool_choice` combined with images (`param: tool_choice`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
+| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, native media tools unsupported by a model's serving fleet (`param: model`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
 | 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`requireAuth`, `requirePrivyAuth`), no account user (`requirePrivyUser`), release key |
 | 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
 | 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) |
 | 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; device codes; `/v1/` catch-all; state export when disabled |
 | 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state |
-| 410 | `telemetry_ingest_disabled`, `expired_token`, `expired_code` | [Telemetry endpoint](#telemetry-1); expired [device codes](#device-code-flow-3) |
+| 410 | `expired_token`, `expired_code` | expired [device codes](#device-code-flow-3) |
 | 412 | `precondition_failed` | State export without an encryption recipient |
 | 413 | `invalid_request_error` (plain, or with `code: payload_too_large`) | Inference body over `maxInferenceBodyBytes` ([Limits and validation](#limits-and-validation); `parseInferencePrelude`); admission rejects a prompt no provider can accept (`runInferenceAdmission`) |
 | 422 | `invalid_request_error` | Tool-constraint schema the parser cannot compile (`validateResolvedToolConstraintParser`, `coordinator/api/tool_constraints.go`) |
@@ -550,6 +654,31 @@ provider sends none (`handleStreamingResponseWithFirstChunkAndError`,
 
 ### Responses API
 
+Non-empty string `instructions` becomes a leading system message before `input`,
+preserving whitespace, existing system/developer messages and tool history.
+Missing, null or empty instructions add no message; other types return400.
+Both serving and text-cache preparation use `lowerResponsesWithContent`
+(`coordinator/promptcontract/endpoint_lower_responses.go`); Rust mirrors the
+text-cache contract in `lower_responses` (`coordinator/promptsidecar/src/endpoint.rs`).
+Routing and billing reservation estimates include the new system message before
+lowering (`routingShape`, `billingBytes`, `coordinator/api/request_introspection.go`).
+
+Serving uses `LowerResponsesInferenceBody`
+(`coordinator/promptcontract/endpoint_responses_inference.go`) to preserve
+ordered inline media alongside text and function history. `input_image` accepts
+a string `image_url`; canonical `image_url` and `video_url` parts accept their
+`{"url": ...}` objects. These references must be inline `data:` URIs. Uploaded
+file IDs, files, audio, unknown parts and the unsupported `input_video` alias
+return400 rather than being omitted or fetched. The existing Chat remote-media
+resolver policy is unchanged. Media-bearing `function_call_output.output`
+arrays participate in vision routing and media-aware token estimates.
+
+This serving path is distinct from `LowerProviderBody`, the text-only Go/Rust
+cache-planning contract. That contract rejects media, including media in tool
+outputs; accepting a Responses image for inference does not establish exact
+coordinator cache-routing eligibility. Native model codec, media-size, context
+and tool-capability checks still apply.
+
 Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`newResponsesStreamEmitter`, `coordinator/api/responses_stream.go`).
 
 `usage.total_tokens` is always emitted as `input_tokens + output_tokens`, including
@@ -606,7 +735,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Tool schemas | Normalised to strict JSON Schema before dispatch; schemas the constraint parser cannot compile → 422 | `NormalizeToolSchemas`, `validateResolvedToolConstraintParser` |
 | Vision | Image parts require a vision-capable model, otherwise 400; a vision model with no vision-capable provider online → 503 `model_unavailable` | `detectMediaRequirement` (`coordinator/api/request_introspection.go`), `visionToolsFailFast` (`coordinator/api/inference_preprocess.go`) |
 | Remote images | `http(s)` `image_url` parts are gated before dispatch and fetched by the coordinator; the fetch is billed as media | `gateRemoteMediaPreDispatch`, `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |
-| Inference-enforced `tool_choice` + images | `required` or a named `tool_choice` (modes that need provider-side constraint enforcement) together with image content → 400, `param: tool_choice`. `response_format` is not validated by the coordinator | `handleChatCompletions` |
+| Forced media tools / media tool results | Requires explicit per-model native media-tool capability. A public model served only by providers lacking it → 400, `param: model`; no currently eligible capable provider → 503. Applies to `required`/named tools with media and media-bearing tool results even with `tool_choice: none`. Other vision/tool checks remain; `response_format` is not validated by the coordinator | `nativeMediaToolsFailFast`, `coordinator/api/native_media_tools.go` |
 | Token rate limits | Per-account input and output tokens per minute → 429 with `Retry-After` | `applyTokenRateLimitWithAdmission`, `writeTokenRateLimited` |
 | Model shedding | A model currently rejecting → 429 with `Retry-After` from `estimateRetryAfter` | `shedIfModelRejected` |
 
@@ -629,17 +758,16 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 
 ## Version gating
 
-Three distinct version values govern providers:
+Two distinct version values govern providers:
 
-- `LatestProviderVersion = "0.9.7"` (`coordinator/api/server.go`) is the source's provider-version display fallback. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered. With production App Attest serving enabled, `/api/version` returns 503 instead of a download fallback when release authorization is unavailable. Preparing a source bump does not create a release row or alter `/v1/releases/latest`.
-- `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) is a **feature floor for the WebSocket `desired_models` message**: only Swift-runtime providers at or above it receive the message (`providerSupportsDesiredModels`, `fanOutDesiredModels` in `coordinator/api/model_alias_handlers.go`), because older decoders disconnect on unknown message types. It does not affect HTTP routes.
-- `EIGENINFERENCE_MIN_PROVIDER_VERSION` (`MinProviderVersion`, `coordinator/api/server_config.go`; `SetMinProviderVersion`) is the **routing floor**: a provider that registers or re-attests below it stays connected but is marked not runtime-verified and excluded from routing (`coordinator/api/provider.go`, registration and `applyChallengeMinVersionPolicy`), and its log uploads get 426 `upgrade_required`.
-- **Feature floors** exclude too-old providers from serving specific request traits rather than the whole model: tools require providers ≥ `0.6.3` (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`); vision requests strip repetition-penalty fields for providers below `penaltySafeProviderVersion` = `0.6.7` (`coordinator/api/consumer.go`); reconnect attestation needs `minProviderVersionForReconnectAttestation` = `0.8.15` (`coordinator/api/provider.go`); servability gating uses `servabilityActivationFloorMinVersion` = `0.8.0` and `servabilityPerModelFloorMinVersion` = `0.8.16` (`coordinator/registry/servability.go`); private slot grants need `privateSlotGrantsMinVersion` = `0.7.5` (`coordinator/registry/pooled_admission.go`). When no provider clears the floor for a request, the client sees 503 `model_unavailable` (or 400 `param: tool_choice` when the fleet serves the model but no provider advertises the tool-constraint protocol).
+- `LatestProviderVersion = "0.9.10"` (`coordinator/api/server.go`) is the source's provider-version display fallback. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered. With production App Attest serving enabled, `/api/version` returns 503 instead of a download fallback when release authorization is unavailable. Preparing a source bump does not create a release row or alter `/v1/releases/latest`.
+- `EIGENINFERENCE_MIN_PROVIDER_VERSION` (`MinProviderVersion`, `coordinator/api/server_config.go`; `SetMinProviderVersion`) is the **routing floor**: a provider that registers or re-attests below it stays connected but is marked not runtime-verified and excluded from routing (`belowMinProviderVersion` in `coordinator/api/server.go`, applied at registration, in `applyChallengeMinVersionPolicy` and in manifest sync). While a floor is set, a provider that reports no version counts as below it.
+- **Request-shape gates** exclude providers from specific request traits rather than the whole model, and they key on advertised capabilities, not versions: inference-enforced `tool_choice` (required/named) needs the model's tool-constraint advertisement (`providerSupportsToolConstraintLocked`, `coordinator/registry/tool_constraints.go`), and a build reporting `template_render_ok=false` serves no request for that model (`providerEligibleForTraitsLocked`, `coordinator/registry/request_traits.go`). Servability and pooled admission assume the routed fleet is past the routing floor and carry no version branches. When no provider clears a gate for a request, the client sees 503 `model_unavailable` (or 400 `param: tool_choice` when the fleet serves the model but no provider advertises the tool-constraint protocol).
 
 A consumer never sees a version error directly; an under-served model surfaces as 503 `model_unavailable`.
 
-The exact Flash-Next registry ID also has an all-request compatibility floor,
-separate from tool-only capability floors. See the
+The exact Flash-Next registry ID also has an all-request version floor
+(`qwen4RegistryMinimumProviderVersion`, `coordinator/registry/qwen4_model_policy.go`). See the
 [native identity routing gate](../architecture/routing.md#native-model-capacity-and-registry-identity);
 a catalog listing alone does not grant an older provider the matching policy.
 
@@ -693,7 +821,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
-| Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
+| Drain, admin telemetry, profiler, state export | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |
 

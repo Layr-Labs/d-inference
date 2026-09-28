@@ -27,7 +27,3 @@ mkdir "$task_build/retirement-checks"
 "$task_build/RetirementShutdownTests" "$task_build/FakeOwner" "$task_build/FakeClusterWorker" "$task_build/retirement-checks" corrected
 mkdir "$task_build/diagnostic-checks"
 "$task_build/OwnerDiagnosticDrainTests" "$task_build/LateDiagnosticOwner" "$task_build/DiagnosticFailureWorker" "$task_build/diagnostic-checks"
-
-xcrun swiftc -j 2 -swift-version 6 -warnings-as-errors -target "$task_target" \
-  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote \
-  -Xlinker -rpath -Xlinker "$task_build" "$task_root/Tools/ConfiguredOwner/main.swift" -o "$task_build/configured-owner"

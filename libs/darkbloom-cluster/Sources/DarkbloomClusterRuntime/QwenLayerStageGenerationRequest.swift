@@ -1,7 +1,7 @@
 import Foundation
 
 /// Software bounds supplied by a qualified model adapter, not a load/resource
-/// permit. Legacy and long-prefill profiles retain their separate admissions.
+/// permit. Source identity and resource admission are checked separately.
 struct QwenLayerStageGenerationProfile: Equatable, Encodable {
     let identifier: String
     let vocabularySize: Int

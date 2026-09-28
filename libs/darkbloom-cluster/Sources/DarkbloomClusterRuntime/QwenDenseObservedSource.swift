@@ -38,20 +38,9 @@ struct QwenDenseSourceReadPlan {
     }
 }
 
-enum QwenDenseLegacySourcePurpose { case diagnostic, layerStage }
-
 enum QwenDenseObservedSourceValidation {
-    static func validateLegacy(_ observed: [QwenDenseObservedSourceTensor], convertBF16: Bool,
-                               purpose: QwenDenseLegacySourcePurpose) throws -> QwenDenseSourceReadPlan {
-        try validate(observed, convertBF16: convertBF16,
-            sourceLimit: QwenDenseLegacySourceBounds.maximumSourceModelTensorBytes,
-            hostLimit: QwenDenseLegacySourceBounds.maximumHostTensorBytes, purpose: purpose,
-            profile: nil, requirement: nil)
-    }
-
-    /// No materializer calls this branch in the proposed bridge. Actual raw
-    /// manifest/artifact verification and descriptor projection must precede a
-    /// future call; matching caller strings alone never authorizes execution.
+    /// Raw artifact verification and descriptor projection must precede this
+    /// check; matching caller strings alone never authorizes execution.
     static func validateRegistered(_ observed: [QwenDenseObservedSourceTensor],
         identity: QwenDenseObservedSourceIdentity, profile: QwenRegisteredDenseModelProfile,
         requirement: QwenDenseStorageRequirement, plan: QwenLayerStagePlan
@@ -70,7 +59,7 @@ enum QwenDenseObservedSourceValidation {
         }
         let result = try validate(observed, convertBF16: profile.requiredBF16ConversionPolicy,
             sourceLimit: profile.sourceTensorBytes, hostLimit: profile.largestSourceTensorBytes,
-            purpose: .layerStage, profile: profile.fingerprint, requirement: requirement.fingerprint)
+            profile: profile.fingerprint, requirement: requirement.fingerprint)
         let actual = result.tensors.map(\.canonical)
         guard actual == profile.canonicalTensors, result.sourceBytes == profile.sourceTensorBytes,
               result.largestSourceBytes == profile.largestSourceTensorBytes else {
@@ -80,7 +69,7 @@ enum QwenDenseObservedSourceValidation {
     }
 
     private static func validate(_ observed: [QwenDenseObservedSourceTensor], convertBF16: Bool,
-        sourceLimit: Int, hostLimit: Int, purpose: QwenDenseLegacySourcePurpose,
+        sourceLimit: Int, hostLimit: Int,
         profile: String?, requirement: String?
     ) throws -> QwenDenseSourceReadPlan {
         let sorted = observed.sorted { $0.canonical.name < $1.canonical.name }
@@ -95,23 +84,14 @@ enum QwenDenseObservedSourceValidation {
                   let packed = observed.constructorParameterIsPacked,
                   (tensor.sourceDType == "U32") == packed,
                   ["U32", "F16", "BF16", "F32"].contains(tensor.sourceDType) else {
-                switch purpose {
-                case .diagnostic:
-                    throw ProbeError("Verified diagnostic requires bounded, exact full tensor shapes and dtypes: \(tensor.name)")
-                case .layerStage:
-                    throw ProbeError("Stage source requires exact bounded full tensor shape/dtype: \(tensor.name)")
-                }
+                throw ProbeError("Stage source requires exact bounded full tensor shape/dtype: \(tensor.name)")
             }
             // Verified TensorDescriptor already checked shape products. Keep
-            // the legacy pre-materialization shape/class/one-part semantics;
+            // pre-materialization shape/class/one-part checks;
             // registered equality independently fixes every descriptor byte.
             let next = total.addingReportingOverflow(tensor.byteCount)
             guard !next.overflow, next.partialValue <= sourceLimit else {
-                if profile != nil { throw ProbeError("Observed registered source exceeds its exact descriptor byte limit") }
-                switch purpose {
-                case .diagnostic: throw ProbeError("Verified diagnostic canonical source exceeds the 6 GiB byte limit")
-                case .layerStage: throw ProbeError("Layer-stage canonical source exceeds 6 GiB")
-                }
+                throw ProbeError("Observed registered source exceeds its exact descriptor byte limit")
             }
             total = next.partialValue; largest = max(largest, tensor.byteCount)
             let dtype: String
@@ -125,10 +105,7 @@ enum QwenDenseObservedSourceValidation {
             records.append(.init(canonical: tensor, loadedDType: dtype))
         }
         guard total > 0 else {
-            switch purpose {
-            case .diagnostic: throw ProbeError("Verified diagnostic has no canonical tensors")
-            case .layerStage: throw ProbeError("Every canonical source tensor must have exactly one layer-stage owner")
-            }
+            throw ProbeError("Every canonical source tensor must have exactly one layer-stage owner")
         }
         return .init(tensors: records, sourceBytes: total, largestSourceBytes: largest,
                      profile: profile, requirement: requirement)

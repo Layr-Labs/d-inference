@@ -21,55 +21,8 @@ struct PreparedQwenLayerSource {
     let sourceParameterLayoutSHA256: String
 }
 
-func prepareVerifiedQwenLayerSource(directory: URL, originalConfiguration: Data,
-    plan: QwenLayerStagePlan, expectedAggregateSHA256: String, check: () throws -> Void
-) throws -> PreparedQwenLayerSource {
-    guard !_qwen35MTPEnabled, originalConfiguration == plan.originalConfiguration,
-          plan.stages.count == 2 else {
-        throw ProbeError("Layer-stage source requires exact retained configuration and MTP disabled")
-    }
-    // Reconstruct the pure plan rather than trusting an unrelated caller's
-    // stage metadata. This performs no model construction or tensor IO.
-    let rebuilt = try QwenLayerStagePlan(configuration: originalConfiguration,
-        ranges: plan.stages.map(\.sourceRange), activeMTP: false)
-    guard rebuilt.fingerprint == plan.fingerprint,
-          zip(rebuilt.stages, plan.stages).allSatisfy({ pair in
-              pair.0.fingerprint == pair.1.fingerprint
-                && pair.0.constructionConfiguration == pair.1.constructionConfiguration
-          }), let root = try JSONSerialization.jsonObject(with: originalConfiguration) as? [String: Any] else {
-        throw ProbeError("Layer-stage source plan identity differs")
-    }
-    let text = root["text_config"] as? [String: Any] ?? root
-    let hidden = try QwenStageMetadata.integer(text, "hidden_size", limit: 8192)
-    let vocabulary = try QwenStageMetadata.integer(text, "vocab_size", limit: 262144)
-    let convert = (ProcessInfo.processInfo.environment["DARKBLOOM_BF16_WEIGHTS"] ?? "1") == "1"
-    let base = try JSONDecoder().decode(BaseConfiguration.self, from: originalConfiguration)
-    let policy = base.perLayerQuantization ?? .init(perLayerQuantization: [:])
-    weak var retiredMetadataModel: Module?
-    let result = try autoreleasepool { () throws -> PreparedQwenLayerSource in
-        let model = try constructQwenModel(originalConfiguration)
-        retiredMetadataModel = model
-        try validateQwenStageDenseModel(model, layerCount: plan.layers)
-        let prepared = try PreparedQwenCheckpoint(model: model, directory: directory,
-            originalConfiguration: originalConfiguration, policy: policy,
-            expectedAggregateSHA256: expectedAggregateSHA256,
-            maximumPayloadBytes: LocalCorrectnessStorage.maximumManifestPayloadBytes)
-        try check()
-        let validated = try QwenDenseObservedSourceValidation.validateLegacy(
-            observedQwenDenseSource(prepared, model: model), convertBF16: convert, purpose: .layerStage)
-        return try finishPreparedQwenLayerSource(prepared: prepared, model: model,
-            plan: plan, policy: policy, convert: convert, validated: validated,
-            root: root, hidden: hidden, vocabulary: vocabulary, check: check)
-    }
-    // Neither descriptor preparation nor quantization called eval(model). Do
-    // not proceed if an unexpected Swift reference retains the full constructor.
-    guard retiredMetadataModel == nil else { throw ProbeError("Full metadata model remained retained") }
-    return result
-}
-
-
-/// Shared scalar-record assembly after the caller's legacy or registered
-/// descriptor validation. Does not read payload tensors or authorize loading.
+/// Scalar-record assembly after registered descriptor validation. Does not
+/// read payload tensors or authorize loading.
 func finishPreparedQwenLayerSource(prepared: PreparedQwenCheckpoint, model: any LanguageModel,
     plan: QwenLayerStagePlan, policy: BaseConfiguration.PerLayerQuantization,
     convert: Bool, validated: QwenDenseSourceReadPlan, root: [String: Any],

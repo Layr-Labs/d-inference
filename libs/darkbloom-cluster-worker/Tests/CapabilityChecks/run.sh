@@ -13,7 +13,7 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-mac
 # The producer's actual pure source closure; no MLX/Cmlx or model constructor.
 task_sources=(WorkerJSONScanner BoundedProbeInput QwenLayerStageMetadata QwenLayerStagePlan
   QwenLongPrefillTensorBudget QwenDenseProfileTypes QwenDenseRegisteredSpecification
-  QwenLayerStageGenerationRequest QwenLayerStageSchedule QwenLayerStageWireExpectation
+  QwenLayerStageGenerationRequest QwenLayerStageFrame QwenLayerStageWireIdentity
   ClusterRuntimeError CanonicalJSON ClusterMetadataHashing QwenLongPrefillArithmeticEnvironment
   QwenResidentAdapterDefinition QwenResidentCapabilityMetadata)
 task_paths=()

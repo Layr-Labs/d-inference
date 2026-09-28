@@ -86,12 +86,10 @@ func loadQwenResidentStage(_ admission: QwenResidentAdmission,
             let selected = try QwenDenseStorageRequirement.derive(profile: prepared.profile,
                 plan: plan, role: index == 0 ? .stage0 : .stage1)
             let gate = try QwenResidentLoadGate(inventory: value.inventory)
-            let loaded = try withoutActuallyEscaping(check) { borrowedCheck in
-                try materializeVerifiedQwenLayerStage(source: prepared.source, plan: plan,
-                    stageIndex: index, model: value.model, inventory: value.inventory, commitment: commitment,
-                    check: { try borrowedCheck(); try gate.observe(); try borrowedCheck() },
-                    beforeTensor: { try borrowedCheck(); try gate.beforeRead($0); try borrowedCheck() })
-            }
+            let loaded = try materializeVerifiedQwenLayerStage(source: prepared.source, plan: plan,
+                stageIndex: index, model: value.model, inventory: value.inventory, commitment: commitment,
+                check: { try check(); try gate.observe(); try check() },
+                beforeTensor: { try check(); try gate.beforeRead($0); try check() })
             try gate.finish(); try check()
             return .init(loaded: loaded, profile: prepared.profile, selectedRequirement: selected)
         }

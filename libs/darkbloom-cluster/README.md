@@ -27,7 +27,11 @@ the native rank executable separately with a macOS 26.2 minimum for JACCL.
 It is not built into the provider's normal control dependency path. The shared
 runtime currently admits registered Qwen3.5 9B 4-bit weights with BF16 activations,
 greedy decoding and MTP off;
-other model profiles and production serving remain unqualified.
+other model profiles and production serving remain unqualified. Its stage session
+uses `QwenLayerStageGenerationRequest` and `QwenLayerStageGenerationSchedule`
+directly. Registered source validation precedes loading, and each selected tensor
+read requires the resident resource gate. Legacy probe request modes and the
+standalone owner qualification executable have been retired.
 
 From the repository root, run the focused control checks:
 
@@ -59,12 +63,11 @@ the real C/Swift callback bridge with explicit native factory/cache stand-ins.
 They also check worker argument admission with explicit MLX value stand-ins.
 The paired relay admits the closed two-member native mesh bootstrap and preserves
 the cleanup channel when cancellation races a bootstrap round. The SSH runner
-also exercises that path with actual local owner/native children. A
-[private configured owner tool](Tools/ConfiguredOwner/README.md) supports the next
-cross-host qualification; no such execution is established by the local tests.
-Unresolved journals refuse a new launch; automatic orphan recovery remains
-unsupported. Installed `cluster worker-owner --stdio` uses the same ownership
-service with saved local configuration and the canonical device lease.
+also exercises that path with actual local owner/native children. Installed
+`cluster worker-owner --stdio` uses the ownership service with saved local
+configuration and the canonical device lease. Unresolved journals refuse a new
+launch; automatic orphan recovery remains unsupported. Local tests do not
+establish cross-host execution.
 
 The pinned capability advertises supported prefill schedules; saved setup selects
 `serial_v1` or `one_chunk_lookahead_v1`. Serial remains the default. Native peers

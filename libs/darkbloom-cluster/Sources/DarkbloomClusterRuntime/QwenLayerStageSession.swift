@@ -21,38 +21,21 @@ struct QwenLayerStageSessionIdentity: Codable, Equatable {
 /// changes. Native methods install an error handler and retire on every error.
 final class QwenLayerStageSession {
     let identity: QwenLayerStageSessionIdentity
-    let request: QwenLayerStageAdmittedRequest
+    let request: QwenLayerStageGenerationRequest
     private let stage: LoadedQwenLayerStage
     private let descriptor: QwenLayerStagePlan.Stage
     private let adapter: CBv2SteppableLanguageModelAdapter
     private let state: CBv2OwnedRequestState
     private let hiddenSize: Int
     private let producerStageFingerprint: String
-    private var schedule: QwenLayerStageAdmittedSchedule
+    private var schedule: QwenLayerStageGenerationSchedule
 
     var committedTokens: Int { schedule.committedTokens }
     var isClosed: Bool { state.isClosed }
     var isFailed: Bool { state.isFailed }
 
-    convenience init(stage: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
-                     request: QwenLayerStageRequestSpec) throws {
-        try self.init(stage: stage, plan: plan, admittedRequest: .legacy(request))
-    }
-
-    /// Larger geometry is admitted only through the explicit profile type. The
-    /// same forward, ownership and boundary validation serve both request kinds.
-    convenience init(stage: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
-                     profiledRequest: QwenLayerStageProfiledPrefillRequestSpec) throws {
-        try self.init(stage: stage, plan: plan, admittedRequest: .profiled(profiledRequest))
-    }
-
-    convenience init(stage: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
-                     generationRequest: QwenLayerStageGenerationRequest) throws {
-        try self.init(stage: stage, plan: plan, admittedRequest: .generation(generationRequest))
-    }
-
-    private init(stage: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
-                 admittedRequest request: QwenLayerStageAdmittedRequest) throws {
+    init(stage: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
+         generationRequest request: QwenLayerStageGenerationRequest) throws {
         guard plan.stages.indices.contains(stage.stageIndex), plan.stages.count == 2,
             stage.plan.fingerprint == plan.fingerprint else { throw ProbeError("Stage session received a different source plan") }
         let descriptor = plan.stages[stage.stageIndex], receipt = stage.receipt
@@ -83,12 +66,10 @@ final class QwenLayerStageSession {
             let hidden = BoundedProbeInput.integer(text["hidden_size"]), (1...8192).contains(hidden) else {
             throw ProbeError("Compact stage metadata does not match its loaded layer/hidden/vocabulary geometry")
         }
-        if case .generation(let generation) = request {
-            guard generation.profile.hiddenSize == hidden,
-                  generation.profile.vocabularySize == stage.vocabularySize,
-                  generation.profile.activationDType == receipt.embeddingActivationDType else {
-                throw ProbeError("Generation profile differs from the actual loaded stage geometry/dtype")
-            }
+        guard request.profile.hiddenSize == hidden,
+              request.profile.vocabularySize == stage.vocabularySize,
+              request.profile.activationDType == receipt.embeddingActivationDType else {
+            throw ProbeError("Generation profile differs from the actual loaded stage geometry/dtype")
         }
         let geometry = try CBv2RequestGeometry(model: stage.model, family: .qwen35, feedForwardKind: "dense",
             layerCount: stage.layerCount, vocabularySize: stage.vocabularySize,
@@ -98,7 +79,7 @@ final class QwenLayerStageSession {
         self.stage = stage; self.descriptor = descriptor; self.request = request
         self.adapter = CBv2SteppableLanguageModelAdapter(stage.model)
         self.hiddenSize = hidden; self.producerStageFingerprint = plan.stages[0].fingerprint
-        self.schedule = QwenLayerStageAdmittedSchedule(request: request)
+        self.schedule = QwenLayerStageGenerationSchedule(request: request)
         self.identity = .init(stageIndex: stage.stageIndex, requestFingerprint: request.fingerprint,
             artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
             storageCommitmentSHA256: receipt.storageCommitmentSHA256,
@@ -218,7 +199,7 @@ final class QwenLayerStageSession {
                           selectedTokenCount: Int, lastTokenID: Int) throws {
         do {
             try state.requireOpen()
-            try schedule.finishGeneration(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID)
+            try schedule.finish(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID)
             try retire(failed: false)
         } catch { try fail(error) }
     }

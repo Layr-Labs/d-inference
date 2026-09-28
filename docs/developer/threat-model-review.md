@@ -1,32 +1,39 @@
 # Configure advisory threat-model review
 
-> Last updated: 2026-09-28 · commit `45f5ef178`
+> Last updated: 2026-09-28 · commit `15dd32a06`
 
 The OpenRouter reviewer scans every PR change against the entire canonical threat
 model and posts actionable findings in one updatable public PR comment. It includes
 complete before/after text for changed files and a separate cross-file integration
-pass. Findings and incomplete scans never block merging or request changes.
+pass independently with Opus 5.5 and GPT-6 Astra, then combines their advice with
+model attribution. Findings and incomplete scans never block merging or request changes.
 
 ## Prerequisites
 
 - Repository access to Actions secrets and variables.
 - An OpenRouter key with credit and a spend limit suitable for automatic reviews.
-- A model supporting structured outputs; the default is `anthropic/claude-opus-5.5`.
+- Access through that key to `anthropic/claude-opus-5.5` and `openai/gpt-6-astra`,
+  both supporting structured outputs.
 
 ## Steps
 
 1. Add repository Actions secret `OPENROUTER_API_KEY` through **Settings → Secrets
    and variables → Actions**, or use `gh secret set OPENROUTER_API_KEY --repo
    Layr-Labs/d-inference` and enter the key interactively. Never commit it.
-2. Optionally set repository variable `THREAT_REVIEW_MODEL` to another OpenRouter
-   model ID supporting `response_format: json_schema`.
+2. Set repository variable `THREAT_REVIEW_MODELS` to
+   `anthropic/claude-opus-5.5,openai/gpt-6-astra`. It accepts one or two distinct,
+   comma-separated OpenRouter IDs supporting `response_format: json_schema`.
+   This overrides legacy `THREAT_REVIEW_MODEL`, which still selects a single
+   reviewer when the plural variable is absent. With neither variable set, the
+   default is Opus 5.5 plus Astra. No separate OpenAI key is needed.
 3. Land the workflow through the reviewed PR process. Opening, updating, reopening,
    or marking a PR ready triggers a scan. Drafts are skipped. The workflow must be
    present on the base branch before it can run.
 4. Keep **Threat Model Review (advisory)** out of required status checks. No separate
    GitHub PAT is needed: the built-in token has contents read and PR write access.
 5. Set an OpenRouter key spend limit and monitor usage. Full scans make multiple
-   paid requests, each containing the full threat model. Every new PR revision,
+   paid requests per model, each containing the full threat model. Two reviewers
+   run two full scans, so budget for both models. Every new PR revision,
    including a fork update, can trigger another scan.
 
 ## Verify
@@ -36,22 +43,27 @@ Run the cloud-free suites:
 ```sh
 python3 .github/scripts/test-threat-model-review.py
 python3 .github/scripts/test-threat-full-scan.py
+python3 .github/scripts/test-threat-ensemble.py
 ```
 
 They cover immutable Git sources, large changes beyond the former cutoffs,
 complete source segmentation, missing-patch reconstruction, cross-file findings,
 incomplete batches, binary/submodule coverage, and the comment lifecycle. A real
 loopback HTTP test exercises source retrieval, OpenRouter requests, and PR delivery
-with synthetic credentials. Release Integrity runs both suites in ordinary CI.
+with synthetic credentials. Ensemble tests verify independent full scans,
+disagreement, exact duplicate attribution, per-model failures, deadline handling,
+and Astra-compatible request parameters. Release Integrity runs all three suites
+in ordinary CI.
 
 After activation, inspect **Actions → Threat Model Review (advisory)** and the PR:
 
 | Outcome | Author feedback |
 |---|---|
-| Findings | One public bot comment with severity, source links, threat references, trigger, impact, and suggested fix. |
+| Findings | One public bot comment with severity, source links, threat references, trigger, impact, suggested fix, and which model raised each finding. |
 | Complete clean first scan | Actions summary only. |
 | Complete clean follow-up | Existing comment updated to clear old findings. |
 | Incomplete scan | Public comment explicitly says the scan is incomplete; it never presents missing coverage as clean. |
+| One model fails | Findings from the completed reviewer remain visible; the comment names the incomplete reviewer. A clean surviving review does not clear the incomplete status. |
 | PR changed or closed during scan | Stale output is suppressed. |
 
 Legacy comments from the previous reviewer are updated in place. Findings are
@@ -73,6 +85,14 @@ findings for interactions across files; large analysis sets are reduced through
 additional integration passes without dropping batches. Candidate findings pass through integration review for validation and consolidation;
 unsupported candidates and duplicates are removed.
 
+`ensemble.review_models` runs this entire process independently for each model,
+in configured order. Models do not see the other reviewer's analysis. The combined
+report removes exact duplicate findings and lists both reviewers on them; differing
+assessments remain separate for human validation. No majority vote or final model
+can veto a finding from the other completed review. Both must finish for a complete
+scan. A model failure does not prevent the next review, and a global timeout
+preserves already completed reviews while marking remaining ones incomplete.
+
 The prompt checks assets, trust boundaries, assumptions, threats and mitigations,
 including new attack surfaces and threat-model updates required by a PR. Context
 includes complete changed files; unchanged callers elsewhere in the repository are
@@ -88,23 +108,26 @@ Non-UTF-8/binary files and submodule contents require manual review and are name
 in the comment. A request permits 16,384 output tokens; incomplete responses or a
 full 32-finding response are treated as incomplete. A report exceeding the single
 comment's 60,000-character budget asks the author to split the PR. The process has
-a 50-minute scan deadline within a 60-minute workflow timeout.
+a shared 50-minute scan deadline within a 60-minute workflow timeout. Models run
+sequentially, so a first scan that uses the whole budget leaves the second incomplete.
 
 For an incomplete scan, inspect the listed files and source/model availability,
 OpenRouter balance/rate limits, and whether splitting the PR would allow complete
 feedback. Raw API responses and credentials are never printed. OpenRouter and the
-selected provider receive the threat model, changed source, and review analyses;
+selected providers receive the threat model, changed source, and their review analyses;
 their data-handling settings apply. Disable the workflow or remove its key to stop
 new paid reviews. Operational failures remain non-blocking.
 
 Implementation: `.github/workflows/threat-model-review.yml`,
 `.github/scripts/threat_review/runner.py` (`run`), `source.py` (`Sources`,
 `complete_files`), `scan.py` (`scan`), `review.py` (`prepare`, `model_call`,
-`validate_findings`), `client.py` (`GitHub`), and `report.py` (`render`).
+`validate_findings`), `ensemble.py` (`configured_models`, `review_models`),
+`client.py` (`GitHub`), and `report.py` (`render`).
 
 ## Related
 
 - [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs).
+- [OpenAI Astra API guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra) — structured output and supported parameters; sampling parameters are omitted.
 - [GitHub trusted-base PR event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target).
 - [Build](build.md) — local toolchains.
 - [Test](test.md) — regression and CI checks.

@@ -32,6 +32,7 @@ jobs:
         run: |
           python3 .github/scripts/test-threat-model-review.py
           python3 .github/scripts/test-threat-full-scan.py
+          python3 .github/scripts/test-threat-ensemble.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
 

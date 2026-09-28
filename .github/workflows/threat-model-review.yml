@@ -32,6 +32,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           THREAT_REVIEW_MODEL: ${{ vars.THREAT_REVIEW_MODEL }}
+          THREAT_REVIEW_MODELS: ${{ vars.THREAT_REVIEW_MODELS }}
         run: python3 .github/scripts/threat-model-review.py
       - name: Report infrastructure failure without blocking
         if: ${{ failure() }}

@@ -106,13 +106,16 @@ def validate_findings(result, evidence, threat_model):
 
 
 def model_call(message, evidence, threat_model, key, model, transport, schema=SCHEMA, instruction=""):
-    response = transport("https://openrouter.ai/api/v1/chat/completions", key, {
-        "model": model, "max_tokens": 16384, "temperature": 0,
+    payload = {
+        "model": model, "max_tokens": 16384,
         "provider": {"require_parameters": True},
         "response_format": {"type": "json_schema", "json_schema": {
             "name": "threat_review", "strict": True, "schema": schema}},
         "messages": [{"role": "system", "content": SYSTEM + instruction}, {"role": "user", "content": message}],
-    })
+    }
+    # Astra supports structured outputs but rejects sampling parameters.
+    # Leave reasoning at the provider default; do not silently substitute models.
+    response = transport("https://openrouter.ai/api/v1/chat/completions", key, payload)
     try:
         choice = response["choices"][0]
         if choice["finish_reason"] != "stop":

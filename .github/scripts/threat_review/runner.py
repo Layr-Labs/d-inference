@@ -2,7 +2,8 @@
 import re
 from .client import GitHub, ReviewUnavailable, ScanTimeout
 from .report import MARKER, LEGACY_MARKER, render
-from .review import DEFAULT_MODEL, review
+from .review import review
+from .ensemble import configured_models, review_models
 from .source import complete_files
 
 
@@ -18,9 +19,8 @@ def run(event, root, env, github=None, reviewer=review):
             or not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (head, base))
             or type(number) is not int or number <= 0):
         raise ReviewUnavailable("Invalid PR event identity")
-    model = env.get("THREAT_REVIEW_MODEL") or DEFAULT_MODEL
-    if not re.fullmatch(r"[A-Za-z0-9_.:/-]{1,150}", model):
-        raise ReviewUnavailable("Invalid configured model identifier")
+    models = configured_models(env)
+    model = ", ".join(models)
     github = github or GitHub(repository, number, env["GH_TOKEN"])
     if pr.get("draft"):
         return "Skipped: draft PR."
@@ -29,6 +29,7 @@ def run(event, root, env, github=None, reviewer=review):
         return "Skipped: PR revision changed or PR closed."
     existing = github.existing_comment((MARKER, LEGACY_MARKER))
     findings, evidence, limits, error = [], {}, [], None
+    outcomes = []
     diff_base = base
     try:
         key = env.get("OPENROUTER_API_KEY")
@@ -40,7 +41,9 @@ def run(event, root, env, github=None, reviewer=review):
         if files:
             # root is the trusted base checkout, not the PR branch.
             threat_model = (root / "docs/threat-model.yaml").read_text()
-            findings, evidence, limits = reviewer(threat_model, files, key, model)
+            findings, evidence, limits, outcomes = review_models(threat_model, files, key, models, reviewer)
+            if any(outcome["status"] != "completed" for outcome in outcomes):
+                error = "Scan incomplete: one or more configured reviewers did not finish; completed reviewers' findings are shown below"
     except ScanTimeout:
         error = "Scan incomplete: runtime limit reached; no complete review was produced"
     except ReviewUnavailable:
@@ -52,16 +55,16 @@ def run(event, root, env, github=None, reviewer=review):
         return "Skipped: PR revision changed during review; no stale comment published."
     # Clean first scans stay quiet; incomplete scans always notify the author.
     if findings or existing or error or limits:
-        body = render(repository, head, base, model, findings, evidence, limits, error, diff_base)
+        body = render(repository, head, base, model, findings, evidence, limits, error, diff_base, outcomes)
         if len(body) > 60000:
             error = "Scan incomplete: findings exceed the PR comment capacity; split the PR for complete feedback"
-            body = render(repository, head, base, model, [], {}, [], error, diff_base)
+            body = render(repository, head, base, model, [], {}, [], error, diff_base, outcomes)
         github.publish(existing, body)
     if error:
         return f"Review unavailable (non-blocking): {error}."
     if limits:
         return f"Scan incomplete (non-blocking): {len(limits)} file(s) lack complete text source."
-    return f"Full PR scan completed: {len(findings)} finding(s); {len(limits)} file(s) with limited coverage."
+    return f"Full PR scan completed: {len(findings)} finding(s); {len(limits)} file(s) with limited coverage; {len(outcomes)} reviewer(s) completed."
 
 
 def summarize(message, env):

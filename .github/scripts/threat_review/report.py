@@ -13,13 +13,16 @@ def plain(value):
     return re.sub(r"([\\`*_{}\[\]()#+.!|<>~-])", r"\\\1", value)
 
 
-def render(repository, head, base, model, findings, evidence, limits, error=None, diff_base=None):
+def render(repository, head, base, model, findings, evidence, limits, error=None, diff_base=None, outcomes=()):
     root = f"https://github.com/{repository}"
     lines = [MARKER, "## Threat model review — advisory", "",
              f"Reviewed head [`{head[:12]}`]({root}/commit/{head}) against base `{base[:12]}`.", ""]
     if error:
         lines += ["**Review not completed for this head.** Previous findings are superseded, not confirmed resolved.",
                   plain(error)]
+    if outcomes:
+        lines += ["", "Reviewers: " + "; ".join(
+            f"{plain(item['model'])}: {plain(item['status'])}" for item in outcomes), ""]
     if findings:
         for finding in findings:
             path = finding["file"]
@@ -30,6 +33,8 @@ def render(repository, head, base, model, findings, evidence, limits, error=None
             lines += [f"### {finding['severity'].upper()}: {plain(finding['title'])}",
                       f"[{plain(path)}:{finding['line']}]({url}) · {refs}", "",
                       plain(finding["detail"]), ""]
+            if finding.get("models"):
+                lines += ["Raised by: " + ", ".join(plain(name) for name in finding["models"]), ""]
     elif not error and not limits:
         lines += ["No actionable findings in the reviewed text. This is not a security approval."]
     if limits:
@@ -37,5 +42,5 @@ def render(repository, head, base, model, findings, evidence, limits, error=None
         lines += ["Affected files: " + ", ".join(plain(path) for path in limits)]
     elif not error:
         lines += ["", f"Coverage: {len(evidence)} changed file(s), complete before/after text, and a cross-file threat-model review."]
-    lines += ["", f"Model: {plain(model)}. Findings require human validation; this review never requests changes or blocks merging."]
+    lines += ["", f"Models: {plain(model)}. Findings require human validation; this review never requests changes or blocks merging."]
     return "\n".join(lines)

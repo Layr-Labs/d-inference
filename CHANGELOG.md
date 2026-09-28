@@ -3,6 +3,7 @@
 ## Unreleased — advisory threat-model review
 
 - Restore PR threat-model review through OpenRouter. Scan every changed file with complete before/after text and a cross-file pass against the full threat model. Findings update one advisory comment; incomplete coverage is explicit, clean first scans stay quiet, and model/service failures do not block merging. The workflow executes only the trusted base revision.
+- Combine independent Opus 5.5 and GPT-6 Astra full scans through the same OpenRouter key. Attribute findings to their reviewers, preserve differing advice, and retain completed feedback if the other model fails.
 
 ## Unreleased — provider readiness diagnostics
 

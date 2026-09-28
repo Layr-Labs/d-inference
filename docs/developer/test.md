@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `c7676c890`
+> Last updated: 2026-09-28 · commit `15dd32a06`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2401,6 +2401,8 @@ comment lifecycle tests. The suite opens a temporary loopback HTTP server and
 uses no external service or real key. Also run
 `python3 .github/scripts/test-threat-full-scan.py` for full-source retrieval,
 batching beyond the former cutoffs, cross-file review, and explicit incomplete
-coverage. Release Integrity runs both suites in normal CI.
+coverage. Run `python3 .github/scripts/test-threat-ensemble.py` for independent
+reviewer coverage, disagreement, attribution, partial failures and deadline
+retention. Release Integrity runs all three suites in normal CI.
 Model findings and live API failures remain non-blocking in the separate
 [advisory review workflow](threat-model-review.md).

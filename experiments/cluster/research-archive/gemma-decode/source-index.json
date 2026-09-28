@@ -16595,6 +16595,70 @@
         "gemma4-26b-distributed-artifact-20260915/metadata/chat_template.jinja"
       ],
       "privacy_redacted": false
+    },
+    {
+      "file": "sources/decode-faster-than-solo-20260920/control-operation-draft/Tests/expected-checks.json",
+      "sha256": "56b1feb0c369c0ed743bbc4ca33c482dfeb56129a4fbd3f7582805105b7ca042",
+      "locations": [
+        "decode-faster-than-solo-20260920/control-operation-draft/Tests/expected-checks.json"
+      ],
+      "privacy_redacted": false
+    },
+    {
+      "file": "sources/decode-faster-than-solo-20260920/local-mtp-cohort-draft/Tests/metadata-cases.json",
+      "sha256": "f24ba5d9a1c6db3366f462fbff5aaf7e5489bcd0d20b94b1ab7b84e48ccf39c2",
+      "locations": [
+        "decode-faster-than-solo-20260920/local-mtp-cohort-draft/Tests/metadata-cases.json"
+      ],
+      "privacy_redacted": false
+    },
+    {
+      "file": "sources/decode-faster-than-solo-20260920/remote-window-timing-draft/Tests/expected-checks.json",
+      "sha256": "b9088d1dc9eec7614bd83dabedfb5e465b404cafff4446aa3692147040a2c646",
+      "locations": [
+        "decode-faster-than-solo-20260920/remote-window-timing-draft/Tests/expected-checks.json"
+      ],
+      "privacy_redacted": false
+    },
+    {
+      "file": "sources/decode-faster-than-solo-20260920/remote-control-operation-draft/Tests/expected-checks.json",
+      "sha256": "c510a0af25634e33d2a06c4f155da7e16f2704a8bf13fe946a0aa96631f468d1",
+      "locations": [
+        "decode-faster-than-solo-20260920/remote-control-operation-draft/Tests/expected-checks.json"
+      ],
+      "privacy_redacted": false
+    },
+    {
+      "file": "sources/decode-faster-than-solo-20260920/remote-target-sum-cache-draft/Tests/expected-checks.json",
+      "sha256": "919b4ba0a943bd0048ec16eadaf645dc402a74ce93c78cad6fbd9bade31141eb",
+      "locations": [
+        "decode-faster-than-solo-20260920/remote-target-sum-cache-draft/Tests/expected-checks.json"
+      ],
+      "privacy_redacted": false
+    },
+    {
+      "file": "sources/gemma4-remote-mtp-depth-20260920/Tests/expected-groups.json",
+      "sha256": "32a4da2bc5e7f3d97efb027464dbda86663f8cfd4ec9ff12544887a5023d6694",
+      "locations": [
+        "gemma4-remote-mtp-depth-20260920/Tests/expected-groups.json"
+      ],
+      "privacy_redacted": false
+    },
+    {
+      "file": "sources/gemma4-decode-optimization-20260920/control-frame-draft/Tests/expected-checks.json",
+      "sha256": "45296146ded089176ba029d611df7db0cc746f56ea09c6f85ef89cbedb40e2d0",
+      "locations": [
+        "gemma4-decode-optimization-20260920/control-frame-draft/Tests/expected-checks.json"
+      ],
+      "privacy_redacted": false
+    },
+    {
+      "file": "sources/gemma4-mtp-remote-cohort-draft-20260920/Tests/metadata-cases.json",
+      "sha256": "de48a208c7059c10412d7810533d902d012115c26d56bd75d762dc96593f6f6e",
+      "locations": [
+        "gemma4-mtp-remote-cohort-draft-20260920/Tests/metadata-cases.json"
+      ],
+      "privacy_redacted": false
     }
   ],
   "category": "gemma-decode"

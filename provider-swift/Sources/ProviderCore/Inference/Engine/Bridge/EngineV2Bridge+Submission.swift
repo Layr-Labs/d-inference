@@ -396,6 +396,20 @@ extension EngineV2Bridge {
             completePrefixOwnsRequestCharge = transaction.ownsNativeCompletePrefixRequestCharge(
                 engine: actual, bridge: self, budget: kvBudget)
         } else { completePrefixOwnsRequestCharge = false }
+        let nativePagedOwnsRequestCharge: Bool
+        if let actual = ownedEngine as? EngineV2, let kvBudget,
+           let transaction = nativeTransaction, nativeTransactionID == transaction.id {
+            nativePagedOwnsRequestCharge = transaction.ownsNativePagedRequestCharge(
+                engine: actual, bridge: self, budget: kvBudget)
+        } else { nativePagedOwnsRequestCharge = false }
+        if kvBackendKind == .paged, nativeTransactionID != nil, !nativePagedOwnsRequestCharge {
+            await releasePreSubmitResources(requestID: id, sharedKVReserved: false,
+                prefixCacheReceiptID: prefixCacheReceiptID, ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered, usageSignal: usageSignal, failure: .policy)
+            continuation.yield(.error("native_paged_process_owner_mismatch"))
+            continuation.finish()
+            return stream // no native submission or foreign-budget coverage inference
+        }
         if kvBackendKind == .contiguous, let kvBudget,
             !completePrefixOwnsRequestCharge,
             (ownedEngine as? CBv2NativeBlockEngine)?.usesProcessMemoryOwner != true,

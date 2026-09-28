@@ -37,15 +37,18 @@ enum MiMoPrefixStoreTestSupport {
 final class MiMoV26NativePrefixResourcesTests: XCTestCase {
     func testDefaultOffAndMediaCannotSilentlySelectTextPrefixProfile() {
         let model = "EigenLabs/MiMo-V2.6-Flash-MOPD-MLX-4bit-mtp"
-        func refusal(_ env: [String: String], media: Bool = false) -> PrefixCacheStatusReason? {
-            EngineV2SlotFactory.nativeMiMoPrefixRefusal(modelId: model, hasMedia: media, environment: env)
+        func refusal(_ env: [String: String]) -> PrefixCacheStatusReason? {
+            EngineV2SlotFactory.nativeMiMoPrefixRefusal(modelId: model, environment: env)
         }
         XCTAssertEqual(refusal([:]), .configDisabled)
         XCTAssertEqual(refusal(["DARKBLOOM_PREFIX_CACHE": "1"]), .configDisabled)
         XCTAssertEqual(refusal(["DARKBLOOM_MIMO_COMPLETE_PREFIX": "1"]), .configDisabled)
         let on = ["DARKBLOOM_PREFIX_CACHE": "1", "DARKBLOOM_MIMO_COMPLETE_PREFIX": "1"]
         XCTAssertNil(refusal(on))
-        XCTAssertEqual(refusal(on, media: true), .unsupportedLayout)
+        XCTAssertEqual(EngineV2SlotFactory.nativeMiMoServingProfile(hasVisual: false, hasAudio: false), .text)
+        XCTAssertEqual(EngineV2SlotFactory.nativeMiMoServingProfile(hasVisual: true, hasAudio: false), .decodedVisual)
+        XCTAssertEqual(EngineV2SlotFactory.nativeMiMoServingProfile(hasVisual: false, hasAudio: true), .decodedAudio)
+        XCTAssertEqual(EngineV2SlotFactory.nativeMiMoServingProfile(hasVisual: true, hasAudio: true), .decodedAudio)
         XCTAssertEqual(refusal(["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_MIMO_COMPLETE_PREFIX": "1"]),
             .configDisabled)
     }

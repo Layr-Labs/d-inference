@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-09-27 · commit `a2ccc2499`
+> Last updated: 2026-09-28 · commit `2037f9977`
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -94,7 +94,7 @@ and MTP codec. No public header field exposes those token boundaries
 | Host IO lifetime | Read/decrypt aliases retire before the read charge returns; writers claim host buffers before encoding and release them after the complete write stack drains | `SSDHybridCheckpointStore+Read.swift` (`readCheckpoint`), `SSDHybridCheckpointStore+Write.swift` (`write`) |
 | Durable ready | Only supplied actual input checkpoint after committed write and engine donor/export retirement; requires request mode echo | `SSDHybridCheckpointStore+Write.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheEvidenceSequencer.swift` |
 | Disk compatibility | Verified model/template, binary, loaded metallib, OS and numerical/MTP settings, plus actual native dtype and storage geometry | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift`, `CompleteCheckpointStorageIdentity.swift` |
-| Numerical environment identity | Process and slot values whose keys start with `MLX_`, `DARKBLOOM_CBV2_`, `DARKBLOOM_QWEN_`, `DARKBLOOM_MTP_`, `DARKBLOOM_GPTOSS_` or `DARKBLOOM_GEMMA4_`; changing an included optimization or rollback setting selects a different disk namespace | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift` (`completeCheckpointIdentity`) |
+| Numerical environment identity | Process and slot values whose keys start with `MLX_`, `DARKBLOOM_CBV2_`, `DARKBLOOM_QWEN_`, `DARKBLOOM_MTP_`, `DARKBLOOM_GPTOSS_` or `DARKBLOOM_GEMMA4_`; native `mimo_v2` additionally binds its `DARKBLOOM_MIMO_` controls. Changing an included optimization or rollback setting selects a different disk namespace | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift` (`completeCheckpointIdentity`) |
 
 | Complete layout | Payload | Loaded gate |
 |---|---|---|
@@ -218,6 +218,16 @@ exact-artifact release validation claim.
 | Qwen 3.5/3.6 MoE (`qwen3_5_moe`) | Same recurrent complete codec | Native contiguous or segmented paged | Same gate as dense Qwen |
 | Selected Nemotron 3.5 Lightning (`nemotron_h`) | Native attention KV, Mamba convolution/FP32 SSM state, and optional shifted trusted MTP history | Native contiguous or segmented paged target | Exact Lightning model ID, loaded native types, complete checkpoint identity and typed Nemotron assistant codec when MTP is active |
 | Qwen3-VL MoE (`qwen3_vl_moe`) | Unsupported | No paged capability | No complete store (`unsupported_layout`) |
+| MiMo V2.6 (`mimo_v2`) | Asymmetric full/window target KV and optional trained-head checkpoint state | Native contiguous, text-only profile | Explicit MiMo COMPLETE-prefix opt-in, enabled model cache policy, exact loaded/store/process binding and observed native geometry; media profiles decline this checkpoint path |
+
+MiMo's dedicated factory uses `EngineV2SlotFactory+MiMoPrefix.swift`, rather
+than treating its generic prefix capability as supported. The complete storage
+identity binds separate key/value widths and the actual active assistant codec
+(`CompleteCheckpointStorageIdentity.swift`). `SSDHybridCheckpointStoreFactory`
+threads native IO/work ownership through capture, import and publication;
+returned host IO is not proof of native retirement. Full selected-artifact
+reuse, encrypted restart, paging composition and media-prefix qualification
+remain open; see the [MiMo qualification scope](../../libs/mlx-swift-lm/docs/mimo-v26/qualification.md).
 
 SSD activation and backend selection have separate exact-model defaults; see
 the [backend and cache cohorts](../architecture/prefix-cache.md#kv-layouts).

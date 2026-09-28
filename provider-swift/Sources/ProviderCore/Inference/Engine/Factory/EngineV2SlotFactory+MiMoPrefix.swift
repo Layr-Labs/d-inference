@@ -16,16 +16,23 @@ extension EngineV2SlotFactory {
         }
     }
 
-    /// Separate experiment opt-in, never a catalog/capability advertisement.
-    /// Media remains on its genuine existing owner/profile; combined media
-    /// prefix is not supported by this text-only complete-checkpoint contract.
-    static func nativeMiMoPrefixRefusal(modelId: String, hasMedia: Bool,
+    /// Construction intent only, not capability or ownership authority. The
+    /// factory must issue the corresponding genuine SDK tuple; it may never
+    /// turn a media load into a text-only profile to obtain prefix support.
+    enum MiMoNativeServingProfile: Sendable, Equatable { case text, decodedVisual, decodedAudio }
+    static func nativeMiMoServingProfile(hasVisual: Bool, hasAudio: Bool) -> MiMoNativeServingProfile {
+        hasAudio ? .decodedAudio : hasVisual ? .decodedVisual : .text
+    }
+
+    /// Existing opt-in/cache policy only. Joint media authority is checked by
+    /// the protected SDK issuer, not inferred from this successful policy gate.
+    static func nativeMiMoPrefixRefusal(modelId: String,
         environment: [String: String]) -> PrefixCacheStatusReason? {
         guard environment["DARKBLOOM_MIMO_COMPLETE_PREFIX"] == "1",
               PrefixCachePolicy.isEnabled(modelId: modelId, environment: environment) else {
             return .configDisabled
         }
-        return hasMedia ? .unsupportedLayout : nil
+        return nil
     }
 
     /// Stable source facts only. Sessions, loaded-generation UUIDs, binding

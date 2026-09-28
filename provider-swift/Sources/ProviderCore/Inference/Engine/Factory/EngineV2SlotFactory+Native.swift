@@ -225,6 +225,13 @@ extension EngineV2SlotFactory {
         persistentTestNamespace: SSDPersistentTestKeyNamespace?, startServingTelemetry: Bool,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
     ) async throws -> ProviderEngineBundle {
+        if backend.lowercased() == "paged" {
+            return try await makeNativeMiMoPagedTargetBundle(modelId: modelId, tokenizer: tokenizer,
+                sizing: sizing, prepared: prepared, kvBytesCapacity: kvBytesCapacity,
+                maxConcurrentRequests: maxConcurrentRequests, kvBudget: kvBudget,
+                prefillDeadlineMode: prefillDeadlineMode, environment: environment,
+                startServingTelemetry: startServingTelemetry, emitTelemetry: emitTelemetry)
+        }
         let transaction = prepared.transaction
         // These refusals are outside owned construction cleanup: a rejected
         // second/warm assembly must not revoke or release the existing pipeline.
@@ -247,10 +254,11 @@ extension EngineV2SlotFactory {
                 let verificationMode = nativeMiMoVerificationMode(wantsMTP: wantsMTP, environment: environment)
                 let mtpConfig = CBv2MTPConfig(enabled: wantsMTP, maxDraftTokens: 3,
                     maxSpeculativeBatch: 1, verificationMode: verificationMode)
+                let servingProfile = nativeMiMoServingProfile(
+                    hasVisual: prepared.load.decodedMediaPolicy != nil,
+                    hasAudio: prepared.load.decodedAudioPolicy != nil)
                 let prefix: MiMoNativePrefixPreparation
-                if let reason = nativeMiMoPrefixRefusal(modelId: modelId,
-                    hasMedia: prepared.load.decodedMediaPolicy != nil || prepared.load.decodedAudioPolicy != nil,
-                    environment: environment) {
+                if let reason = nativeMiMoPrefixRefusal(modelId: modelId, environment: environment) {
                     prefix = .disabled(reason)
                 } else if PrefixCachePolicy.checkpointIdentityHash(weightHash) == nil {
                     prefix = .disabled(.weightHashUnavailable)
@@ -301,10 +309,35 @@ extension EngineV2SlotFactory {
                                     contract: CBv2NativeExecutionContract)
                     if let prefixOwner = prefix.resources, let store = prefixOwner.store,
                        let metadata = prefix.metadata {
-                        let text = try model.makeNativeCompletePrefixExecutionResources(binding: binding,
-                            bytesCapacity: kvBytesCapacity, expectedMetadata: metadata,
-                            completePrefixCache: store, processMemoryOwner: prefixOwner.processOwner, retaining: scope)
-                        resources = (text.backend, text.cacheProvider, text.contract)
+                        switch servingProfile {
+                        case .decodedAudio:
+                            guard let audio = prepared.load.decodedAudioPolicy else {
+                                throw MiMoV26ServingLoadError.nativeOwnerMismatch
+                            }
+                            try transaction.registerDecodedMediaFacade(prepared.load,
+                                sampling: MiMoV26EncodedVisualDecoder.Sampling(configuration: config))
+                            let joint = try model.makeManagedAudioCompletePrefixExecutionResources(binding: binding,
+                                bytesCapacity: kvBytesCapacity, expectedMetadata: metadata,
+                                completePrefixCache: store, processMemoryOwner: prefixOwner.processOwner,
+                                limits: audio.media.limits, retaining: scope)
+                            resources = (joint.backend, joint.cacheProvider, joint.contract)
+                        case .decodedVisual:
+                            guard let policy = prepared.load.decodedMediaPolicy else {
+                                throw MiMoV26ServingLoadError.nativeOwnerMismatch
+                            }
+                            try transaction.registerDecodedMediaFacade(prepared.load,
+                                sampling: MiMoV26EncodedVisualDecoder.Sampling(configuration: config))
+                            let joint = try model.makeManagedMediaCompletePrefixExecutionResources(binding: binding,
+                                bytesCapacity: kvBytesCapacity, expectedMetadata: metadata,
+                                completePrefixCache: store, processMemoryOwner: prefixOwner.processOwner,
+                                limits: policy.limits, retaining: scope)
+                            resources = (joint.backend, joint.cacheProvider, joint.contract)
+                        case .text:
+                            let text = try model.makeNativeCompletePrefixExecutionResources(binding: binding,
+                                bytesCapacity: kvBytesCapacity, expectedMetadata: metadata,
+                                completePrefixCache: store, processMemoryOwner: prefixOwner.processOwner, retaining: scope)
+                            resources = (text.backend, text.cacheProvider, text.contract)
+                        }
                     } else if let audio = prepared.load.decodedAudioPolicy {
                         try transaction.registerDecodedMediaFacade(prepared.load,
                             sampling: MiMoV26EncodedVisualDecoder.Sampling(configuration: config))
@@ -410,4 +443,110 @@ extension EngineV2SlotFactory {
             throw failure
         }
     }
+    /// Real experimental target-only route. Unsupported loaded media/audio,
+    /// MTP and prefix combinations refuse rather than silently losing features.
+    private static func makeNativeMiMoPagedTargetBundle(
+        modelId: String, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
+        prepared: MiMoV26ServingPreparation, kvBytesCapacity: Int, maxConcurrentRequests: Int,
+        kvBudget: GlobalKVCacheBudget?, prefillDeadlineMode: PrefillDeadlineMode?,
+        environment: [String: String], startServingTelemetry: Bool,
+        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
+    ) async throws -> ProviderEngineBundle {
+        let transaction = prepared.transaction
+        let intent = prepared.status.configured && prepared.status.reason == nil
+            && !SpecDecArtifactFunnel.killSwitchEnabled(environment: environment)
+            ? prepared.status.fallingBack(.killSwitchDisabled) : prepared.status
+        guard environment["DARKBLOOM_MIMO_NATIVE_PAGED_TARGET"] == "1",
+              prepared.load.decodedMediaPolicy == nil, prepared.load.decodedAudioPolicy == nil,
+              !(intent.configured && intent.reason == nil),
+              nativeMiMoPrefixRefusal(modelId: modelId, environment: environment) != nil,
+              kvBytesCapacity > 0, maxConcurrentRequests > 0, let kvBudget else {
+            throw MiMoV26ServingLoadError.unsupportedBackend
+        }
+        guard kvBudget === transaction.budget, prepared.load.transaction === transaction else {
+            throw MiMoV26ServingLoadError.nativeOwnerMismatch
+        }
+        try transaction.validateContainerIdentity(prepared.container)
+        try prepared.load.recheck()
+        try transaction.claimSlotAssembly(prepared.container) // foreign/warm refusal never disposes live work
+        do {
+            return try await transaction.performSetup {
+                let paging = MiMoV26NativePagedResources(transactionID: transaction.id,
+                    sessionID: prepared.load.request.sessionID, budget: kvBudget)
+                do { try transaction.registerNativePagedResources(paging) }
+                catch {
+                    // This newly created, unbound, zero-charge owner only.
+                    let error = error
+                    try paging.retireUnusedOwner()
+                    throw error
+                }
+                let assembled = try await transaction.withNativeConstruction { model, scope in
+                    guard model.loadReceipt.sessionID == prepared.load.request.sessionID,
+                          model.loadReceipt.binding == prepared.load.request.binding else {
+                        throw MiMoV26ServingLoadError.nativeOwnerMismatch
+                    }
+                    let binding = try model.makeCBv2Binding(enableMTP: false)
+                    let probe = try binding.adapter.probeNativeKVTypes(retaining: scope)
+                    let config = model.nativeConfiguration
+                    let geometry = try MiMoV26AdmissionGeometry(layerKinds: binding.adapter.layerKinds,
+                        probedDTypes: probe.layerDTypes, maximumContextTokens: config.maxPositionEmbeddings)
+                    var scheduler = EngineV2Factory.productionSchedulerConfig(
+                        maxConcurrentRequests: maxConcurrentRequests, model: model, environment: environment)
+                    scheduler.enablePrefixCache = false
+                    let maximumQuery = max(scheduler.maxBatchedTokensPerStep,
+                        max(scheduler.prefillChunkSize, scheduler.soloPrefillStripeTokens ?? 0))
+                    let maximumPrefill = max(scheduler.prefillChunkSize, scheduler.soloPrefillStripeTokens ?? 0)
+                    let resources = try model.makeNativePagedExecutionResources(binding: binding,
+                        bytesCapacity: kvBytesCapacity, maximumConcurrentRequests: scheduler.maxConcurrentRequests,
+                        maximumQueryTokens: maximumQuery, maximumPrefillChunk: maximumPrefill,
+                        processMemoryOwner: paging.processOwner, retaining: scope)
+                    let engine = EngineV2(model: binding.adapter, layerKinds: binding.adapter.layerKinds,
+                        backend: resources.backend, cacheProvider: resources.cacheProvider,
+                        sampler: CBv2DefaultSampler(),
+                        detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer.inner),
+                        schedulerConfig: scheduler,
+                        loopConfig: .init(useLegacyRequestTimeout: EngineV2Factory.legacyRequestTimeoutEnabled()),
+                        admissionConfig: geometry.internalAdmissionConfig,
+                        processMemoryOwner: paging.processOwner,
+                        nativeCompletionTracking: true, nativeExecutionContract: resources.contract)
+                    try transaction.registerEngine(engine, executionContract: resources.contract)
+                    guard engine.nativeCompletionFault == nil, engine.pagedAttentionWorkInactiveReason == nil,
+                          engine.mtpMetricsSnapshot() == nil else {
+                        throw MiMoV26ServingLoadError.nativeOwnerMismatch
+                    }
+                    try prepared.load.recheck()
+                    let bridge = try EngineV2Factory.makeBridge(modelId: modelId, tokenizer: tokenizer,
+                        eosTokenIds: binding.stopTokenIDs, defaultMaxTokens: sizing.defaultMaxTokens,
+                        maxConcurrentRequests: maxConcurrentRequests, prefillDeadlineMode: prefillDeadlineMode,
+                        advertisedContextTokens: config.maxPositionEmbeddings,
+                        runtimePolicyEnvironment: environment, kvBytesPerToken: geometry.fullKVBytesPerToken,
+                        kvBudget: kvBudget, ssdHybridCheckpointStore: nil,
+                        prefixCacheStatus: .init(modelId: modelId, backend: .paged,
+                            replayStrategy: .none, state: .disabled, reason: .unsupportedLayout),
+                        emitTelemetry: emitTelemetry) {
+                        .init(engine: engine, fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
+                            kvBackendKind: .paged, kvBackendFallbackReason: nil,
+                            mtpAdmissionResolution: engine.resolvedMTPAdmission)
+                    }
+                    try transaction.registerBridge(bridge)
+                    return MiMoV26NativeSlotAssembly(engine: engine, bridge: bridge,
+                        assistant: nil, status: intent)
+                }
+                try await assembled.bridge.attachNativeTransaction(transaction)
+                await assembled.bridge.configureMTPStatus(assembled.status,
+                    metricsInterval: startServingTelemetry ? .seconds(60) : .zero)
+                try prepared.load.recheck()
+                let bundle = ProviderEngineBundle(bridge: assembled.bridge, assistant: nil,
+                    assistantBytes: 0, mtpArtifact: nil, mtpStatus: assembled.status)
+                try transaction.registerBundle(bundle)
+                return bundle
+            }
+        } catch {
+            let failure = error
+            prepared.load.revoke()
+            _ = await prepared.load.finishFailureAfterUnwind()
+            throw failure
+        }
+    }
+
 }

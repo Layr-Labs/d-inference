@@ -40,16 +40,12 @@ fn family_selection_is_exact_metadata_not_model_name_or_request_type() {
         assert!(!applies(kind));
     }
     assert!(applies(Some("mimo_v2")));
-    let mut body = history(json!("null"));
+    let mut body = history(json!("{\"x\":null}"));
     body["model"] = json!("XiaomiMiMo/MiMo-V2.6-Flash-RL");
     body["model_type"] = json!("mimo_v2");
     let legacy = normalize(body.as_object().unwrap().clone(), Some("llama")).unwrap();
-    assert!(
-        legacy.messages[0]["tool_calls"][0]["function"]
-            .get("arguments")
-            .is_none()
-    );
-    assert_eq!(arguments(&normalized(body).unwrap()), &json!("null"));
+    assert_eq!(arguments(&legacy), &json!({}));
+    assert_eq!(arguments(&normalized(body).unwrap()), &json!({"x":null}));
 }
 
 #[test]
@@ -102,7 +98,10 @@ fn upstream_assistant_framing_cleanup_keeps_mimo_null_and_argument_contract() {
     let value = normalized(body).unwrap();
     assert_eq!(value.messages[0]["content"], "");
     assert_eq!(value.messages[0]["reasoning_content"], "");
-    assert_eq!(value.messages[0]["tool_calls"][0]["function"]["arguments"]["text"], raw);
+    assert_eq!(
+        value.messages[0]["tool_calls"][0]["function"]["arguments"]["text"],
+        raw
+    );
     assert_eq!(value.messages[1]["content"], raw);
     assert_eq!(value.messages[2]["content"], "Answer.");
 }
@@ -343,7 +342,7 @@ fn malformed_shadowed_controls_and_unsupported_efforts_are_not_dropped() {
 }
 
 #[test]
-fn old_families_keep_null_dropping_raw_shape_and_permissive_control_behavior() {
+fn old_families_keep_upstream_object_bridge_and_permissive_control_behavior() {
     let mut body = history(json!("{\"a\":[1,null,2],\"x\":null}"));
     body["enable_thinking"] = json!("false");
     for kind in [None, Some("llama"), Some("qwen4_exp")] {
@@ -356,7 +355,7 @@ fn old_families_keep_null_dropping_raw_shape_and_permissive_control_behavior() {
         None,
     )
     .unwrap();
-    assert_eq!(arguments(&value), &json!([1]));
+    assert_eq!(arguments(&value), &json!("[1,null]"));
     assert!(normalized(body).is_err());
 }
 

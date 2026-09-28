@@ -303,6 +303,8 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
     private var wiredResidency: MiMoV26WiredResidency?
     private var nativePrefixResources: MiMoV26NativePrefixResources?
     private var prefixAliasesDetached = false
+    private var nativePagedResources: MiMoV26NativePagedResources?
+    private var pagedAliasesDetached = false
 
     fileprivate init(request: MiMoV26SerialLoadRequest, budget: GlobalKVCacheBudget,
                      lifecycle: MiMoV26NativeLifecycle, registry: MiMoV26NativeLoadRegistry) {
@@ -717,12 +719,39 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
             }
         }
     }
+    func registerNativePagedResources(_ value: MiMoV26NativePagedResources) throws {
+        try registered(newWork: false) {
+            try lock.withLock {
+                guard !draining, retired == nil, !operations.isEmpty,
+                      value.transactionID == id, value.sessionID == request.sessionID,
+                      value.budget === budget, nativePrefixResources == nil,
+                      nativePagedResources == nil || nativePagedResources === value else {
+                    throw MiMoV26NativeTransactionError.foreignOwner
+                }
+                nativePagedResources = value
+            }
+        }
+    }
+
+    func ownsNativePagedRequestCharge(engine expectedEngine: EngineV2,
+        bridge expectedBridge: EngineV2Bridge, budget expectedBudget: GlobalKVCacheBudget) -> Bool {
+        do {
+            return try registered(newWork: true) {
+                lock.withLock {
+                    published && !cancelled && !draining && retired == nil && faultCode == nil
+                        && budget === expectedBudget && engine === expectedEngine && bridge === expectedBridge
+                        && (contract.map { nativePagedResources?.matches(engine: expectedEngine, contract: $0) == true } == true)
+                }
+            }
+        } catch { return false }
+    }
+
     func registerNativeCompletePrefixResources(_ value: MiMoV26NativePrefixResources) throws {
         try registered(newWork: false) {
             try lock.withLock {
                 guard !draining, retired == nil, !operations.isEmpty,
                       value.transactionID == id, value.sessionID == request.sessionID,
-                      value.budget === budget,
+                      value.budget === budget, nativePagedResources == nil,
                       nativePrefixResources == nil || nativePrefixResources === value else {
                     throw MiMoV26NativeTransactionError.foreignOwner
                 }
@@ -766,6 +795,12 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
                 // process owner, loaded validator, bank and optional assistant.
                 if executionContract.supportsNativeCompletePrefix {
                     guard let owner = nativePrefixResources else {
+                        throw MiMoV26NativeTransactionError.unsupportedExecutionContract
+                    }
+                    try owner.bind(engine: value, contract: executionContract)
+                }
+                if executionContract.supportsNativePagedTarget {
+                    guard let owner = nativePagedResources else {
                         throw MiMoV26NativeTransactionError.unsupportedExecutionContract
                     }
                     try owner.bind(engine: value, contract: executionContract)
@@ -837,6 +872,8 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
     }
     private static func supportsProfile(_ contract: CBv2NativeExecutionContract) -> Bool {
         contract.profile == "mimo_text_contiguous_default_and_cpu_v1"
+            || (contract.supportsNativePagedTarget
+                && contract.profile == "mimo_text_native_gathered_paged_default_and_cpu_v1")
             || contract.supportsManagedDecodedMedia
             || (contract.supportsNativeCompletePrefix
                 && contract.profile == "mimo_complete_text_prefix_contiguous_default_and_cpu_v1")
@@ -1195,6 +1232,20 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
                         return .retainedFault(code: "prefix_owner_validation_failed")
                     }
                 }
+                if contract.supportsNativePagedTarget && !lock.withLock({ pagedAliasesDetached }) {
+                    guard let actualContainer = selected.3 else { return .pending(.identityMismatch) }
+                    do {
+                        try await actualContainer.perform { context in
+                            guard let model = context.model as? MiMoV26LoadedModel else {
+                                throw MiMoV26NativeTransactionError.foreignOwner
+                            }
+                            try model.beginNativePagedRetirement(executionContractID: contract.id)
+                        }
+                    } catch {
+                        registry.retainFault(self, code: "paged_owner_validation_failed")
+                        return .retainedFault(code: "paged_owner_validation_failed")
+                    }
+                }
                 if let bridge = selected.2 {
                     outcome = try await bridge.shutdownNativeConstruction(
                         expectedEngine: engine, executionContractID: contract.id)
@@ -1272,6 +1323,27 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
                     try prefix.retireUnusedOwner()
                 }
             }
+            if let paging = lock.withLock({ nativePagedResources }) {
+                if selected.1?.supportsNativePagedTarget == true {
+                    guard let receipt = nativeReceipt, let actualContainer = selected.3 else {
+                        return .pending(.identityMismatch)
+                    }
+                    do { try paging.acceptRetirement(receipt) }
+                    catch {
+                        registry.retainFault(self, code: "paged_ledger_retirement_failed")
+                        return .retainedFault(code: "paged_ledger_retirement_failed")
+                    }
+                    if !lock.withLock({ pagedAliasesDetached }) {
+                        try await actualContainer.perform { context in
+                            guard let model = context.model as? MiMoV26LoadedModel else {
+                                throw MiMoV26NativeTransactionError.foreignOwner
+                            }
+                            try model.releaseNativePagedAfterNativeRetirement(receipt)
+                        }
+                        lock.withLock { pagedAliasesDetached = true }
+                    }
+                } else { try paging.retireUnusedOwner() }
+            }
             let sidecar = lock.withLock { audioReservation }
             if let sidecar {
                 if !lock.withLock({ audioAliasesDetached }) {
@@ -1335,7 +1407,7 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
                                     lifecycle: lifecycle, construction: construction, engine: nativeReceipt,
                                     audioSessionID: audioRequest?.sessionID)
                     audioReservation = nil; audioReceipt = nil; audioRequest = nil
-                    nativePrefixResources = nil
+                    nativePrefixResources = nil; nativePagedResources = nil
                 }
             }
         } catch { return .pending(.permitSettlement) }

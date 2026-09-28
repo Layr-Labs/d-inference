@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `05d26caaf`
+> Last updated: 2026-09-28 · commit `d06b528e4`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -496,7 +496,7 @@ flowchart LR
 | MTP | Embedded heads only; explicit MiMo enablement, serial-target verification by default; rectangular is a separate experiment | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`) |
 | Media | Explicit decoded visual/audio profiles bind the real processor/codec, load generation and reservation; media requests stay target-only even when a text assistant is installed | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMoV26LoadedModel.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMoV26ServingLoad.swift` |
 | Prefix | Opt-in text-only COMPLETE checkpoints bind the exact store, observed dtypes, assistant codec, process owner and loaded validator; async store work participates in retirement | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+MiMoPrefix.swift` (`prepareNativeMiMoPrefix`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2NativeCompletePrefixWork.swift` |
-| Paging / generic fast paths | MiMo's adapter still declines paging, generic prefix reuse, compiled decode and packed-prefill capabilities; the slot factory accepts only auto/contiguous | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMoV26CBv2.swift` (`cbv2Capabilities`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`makeNativeMiMoBundle`) |
+| Native paging / generic fast paths | Separate opt-in target-only paging binds the actual asymmetric pool, bank and process owner; MTP/prefix/media composition is refused. Generic paging, prefix reuse, compiled decode and packed-prefill flags remain disabled | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMoV26NativePagedProducer.swift` (`makeNativePagedExecutionResources`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`makeNativeMiMoBundle`) |
 | Public availability | Exact `mimo_v2` is admitted by the ordinary allowlist; normal callers select bounded visual/audio policies through MiMoV26OrdinaryServingPolicy. This does not create a catalog entry or qualify all endpoints | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift` (`isSupported`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`; `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 
 Typed media support does not grant encoded audiovisual/container support,
@@ -505,6 +505,12 @@ target+assistant prefix adoption, encrypted restart, paging and composed
 lifecycle/API qualification are separate gates; a helper or component result
 does not certify them. `input_audio` remains excluded from text-only cache
 planning and is not treated as vision.
+
+Joint contiguous text-prefix/media issuance shares the real process/store/model
+ownership contract: text can use complete checkpoints, while media remains
+noncacheable and target-only. This does not enable media-prefix reuse or the
+separate paged profile. The [composed SDK component record](../../libs/mlx-swift-lm/docs/mimo-v26/qualified-composition-20260928.md)
+identifies selected executed checks and the still-open full-artifact gates.
 
 This source candidate does not register a catalog model, change context or
 hardware limits, or activate a release. Defaults and opt-in spellings are in

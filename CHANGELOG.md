@@ -6,6 +6,7 @@
 - Add exact native MiMo ordinary dispatch with owned visual/audio policies and bounded encoded ingress. Required sidecars retain separate authenticated ownership. API/media qualification, unsupported formats, speech output and coordinator capability parity remain explicit gates.
 - Prepare opt-in text-only COMPLETE-prefix store/loaded-owner integration and bounded performance/residency candidates, preserving native precision, checkpoint topology, fallback paths and memory safeguards. Paging, media-prefix reuse and composed cache/lifecycle qualification remain separate gates.
 - Admit exact native MiMo through its dedicated ordinary loader; keep MiMo MTP out of automatic selection. Preliminary rectangular MTP measurements include a real greedy-output divergence and are not a lossless performance qualification. No catalog publication, deployment, model-limit change or optimization default is enabled.
+- Integrate current upstream cache ownership and add separately issued target-only native paging, joint contiguous text-prefix/media ownership, and admitted scalar-shape verification candidates. A selected 114-method component cohort passes; full-model/API, complete MTP state, paging composition and production defaults remain unqualified.
 
 ## Unreleased — provider readiness diagnostics
 

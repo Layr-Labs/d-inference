@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-28 · commit `d06b528e4`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -511,6 +511,8 @@ process-scoped settings before first use and restart for latched kernel flags.
 |---|---|---|---|
 | `backend.mtp_mode` for `mimo_v2` | `on`, subject to existing MTP kill switch | `auto` leaves MiMo MTP off | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.preparation` accepts embedded heads, not an external assistant path |
 | `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` | exact `1` | off; serial target when MTP is enabled | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`); does not itself enable MTP and remains subject to exact greedy/state qualification |
+| `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE` | exact `1` | off | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMoV26RectangularDense.swift` (`enabledByEnvironment`); separately charged scalar-shape projections only in genuine admitted rectangular verification; full target/head-state qualification remains required |
+| `DARKBLOOM_MIMO_NATIVE_PAGED_TARGET` | exact `1` with an explicit paged backend | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`; separately issued asymmetric target-only paging; MTP, complete prefix and managed media remain refused in this profile |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | exact `1` | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMoV26WiredResidency.swift` (`isEnabled`, `Bounds`, `Policy`); shared-manager, owned-lifetime acceleration only, never load admission or physical-page coverage proof |
 | `DARKBLOOM_MIMO_COMPLETE_PREFIX` | exact `1` AND existing model-scoped prefix-cache policy enabled | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+MiMoPrefix.swift` (`nativeMiMoPrefixRefusal`); text-only contiguous COMPLETE checkpoints, exact store/process/loaded-owner binding; decoded-media profiles keep an honest prefix miss |
 
@@ -540,8 +542,9 @@ converted into successful fallback.
 
 The ordered key-range helper
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26NAXAttentionKeyRanges.swift`
-also remains separate from ordinary dispatch until its state allocations are
-admitted and retained by a real native owner. Neither helper flag nor grouped
+requires the genuine native process owner, bound policy, actual per-step work
+and extra allocation reservation. Source presence or requested flags do not
+prove a benchmark took that path. Neither helper flag nor grouped
 prefill changes scheduler chunk defaults, precision, cache semantics or memory
 reserves. Port-specific eligibility and licenses are in the
 [SDK port map](../../libs/mlx-swift-lm/docs/mimo-v26/implementation-references.md).

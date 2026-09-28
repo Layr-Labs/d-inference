@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-28 · commit `18fad5efe`
+> Last updated: 2026-09-28 · commit `9540c801d`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -504,7 +504,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | `billing.overage_micro_usd` | histogram | `model` | `handleCompleteAt` |
 | `billing.settlement_refund_micro_usd` | histogram | `model` | `handleCompleteAt` |
 | `billing.zero_usage_complete` | incr | `model` | `handleCompleteAt` |
-| `billing.cache_read_discount_micro_usd` | count | `model` | `handleCompleteAt` — µUSD the settled bill was below the same request priced with every prompt token at the input rate, through the same settle function (`payments.CacheReadDiscount` over `Rates.CostWithMinimum`, or `Rates.Cost` for service accounts), so a request at the per-request minimum either way reports nothing; emitted only for finalized, collected (`totalCost > 0`), non-free, non-promotion settlements with a cache hit. The token count itself is `cache_model_cached_tokens` |
+| `billing.cache_read_discount_micro_usd` | count | `model` | `handleCompleteAt` — µUSD the settled bill was below the same request priced with every prompt token at the input rate, through the same settle function (`payments.CacheReadDiscount` over `Rates.CostWithMinimum`, or `Rates.Cost` for service accounts), so a request at the per-request minimum either way reports nothing; emitted only when a cache hit settled at its computed price — not free, not zeroed as uncollected, not capped by the overage clamp or a failed overage charge, and not against a model-token grant. The token count itself is `cache_model_cached_tokens` |
 | `billing.provider_credits_micro_usd` | count | `model`, `type:account` | `handleCompleteAt` |
 | `billing.platform_fees_micro_usd` | count | `model` | `handleCompleteAt` |
 | `billing.credit_failed` | incr | `op:settlement_refund\|platform_fee` | `handleCompleteAt` |

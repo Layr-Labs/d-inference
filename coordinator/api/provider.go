@@ -2407,6 +2407,7 @@ func (s *Server) handleCompleteAt(
 		settle = rates.Cost
 	}
 	totalCost := settle(billable)
+	pricedCost := totalCost // before free-route, clamp and uncollected adjustments
 
 	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
 
@@ -2610,10 +2611,12 @@ func (s *Server) handleCompleteAt(
 		// Revenue effect of the cache hit that was actually settled: what this
 		// request would have cost with every prompt token at the input rate,
 		// less what it did cost, through the same settle function (so the
-		// per-request minimum is honoured). Free self-route and an uncollected
-		// charge settle at 0, and a model-token promotion settles through
-		// priceModelTokens at the input rate, so nothing was discounted there.
-		if !freeSelfRoute && pr.ModelTokenReservationID == "" && totalCost > 0 && billable.CachedTokens > 0 {
+		// per-request minimum is honoured). Only a request that settled at its
+		// computed price counts: free self-route and an uncollected charge
+		// settle at 0, an overage clamp or a failed overage charge settles at a
+		// cap the cold price would have hit too, and a model-token promotion
+		// settles through priceModelTokens at the input rate.
+		if pr.ModelTokenReservationID == "" && totalCost > 0 && totalCost == pricedCost && billable.CachedTokens > 0 {
 			if discount := payments.CacheReadDiscount(settle, billable); discount > 0 {
 				s.ddCount("billing.cache_read_discount_micro_usd", discount, []string{"model:" + pr.Model})
 			}

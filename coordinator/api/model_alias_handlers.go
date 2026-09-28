@@ -279,7 +279,9 @@ func (s *Server) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) 
 // message (providerSupportsDesiredModels).
 // IDs+entries are collected under the registry's read lock and the sends happen
 // afterward (SendDesiredModels takes the lock again).
-func (s *Server) fanOutDesiredModels() {
+// Return false if any send fails so callers can retry the committed mutation.
+// Failed snapshots are not deduplicated by SendDesiredModels on that retry.
+func (s *Server) fanOutDesiredModels() bool {
 	// Collect eligible provider IDs under the registry read lock, then compute
 	// entries and send AFTER releasing it. DesiredModelsForProvider and
 	// SendDesiredModels each take r.mu themselves, so calling them inside the
@@ -295,14 +297,17 @@ func (s *Server) fanOutDesiredModels() {
 			eligibleIDs = append(eligibleIDs, id)
 		}
 	})
+	delivered := true
 	for _, id := range eligibleIDs {
 		// Empty entry sets are sent too: "nothing is desired" is meaningful
 		// state — it marks a provider's in-flight prefetch for a now-deleted/
 		// repointed alias as stale (see SendDesiredModels).
 		if err := s.registry.SendDesiredModels(id, s.registry.DesiredModelsForProvider(id)); err != nil {
 			s.logger.Warn("failed to push desired_models", "provider_id", id, "error", err)
+			delivered = false
 		}
 	}
+	return delivered
 }
 
 // providerSupportsDesiredModels reports whether a provider can receive the

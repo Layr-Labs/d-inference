@@ -33,7 +33,7 @@ extension ProviderLoop {
                 outboundSend?.send(.modelsUpdate(models: [oldInfo]))
             } else {
                 await coordinatorClient?.unadvertiseModel(id)
-                await coordinatorClient?.forceReconnect()
+                requestPlannedReconnect()
             }
             if wasWarm, !isShuttingDown {
                 try await ensureModelLoaded(modelId: id, allowEviction: false, revisionUpdate: true)

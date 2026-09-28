@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-27 · commit `547f202f4`
+> Last updated: 2026-09-28 · commit `a8b7d3318`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -163,8 +163,8 @@ DDL in `coordinator/store/postgres.go`; Go types in `coordinator/store/interface
 | `version` | text | unique per `model_id` |
 | `r2_prefix`, `aggregate_sha256`, `total_size_bytes`, `file_count` | | copied from the manifest |
 | `status` | text | `'ready'` on new registration; an existing `'retired'` version stays retired across re-registration |
-| `uploaded_by` | text | publishing key name, `env-bootstrap`, or `admin` |
-| `uploaded_at`, `promoted_at` | timestamptz | `promoted_at` set by `PromoteModelVersion` |
+| `uploaded_by` | text | original publishing key name, `env-bootstrap`, or `admin`; preserved by identical registration/publication retries |
+| `uploaded_at`, `promoted_at` | timestamptz | original `uploaded_at` survives identical retries; `promoted_at` set by `PromoteModelVersion` |
 | `metadata` | jsonb | the registration `metadata` |
 
 ### `model_version_files` ↔ `ModelVersionFile`
@@ -303,9 +303,9 @@ successful action calls `SyncModelCatalog()`.
 
 | `action` | Body | Effect | Response |
 |---|---|---|---|
-| `publish-revision` | `{"version":"...","hugging_face_artifact":{"repo_id":"owner/repo","revision":"<40-character SHA>","path_prefix":"optional/subdir"}}` | `handlePublishModelRevision` in `coordinator/api/model_revision_handlers.go` validates the optional per-revision HF locator, verifies the R2 manifest/files, records the authenticated publisher, preserves model metadata/pricing, promotes and refreshes live desired state | `{"status":"promoted","model_id","version","aggregate_sha256"}`; 503 with `Retry-After` if promotion committed but live policy refresh failed |
+| `publish-revision` | `{"version":"...","hugging_face_artifact":{"repo_id":"owner/repo","revision":"<40-character SHA>","path_prefix":"optional/subdir"}}` | `handlePublishModelRevision` in `coordinator/api/model_revision_handlers.go` validates the optional per-revision HF locator, verifies the R2 manifest/files, records the initial authenticated publisher, preserves original upload attribution on retries and model metadata/pricing, promotes and refreshes live desired state | `{"status":"promoted","model_id","version","aggregate_sha256"}`; 503 with `Retry-After` if promotion committed but live policy refresh or desired-state delivery to a provider failed |
 | `retire-revision` | `{"version":"..."}` | `RetireModelVersion` removes an inactive revision from accepted hashes; active revision returns 409. Re-registration preserves retired status; no file deletion | `{"status":"retired","model_id","version"}`; 503 if live policy refresh failed |
-| `promote` | `{"version": "..."}` | `PromoteModelVersion` — point `model_active_versions` at this version | `{"status":"promoted","model_id","version"}` |
+| `promote` | `{"version": "..."}` | `PromoteModelVersion` — point `model_active_versions` at this version | `{"status":"promoted","model_id","version"}`; 503 with `Retry-After: 5` if promotion committed but live policy refresh or desired-state delivery failed; retry the same version |
 | `status` | `{"status": "..."}` | `SetModelStatus`; value must be `beta`, `active`, `deprecated`, or `retired` | `{"status":"updated","model_id","model_status"}` |
 | `runtime-parameters` | `{"runtime_parameters": {...}}` | **merge** keys into the existing object (partial update) | `{"status":"updated","model_id","runtime_parameters"}` |
 | `capabilities` | `{"capabilities": [...]}` | **replace** wholesale; trimmed, de-duplicated, sorted (`normalizeCapabilities`) | `{"status":"updated","model_id","capabilities"}` |
@@ -316,8 +316,11 @@ successful action calls `SyncModelCatalog()`.
 For `publish-revision`, omit `hugging_face_artifact` to select R2-only for this
 revision. The locator is never inherited from older weights; it is separate
 from upstream `hugging_face_id` metadata. Its [pinned artifact validation](#hugging-face-download-artifact)
-applies before registration or promotion. Retry a 503 with the same version and
-source fields. Promoting a retired revision returns 409 (`ErrModelVersionRetired`);
+applies before registration or promotion. A 503 can occur after the durable
+promotion and live catalog update when sending desired state to a provider fails;
+it does not imply rollback. Retry with the same version and source fields. An
+identical retry preserves the original `uploaded_by` and `uploaded_at`.
+Promoting a retired revision returns 409 (`ErrModelVersionRetired`);
 publish a new version to approve those bytes again.
 
 Unknown action → `404 model action not found`.

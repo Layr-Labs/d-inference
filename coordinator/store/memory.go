@@ -1624,9 +1624,10 @@ func (s *MemoryStore) setModelVersionLocked(entry *ModelRegistryEntry, version *
 		if existing.Status == "retired" {
 			versionCopy.Status = "retired"
 		}
-		if versionCopy.UploadedAt.IsZero() {
-			versionCopy.UploadedAt = existing.UploadedAt
-		}
+		// Identical publication retries retain the first publisher's audit
+		// identity, even when a different credential replays the manifest.
+		versionCopy.UploadedBy = existing.UploadedBy
+		versionCopy.UploadedAt = existing.UploadedAt
 		versionCopy.PromotedAt = cloneTimePtr(existing.PromotedAt)
 	} else {
 		s.modelVersionSeq++
@@ -1638,6 +1639,7 @@ func (s *MemoryStore) setModelVersionLocked(entry *ModelRegistryEntry, version *
 	s.modelVersions[key] = &versionCopy
 	s.modelVersionByID[versionCopy.ID] = &versionCopy
 	version.ID = versionCopy.ID
+	version.UploadedBy = versionCopy.UploadedBy
 	version.UploadedAt = versionCopy.UploadedAt
 	version.Status = versionCopy.Status
 

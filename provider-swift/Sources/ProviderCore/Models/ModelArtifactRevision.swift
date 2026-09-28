@@ -89,7 +89,9 @@ extension ModelDownloader {
         }
     }
 
-    static func publishRevision(stagingDir: URL, directory: URL, manifest: ModelManifest) throws {
+    static func publishRevision(
+        stagingDir: URL, directory: URL, manifest: ModelManifest, activationRequested: Bool = false
+    ) throws {
         try Task.checkCancellation()
         // Refuse to overwrite even a corrupt immutable snapshot. A running
         // process may still own it. Recovery needs a new revision or removal
@@ -103,14 +105,29 @@ extension ModelDownloader {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(manifest).write(to: stagingDir.appendingPathComponent(".darkbloom-manifest.json"), options: .atomic)
+        // An initial activate-enabled download has no previous selection to
+        // preserve. Record its intent before the atomic directory move: before
+        // publication discovery sees no model, and afterwards the complete,
+        // verified snapshot is discoverable even if the process exits before
+        // activateRevision. Staged-only revisions never gain a ref, and an
+        // existing active snapshot keeps its ref until explicit activation.
+        if activationRequested, ModelScanner.resolveLocalPath(modelID: manifest.modelID) == nil {
+            try writeRevisionRef(modelID: manifest.modelID, directory: directory, requirePublishedSnapshot: false)
+        }
         try FileManager.default.moveItem(at: stagingDir, to: directory)
     }
 
     static func activateRevision(modelID: String, directory: URL) throws {
+        try writeRevisionRef(modelID: modelID, directory: directory, requirePublishedSnapshot: true)
+    }
+
+    private static func writeRevisionRef(
+        modelID: String, directory: URL, requirePublishedSnapshot: Bool
+    ) throws {
         let modelDir = cacheModelDirectory(for: modelID)
         let snapshots = modelDir.appendingPathComponent("snapshots", isDirectory: true).standardizedFileURL
         guard directory.deletingLastPathComponent().standardizedFileURL == snapshots,
-            FileManager.default.fileExists(atPath: directory.path)
+            !requirePublishedSnapshot || FileManager.default.fileExists(atPath: directory.path)
         else { throw ModelCatalogError.downloadFailed("revision is outside this model's snapshot store") }
         let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
         try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)

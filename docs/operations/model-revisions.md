@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-09-20 · commit `cc225365f`
+> Last updated: 2026-09-28 · commit `a8b7d3318`
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -30,16 +30,36 @@ Overwriting an already published R2 revision is rejected.
 
 ## Steps
 
-1. Preview the publication. This hashes locally and makes no remote changes:
+1. Read the existing catalog entry and save its version and hash before selecting
+   replacement bytes. The [Nemotron Lightning rollout](cache-routing-rollout.md#widen-the-plan-gate-and-add-nemotron-lightning-and-bonsai-2)
+   uses the catalog ID `nvidia-nemotron-3.5-lightning`; confirm that ID and its
+   active entry on the selected coordinator. A Hugging Face repository name is
+   a download source and does not replace the catalog ID.
 
    ```bash
-   python3 scripts/publish-model-revision.py publish /path/to/checkpoint org/model \
-     --coordinator https://api.dev.darkbloom.xyz \
-     --endpoint https://ACCOUNT.r2.cloudflarestorage.com \
-     --version candidate-20260920 --dry-run
+   REVISION_COORDINATOR=https://api.dev.darkbloom.xyz
+   REVISION_MODEL_ID=nvidia-nemotron-3.5-lightning
+   curl --fail --silent --show-error \
+     "${REVISION_COORDINATOR}/v1/models/catalog/${REVISION_MODEL_ID}" \
+     --output /tmp/nemotron-catalog-before.json
+   python3 -m json.tool /tmp/nemotron-catalog-before.json
    ```
 
-2. Run the same command without `--dry-run` to reserve the R2 prefix, upload
+   Retain the returned `version`, `aggregate_sha256`, `r2_prefix` and any
+   `hugging_face_artifact` for verification and rollback. Choose and qualify the
+   exact replacement checkpoint independently; the commands below leave its
+   local path and optional pinned HF source explicit.
+
+2. Preview the publication. This hashes locally and makes no remote changes:
+
+   ```bash
+   python3 scripts/publish-model-revision.py publish /path/to/qualified-checkpoint "$REVISION_MODEL_ID" \
+     --coordinator "$REVISION_COORDINATOR" \
+     --endpoint https://ACCOUNT.r2.cloudflarestorage.com \
+     --version candidate-YYYYMMDD-r1 --dry-run
+   ```
+
+3. Run the same command without `--dry-run` to reserve the R2 prefix, upload
    files and the final manifest, then invoke the authenticated
    `publish-revision` registry action. Omit `--version` to generate a unique
    timestamp/UUID version. Retry with the same version and identical files to
@@ -61,21 +81,35 @@ Overwriting an already published R2 revision is rejected.
    the HF flags makes the revision R2-only; an old source is never inherited.
 
    The action preserves model metadata, upstream `hugging_face_id` and pricing,
-   and records the authenticated publisher in `uploaded_by`. The coordinator
+   and records the initial authenticated publisher in `uploaded_by`. Identical
+   retries keep the original `uploaded_by` and `uploaded_at`. The coordinator
    checks the R2 manifest and file sizes before promotion; providers check file
    and aggregate SHA-256 hashes for either source. If publication returns 503
    after promotion, retry with the same version and HF flags until the live
-   catalog refresh succeeds.
+   catalog refresh and desired-state delivery succeed. A provider send failure
+   can return 503 even after the durable promotion and live catalog have changed;
+   do not treat that response as a rollback.
 
-3. Let eligible providers download while serving their existing revisions.
+4. Let eligible providers download while serving their existing revisions.
    Providers then stagger their model-scoped drains, switch snapshots and
    announce the new hash through `models_update`. No per-model binary release,
    alias edit or manual fleet download command is needed after support is installed.
 
+5. If this model participates in cache routing, qualify and derive the new
+   `(model_id, model_aggregate_sha256, prompt_contract_id)` tuple using the
+   [cache-routing rollout](cache-routing-rollout.md#widen-the-plan-gate-and-add-nemotron-lightning-and-bonsai-2).
+   Append it to `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` through that
+   runbook's separately approved deployment step. Keep tuples for retained
+   approved revisions during convergence and rollback. Promotion does not update
+   the allowlist, and a changed weight hash needs a new tuple even when its
+   tokenizer and prompt contract remain identical.
+
 ## Verification
 
-- Read `GET /v1/models/catalog/{model_id}` and its manifest endpoint. Confirm
-  `version`, `r2_prefix` and `aggregate_sha256` match the published manifest.
+- Read `GET /v1/models/catalog/{model_id}` and
+  `GET /v1/models/catalog/manifest/{model_id}`. Confirm `version`, `r2_prefix`
+  and `aggregate_sha256` match the published manifest and that the catalog ID,
+  pricing and aliases remain the intended ones.
 - Check provider logs for `model revision:` and the exact model/version.
   `outcome=installed` follows activation and advertisement; download progress
   alone does not prove a loaded replacement. Check heartbeat slot state and
@@ -96,7 +130,10 @@ Use the existing authenticated `POST /v1/admin/models/{model_id}/promote` with
 `{"version":"previous-version"}`. Providers receive its hash as desired state
 and use the retained snapshot when available. Previously approved, non-retired
 revisions remain acceptable during that convergence. Rollback does not restore
-model metadata changes made separately through other admin actions.
+model metadata changes made separately through other admin actions. If promotion
+returns 503 with `Retry-After: 5`, its storage change may already be committed;
+retry the same previous version until the live catalog refresh and desired-state
+delivery succeed.
 
 Retirement is a separate, explicit operation after checking fleet adoption:
 `POST /v1/admin/models/{model_id}/retire-revision` with `{"version":"old-version"}`.
@@ -113,3 +150,4 @@ revocation is not complete until the live routing policy refresh succeeds.
 - [Coordinator deployment](coordinator-deploy.md)
 - [Provider release](provider-release.md)
 - [Model revision design](../architecture/model-revisions.md)
+- [Cache-routing rollout](cache-routing-rollout.md)

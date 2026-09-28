@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-27 · commit `547f202f4`
+> Last updated: 2026-09-28 · commit `a8b7d3318`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -117,7 +117,8 @@ It also reconciles prompt-contract artifacts for the new hashes, fans out
 A provider's advertised inventory only counts when the catalog agrees.
 `coordinator/registry/model_catalog.go` (`modelAllowedByCatalogLocked`) requires the
 build id to be in the catalog and, when both sides carry a hash, the provider's
-`WeightHash` to equal the catalog's. The `models_update` merge path
+`WeightHash` to match the desired revision or a retained approved revision of
+that model (`CatalogEntry.acceptsWeightHash`). The `models_update` merge path
 (`mergeProviderModels`) is stricter: a build the catalog has never heard of is
 rejected, a provider missing a required runtime capability is rejected, and
 when the catalog pins a hash the update **must** carry a matching one — a

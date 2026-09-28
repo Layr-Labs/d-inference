@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-27 · commit `547f202f4`
+> Last updated: 2026-09-28 · commit `a8b7d3318`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -43,7 +43,7 @@ snapshot through `RefreshDesiredModels` in `coordinator/registry/model_commands.
 The API then sends `models_replace_resumed`, and the provider waits for the
 matching receipt before reporting success.
 That refresh bypasses per-connection delivery deduplication, retains the existing
-capability/version guards and retired-alias lineage, and emits an empty snapshot
+backend/capability guards and retired-alias lineage, and emits an empty snapshot
 when deselected aliases no longer apply. The provider preserves a snapshot that
 arrives while its commit is awaiting acknowledgement and resumes convergence
 after reopening admission. A failed receipt write or missing readiness neither

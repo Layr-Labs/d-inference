@@ -233,7 +233,11 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 			s.writeModelRegistryStoreError(w, "promote model version", err)
 			return
 		}
-		s.SyncModelCatalog()
+		if !s.syncModelCatalog() {
+			w.Header().Set("Retry-After", "5")
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("internal_error", "revision promoted in storage but live policy refresh or provider delivery failed; retry promotion with the same version"))
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "promoted", "model_id": modelID, "version": req.Version})
 	case "status":
 		var req struct {

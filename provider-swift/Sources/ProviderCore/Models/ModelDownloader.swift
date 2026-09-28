@@ -85,9 +85,12 @@ public struct ModelDownloader: Sendable {
     }
 
     /// Remove a downloaded model from the cache. Returns true if anything was
-    /// removed, false if the model was not present.
+    /// removed, false if the model was not present. An active download or
+    /// revision activation must finish before removal can acquire its lease.
     @discardableResult
     public static func remove(modelID: String) throws -> Bool {
+        let lease = try ModelArtifactWriteLease.acquireIfAvailable(modelID: modelID)
+        defer { lease.release() }
         let modelDir = cacheModelDirectory(for: modelID)
         guard FileManager.default.fileExists(atPath: modelDir.path) else { return false }
         try FileManager.default.removeItem(at: modelDir)

@@ -1234,8 +1234,8 @@ func (s *Server) SetMDMWebhookSecret(secret string) {
 // registry's model catalog. Call this at startup and after admin catalog changes.
 func (s *Server) SyncModelCatalog() { s.syncModelCatalog() }
 
-// Return whether the committed registry state reached the live routing policy.
-// Revocation callers must not acknowledge completion after a failed refresh.
+// Return whether the committed registry state reached the live routing policy
+// and connected providers. Revision callers must retry after either failure.
 func (s *Server) syncModelCatalog() bool {
 	s.modelCatalogSyncMu.Lock()
 	defer s.modelCatalogSyncMu.Unlock()
@@ -1282,9 +1282,9 @@ func (s *Server) syncModelCatalog() bool {
 	// prefetch even when alias pointers did not change. Re-publish the filtered
 	// desired state immediately; newly ineligible providers receive an empty
 	// set, which cancels stale reconciliation work.
-	s.fanOutDesiredModels()
+	delivered := s.fanOutDesiredModels()
 	s.invalidateCatalogCache()
-	return true
+	return delivered
 }
 
 // syncModelAliases loads standard rollout aliases first, then resolves

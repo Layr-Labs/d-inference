@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-28 · commit `2496ac833`
+> Last updated: 2026-09-28 · commit `ad002169e`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -742,7 +742,12 @@ Code: `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Cache.swift`
 
 ### `darkbloom models remove <id>`
 
-Delete a downloaded model.
+Delete a downloaded model. The command returns a busy error if a download or
+revision update currently owns that model's writer lease; retry after it finishes.
+`--force` skips confirmation and does not bypass the lease. Code:
+`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift` (`remove`),
+`provider-swift/Sources/ProviderCore/Models/ModelArtifactWriteLease.swift`
+(`acquireIfAvailable`).
 
 ```bash
 darkbloom models remove <id> [--force]

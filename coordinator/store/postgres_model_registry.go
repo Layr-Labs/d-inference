@@ -97,21 +97,23 @@ func (s *PostgresStore) setModelVersion(entry *ModelRegistryEntry, version *Mode
 	if err != nil {
 		return err
 	}
+	// A replay may refresh descriptive metadata, but the original publisher
+	// and upload time remain the provenance of these immutable bytes.
 	err = tx.QueryRow(ctx, `
 		INSERT INTO model_versions (model_id, version, r2_prefix, aggregate_sha256, total_size_bytes, file_count, status, uploaded_by, uploaded_at, metadata, hugging_face_artifact)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, $10)
 		ON CONFLICT (model_id, version) DO UPDATE SET
 		  r2_prefix = $3, aggregate_sha256 = $4, total_size_bytes = $5, file_count = $6,
 		  status = CASE WHEN model_versions.status = 'retired' THEN 'retired' ELSE $7 END,
-		  uploaded_by = $8, metadata = $9, hugging_face_artifact = $10
+		  metadata = $9, hugging_face_artifact = $10
 		WHERE model_versions.aggregate_sha256 = EXCLUDED.aggregate_sha256
 		  AND model_versions.r2_prefix = EXCLUDED.r2_prefix
 		  AND model_versions.total_size_bytes = EXCLUDED.total_size_bytes
 		  AND model_versions.file_count = EXCLUDED.file_count
-		RETURNING id, uploaded_at, promoted_at, status`,
+		RETURNING id, uploaded_by, uploaded_at, promoted_at, status`,
 		version.ModelID, version.Version, version.R2Prefix, version.AggregateSHA256,
 		version.TotalSizeBytes, version.FileCount, version.Status, version.UploadedBy,
-		versionMetadata, version.HuggingFaceArtifact).Scan(&version.ID, &version.UploadedAt, &version.PromotedAt, &version.Status)
+		versionMetadata, version.HuggingFaceArtifact).Scan(&version.ID, &version.UploadedBy, &version.UploadedAt, &version.PromotedAt, &version.Status)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return ErrModelVersionImmutable

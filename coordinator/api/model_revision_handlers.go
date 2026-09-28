@@ -70,7 +70,7 @@ func (s *Server) handlePublishModelRevision(w http.ResponseWriter, r *http.Reque
 	}
 	if !s.syncModelCatalog() {
 		w.Header().Set("Retry-After", "5")
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("internal_error", "revision promoted in storage but live policy refresh failed; retry publication with the same version"))
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("internal_error", "revision promoted in storage but live policy refresh or provider delivery failed; retry publication with the same version"))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -98,7 +98,8 @@ func (s *Server) handleRetireModelRevision(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if !s.syncModelCatalog() {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("internal_error", "revision retired in storage but live policy refresh failed; retry retirement"))
+		w.Header().Set("Retry-After", "5")
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("internal_error", "revision retired in storage but live policy refresh or provider delivery failed; retry retirement"))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "retired", "model_id": modelID, "version": req.Version})

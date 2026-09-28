@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-27 · commit `547f202f4`
+> Last updated: 2026-09-28 · commit `a8b7d3318`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog

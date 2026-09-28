@@ -49,7 +49,7 @@ struct RevisionActivationFixture {
             config: ProviderConfig(provider: ProviderSettings(name: "revision-test", memoryReserveGB: 1),
                 backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 2)),
             modelHashes: [id: oldHash])
-        let loop = try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        let loop = try ProviderLoop(config: config, attestationSigner: nil)
         await loop.setDaemonStateFileForTesting(snapshots.appendingPathComponent(".test-state.json"))
         let entry = CoordinatorMessage.DesiredModelEntry(modelName: id, desiredBuild: id, revision: "new", aggregateSHA256: newHash)
         await loop.revisionTestSetDesired(entry)

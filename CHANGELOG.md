@@ -2,7 +2,9 @@
 
 ## Unreleased — automatic model artifact revisions
 
-- Let each revision declare a different pinned Hugging Face repo, commit and subdirectory through publishing flags or the API, with checksum-verified R2 fallback. Preserve retirement across registration retries, report failed live refreshes as retryable errors, retain updates for eligible alias lineage builds, and attribute revisions to the authenticated publisher.
+- Preserve model writer locks across cache removal and refuse removal during an active download or update. Keep a first verified download discoverable if the process exits immediately after publishing its snapshot.
+
+- Let each revision declare a different pinned Hugging Face repo, commit and subdirectory through publishing flags or the API, with checksum-verified R2 fallback. Preserve retirement and original upload attribution across registration retries, report failed live refreshes or provider desired-state sends as retryable errors, and retain updates for eligible alias lineage builds.
 
 - Add automatic artifact revisions for existing model IDs: publish immutable R2 bytes and a manifest once, then supporting providers resume/verify downloads, drain accepted requests and activate with rollback. Retain approved older hashes during convergence; add explicit inactive-revision retirement. Share the idle-upgrade lifecycle with Gemma MTP.
 

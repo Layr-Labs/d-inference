@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-28 · commit `a8b7d3318`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -468,6 +468,14 @@ or non-directory component before `..`.
 The command never moves weights or restarts a provider. Apply a saved change with
 `darkbloom restart` (or `darkbloom start` if stopped). The CLI reports its selected
 config, not proof that an already-running daemon has adopted a new setting.
+
+The selected cache root also holds `.artifact-writer-locks`, whose persistent
+per-model lock files coordinate downloads, revision activation and
+[`models remove`](../provider/cli-reference.md#darkbloom-models-remove-id).
+They remain outside removed model directories; do not delete them while a
+provider or model command is running. Code:
+`provider-swift/Sources/ProviderCore/Models/ModelArtifactWriteLease.swift`
+(`openDescriptor`).
 
 ### Operator-facing: daemon, paths, updates
 

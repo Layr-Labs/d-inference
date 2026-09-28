@@ -261,9 +261,10 @@ struct ModelPrefetchDownloaderTests {
             try await downloader.downloadManifestModel(model: model, manifest: manifest, onProgress: nil)
         }
 
-        let snapshot = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let snapshot = try #require(ModelScanner.resolveLocalPath(modelID: modelID))
+        #expect(snapshot == (try ModelDownloader.revisionSnapshotDirectory(manifest: manifest)).resolvingSymlinksInPath())
         #expect(try Data(contentsOf: snapshot.appendingPathComponent("model.safetensors")) == payload)
-        #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == "local")
+        #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == snapshot.lastPathComponent)
         #expect(!fm.fileExists(atPath: missingTarget.path))
         let backups = try fm.contentsOfDirectory(atPath: cacheRoot.path).filter { $0.hasPrefix(backupPrefix) }
         #expect(backups.count == 1)

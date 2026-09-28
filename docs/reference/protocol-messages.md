@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-28 · commit `ad002169e`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -805,7 +805,7 @@ concrete-model entries only for providers reporting `model_revisions_v1` in
 Sent right after `register`, when desired identities or eligible capabilities
 change, and freshly recomputed after matching provider readiness for a committed
 replacement even when the snapshot equals the one sent before switching. The same
-backend/version and attested capability guards apply. Alias entries describe aliases
+backend and attested capability guards apply. Alias entries describe aliases
 whose desired, previous, or retired build is in the provider's advertised inventory;
 an empty set revokes old targets. Revision-aware providers stage the exact artifact
 and drain before activation; ID-only providers retain the legacy prefetch path.

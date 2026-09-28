@@ -42,11 +42,16 @@ func revisionPublishFixture(t *testing.T, backing store.Store) (*Server, *store.
 
 func publishRevisionRequest(t *testing.T, srv *Server, id string, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
+	return modelRevisionActionRequest(t, srv, id, "publish-revision", body)
+}
+
+func modelRevisionActionRequest(t *testing.T, srv *Server, id, action string, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
 	data, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/"+id+"/publish-revision", bytes.NewReader(data))
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/"+id+"/"+action, bytes.NewReader(data))
 	req.Header.Set("Authorization", "Bearer publish-secret")
 	response := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(response, req)
@@ -165,5 +170,38 @@ func TestPublishRevisionReturnsRetryableErrorUntilLivePolicyRefreshes(t *testing
 	}
 	if srv.registry.CatalogWeightHash(manifest.ModelID) != manifest.AggregateSHA256 {
 		t.Fatal("successful retry did not refresh live policy")
+	}
+}
+
+func TestPublishRevisionReturnsRetryableErrorUntilDesiredStateIsDelivered(t *testing.T) {
+	srv, st, manifest := revisionPublishFixture(t, store.NewMemory(store.Config{}))
+	// A registered provider with a stopped writer deterministically rejects the
+	// desired_models send after the catalog read and routing refresh succeed.
+	provider := registerBuildsProvider(srv, "unreachable-revision-provider", manifest.ModelID)
+	provider.Mu().Lock()
+	provider.ReportedRuntimeCapabilities = []string{"model_revisions_v1"}
+	provider.Mu().Unlock()
+	body := map[string]any{"version": manifest.Version}
+	response := publishRevisionRequest(t, srv, manifest.ModelID, body)
+	if response.Code != http.StatusServiceUnavailable || response.Header().Get("Retry-After") == "" {
+		t.Fatalf("failed delivery was acknowledged: %d %s", response.Code, response.Body.String())
+	}
+	committed, err := st.GetModelRegistryRecord(manifest.ModelID)
+	if err != nil || committed.ActiveVersion.Version != manifest.Version {
+		t.Fatal("expected committed promotion awaiting delivery", err)
+	}
+	if srv.registry.CatalogWeightHash(manifest.ModelID) != manifest.AggregateSHA256 {
+		t.Fatal("catalog refresh must succeed before this delivery failure")
+	}
+	desired := srv.registry.DesiredModelsForProvider(provider.ID)
+	if len(desired) != 1 || desired[0].Revision != manifest.Version || desired[0].AggregateSHA256 != manifest.AggregateSHA256 {
+		t.Fatalf("expected pending desired revision: %+v", desired)
+	}
+	// Once the failed session leaves, reconnects receive the latest state and
+	// retrying the already-committed publication can acknowledge completion.
+	srv.registry.Disconnect(provider.ID)
+	response = publishRevisionRequest(t, srv, manifest.ModelID, body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("retry: %d %s", response.Code, response.Body.String())
 	}
 }

@@ -1,6 +1,6 @@
 # Model artifact revisions
 
-> Last updated: 2026-09-20 · commit `59215f370`
+> Last updated: 2026-09-28 · commit `a8b7d3318`
 
 An existing model can acquire new weights without changing its model ID or
 releasing another provider binary. Publishers upload an immutable revision and
@@ -67,6 +67,12 @@ immutable publication, file reuse and a cancellable process-shared writer lease.
 Files copied from the active snapshot are independently owned and reverified.
 The implementation uses copies, not a deduplicating blob store; disk must fit
 both retained and incoming revisions. A storage failure preserves the selection.
+`ModelArtifactWriteLease.openDescriptor` keeps persistent lock files under the
+selected cache root's `.artifact-writer-locks` directory, outside each removable
+model directory. `ModelDownloader.remove` acquires the same lease without waiting
+and refuses removal while a download or update owns it. Keeping the lock inode
+through removal prevents another process from acquiring a second lock on a
+recreated model tree; the operating system releases a crashed process's lease.
 
 Completed snapshots live at `snapshots/.revision-<identity_sha256>`. The snapshot
 key hashes the model ID, version, R2 prefix, aggregate hash and path-sorted file
@@ -78,6 +84,15 @@ staging and completed-but-unselected snapshots are excluded from discovery.
 `ModelScanner.findLatestSnapshot` honors `refs/main`; modification times cannot
 undo a rollback. Legacy caches without a ref retain modification-time discovery.
 The provider never deletes retained revisions automatically.
+
+For an activation-enabled first download with no usable selected snapshot,
+`ModelArtifactRevision.publishRevision` writes the `refs/main` intent before
+atomically moving the verified staging directory into its final snapshot path.
+A crash before that move leaves no discoverable model; a crash afterward leaves
+the complete verified snapshot discoverable without another download. A retry
+may replace an intent whose target is still absent. Existing managed or legacy
+snapshots retain their selection until `activateRevision`; preparation with
+`activate: false` never writes the initial intent.
 
 The monitor runs one revision attempt at a time and retries with jittered,
 exponential backoff capped at 300 seconds. A new desired identity resets that
@@ -102,7 +117,8 @@ random rollout jitter is not a fleet availability guarantee.
 
 1. **A published version cannot change identity.** `SetModelVersion` rejects
    different hashes, prefixes, sizes, file counts or file manifests for an
-   existing `(model_id, version)`. The publisher's conditional R2 reservation
+   existing `(model_id, version)`. An identical retry preserves the original
+   uploader and upload timestamp. The publisher's conditional R2 reservation
    rejects competing different content before uploading. R2 supports the
    conditional `PutObject` used for that reservation ([Cloudflare API contract](https://developers.cloudflare.com/r2/api/s3/api/)).
 2. **Selection follows verification.** `ModelArtifactRevision.publishRevision`
@@ -133,7 +149,10 @@ random rollout jitter is not a fleet availability guarantee.
 |---|---|
 | Live catalog refresh fails after promotion | HTTP 503 with `Retry-After`; retry publication using the same version and source |
 | Incomplete upload or invalid manifest | Publishing is rejected; desired revision stays unchanged |
+| Live catalog refresh or provider desired-state send fails after promotion | API returns retryable 503; retry the same version and source fields, preserving the committed revision and original upload attribution |
 | Network interruption or insufficient disk | Old revision serves; partial downloads can resume |
+| Removal while a writer owns the model lease | Removal returns a busy error; retry after download or update completes |
+| Process exits after first activation-enabled snapshot publication | Prewritten ref selects the complete verified snapshot on restart |
 | Desired revision changes during preparation or publication | Old attempt is cancelled; publication restores the previous selection and preserves pending alias cleanup; completed bytes may remain for reuse |
 | Explicit external snapshot override | The provider respects the override and does not replace it through the cache |
 | Busy accepted requests outlast drain wait | New admission reopens on old revision; retry later |

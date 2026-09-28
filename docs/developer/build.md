@@ -1,11 +1,16 @@
 # Build
 
-> Last updated: 2026-09-28 · commit `15dd32a06`
+> Last updated: 2026-09-28 · commit `8b8ed95e1`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the console and marketing Next.js UIs.
 `make build` builds those components; the admin UI is built separately below.
+
+Coordinator CI builds the adversarial-number test once without instrumentation
+for its enforced performance budget, then builds the full suite with race
+detection and atomic coverage. See [numeric parsing tests](test.md#adversarial-numeric-parsing)
+for the separate commands and their timing limits.
 
 Registry-ID support changes Swift provider policy and Rust prompt normalization
 together. Build the paired coordinator/sidecar/provider candidate; the v6

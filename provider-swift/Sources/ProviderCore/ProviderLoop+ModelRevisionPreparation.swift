@@ -23,7 +23,7 @@ extension ProviderLoop {
         let oldHash = liveModelHashes[id]
         let needsRollback = advertisedModels[id] != nil || modelSlots[id] != nil
         let info = try await Task.detached(priority: .utility) {
-            guard ModelDownloader.verifiedRevisionExists(at: directory, manifest: manifest) else {
+            guard try ModelDownloader.verifyRevisionAndRepairReceipt(at: directory, manifest: manifest) else {
                 throw ModelCatalogError.downloadFailed("prepared revision changed before activation ownership was acquired")
             }
             if needsRollback {

@@ -90,6 +90,41 @@ struct ModelArtifactPublicationTests {
         #expect(ModelScanner.resolveLocalPath(modelID: f.modelID) == directory.resolvingSymlinksInPath())
     }
 
+    @Test("a linked model cache supports initial activation and rollback without allowing external snapshots")
+    func linkedCacheActivationAndRollback() throws {
+        let f = Fixture()
+        let fm = FileManager.default
+        let external = fm.temporaryDirectory.appendingPathComponent("linked-revisions-\(UUID().uuidString)")
+        defer { f.clean(); try? fm.removeItem(at: external) }
+        let modelTarget = external.appendingPathComponent("model", isDirectory: true)
+        try fm.createDirectory(at: modelTarget, withIntermediateDirectories: true)
+        try fm.createDirectory(at: f.modelDirectory.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(atPath: f.modelDirectory.path, withDestinationPath: modelTarget.path)
+        let (oldStaging, oldDirectory, oldManifest) = try f.stage(version: "old")
+        // The target child does not exist yet when initial activation intent
+        // validates its parent; resolve the existing parent through the link.
+        #expect(!fm.fileExists(atPath: oldDirectory.path))
+        try ModelDownloader.publishRevision(stagingDir: oldStaging, directory: oldDirectory,
+            manifest: oldManifest, activationRequested: true)
+        let previous = try #require(ModelScanner.resolveLocalPath(modelID: f.modelID))
+        #expect(previous == oldDirectory.resolvingSymlinksInPath())
+        #expect(previous != oldDirectory)
+        #expect(ModelDownloader.selectedRevisionMatches(modelID: f.modelID,
+            version: oldManifest.version, aggregateSHA256: oldManifest.aggregateSHA256))
+        let (nextStaging, nextDirectory, nextManifest) = try f.stage()
+        try ModelDownloader.publishRevision(stagingDir: nextStaging, directory: nextDirectory, manifest: nextManifest)
+        try ModelDownloader.activateRevision(modelID: f.modelID, directory: nextDirectory)
+        // Rollback uses the resolved path returned by the scanner.
+        try ModelDownloader.activateRevision(modelID: f.modelID, directory: previous)
+        #expect(ModelScanner.resolveLocalPath(modelID: f.modelID) == previous)
+        #expect(try String(contentsOf: f.modelDirectory.appendingPathComponent("refs/main"), encoding: .utf8)
+            == previous.lastPathComponent)
+        let outside = external.appendingPathComponent("unmanaged", isDirectory: true)
+        try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+        #expect(throws: (any Error).self) { try ModelDownloader.activateRevision(modelID: f.modelID, directory: outside) }
+        #expect(ModelScanner.resolveLocalPath(modelID: f.modelID) == previous)
+    }
+
     @Test("shared manifest finalization honors activation and publishes immutable revisions", arguments: [false, true])
     func sharedFinalization(activate: Bool) throws {
         let f = Fixture()

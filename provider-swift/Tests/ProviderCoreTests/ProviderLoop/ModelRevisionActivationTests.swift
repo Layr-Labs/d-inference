@@ -34,7 +34,9 @@ struct RevisionActivationFixture {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             try encoder.encode(manifest).write(to: directory.appendingPathComponent(".darkbloom-manifest.json"))
-            return (directory, hash)
+            let immutableDirectory = try ModelDownloader.revisionSnapshotDirectory(manifest: manifest)
+            try FileManager.default.moveItem(at: directory, to: immutableDirectory)
+            return (immutableDirectory, hash)
         }
         let (oldDirectory, oldHash) = try write(".revision-old", "old")
         let (newDirectory, newHash) = try write(".revision-new", "new")

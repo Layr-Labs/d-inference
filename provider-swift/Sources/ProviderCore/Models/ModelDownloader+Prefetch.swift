@@ -50,7 +50,7 @@ extension ModelDownloader {
                 ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
         }
         let cacheDir = try Self.revisionSnapshotDirectory(manifest: manifest)
-        if Self.verifiedRevisionExists(at: cacheDir, manifest: manifest) {
+        if try Self.verifyRevisionAndRepairReceipt(at: cacheDir, manifest: manifest) {
             if activate { try Self.activateRevision(modelID: model.id, directory: cacheDir) }
             onByteProgress?(manifest.totalSizeBytes, manifest.totalSizeBytes)
             return cacheDir

@@ -23,12 +23,14 @@ extension ModelDownloader {
     /// byte verification during download or attestation.
     static func selectedRevisionMatches(modelID: String, version: String, aggregateSHA256: String) -> Bool {
         guard let directory = ModelScanner.resolveLocalPath(modelID: modelID),
-            let data = try? Data(contentsOf: directory.appendingPathComponent(".darkbloom-manifest.json"))
-        else { return false }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let manifest = try? decoder.decode(ModelManifest.self, from: data) else { return false }
-        return manifest.modelID == modelID && manifest.version == version && manifest.aggregateSHA256 == aggregateSHA256
+            let manifest = revisionReceipt(at: directory) else { return false }
+        let model = CatalogModel(id: modelID, s3Name: manifest.r2Prefix, displayName: modelID, sizeGb: 0,
+            version: version, r2Prefix: manifest.r2Prefix, aggregateSHA256: aggregateSHA256)
+        do {
+            try validateArtifactManifest(manifest, model: model)
+            let expected = try revisionSnapshotDirectory(manifest: manifest)
+            return expected.resolvingSymlinksInPath() == directory.resolvingSymlinksInPath()
+        } catch { return false }
     }
 
     static func validateArtifactManifest(_ manifest: ModelManifest, model: CatalogModel) throws {
@@ -97,14 +99,12 @@ extension ModelDownloader {
         // process may still own it. Recovery needs a new revision or removal
         // of the corrupt inactive artifact by its owner.
         if FileManager.default.fileExists(atPath: directory.path) {
-            guard verifiedRevisionExists(at: directory, manifest: manifest) else {
+            guard try verifyRevisionAndRepairReceipt(at: directory, manifest: manifest) else {
                 throw ModelCatalogError.downloadFailed("immutable revision is corrupt: \(directory.lastPathComponent)")
             }
             return
         }
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(manifest).write(to: stagingDir.appendingPathComponent(".darkbloom-manifest.json"), options: .atomic)
+        try writeRevisionReceipt(manifest, at: stagingDir)
         // An initial activate-enabled download has no previous selection to
         // preserve. Record its intent before the atomic directory move: before
         // publication discovery sees no model, and afterwards the complete,
@@ -125,8 +125,8 @@ extension ModelDownloader {
         modelID: String, directory: URL, requirePublishedSnapshot: Bool
     ) throws {
         let modelDir = cacheModelDirectory(for: modelID)
-        let snapshots = modelDir.appendingPathComponent("snapshots", isDirectory: true).standardizedFileURL
-        guard directory.deletingLastPathComponent().standardizedFileURL == snapshots,
+        let snapshots = modelDir.appendingPathComponent("snapshots", isDirectory: true).resolvingSymlinksInPath()
+        guard directory.deletingLastPathComponent().resolvingSymlinksInPath() == snapshots,
             !requirePublishedSnapshot || FileManager.default.fileExists(atPath: directory.path)
         else { throw ModelCatalogError.downloadFailed("revision is outside this model's snapshot store") }
         let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
@@ -137,7 +137,7 @@ extension ModelDownloader {
 
 /// Stable, path-aware snapshot identity. Derived totals and creation time do not
 /// distinguish revisions; the complete file entries and registry identity do.
-private struct ModelRevisionIdentity: Encodable {
+struct ModelRevisionIdentity: Encodable, Equatable {
     let schemaVersion: Int
     let modelID: String
     let version: String

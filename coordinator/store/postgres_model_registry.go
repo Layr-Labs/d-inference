@@ -152,6 +152,9 @@ func (s *PostgresStore) PromoteModelVersion(modelID, version string) error {
 	// Promotion and retirement serialize on the same parent row.
 	var lockedModel string
 	if err := tx.QueryRow(ctx, `SELECT id FROM model_registry WHERE id=$1 FOR UPDATE`, modelID).Scan(&lockedModel); err != nil {
+		if err == pgx.ErrNoRows {
+			return fmt.Errorf("model %q: %w", modelID, ErrNotFound)
+		}
 		return err
 	}
 	var versionID int64

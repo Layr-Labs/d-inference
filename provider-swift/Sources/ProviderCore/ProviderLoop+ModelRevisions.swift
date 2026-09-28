@@ -121,22 +121,12 @@ extension ProviderLoop {
                 }, activate: false)
             try Task.checkCancellation()
             guard revisionIsDesired(entry) else { return nil }
-            let info = await Task.detached(priority: .utility) {
-                ModelScanner.parseModelInfo(snapshotDir: directory, modelName: model.id)
-            }.value
-            guard var info, info.templateRenderOK != false, EngineV2SupportedModels.isSupported(model: info) else {
-                throw ModelCatalogError.downloadFailed("revision failed engine/template compatibility checks")
-            }
-            info.weightHash = manifest.aggregateSHA256
             // Refresh auxiliary-artifact metadata as part of target revision
             // preparation. The existing MTP funnel still verifies and stages
             // assistants; an old cached catalog entry must not bind a stale one.
             _ = await specDecFunnel.prewarmCatalog(modelId: model.id,
                 timeout: Self.specDecCatalogPrewarmTimeout, forceRefresh: true)
-            let lease = try await ModelArtifactWriteLease.acquire(modelID: model.id)
-            guard revisionIsDesired(entry), !Task.isCancelled else { lease.release(); return nil }
-            return StagedModelRevision(entry: entry, directory: directory, info: info, lease: lease,
-                totalSizeBytes: manifest.totalSizeBytes)
+            return try await protectPreparedModelRevision(entry, directory: directory, manifest: manifest)
         } catch {
             send?.send(.prefetchModelStatus(modelId: model.id, status: .failed, bytesDone: 0,
                 bytesTotal: manifest.totalSizeBytes, error: error.localizedDescription))

@@ -2,7 +2,7 @@
 
 ## Unreleased — automatic model artifact revisions
 
-- Preserve model writer locks across cache removal and refuse removal during an active download or update. Keep a first verified download discoverable if the process exits immediately after publishing its snapshot.
+- Preserve model writer locks across cache removal and refuse removal during an active download or update. Revalidate replacement and rollback snapshots under the activation lease before draining. Keep a first verified download discoverable if the process exits immediately after publishing its snapshot.
 
 - Let each revision declare a different pinned Hugging Face repo, commit and subdirectory through publishing flags or the API, with checksum-verified R2 fallback. Preserve retirement and original upload attribution across registration retries, report failed live refreshes or provider desired-state sends as retryable errors, and retain updates for eligible alias lineage builds.
 

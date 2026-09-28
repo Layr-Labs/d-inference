@@ -152,12 +152,17 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
         // probe: `mtplx_mtp.included == true`, as the default `-mtp` catalog
         // build does) must load it: a silent fallback would turn the
         // MTP-history capture and restore this suite claims into an MTP-off
-        // run. Only an artifact without a declared head serves MTP-off.
-        if SpecDecStore.inlineDeclarationProbe(directory: directory) == .declared {
+        // run. Only an artifact the probe positively reports as having no
+        // head serves MTP-off; a config the probe cannot read may still
+        // declare one, so that is a fixture failure, not an MTP-off run.
+        switch SpecDecStore.inlineDeclarationProbe(directory: directory) {
+        case .declared:
             assistant = try Qwen35InlineMTPAssistant.load(from: directory, target: model)
-        } else {
+        case .absent:
             print("[qwen35-retention] \(modelID) declares no embedded MTP head, serving MTP-off")
             assistant = nil
+        case .undeterminable:
+            throw FixtureFailure.undeterminableMTPDeclaration(modelID)
         }
         let resolvedTokenizer = await container.perform { TokenizerHandle($0.tokenizer) }
         tokenizer = resolvedTokenizer
@@ -342,5 +347,9 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
         MLX.Memory.clearCache()
     }
 
-    enum FixtureFailure: Error { case promptTooShort }
+    enum FixtureFailure: Error {
+        case promptTooShort
+        /// The production probe could not read the artifact's MTP declaration.
+        case undeterminableMTPDeclaration(String)
+    }
 }

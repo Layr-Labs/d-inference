@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-26 · commit `cf5982227`
+> Last updated: 2026-09-28 · commit `3dea7a63f`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -76,7 +76,7 @@ Each entry carries:
 | `chip_name`, `hardware_model`, `memory_gb`, `gpu_cores`, `models[]` | Hardware class and served models |
 | `trust_level` | `none`, `self_signed`, or `hardware` (below) |
 | `status` | `online`, `offline`, `untrusted`, … |
-| `secure_enclave`, `sip_enabled`, `secure_boot_enabled`, `authenticated_root_enabled`, `system_volume_hash`? | Latest posture the coordinator verified |
+| `secure_enclave`, `sip_enabled`, `secure_boot_enabled`, `authenticated_root_enabled`, `system_volume_hash`? | Legacy attestation-reported posture; a valid signature binds the reported fields but does not independently certify every value or establish current App Attest authorization |
 | `se_public_key` | The provider's persistent legacy Secure Enclave P-256 public key (base64); permits linking public sessions, is not a private key or the App Attest credential |
 | `mdm_verified` | `true` exactly when the live connection holds `hardware` |
 | `acme_verified` | Deprecated, always `false`; kept on the wire for shipped decoders |
@@ -89,11 +89,14 @@ the `code_attested` flag.
 
 ## What the levels mean
 
+These levels describe legacy evidence. Use the dispatch verification method to
+identify App Attest or legacy serving authorization.
+
 | `trust_level` | What it tells you |
 |---|---|
 | `hardware` | Apple's MDM subsystem on that Mac confirmed SIP and full Secure Boot in agreement with the provider's Secure-Enclave-signed attestation. MDM `SecurityInfo` is the only path to this level; the MDA certificate chain is not required for it |
-| `self_signed` | The Secure-Enclave-signed attestation verified and the provider is passing the coordinator's periodic challenge, but there is no MDM confirmation yet |
-| `none` | No verified attestation |
+| `self_signed` | The legacy registration signature verified without a current hardware-trust grant; the label alone does not prove current challenge freshness or serving authorization |
+| `none` | No legacy trust grant; read the separate verification method for serving authorization |
 
 The grant and loss conditions for each level are tabulated in
 [`../architecture/security/attestation.md#trust-levels`](../architecture/security/attestation.md#trust-levels);
@@ -114,12 +117,17 @@ binds the provider's SE key (or serial) — proof of *which* genuine Apple devic
 holds the key. It is a flag on top of `hardware`, not a level, and it does not
 gate routing ([Flag — Apple Managed Device Attestation](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
 
-Public routing applies the coordinator's trust floor (`MinTrustLevel`, set by
-[`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft))
-plus every privacy gate (encrypted response chunks, coordinator-verified SIP,
-required privacy capabilities, code identity once enforced), so a request you
-send without self-routing is served only by a provider that passes all of them
-([`../architecture/security/attestation.md`](../architecture/security/attestation.md#routing-gate)).
+Public routing requires either the legacy authorization path or a current
+qualified App Attest lease, followed by shared liveness, runtime, encryption,
+privacy-capability and model checks. The legacy path applies the coordinator's
+trust floor (`MinTrustLevel`, set by
+[`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft)),
+fresh challenge-verified SIP and configured APNs/release-evidence gates. A qualified
+App Attest lease substitutes for those legacy requirements without setting the
+legacy evidence fields. Read the response's verification method at dispatch;
+a served response alone does not establish MDM or APNs verification. See the
+[hybrid provider trust model](../architecture/security/provider-trust.md) for the
+independent paths and their shared final handoff checks.
 
 ## Per-response signals
 
@@ -180,18 +188,21 @@ See [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
 ## Code identity
 
-The strongest production gate is APNs code-identity attestation: proof that the
+On the legacy path, APNs code-identity attestation provides evidence that the
 process holding the provider's decryption key is the genuine, team-signed
-Darkbloom binary. It is not a consumer-visible field, but once enforcement is
-switched on (`APNS_ENFORCE_AFTER`) a provider without it is excluded from
-private-text routing, so a served response implies it passed. See
-[`../design/apns-code-attestation.md`](../design/apns-code-attestation.md) and
-[`../architecture/security/attestation.md`](../architecture/security/attestation.md#flag--apns-code-identity).
+Darkbloom binary. Once configured enforcement is active (`APNS_ENFORCE_AFTER`),
+that path requires APNs evidence. A qualified App Attest lease instead provides
+its own verified code, endpoint and build-qualification evidence; it does not
+set `CodeAttested`. A served response therefore does not imply that the provider
+passed APNs attestation. Use the dispatch verification method and the
+[hybrid provider trust model](../architecture/security/provider-trust.md) to
+interpret which path authorized it.
 
-A coordinator reconnect still requires a fresh process-possession challenge before
-private routing. Recorded code-verified continuity can avoid another Apple push
-for the same process; it does not grant hardware trust or bypass verification.
-See [APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity).
+Legacy code-identity continuity after a coordinator reconnect still requires a
+fresh process-possession challenge before private routing. Recorded code-verified
+continuity can avoid another Apple push for the same process; it does not grant
+hardware trust or bypass verification. See [APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)
+and the [design record](../design/apns-code-attestation.md).
 
 ## Related
 

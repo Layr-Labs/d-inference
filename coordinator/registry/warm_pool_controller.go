@@ -54,8 +54,9 @@ func (r *Registry) StartWarmPoolController(ctx context.Context, cfg WarmPoolConf
 func (r *Registry) RequestWarmPoolTrigger() bool {
 	r.mu.RLock()
 	controller := r.warmPool
+	active := controller != nil && controller.config.activePlanner()
 	r.mu.RUnlock()
-	if controller == nil || !controller.config.Enabled || controller.config.ObserveOnly {
+	if !active {
 		return false
 	}
 	select {
@@ -72,8 +73,9 @@ func (r *Registry) RequestWarmPoolTrigger() bool {
 func (r *Registry) TriggerWarmPool() []WarmPoolSnapshot {
 	r.mu.RLock()
 	controller := r.warmPool
+	active := controller != nil && controller.config.activePlanner()
 	r.mu.RUnlock()
-	if controller == nil || !controller.config.Enabled || controller.config.ObserveOnly {
+	if !active {
 		return nil
 	}
 	return controller.tick(time.Now())
@@ -181,7 +183,7 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 }
 
 func (c *warmPoolController) plan(now time.Time) []WarmPoolSnapshot {
-	if c.config.MaxLoadsPerTick == 0 || c.config.MaxGlobalPendingLoads == 0 {
+	if !c.config.activePlanner() {
 		return c.planObserveOnly(now, nil)
 	}
 	return c.planObserveOnly(now, c.reserveActions)
@@ -332,7 +334,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			SpeculativeWon:       p.speculativeWon,
 			ColdDispatches:       p.coldDispatches,
 			LoadDurationEWMA:     p.loadDurationEWMA,
-			ObserveOnly:          c.config.ObserveOnly,
+			ObserveOnly:          !c.config.activePlanner(),
 			Actions:              actions,
 			RunningRequests:      f.running,
 			WaitingRequests:      f.waiting,

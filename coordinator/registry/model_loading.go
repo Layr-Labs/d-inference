@@ -110,7 +110,7 @@ func (r *Registry) TriggerModelSwaps() {
 	// second planner would bypass its global budgets and dwell policy.
 	r.mu.RLock()
 	controller := r.warmPool
-	active := controller != nil && controller.config.Enabled && !controller.config.ObserveOnly
+	active := controller != nil && controller.config.activePlanner()
 	r.mu.RUnlock()
 	if active {
 		r.RequestWarmPoolTrigger()

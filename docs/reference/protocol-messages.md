@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `914dc4e53`
+> Last updated: 2026-09-28 · commit `0b3fe26ea`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -279,6 +279,7 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 |---|---|---|---|---|
 | `slots` | `[]BackendSlotCapacity` | `[BackendSlotCapacity]` | req | [`slots[]`](#slots) |
 | `whole_mac_service_used` | `*float64` | `Double?` | opt | Fraction of the shared machine service allowance owned by requests until engine retirement; `[0,1]` |
+| `whole_mac_service_reservations` | `[]WholeMacServiceReservation` | `[WholeMacServiceReservation]` | opt | Exact coordinator attempts included in the aggregate above; omitted when empty, including local-only work. Missing decodes to an empty list; [entry schema and reconciliation](#service-reservation-correlation) |
 | `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `gpu_memory_cache_gb` | `float64` | `Double` | req | Metal active / peak / reclaimable cache, shared across slots |
 | `total_memory_gb` | `float64` | `Double` | req | |
 | `free_for_load_gb` | `*float64` | `Double` (always encoded) | ptr | **The single source of truth for cold-load admission**: max additional model-weight GB loadable now, net of the unified-memory cap (`defaultCapFraction`, [`../architecture/hardware-support.md#constants`](../architecture/hardware-support.md#constants)), the OS/operator reserve and activation + minimum-KV headroom, clamped to real OS-available memory, with idle resident models counted as evictable. Nil (legacy provider) → the coordinator falls back to its total-memory heuristic |
@@ -289,6 +290,31 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 | `capacity_seq` | `uint64` | `UInt64` | opt | per-connection monotonic snapshot sequence; the coordinator discards stale or reordered snapshots, and any `seq > 0` marks the connection quote-capable (`capacity_probe`). 0/omitted = legacy last-write-wins |
 | `telemetry` | `*CapacityTelemetry` | `CapacityTelemetry?` | opt | [`backend_capacity.telemetry`](#backend_capacitytelemetry) |
 | `prefix_cache_maintenance` | `*PrefixCacheMaintenanceTelemetry` | `PrefixCacheMaintenanceTelemetry?` | opt | Process-lifetime whole-root removal counters: `ttl_expired_total`, `budget_evicted_total`, `temp_removed_total`; includes unloaded models, separate from active-store evictions |
+
+#### Service reservation correlation
+
+Go `WholeMacServiceReservation` (`coordinator/protocol/whole_mac_service.go`) ·
+Swift `WholeMacServiceReservation`
+(`provider-swift/Sources/ProviderCore/Protocol/WholeMacServiceReservation.swift`).
+Each `whole_mac_service_reservations[]` entry has this shape:
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `id` | `string` | `String` | req | Opaque UUID echoed from the attempt's [`service_reservation_id`](#inference_request); independent of the client request ID |
+| `used_fraction` | `float64` | `Double` | req | Actual service allowance still held by this attempt; finite and in `(0,1]` |
+
+The provider snapshots the aggregate and this list atomically. Entries remain
+until engine retirement; local or legacy work without an attempt ID contributes
+only to the aggregate. Lists are bounded to 64 unique UUIDs, and their fractions
+must sum to no more than `whole_mac_service_used`. With a reported aggregate,
+malformed correlation metadata fails admission closed at full usage.
+
+The coordinator credits overlap only for an exact attempt ID, adding every
+unmatched pending charge and any positive difference between a matched local
+reservation and its reported fraction. Omitting the list while reporting the
+total is supported but conservatively counts all pending reservations in
+addition to that total. Omitting the total retains legacy admission; the list
+alone cannot establish overlap. Receipt time never proves inclusion.
 
 #### `slots[]`
 
@@ -784,6 +810,7 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | attempt UUID |
+| `service_reservation_id` | `string` | `String?` | opt | Fresh opaque UUID for the committed service reservation, including retries of the same request; omitted by older coordinators. The provider echoes it with the actual held charge in [`whole_mac_service_reservations`](#service-reservation-correlation) until retirement. Distinct from `request_id`; missing or invalid IDs receive no overlap credit but still consume provider allowance |
 | `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; the only request body. There is no plaintext `body` key: the coordinator never sends one and Swift rejects a request without `encrypted_body` |
 | `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding |
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |

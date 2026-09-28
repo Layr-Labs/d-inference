@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-28 · commit `e4ea7aeb1`
+> Last updated: 2026-09-28 · commit `0b3fe26ea`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -309,7 +309,9 @@ sum does not exceed the total; malformed reports fail closed at full usage.
 `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift` treats changes
 to this fraction or its reservation correlations as material even when slot
 counts and token budgets remain unchanged, covering pre-submit acquisition and
-delayed retirement release.
+delayed retirement release. Changes to slot concurrency or the full profile
+reference are also material, so a capacity refresh publishes posture-driven
+withdrawal and recovery even for idle slots with unchanged token budgets.
 The shared budget coalesces ownership notifications into one bounded stream;
 `provider-swift/Sources/ProviderCore/ProviderLoop+ServiceAllowance.swift`
 (`startServiceAllowanceRefreshMonitor`) rebuilds capacity through the existing
@@ -505,7 +507,11 @@ reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 
 The active controller owns model-load planning; `TriggerModelSwaps` coalesces
 a controller wakeup instead of running a second planner. Disabled/observe-only
-controllers keep the legacy fallback. Allocation tries the remaining ranked
+controllers and configurations with a non-positive resolved per-tick or global
+load limit keep the legacy fallback. A positive ramp ceiling does not override
+a disabled per-tick baseline. Exhausting a positive global budget temporarily
+keeps controller ownership, so the fallback cannot bypass its load limit.
+Allocation tries the remaining ranked
 candidates when another model already reserved the first candidate, and
 rechecks eligibility atomically before sending a command
 (`coordinator/registry/warm_pool_allocation.go`). Successful loads start a per-provider
@@ -522,9 +528,10 @@ state (`storeSnapshots` / `latestSnapshots`):
 `SpeculativeWon`, `ColdDispatches`, `LoadDurationEWMA`, `ObserveOnly`,
 `Actions`, `RunningRequests`, `WaitingRequests`, `SpillArrivalRate`,
 `ServiceTime`, `QualityConcurrency`, `DemandConcurrency`, `ColdIneligible`,
-`ColdDisqualifiers`. With `ObserveOnly` the snapshot is produced but no
-`load_model` is sent; `MaxLoadsPerTick = 0` or `MaxGlobalPendingLoads = 0`
-has the same effect (`plan`).
+`ColdDisqualifiers`. With `ObserveOnly` the snapshot is produced but the
+controller sends no `load_model`; `MaxLoadsPerTick <= 0` or
+`MaxGlobalPendingLoads <= 0` has the same effect (`plan`) and marks the snapshot
+observe-only.
 
 When Datadog is configured, `StartWarmPoolTelemetryLoop`
 (`coordinator/api/warm_pool_telemetry.go`) polls the retained snapshot every

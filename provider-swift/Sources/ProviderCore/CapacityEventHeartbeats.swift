@@ -72,6 +72,11 @@ public enum CapacityHeartbeatMateriality {
             if before.state != slot.state { return true }
             if before.numRunning != slot.numRunning { return true }
             if before.numWaiting != slot.numWaiting { return true }
+            // Posture can withdraw a reviewed profile and lower concurrency
+            // on an idle slot without changing its contiguous token budget.
+            // Publish both directions and the full qualification identity.
+            if before.maxConcurrency != slot.maxConcurrency { return true }
+            if before.performanceProfile != slot.performanceProfile { return true }
             // Token budget drifting without an admission-count change
             // (re-slice, queued work retiring, KV reclaim) is compared PER
             // SLOT: the coordinator's ledger is per-model, so opposing

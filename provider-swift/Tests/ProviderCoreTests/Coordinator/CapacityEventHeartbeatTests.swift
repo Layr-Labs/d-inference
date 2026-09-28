@@ -112,6 +112,47 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
         previous: base, current: capacity([slot(state: "reloading")])))
 }
 
+@Test func idleConcurrencyChangesAreMaterialWithoutTokenBudgetChanges() {
+    var fallbackSlot = slot(state: "idle", numRunning: 0, used: 0)
+    fallbackSlot.maxConcurrency = 16
+    var expandedSlot = fallbackSlot
+    expandedSlot.maxConcurrency = 48
+    let fallback = capacity([fallbackSlot])
+    let expanded = capacity([expandedSlot])
+
+    // Profile stays absent on both snapshots, so only the concurrency gate
+    // can trigger publication. Both withdrawal and restoration must publish.
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: expanded, current: fallback))
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: fallback, current: expanded))
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: fallback, current: fallback))
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: expanded, current: expanded))
+}
+
+@Test func profileQualificationChangesAreMaterialAtTheSameConcurrency() {
+    var qualifiedSlot = slot(state: "idle", numRunning: 0, used: 0)
+    qualifiedSlot.maxConcurrency = 16
+    qualifiedSlot.performanceProfile = .init(
+        id: "reviewed-a", runtimeRevision: "runtime-a", contextTokens: 32_768)
+    let qualified = capacity([qualifiedSlot])
+    let replacements: [ServingPerformanceProfileReference?] = [
+        nil,
+        .init(id: "reviewed-b", runtimeRevision: "runtime-a", contextTokens: 32_768),
+        .init(id: "reviewed-a", runtimeRevision: "runtime-b", contextTokens: 32_768),
+        .init(id: "reviewed-a", runtimeRevision: "runtime-a", contextTokens: 65_536),
+    ]
+    for reference in replacements {
+        var changedSlot = qualifiedSlot
+        changedSlot.performanceProfile = reference
+        let changed = capacity([changedSlot])
+        // Count, token budget and concurrency stay fixed. Presence and every
+        // reviewed-reference field affect coordinator admission qualification.
+        #expect(CapacityHeartbeatMateriality.isMaterial(previous: qualified, current: changed))
+        #expect(CapacityHeartbeatMateriality.isMaterial(previous: changed, current: qualified))
+        #expect(!CapacityHeartbeatMateriality.isMaterial(previous: changed, current: changed))
+    }
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: qualified, current: qualified))
+}
+
 @Test func tokenBudgetShiftsUseFloorAndFractionThresholds() {
     // Available budget = max − used − queued = 8000.
     let base = capacity([slot(used: 1000, max: 9000)])

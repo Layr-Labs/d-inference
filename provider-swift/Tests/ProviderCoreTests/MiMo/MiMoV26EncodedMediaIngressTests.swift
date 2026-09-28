@@ -281,19 +281,23 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         let (value,bundle,actual) = try await published(mtp:true)
         let owners = Owners(), app = application(value,bundle,owners)
         let epoch = value.transaction.snapshot().constructionEpoch
+        var prepared: [(responses: Bool, data: Data)] = []
+        for responses in [false,true] {
+            for stream in [false,true] {
+                prepared.append((responses, try body(responses:responses,stream:stream)))
+            }
+        }
+        let requests = prepared // immutable Sendable bytes; do not capture XCTestCase
         try await app.test(.router) { client in
-            for responses in [false,true] {
-                for stream in [false,true] {
-                    let data = try body(responses:responses,stream:stream)
-                    try await client.execute(uri:responses ? "/v1/responses" : "/v1/chat/completions",
-                        method:.post,headers:[.contentType:"application/json",.authorization:"Bearer synthetic-media-token"],
-                        body:ByteBuffer(bytes:data)) { result in
-                        XCTAssertEqual(result.status,.ok)
-                        let text = String(buffer:result.body)
-                        XCTAssertFalse(text.contains("data:image"))
-                        XCTAssertFalse(text.contains("PRIVATE_OFF_THOUGHT"))
-                        XCTAssertFalse(text.contains("response.failed"))
-                    }
+            for request in requests {
+                try await client.execute(uri:request.responses ? "/v1/responses" : "/v1/chat/completions",
+                    method:.post,headers:[.contentType:"application/json",.authorization:"Bearer synthetic-media-token"],
+                    body:ByteBuffer(bytes:request.data)) { result in
+                    XCTAssertEqual(result.status,.ok)
+                    let text = String(buffer:result.body)
+                    XCTAssertFalse(text.contains("data:image"))
+                    XCTAssertFalse(text.contains("PRIVATE_OFF_THOUGHT"))
+                    XCTAssertFalse(text.contains("response.failed"))
                 }
             }
         }
@@ -307,15 +311,16 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
     func testRealAuthenticatedIngressRefusesRemoteURIsBoundsAndUnsupportedControlsBeforeDecode() async throws {
         let (value,bundle,actual) = try await published()
         let owners = Owners(), app = application(value,bundle,owners)
+        let good = try body(responses:false,stream:false)
+        let refusedURIs = ["https://example.invalid/private.png","file:///private/not-authorized","data:image/png;base64,AAAA"]
+        let refusedBodies = try refusedURIs.map { try body(responses:false,stream:false,uri:$0) }
         try await app.test(.router) { client in
-            let good = try body(responses:false,stream:false)
             try await client.execute(uri:"/v1/chat/completions",method:.post,
                 headers:[.contentType:"application/json",.authorization:"Bearer wrong"],body:ByteBuffer(bytes:good)) {
                 XCTAssertEqual($0.status,.unauthorized)
             }
             XCTAssertEqual(owners.acquisitions,0)
-            for uri in ["https://example.invalid/private.png","file:///private/not-authorized","data:image/png;base64,AAAA"] {
-                let data = try body(responses:false,stream:false,uri:uri)
+            for data in refusedBodies {
                 try await client.execute(uri:"/v1/chat/completions",method:.post,
                     headers:[.contentType:"application/json",.authorization:"Bearer synthetic-media-token"],
                     body:ByteBuffer(bytes:data)) { XCTAssertEqual($0.status,.badRequest) }

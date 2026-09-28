@@ -205,7 +205,8 @@ enum MiMoV26EncodedMediaIngress {
         let pixelLimit = min(MediaIngest.maxImagePixels,native.pixels.maximumInputElements / 3)
         let limits = MiMoV26EncodedVisualDecoder.Limits(maximumPixels:pixelLimit,
             maximumWorkingBytes:working,maximumSourceFrames:360_000,
-            maximumSampledFrames:native.maximumVideoFrames)
+            maximumSampledFrames:native.maximumVideoFrames,
+            maximumEncodedBytes:MediaIngest.maxMediaDecodedBytes)
         let audiovisualLimits = MiMoV26EncodedAudiovisualDecoder.Limits(
             maximumFrames:native.audio.maximumInputSamples, maximumWorkingBytes:working,
             maximumBuffers:min(4096,native.maximumMetadataNodes))

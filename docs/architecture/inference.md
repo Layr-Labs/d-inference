@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `fa9d83270`
+> Last updated: 2026-09-28 · commit `684108dfa`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -505,6 +505,13 @@ target+assistant prefix adoption, encrypted restart, paging and composed
 lifecycle/API qualification are separate gates; a helper or component result
 does not certify them. `input_audio` remains excluded from text-only cache
 planning and is not treated as vision.
+
+Encoded MiMo visual ingress passes the existing transport ceiling
+`MediaIngest.maxMediaDecodedBytes` to the SDK decoder's `maximumEncodedBytes`.
+`MiMoV26EncodedMediaIngress.decode` enforces the same bounded input contract
+before ImageIO parsing or AVFoundation asset reads; SDK callers without a
+separate ceiling default to their declared working-byte limit. Raster/frame
+and owned-reservation checks remain additional gates.
 
 Joint contiguous text-prefix/media issuance shares the real process/store/model
 ownership contract: text can use complete checkpoints, while media remains

@@ -66,8 +66,9 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
         XCTAssertEqual(value.frames.count,2)
         XCTAssertEqual(value.timestamps.map(\.bitPattern),[Float(0).bitPattern,(Float(2)/Float(3)).bitPattern])
         XCTAssertEqual(value.wholeAudio.samples.count,24000)
+        let expectedSamples: [Float] = [-1, -1.0 / 32768, 0, 1.0 / 32768, 32767.0 / 32768]
         XCTAssertEqual(Array(value.wholeAudio.samples.prefix(5)).map(\.bitPattern),
-            [Float(-1),-1/32768,0,1/32768,32767/32768].map(\.bitPattern))
+            expectedSamples.map(\.bitPattern))
         XCTAssertNil(input.messages[0].templateFields["video_url"])
         XCTAssertEqual(input.maximumOutputTokens,2)
     }
@@ -151,8 +152,9 @@ private enum MiMoAVFixture {
         }
         func track(offset: Int, id: Int = 2) -> Data {
             let duration = UInt64(frames * 600 / rate)
-            let tkhd = atom("tkhd", be(7) + be(0) + be(0) + be(UInt64(id)) + be(0) + be(duration)
-                + Data(repeating: 0, count: 12) + be(0x100,2) + be(0,2) + matrix + be(0) + be(0))
+            let tkhdFields: [Data] = [be(7), be(0), be(0), be(UInt64(id)), be(0), be(duration),
+                Data(repeating: 0, count: 12), be(0x100,2), be(0,2), matrix, be(0), be(0)]
+            let tkhd = atom("tkhd", tkhdFields.reduce(into: Data()) { $0.append($1) })
             let mdhd = atom("mdhd", Data(repeating: 0, count: 12) + be(UInt64(rate)) + be(UInt64(frames))
                 + be(0x55c4,2) + be(0,2))
             let hdlr = atom("hdlr", Data(repeating: 0, count: 8) + Data("soun".utf8)

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `013867d9e`
+> Last updated: 2026-09-28 · commit `684108dfa`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -17,6 +17,20 @@ starting a localhost server. `MutableInputKernelTests` and
 exercise declared Metal writes, alias ownership and export/import. CI runs each
 selected suite through the nonzero/no-skip wrapper
 (`.github/workflows/ci.yml`, `scripts/run-nested-suite.sh`).
+
+MiMo source and tests are grouped under their existing modules' `MiMo/`
+folders; Swift target names are unchanged. The SDK's
+`MiMoV26EncodedVisualDecoderTests` covers rounded sampling bounds and compressed
+payload ceilings before real platform decoder entry. Normal provider
+`swift build --build-tests` does not compile a dependency's SDK test targets;
+compile and run the SDK package tests separately as CI does. Small selected
+native runners do not replace these whole-target compile checks.
+
+`TestReserveProviderWithPlanPrimarySelectionUnchanged` compares selection and
+costs exactly while normalizing only wall-clock profiling ages, including
+first-content capacity/performance sample ages. Two independently constructed
+fleets need not have identical elapsed milliseconds; forecast and freshness
+behavior remain covered by the separate first-content tests.
 
 For HF artifact downloads, `HuggingFaceDownloadTests` covers source preference,
 checksum rejection, fallback, and cancellation. Native Nemotron CI also runs

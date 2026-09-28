@@ -62,7 +62,8 @@ extension ModelDownloader {
 
     /// Always verify bytes on reuse; a receipt is never an integrity shortcut.
     static func verifiedRevisionExists(at directory: URL, manifest: ModelManifest) -> Bool {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return false }
+        guard FileManager.default.fileExists(atPath: directory.path),
+            revisionIntegrityFilesMatch(at: directory, manifest: manifest) else { return false }
         return manifest.files.allSatisfy {
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent($0.path).path),
                 attrs[.type] as? FileAttributeType == .typeRegular else { return false }
@@ -70,6 +71,17 @@ extension ModelDownloader {
         } && WeightHasher.hashFilesWithRelativeKey(manifest.files.map {
             (file: directory.appendingPathComponent($0.path), sortKey: $0.path)
         }) == manifest.aggregateSHA256
+    }
+
+    /// Match the same integrity surface used by publication and attestation.
+    /// An extra template, tokenizer or weight file can change runtime behavior
+    /// even when all manifest-listed files still match. Receipts and unrelated
+    /// notes are excluded by the canonical scanner, without hashing at discovery.
+    static func revisionIntegrityFilesMatch(at directory: URL, manifest: ModelManifest) -> Bool {
+        let root = directory.resolvingSymlinksInPath()
+        let actual = Set(ModelScanner.collectWeightFiles(in: root).paths.map { $0.standardizedFileURL.path })
+        let expected = Set(manifest.files.map { root.appendingPathComponent($0.path).standardizedFileURL.path })
+        return actual == expected
     }
 
     /// Reuse unchanged files from the active revision, including legacy caches.
@@ -103,6 +115,11 @@ extension ModelDownloader {
                 throw ModelCatalogError.downloadFailed("immutable revision is corrupt: \(directory.lastPathComponent)")
             }
             return
+        }
+        // Resume may encounter files added to staging by another tool. Do not
+        // publish or activate bytes outside the verified manifest inventory.
+        guard revisionIntegrityFilesMatch(at: stagingDir, manifest: manifest) else {
+            throw ModelCatalogError.downloadFailed("staged integrity files do not match the revision manifest")
         }
         try writeRevisionReceipt(manifest, at: stagingDir)
         // An initial activate-enabled download has no previous selection to

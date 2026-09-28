@@ -338,7 +338,8 @@ struct ModelPrefetchDownloaderTests {
         // N = 4 files; the prefetch loop fetches them in manifest order. We
         // interrupt at file index K = 2 (0-based: files[2]) so files[0..1] land
         // and files[2..3] do not.
-        let names = ["a-config.json", "b-tokenizer.json", "c-shard0.safetensors", "d-shard1.safetensors"]
+        // Use the same integrity-file names as real publisher manifests.
+        let names = ["config.json", "tokenizer.json", "c-shard0.safetensors", "d-shard1.safetensors"]
         var files: [ManifestFile] = []
         var served: [String: Data] = [:]
         var pairs: [(String, Data)] = []
@@ -444,7 +445,7 @@ struct ModelPrefetchDownloaderTests {
         PrefetchURLProtocol.reset()
         let modelID = "test-org/prefetch-partial-\(UUID().uuidString)"
         let prefix = "v2/prefetch-partial/v1"
-        let names = ["a-config.json", "b-weights.safetensors"]
+        let names = ["config.json", "b-weights.safetensors"]
         // Sizes are deliberately asymmetric: a tiny config and a large weight
         // file. With real byte-level resume, each dropped attempt APPENDS the
         // received prefix to `.part`, so the weight must be large enough that the
@@ -779,11 +780,11 @@ struct ModelPrefetchDownloaderTests {
         let smallBytes = Data("small remaining file".utf8)
         let files = [
             ManifestFile(path: "big.safetensors", sizeBytes: Int64(bigBytes.count), sha256: sha256Hex(bigBytes), role: "weight"),
-            ManifestFile(path: "small.json", sizeBytes: Int64(smallBytes.count), sha256: sha256Hex(smallBytes), role: "config"),
+            ManifestFile(path: "generation_config.json", sizeBytes: Int64(smallBytes.count), sha256: sha256Hex(smallBytes), role: "config"),
         ]
         let aggregate = aggregateHash(files: [
             ("big.safetensors", bigBytes),
-            ("small.json", smallBytes),
+            ("generation_config.json", smallBytes),
         ])
         let manifest = ModelManifest(
             schemaVersion: 1, modelID: modelID, version: "v1", r2Prefix: prefix,
@@ -792,7 +793,7 @@ struct ModelPrefetchDownloaderTests {
         )
         PrefetchURLProtocol.files = [
             "/\(prefix)/big.safetensors": bigBytes,
-            "/\(prefix)/small.json": smallBytes,
+            "/\(prefix)/generation_config.json": smallBytes,
         ]
 
         let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
@@ -814,10 +815,10 @@ struct ModelPrefetchDownloaderTests {
         // file) passes, only the small file is fetched, and the snapshot publishes.
         try await downloader.prefetch(model: model, manifest: manifest)
         let fetched = PrefetchURLProtocol.fetchedPaths()
-        #expect(fetched.contains("/\(prefix)/small.json"))
+        #expect(fetched.contains("/\(prefix)/generation_config.json"))
         #expect(!fetched.contains("/\(prefix)/big.safetensors")) // big was skipped
         #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("big.safetensors")) == bigBytes)
-        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("small.json")) == smallBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("generation_config.json")) == smallBytes)
     }
 
     @Test("foreground download resumes: already-valid staged files are skipped, only missing files fetched")

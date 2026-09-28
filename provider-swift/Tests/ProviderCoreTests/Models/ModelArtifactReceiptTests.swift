@@ -145,4 +145,59 @@ struct ModelArtifactReceiptTests {
         #expect(!ModelDownloader.selectedRevisionMatches(modelID: f.id,
             version: manifest.version, aggregateSHA256: manifest.aggregateSHA256))
     }
+
+    @Test("unmanifested integrity files prevent every snapshot reuse path",
+        arguments: ["foreground", "prefetch", "publish", "protected"], ["chat_template.jinja", "adapters/extra.safetensors"])
+    func extraIntegrityFilesRejectReuse(path: String, extra: String) async throws {
+        let f = try await RevisionActivationFixture.make()
+        defer { f.clean() }
+        let manifest = try manifest(f)
+        let originalReceipt = try Data(contentsOf: receiptURL(f))
+        let added = f.newDirectory.appendingPathComponent(extra)
+        try FileManager.default.createDirectory(at: added.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{{ messages[0]['content'] }}".utf8).write(to: added)
+        #expect(WeightHasher.computeHash(snapshotDir: f.newDirectory) != manifest.aggregateSHA256)
+        #expect(!ModelDownloader.verifiedRevisionExists(at: f.newDirectory, manifest: manifest))
+        f.staged.lease.release()
+        await #expect(throws: (any Error).self) { try await reuse(f, manifest: manifest, path: path) }
+        #expect(try Data(contentsOf: receiptURL(f)) == originalReceipt)
+        #expect(ModelScanner.resolveLocalPath(modelID: f.id) == f.oldDirectory)
+        #expect(await !f.loop.revisionTestDraining(f.id))
+        #expect(await f.loop.revisionTestHash(f.id) == f.oldHash)
+    }
+
+    @Test("non-runtime files and hidden receipts do not invalidate a snapshot",
+        arguments: ["foreground", "prefetch", "publish", "protected"])
+    func benignExtraFilesPermitReuse(path: String) async throws {
+        let f = try await RevisionActivationFixture.make()
+        defer { f.clean() }
+        let manifest = try manifest(f)
+        try Data("local notes".utf8).write(to: f.newDirectory.appendingPathComponent("README.md"))
+        f.staged.lease.release()
+        try await reuse(f, manifest: manifest, path: path)
+        #expect(ModelDownloader.selectedRevisionMatches(modelID: f.id,
+            version: manifest.version, aggregateSHA256: manifest.aggregateSHA256))
+    }
+
+    @Test("resumed staging with extra integrity files cannot be published", arguments: ["chat_template.jinja", "adapters/extra.safetensors"])
+    func extraStagingFilesRejectPublication(extra: String) async throws {
+        let f = try await RevisionActivationFixture.make()
+        defer { f.clean() }
+        let manifest = try manifest(f)
+        let staging = f.newDirectory.deletingLastPathComponent().appendingPathComponent(".staging-extra", isDirectory: true)
+        try FileManager.default.moveItem(at: f.newDirectory, to: staging)
+        let added = staging.appendingPathComponent(extra)
+        try FileManager.default.createDirectory(at: added.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("unmanifested".utf8).write(to: added)
+        let model = CatalogModel(id: f.id, s3Name: manifest.r2Prefix, displayName: f.id, sizeGb: 0,
+            version: manifest.version, r2Prefix: manifest.r2Prefix, aggregateSHA256: manifest.aggregateSHA256)
+        let downloader = ModelDownloader()
+        #expect(throws: (any Error).self) {
+            try downloader.finalizeStagedManifest(model: model, manifest: manifest,
+                jobs: downloader.manifestJobs(manifest, stagingDir: staging), stagingDir: staging,
+                cacheDir: f.newDirectory)
+        }
+        #expect(!FileManager.default.fileExists(atPath: f.newDirectory.path))
+        #expect(ModelScanner.resolveLocalPath(modelID: f.id) == f.oldDirectory)
+    }
 }

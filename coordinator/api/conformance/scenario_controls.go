@@ -1,4 +1,4 @@
-package api
+package conformance
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestOpenRouterConformanceScenario(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceScenario(t *testing.T) {
 	end := orIncidentEnd("tool_calls")
 	bad := func(name, args string) string {
 		return orIncidentCalls(orIncidentTool(0, "call-fixture-weather", name, args)) + end
@@ -88,7 +88,7 @@ func TestOpenRouterConformanceScenario(t *testing.T) {
 	}
 }
 
-func TestOpenRouterConformanceScenarioFragmentation(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceScenarioFragmentation(t *testing.T) {
 	const args = `{"location":"Boston, MA","unit":"fahrenheit"}`
 	for split := 0; split <= len(args); split++ {
 		t.Run(fmt.Sprintf("split_%02d", split), func(t *testing.T) {
@@ -106,7 +106,7 @@ func TestOpenRouterConformanceScenarioFragmentation(t *testing.T) {
 	}
 }
 
-func TestOpenRouterConformanceScenarioBounds(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceScenarioBounds(t *testing.T) {
 	for _, tc := range []struct{ name, wire string }{
 		{"oversize_call_id", orIncidentCalls(orIncidentTool(0, strings.Repeat("x", 257), "get_current_weather", `{}`)) + orIncidentEnd("tool_calls")},
 		{"oversize_name", orIncidentCalls(orIncidentTool(0, "call", strings.Repeat("x", 257), `{}`)) + orIncidentEnd("tool_calls")},
@@ -128,7 +128,7 @@ func TestOpenRouterConformanceScenarioBounds(t *testing.T) {
 	})
 }
 
-func TestOpenRouterConformanceScenarioChoiceShape(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceScenarioChoiceShape(t *testing.T) {
 	for _, name := range []string{"missing_choice_index", "null_choice_index", "duplicate_choice_zero"} {
 		t.Run(name, func(t *testing.T) {
 			wire := orIncidentCalls(orWeatherCall())

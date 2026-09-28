@@ -1,4 +1,4 @@
-package api
+package conformance
 
 import (
 	"encoding/json"
@@ -37,7 +37,7 @@ type orProvider struct {
 
 func (f *orFixture) provider(version string) *orProvider {
 	f.t.Helper()
-	p := &orProvider{f: f, pub: testPublicKeyB64(), requests: make(chan orDispatch, 8), cancels: make(chan string, 8), acks: make(chan string, 2), faults: make(chan error, 1), ready: make(chan struct{}), done: make(chan struct{})}
+	p := &orProvider{f: f, pub: f.suite.NewProviderKey(), requests: make(chan orDispatch, 8), cancels: make(chan string, 8), acks: make(chan string, 2), faults: make(chan error, 1), ready: make(chan struct{}), done: make(chan struct{})}
 	conn, _, err := websocket.Dial(f.ctx, "ws"+strings.TrimPrefix(f.ts.URL, "http")+"/ws/provider", &websocket.DialOptions{HTTPClient: f.client})
 	if err != nil {
 		f.t.Fatal(err)
@@ -46,7 +46,7 @@ func (f *orFixture) provider(version string) *orProvider {
 	f.providers = append(f.providers, p)
 	go p.read()
 	yes := true
-	p.write(protocol.RegisterMessage{Type: protocol.TypeRegister, Hardware: protocol.Hardware{MachineModel: "fixture", ChipName: "Apple M3 Max", MemoryGB: 64}, Models: []protocol.ModelInfo{{ID: f.model, WeightHash: testHash, ModelType: "chat", Quantization: "4bit", TemplateRenderOK: &yes}}, Backend: "mlx-swift", Version: version, DecodeTPS: 200, PublicKey: p.pub, EncryptedResponseChunks: true, PrivacyCapabilities: testPrivacyCaps()})
+	p.write(protocol.RegisterMessage{Type: protocol.TypeRegister, Hardware: protocol.Hardware{MachineModel: "fixture", ChipName: "Apple M3 Max", MemoryGB: 64}, Models: []protocol.ModelInfo{{ID: f.model, WeightHash: testHash, ModelType: "chat", Quantization: "4bit", TemplateRenderOK: &yes}}, Backend: "mlx-swift", Version: version, DecodeTPS: 200, PublicKey: p.pub, EncryptedResponseChunks: true, PrivacyCapabilities: f.suite.PrivacyCapabilities()})
 	select {
 	case <-p.ready:
 	case e := <-p.faults:
@@ -54,8 +54,8 @@ func (f *orFixture) provider(version string) *orProvider {
 	case <-f.ctx.Done():
 		f.t.Fatal("registration barrier deadline")
 	}
-	for _, id := range f.srv.registry.ProviderIDs() {
-		rp := f.srv.registry.GetProvider(id)
+	for _, id := range f.srv.Registry.ProviderIDs() {
+		rp := f.srv.Registry.GetProvider(id)
 		rp.Mu().Lock()
 		match := rp.PublicKey == p.pub
 		rp.Mu().Unlock()
@@ -68,9 +68,9 @@ func (f *orFixture) provider(version string) *orProvider {
 		f.t.Fatal("registration barrier without provider")
 	}
 	// Explicit test-only trust bypass. This does not qualify attestation.
-	f.srv.registry.SetTrustLevel(p.id, registry.TrustHardware)
-	f.srv.registry.RecordChallengeSuccess(p.id)
-	rp := f.srv.registry.GetProvider(p.id)
+	f.srv.Registry.SetTrustLevel(p.id, registry.TrustHardware)
+	f.srv.Registry.RecordChallengeSuccess(p.id)
+	rp := f.srv.Registry.GetProvider(p.id)
 	rp.Mu().Lock()
 	rp.AccountID = "conformance-provider"
 	rp.PrefillTPS = 6000
@@ -91,8 +91,7 @@ func (p *orProvider) read() {
 		default:
 		}
 	}
-	keys, _ := testProviderKeys.Load(p.pub)
-	private := keys.(testProviderKeyPair).private
+	private := p.f.suite.ProviderPrivateKey(p.f.t, p.pub)
 	for {
 		_, data, err := p.conn.Read(p.f.ctx)
 		if err != nil {
@@ -118,7 +117,7 @@ func (p *orProvider) read() {
 				fail(errORPlaintext)
 				return
 			}
-			body, err := e2e.DecryptWithPrivateKey(&e2e.EncryptedPayload{EphemeralPublicKey: req.EncryptedBody.EphemeralPublicKey, Ciphertext: req.EncryptedBody.Ciphertext}, private)
+			body, err := e2e.DecryptWithPrivateKey(&e2e.EncryptedPayload{EphemeralPublicKey: req.EncryptedBody.EphemeralPublicKey, Ciphertext: req.EncryptedBody.Ciphertext}, *private)
 			if err != nil {
 				fail(err)
 				return
@@ -188,7 +187,7 @@ func (p *orProvider) next() orDispatch {
 }
 func (p *orProvider) chunk(r orDispatch, sse string) {
 	p.f.t.Helper()
-	p.write(testEncryptedChunk(p.f.t, r.request, p.pub, sse))
+	p.write(p.f.suite.EncryptChunk(p.f.t, r.request, p.pub, sse))
 }
 func (p *orProvider) complete(r orDispatch) {
 	p.write(protocol.InferenceCompleteMessage{Type: protocol.TypeInferenceComplete, RequestID: r.request.RequestID, Usage: protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 10}})
@@ -198,9 +197,9 @@ func (p *orProvider) failure(r orDispatch, status int, code protocol.InferenceFa
 }
 func (p *orProvider) success(r orDispatch, stream, usage bool) {
 	if stream {
-		p.chunk(r, orFrame(`{"role":"assistant"}`, "null"))
-		p.chunk(r, orFrame(`{"content":"héllo"}`, "null"))
-		terminal := orFrame(`{}`, `"stop"`)
+		p.chunk(r, orModelFrame(p.f.model, `{"role":"assistant"}`, "null"))
+		p.chunk(r, orModelFrame(p.f.model, `{"content":"héllo"}`, "null"))
+		terminal := orModelFrame(p.f.model, `{}`, `"stop"`)
 		if usage {
 			terminal = strings.Replace(terminal, `}]}`, `}],"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20}}`, 1)
 		}
@@ -217,7 +216,7 @@ func (p *orProvider) close() {
 	case <-time.After(time.Second):
 		p.f.t.Error("provider reader did not join")
 	}
-	testProviderKeys.Delete(p.pub)
+	p.f.suite.DeleteProviderKey(p.pub)
 }
 
 // barrier fences this provider only after the scenario has finished routing.
@@ -260,7 +259,7 @@ func (p *orProvider) advertiseTools(enabled bool) {
 	yes := true
 	p.write(protocol.ModelsUpdateMessage{Type: protocol.TypeModelsUpdate, Models: []protocol.ModelInfo{{ID: p.f.model, WeightHash: testHash, ModelType: "nemotron_h", Quantization: "4bit", TemplateRenderOK: &yes}}, ToolConstraintProtocol: 1, ToolConstraintModels: advertised})
 	orEventually(p.f.t, func() bool {
-		provider := p.f.srv.registry.GetProvider(p.id)
+		provider := p.f.srv.Registry.GetProvider(p.id)
 		if provider == nil {
 			return false
 		}

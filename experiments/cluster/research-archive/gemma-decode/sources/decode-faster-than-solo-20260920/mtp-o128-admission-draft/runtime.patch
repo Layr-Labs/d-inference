@@ -1,0 +1,33 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkInput.swift
+@@ -18,7 +18,9 @@
+         guard prefillPolicy == nil || ["serial", "oneChunkLookahead"].contains(prefillPolicy!),
+               mode != "full" || prefill == .serial,
+               schema == "gemma4_resident_benchmark_v1", ["full", "stage0", "stage1"].contains(mode),
+-              [128,256,1024,4096,8192].contains(promptCount), [64,128].contains(chunkSize), outputCount == 16, [6,7,8,10].contains(cut),
++              [128,256,1024,4096,8192].contains(promptCount), [64,128].contains(chunkSize),
++              Gemma4BenchmarkOutputEnvelope.allows(outputCount:outputCount,mode:mode,promptCount:promptCount,
++                  chunkSize:chunkSize,cut:cut,residualDType:residualDType), [6,7,8,10].contains(cut),
+               (1...300).contains(timeoutSeconds), requestIDs.count == 4, Set(requestIDs).count == 4,
+               (requestIDs + [membershipEpoch]).allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
+               [promptFileSHA256, buildIdentitySHA256].allSatisfy(qwenStageWireIsSHA256),
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LocalMTPInput.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LocalMTPInput.swift
+@@ -47,13 +47,15 @@
+         try ordinary.validate()
+         try QwenLayerStageGenerationWireJSON.requireExact(QwenLayerStageGenerationWireJSON.object(original), ordinary)
+         guard ordinary.mode == "full", ordinary.rank == nil, ordinary.prefill == .serial,
+-              !ordinary.captureEvidence, ordinary.chunkSize == 64, ordinary.outputCount == 16,
++              !ordinary.captureEvidence, ordinary.chunkSize == 64,
++              Gemma4BenchmarkOutputEnvelope.allows(outputCount:ordinary.outputCount,mode:ordinary.mode,
++                  promptCount:ordinary.promptCount,chunkSize:ordinary.chunkSize,cut:ordinary.cut,residualDType:ordinary.residualDType),
+               [128, 4096].contains(ordinary.promptCount), ordinary.cut == 7,
+               ordinary.residualDType == "bfloat16",
+               ordinary.modelDirectory != job.assistantModelDirectory,
+               ordinary.outputDirectory != job.assistantModelDirectory,
+               ordinary.outputDirectory != job.assistantMetadataDirectory else {
+-            throw ProbeError("Local MTP requires the pinned full P128/P4096 C64 O16 cut7 BF16 workload")
++            throw ProbeError("Local MTP requires the pinned full P128/P4096 C64 O16/O128 cut7 BF16 workload")
+         }
+         let benchmark = try Gemma4BenchmarkInput(job: ordinary)
+         let directory = URL(fileURLWithPath: job.assistantMetadataDirectory, isDirectory: true)

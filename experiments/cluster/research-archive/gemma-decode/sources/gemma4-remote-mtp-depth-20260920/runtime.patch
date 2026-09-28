@@ -1,0 +1,83 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPInput.swift
+@@ -22,6 +22,7 @@
+     let local: Gemma4LocalMTPInput
+     let scopeSHA256: String
+     let denseProjectionEnabled: Bool
++    let verificationDepth: Gemma4RemoteMTPDepth
+     var benchmark: Gemma4BenchmarkInput { local.benchmark }
+     init(url: URL, denseProjectionEnabled: Bool = false,
+          headPolicy: Gemma4MTPDenseProjection.HeadPolicy = .serialM1) throws {
+@@ -34,18 +35,19 @@
+         guard sha256(localBytes) == job.localMTPJobSHA256 else { throw ProbeError("Remote MTP local metadata changed") }
+         let local = try Gemma4LocalMTPInput(url:URL(fileURLWithPath:job.localMTPJob),qualifyConditioning:false,
+             denseProjectionEnabled:denseProjectionEnabled,headPolicy:headPolicy)
+-        guard local.job.maximumDraftTokens == 2,
+-              local.benchmark.job.buildIdentitySHA256 == (job.rank == 1 ? job.targetNativeSHA256 : job.assistantNativeSHA256) else {
+-            throw ProbeError("Remote MTP needs depth2 and the actual local native identity")
++        let verificationDepth = try Gemma4RemoteMTPDepth(maximumDraftTokens:local.job.maximumDraftTokens)
++        guard local.benchmark.job.buildIdentitySHA256 == (job.rank == 1 ? job.targetNativeSHA256 : job.assistantNativeSHA256) else {
++            throw ProbeError("Remote MTP requires the actual local native identity")
+         }
+         self.job = job; self.local = local; self.denseProjectionEnabled = denseProjectionEnabled
++        self.verificationDepth = verificationDepth
+         // Local paths/role are intentionally excluded from the bilateral scope.
+         // Both exact local input files remain independently bound by parent jobs.
+         scopeSHA256 = sha256(Data((["gemma4_remote_mtp_cohort_v1",local.benchmark.job.membershipEpoch,
+             job.targetNativeSHA256,job.assistantNativeSHA256,job.embeddingIdentitySHA256,
+             Gemma4ArtifactMetadata.artifactAggregateSHA256,Gemma4AssistantArtifact.aggregateSHA256,
+             local.benchmark.plan.fingerprint,local.benchmark.job.promptFileSHA256,
+-            "depth=2","buffer=5","targetRank=1","assistantRank=0",
++            verificationDepth.scopeComponent,"buffer=5","targetRank=1","assistantRank=0",
+             "capture=\(local.job.captureEvidence)"]+local.benchmark.requests.map(\.fingerprint)
+             + (local.targetProjectionPolicy.map { ["targetProjection="+$0] } ?? [])).joined(separator:"\n").utf8))
+     }
+@@ -76,7 +78,7 @@
+             requestSHA256:resourceRequestSHA256,maximumFrontier:benchmark.requests[0].finalCommittedTokens,bound:{$0})
+         var report: [String: Any] = [
+             "schema":"gemma4_remote_mtp_cohort_capability_v1","job":try JSONSerialization.jsonObject(with:canonicalJSONData(job)),
+-            "scopeSHA256":scopeSHA256,"role":job.role,"rank":job.rank,"maximumDraftTokens":2,"maximumBufferedProposals":5,
++            "scopeSHA256":scopeSHA256,"role":job.role,"rank":job.rank,"maximumDraftTokens":verificationDepth.maximumDraftTokens,"maximumBufferedProposals":5,
+             "requestSHA256s":benchmark.requests.map(\.fingerprint),"targetExtraLogicalNativeBytes":target.nativeBytes,
+             "targetExtraHostBytes":target.hostBytes,"assistantLogicalNativeBytes":assistant.liveNativeBytes,
+             "assistantHostBytes":assistant.liveHostBytes,"assistantConstructorBytes":assistant.constructorBytes,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift
+@@ -74,9 +74,10 @@
+                             _ = try session.reconcileMTP(window,keeping:1,check:checked)
+                             selected += token; widths.append(1); accepts.append(0); lastWindow = window; lastKeep = 1
+                         } else {
+-                            try target.fill(draftCount:min(2,remaining-1),check:checked)
++                            let draftCount = try input.verificationDepth.draftCount(remainingOutputTokens:remaining)
++                            try target.fill(draftCount:draftCount,check:checked)
+                             lastWindow = nil
+-                            let result = try target.verify(draftCount:min(2,remaining-1),session:session,
++                            let result = try target.verify(draftCount:draftCount,session:session,
+                                 admitVerification:admit,denseProjection:denseProjection,check:checked)
+                             selected += result.confirmedTokens
+                             widths.append(result.window.inputTokens.count); accepts.append(result.acceptedDraftTokens)
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDepth.swift
+@@ -0,0 +1,22 @@
++import Foundation
++
++/// Chosen target verification width within the unchanged k2/five-slot producer
++/// envelope. This value grants no model, KV, transport or resource capacity.
++struct Gemma4RemoteMTPDepth: Equatable {
++    struct Failure: Error { let reason: String }
++    let maximumDraftTokens: Int
++    var scopeComponent: String { "depth=\(maximumDraftTokens)" }
++
++    init(maximumDraftTokens: Int) throws {
++        guard (1...2).contains(maximumDraftTokens) else {
++            throw Failure(reason:"Remote MTP verification depth must be one or two")
++        }
++        self.maximumDraftTokens = maximumDraftTokens
++    }
++    func draftCount(remainingOutputTokens: Int) throws -> Int {
++        guard remainingOutputTokens >= 2 else {
++            throw Failure(reason:"Remote MTP verification requires a draft and confirmed output slot")
++        }
++        return min(maximumDraftTokens,remainingOutputTokens-1)
++    }
++}

@@ -1,0 +1,53 @@
+{
+  "schema": "gemma4_verification_bound_memo_freeze_v1",
+  "files": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 3714,
+      "sha256": "4163ca359a6dbea64b3933ee51fa4bcf5cd58319fedda6e3dc4a2c1bbd39856e"
+    },
+    {
+      "path": "Runtime/Gemma4MTPAuxiliaryOwner.swift",
+      "bytes": 14000,
+      "sha256": "521c3f6ffffb015a9c87cb70007273bca2c1d44fb53b12c8b7221b81f48d3f70"
+    },
+    {
+      "path": "Runtime/Gemma4MTPRemoteTargetResources.swift",
+      "bytes": 5926,
+      "sha256": "60b60337c12375693e57adfbcbe53d4de12668beff76d1b5e20126dfdcd40f32"
+    },
+    {
+      "path": "Runtime/InvocationAllocationBoundMemo.swift",
+      "bytes": 552,
+      "sha256": "90cf9a41a64ee2b8f91fb04ea122577f1907dcd5f8fd30d4e76a259b6bda1d20"
+    },
+    {
+      "path": "Tests/InvocationAllocationBoundMemoChecks.swift",
+      "bytes": 4388,
+      "sha256": "cad6bcd57626b7b90b491db5330428b683530b5bf40a1ef3c4ac3e55243ae413"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 4074,
+      "sha256": "7c2f3fd14fa613856efe33b171ad10d09ac57db73e41038f273a52e4f4e68431"
+    },
+    {
+      "path": "preimages/Gemma4MTPAuxiliaryOwner.swift",
+      "bytes": 13798,
+      "sha256": "9ba7124b4e36fe3dad984961de3c3e53e0c1f423accd02562b735b3f2c01aa4c"
+    },
+    {
+      "path": "preimages/Gemma4MTPRemoteTargetResources.swift",
+      "bytes": 5724,
+      "sha256": "ed580ee3907335d2ffb2ae0ba71eda6cea9b8efc503bfc46f3c62262fac66cf0"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 1907,
+      "sha256": "d0dae58d36d3e6db331b45a55c6cc42f276b66bec1f3d76aa0dab7df653c36dd"
+    }
+  ],
+  "sourceInverseChecksPassed": 2,
+  "authorCompilerExecuted": false,
+  "authorTestsExecuted": false
+}

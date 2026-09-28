@@ -1,0 +1,11 @@
+--- /Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseStageLoadResources.swift
++++ /Users/developer/DarkbloomDev/d-inference/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenDenseStageLoadResources.swift
+@@ -47,7 +47,7 @@
+         let reclaimablePages = try QwenLongPrefillCheckedBytes.sum([free, inactive, speculative])
+         let reclaimable = try QwenLongPrefillCheckedBytes.product([reclaimablePages, page])
+         return .init(startedNanoseconds: start, completedNanoseconds: DispatchTime.now().uptimeNanoseconds,
+-            timestampUTC: ISO8601DateFormatter().string(from: Date()), physicalMemoryBytes: Int(physical),
++            timestampUTC: ResourceObservationTimestamp.utc(), physicalMemoryBytes: Int(physical),
+             pageSizeBytes: page, kernelFreePages: rawFree, freePages: free, inactivePages: inactive,
+             speculativePages: speculative, actualFreeBytes: freeBytes, estimatedReclaimableBytes: reclaimable,
+             pressureLevel: Int(pressure), swapUsedBytes: Int(swap.xsu_used))

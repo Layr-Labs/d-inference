@@ -1,0 +1,225 @@
+{
+  "schema": "gemma4_o128_harness_draft_sources_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 4371,
+      "sha256": "d23c06bc289aef8a60595644a62bfe129cd9000a9cc2547b33f0416152f6256e"
+    },
+    {
+      "path": "Tests/test_control.py",
+      "bytes": 4179,
+      "sha256": "92374d818b20732cdc2ae8cfd8ca3c7fc2661736ecd0feabbec16384feb8de5f"
+    },
+    {
+      "path": "Tests/test_depth.py",
+      "bytes": 2227,
+      "sha256": "c39056d36dd7902563417ef0f1c970b2e5d3dee00f7eaa1c823ea9b9d2c4a62d"
+    },
+    {
+      "path": "Tests/test_o128.py",
+      "bytes": 5502,
+      "sha256": "23525dc1ba1d56893909a1263ab7b36da0b63df9711ab685f9efed53baa8b9d9"
+    },
+    {
+      "path": "harness.patch",
+      "bytes": 100024,
+      "sha256": "bb7e832d41c6b142c7fd905ab498727acf489feaf7ab2291093ac9a72c7d73f4"
+    },
+    {
+      "path": "numerical-operations.json",
+      "bytes": 8106,
+      "sha256": "9dc3b714b50a3534627290cecd9e917463df08537b1990e4988ed52f1a37eff8"
+    },
+    {
+      "path": "prepare.py",
+      "bytes": 9331,
+      "sha256": "e1f1e2b60a086b53f855410c580553bac3f624c1e5dd7783f1c5640e27781165"
+    },
+    {
+      "path": "projection.json",
+      "bytes": 17532,
+      "sha256": "754277d48e8bd79035893d7d370c6d421e96975d953bf4bdf2d1711c164ff164"
+    },
+    {
+      "path": "proposed/local/compare.py",
+      "bytes": 12623,
+      "sha256": "52ae9016e3f82067a1c487e46b3bfda18f397095eed926fc5be186190358fe9f"
+    },
+    {
+      "path": "proposed/local/deploy.py",
+      "bytes": 5041,
+      "sha256": "ec3701bb41144fec3b20a273de7b71aab217c1988caa511155da90d33fb8e409"
+    },
+    {
+      "path": "proposed/local/numerical_compare.py",
+      "bytes": 27879,
+      "sha256": "8d49cde4fc1e5b3c6c784a3f6e0917f7ba8065845470d0fca92502351614b459"
+    },
+    {
+      "path": "proposed/local/package/gemma_inputs.py",
+      "bytes": 569,
+      "sha256": "ab2c719c623fab5a5f8f21931d46849dc7f8093071dafb8351d9d4db93d52be8"
+    },
+    {
+      "path": "proposed/local/package/local_mtp_base_contract.py",
+      "bytes": 7015,
+      "sha256": "38f4f1752870c8836a78c58d1c0c074f01ea52d74549d1524a3ff577e17dde41"
+    },
+    {
+      "path": "proposed/local/package/run_benchmark.py",
+      "bytes": 9141,
+      "sha256": "e53eaa3a0fec49059ef864b990954639766149ff9c1c7e94fb65edd7f5e593fd"
+    },
+    {
+      "path": "proposed/local/package/solo_contract.py",
+      "bytes": 5619,
+      "sha256": "407cd2f13b20d9ef54707e08dca13cb80e7c72f90514cc9b404dca8559aea423"
+    },
+    {
+      "path": "proposed/local/package/workload_contract.py",
+      "bytes": 1913,
+      "sha256": "61f1f6486911759493da3cef568b928c190793b8a6e869091773b25b4c494bbb"
+    },
+    {
+      "path": "proposed/local/remote_metadata.py",
+      "bytes": 4290,
+      "sha256": "b4e60cae1f8497c38eed410ab034683ddf433b049b240e215e882399270ab08a"
+    },
+    {
+      "path": "proposed/local/root_run.py",
+      "bytes": 4708,
+      "sha256": "341267cda9c7f1830861b7c13b4b0cc439eae4b73f17949d0fcefeb21bc3903c"
+    },
+    {
+      "path": "proposed/local/run_case.py",
+      "bytes": 15033,
+      "sha256": "93752a47a391e0a5cae7c81e3a4a2cf1b2ac3468de98b87517f3625b6e6ff06d"
+    },
+    {
+      "path": "proposed/local/workload_contract.py",
+      "bytes": 1913,
+      "sha256": "61f1f6486911759493da3cef568b928c190793b8a6e869091773b25b4c494bbb"
+    },
+    {
+      "path": "proposed/numerical/binding_common.py",
+      "bytes": 2452,
+      "sha256": "9b077c9cf918ff58999c4f3c5f49eb5db9dbe40a5965d1c9c1b70013e48a3e41"
+    },
+    {
+      "path": "proposed/numerical/check_sources.py",
+      "bytes": 849,
+      "sha256": "5fcc7b141073f9f0e994f248152c3689727fa1a7611e34156cf077ab9a81809e"
+    },
+    {
+      "path": "proposed/numerical/compare.py",
+      "bytes": 13998,
+      "sha256": "e4e847f12fb5ec8ec607a81a82f969429322fdb77955e25464a0e4242420b338"
+    },
+    {
+      "path": "proposed/numerical/control_contract.py",
+      "bytes": 2434,
+      "sha256": "5f42902ca08312667aec3174141359474f1f825b52df960d3757f00dc000f9bd"
+    },
+    {
+      "path": "proposed/numerical/numeric_reader.py",
+      "bytes": 27879,
+      "sha256": "8d49cde4fc1e5b3c6c784a3f6e0917f7ba8065845470d0fca92502351614b459"
+    },
+    {
+      "path": "proposed/numerical/workload_contract.py",
+      "bytes": 1913,
+      "sha256": "61f1f6486911759493da3cef568b928c190793b8a6e869091773b25b4c494bbb"
+    },
+    {
+      "path": "proposed/remote/Tests/test_contract.py",
+      "bytes": 12466,
+      "sha256": "f19706ed49d962b828fe7507fe88c3de59a590a7907421abf8360396c1cd94a6"
+    },
+    {
+      "path": "proposed/remote/activation.py",
+      "bytes": 4760,
+      "sha256": "e233ab038fea3a306d587d65e93f2610a26c8a41f7d746a95c7114e141eeac8a"
+    },
+    {
+      "path": "proposed/remote/check_sources.py",
+      "bytes": 849,
+      "sha256": "5fcc7b141073f9f0e994f248152c3689727fa1a7611e34156cf077ab9a81809e"
+    },
+    {
+      "path": "proposed/remote/compare.py",
+      "bytes": 14702,
+      "sha256": "56cc2f3c2ce702e3997d1694ece84e73fdacc64d42fd58635ac41e319440d875"
+    },
+    {
+      "path": "proposed/remote/deploy.py",
+      "bytes": 5058,
+      "sha256": "83baf1c6014ddc77d8676b63e7876918bd8fd7e14ca10a2b38275e5b01d82587"
+    },
+    {
+      "path": "proposed/remote/jobs.py",
+      "bytes": 2723,
+      "sha256": "c203f8ffc786d09d3d3af1e8fddae4ccd6e20d7d0cccd06e040c788cc9752878"
+    },
+    {
+      "path": "proposed/remote/package/control_contract.py",
+      "bytes": 2434,
+      "sha256": "5f42902ca08312667aec3174141359474f1f825b52df960d3757f00dc000f9bd"
+    },
+    {
+      "path": "proposed/remote/package/dense_contract.py",
+      "bytes": 1653,
+      "sha256": "df4d40a579505bcf14fd7bc32ee78d87fd30f067744e5244dcfd322c1001f78f"
+    },
+    {
+      "path": "proposed/remote/package/gemma_inputs.py",
+      "bytes": 570,
+      "sha256": "a7d5ab88c00c59ebd2cbd117b517c171e30cd3050a5b4c0238699e211d97ad5a"
+    },
+    {
+      "path": "proposed/remote/package/remote_mtp_contract.py",
+      "bytes": 10531,
+      "sha256": "71179e6406cb387da45b0f0639b31a1c75830b3fb7d10f43711e7f81617bf69f"
+    },
+    {
+      "path": "proposed/remote/package/workload_contract.py",
+      "bytes": 1913,
+      "sha256": "61f1f6486911759493da3cef568b928c190793b8a6e869091773b25b4c494bbb"
+    },
+    {
+      "path": "proposed/remote/prepare_case.py",
+      "bytes": 581,
+      "sha256": "d41ce0f598e8082bb786ad4388b9216bb73671c7a16bab8565f69a6588b32352"
+    },
+    {
+      "path": "proposed/remote/remote_metadata.py",
+      "bytes": 4467,
+      "sha256": "3ca2bdf47664b4ef85578806324506ebc0923e389825aae3283d223b8101a940"
+    },
+    {
+      "path": "proposed/remote/root_run.py",
+      "bytes": 4538,
+      "sha256": "17c0b2f8e3999e2792a1f62c491d2e1153522ad00f89a91ca70cb30abe295447"
+    },
+    {
+      "path": "proposed/remote/run_case.py",
+      "bytes": 10566,
+      "sha256": "a3bbd7f70e68d379d603b224d64e0e3814c3ddb51920b7b4e90354a73f701dfb"
+    },
+    {
+      "path": "stage-state.json",
+      "bytes": 16339,
+      "sha256": "fb2da95a529eb4cf7da0feea18a60fcc32ac4670ce80a17610b76e1e2962f568"
+    },
+    {
+      "path": "stage.py",
+      "bytes": 15128,
+      "sha256": "bd3c4173beb3172dd94590ff02ef5321fdc4fb00fefac6b0c5e06bb15d68adee"
+    },
+    {
+      "path": "stage_numerical.py",
+      "bytes": 6637,
+      "sha256": "3452514abc51ed8683859157e053e461febe5b601881df4e7ee436556510e692"
+    }
+  ]
+}

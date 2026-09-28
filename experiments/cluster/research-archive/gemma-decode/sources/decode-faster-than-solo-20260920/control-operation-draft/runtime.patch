@@ -1,0 +1,311 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
+@@ -35,13 +35,22 @@
+                 try owned?.finish(deadline: deadline)
+             }
+             func freshCheck() throws { try check(nil) }
++            func faultCheck() throws {
++                try guardMetrics.measure(.entryGuard) {
++                    try guardMetrics.measure(.outerNativeFault) { try native.check() }
++                    guard DispatchTime.now().uptimeNanoseconds < deadline else {
++                        throw ProbeError("Gemma benchmark lifetime expired")
++                    }
++                    try guardMetrics.measure(.outerNativeFault) { try native.check() }
++                }
++            }
+             do {
+                 try freshCheck()
+                 let bytes: Data = try autoreleasepool {
+                     let group: Collective? = input.job.rank == nil ? nil : try Collective(transport: .jaccl)
+                     releasedGroup = group
+                     let sidecars = try Gemma4BenchmarkSidecars(directory: input.job.outputDirectory)
+-                    return try Gemma4BenchmarkRuntime.execute(input, deadline: deadline, group: group, sidecars: sidecars, guardMetrics: guardMetrics, check: check)
++                    return try Gemma4BenchmarkRuntime.execute(input, deadline: deadline, group: group, sidecars: sidecars, guardMetrics: guardMetrics, check: check, faultCheck: faultCheck)
+                 }
+                 Stream.gpu.synchronize(); Stream.cpu.synchronize(); try freshCheck()
+                 guard releasedGroup == nil else { throw ProbeError("Gemma benchmark collective remains retained") }
+@@ -54,7 +63,7 @@
+                 report["collectiveReleased"] = input.job.rank != nil
+                 report["nativeCacheBytesAfterRelease"] = Memory.cacheMemory
+                 report["guardMetrics"] = try JSONSerialization.jsonObject(with: canonicalJSONData(guardMetrics.snapshot()))
+-                report["guardObservationPolicy"] = Gemma4BenchmarkGuardInvocation.schema
++                report["guardObservationPolicy"] = Gemma4BenchmarkGuardMetrics.observationPolicy
+                 let result = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .withoutEscapingSlashes])
+                 guard result.count <= 8_388_608 else { throw ProbeError("Gemma benchmark report exceeds8MiB") }
+                 return result
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkRuntime.swift
+@@ -20,9 +20,11 @@
+ enum Gemma4BenchmarkRuntime {
+     static func execute(_ input: Gemma4BenchmarkInput, deadline: UInt64, group: Collective?,
+                         sidecars: Gemma4BenchmarkSidecars, guardMetrics: Gemma4BenchmarkGuardMetrics,
+-                        check: (Gemma4BenchmarkGuardObservation?) throws -> Void) throws -> Data {
++                        check: (Gemma4BenchmarkGuardObservation?) throws -> Void,
++                        faultCheck: () throws -> Void) throws -> Data {
+         weak var releasedModel: Module?
+-        return try withoutActuallyEscaping(check) { borrowedCheck in
++        return try withoutActuallyEscaping(faultCheck) { borrowedFaultCheck in
++          try withoutActuallyEscaping(check) { borrowedCheck in
+             try MLX.withError { native in
+                 func scopedOuterCheck(_ observation: Gemma4BenchmarkGuardObservation?) throws {
+                     try guardMetrics.measure(.outerNativeFault) { try native.check() }
+@@ -47,12 +49,28 @@
+                         captureEvidence: input.job.captureEvidence, prefillPolicy: input.job.prefill, deadline: deadline, guardMetrics: guardMetrics)
+                     func checked() throws {
+                         try guardMetrics.measure(.logicalGuard) {
++                          try guardMetrics.measure(.resourceGate) {
+                             let observation = Gemma4BenchmarkGuardObservation(mode: .combined, deadline: deadline)
+                             defer { observation.close() }
+                             try scopedOuterCheck(observation)
+                             try owner.check(observation: observation)
+                             try scopedOuterCheck(observation)
+                             try observation.finish(deadline: deadline)
++                          }
++                        }
++                    }
++                    func faultChecked() throws {
++                        try guardMetrics.measure(.logicalGuard) {
++                            try guardMetrics.measure(.faultDeadlineCheck) {
++                                func outerFaultCheck() throws {
++                                    try guardMetrics.measure(.outerNativeFault) { try native.check() }
++                                    try borrowedFaultCheck()
++                                    try guardMetrics.measure(.outerNativeFault) { try native.check() }
++                                }
++                                try outerFaultCheck()
++                                try owner.checkLifetime()
++                                try outerFaultCheck()
++                            }
+                         }
+                     }
+                     var releaseWire: Gemma4BenchmarkWire?
+@@ -60,7 +78,7 @@
+                     var loadCompleted: UInt64 = 0, probeCompleted: UInt64 = 0
+                     let execution: (Gemma4ForwardLoadReceipt, [Gemma4BenchmarkSample]) = try autoreleasepool {
+                         let first = try input.iteration(0)
+-                        let firstWire = try group.map { try Gemma4BenchmarkWire(input: first, group: $0, guardMetrics: guardMetrics) }
++                        let firstWire = try group.map { try Gemma4BenchmarkWire(input: first, group: $0, guardMetrics: guardMetrics, controlFaultCheck: faultChecked) }
+                         releaseWire = firstWire
+                         try firstWire?.checkpoint("begin", check: checked)
+                         let source = try Gemma4RegisteredSource.prepare(
+@@ -89,7 +107,7 @@
+                         var samples: [Gemma4BenchmarkSample] = []
+                         for ordinal in input.requests.indices {
+                             let requestInput = try input.iteration(ordinal)
+-                            let wire: Gemma4BenchmarkWire? = ordinal == 0 ? firstWire : try group.map { try Gemma4BenchmarkWire(input: requestInput, group: $0, guardMetrics: guardMetrics) }
++                            let wire: Gemma4BenchmarkWire? = ordinal == 0 ? firstWire : try group.map { try Gemma4BenchmarkWire(input: requestInput, group: $0, guardMetrics: guardMetrics, controlFaultCheck: faultChecked) }
+                             releaseWire = wire
+                             if ordinal > 0 { try wire?.checkpoint("begin", check: checked) }
+                             try owner.beginRequest(requestInput.request)
+@@ -137,6 +155,7 @@
+                     throw primary
+                 }
+             }
++          }
+         }
+     }
+ }
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceOwner.swift
+@@ -75,6 +75,19 @@
+         }
+     }
+ 
++    /// Pure owner/lifetime state only. Called at each inner control checkpoint;
++    /// fresh resource admission remains on both sides of that whole operation.
++    func checkLifetime() throws {
++        do {
++            try guardMetrics.measure(.ownerGuard) {
++                guard phase != .failed, !progress.failed,
++                      DispatchTime.now().uptimeNanoseconds < deadline else {
++                    throw ProbeError("Gemma resource owner failed or expired")
++                }
++            }
++        } catch { phase = .failed; progress.poison(); throw error }
++    }
++
+     private func checkObservedResources(observation: Gemma4BenchmarkGuardObservation, finishObservation: Bool) throws {
+         do {
+             guard phase != .failed, !progress.failed,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift
+@@ -8,16 +8,19 @@
+     let input: Gemma4BenchmarkRequestInput
+     let group: Collective
+     let guardMetrics: Gemma4BenchmarkGuardMetrics
++    private let controlFaultCheck: () throws -> Void
+     private var sent = 0, received = 0, busy = false, failed = false
+     private var pending: Gemma4BenchmarkWireValue?
+     struct SentFrameTicket { let value: Gemma4BenchmarkWireValue }
+     var rank: Int { group.rank }
+ 
+-    init(input: Gemma4BenchmarkRequestInput, group: Collective, guardMetrics: Gemma4BenchmarkGuardMetrics) throws {
++    init(input: Gemma4BenchmarkRequestInput, group: Collective, guardMetrics: Gemma4BenchmarkGuardMetrics,
++         controlFaultCheck: @escaping () throws -> Void) throws {
+         guard group.transport == .jaccl, group.size == 2, input.job.rank == group.rank else {
+             throw ProbeError("Gemma wire requires its exact selected two-rank JACCL endpoint")
+         }
+         self.input = input; self.group = group; self.guardMetrics = guardMetrics
++        self.controlFaultCheck = controlFaultCheck
+     }
+     func poison() { failed = true }
+ 
+@@ -29,24 +32,28 @@
+ 
+     func send(_ value: Gemma4BenchmarkWireValue, check: () throws -> Void) throws {
+         guard sent < 512 else { throw ProbeError("Gemma control count exceeds its bounded resident request") }
+-        try check()
+-        let data = try canonicalJSONData(Gemma4BenchmarkWirePacket(schema: "gemma4_benchmark_p2p_v1",
+-            scopeSHA256: input.scopeSHA256, senderRank: rank, ordinal: sent, value: value))
+-        let frame = try PaddedControlFrame.encode(data)
+-        try guardMetrics.measure(.wireSendCompleted) {
+-            try group.sendControlCompleted(frame,
+-                to: 1-rank, maximumBytes: PaddedControlFrame.byteCount, check: check)
++        let operation = BoundedControlResourceOperation()
++        try operation.send(resourceCheck: check, faultCheck: controlFaultCheck) { checkpoint in
++            let data = try canonicalJSONData(Gemma4BenchmarkWirePacket(schema: "gemma4_benchmark_p2p_v1",
++                scopeSHA256: input.scopeSHA256, senderRank: rank, ordinal: sent, value: value))
++            let frame = try PaddedControlFrame.encode(data)
++            try guardMetrics.measure(.wireSendCompleted) {
++                try group.sendControlCompleted(frame,
++                    to: 1-rank, maximumBytes: PaddedControlFrame.byteCount, check: checkpoint.check)
++            }
+         }
+-        sent += 1; try check()
++        sent += 1
+     }
+ 
+     func receive(check: () throws -> Void) throws -> Gemma4BenchmarkWireValue {
+         guard received < 512 else { throw ProbeError("Gemma control count exceeds its bounded resident request") }
+-        let frame = try guardMetrics.measure(.wireReceiveCompleted) {
+-            try group.receiveControlCompleted(byteCount: PaddedControlFrame.byteCount,
+-                from: 1-rank, maximumBytes: PaddedControlFrame.byteCount, check: check)
++        let operation = BoundedControlResourceOperation()
++        let frame = try operation.receive(resourceCheck: check, faultCheck: controlFaultCheck) { checkpoint in
++            try guardMetrics.measure(.wireReceiveCompleted) {
++                try group.receiveControlCompleted(byteCount: PaddedControlFrame.byteCount,
++                    from: 1-rank, maximumBytes: PaddedControlFrame.byteCount, check: checkpoint.check)
++            }
+         }
+-        try check()
+         let data = try PaddedControlFrame.decode(frame)
+         let value = try Gemma4BenchmarkWireCodec.decode(data, scope: input.scopeSHA256, sender: 1-rank, ordinal: received)
+         received += 1; return value
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkGuardMetrics.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkGuardMetrics.swift
+@@ -4,10 +4,12 @@
+ /// Durations are inclusive; different categories MUST NOT be added together.
+ final class Gemma4BenchmarkGuardMetrics {
+     static let hostAllowanceBytes = 32_768
++    static let observationPolicy = "gemma4_control_operation_resource_boundaries_v1"
+     enum Kind: Int, CaseIterable {
+         case logicalGuard, entryGuard, ownerGuard, environmentGuard
+         case osSnapshot, nativeSnapshot, outerNativeFault
+         case wireSendCompleted, wireReceiveCompleted
++        case resourceGate, faultDeadlineCheck
+         var label: String {
+             switch self {
+             case .logicalGuard: return "logicalGuard"
+@@ -19,6 +21,8 @@
+             case .outerNativeFault: return "outerNativeFault"
+             case .wireSendCompleted: return "wireSendCompleted"
+             case .wireReceiveCompleted: return "wireReceiveCompleted"
++            case .resourceGate: return "resourceGate"
++            case .faultDeadlineCheck: return "faultDeadlineCheck"
+             }
+         }
+     }
+@@ -28,12 +32,16 @@
+         var nestedLogicalGuardNanoseconds: UInt64 = 0
+     }
+     struct Snapshot: Encodable {
+-        let schema = "gemma4_guard_wall_counters_v1"
++        let schema = "gemma4_guard_wall_counters_v2"
+         let records: [Record]
+         let overflow: Bool
+         let sameProcessClock = true, categoriesAreInclusive = true
+         let extraOSReads = 0, extraNativeEvaluations = 0
+         let observerOverheadIncludedInRequestTiming = true
++        // Full combined runtime guards and cheap control-internal guards are
++        // counted separately. OS/native snapshots include standalone gates too.
++        let resourceGateCountsCombinedChecksOnly = true
++        let faultDeadlineCheckReadsResources = false
+     }
+     struct Sample: Encodable {
+         let prefill: Snapshot, decode: Snapshot
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/BoundedControlResourceOperation.swift
+@@ -0,0 +1,74 @@
++import Foundation
++
++/// One serialized host-control operation. No resource observation is stored.
++/// Entry/exit perform independent fresh admission. The borrowed inner checker
++/// retains native-fault/deadline/lifecycle checks, never resource authority.
++final class BoundedControlResourceOperation {
++    enum Failure: Error, Equatable { case reused, cancelled, closed, reentered }
++    private enum Phase: Equatable { case fresh, running, completed, failed }
++    private var phase = Phase.fresh
++    private var active: Checkpoint?
++
++    final class Checkpoint {
++        private weak var owner: BoundedControlResourceOperation?
++        private var callback: (() throws -> Void)?
++        private var checking = false
++
++        fileprivate init(owner: BoundedControlResourceOperation, callback: @escaping () throws -> Void) {
++            self.owner = owner; self.callback = callback
++        }
++        fileprivate func close() { callback = nil; owner = nil }
++
++        func check() throws {
++            guard let owner, owner.phase == .running, let callback else { throw Failure.closed }
++            guard !checking else { owner.cancel(); throw Failure.reentered }
++            checking = true; defer { checking = false }
++            do {
++                try callback()
++                guard owner.phase == .running, self.callback != nil else { throw Failure.cancelled }
++            } catch { owner.cancel(); throw error }
++        }
++    }
++
++    func cancel() {
++        phase = .failed; active?.close(); active = nil
++    }
++
++    func send(resourceCheck: () throws -> Void, faultCheck: () throws -> Void,
++              body: (Checkpoint) throws -> Void) throws {
++        try perform(resourceCheck: resourceCheck, faultCheck: faultCheck, body: body)
++    }
++
++    func receive(resourceCheck: () throws -> Void, faultCheck: () throws -> Void,
++                 body: (Checkpoint) throws -> Data) throws -> Data {
++        try perform(resourceCheck: resourceCheck, faultCheck: faultCheck, body: body)
++    }
++
++    private func perform<T>(resourceCheck: () throws -> Void, faultCheck: () throws -> Void,
++                            body: (Checkpoint) throws -> T) throws -> T {
++        guard phase == .fresh else { cancel(); throw Failure.reused }
++        phase = .running
++        do {
++            // This finishes its fresh observation before any caller allocation.
++            try resourceCheck()
++            guard phase == .running else { throw Failure.cancelled }
++            let result = try withoutActuallyEscaping(faultCheck) { borrowed in
++                let checkpoint = Checkpoint(owner: self, callback: borrowed)
++                active = checkpoint
++                defer { checkpoint.close(); active = nil }
++                let value = try body(checkpoint)
++                guard phase == .running else { throw Failure.cancelled }
++                // Invalidate before exit admission. Even an escaped checkpoint
++                // cannot run again or retain the borrowed error-context closure.
++                checkpoint.close(); active = nil
++                try resourceCheck()
++                guard phase == .running else { throw Failure.cancelled }
++                return value
++            }
++            phase = .completed
++            return result
++        } catch { cancel(); throw error }
++    }
++
++    deinit { cancel() }
++}

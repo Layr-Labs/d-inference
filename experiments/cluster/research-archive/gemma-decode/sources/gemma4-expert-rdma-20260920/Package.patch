@@ -1,0 +1,20 @@
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "GemmaExpertRDMACheck", targets: ["GemmaExpertRDMACheck"]),
+         .executable(name: "GemmaResidentBenchmark", targets: ["GemmaResidentBenchmark"]),
+         .executable(name: "GemmaShortCorrectnessCheck", targets: ["GemmaShortCorrectnessCheck"]),
+         .executable(name: "WindowedRequestStateCheck", targets: ["WindowedRequestStateCheck"]),
+@@ -23,6 +24,9 @@
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "GemmaExpertRDMACheck", dependencies: [
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++        ], path: "Tests/GemmaExpertRDMACheck"),
+         .executableTarget(name: "GemmaResidentBenchmark", dependencies: [
+             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
+         ], path: "Tests/GemmaResidentBenchmark"),

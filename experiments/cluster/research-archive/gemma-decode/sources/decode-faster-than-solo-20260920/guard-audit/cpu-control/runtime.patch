@@ -1,0 +1,175 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Collective.swift
+@@ -88,6 +88,24 @@
+         }
+     }
+ 
++    /// CPU-origin control bytes only; the shim constructs its own native array.
++    /// Completion retains CPU task/error fences and owned receive validation.
++    func sendControlCompleted(_ bytes: Data, to peer: Int, maximumBytes: Int,
++                              check: () throws -> Void) throws {
++        try withExtendedLifetime(self) {
++            try CollectivePointToPoint.sendControl(bytes, peer: peer, group: handle,
++                rank: rank, size: size, maximumBytes: maximumBytes, check: check)
++        }
++    }
++
++    func receiveControlCompleted(byteCount: Int, from peer: Int, maximumBytes: Int,
++                                 check: () throws -> Void) throws -> Data {
++        try withExtendedLifetime(self) {
++            try CollectivePointToPoint.receiveControl(byteCount: byteCount, peer: peer,
++                group: handle, rank: rank, size: size, maximumBytes: maximumBytes, check: check)
++        }
++    }
++
+     func barrier() {
+         let result = sum(MLXArray(Int32(rank + 1)))
+         eval(result)
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift
+@@ -12,11 +12,51 @@
+ enum CollectivePointToPoint {
+     private static let operationLock = NSLock()
+ 
++    // This path has no caller-supplied MLXArray and therefore cannot silently
++    // classify a uint8 GPU producer as CPU-origin storage. Keep the ordinary
++    // tensor API's two-stream completion unchanged.
++    private static let maximumControlBytes = 65_536
++
++    private static func requireControlBounds(_ count: Int, maximumBytes: Int) throws {
++        guard (1...maximumControlBytes).contains(maximumBytes),
++              (1...maximumBytes).contains(count) else {
++            throw ProbeError("CPU control bytes exceed their explicit bound")
++        }
++    }
++
++    static func sendControl(_ bytes: Data, peer: Int, group: mlx_distributed_group,
++                            rank: Int, size: Int, maximumBytes: Int,
++                            check: () throws -> Void) throws {
++        try requireControlBounds(bytes.count, maximumBytes: maximumBytes)
++        let input = MLXArray(bytes, [bytes.count], dtype: .uint8)
++        _ = try sendInput(input, peer: peer, group: group, rank: rank, size: size,
++            maximumBytes: maximumBytes, fenceModelGPU: false, check: check)
++    }
++
++    static func receiveControl(byteCount: Int, peer: Int, group: mlx_distributed_group,
++                               rank: Int, size: Int, maximumBytes: Int,
++                               check: () throws -> Void) throws -> Data {
++        try requireControlBounds(byteCount, maximumBytes: maximumBytes)
++        let output = try receiveArray(shape: [byteCount], dtype: .uint8, peer: peer,
++            group: group, rank: rank, size: size, maximumBytes: maximumBytes,
++            fenceModelGPU: false, check: check)
++        // The completed CPU receive has no inputs or GPU consumers. Copy only
++        // after the same compact/unique/zero-offset native ownership check.
++        return output.asData(access: .copy).data
++    }
++
+     /// Returns the completed native Send handle, which aliases `input` storage.
+     /// Completion permits source release; it does not acknowledge peer consumption.
+     static func send(_ input: MLXArray, peer: Int, group: mlx_distributed_group,
+                      rank: Int, size: Int, maximumBytes: Int,
+                      check: () throws -> Void) throws -> MLXArray {
++        try sendInput(input, peer: peer, group: group, rank: rank, size: size,
++            maximumBytes: maximumBytes, fenceModelGPU: true, check: check)
++    }
++
++    private static func sendInput(_ input: MLXArray, peer: Int, group: mlx_distributed_group,
++                                  rank: Int, size: Int, maximumBytes: Int,
++                                  fenceModelGPU: Bool, check: () throws -> Void) throws -> MLXArray {
+         operationLock.lock()
+         defer { operationLock.unlock() }
+         return try withExtendedLifetime(input) {
+@@ -31,7 +71,7 @@
+                 // Capture this exact public stream. Pinned StreamOrDevice.stream(_)
+                 // ignores its argument; do not use it to wrap a custom CPU stream.
+                 let communication = StreamOrDevice.cpu
+-                let gpu = StreamOrDevice.gpu
++                let gpu: StreamOrDevice? = fenceModelGPU ? .gpu : nil
+                 let output = try makeArray(operation: "send", check: checked) { result in
+                     mlx_distributed_send(&result, input.ctx, Int32(peer), group, communication.ctx)
+                 }
+@@ -48,6 +88,14 @@
+     static func receive(shape: [Int], dtype: DType, peer: Int,
+                         group: mlx_distributed_group, rank: Int, size: Int,
+                         maximumBytes: Int, check: () throws -> Void) throws -> MLXArray {
++        try receiveArray(shape: shape, dtype: dtype, peer: peer, group: group,
++            rank: rank, size: size, maximumBytes: maximumBytes, fenceModelGPU: true, check: check)
++    }
++
++    private static func receiveArray(shape: [Int], dtype: DType, peer: Int,
++                                     group: mlx_distributed_group, rank: Int, size: Int,
++                                     maximumBytes: Int, fenceModelGPU: Bool,
++                                     check: () throws -> Void) throws -> MLXArray {
+         let geometry = try CollectivePointToPointShape(shape: shape, dtype: dtype,
+                                                       maximumBytes: maximumBytes)
+         operationLock.lock()
+@@ -57,7 +105,7 @@
+             try checked()
+             try validatePeer(peer, group: group, rank: rank, size: size, check: checked)
+             let communication = StreamOrDevice.cpu
+-            let gpu = StreamOrDevice.gpu
++            let gpu: StreamOrDevice? = fenceModelGPU ? .gpu : nil
+             let cShape = shape.map { Int32($0) }
+             let output = try makeArray(operation: "receive", check: checked) { result in
+                 cShape.withUnsafeBufferPointer { dimensions in
+@@ -66,8 +114,8 @@
+                 }
+             }
+             try complete(output, communication: communication, gpu: gpu, check: checked)
+-            // Completion handlers may retain array copies beyond the output event.
+-            // Both stream fences run before inspecting native ownership metadata.
++            // CPU completion drains CPU-owned references. Generic receives keep
++            // both stream fences; the private control path has no GPU graph.
+             try geometry.validateOwnedReceive(output)
+             try checked()
+             return output
+@@ -101,13 +149,19 @@
+     }
+ 
+     private static func complete(_ array: MLXArray, communication: StreamOrDevice,
+-                                 gpu: StreamOrDevice, check: () throws -> Void) throws {
++                                 gpu: StreamOrDevice?, check: () throws -> Void) throws {
+         try requireSuccess(mlx_array_eval(array.ctx), operation: "evaluation", check: check)
+         try requireSuccess(mlx_synchronize(communication.ctx), operation: "CPU completion", check: check)
+         // Producer tensors can originate on the model GPU stream. Waiting for its
+         // completion handlers also removes transient references before ownership
+         // inspection. This correctness fence is intentionally not a TPS policy.
+-        try requireSuccess(mlx_synchronize(gpu.ctx), operation: "GPU completion", check: check)
++        if let gpu {
++            try requireSuccess(mlx_synchronize(gpu.ctx), operation: "GPU completion", check: check)
++        } else {
++            // Preserve the same fresh check/error checkpoint count. The typed
++            // host-control path alone omits the unrelated default GPU fence.
++            try check()
++        }
+     }
+ 
+     private static func requireSuccess(_ status: Int32, operation: String,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkWire.swift
+@@ -33,8 +33,8 @@
+         let data = try canonicalJSONData(Gemma4BenchmarkWirePacket(schema: "gemma4_benchmark_p2p_v1",
+             scopeSHA256: input.scopeSHA256, senderRank: rank, ordinal: sent, value: value))
+         let frame = try PaddedControlFrame.encode(data)
+-        _ = try guardMetrics.measure(.wireSendCompleted) {
+-            try group.sendCompleted(MLXArray(frame, [PaddedControlFrame.byteCount], dtype: .uint8),
++        try guardMetrics.measure(.wireSendCompleted) {
++            try group.sendControlCompleted(frame,
+                 to: 1-rank, maximumBytes: PaddedControlFrame.byteCount, check: check)
+         }
+         sent += 1; try check()
+@@ -42,11 +42,11 @@
+ 
+     func receive(check: () throws -> Void) throws -> Gemma4BenchmarkWireValue {
+         guard received < 512 else { throw ProbeError("Gemma control count exceeds its bounded resident request") }
+-        let array = try guardMetrics.measure(.wireReceiveCompleted) {
+-            try group.receiveCompleted(shape: [PaddedControlFrame.byteCount], dtype: .uint8,
++        let frame = try guardMetrics.measure(.wireReceiveCompleted) {
++            try group.receiveControlCompleted(byteCount: PaddedControlFrame.byteCount,
+                 from: 1-rank, maximumBytes: PaddedControlFrame.byteCount, check: check)
+         }
+-        let frame = array.asData(access: .copy).data; try check()
++        try check()
+         let data = try PaddedControlFrame.decode(frame)
+         let value = try Gemma4BenchmarkWireCodec.decode(data, scope: input.scopeSHA256, sender: 1-rank, ordinal: received)
+         received += 1; return value

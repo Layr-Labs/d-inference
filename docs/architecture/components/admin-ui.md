@@ -1,6 +1,6 @@
 # Admin UI (`admin-ui/`)
 
-> Last updated: 2026-09-26 · commit `b1aac01b5`
+> Last updated: 2026-09-28 · commit `18fad5efe`
 
 `admin-ui/` is the internal, read-only operations dashboard: a separate Next.js 16 / React 19 application (`admin-ui/package.json`) whose pages are React Server Components that run parameterised `SELECT` statements against the coordinator database's read-only replica at request time. It has one authentication surface (HTTP Basic, enforced by `admin-ui/src/proxy.ts`), one raw App Attest evidence download route and no other API routes, and no browser-side data fetching. It is not the consumer console — that is [`console-ui.md`](console-ui.md) — and it never talks to the coordinator's HTTP API.
 

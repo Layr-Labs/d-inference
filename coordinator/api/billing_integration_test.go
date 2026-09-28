@@ -163,7 +163,7 @@ func TestIntegration_StreamingReservationBlocksExploit(t *testing.T) {
 	// Seed the consumer with 1000 μUSD ($0.001) — well above the old
 	// MinimumCharge of 100 μUSD but below the reservation required for a
 	// streaming 4096-token request on default pricing
-	// (CalculateCost of ~4096 × 200 μUSD/1M ≈ 819 μUSD is close, so use
+	// (Rates.CostWithMinimum of ~4096 × 200 μUSD/1M ≈ 819 μUSD is close, so use
 	// max_tokens=8192 to make the gap unambiguous: reservation ≈ 1638 μUSD).
 	const seedBalance int64 = 1000
 	if err := st.Credit(consumerID, seedBalance, store.LedgerDeposit, "test-seed"); err != nil {

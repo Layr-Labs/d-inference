@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"nhooyr.io/websocket"
 )
 
 func TestTransportMeasurementFreshnessAndForecast(t *testing.T) {
@@ -17,6 +20,11 @@ func TestTransportMeasurementFreshnessAndForecast(t *testing.T) {
 	expected, conservative, age := transportForecast(p.transport, now.Add(time.Second))
 	if expected != 150 || conservative != 350 || age != 0 {
 		t.Fatalf("forecast = %v/%v/%v", expected, conservative, age)
+	}
+	beforeLate := p.transport
+	p.recordTransportLocked(4*time.Second, now.Add(5*time.Second))
+	if p.transport != beforeLate {
+		t.Fatal("late pong changed accepted transport measurement")
 	}
 	if _, _, age := transportForecast(p.transport, now.Add(2*time.Minute)); age != -1 {
 		t.Fatal("stale transport retained")
@@ -40,7 +48,7 @@ func TestTransportRealWebSocketProbeAndDisconnect(t *testing.T) {
 	go func() { _, _, _ = h.clientConn.Read(ctx) }()
 	p := &Provider{Conn: h.serverConn, Status: StatusOnline}
 	for i := 0; i < 2; i++ {
-		if err := p.MeasureTransport(ctx); err != nil {
+		if err := p.MeasureTransport(); err != nil {
 			t.Fatalf("ping: %v", err)
 		}
 	}
@@ -49,11 +57,52 @@ func TestTransportRealWebSocketProbeAndDisconnect(t *testing.T) {
 	}
 	p.modelIndexDetached = true
 	p.transport = transportMeasurement{}
-	if err := p.MeasureTransport(ctx); err != nil {
+	if err := p.MeasureTransport(); err != nil {
 		t.Fatal(err)
 	}
 	if p.transport.samples != 0 {
 		t.Fatal("detached session accepted a late probe")
+	}
+}
+
+func TestTransportUnansweredPongWaitsForConnectionTeardown(t *testing.T) {
+	h := newPingStallHarness(t)
+	r := New(testLogger())
+	p := r.Register("transport-session", h.serverConn, &protocol.RegisterMessage{})
+	done := make(chan error, 1)
+	go func() { done <- p.MeasureTransport() }()
+
+	// No client Read means no automatic pong. The observation acceptance limit
+	// must not become a socket deadline or launch another probe while this waits.
+	select {
+	case err := <-done:
+		t.Fatalf("unanswered pong ended before connection teardown: %v", err)
+	case <-time.After(3250 * time.Millisecond):
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := h.clientConn.Write(ctx, websocket.MessageText, []byte("still alive")); err != nil {
+		t.Fatalf("unanswered transport probe closed the connection: %v", err)
+	}
+	select {
+	case message := <-h.inbound:
+		if message != "still alive" {
+			t.Fatalf("unexpected application message: %q", message)
+		}
+	case <-ctx.Done():
+		t.Fatal("transport observer blocked the application read loop")
+	}
+
+	// The real registry disconnect owns socket closure and must release the
+	// outstanding observer without waiting for another pong or timer tick.
+	r.Disconnect(p.ID)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("unanswered ping succeeded after disconnect")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("connection teardown retained transport observer")
 	}
 }
 

@@ -434,7 +434,7 @@ adds burst headroom and applies the existing bounds:
 qc                    = median(per-provider qualified or legacy quality concurrency)
 normalizedServiceTime = clamp(promptTokens / prefillTPS + outputTokens / aggregateDecodeTPS,
                               warmPoolMinServiceTime, warmPoolMaxServiceTime)
-serviceTime           = min(normalizedServiceTime × qc, warmPoolMaxServiceTime)
+serviceTime           = normalizedServiceTime × qc
 L                     = running + waiting + queueDepth + spillArrivalRate × serviceTime
 occupiedProviderDemand = L / qc
 measuredWorkProviders  = promptWorkTPS / prefillTPS + generationWorkTPS / aggregateDecodeTPS
@@ -447,7 +447,9 @@ target                = clamp(target, warm, warm + eligibleCold)
 `promptTokens` and `outputTokens` use fresh measured shape EWMAs where available,
 otherwise `AssumedPromptTokens` and `AssumedCompletionTokens`. The service clamps
 are `warmPoolMinServiceTime = 500 * time.Millisecond` and
-`warmPoolMaxServiceTime = 2 * time.Minute`. Without usable aggregate capacity,
+`warmPoolMaxServiceTime = 2 * time.Minute`, applied to Mac work before converting
+to request-concurrency units. This preserves refused prompt demand independently
+of the decode width. Without usable aggregate capacity,
 service time retains the legacy per-request decode estimate. The measured-work
 term includes only fresh qualified-count observations. Reviewed curves provide
 aggregate throughput at an exact width; an operator cap between qualified widths

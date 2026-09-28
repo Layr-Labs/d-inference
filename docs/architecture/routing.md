@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-28 · commit `914dc4e53`
+> Last updated: 2026-09-28 · commit `4713e9158`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -75,9 +75,14 @@ First-content forecasts include fresh coordinator-to-provider WebSocket RTT.
 `coordinator/registry/provider_transport.go` (`transportForecast`) requires two
 successful samples on the current connection within 90 seconds, and adds RTT
 and measured variation to the existing delivery allowances. The 30-second
-probe loop (`coordinator/api/provider_transport.go`) has a three-second bound;
-missing or stale samples retain the conservative legacy allowances. Ping/pong
-control frames do not hold the application text writer while waiting for a pong.
+probe loop (`coordinator/api/provider_transport.go`) accepts RTT observations
+up to three seconds; this is a sample limit, not a probe-specific socket
+deadline. It keeps at most one probe outstanding, and an unanswered pong waits
+for ordinary connection teardown. The WebSocket library's control-frame failure
+policy still applies, as for automatic pongs; application writes retain their
+existing watchdog. Missing or stale samples retain the conservative legacy
+allowances. Ping/pong control frames do not hold the application text writer
+while waiting for a pong.
 
 Forced tool choice with media, and media-bearing tool results even with
 `tool_choice: none`, carry `RequestTraits.RequiresNativeMediaTools`. The shared

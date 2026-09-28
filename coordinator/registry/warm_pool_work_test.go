@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -144,5 +145,59 @@ func TestWarmPoolUsesQualifiedCapacityAndOperatorCap(t *testing.T) {
 	quality, aggregate, _ = r.warmPoolCapacityLocked(p, "model", params)
 	if quality != 3 || aggregate != 105 {
 		t.Fatalf("operator intermediate cap extrapolated aggregate: %d/%v", quality, aggregate)
+	}
+}
+
+func TestWarmPoolRefusedPromptWorkIsIndependentOfDecodeWidth(t *testing.T) {
+	for _, prompt := range []struct {
+		tokens int
+		work   time.Duration
+		target int
+	}{
+		{tokens: 64000, work: 64 * time.Second, target: 8},
+		{tokens: 256000, work: warmPoolMaxServiceTime, target: 15},
+	} {
+		for _, width := range []int{1, 4, 16} {
+			t.Run(fmt.Sprintf("prompt_%d_width_%d", prompt.tokens, width), func(t *testing.T) {
+				reg := New(testLogger())
+				const model = "refused-long-prompt"
+				for i := 0; i < 20; i++ {
+					p := makeWarmPoolColdProvider(t, reg, fmt.Sprintf("cold-%d", i), model, 50, 64, 8)
+					p.mu.Lock()
+					p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{{
+						Model: model, State: "idle_shutdown", MaxConcurrency: width,
+						ObservedPrefillTPS: 1000,
+					}}
+					p.mu.Unlock()
+				}
+				cfg := testWarmPoolConfig()
+				cfg.ObserveOnly = true
+				cfg.AssumedPromptTokens = prompt.tokens
+				cfg.AssumedCompletionTokens = 0
+				reg.ConfigureWarmPool(cfg)
+
+				// All offered work was refused: one arrival per eight seconds.
+				// No running request or completed-work counter can rescue an
+				// understated spill target. Decode width does not parallelize
+				// this serial prompt work, and its clamp is in Mac-time units.
+				now := time.Now()
+				reg.warmPool.state.recordEvent(model, warmPoolEventCapacityReject, now)
+				reg.warmPool.state.foldArrivalRates(now, time.Second, 1)
+				snaps := reg.warmPool.planObserveOnly(now.Add(8*time.Second), nil)
+				if len(snaps) != 1 {
+					t.Fatalf("snapshots = %d, want 1", len(snaps))
+				}
+				snap := snaps[0]
+				if snap.WorkProviders != 0 || snap.RunningRequests != 0 || snap.SpillArrivalRate != 0.125 {
+					t.Fatalf("expected refused-only demand, got %+v", snap)
+				}
+				if snap.TargetWarm != prompt.target {
+					t.Fatalf("target = %d, want %d Macs for refused prompt work", snap.TargetWarm, prompt.target)
+				}
+				if snap.QualityConcurrency != width || snap.ServiceTime != prompt.work*time.Duration(width) {
+					t.Fatalf("quality/service = %d/%v, want %d/%v", snap.QualityConcurrency, snap.ServiceTime, width, prompt.work*time.Duration(width))
+				}
+			})
+		}
 	}
 }

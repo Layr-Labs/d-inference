@@ -17,7 +17,7 @@ def receipt():
             sample = dict(decode_p10_tps=40, aggregate_decode_tps=40 * width, prefill_tps=2000,
                           first_content_p95_ms=1000, token_gap_p95_ms=25, forward_widths=[width],
                           power_mode="automatic", thermal_state="nominal",
-                          mtp_active=False, runtime_policy_overrides={},
+                          mtp_active=False, runtime_policy_overrides={}, effective_mixed_prefill_token_cap=None,
                           competing_model_active_requests={model: 1 for model in models},
                           activation_peak_bytes=2**30,
                           kv_peak_bytes=2**30, resident_bytes=10 * 2**30, activation_reserve_bytes=6 * 2**30,
@@ -29,6 +29,21 @@ def receipt():
                 resolved_activation_floor_bytes=5.5 * 2**30,
                 checks={check: dict(passed=True, receipt_sha256="c" * 64) for check in CHECKS},
                 samples=[dict(sample, run_id=str(i)) for i in range(MIN_SAMPLES)]))
+    return report
+
+
+def chunk_receipt(cap=128):
+    report = receipt()
+    report["mixed_prefill_token_cap"] = cap
+    for cell in report["qualification_cells"]:
+        baseline = {key: cell["samples"][0][key] for key in
+                    ("decode_p10_tps", "aggregate_decode_tps", "prefill_tps", "first_content_p95_ms")}
+        cell["mixed_prefill_baseline"] = dict(
+            baseline, token_gap_p95_ms=40, receipt_sha256="d" * 64,
+            effective_mixed_prefill_token_cap=None)
+        cell["mixed_prefill_work_p95_ms"] = 90
+        for sample in cell["samples"]:
+            sample["effective_mixed_prefill_token_cap"] = cap
     return report
 
 
@@ -121,16 +136,67 @@ class QualificationTests(unittest.TestCase):
         self.assertFalse(run(report)["qualified"])
 
     def test_chunk_promotion_needs_measured_comparison(self):
-        report = receipt()
-        report["mixed_prefill_token_cap"] = 128
+        report = chunk_receipt()
+        for cell in report["qualification_cells"]:
+            cell.pop("mixed_prefill_baseline")
         unqualified_chunk = run(report)["profile"]
         self.assertEqual(unqualified_chunk["max_concurrency"], 1)
         self.assertNotIn("mixed_prefill_token_cap", unqualified_chunk)
+        self.assertEqual(run(chunk_receipt())["profile"]["max_concurrency"], 2)
+
+    def test_chunk_candidate_must_match_every_observed_sample(self):
+        for invalid in (None, 256, "128", 128.0, True):
+            with self.subTest(invalid=invalid):
+                report = chunk_receipt()
+                report["qualification_cells"][0]["samples"][0]["effective_mixed_prefill_token_cap"] = invalid
+                self.assertFalse(run(report)["qualified"])
+        report = chunk_receipt()
+        report["qualification_cells"][0]["samples"][0].pop("effective_mixed_prefill_token_cap")
+        self.assertFalse(run(report)["qualified"])
+        report = chunk_receipt()
+        report["mixed_prefill_token_cap"] = 256
+        self.assertFalse(run(report)["qualified"])
+        report = chunk_receipt()
+        report.pop("mixed_prefill_token_cap")
+        self.assertFalse(run(report)["qualified"])
+
+    def test_candidate_allows_only_its_exact_global_override(self):
+        report = chunk_receipt()
         for cell in report["qualification_cells"]:
-            baseline = {key: cell["samples"][0][key] for key in
-                        ("decode_p10_tps", "aggregate_decode_tps", "prefill_tps", "first_content_p95_ms")}
-            cell["mixed_prefill_baseline"] = dict(baseline, token_gap_p95_ms=40, receipt_sha256="d" * 64)
-            cell["mixed_prefill_work_p95_ms"] = 90
+            for sample in cell["samples"]:
+                sample["runtime_policy_overrides"] = {"DARKBLOOM_CBV2_MIXED_PREFILL_CAP": "128"}
+        self.assertEqual(run(report)["profile"]["mixed_prefill_token_cap"], 128)
+        for overrides in (
+            {"DARKBLOOM_CBV2_MIXED_PREFILL_CAP": "256"},
+            {"DARKBLOOM_CBV2_MIXED_PREFILL_CAP": 128},
+            {"DARKBLOOM_CBV2_MIXED_PREFILL_CAP": "128", "DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE": "2048"},
+            {"DARKBLOOM_CBV2_MIXED_PREFILL_CAP_BY_MODEL": "fixture=128"},
+        ):
+            with self.subTest(overrides=overrides):
+                invalid = copy.deepcopy(report)
+                invalid["qualification_cells"][0]["samples"][0]["runtime_policy_overrides"] = overrides
+                self.assertFalse(run(invalid)["qualified"])
+        plain = receipt()
+        plain["qualification_cells"][0]["samples"][0]["runtime_policy_overrides"] = {
+            "DARKBLOOM_CBV2_MIXED_PREFILL_CAP": "128"}
+        self.assertFalse(run(plain)["qualified"])
+
+    def test_baseline_requires_an_explicit_different_measured_policy(self):
+        for invalid in (128, "256", -1, True):
+            with self.subTest(invalid=invalid):
+                report = chunk_receipt()
+                cell = next(c for c in report["qualification_cells"]
+                            if c["width"] == 2 and c["arrival_pattern"] == "staggered")
+                cell["mixed_prefill_baseline"]["effective_mixed_prefill_token_cap"] = invalid
+                self.assertEqual(run(report)["profile"]["max_concurrency"], 1)
+        report = chunk_receipt()
+        cell = next(c for c in report["qualification_cells"]
+                    if c["width"] == 2 and c["arrival_pattern"] == "staggered")
+        cell["mixed_prefill_baseline"].pop("effective_mixed_prefill_token_cap")
+        self.assertEqual(run(report)["profile"]["max_concurrency"], 1)
+        report = chunk_receipt()
+        for cell in report["qualification_cells"]:
+            cell["mixed_prefill_baseline"]["effective_mixed_prefill_token_cap"] = 256
         self.assertEqual(run(report)["profile"]["max_concurrency"], 2)
 
 

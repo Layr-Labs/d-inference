@@ -8,7 +8,7 @@ METRICS = ("decode_p10_tps", "aggregate_decode_tps", "prefill_tps",
            "first_content_p95_ms", "token_gap_p95_ms")
 
 
-def measure(cell, identity):
+def measure(cell, identity, mixed_prefill_token_cap=None):
     errors = []
     samples = cell.get("samples", [])
     if not isinstance(samples, list) or len(samples) < MIN_SAMPLES:
@@ -44,8 +44,19 @@ def measure(cell, identity):
                     for model in cell["competing_models"]) or
                 any(model not in cell["competing_models"] and count != 0 for model, count in competitors.items())):
             errors.append("competing-model work was not observed for the serving set")
-        if sample.get("mtp_active") is not False or sample.get("runtime_policy_overrides") != {}:
-            errors.append("initial runtime revision requires measured plain-target execution without policy overrides")
+        # This records explicit per-engine configuration. None selects the
+        # existing runtime/model default, which may itself impose a cap.
+        observed_cap = sample.get("effective_mixed_prefill_token_cap")
+        if ("effective_mixed_prefill_token_cap" not in sample or
+                (mixed_prefill_token_cap is None and observed_cap is not None) or
+                (mixed_prefill_token_cap is not None and
+                 (type(observed_cap) is not int or observed_cap != mixed_prefill_token_cap))):
+            errors.append("measured mixed-prefill cap does not match the candidate policy")
+        allowed_overrides = [{}]
+        if mixed_prefill_token_cap is not None:
+            allowed_overrides.append({"DARKBLOOM_CBV2_MIXED_PREFILL_CAP": str(mixed_prefill_token_cap)})
+        if sample.get("mtp_active") is not False or sample.get("runtime_policy_overrides") not in allowed_overrides:
+            errors.append("initial runtime revision permits only the exact candidate mixed-prefill override")
         if sample.get("power_mode") != "automatic" or sample.get("thermal_state") != "nominal":
             errors.append("power/thermal posture missing or throttled")
         fields = ("activation_peak_bytes", "kv_peak_bytes", "resident_bytes",
@@ -118,7 +129,7 @@ def evaluate(raw):
             if cell is None:
                 failures.append(f"missing {key}")
                 continue
-            metrics, problems = measure(cell, identity)
+            metrics, problems = measure(cell, identity, report.get("mixed_prefill_token_cap"))
             if metrics:
                 measured[key] = metrics
                 baseline = measured.get((1, *shape))
@@ -135,6 +146,11 @@ def evaluate(raw):
                     prior = cell.get("mixed_prefill_baseline")
                     if (type(cap) is not int or not 128 <= cap <= 512 or not isinstance(prior, dict) or
                             not digest(prior.get("receipt_sha256")) or
+                            "effective_mixed_prefill_token_cap" not in prior or
+                            (prior["effective_mixed_prefill_token_cap"] is not None and
+                             (type(prior["effective_mixed_prefill_token_cap"]) is not int or
+                              prior["effective_mixed_prefill_token_cap"] < 0)) or
+                            prior["effective_mixed_prefill_token_cap"] == cap or
                             any(not positive(prior.get(k)) for k in METRICS) or
                             not positive(cell.get("mixed_prefill_work_p95_ms")) or
                             cell["mixed_prefill_work_p95_ms"] > 100):

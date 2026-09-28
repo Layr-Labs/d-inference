@@ -18,8 +18,12 @@ type transportMeasurement struct {
 // RFC control frames use the WebSocket library's control-frame serialization,
 // which can interleave with fragmented text frames; no application text bypasses
 // the two-lane writer. Waiting for the pong never holds that writer's queue.
-// The caller supplies a short timeout and must keep its Read loop running.
-func (p *Provider) MeasureTransport(ctx context.Context) error {
+// The caller must keep its Read loop running. Do not impose a probe-specific
+// write deadline: nhooyr treats expiration during a write as connection failure.
+// Its ordinary control-frame failure policy still applies, as for automatic
+// pongs. A missing pong keeps this one observer pending until connection teardown;
+// an eventual RTT above three seconds is discarded by recordTransportLocked.
+func (p *Provider) MeasureTransport() error {
 	p.mu.Lock()
 	conn := p.Conn
 	p.mu.Unlock()
@@ -27,7 +31,7 @@ func (p *Provider) MeasureTransport(ctx context.Context) error {
 		return errProviderWriterStopped
 	}
 	start := time.Now()
-	if err := conn.Ping(ctx); err != nil {
+	if err := conn.Ping(context.Background()); err != nil {
 		return err
 	}
 	finished := time.Now()

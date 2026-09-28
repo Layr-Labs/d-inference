@@ -8,8 +8,9 @@ import (
 )
 
 // Transport samples are local to one provider session and never infer GPU or
-// delivery performance from attestation processing time. Failure merely ages
-// out the sample; liveness and health keep their existing independent owners.
+// delivery performance from attestation processing time. Only one probe can be
+// outstanding: an unanswered pong waits for ordinary connection teardown rather
+// than introducing a separate measurement deadline that could close the socket.
 func (s *Server) providerTransportLoop(ctx context.Context, provider *registry.Provider) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -17,9 +18,7 @@ func (s *Server) providerTransportLoop(ctx context.Context, provider *registry.P
 		if ctx.Err() != nil {
 			return
 		}
-		probe, cancel := context.WithTimeout(ctx, 3*time.Second)
-		_ = provider.MeasureTransport(probe)
-		cancel()
+		_ = provider.MeasureTransport()
 		select {
 		case <-ctx.Done():
 			return

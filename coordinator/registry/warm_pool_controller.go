@@ -279,8 +279,10 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 		if f.qualityConc > 0 && f.aggregateDecodeTPS > 0 {
 			// Convert serial prompt work and measured aggregate generation work
 			// into the request-concurrency units used by the existing target.
+			// estimateServiceTime clamps work in Mac-time units BEFORE scaling;
+			// clamping again here would divide long refused prompt work by the
+			// decode width when warmTarget converts concurrency back to Macs.
 			svc = estimateServiceTime(f.prefillTPS, f.aggregateDecodeTPS, serviceParams) * time.Duration(f.qualityConc)
-			svc = min(svc, warmPoolMaxServiceTime)
 		}
 		target := c.targetWarm(f, p, q, params, svc, now)
 

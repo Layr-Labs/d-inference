@@ -13,7 +13,8 @@ catalogs are empty: M5 Max B8 and M5 Ultra B16 remain qualification targets.
 - Record the provider version, `cbv2-first-content-v1` runtime revision, resolved
   KV backend, chip name, GPU cores, RAM and the engine's entire configured context
   limit. The initial runtime identity covers plain target execution; assistant
-  and experimental runtime overrides do not qualify.
+  and unrelated runtime overrides do not qualify. A mixed-prefill candidate may
+  use only its exact global cap override described below.
 - Automatic power mode and nominal thermal posture. High-power-only results do
   not certify ordinary service. Keep production traffic off the test machine.
 
@@ -75,8 +76,8 @@ are **not hardware evidence**.
 | Identity | `id`, `model_id`, `artifact_sha256`, `provider_version`, `runtime_revision`, `kv_backend`, `chip_name`, `gpu_cores`, `memory_gb`, `context_tokens_max` |
 | Cell | `width`, `prompt_tokens`, `output_tokens`, `arrival_pattern` (`fixed`/`staggered`), `cache_state` (`cold`/`reused`), `competing_models`, `failures`, `raw_measurements_sha256`, `absolute_first_content_budget_ms`, `resolved_activation_floor_bytes`, `checks`, `samples` |
 | Checks | Each of `correctness`, `constraints`, `isolation`, `cancellation`, `accounting`, `retirement` has `passed: true` and `receipt_sha256` |
-| Sample | Unique `run_id`, `decode_p10_tps`, `aggregate_decode_tps`, `prefill_tps`, `first_content_p95_ms`, `token_gap_p95_ms`, actual `forward_widths`, `competing_model_active_requests` (positive measured count for every competing model), `power_mode: "automatic"`, `thermal_state: "nominal"`, `mtp_active: false`, `runtime_policy_overrides: {}`, `activation_peak_bytes`, `kv_peak_bytes`, `resident_bytes`, `activation_reserve_bytes`, `memory_budget_bytes` |
-| Chunk comparison | Each mixed staggered cell also carries `mixed_prefill_work_p95_ms` and `mixed_prefill_baseline` (the five rate/latency metrics plus `receipt_sha256`) |
+| Sample | Unique `run_id`, `decode_p10_tps`, `aggregate_decode_tps`, `prefill_tps`, `first_content_p95_ms`, `token_gap_p95_ms`, actual `forward_widths`, `competing_model_active_requests` (positive measured count for every competing model), `power_mode: "automatic"`, `thermal_state: "nominal"`, `mtp_active: false`, `effective_mixed_prefill_token_cap` (explicit integer engine cap; `null` selects the existing runtime/model default), `runtime_policy_overrides` (empty, or only the exact candidate global override), `activation_peak_bytes`, `kv_peak_bytes`, `resident_bytes`, `activation_reserve_bytes`, `memory_budget_bytes` |
+| Chunk comparison | Each mixed staggered cell also carries `mixed_prefill_work_p95_ms` and `mixed_prefill_baseline` (the five rate/latency metrics, `receipt_sha256`, and explicit `effective_mixed_prefill_token_cap`: `null` for the runtime/model default or a nonnegative integer different from the candidate) |
 
 ## Verify
 
@@ -84,6 +85,17 @@ The evaluator uses the lowest rate and highest latency across independent
 repetitions, checks each shape against its own B1 and previous selected width,
 requires decode p10 ≥30 tokens/s and ≥10% aggregate gain, and enforces both the
 absolute first-content budget and `max(3000 ms, 1.5 × B1)`.
+
+Every sample must record the engine's explicit mixed-prefill cap configuration.
+An explicit `null` selects the existing runtime/model default; it does not mean
+that mixed prefill is unlimited. For a candidate such as `128`, the field must
+be the integer `128` in every sample. An empty override map is valid when the
+benchmark sets the cap directly; otherwise the only permitted map is
+`{"DARKBLOOM_CBV2_MIXED_PREFILL_CAP": "128"}`. A changed root candidate cannot
+reuse measurements of a different applied cap. Other overrides remain rejected,
+and a runtime-default profile requires an empty map. The baseline comparison must
+identify a different explicit cap (or `null` for the runtime/model default); a missing policy or the
+same candidate policy is not a qualifying baseline.
 
 Mixed-prefill promotion requires ≤100 ms incremental work, ≥25% lower mixed
 token-gap p95, ≤5% first-content regression, ≤5% aggregate throughput loss and

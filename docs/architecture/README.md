@@ -1,6 +1,6 @@
 # Architecture — how Darkbloom works
 
-> Last updated: 2026-09-27 · commit `0bd16a9fa`
+> Last updated: 2026-09-28 · commit `59af7292d`
 
 Explanation pages: context, mechanism, invariants, failure modes, and a code
 map for each part of the system. The code in `coordinator/`,
@@ -43,6 +43,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 
 | Page | Concern |
 |---|---|
+| [first-content-routing.md](first-content-routing.md) | Expected and conservative delivery forecasts, measurement freshness, 100-ms selection and atomic retry policy |
 | [routing.md](routing.md) | How a request becomes a provider choice: eligibility gates, cost model, selection, hedged dispatch, servability, breakers |
 | [scheduling.md](scheduling.md) | Per-model queue, slot states, token-budget admission, concurrency caps, model swaps, warm pool, heartbeat and eviction |
 | [cache-aware-routing.md](cache-aware-routing.md) | Provider-confirmed exact prefix-cache routing: proof, holders, cost discount, kill switch |

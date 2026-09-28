@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-27 · commit `4320091ca`
+> Last updated: 2026-09-28 · commit `2496ac833`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -159,7 +159,8 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
+| `model fits in RAM` FAIL / `Cold load blocked (memory)` in status | The live no-eviction load budget is below the scanner's complete model estimate plus activation and minimum-KV serving reserve, and request-time idle eviction cannot close the gap. The nominal `Inference memory` hardware figure is not live free RAM. Status and doctor show both the preload gap and the smaller eviction-aware cold-load gap ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)). A busy machine with an active request gets a temporary verdict instead | Free at least the **cold-load** shortfall with margin, rerun `darkbloom doctor`, then `darkbloom restart` to retry preload when enabled; or select a smaller model ([hardware requirements](./hardware-requirements.md)). A request cannot cold-load at the same memory level. |
+| `Preload skipped (no eviction)` in status | The model does not fit alongside the current resident slots. The request-time allowance can fit it by evicting idle models; startup preload deliberately avoids that churn | Keep the current serving set, or free memory if both models should stay resident. |
 | Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |

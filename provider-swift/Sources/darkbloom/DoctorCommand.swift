@@ -77,14 +77,16 @@ struct Doctor: AsyncParsableCommand {
         }
 
         // The high-signal diagnosis first (sectioned, with fixes).
-        let rendered = DiagnosticReportRenderer.render(diagnosis)
+        let color = DoctorTerminalStyle.enabled()
+        let rendered = DiagnosticReportRenderer.render(
+            diagnosis, color: color, additionalLevels: checks.map(\.status))
         if !rendered.isEmpty { print(rendered) }
 
         // Then the detailed low-level checks.
         print("")
-        print("DETAILED CHECKS")
+        print(DoctorTerminalStyle.heading("DETAILED CHECKS", color: color))
         for check in checks {
-            print("  \(check.status.marker) \(check.name): \(check.detail)")
+            print("  \(DoctorTerminalStyle.marker(check.status, color: color)) \(check.name): \(check.detail)")
         }
 
         if let guide = bootSecurityActionGuide(bootSecurity) {

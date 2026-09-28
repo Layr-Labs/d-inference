@@ -47,6 +47,9 @@ public enum CapacityHeartbeatMateriality {
         // Nothing published yet on this connection: the first rebuild is
         // always worth pushing (the baseline heartbeat would send it anyway).
         guard let previous else { return true }
+        // A pending load can reserve memory before any slot exists. Surface
+        // both edges promptly so owner diagnostics do not call it a failure.
+        if previous.loadTransitionActive != current.loadTransitionActive { return true }
 
         // Slot roster: a model loaded, unloaded, or evicted.
         let previousSlots = Dictionary(

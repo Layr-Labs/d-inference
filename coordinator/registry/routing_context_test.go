@@ -229,7 +229,8 @@ func TestGateRejectionTallies(t *testing.T) {
 			pr.RequiresVision = true // provider advertises a text-only build
 			return nil
 		}},
-		{name: "ttft_ceiling", want: GateTTFTCeiling, setup: func(_ *testing.T, _ *Registry, _ *Provider, pr *PendingRequest) []string {
+		{name: "ttft_ceiling", want: GateTTFTCeiling, setup: func(_ *testing.T, _ *Registry, p *Provider, pr *PendingRequest) []string {
+			setFreshIdleFirstContentTelemetry(p, 1000)
 			pr.MaxTTFTMs = 0.001
 			return nil
 		}},
@@ -329,11 +330,13 @@ func gateTallyMap(d RoutingDecision) map[string]int {
 
 func mkCandidate(id string, cost float64, queue, pending int, discount float64) *routingCandidate {
 	return &routingCandidate{
-		provider:       &Provider{ID: id},
-		costMs:         cost,
-		effectiveQueue: queue,
-		snapshot:       routingSnapshot{totalPending: pending},
-		breakdown:      costBreakdown{CacheDiscountMs: discount, Total: cost},
+		provider:                  &Provider{ID: id},
+		costMs:                    cost,
+		effectiveQueue:            queue,
+		firstContent:              FirstContentEstimate{Status: FirstContentUnknown, ExpectedMs: cost, ServiceMs: float64(queue+pending) * 1000, CachedTokens: discount},
+		cacheEstimatedTTFTSavedMs: discount,
+		snapshot:                  routingSnapshot{totalPending: pending},
+		breakdown:                 costBreakdown{CacheDiscountMs: discount, Total: cost},
 	}
 }
 
@@ -365,21 +368,21 @@ func TestSelectRoutingCandidatePaths(t *testing.T) {
 		}
 	})
 	t.Run("tie_queue", func(t *testing.T) {
-		a, b := mkCandidate("a", 1000, 1, 0, 0), mkCandidate("b", 1500, 0, 0, 0)
+		a, b := mkCandidate("a", 1000, 1, 0, 0), mkCandidate("b", 1050, 0, 0, 0)
 		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b})
-		if id(w) != "b" || id(ru) != "a" || n != 2 || path != SelectionTieQueue {
+		if id(w) != "b" || id(ru) != "a" || n != 2 || path != SelectionTiePending {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 		}
 	})
 	t.Run("tie_pending", func(t *testing.T) {
-		a, b := mkCandidate("a", 1000, 0, 2, 0), mkCandidate("b", 1500, 0, 1, 0)
+		a, b := mkCandidate("a", 1000, 0, 2, 0), mkCandidate("b", 1050, 0, 1, 0)
 		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b})
 		if id(w) != "b" || id(ru) != "a" || n != 2 || path != SelectionTiePending {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 		}
 	})
 	t.Run("random", func(t *testing.T) {
-		a, b, far := mkCandidate("a", 1000, 0, 0, 0), mkCandidate("b", 1500, 0, 0, 0), mkCandidate("far", 50000, 0, 0, 0)
+		a, b, far := mkCandidate("a", 1000, 0, 0, 0), mkCandidate("b", 1050, 0, 0, 0), mkCandidate("far", 50000, 0, 0, 0)
 		for i := 0; i < 20; i++ {
 			w, ru, n, path := selectRoutingCandidate([]*routingCandidate{far, a, b})
 			if path != SelectionRandom || n != 2 {
@@ -440,12 +443,11 @@ func TestSelectRoutingCandidatePaths(t *testing.T) {
 			}
 		}
 	})
-	t.Run("cache_credit_beats_less_busy_cold_peer", func(t *testing.T) {
-		// A credited holder inside the band wins over a cold peer even when the
-		// cold peer would win today's least-busy spreading.
-		a, b := mkCandidate("a", 1200, 1, 1, 300), mkCandidate("b", 1000, 0, 0, 0)
+	t.Run("whole_mac_work_precedes_cache_affinity", func(t *testing.T) {
+		// Whole-Mac work is compared before cache affinity inside the band.
+		a, b := mkCandidate("a", 1050, 1, 1, 300), mkCandidate("b", 1000, 0, 0, 0)
 		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{b, a})
-		if id(w) != "a" || id(ru) != "b" || n != 2 || path != SelectionCacheCredit {
+		if id(w) != "b" || id(ru) != "a" || n != 2 || path != SelectionTiePending {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 		}
 	})
@@ -463,15 +465,15 @@ func TestSelectRoutingCandidatePaths(t *testing.T) {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 		}
 	})
-	t.Run("restore_penalty_never_enters_band", func(t *testing.T) {
-		// A restore penalty (negative estimated saving, no credit) competes on
-		// strict cost: it is not a near-tie of a cheaper, busier cold peer.
+	t.Run("restore_cost_is_already_in_forecast", func(t *testing.T) {
+		// Restore time is already in expected delivery. Within the fast band,
+		// the idle provider can still win on service work.
 		penalized := mkCandidate("penalized", 1040, 0, 0, 0)
 		penalized.cacheEstimatedTTFTSavedMs = -40
 		cold := mkCandidate("cold", 1020, 1, 1, 0)
 		for _, pool := range [][]*routingCandidate{{penalized, cold}, {cold, penalized}} {
 			w, ru, n, path := selectRoutingCandidate(pool)
-			if id(w) != "cold" || id(ru) != "penalized" || n != 1 || path != SelectionUniqueMin {
+			if id(w) != "penalized" || id(ru) != "cold" || n != 2 || path != SelectionTiePending {
 				t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 			}
 		}

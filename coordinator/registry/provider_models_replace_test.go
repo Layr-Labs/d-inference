@@ -14,6 +14,43 @@ func markReplacementCapacityFresh(p *Provider) {
 	p.mu.Unlock()
 }
 
+func TestReplaceProviderModelsInvalidatesOwnerLoadEvidenceForSameID(t *testing.T) {
+	r := New(testLogger())
+	r.SetModelCatalog([]CatalogEntry{{ID: drainStateTestModel}})
+	p := registerDrainStateProvider(t, r, "session", 100)
+	p.mu.Lock()
+	p.Models[0].EstimatedMemoryGB = 18.2
+	p.CapacityModelIDs = []string{drainStateTestModel}
+	p.CapacityAcceptedAt = time.Now()
+	p.firstContentMeasurements = map[string]firstContentMeasurement{drainStateTestModel: {rate: 1000, observedAfter: time.Now()}}
+	p.BackendCapacity = &protocol.BackendCapacity{Slots: []protocol.BackendSlotCapacity{}}
+	p.mu.Unlock()
+	generation := r.CommitProviderDrain(p, "drain")
+	r.CompleteProviderDrain(p, "drain", generation)
+	_, _, _, err := r.ReplaceProviderModels(p, &protocol.ModelsReplaceMessage{
+		RequestID: "replace", DrainRequestID: "drain",
+		Models: []protocol.ModelInfo{{ID: drainStateTestModel, WeightHash: "new-hash", EstimatedMemoryGB: 3}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.CapacityModelIDs != nil || !p.CapacityAcceptedAt.IsZero() || p.BackendCapacity == nil {
+		t.Fatal("same-ID replacement left owner load evidence fresh or disturbed routing capacity")
+	}
+	if p.firstContentMeasurements != nil {
+		t.Fatal("same-ID artifact replacement retained prior performance freshness")
+	}
+	if !r.Heartbeat(p.ID, &protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle",
+		BackendCapacity: &protocol.BackendCapacity{CapacitySeq: 1, Slots: []protocol.BackendSlotCapacity{}},
+	}) {
+		t.Fatal("replacement heartbeat rejected")
+	}
+	if p.CapacityAcceptedAt.IsZero() || len(p.CapacityModelIDs) != 1 || p.CapacityModelIDs[0] != drainStateTestModel {
+		t.Fatal("fresh applied heartbeat did not restore owner load evidence")
+	}
+}
+
 func TestReplaceProviderModelsRejectsAtomicallyAndCanResumeOldSet(t *testing.T) {
 	cases := []struct {
 		name   string

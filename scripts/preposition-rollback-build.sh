@@ -16,7 +16,11 @@
 # does not carry min_ram_gb/prices in registerable form):
 #   R2_ACCOUNT_ID=… GCP_PROJECT=… ./scripts/preposition-rollback-build.sh \
 #     <src-model-id> <src-version> <new-model-id> <coordinator-url> <publishing-key> \
-#     <quantization> <min-ram-gb> <max-context> <max-output> <input-price-µ$/Mtok> <output-price-µ$/Mtok> [capabilities-csv]
+#     <quantization> <min-ram-gb> <max-context> <max-output> <input-price-µ$/Mtok> <output-price-µ$/Mtok> [capabilities-csv] [cache-read-price-µ$/Mtok]
+#
+# Pass the source row's cache_read_price (GET /v1/pricing) as the 13th argument
+# when it sets one, so both builds behind the alias bill cache hits alike; empty
+# derives the coordinator default (half the input price).
 #
 # Example (gemma 4bit cutover; values = the absorbed 8bit registry row):
 #   ./scripts/preposition-rollback-build.sh \
@@ -40,6 +44,8 @@ OUTPUT_PRICE="${11:?output price micro-usd per Mtok}"
 # /v1/models + the OpenRouter feed derive features/modalities from it; an empty
 # set would silently drop tool/vision support for clients.
 CAPABILITIES="${12:-chat}"
+# Optional explicit cache-read price; empty = unset (coordinator derives it).
+CACHE_READ_PRICE="${13:-}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-auto}"
 
 R2_BUCKET="${R2_BUCKET:-darkbloom-models}"
@@ -85,10 +91,10 @@ PY
 aws s3 cp "$TMP/manifest.json" "s3://$R2_BUCKET/$NEW_PREFIX/manifest.json" --endpoint-url "$ENDPOINT"
 
 echo "Registering $NEW_MODEL_ID with the coordinator…"
-python3 - "$NEW_MODEL_ID" "$SRC_VERSION" "$QUANT" "$MIN_RAM_GB" "$MAX_CONTEXT" "$MAX_OUTPUT" "$INPUT_PRICE" "$OUTPUT_PRICE" "$CAPABILITIES" <<'PY' > "$TMP/register.json"
+python3 - "$NEW_MODEL_ID" "$SRC_VERSION" "$QUANT" "$MIN_RAM_GB" "$MAX_CONTEXT" "$MAX_OUTPUT" "$INPUT_PRICE" "$OUTPUT_PRICE" "$CAPABILITIES" "$CACHE_READ_PRICE" <<'PY' > "$TMP/register.json"
 import json, sys
-new_id, version, quant, min_ram, max_ctx, max_out, in_p, out_p, caps = sys.argv[1:10]
-print(json.dumps({
+new_id, version, quant, min_ram, max_ctx, max_out, in_p, out_p, caps, cache_read = sys.argv[1:11]
+payload = {
   "model_id": new_id,
   "version": version,
   "display_name": new_id + " (rollback)",
@@ -99,7 +105,10 @@ print(json.dumps({
   "input_price": int(in_p),
   "output_price": int(out_p),
   "capabilities": [c for c in caps.split(",") if c],
-}))
+}
+if cache_read.strip():
+    payload["cache_read_price"] = int(cache_read)
+print(json.dumps(payload))
 PY
 curl -fsS -X POST "$COORD/v1/admin/models/register" \
   -H "Authorization: Bearer $PUBLISH_KEY" -H "Content-Type: application/json" \

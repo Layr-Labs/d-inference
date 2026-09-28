@@ -15,7 +15,7 @@ import (
 // clamped unnecessarily.
 const (
 	maxDecodeTPS                    = 500.0
-	maxPrefillTPS                   = 5000.0
+	maxPrefillTPS                   = 20000.0
 	maxMemoryBandwidthGBs           = 2000.0
 	maxMemoryGB                     = 1024
 	maxMemoryGBFloat                = 1024.0
@@ -73,6 +73,15 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 				"provider_id", providerID, "reported", v)
 			bc.FreeForLoadGB = nil
 		}
+	}
+	// Owner-facing load diagnostics must remain optional for older providers.
+	// Drop malformed samples rather than emitting invalid JSON or a false
+	// "fits" verdict in /v1/me/providers.
+	if bc.LoadUsableGB != nil && !validLoadDiagnosticGB(*bc.LoadUsableGB) {
+		bc.LoadUsableGB = nil
+	}
+	if bc.LoadHeadroomGB != nil && !validLoadDiagnosticGB(*bc.LoadHeadroomGB) {
+		bc.LoadHeadroomGB = nil
 	}
 	if m := bc.PrefixCacheMaintenance; m != nil {
 		m.TTLExpiredTotal = min(m.TTLExpiredTotal, maxCapacitySampleValue)
@@ -156,9 +165,7 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 			}
 		}
 		if t := s.Telemetry; t != nil {
-			// System-profiler slot telemetry (measurement only). Silent
-			// clamps, like the token-budget fields above: nothing routes on
-			// these, so a bad value is not worth a log line per heartbeat.
+			// Counts remain bounded for diagnostics and routing forecasts.
 			// t is the registry-owned clone made by canonicalHeartbeatModelState.
 			clampTelemetryCount(t.QueuedPrefillTokens)
 			clampTelemetryCount(t.PartialPrefillRows)
@@ -175,10 +182,10 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 			// after ~17 min of stepping, so it gets the wide ns bound.
 			clampTelemetryInt64(t.StepWallNSTotal, maxTelemetryNSTotal)
 			if p := t.IsolatedPrefillTPS; p != nil {
-				if math.IsNaN(*p) || math.IsInf(*p, 0) {
-					t.IsolatedPrefillTPS = nil // garbage reads as "not reported"
-				} else if v, changed := clampNonNeg(*p, maxTelemetryTPS); changed {
-					*p = v
+				if math.IsNaN(*p) || math.IsInf(*p, 0) || *p < 0 || *p > maxPrefillTPS {
+					logger.Warn("provider isolated_prefill_tps out of range; ignoring",
+						"provider_id", providerID, "model", s.Model, "reported", *p)
+					t.IsolatedPrefillTPS = nil
 				}
 			}
 		}
@@ -192,15 +199,18 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 	}
 }
 
+func validLoadDiagnosticGB(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= maxMemoryGBFloat
+}
+
 // System-profiler heartbeat telemetry bounds (CONTRACT-WIRE.md §2). Pointer
 // numerics are clamped in place into [0, max]; nil (absent) is left alone so
 // presence semantics survive.
 const (
-	maxTelemetryCount   int64   = 1_000_000_000_000 // 1e12
-	maxTelemetryBytes   int64   = 1 << 48
-	maxTelemetryMS      int64   = 3_600_000                 // 1 h
-	maxTelemetryNSTotal int64   = 1_000_000_000_000_000_000 // 1e18 ≈ 31 y of cumulative ns
-	maxTelemetryTPS     float64 = 20_000
+	maxTelemetryCount   int64 = 1_000_000_000_000 // 1e12
+	maxTelemetryBytes   int64 = 1 << 48
+	maxTelemetryMS      int64 = 3_600_000                 // 1 h
+	maxTelemetryNSTotal int64 = 1_000_000_000_000_000_000 // 1e18 ≈ 31 y of cumulative ns
 )
 
 func clampTelemetryInt64(p *int64, limit int64) {
@@ -291,6 +301,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	clampBackendCapacity(r.logger, id, backendCapacity)
 	now := time.Now()
 	prevHB := p.LastHeartbeat
+	p.reconcileFirstContentMeasurementsLocked(backendCapacity)
 	p.reconcileCapacitySamplesLocked(backendCapacity, now)
 	p.LastHeartbeat = now
 	applyHeartbeatStatsDelta(&p.Stats, p.lastSessionStats, msg.Stats)
@@ -305,6 +316,17 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = backendCapacity
+	p.CapacityAcceptedAt = time.Time{}
+	if backendCapacity != nil {
+		p.CapacityAcceptedAt = now
+	}
+	// Bind the owner-facing readiness model set to this exact applied capacity
+	// snapshot. Catalog changes or model replacements take effect on the next
+	// heartbeat, never halfway through an owner read.
+	p.CapacityModelIDs = make([]string, 0, len(eligibleModels))
+	for _, model := range eligibleModels {
+		p.CapacityModelIDs = append(p.CapacityModelIDs, model.ID)
+	}
 	// Per-slot KV backend (v0.8.0 paged rollout). Recorded from the canonical
 	// report after unaccepted model identifiers have been removed,
 	// BEFORE the nil-clearing semantics above take effect for it: the record is
@@ -613,6 +635,14 @@ func cloneBackendCapacityFields(capacity, in *protocol.BackendCapacity) {
 	if in.FreeForLoadGB != nil {
 		free := *in.FreeForLoadGB
 		capacity.FreeForLoadGB = &free
+	}
+	if in.LoadUsableGB != nil {
+		usable := *in.LoadUsableGB
+		capacity.LoadUsableGB = &usable
+	}
+	if in.LoadHeadroomGB != nil {
+		headroom := *in.LoadHeadroomGB
+		capacity.LoadHeadroomGB = &headroom
 	}
 	if in.MLXCacheReclaimer != nil {
 		reclaimer := *in.MLXCacheReclaimer

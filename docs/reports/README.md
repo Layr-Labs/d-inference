@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-28 · commit `2b714c427`
+> Last updated: 2026-09-28 · commit `59af7292d`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -13,6 +13,7 @@ freshness stamp carries its own date, not the current one.
 
 - [Hybrid provider trust review](2026-09-27-hybrid-provider-trust-review.md) — current legacy MDM/APNs and App Attest authorization boundaries, threats, evidence and deployment limits.
 - [Security model and code review](2026-09-10-security-model-review.md) — proposed review of coordinator protection, provider trust, browser encryption, result integrity and payments, with 13 findings, evidence and all 52 original threats.
+- [First-content performance and M5 capacity investigation](2026-09-28-first-content-performance.md) — production latency, deadline-refusal amplification and prefill measurement bounds; separates observations from unqualified concurrency targets.
 - [Qwen chunk-partition parity and chunk-agnostic recurrent capture](2026-09-27-qwen-chunk-partition-parity.md) — dense Qwen3.5-9B checkpoint state is bit-identical across chunk partitions and the MoE varies cold already, so recurrent capture now takes every 256-token-aligned range end; live results for the company-leaves case.
 - [Prefix cache hit rate: production analysis and levers](2026-09-26-prefix-cache-hit-rate-analysis.md) — 1.4–5.2% per-model hit rates with cache routing on at 100%; per-file epoch rotation, write churn, checkpoint geometry, credit-vs-load selection and the 40 QPS plan cap ranked as levers.
 - [App Attest post-swap authorization failures](2026-09-22-app-attest-postswap-grants.md) — signed assertion framing, archive-gap recovery, and the distinction between prospective policy and an active grant.

@@ -98,6 +98,7 @@ func TestReserveProviderCountsScans(t *testing.T) {
 		providers[i] = planTestProvider(t, reg, fmt.Sprintf("p%02d", i), model, int64(i)*400)
 		providers[i].mu.Lock()
 		providers[i].BackendCapacity.Slots[0].MaxConcurrency = 1
+		providers[i].PrefillTPS = 1000 / float64(1+i*100)
 		providers[i].mu.Unlock()
 	}
 

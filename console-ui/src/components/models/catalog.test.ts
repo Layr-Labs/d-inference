@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Model } from "@/lib/api";
-import { buildCatalogPrices, filterModels, formatPrice, modelContext, modelFeatures } from "./catalog";
+import { buildCatalogPrices, catalogPrice, filterModels, formatPrice, modelContext, modelFeatures } from "./catalog";
 
 const ALPHA = "example/alpha";
 const BETA = "example/beta";
@@ -48,5 +48,31 @@ describe("model catalog controls", () => {
   it("does not render malformed or negative prices as valid rates", () => {
     const invalid = buildCatalogPrices({ prices: [{ model: "broken", input_price: -1, output_price: Number.NaN, input_usd: "", output_usd: "" }] });
     expect(invalid.has("broken")).toBe(false);
+  });
+
+  it("carries the cache-read rate only when it is a valid discount off the input rate", () => {
+    const withCache = buildCatalogPrices({ prices: [
+      { model: ALPHA, input_price: 50_000, output_price: 200_000, cache_read_price: 25_000, input_usd: "0.05", output_usd: "0.20", cache_read_usd: "0.025" },
+      { model: BETA, input_price: 50_000, output_price: 200_000, cache_read_price: 0, input_usd: "0.05", output_usd: "0.20" },
+      { model: GAMMA, input_price: 50_000, output_price: 200_000, cache_read_price: 60_000, input_usd: "0.05", output_usd: "0.20" },
+      { model: "legacy", input_price: 50_000, output_price: 200_000, input_usd: "0.05", output_usd: "0.20" },
+    ] });
+    expect(withCache.get(ALPHA)).toEqual({ input: 50_000, output: 200_000, cacheRead: 25_000 });
+    expect(withCache.get(BETA)?.cacheRead).toBe(0);
+    expect(withCache.get(GAMMA)).toEqual({ input: 50_000, output: 200_000 });
+    expect(withCache.get("legacy")).toEqual({ input: 50_000, output: 200_000 });
+  });
+
+  it("resolves an alias's price from its embedded /v1/models pricing when /v1/pricing is keyed by the build", () => {
+    const alias: Model = { id: "example/alias", object: "model", pricing: { prompt: "0.00000005", completion: "0.0000002", input_cache_read: "0.0000000084" } };
+    expect(catalogPrice(alias, prices)).toEqual({ input: 50_000, output: 200_000, cacheRead: 8_400 });
+    // A listed /v1/pricing row wins over the embedded block.
+    expect(catalogPrice({ ...alias, id: ALPHA }, prices)).toEqual({ input: 50_000, output: 200_000 });
+    // No usable embedded price: unlisted, and a cache "discount" above input is dropped.
+    expect(catalogPrice({ id: "bare", object: "model" }, prices)).toBeUndefined();
+    expect(catalogPrice({ id: "bad", object: "model", pricing: { prompt: "abc", completion: "0.0000002" } }, prices)).toBeUndefined();
+    expect(catalogPrice({ id: "odd", object: "model", pricing: { prompt: "0.00000005", completion: "0.0000002", input_cache_read: "0.0000001" } }, prices)).toEqual({ input: 50_000, output: 200_000 });
+    // Aliases sort by their resolved price rather than falling to the end.
+    expect(filterModels([alias, models[2]], "", "all", "input", prices).map((model) => model.id)).toEqual(["example/alias", GAMMA]);
   });
 });

@@ -149,8 +149,8 @@ func TestKeySpendSinceWindows(t *testing.T) {
 	_, rec, _ := s.CreateAPIKey("acct-1", APIKeyCreate{Name: "a"})
 
 	// Record usage attributed to this key.
-	s.RecordUsageFull("prov", "acct-1", rec.ID, "model", "req-1", 10, 10, 2_000_000, nil)
-	s.RecordUsageFull("prov", "acct-1", rec.ID, "model", "req-2", 5, 5, 500_000, nil)
+	s.RecordUsage(UsageRecord{ProviderID: "prov", ConsumerKey: "acct-1", KeyID: rec.ID, Model: "model", RequestID: "req-1", PromptTokens: 10, CompletionTokens: 10, CostMicroUSD: 2_000_000})
+	s.RecordUsage(UsageRecord{ProviderID: "prov", ConsumerKey: "acct-1", KeyID: rec.ID, Model: "model", RequestID: "req-2", PromptTokens: 5, CompletionTokens: 5, CostMicroUSD: 500_000})
 
 	// Lifetime (zero since) sums everything.
 	if got := s.KeySpendSince(rec.ID, time.Time{}); got != 2_500_000 {

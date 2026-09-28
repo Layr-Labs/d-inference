@@ -50,14 +50,41 @@ func buildCompletionsResponse(
 			"logprobs":      nil,
 			"finish_reason": genericFinishReason(message.FinishReason, usage, pr.RequestedMaxTokens),
 		}},
-		"usage": map[string]any{
-			"prompt_tokens":     usage.PromptTokens,
-			"completion_tokens": usage.CompletionTokens,
-			"total_tokens":      usage.PromptTokens + usage.CompletionTokens,
-		},
+		"usage": completionsUsage(usage),
 	}
 	addResponseProof(response, pr)
 	return response
+}
+
+// completionsUsage is the OpenAI usage object. Validated cache usage surfaces
+// as prompt_tokens_details.cached_tokens (a subset of prompt_tokens), the
+// count billed at the cache-read rate — the same shape Chat Completions uses.
+func completionsUsage(usage protocol.UsageInfo) map[string]any {
+	out := map[string]any{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.PromptTokens + usage.CompletionTokens,
+	}
+	if cached := billableCachedTokens(usage); cached > 0 {
+		out["prompt_tokens_details"] = map[string]any{"cached_tokens": cached}
+	}
+	return out
+}
+
+// messagesUsage is the Anthropic usage object. Anthropic counts cache reads
+// separately from input_tokens (total input = input_tokens +
+// cache_read_input_tokens), so a validated cache hit moves those prompt
+// tokens from input_tokens to cache_read_input_tokens.
+func messagesUsage(usage protocol.UsageInfo) map[string]any {
+	cached := billableCachedTokens(usage)
+	out := map[string]any{
+		"input_tokens":  usage.PromptTokens - cached,
+		"output_tokens": usage.CompletionTokens,
+	}
+	if cached > 0 {
+		out["cache_read_input_tokens"] = cached
+	}
+	return out
 }
 
 func buildMessagesResponse(
@@ -85,10 +112,7 @@ func buildMessagesResponse(
 		"content":       content,
 		"stop_reason":   stopReason,
 		"stop_sequence": stopSequence,
-		"usage": map[string]any{
-			"input_tokens":  usage.PromptTokens,
-			"output_tokens": usage.CompletionTokens,
-		},
+		"usage":         messagesUsage(usage),
 	}
 	addResponseProof(response, pr)
 	return response

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -43,8 +44,8 @@ type PostgresStore struct {
 }
 
 type cachedPrice struct {
-	input, output int64
-	at            time.Time
+	price ModelPrice
+	at    time.Time
 }
 
 // NewPostgres creates a new PostgresStore connected to the given database URL.
@@ -271,6 +272,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				model TEXT NOT NULL,
 				public_model TEXT NOT NULL DEFAULT '',
 				prompt_tokens INTEGER NOT NULL,
+				cached_tokens INTEGER NOT NULL DEFAULT 0,
 				completion_tokens INTEGER NOT NULL,
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			request_id TEXT NOT NULL DEFAULT '',
@@ -281,6 +283,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// table created before key_id existed. Must run AFTER CREATE TABLE usage.
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS key_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS public_model TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		// Prompt tokens billed at the cache-read rate; rows written before the
+		// column existed had no cache discount, so 0 is the truthful backfill.
+		// Deliberately not wrapped in an exception handler: RecordUsage writes
+		// this column, so a failed ALTER (lock timeout, missing privilege) must
+		// abort startup rather than lose every usage row after settlement.
+		`ALTER TABLE usage ADD COLUMN IF NOT EXISTS cached_tokens INTEGER NOT NULL DEFAULT 0`,
 		// Indexes for usage queries (stats, billing, per-consumer history).
 		`CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_consumer ON usage(consumer_key_hash, created_at DESC)`,
@@ -361,9 +369,18 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			model TEXT NOT NULL,
 			input_price BIGINT NOT NULL,
 			output_price BIGINT NOT NULL,
+			cache_read_price BIGINT,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (account_id, model)
 		)`,
+		// Cache-read rate for prompt tokens served from a provider's prefix
+		// cache (OpenRouter pricing.input_cache_read). Nullable: NULL means the
+		// row sets none and billing derives the rate from input_price, so
+		// existing rows gain the default cache discount without a backfill.
+		// Not wrapped in an exception handler: GetModelPrice selects this
+		// column, so a failed ALTER must abort startup rather than make every
+		// price lookup miss and bill at the default rates.
+		`ALTER TABLE model_prices ADD COLUMN IF NOT EXISTS cache_read_price BIGINT`,
 
 		// Users — Privy identity → internal account mapping
 		`CREATE TABLE IF NOT EXISTS users (
@@ -698,7 +715,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 
 		// Materialized usage totals — eliminates full-table scan of usage
 		// on every stats cache miss.  Single counter row incremented
-		// atomically by RecordUsage / RecordUsageWithCostAndLocation.
+		// atomically by RecordUsage.
 		`CREATE TABLE IF NOT EXISTS usage_totals (
 			id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
 			total_requests BIGINT NOT NULL DEFAULT 0,
@@ -1623,27 +1640,6 @@ func (s *PostgresStore) RevokeKey(key string) bool {
 	return tag.RowsAffected() > 0
 }
 
-// RecordUsage inserts a usage record into PostgreSQL.
-func (s *PostgresStore) RecordUsage(providerID, consumerKey, model string, promptTokens, completionTokens int) {
-	h := hashKey(consumerKey)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, _ = s.pool.Exec(ctx,
-		`WITH ins AS (
-			INSERT INTO usage (provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens)
-			VALUES ($1, $2, $3, $4, $5)
-		)
-		UPDATE usage_totals SET
-			total_requests = total_requests + 1,
-			total_prompt_tokens = total_prompt_tokens + $4,
-			total_completion_tokens = total_completion_tokens + $5
-		WHERE id = 1`,
-		providerID, h, model, promptTokens, completionTokens,
-	)
-}
-
 // UsageByConsumer returns usage records for a specific consumer key.
 func (s *PostgresStore) UsageByConsumer(consumerKey string) []UsageRecord {
 	h := hashKey(consumerKey)
@@ -1652,7 +1648,7 @@ func (s *PostgresStore) UsageByConsumer(consumerKey string) []UsageRecord {
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT provider_id, consumer_key_hash, model, public_model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd
+		`SELECT provider_id, consumer_key_hash, model, public_model, prompt_tokens, cached_tokens, completion_tokens, created_at, request_id, cost_micro_usd
 			 FROM usage WHERE consumer_key_hash = $1 ORDER BY created_at DESC LIMIT 100`, h)
 	if err != nil {
 		return nil
@@ -1662,7 +1658,7 @@ func (s *PostgresStore) UsageByConsumer(consumerKey string) []UsageRecord {
 	var records []UsageRecord
 	for rows.Next() {
 		var r UsageRecord
-		if err := rows.Scan(&r.ProviderID, &r.ConsumerKey, &r.Model, &r.PublicModel, &r.PromptTokens, &r.CompletionTokens, &r.CreatedAt, &r.RequestID, &r.CostMicroUSD); err != nil {
+		if err := rows.Scan(&r.ProviderID, &r.ConsumerKey, &r.Model, &r.PublicModel, &r.PromptTokens, &r.CachedTokens, &r.CompletionTokens, &r.CreatedAt, &r.RequestID, &r.CostMicroUSD); err != nil {
 			continue
 		}
 		records = append(records, r)
@@ -1670,38 +1666,34 @@ func (s *PostgresStore) UsageByConsumer(consumerKey string) []UsageRecord {
 	return records
 }
 
-// RecordUsageWithCostAndLocation inserts a usage record with request ID, cost,
-// and approximate request-origin location.
-func (s *PostgresStore) RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
-	s.RecordUsageFull(providerID, consumerKey, "", model, requestID, promptTokens, completionTokens, costMicroUSD, requestLocation)
-}
-
-// RecordUsageFull inserts a usage record with full attribution including the
-// originating API key ID for per-key usage and spend tracking.
-func (s *PostgresStore) RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
-	s.RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, "", requestID, promptTokens, completionTokens, costMicroUSD, requestLocation)
-}
-
-// RecordUsageFullWithPublicModel inserts a usage record with full attribution,
-// storing both the concrete billing model and optional public display model.
-func (s *PostgresStore) RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
-	h := hashKey(consumerKey)
+// RecordUsage inserts a usage row (consumer key stored as its hash) and folds
+// the token counts into usage_totals in the same statement. Cached tokens are
+// a subset of prompt tokens, so the totals count prompt tokens once. A failed
+// insert is logged rather than returned: billing has already settled, but a
+// missing row is an audit gap (usage history, per-key spend) that must not
+// disappear silently.
+func (s *PostgresStore) RecordUsage(rec UsageRecord) {
+	h := hashKey(rec.ConsumerKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, _ = s.pool.Exec(ctx,
+	_, err := s.pool.Exec(ctx,
 		`WITH ins AS (
-			INSERT INTO usage (provider_id, consumer_key_hash, key_id, model, public_model, prompt_tokens, completion_tokens, request_id, cost_micro_usd, request_location)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			INSERT INTO usage (provider_id, consumer_key_hash, key_id, model, public_model, prompt_tokens, cached_tokens, completion_tokens, request_id, cost_micro_usd, request_location)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		)
 		UPDATE usage_totals SET
 			total_requests = total_requests + 1,
 			total_prompt_tokens = total_prompt_tokens + $6,
-			total_completion_tokens = total_completion_tokens + $7
+			total_completion_tokens = total_completion_tokens + $8
 		WHERE id = 1`,
-		providerID, h, keyID, model, publicModel, promptTokens, completionTokens, requestID, costMicroUSD, marshalProviderLocation(requestLocation),
+		rec.ProviderID, h, rec.KeyID, rec.Model, rec.PublicModel, rec.PromptTokens, rec.CachedTokens, rec.CompletionTokens,
+		rec.RequestID, rec.CostMicroUSD, marshalProviderLocation(rec.RequestLocation),
 	)
+	if err != nil {
+		slog.Error("store: record usage failed", "request_id", rec.RequestID, "model", rec.Model, "error", err)
+	}
 }
 
 const inferenceRouteSelectColumns = `
@@ -2637,23 +2629,23 @@ func (s *PostgresStore) CompleteBillingSession(sessionID string) error {
 
 // --- Custom Pricing ---
 
-func (s *PostgresStore) SetModelPrice(accountID, model string, inputPrice, outputPrice int64) error {
+func (s *PostgresStore) SetModelPrice(price ModelPrice) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO model_prices (account_id, model, input_price, output_price, updated_at)
-		 VALUES ($1, $2, $3, $4, NOW())
+		`INSERT INTO model_prices (account_id, model, input_price, output_price, cache_read_price, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, NOW())
 		 ON CONFLICT (account_id, model) DO UPDATE SET
-		   input_price = $3, output_price = $4, updated_at = NOW()`,
-		accountID, model, inputPrice, outputPrice,
+		   input_price = $3, output_price = $4, cache_read_price = $5, updated_at = NOW()`,
+		price.AccountID, price.Model, price.InputPrice, price.OutputPrice, price.CacheReadPrice,
 	)
 	if err != nil {
 		return fmt.Errorf("store: set model price: %w", err)
 	}
 
 	// Invalidate cache.
-	key := accountID + ":" + model
+	key := price.AccountID + ":" + price.Model
 	s.priceCacheMu.Lock()
 	delete(s.priceCache, key)
 	s.priceCacheMu.Unlock()
@@ -2661,35 +2653,35 @@ func (s *PostgresStore) SetModelPrice(accountID, model string, inputPrice, outpu
 	return nil
 }
 
-func (s *PostgresStore) GetModelPrice(accountID, model string) (int64, int64, bool) {
+func (s *PostgresStore) GetModelPrice(accountID, model string) (ModelPrice, bool) {
 	key := accountID + ":" + model
 
 	// Check in-memory cache (30-second TTL).
 	s.priceCacheMu.RLock()
 	if cached, ok := s.priceCache[key]; ok && time.Since(cached.at) < 30*time.Second {
 		s.priceCacheMu.RUnlock()
-		return cached.input, cached.output, true
+		return cached.price.clone(), true
 	}
 	s.priceCacheMu.RUnlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var input, output int64
+	mp := ModelPrice{AccountID: accountID, Model: model}
 	err := s.pool.QueryRow(ctx,
-		`SELECT input_price, output_price FROM model_prices WHERE account_id = $1 AND model = $2`,
+		`SELECT input_price, output_price, cache_read_price FROM model_prices WHERE account_id = $1 AND model = $2`,
 		accountID, model,
-	).Scan(&input, &output)
+	).Scan(&mp.InputPrice, &mp.OutputPrice, &mp.CacheReadPrice)
 	if err != nil {
-		return 0, 0, false
+		return ModelPrice{}, false
 	}
 
 	// Populate cache.
 	s.priceCacheMu.Lock()
-	s.priceCache[key] = cachedPrice{input: input, output: output, at: time.Now()}
+	s.priceCache[key] = cachedPrice{price: mp.clone(), at: time.Now()}
 	s.priceCacheMu.Unlock()
 
-	return input, output, true
+	return mp, true
 }
 
 func (s *PostgresStore) ListModelPrices(accountID string) []ModelPrice {
@@ -2697,7 +2689,7 @@ func (s *PostgresStore) ListModelPrices(accountID string) []ModelPrice {
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT account_id, model, input_price, output_price FROM model_prices WHERE account_id = $1 ORDER BY model`,
+		`SELECT account_id, model, input_price, output_price, cache_read_price FROM model_prices WHERE account_id = $1 ORDER BY model`,
 		accountID,
 	)
 	if err != nil {
@@ -2708,7 +2700,7 @@ func (s *PostgresStore) ListModelPrices(accountID string) []ModelPrice {
 	var prices []ModelPrice
 	for rows.Next() {
 		var mp ModelPrice
-		if err := rows.Scan(&mp.AccountID, &mp.Model, &mp.InputPrice, &mp.OutputPrice); err != nil {
+		if err := rows.Scan(&mp.AccountID, &mp.Model, &mp.InputPrice, &mp.OutputPrice, &mp.CacheReadPrice); err != nil {
 			continue
 		}
 		prices = append(prices, mp)

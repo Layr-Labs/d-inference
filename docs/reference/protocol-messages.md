@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `0bd16a9fa`
+> Last updated: 2026-09-28 · commit `1f664f507`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -281,6 +281,9 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 | `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `gpu_memory_cache_gb` | `float64` | `Double` | req | Metal active / peak / reclaimable cache, shared across slots |
 | `total_memory_gb` | `float64` | `Double` | req | |
 | `free_for_load_gb` | `*float64` | `Double` (always encoded) | ptr | **The single source of truth for cold-load admission**: max additional model-weight GB loadable now, net of the unified-memory cap (`defaultCapFraction`, [`../architecture/hardware-support.md#constants`](../architecture/hardware-support.md#constants)), the OS/operator reserve and activation + minimum-KV headroom, clamped to real OS-available memory, with idle resident models counted as evictable. Nil (legacy provider) → the coordinator falls back to its total-memory heuristic |
+| `load_usable_gb` | `*float64` | `Double?` | opt | Owner diagnostic: live GB available to the no-eviction load gate before activation/minimum-KV headroom. Zero is an observed zero; omission means an older provider or invalid sample. Not a routing input. |
+| `load_headroom_gb` | `*float64` | `Double?` | opt | Owner diagnostic: current serving-set activation + minimum-KV reserve. A cold model needs `estimated_memory_gb + load_headroom_gb` out of `load_usable_gb`. Not a routing input. |
+| `load_transition_active` | `*bool` | `Bool?` | opt | Owner diagnostic: a model load or load-gate update is in flight, possibly before a slot exists. When true, defer a cold-load memory verdict; omission means older provider. Not a routing input. |
 | `mlx_cache_reclaimer` | `*MLXCacheReclaimerTelemetry` | `MLXCacheReclaimerTelemetry?` | opt | cumulative allocator-reclaim counters (`uint64`, reset on restart): `cache_limit_bytes`, `sweep_signals`, `reclaims`, `reclaimed_bytes`, `last_reclaimed_bytes`, `last_reclaim_duration_ms` |
 | `capacity_seq` | `uint64` | `UInt64` | opt | per-connection monotonic snapshot sequence; the coordinator discards stale or reordered snapshots, and any `seq > 0` marks the connection quote-capable (`capacity_probe`). 0/omitted = legacy last-write-wins |
 | `telemetry` | `*CapacityTelemetry` | `CapacityTelemetry?` | opt | [`backend_capacity.telemetry`](#backend_capacitytelemetry) |
@@ -727,7 +730,7 @@ drift correction for the coordinator's ledger, not reservations.
 | JSON key | Go | Presence | Notes |
 |---|---|---|---|
 | `quote_id` | `string` | req | echo of the probe's random, request-local id |
-| `capacity_seq` | `uint64` | req | snapshot the quote was computed from; the coordinator trusts the probe window (`capacityProbeWindow`, [`../architecture/routing.md#entry-points`](../architecture/routing.md#entry-points)) and does not compare seqs |
+| `capacity_seq` | `uint64` | req | snapshot the quote was computed from; `applyFirstContentQuote` (`coordinator/registry/first_content_plan.go`) rejects older accepted-capacity sequences and newer local reservations; response correlation remains bounded by `capacityProbeWindow` |
 | `admissible_now` | `bool` | req | advisory — the inference request itself is the reservation |
 | `rejection_reason` | `CapacityRejectionReason` | opt | present **exactly when** `admissible_now` is false: `token_budget`, `kv_headroom`, `memory_cap`, `slot_state`, `template`, `capability`, `deadline` |
 | `ttft_p50_ms`, `ttft_p90_ms` | `float64` | req | end-to-end quantiles from completed comparable requests, never summed per-stage p95s |

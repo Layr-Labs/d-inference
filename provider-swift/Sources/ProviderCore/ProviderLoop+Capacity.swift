@@ -162,6 +162,13 @@ extension ProviderLoop {
             // coordinator's cold-load routing desyncs from it.
             headroomGb: loadHeadroomGb,
             outstandingReservationBytes: unmaterializedCommitments)
+        let loadUsableGb = ModelLoadAdmission.freeForLoadGb(
+            totalBytes: totalMem,
+            systemAvailableBytes: processMemory.systemAvailableBytes,
+            gpuActiveBytes: mlxActiveBytes,
+            gpuCacheBytes: mlxCacheBytes,
+            reserveBytes: loadReserve,
+            outstandingReservationBytes: unmaterializedCommitments)
         let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
         let reclaimerTelemetry = MLXCacheReclaimerTelemetry(
             cacheLimitBytes: UInt64(max(
@@ -217,6 +224,11 @@ extension ProviderLoop {
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,
             totalMemoryGb: Double(totalMem) / gbDivisor,
             freeForLoadGb: freeForLoadGb,
+            loadUsableGb: loadUsableGb,
+            loadHeadroomGb: loadHeadroomGb,
+            loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
+                || !startupPreloadPendingModels.isEmpty
+                || mtpStagingReservations.hasRetainedTargets,
             mlxCacheReclaimer: reclaimerTelemetry,
             telemetry: capacityTelemetry,
             prefixCacheMaintenance: PrefixCacheMaintenanceTelemetry(SSDWholeRootMaintainer.shared.statsSnapshot())

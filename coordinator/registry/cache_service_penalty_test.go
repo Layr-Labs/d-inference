@@ -92,7 +92,7 @@ func TestCacheServiceCostIncludesNetStagePenalty(t *testing.T) {
 func TestCacheServiceCostPenaltyPreservesNearTieRanking(t *testing.T) {
 	r, warm, hint := serviceCostFixture(1000, 0, 0)
 	hint.StageMs = 4136 // 40 ms slower than recomputing the matched prefix.
-	cold := mkCandidate("cold", warm.costMs+20, 1, 1, 0)
+	cold := mkCandidate("cold", 10900, 1, 1, 0)
 	applyServiceHint(r, warm, hint)
 	for _, pool := range [][]*routingCandidate{{warm, cold}, {cold, warm}} {
 		winner, runnerUp, near, path := selectRoutingCandidate(pool)

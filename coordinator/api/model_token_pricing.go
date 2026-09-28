@@ -15,13 +15,14 @@ type modelTokenPrice struct {
 	gross, paid, payout, remainder int64
 }
 
-func priceModelTokens(model string, prompt, completion int, in, out int64, custom bool, free int64, fee *int64) (modelTokenPrice, error) {
+// Promotion settlement prices every prompt token at rates.Input: cached prompt
+// tokens get no cache-read discount on this path (which prompt tokens a grant's
+// free tokens cover, and at which rate the sponsor values them, is unresolved).
+func priceModelTokens(prompt, completion int, rates payments.Rates, free int64, fee *int64) (modelTokenPrice, error) {
 	if prompt < 0 || completion < 0 || free < 0 {
 		return modelTokenPrice{}, errors.New("negative token count")
 	}
-	if !custom {
-		in, out = payments.InputPricePerMillion(model), payments.OutputPricePerMillion(model)
-	}
+	in, out := rates.Input, rates.Output
 	if in < 0 || out < 0 {
 		return modelTokenPrice{}, errors.New("negative token price")
 	}

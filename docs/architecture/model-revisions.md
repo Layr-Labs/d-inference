@@ -1,6 +1,6 @@
 # Model artifact revisions
 
-> Last updated: 2026-09-28 · commit `291d83ee9`
+> Last updated: 2026-09-28 · commit `7bd5b0648`
 
 An existing model can acquire new weights without changing its model ID or
 releasing another provider binary. Publishers upload an immutable revision and
@@ -93,6 +93,15 @@ staging and completed-but-unselected snapshots are excluded from discovery.
 undo a rollback. Legacy caches without a ref retain modification-time discovery.
 The provider never deletes retained revisions automatically.
 
+The selected receipt must match the requested version/hash, have valid manifest
+metadata and identify its canonical snapshot directory. Receipt checks do not
+hash weights during reconciliation. When reusing a snapshot,
+`verifyRevisionAndRepairReceipt` first verifies its files under the writer lease,
+then atomically restores a missing, malformed or mismatched receipt. Corrupt
+weights are rejected without rewriting the receipt. Canonical parent comparison
+also lets activation and rollback use resolved paths beneath a valid linked
+model directory while rejecting snapshots outside that model's store.
+
 For an activation-enabled first download with no usable selected snapshot,
 `ModelArtifactRevision.publishRevision` writes the `refs/main` intent before
 atomically moving the verified staging directory into its final snapshot path.
@@ -178,6 +187,7 @@ random rollout jitter is not a fleet availability guarantee.
 | Persistent acceptance and immutable versions | `coordinator/store/model_revision.go`, `postgres_model_revisions.go`, `postgres_model_registry.go`; `CachedStore` overrides |
 | Desired state and routing hash admission | `coordinator/registry/model_commands.go`, `model_revisions.go`, `model_catalog.go` |
 | Immutable files and atomic selection | `provider-swift/Sources/ProviderCore/Models/ModelArtifactRevision.swift`, `ModelArtifactWriteLease.swift` |
+| Verified local receipt recovery | `provider-swift/Sources/ProviderCore/Models/ModelArtifactReceipt.swift` (`verifyRevisionAndRepairReceipt`) |
 | Reconciliation and backoff | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelRevisions.swift` |
 | Snapshot revalidation before draining | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelRevisionPreparation.swift` (`protectPreparedModelRevision`) |
 | Guarded inventory publication | `provider-swift/Sources/ProviderCore/ProviderLoop+PrefetchPublication.swift` (`publishVerifiedPrefetch`) |

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — withdrawal support details
+
+- Show withdrawal status explanations without hovering, expose the withdrawal ID and request time for support, and make the remaining recent withdrawals accessible beyond the first five.
+
 ## Unreleased — automatic model artifact revisions
 
 - Reject cached or staged revisions with unmanifested integrity files, so an added template, tokenizer or weight file cannot be activated under the original approved hash.

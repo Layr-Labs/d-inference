@@ -131,15 +131,20 @@ public struct ModelScanner: Sendable {
         var latest: (url: URL, date: Date)?
 
         for entry in entries {
+            // Foundation reports the type of a directory symlink itself.
+            // Validate its canonical target, but rank by the original entry's
+            // modification date so snapshot-selection ordering is unchanged.
+            let candidate = resolved(entry)
             guard let resourceValues = try? entry.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey]),
-                  resourceValues.isDirectory == true else {
+                  let candidateValues = try? candidate.resourceValues(forKeys: [.isDirectoryKey]),
+                  candidateValues.isDirectory == true else {
                 continue
             }
 
             let modified = resourceValues.contentModificationDate ?? Date.distantPast
 
             if latest == nil || modified > latest!.date {
-                latest = (entry, modified)
+                latest = (candidate, modified)
             }
         }
 

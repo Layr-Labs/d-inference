@@ -7,6 +7,7 @@
 - Prepare opt-in text-only COMPLETE-prefix store/loaded-owner integration and bounded performance/residency candidates, preserving native precision, checkpoint topology, fallback paths and memory safeguards. Paging, media-prefix reuse and composed cache/lifecycle qualification remain separate gates.
 - Admit exact native MiMo through its dedicated ordinary loader; keep MiMo MTP out of automatic selection. Preliminary rectangular MTP measurements include a real greedy-output divergence and are not a lossless performance qualification. No catalog publication, deployment, model-limit change or optimization default is enabled.
 - Integrate current upstream cache ownership and add separately issued target-only native paging, joint contiguous text-prefix/media ownership, and admitted scalar-shape verification candidates. A selected 114-method component cohort passes; full-model/API, complete MTP state, paging composition and production defaults remain unqualified.
+- Resolve linked snapshot directories through the normal scanner without copying weights or changing cache selection order; preserve rejection of invalid and non-directory entries.
 
 ## Unreleased — provider readiness diagnostics
 

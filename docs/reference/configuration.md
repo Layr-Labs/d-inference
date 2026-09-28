@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-28 · commit `d06b528e4`
+> Last updated: 2026-09-28 · commit `31ef770bf`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -419,6 +419,12 @@ Discovery, downloads, hashing and removal share `ModelScanner.resolveCache`
 (`provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift`).
 The selected directory is a hub root containing
 `models--<org>--<name>/snapshots/<revision>`, not a single model snapshot.
+
+Snapshot discovery accepts a directory symlink only when its canonical target
+is a directory. It retains the original snapshot entry's modification-date
+ordering and returns the canonical target. Broken, file, FIFO, hidden and cyclic
+snapshot entries do not become model directories
+(`provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`, `findLatestSnapshot`).
 
 | Runtime setting | Cache directory | Reader |
 |---|---|---|

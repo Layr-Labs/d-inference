@@ -217,11 +217,8 @@ struct Qwen35CheckpointRetentionLiveTests {
                     "no donor range ran packed in this schedule")
             let kept = try fixture.positions(scope: "tenant-a", prefixOf: donorTokens)
             let deepest = try #require(captured.max())
-            #expect(kept.positions.last == deepest, "the deepest captured boundary is published: \(kept.positions)")
-            #expect(kept.positions.count == 3, "first, the deepest boundary at or below 5,120, deepest: \(kept.positions)")
-            let first = try #require(kept.positions.first, "no checkpoint published for tenant-a: \(kept.positions)")
-            #expect(kept.positions.contains { $0 <= 5_120 && $0 > first },
-                    "the fork target below the hint is kept: \(kept.positions)")
+            #expect(kept.positions == Self.expectedRetained(captured: captured, hint: 5_120),
+                    "retained first (at the store floor), fork target at or below 5,120, deepest: \(kept.positions)")
             let chunkSizes = try fixture.persistedManifests()
                 .filter { $0.cacheSalt == "tenant-a" }.sorted { $0.position < $1.position }.map(\.chunkSize)
             print("[qwen35-company-leaves] prompt=\(donorTokens.count) widths=\(widths) captured=\(captured) "
@@ -359,21 +356,34 @@ struct Qwen35CheckpointRetentionLiveTests {
             #expect(mixedStore.stats().recurrentCaptureDisarmedPacked == 0)
             let mixedKept = try fixture.positions(scope: "tenant-b", prefixOf: donorTokens)
             let mixedDeepest = try #require(captured.max())
-            #expect(mixedKept.positions.last == mixedDeepest,
-                    "the deepest captured boundary is published for tenant-b: \(mixedKept.positions)")
-            #expect(mixedKept.positions.count == 3,
-                    "first, the deepest boundary at or below 5,120, deepest: \(mixedKept.positions)")
-            let mixedFirst = try #require(mixedKept.positions.first,
-                                          "no checkpoint published for tenant-b: \(mixedKept.positions)")
-            #expect(mixedFirst > firstStripeEnd - Qwen35CheckpointRetentionFixture.stripeTokens || mixedFirst >= 1_024,
-                    "the first retained boundary is at or above the store floor: \(mixedKept.positions)")
-            #expect(mixedKept.positions.contains { $0 <= 5_120 && $0 > mixedFirst },
-                    "the fork target below the hint is kept: \(mixedKept.positions)")
+            #expect(mixedKept.positions == Self.expectedRetained(captured: captured, hint: 5_120),
+                    "retained first (at the store floor), fork target at or below 5,120, deepest: \(mixedKept.positions)")
             print("[qwen36-moe-mixed] widths=\(widths) captured=\(captured) positions=\(mixedKept.positions) "
                 + "tensorBytes=\(mixedKept.bytes) disarmed=\(mixedStore.stats().recurrentCaptureDisarmedPacked) "
                 + "answer=\(mixed.answer.debugDescription)")
             await mixedBridge.shutdown()
             await mixedStore.closeAndWait()
+
+            // The mixed-partition checkpoint must restore too: MoE state is
+            // partition-dependent, so the dense mixed restore does not cover
+            // this codec/adopter path. A fresh store rescans the files on
+            // disk; the next turn restores the deepest mixed boundary and
+            // answers with the expected marker.
+            let mixedNext = try fixture.continuation()
+            try #require(mixedNext.shared >= mixedDeepest)
+            let mixedNextStore = try fixture.makeStore()
+            let mixedNextBridge = try fixture.makeBridge(store: mixedNextStore)
+            let mixedNextHint = mixedNext.shared / PrefixCachePolicy.blockSize * PrefixCachePolicy.blockSize
+            let mixedTurn = try await run(fixture, bridge: mixedNextBridge, tokens: mixedNext.tokens, scope: "tenant-b",
+                id: "moe-mixed-next", expectedMarker: Qwen35CheckpointRetentionFixture.backupMarker,
+                donationDemand: .init(repeatedPrefixTokens: mixedNextHint))
+            #expect(mixedTurn.hitTokens == mixedDeepest,
+                    "the next turn restores the mixed donor's deepest boundary \(mixedDeepest)")
+            try await requireIdle(mixedNextBridge)
+            print("[qwen36-moe-mixed] nextPrompt=\(mixedNext.tokens.count) hit=\(mixedTurn.hitTokens) "
+                + "deepest=\(mixedDeepest) warmTTFT=\(mixedTurn.ttft) answer=\(mixedTurn.answer.debugDescription)")
+            await mixedNextBridge.shutdown()
+            await mixedNextStore.closeAndWait()
             await fixture.close()
         } catch {
             await fixture.close()
@@ -387,6 +397,22 @@ struct Qwen35CheckpointRetentionLiveTests {
         let hitTokens: Int
         let ttft: Duration
         let finishToDone: Duration
+    }
+
+    /// The positions a donor retains, derived from what it captured: the
+    /// first boundary at or above the store's effective-token floor, the
+    /// deepest captured boundary at or below the fork hint, and the deepest
+    /// captured boundary; ascending, without duplicates.
+    private static func expectedRetained(captured: [Int], hint: Int) -> [Int] {
+        var expected = Set<Int>()
+        if let first = captured.filter({ $0 >= SSDPrefixCachePolicy.defaultMinEffectiveTokens }).min() {
+            expected.insert(first)
+        }
+        if let target = captured.filter({ $0 <= hint && $0 >= SSDPrefixCachePolicy.defaultMinEffectiveTokens }).max() {
+            expected.insert(target)
+        }
+        if let deepest = captured.max() { expected.insert(deepest) }
+        return expected.sorted()
     }
 
     private func run(_ fixture: Qwen35CheckpointRetentionFixture, bridge: EngineV2Bridge,

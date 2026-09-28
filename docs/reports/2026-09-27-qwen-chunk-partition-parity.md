@@ -65,7 +65,7 @@ Live runs on real weights with the inline MTP head (provider
 | Qwen3.5-9B, 8,169-token solo donor (adjacency) | 8,169 | 5,120 | 2,048 / 4,096 / 6,144 | 135.4 / 219.3 / 303.2 MB | the 4,096 target, one 2,048-chunk below the 6,144 latest, is kept |
 | Qwen3.5-9B, 6 × 512 then 2,048 chunks (company leaves) | 9,171 | 5,120 | 1,024 / 5,120 / 7,168 (manifest `chunkSize` 512 / 2,048 / 2,048) | 93.5 / 261.2 / 345.1 MB | restores 7,168, same text; warm TTFT 3.1 s vs 13.4 s cold |
 | Qwen3.6-35B-A3B solo stripe | 9,171 | 5,120 | 2,048 / 4,096 / 8,192 | 114.7 / 165.1 / 265.7 MB | restores 8,192, same text; warm TTFT 1.0 s vs 6.5 s cold |
-| Qwen3.6-35B-A3B mixed chunks | 9,171 | 5,120 | 1,024 / 5,120 / 7,168 | 89.6 / 190.2 / 240.6 MB | no disarm |
+| Qwen3.6-35B-A3B mixed chunks | 9,171 | 5,120 | 1,024 / 5,120 / 7,168 | 89.6 / 190.2 / 240.6 MB | no disarm; a fresh store restores 7,168 on the next turn, warm TTFT 1.7 s, correct marker |
 
 The fixture pins the solo stripe at 2,048 tokens; production dense Qwen
 stripes at 4,096, where the solo rows publish 4,096 / 8,192 with the first

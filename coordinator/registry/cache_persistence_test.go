@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,7 +33,9 @@ func persistenceTestProvider(t *testing.T, r *Registry, id string, capability pr
 func startPersistence(t *testing.T, r *Registry, st store.Store) CacheRoutingPersistenceStatus {
 	t.Helper()
 	r.SetStore(st)
-	status, err := r.StartCacheRoutingPersistence(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	status, err := r.StartCacheRoutingPersistence(ctx)
 	if err != nil {
 		t.Fatalf("start persistence: %v", err)
 	}
@@ -328,5 +331,185 @@ func TestCacheRoutingPersisterRetriesAndDedupesDemand(t *testing.T) {
 		UpdatedAt: now, ExpiresAt: now.Add(time.Second)})
 	if batch := p.drain(); len(batch.upserts) != 0 {
 		t.Fatalf("memory-tier holder marked for persistence: %+v", batch.upserts)
+	}
+}
+
+// The wire order: capabilities arrive inside the RegisterMessage, and the
+// heartbeat that follows re-applies the same set, so nothing "changes". A
+// restored holder must bind on that path, not only on a capability change.
+func TestCacheRoutingPersistenceBindsOnWireRegistration(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r1, _, capability := exactTestRegistry(t)
+	removeTestProvider(r1, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r1, st)
+	a := persistenceTestProvider(t, r1, "machine-a", capability)
+	checkpoint := exactTestAnchor(16, "c")
+	floor := exactTestAnchor(17, "d")
+	plan := boundTestCachePlan(r1, exactTestPlan(checkpoint, floor))
+	_, ready := checkpointTestAttempt(t, r1, a, capability, "donor", plan, 1)
+	ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+	ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+	if !r1.ApplyPrefixCacheReadyV2(a.ID, ready) {
+		t.Fatal("ready receipt rejected")
+	}
+	if err := r1.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	r2, _, _ := exactTestRegistry(t)
+	removeTestProvider(r2, "provider-a")
+	startPersistence(t, r2, st)
+	// A capability for another model under the same epoch must not consume
+	// the parked rows.
+	otherModel := capability
+	otherModel.ModelID = "model-b"
+	r2.Register("other-model", nil, &protocol.RegisterMessage{
+		Models:              []protocol.ModelInfo{{ID: "model-b", WeightHash: capability.ModelAggregateHash}},
+		PrefixCacheProtocol: 2,
+		PrefixCacheV2Models: []protocol.PrefixCacheV2Capability{otherModel},
+	})
+	if s := r2.CacheRoutingPersistenceStatus(); s.PendingHolders != 1 || s.BoundHolders != 0 {
+		t.Fatalf("another model's capability consumed the parked row: %+v", s)
+	}
+	wire := r2.Register("machine-a-wire", nil, &protocol.RegisterMessage{
+		Models:              []protocol.ModelInfo{{ID: "model", WeightHash: capability.ModelAggregateHash}},
+		PrefixCacheProtocol: 2,
+		PrefixCacheV2Models: []protocol.PrefixCacheV2Capability{capability},
+	})
+	plan2 := boundTestCachePlan(r2, exactTestPlan(checkpoint, floor))
+	hints := memoryTestHints(r2, plan2, time.Now())
+	if len(hints) != 1 || hints[wire.ID].Tier != "ssd" {
+		t.Fatalf("holder did not bind on registration with capabilities in the message: %+v", hints)
+	}
+	// The unchanged heartbeat re-apply must be harmless.
+	if err := r2.UpdatePrefixCacheCapabilities(wire.ID, 2, []protocol.PrefixCacheV2Capability{capability}); err != nil {
+		t.Fatal(err)
+	}
+	if s := r2.CacheRoutingPersistenceStatus(); s.BoundHolders != 1 || s.PendingHolders != 0 {
+		t.Fatalf("bind counters after wire registration: %+v", s)
+	}
+}
+
+// A capability change on a provider drops the rows parked for its previous
+// capability instead of re-binding stale evidence, and deletes them durably.
+func TestCacheRoutingPersistenceCapabilityChangeDropsParkedRows(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r, st)
+	checkpoint := exactTestAnchor(16, "c")
+	floor := exactTestAnchor(17, "d")
+	plan := boundTestCachePlan(r, exactTestPlan(checkpoint, floor))
+	a := persistenceTestProvider(t, r, "session-1", capability)
+	_, ready := checkpointTestAttempt(t, r, a, capability, "donor", plan, 1)
+	ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+	ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+	if !r.ApplyPrefixCacheReadyV2(a.ID, ready) {
+		t.Fatal("ready receipt rejected")
+	}
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r.cacheRouting.disconnect(a.ID, cacheHolderRemovalDisconnect)
+	removeTestProvider(r, a.ID)
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 1 {
+		t.Fatalf("disconnect must park the row: %+v", s)
+	}
+	// Same machine returns, then its contract changes before any receipt.
+	b := persistenceTestProvider(t, r, "session-2", capability)
+	if hints := memoryTestHints(r, plan, time.Now()); len(hints) != 1 || hints[b.ID].Tier != "ssd" {
+		t.Fatalf("row not rebound on return: %+v", hints)
+	}
+	r.cacheRouting.disconnect(b.ID, cacheHolderRemovalDisconnect)
+	removeTestProvider(r, b.ID)
+	c := persistenceTestProvider(t, r, "session-3", capability)
+	changed := capability
+	changed.PromptContractID = strings.Repeat("e", 64)
+	c.mu.Lock()
+	c.Models[0].WeightHash = changed.ModelAggregateHash
+	c.mu.Unlock()
+	// The row bound on session-3's registration; now the contract changes.
+	if err := r.UpdatePrefixCacheCapabilities(c.ID, 2, []protocol.PrefixCacheV2Capability{changed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 0 {
+		t.Fatalf("capability change must delete the durable row: %+v", rows)
+	}
+	if hints := memoryTestHints(r, plan, time.Now()); len(hints) != 0 {
+		t.Fatalf("stale evidence survived a capability change: %+v", hints)
+	}
+	// And a row parked while the capability changes is dropped, not rebound.
+	r.cacheRouting.disconnect(c.ID, cacheHolderRemovalDisconnect)
+	removeTestProvider(r, c.ID)
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 {
+		t.Fatalf("nothing should be parked after invalidation: %+v", s)
+	}
+}
+
+// A new session can take fresh receipts before the old session's rows are
+// parked; binding the parked rows must not roll the live holder back.
+func TestCacheRoutingPersistenceParkedRowNeverOverwritesNewerLiveHolder(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r, st)
+	checkpoint := exactTestAnchor(16, "c")
+	floor := exactTestAnchor(17, "d")
+	plan := boundTestCachePlan(r, exactTestPlan(checkpoint, floor))
+
+	old := persistenceTestProvider(t, r, "session-1", capability)
+	_, ready := checkpointTestAttempt(t, r, old, capability, "donor-1", plan, 1)
+	ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+	ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+	if !r.ApplyPrefixCacheReadyV2(old.ID, ready) {
+		t.Fatal("first receipt rejected")
+	}
+	time.Sleep(2 * time.Millisecond)
+	fresh := persistenceTestProvider(t, r, "session-2", capability)
+	_, ready2 := checkpointTestAttempt(t, r, fresh, capability, "donor-2", plan, 1)
+	ready2.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+	ready2.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+	if !r.ApplyPrefixCacheReadyV2(fresh.ID, ready2) {
+		t.Fatal("second receipt rejected")
+	}
+	var key string
+	var liveUpdated time.Time
+	r.cacheRouting.mu.Lock()
+	for k, holders := range r.cacheRouting.holders {
+		if h, ok := holders[fresh.ID]; ok {
+			key, liveUpdated = k, h.UpdatedAt
+		}
+	}
+	r.cacheRouting.mu.Unlock()
+	if key == "" {
+		t.Fatal("fresh session holder missing")
+	}
+	// Old session leaves: its row is parked, then the fresh session re-applies
+	// unchanged capabilities and the parked row is offered to it.
+	r.cacheRouting.disconnect(old.ID, cacheHolderRemovalDisconnect)
+	removeTestProvider(r, old.ID)
+	if err := r.UpdatePrefixCacheCapabilities(fresh.ID, 2, []protocol.PrefixCacheV2Capability{capability}); err != nil {
+		t.Fatal(err)
+	}
+	r.cacheRouting.mu.Lock()
+	h := r.cacheRouting.holders[key][fresh.ID]
+	r.cacheRouting.mu.Unlock()
+	if !h.UpdatedAt.Equal(liveUpdated) || h.Provider != fresh {
+		t.Fatalf("parked row rolled back the live holder: got %v want %v", h.UpdatedAt, liveUpdated)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 {
+		t.Fatalf("parked row not consumed: %+v", s)
+	}
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 1 || !rows[0].UpdatedAt.Equal(liveUpdated) {
+		t.Fatalf("durable row must carry the newer receipt: %+v", rows)
 	}
 }

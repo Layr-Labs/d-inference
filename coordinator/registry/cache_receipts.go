@@ -302,9 +302,13 @@ func (t *cacheRoutingTracker) removeHolderLocked(
 		if removed, exists := holders[providerID]; exists {
 			// A disconnect keeps the durable row: the file is still on the
 			// provider and its epoch identifies it again on reconnect.
-			if reason == cacheHolderRemovalDisconnect {
+			// TTL expiry needs no delete: loads filter expired rows and the
+			// store prune removes them.
+			switch reason {
+			case cacheHolderRemovalDisconnect:
 				t.persister.parkHolder(key, removed)
-			} else {
+			case cacheHolderRemovalTTL:
+			default:
 				t.persister.markHolderDelete(key, removed)
 			}
 			delete(holders, providerID)

@@ -22,8 +22,16 @@ import (
 //     bounded batches outside both locks. Nothing here is on a request's
 //     critical path, and a store failure only delays the next flush.
 //   - Disconnects keep the durable row: the provider still has the file, and
-//     its cache epoch (a UUID minted per SSD root and persisted on the
-//     provider) identifies it again when it reconnects under a new provider ID.
+//     its cache epoch identifies it again when it reconnects under a new
+//     provider ID. The provider mints one epoch UUID per (model, identity,
+//     layout) SSD root and persists it (SSDHybridCheckpointStoreFactory.swift,
+//     SSDCacheEpochStore.swift), so an epoch names one model on one machine;
+//     parked rows are keyed by (epoch, model) and the coordinator never has
+//     to trust a provider-wide identity.
+//   - A runtime ConfigureCacheRouting installs an empty tracker without
+//     routing removals through the persister (clearRetired), so live rows of
+//     the retired tracker stay in the store until they expire; only main
+//     calls it today, once at boot.
 //   - At boot the demand index is reloaded directly. Holder rows are parked by
 //     cache epoch and bound to a provider the moment that provider's
 //     capabilities are applied with a matching epoch, model and contract, so a
@@ -42,6 +50,11 @@ const (
 	// rest carry over so the persister never turns into a second planner
 	// under a traffic burst.
 	cacheRoutingDemandFlushRows = 5_000
+	// cacheRoutingHolderFlushRows caps holder upserts and deletes per flush the
+	// same way, so a backlog after a store outage drains in bounded chunks
+	// instead of one statement set that can never finish inside the flush
+	// deadline.
+	cacheRoutingHolderFlushRows = 5_000
 	// cacheRoutingDirtyCap bounds the carried-over dirty sets when the store
 	// is unavailable; beyond it the oldest evidence is dropped and counted.
 	cacheRoutingDirtyCap = 4 * cacheRoutingMaxEntries
@@ -74,8 +87,8 @@ type cacheRoutingPersister struct {
 	holderDeletes   map[store.CacheHolderKey]struct{}
 	demandTouched   map[string]time.Time
 	demandPersisted map[string]time.Time
-	// pending holds restored rows by cache epoch until the provider that owns
-	// that epoch applies its capabilities.
+	// pending holds restored and parked rows by (cache epoch, model) until
+	// the provider that owns that epoch applies a capability for that model.
 	pending      map[string][]store.CacheHolderRecord
 	pendingCount int
 
@@ -106,6 +119,10 @@ func newCacheRoutingPersister(st store.CacheRoutingStateStore, logger *slog.Logg
 	}
 }
 
+// pendingKey groups parked rows by the provider root and the model, so binding
+// one capability never consumes another model's rows under the same epoch.
+func pendingKey(epoch, model string) string { return epoch + "\x00" + model }
+
 func holderRecordFor(key string, h cacheHolder) store.CacheHolderRecord {
 	return store.CacheHolderRecord{
 		Key: key, CacheEpoch: h.CacheEpoch, Tier: h.Tier, ModelID: h.ModelID,
@@ -131,7 +148,7 @@ func (p *cacheRoutingPersister) markHolderUpsert(key string, h cacheHolder) {
 	rec := holderRecordFor(key, h)
 	p.mu.Lock()
 	delete(p.holderDeletes, rec.HolderKey())
-	if len(p.holderUpserts) < cacheRoutingDirtyCap {
+	if _, present := p.holderUpserts[rec.HolderKey()]; present || len(p.holderUpserts) < cacheRoutingDirtyCap {
 		p.holderUpserts[rec.HolderKey()] = rec
 	} else {
 		p.droppedDirty++
@@ -146,11 +163,21 @@ func (p *cacheRoutingPersister) markHolderDelete(key string, h cacheHolder) {
 	k := store.CacheHolderKey{Key: key, CacheEpoch: h.CacheEpoch}
 	p.mu.Lock()
 	delete(p.holderUpserts, k)
-	if len(p.holderDeletes) < cacheRoutingDirtyCap {
+	if _, present := p.holderDeletes[k]; present || len(p.holderDeletes) < cacheRoutingDirtyCap {
 		p.holderDeletes[k] = struct{}{}
 	} else {
 		p.droppedDirty++
 	}
+	p.mu.Unlock()
+}
+
+// cancelDelete forgets a pending delete for a row that is live again.
+func (p *cacheRoutingPersister) cancelDelete(key, epoch string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	delete(p.holderDeletes, store.CacheHolderKey{Key: key, CacheEpoch: epoch})
 	p.mu.Unlock()
 }
 
@@ -165,10 +192,11 @@ func (p *cacheRoutingPersister) markDemand(keys []string, now time.Time) {
 		if last, ok := p.demandPersisted[key]; ok && now.Sub(last) < cacheRoutingDemandPersistGranularity {
 			continue
 		}
-		if prev, ok := p.demandTouched[key]; ok && !now.After(prev) {
+		prev, present := p.demandTouched[key]
+		if present && !now.After(prev) {
 			continue
 		}
-		if len(p.demandTouched) >= cacheRoutingDirtyCap {
+		if !present && len(p.demandTouched) >= cacheRoutingDirtyCap {
 			p.droppedDirty++
 			continue
 		}
@@ -188,17 +216,23 @@ func (p *cacheRoutingPersister) drain() cacheRoutingDirtyBatch {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	batch := cacheRoutingDirtyBatch{
-		upserts: make([]store.CacheHolderRecord, 0, len(p.holderUpserts)),
-		deletes: make([]store.CacheHolderKey, 0, len(p.holderDeletes)),
+		upserts: make([]store.CacheHolderRecord, 0, min(len(p.holderUpserts), cacheRoutingHolderFlushRows)),
+		deletes: make([]store.CacheHolderKey, 0, min(len(p.holderDeletes), cacheRoutingHolderFlushRows)),
 	}
-	for _, rec := range p.holderUpserts {
+	for k, rec := range p.holderUpserts {
+		if len(batch.upserts) >= cacheRoutingHolderFlushRows {
+			break
+		}
 		batch.upserts = append(batch.upserts, rec)
+		delete(p.holderUpserts, k)
 	}
 	for k := range p.holderDeletes {
+		if len(batch.deletes) >= cacheRoutingHolderFlushRows {
+			break
+		}
 		batch.deletes = append(batch.deletes, k)
+		delete(p.holderDeletes, k)
 	}
-	p.holderUpserts = make(map[store.CacheHolderKey]store.CacheHolderRecord)
-	p.holderDeletes = make(map[store.CacheHolderKey]struct{})
 	batch.demand = make([]store.CacheDemandRecord, 0, min(len(p.demandTouched), cacheRoutingDemandFlushRows))
 	for key, seen := range p.demandTouched {
 		if len(batch.demand) >= cacheRoutingDemandFlushRows {
@@ -251,8 +285,10 @@ func (p *cacheRoutingPersister) requeue(batch cacheRoutingDirtyBatch) {
 	}
 }
 
-// flush writes one drained batch. It is safe to call concurrently with the
-// tracker; it holds no tracker lock while talking to the store.
+// flush writes one drained batch in store-sized chunks. On a failure only the
+// chunks not yet written are requeued, so a backlog after an outage drains
+// forward instead of retrying the same set forever. It holds no tracker lock
+// while talking to the store.
 func (p *cacheRoutingPersister) flush(ctx context.Context) error {
 	if p == nil {
 		return nil
@@ -262,15 +298,27 @@ func (p *cacheRoutingPersister) flush(ctx context.Context) error {
 		return nil
 	}
 	started := time.Now()
-	var err error
-	if len(batch.upserts) > 0 {
-		err = p.store.UpsertCacheHolders(ctx, batch.upserts)
+	var (
+		err                    error
+		wrote, deleted, demand int
+	)
+	for wrote < len(batch.upserts) && err == nil {
+		end := min(wrote+store.CacheRoutingStateBatchRows, len(batch.upserts))
+		if err = p.store.UpsertCacheHolders(ctx, batch.upserts[wrote:end]); err == nil {
+			wrote = end
+		}
 	}
-	if err == nil && len(batch.deletes) > 0 {
-		err = p.store.DeleteCacheHolders(ctx, batch.deletes)
+	for deleted < len(batch.deletes) && err == nil {
+		end := min(deleted+store.CacheRoutingStateBatchRows, len(batch.deletes))
+		if err = p.store.DeleteCacheHolders(ctx, batch.deletes[deleted:end]); err == nil {
+			deleted = end
+		}
 	}
-	if err == nil && len(batch.demand) > 0 {
-		err = p.store.UpsertCacheDemand(ctx, batch.demand)
+	for demand < len(batch.demand) && err == nil {
+		end := min(demand+store.CacheRoutingStateBatchRows, len(batch.demand))
+		if err = p.store.UpsertCacheDemand(ctx, batch.demand[demand:end]); err == nil {
+			demand = end
+		}
 	}
 	p.mu.Lock()
 	p.flushes++
@@ -278,20 +326,46 @@ func (p *cacheRoutingPersister) flush(ctx context.Context) error {
 	p.lastFlushAt = time.Now()
 	if err != nil {
 		p.flushErrors++
-	} else {
-		p.rowsWritten += uint64(len(batch.upserts) + len(batch.demand))
-		p.rowsDeleted += uint64(len(batch.deletes))
-		for _, rec := range batch.demand {
-			p.demandPersisted[rec.Key] = rec.SeenAt
-		}
+	}
+	p.rowsWritten += uint64(wrote + demand)
+	p.rowsDeleted += uint64(deleted)
+	for _, rec := range batch.demand[:demand] {
+		p.demandPersisted[rec.Key] = rec.SeenAt
 	}
 	p.mu.Unlock()
 	if err != nil {
-		p.requeue(batch)
-		p.logger.Warn("cache routing persistence flush failed", "error", err,
-			"upserts", len(batch.upserts), "deletes", len(batch.deletes), "demand", len(batch.demand))
+		p.requeue(cacheRoutingDirtyBatch{
+			upserts: batch.upserts[wrote:], deletes: batch.deletes[deleted:], demand: batch.demand[demand:],
+		})
+		p.logger.Warn("cache routing persistence flush failed; unwritten rows requeued", "error", err,
+			"upserts_left", len(batch.upserts)-wrote, "deletes_left", len(batch.deletes)-deleted,
+			"demand_left", len(batch.demand)-demand)
 	}
 	return err
+}
+
+// flushAll drains repeatedly until nothing is dirty, an error occurs or the
+// context ends. Used by the shutdown flush, where the loop has stopped and a
+// long drain may have marked more than one flush's worth.
+func (p *cacheRoutingPersister) flushAll(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	for i := 0; i < 256; i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := p.flush(ctx); err != nil {
+			return err
+		}
+		p.mu.Lock()
+		empty := len(p.holderUpserts) == 0 && len(p.holderDeletes) == 0 && len(p.demandTouched) == 0
+		p.mu.Unlock()
+		if empty {
+			return nil
+		}
+	}
+	return nil
 }
 
 // prune removes expired rows from the store and forgets the persisted-demand
@@ -334,7 +408,8 @@ func (p *cacheRoutingPersister) restore(ctx context.Context, t *cacheRoutingTrac
 			p.droppedPending++
 			continue
 		}
-		p.pending[rec.CacheEpoch] = append(p.pending[rec.CacheEpoch], rec)
+		pk := pendingKey(rec.CacheEpoch, rec.ModelID)
+		p.pending[pk] = append(p.pending[pk], rec)
 		p.pendingCount++
 	}
 	p.restoredHolders = p.pendingCount
@@ -357,7 +432,8 @@ func (p *cacheRoutingPersister) parkHolder(key string, h cacheHolder) {
 	rec := holderRecordFor(key, h)
 	p.mu.Lock()
 	if p.pendingCount < cacheRoutingMaxEntries {
-		p.pending[rec.CacheEpoch] = append(p.pending[rec.CacheEpoch], rec)
+		pk := pendingKey(rec.CacheEpoch, rec.ModelID)
+		p.pending[pk] = append(p.pending[pk], rec)
 		p.pendingCount++
 	} else {
 		p.droppedPending++
@@ -388,18 +464,47 @@ func (p *cacheRoutingPersister) prunePending(now time.Time) {
 	}
 }
 
-// takePending pops the rows parked under one cache epoch.
-func (p *cacheRoutingPersister) takePending(epoch string, now time.Time) []store.CacheHolderRecord {
+// dropPending discards the rows parked under one (cache epoch, model) and
+// schedules their durable rows for deletion: the capability they described no
+// longer exists.
+func (p *cacheRoutingPersister) dropPending(epoch, model string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pk := pendingKey(epoch, model)
+	rows := p.pending[pk]
+	if len(rows) == 0 {
+		return
+	}
+	delete(p.pending, pk)
+	p.pendingCount -= len(rows)
+	p.droppedPending += uint64(len(rows))
+	for _, rec := range rows {
+		k := rec.HolderKey()
+		delete(p.holderUpserts, k)
+		if _, present := p.holderDeletes[k]; present || len(p.holderDeletes) < cacheRoutingDirtyCap {
+			p.holderDeletes[k] = struct{}{}
+		} else {
+			p.droppedDirty++
+		}
+	}
+}
+
+// takePending pops the rows parked under one (cache epoch, model).
+func (p *cacheRoutingPersister) takePending(epoch, model string) []store.CacheHolderRecord {
 	if p == nil {
 		return nil
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	rows := p.pending[epoch]
+	pk := pendingKey(epoch, model)
+	rows := p.pending[pk]
 	if len(rows) == 0 {
 		return nil
 	}
-	delete(p.pending, epoch)
+	delete(p.pending, pk)
 	p.pendingCount -= len(rows)
 	return rows
 }
@@ -423,10 +528,14 @@ func (p *cacheRoutingPersister) status() CacheRoutingPersistenceStatus {
 }
 
 // bindPendingLocked runs under tracker.mu (and the provider's lock, in the
-// same order the receipt path uses) when a provider's SSD capabilities are
-// applied. Every parked row whose epoch, model, artifact and contract match
-// the capability becomes a live holder through the ordinary upsert path, so
-// the per-key cap, the expiry heap and the per-provider index all apply. The
+// same order the receipt path uses) whenever a provider's SSD capabilities are
+// applied, whether or not they changed: registration already carries them, so
+// a reconnecting provider's first apply is an unchanged one. Every parked row
+// whose epoch, model, artifact and contract match the capability becomes a
+// live holder through the ordinary upsert path, so the per-key cap, the
+// expiry heap and the per-provider index all apply. A parked row never
+// overwrites a newer live holder the same provider already produced, and any
+// pending delete for the row is cancelled because the row is live again. The
 // restoring flag keeps the upsert from re-marking a row the store already has.
 func (t *cacheRoutingTracker) bindPendingLocked(provider *Provider, capabilities map[string]protocol.PrefixCacheV2Capability, now time.Time) {
 	p := t.persister
@@ -434,37 +543,50 @@ func (t *cacheRoutingTracker) bindPendingLocked(provider *Provider, capabilities
 		return
 	}
 	for _, capability := range capabilities {
-		if capability.CacheEpoch == "" {
+		if capability.CacheEpoch == "" || capability.ModelID == "" {
 			continue
 		}
-		rows := p.takePending(capability.CacheEpoch, now)
+		rows := p.takePending(capability.CacheEpoch, capability.ModelID)
 		if len(rows) == 0 {
 			continue
 		}
-		var bound uint64
-		t.restoring = true
-		for _, rec := range rows {
-			if !rec.ExpiresAt.After(now) || rec.ModelID != capability.ModelID ||
-				rec.ModelAggregateHash != capability.ModelAggregateHash ||
-				rec.PromptContractID != capability.PromptContractID ||
-				(rec.BlockHashVersion != "" && capability.BlockHashVersion != "" && rec.BlockHashVersion != capability.BlockHashVersion) {
-				continue
-			}
-			holder := cacheHolder{
-				ProviderID: provider.ID, Provider: provider, ModelID: rec.ModelID,
-				ModelAggregateHash: rec.ModelAggregateHash, PromptContractID: rec.PromptContractID,
-				BlockHashVersion: rec.BlockHashVersion, CacheEpoch: rec.CacheEpoch, Tier: rec.Tier,
-				Anchor:                  protocol.PrefixCacheAnchor{ChainHash: rec.AnchorChainHash, TokenCount: rec.AnchorTokenCount},
-				RequiredRecomputeTokens: rec.RequiredRecomputeTokens, StageMs: rec.StageMs,
-				UpdatedAt: rec.UpdatedAt, ExpiresAt: rec.ExpiresAt,
-			}
-			t.upsertHolderLocked(rec.Key, holder)
-			bound++
-		}
-		t.restoring = false
+		bound := t.bindRowsLocked(provider, capability, rows, now)
 		p.mu.Lock()
 		p.boundHolders += bound
 		p.droppedPending += uint64(len(rows)) - bound
 		p.mu.Unlock()
 	}
+}
+
+func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability protocol.PrefixCacheV2Capability, rows []store.CacheHolderRecord, now time.Time) (bound uint64) {
+	t.restoring = true
+	defer func() { t.restoring = false }()
+	for _, rec := range rows {
+		if !rec.ExpiresAt.After(now) || rec.ModelID != capability.ModelID ||
+			rec.ModelAggregateHash != capability.ModelAggregateHash ||
+			rec.PromptContractID != capability.PromptContractID ||
+			(rec.BlockHashVersion != "" && capability.BlockHashVersion != "" && rec.BlockHashVersion != capability.BlockHashVersion) {
+			continue
+		}
+		if live, ok := t.holders[rec.Key][provider.ID]; ok && !rec.UpdatedAt.After(live.UpdatedAt) {
+			// The provider already proved this boundary again on this
+			// connection; the parked row is older evidence for the same thing.
+			bound++
+			continue
+		}
+		holder := cacheHolder{
+			ProviderID: provider.ID, Provider: provider, ModelID: rec.ModelID,
+			ModelAggregateHash: rec.ModelAggregateHash, PromptContractID: rec.PromptContractID,
+			BlockHashVersion: rec.BlockHashVersion, CacheEpoch: rec.CacheEpoch, Tier: rec.Tier,
+			Anchor:                  protocol.PrefixCacheAnchor{ChainHash: rec.AnchorChainHash, TokenCount: rec.AnchorTokenCount},
+			RequiredRecomputeTokens: rec.RequiredRecomputeTokens, StageMs: rec.StageMs,
+			UpdatedAt: rec.UpdatedAt, ExpiresAt: rec.ExpiresAt,
+		}
+		t.upsertHolderLocked(rec.Key, holder)
+		if _, present := t.holders[rec.Key][provider.ID]; present {
+			t.persister.cancelDelete(rec.Key, rec.CacheEpoch)
+			bound++
+		}
+	}
+	return bound
 }

@@ -272,8 +272,12 @@ func main() {
 	srv := api.NewServer(reg, st, serverCfg, logger)
 	// The server handed the store to the registry; restore the durable cache
 	// routing indexes now so the holder index is not empty after a restart.
+	// The write-behind loop keeps running through the drain (the main ctx is
+	// cancelled before it) and stops right before the final flush.
+	persistCtx, persistCancel := context.WithCancel(context.Background())
+	defer persistCancel()
 	if cfg.RegistryCfg.CacheRouting.Persist {
-		if status, err := reg.StartCacheRoutingPersistence(ctx); err != nil {
+		if status, err := reg.StartCacheRoutingPersistence(persistCtx); err != nil {
 			logger.Warn("cache routing persistence unavailable; serving from an empty index", "error", err)
 		} else if status.Enabled {
 			logger.Info("cache routing persistence restored",
@@ -1004,6 +1008,7 @@ func main() {
 	graceCancel()
 	// Final write-behind of the cache routing indexes so the next boot restores
 	// evidence gathered since the last periodic flush.
+	persistCancel()
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := reg.FlushCacheRoutingState(flushCtx); err != nil {
 		logger.Warn("final cache routing persistence flush failed", "error", err)

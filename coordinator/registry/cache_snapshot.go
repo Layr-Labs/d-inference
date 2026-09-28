@@ -123,6 +123,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	protocolChanged := provider.PrefixCacheProtocol != resultVersion
 	changedModels := changedPrefixCacheModels(provider.PrefixCacheV2Models, resultCapabilities,
 		provider.PrefixCacheMemoryModels, resultMemoryCapabilities)
+	previousCapabilities := provider.PrefixCacheV2Models
 	if capabilitiesChanged {
 		provider.PrefixCacheProtocol = resultVersion
 		provider.PrefixCacheV2Models = resultCapabilities
@@ -145,11 +146,21 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 			tracker.invalidateProviderModels(providerID, changedModels)
 		}
 		tracker.reconcileFences(providerID, resultCapabilities, resultMemoryCapabilities)
+		// Evidence parked for a capability that just changed is as stale as
+		// the live evidence invalidated above; drop it and its durable rows
+		// rather than letting the bind below resurrect it.
+		for model := range changedModels {
+			if prev, ok := previousCapabilities[model]; ok {
+				tracker.persister.dropPending(prev.CacheEpoch, model)
+			}
+		}
+	}
+	if tracker != nil && len(resultCapabilities) > 0 {
 		// Rows restored from the durable copy that name one of these epochs
-		// become live holders now (cache_persistence.go).
-		tracker.mu.Lock()
-		tracker.bindPendingLocked(provider, resultCapabilities, tracker.now())
-		tracker.mu.Unlock()
+		// become live holders now (cache_persistence.go). Not gated on a
+		// change: registration already carries the capabilities, so the first
+		// apply after a reconnect is an unchanged one.
+		tracker.bindRestoredHolders(provider, resultCapabilities)
 	}
 	provider.mu.Unlock()
 	if tracker != nil {

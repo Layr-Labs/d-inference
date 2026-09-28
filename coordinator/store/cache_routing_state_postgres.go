@@ -41,12 +41,46 @@ const cacheRoutingDemandSeenIndexDDL = `CREATE INDEX IF NOT EXISTS idx_cache_rou
 
 const cacheHolderInsertColumns = 13
 
+// dedupeHolderRecords keeps one row per (key, epoch) in a batch, merging the
+// way the ON CONFLICT clause would: PostgreSQL rejects a statement that
+// touches the same conflict target twice.
+func dedupeHolderRecords(records []CacheHolderRecord) []CacheHolderRecord {
+	seen := make(map[CacheHolderKey]int, len(records))
+	out := make([]CacheHolderRecord, 0, len(records))
+	for _, r := range records {
+		if i, ok := seen[r.HolderKey()]; ok {
+			out[i] = laterHolder(out[i], r)
+			continue
+		}
+		seen[r.HolderKey()] = len(out)
+		out = append(out, r)
+	}
+	return out
+}
+
+func dedupeDemandRecords(records []CacheDemandRecord) []CacheDemandRecord {
+	seen := make(map[string]int, len(records))
+	out := make([]CacheDemandRecord, 0, len(records))
+	for _, r := range records {
+		if i, ok := seen[r.Key]; ok {
+			if r.SeenAt.After(out[i].SeenAt) {
+				out[i].SeenAt = r.SeenAt
+			}
+			continue
+		}
+		seen[r.Key] = len(out)
+		out = append(out, r)
+	}
+	return out
+}
+
 func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []CacheHolderRecord) error {
 	for _, r := range records {
 		if err := r.validate(); err != nil {
 			return err
 		}
 	}
+	records = dedupeHolderRecords(records)
 	for start := 0; start < len(records); start += CacheRoutingStateBatchRows {
 		end := min(start+CacheRoutingStateBatchRows, len(records))
 		chunk := records[start:end]
@@ -140,6 +174,7 @@ func (s *PostgresStore) UpsertCacheDemand(ctx context.Context, records []CacheDe
 			return err
 		}
 	}
+	records = dedupeDemandRecords(records)
 	for start := 0; start < len(records); start += CacheRoutingStateBatchRows {
 		end := min(start+CacheRoutingStateBatchRows, len(records))
 		chunk := records[start:end]

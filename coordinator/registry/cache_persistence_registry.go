@@ -4,8 +4,12 @@ import (
 	"context"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+// cacheRoutingRestoreTimeout bounds the boot-time load of the durable copy.
+const cacheRoutingRestoreTimeout = 30 * time.Second
 
 // Registry-side wiring for cache routing state persistence: start (restore +
 // loops), bind on capability apply, final flush, and status.
@@ -33,15 +37,22 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 	r.mu.RLock()
 	tracker := r.cacheRouting
 	mode := r.cacheRoutingMode
+	existing := r.cachePersister
 	r.mu.RUnlock()
+	if existing != nil {
+		return existing.status(), nil
+	}
 	if tracker == nil || mode == CacheRoutingOff {
 		return CacheRoutingPersistenceStatus{}, nil
 	}
 	persister := newCacheRoutingPersister(st, r.logger)
 	now := tracker.now()
-	if err := persister.restore(ctx, tracker, now); err != nil {
-		return CacheRoutingPersistenceStatus{}, err
-	}
+	// The restore is bounded so a slow store cannot hold the process before it
+	// listens; a failed restore still leaves write-behind on, so the next boot
+	// has something to restore.
+	restoreCtx, cancel := context.WithTimeout(ctx, cacheRoutingRestoreTimeout)
+	restoreErr := persister.restore(restoreCtx, tracker, now)
+	cancel()
 	tracker.mu.Lock()
 	tracker.persister = persister
 	tracker.mu.Unlock()
@@ -53,7 +64,38 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 	// and reconfigures may) bind now.
 	r.bindRestoredHoldersForConnectedProviders(now)
 	go r.runCacheRoutingPersistence(ctx, persister)
-	return persister.status(), nil
+	return persister.status(), restoreErr
+}
+
+// bindRestoredHolders binds parked rows for one provider's capabilities in
+// the provider.mu → tracker.mu order the receipt path uses. It is called from
+// UpdatePrefixCacheSnapshot (provider.mu already held) and from Register.
+func (t *cacheRoutingTracker) bindRestoredHolders(provider *Provider, capabilities map[string]protocol.PrefixCacheV2Capability) {
+	if t == nil || t.persister == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.bindPendingLocked(provider, capabilities, t.now())
+}
+
+// bindRegisteredProvider runs at the end of Register: registration carries
+// the provider's capabilities, so its parked rows bind before the first
+// heartbeat.
+func (r *Registry) bindRegisteredProvider(p *Provider) {
+	if r == nil || p == nil {
+		return
+	}
+	r.mu.RLock()
+	tracker := r.cacheRouting
+	r.mu.RUnlock()
+	if tracker == nil || tracker.persister == nil {
+		return
+	}
+	p.mu.Lock()
+	caps := clonePrefixCacheCapabilities(p.PrefixCacheV2Models)
+	p.mu.Unlock()
+	tracker.bindRestoredHolders(p, caps)
 }
 
 func (r *Registry) bindRestoredHoldersForConnectedProviders(now time.Time) {
@@ -67,13 +109,12 @@ func (r *Registry) bindRestoredHoldersForConnectedProviders(now time.Time) {
 	if tracker == nil {
 		return
 	}
+	_ = now
 	for _, p := range providers {
 		p.mu.Lock()
 		caps := clonePrefixCacheCapabilities(p.PrefixCacheV2Models)
-		tracker.mu.Lock()
-		tracker.bindPendingLocked(p, caps, now)
-		tracker.mu.Unlock()
 		p.mu.Unlock()
+		tracker.bindRestoredHolders(p, caps)
 	}
 }
 
@@ -104,8 +145,8 @@ func (r *Registry) runCacheRoutingPersistence(ctx context.Context, p *cacheRouti
 	}
 }
 
-// FlushCacheRoutingState writes everything marked dirty. Called once on
-// shutdown after the drain, and by tests.
+// FlushCacheRoutingState writes everything marked dirty, in as many bounded
+// flushes as it takes. Called once on shutdown after the drain, and by tests.
 func (r *Registry) FlushCacheRoutingState(ctx context.Context) error {
 	if r == nil {
 		return nil
@@ -113,7 +154,7 @@ func (r *Registry) FlushCacheRoutingState(ctx context.Context) error {
 	r.mu.RLock()
 	p := r.cachePersister
 	r.mu.RUnlock()
-	return p.flush(ctx)
+	return p.flushAll(ctx)
 }
 
 // CacheRoutingPersistenceStatus reports the persister's counters; Enabled is

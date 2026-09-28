@@ -435,11 +435,11 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `providers.v2_ready_models` | Ready durable SSD capabilities; preserves the existing meaning | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `providers.memory_ready_models` | Ready resident capabilities, counted separately from SSD readiness | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
 | `lifecycle.fences_applied` | Proof-fence windows opened or escalated | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/registry/cache_proof_fence.go` (`rejectCapability`) |
+| `lifecycle.fences_expired` | Windows that lifted by time, each counted once | Same; `coordinator/registry/cache_proof_fence.go` (`countLapseLocked`) |
 | `lifecycle.persistence.enabled` | Whether the holder and demand indexes are being written to the store across restarts | `coordinator/registry/cache_persistence.go` (`CacheRoutingPersistenceStatus`) |
 | `lifecycle.persistence.restored_holders` / `.restored_demand` | Rows loaded at boot: holders parked by cache epoch, demand entries seeded directly | Same (`restore`) |
 | `lifecycle.persistence.pending_holders` / `.bound_holders` / `.dropped_pending` | Parked rows still waiting for their provider, rows bound to a reconnected provider, rows dropped as expired or mismatched | Same (`bindPendingLocked`, `takePending`) |
 | `lifecycle.persistence.flushes` / `.flush_errors` / `.rows_written` / `.rows_deleted` / `.dropped_dirty` / `.last_flush_ms` / `.last_flush_at` | Write-behind health: 5-second flush count, failures (the batch is retried), rows written and deleted, dirty entries dropped at the cap, last flush duration and time | Same (`flush`) |
-| `lifecycle.fences_expired` | Windows that lifted by time, each counted once | Same; `coordinator/registry/cache_proof_fence.go` (`countLapseLocked`) |
 | `lifecycle.fenced_capabilities` | Currently fenced provider/model/tier capabilities | Same; `coordinator/registry/cache_proof_fence.go` (`sweepFencesLocked`) |
 | `lifecycle.demand_entries` | Entries currently in the observed-demand index | `coordinator/registry/cache_demand.go` (`stats`) |
 | `lifecycle.demand_cap_evictions` | Demand entries evicted by the cap inside their TTL; a growing count means repeated prefixes are being reported as novel | Same |

@@ -1,6 +1,6 @@
 # Model artifact revisions
 
-> Last updated: 2026-09-28 · commit `7bd5b0648`
+> Last updated: 2026-09-28 · commit `b788194f0`
 
 An existing model can acquire new weights without changing its model ID or
 releasing another provider binary. Publishers upload an immutable revision and
@@ -60,6 +60,11 @@ commit and optional subdirectory. The publisher exposes `--hf-repo-id`,
 `--hf-revision` and `--hf-path-prefix`; the API records that locator on the
 version row. Providers verify the same manifest checksums from HF and R2,
 with HF first and R2 fallback. The upstream/feed `hugging_face_id` is unchanged.
+For a new version, omission selects R2-only. An identical `publish-revision`
+retry uses `SetExistingModelVersion` to preserve the stored locator, including
+any deliberate mirror edit made since the first attempt. Normal registration
+through `SetModelVersion` continues to support adding, changing or clearing this
+transport metadata without changing the immutable file identity.
 
 `ModelDownloader` retains its foreground parallel scheduler and background
 sequential scheduler. They share manifest validation, checksum/resume transport,

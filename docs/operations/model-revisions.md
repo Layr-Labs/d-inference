@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-09-28 · commit `291d83ee9`
+> Last updated: 2026-09-28 · commit `b788194f0`
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -77,12 +77,17 @@ Overwriting an already published R2 revision is rejected.
    The path prefix is optional. The pinned HF repo must contain this revision's
    exact manifest files and bytes. Providers try that HF source first, verify
    checksums, and fall back to R2 if it is unavailable or incorrect. Every
-   revision can specify a different repo, commit and subdirectory. Omitting
-   the HF flags makes the revision R2-only; an old source is never inherited.
+   new version can specify a different repo, commit and subdirectory. Omitting
+   the HF flags for a new version makes it R2-only; a source is never inherited
+   from another version. Retrying an existing version preserves its stored
+   source, including R2-only, even if the flags are omitted or changed. Use
+   [normal registration](model-migration.md#2-register-the-build-in-the-coordinator-catalog)
+   for an intentional mirror edit on an existing version.
 
    The action preserves model metadata, upstream `hugging_face_id` and pricing,
    and records the initial authenticated publisher in `uploaded_by`. Identical
-   retries keep the original `uploaded_by` and `uploaded_at`. The coordinator
+   retries keep the original `uploaded_by` and `uploaded_at`, and the stored
+   download source. The coordinator
    checks the R2 manifest and file sizes before promotion; providers check file
    and aggregate SHA-256 hashes for either source. If publication returns 503
    after promotion, retry with the same version and HF flags until the live

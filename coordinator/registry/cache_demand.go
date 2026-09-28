@@ -3,11 +3,13 @@ package registry
 import (
 	"container/list"
 	"slices"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // Demand is advisory, never cache evidence. Only keyed, tenant/build-scoped
@@ -19,6 +21,9 @@ type cacheDemandTracker struct {
 	ttl     time.Duration
 	order   list.List
 	entries map[string]*list.Element
+	// onTouched receives the keys an observe inserted or refreshed, after
+	// d.mu is released. Nil when nothing persists the index.
+	onTouched func(keys []string, now time.Time)
 	// capEvictions counts entries the cap removed while they were still
 	// inside the TTL. Each one is a repeat that may now read as novel.
 	capEvictions uint64
@@ -47,9 +52,24 @@ func newCacheDemandTracker(limit int, ttl time.Duration) *cacheDemandTracker {
 	return &cacheDemandTracker{limit: max(1, limit), ttl: ttl, entries: make(map[string]*list.Element)}
 }
 
+func (d *cacheDemandTracker) setOnTouched(fn func(keys []string, now time.Time)) {
+	d.mu.Lock()
+	d.onTouched = fn
+	d.mu.Unlock()
+}
+
 func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.Time) (int, string) {
+	longest, affinity, touched, onTouched := d.observeLocked(boundaries, now)
+	if onTouched != nil && len(touched) > 0 {
+		onTouched(touched, now)
+	}
+	return longest, affinity
+}
+
+func (d *cacheDemandTracker) observeLocked(boundaries []cacheDemandBoundary, now time.Time) (int, string, []string, func([]string, time.Time)) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	var touched []string
 	for expired := 0; expired < cacheDemandMaxExpiryPerObserve; expired++ {
 		first := d.order.Front()
 		if first == nil || now.Sub(first.Value.(cacheDemandEntry).seen) < d.ttl {
@@ -100,6 +120,9 @@ func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.
 		} else {
 			d.entries[boundary.key] = d.order.PushBack(cacheDemandEntry{boundary.key, now})
 		}
+		if d.onTouched != nil {
+			touched = append(touched, boundary.key)
+		}
 		for len(d.entries) > d.limit {
 			first := d.order.Front()
 			evicted := first.Value.(cacheDemandEntry)
@@ -112,7 +135,37 @@ func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.
 			d.order.Remove(first)
 		}
 	}
-	return longest, affinity
+	return longest, affinity, touched, d.onTouched
+}
+
+// restore seeds the index from durable rows, oldest first so the eviction
+// order matches the seen order. Rows past the TTL are skipped; the entry cap
+// keeps the newest.
+func (d *cacheDemandTracker) restore(records []store.CacheDemandRecord, now time.Time) int {
+	sort.Slice(records, func(i, j int) bool { return records[i].SeenAt.Before(records[j].SeenAt) })
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	restored := 0
+	for _, rec := range records {
+		if rec.Key == "" || now.Sub(rec.SeenAt) >= d.ttl || rec.SeenAt.After(now) {
+			continue
+		}
+		if entry := d.entries[rec.Key]; entry != nil {
+			if rec.SeenAt.After(entry.Value.(cacheDemandEntry).seen) {
+				entry.Value = cacheDemandEntry{rec.Key, rec.SeenAt}
+				d.order.MoveToBack(entry)
+			}
+			continue
+		}
+		d.entries[rec.Key] = d.order.PushBack(cacheDemandEntry{rec.Key, rec.SeenAt})
+		restored++
+		for len(d.entries) > d.limit {
+			first := d.order.Front()
+			delete(d.entries, first.Value.(cacheDemandEntry).key)
+			d.order.Remove(first)
+		}
+	}
+	return restored
 }
 
 // stats reports the entries held, including expired ones the bounded sweep

@@ -145,6 +145,11 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 			tracker.invalidateProviderModels(providerID, changedModels)
 		}
 		tracker.reconcileFences(providerID, resultCapabilities, resultMemoryCapabilities)
+		// Rows restored from the durable copy that name one of these epochs
+		// become live holders now (cache_persistence.go).
+		tracker.mu.Lock()
+		tracker.bindPendingLocked(provider, resultCapabilities, tracker.now())
+		tracker.mu.Unlock()
 	}
 	provider.mu.Unlock()
 	if tracker != nil {

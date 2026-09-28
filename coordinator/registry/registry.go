@@ -223,6 +223,7 @@ type Registry struct {
 	cacheRouting                 *cacheRoutingTracker
 	cacheActivation              *cacheActivationGate
 	cacheRoutingMode             string
+	cachePersister               *cacheRoutingPersister
 	cacheRoutingAllowedArtifacts cacheArtifactAllowlist
 	cacheRouteKeys               cacheRouteKeys
 	cacheRoutingMaxDiscountMs    *float64

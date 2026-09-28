@@ -270,6 +270,16 @@ func main() {
 		}
 	}
 	srv := api.NewServer(reg, st, serverCfg, logger)
+	// The server handed the store to the registry; restore the durable cache
+	// routing indexes now so the holder index is not empty after a restart.
+	if cfg.RegistryCfg.CacheRouting.Persist {
+		if status, err := reg.StartCacheRoutingPersistence(ctx); err != nil {
+			logger.Warn("cache routing persistence unavailable; serving from an empty index", "error", err)
+		} else if status.Enabled {
+			logger.Info("cache routing persistence restored",
+				"holders_pending", status.PendingHolders, "demand_entries", status.RestoredDemand)
+		}
+	}
 	var promptProvisioner *promptcontract.Provisioner
 	if cfg.PromptSidecar.Enabled {
 		artifactBaseURL, err := url.Parse(cfg.PromptSidecar.ArtifactBaseURL)
@@ -992,6 +1002,13 @@ func main() {
 			"grace", grace.String(), "inflight", srv.Inflight())
 	}
 	graceCancel()
+	// Final write-behind of the cache routing indexes so the next boot restores
+	// evidence gathered since the last periodic flush.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := reg.FlushCacheRoutingState(flushCtx); err != nil {
+		logger.Warn("final cache routing persistence flush failed", "error", err)
+	}
+	flushCancel()
 
 	// Hard backstop: even after the grace wait, give Shutdown a bounded deadline so
 	// a stuck connection can't block process exit forever.

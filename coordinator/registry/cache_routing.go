@@ -114,6 +114,8 @@ type cacheHolder struct {
 	ModelAggregateHash      string
 	PromptContractID        string
 	CacheEpoch              string
+	BlockHashVersion        string
+	Tier                    string
 	Anchor                  protocol.PrefixCacheAnchor
 	RequiredRecomputeTokens int
 	StageMs                 float64
@@ -313,7 +315,12 @@ type cacheRoutingTracker struct {
 	// sweepBacklog is set when a sweep ran out of budget with expired entries
 	// left; the next tracker operation then continues without waiting for the
 	// interval.
-	sweepBacklog        bool
+	sweepBacklog bool
+	// persister keeps the durable copy (cache_persistence.go); nil when the
+	// store cannot persist or persistence is off. restoring is set while
+	// bound rows re-enter through upsertHolderLocked so they are not re-marked.
+	persister           *cacheRoutingPersister
+	restoring           bool
 	holders             map[string]map[string]cacheHolder
 	attempts            map[string]cacheAttempt
 	holderOrder         cacheHolderOrderHeap
@@ -420,8 +427,9 @@ type CacheRoutingLifecycleStatus struct {
 	// expired entries its bounded sweep has not reached. DemandCapEvictions
 	// counts entries the cap removed inside their TTL; while it grows, the
 	// index is too small and repeated prefixes are reported as novel.
-	DemandEntries      int    `json:"demand_entries"`
-	DemandCapEvictions uint64 `json:"demand_cap_evictions"`
+	DemandEntries      int                           `json:"demand_entries"`
+	DemandCapEvictions uint64                        `json:"demand_cap_evictions"`
+	Persistence        CacheRoutingPersistenceStatus `json:"persistence"`
 }
 
 func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
@@ -430,6 +438,7 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 	}
 	r.mu.RLock()
 	tracker := r.cacheRouting
+	persister := r.cachePersister
 	r.mu.RUnlock()
 	if tracker == nil {
 		return CacheRoutingLifecycleStatus{}
@@ -457,6 +466,7 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 		FencesApplied:    tracker.fencesApplied, FencesExpired: tracker.fencesExpired,
 		FencedCapabilities: fenced,
 		DemandEntries:      demandEntries, DemandCapEvictions: demandCapEvictions,
+		Persistence: persister.status(),
 	}
 }
 
@@ -518,6 +528,12 @@ func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
 	previous := r.cacheRouting
 	if previous != nil {
 		previous.generation.revoked.Store(true)
+	}
+	// A reconfigure keeps the durable copy flowing into the new tracker; the
+	// retired tracker stops marking because its generation is revoked.
+	tracker.persister = r.cachePersister
+	if tracker.persister != nil {
+		tracker.demand.setOnTouched(tracker.persister.markDemand)
 	}
 	r.cacheRouting = tracker
 	r.cacheActivation = activation

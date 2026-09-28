@@ -110,6 +110,8 @@ func (t *cacheRoutingTracker) applyReadyV2Decision(
 			ModelAggregateHash:      msg.ModelAggregateHash,
 			PromptContractID:        msg.PromptContractID,
 			CacheEpoch:              msg.CacheEpoch,
+			BlockHashVersion:        capability.BlockHashVersion,
+			Tier:                    msg.Tier,
 			Anchor:                  anchor,
 			RequiredRecomputeTokens: recompute,
 			StageMs:                 msg.StageMs,

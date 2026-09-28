@@ -115,6 +115,8 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 			ModelAggregateHash:      msg.ModelAggregateHash,
 			PromptContractID:        msg.PromptContractID,
 			CacheEpoch:              msg.CacheEpoch,
+			BlockHashVersion:        capability.BlockHashVersion,
+			Tier:                    msg.Tier,
 			Anchor:                  anchor,
 			RequiredRecomputeTokens: msg.RequiredRecomputeTokens,
 			StageMs:                 msg.StageMs,

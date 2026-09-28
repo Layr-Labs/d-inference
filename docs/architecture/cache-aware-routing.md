@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-28 · commit `24aec06eb`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -731,7 +731,20 @@ back are operator procedures, kept in the runbook
 1. **Routing `off` runs none of the machinery, and applying `off` clears all
    in-memory evidence** — `ConfigureCacheRouting` installs a fresh, empty
    holder/attempt tracker on every application
-   (`coordinator/registry/cache_routing.go`).
+   (`coordinator/registry/cache_routing.go`). A process restart no longer
+   empties the index: with `EIGENINFERENCE_CACHE_ROUTING_PERSIST` on
+   (the default) and a store that can persist, SSD-tier holders and the
+   observed-demand index are written behind the tracker in 5-second batches
+   and reloaded at boot (`coordinator/registry/cache_persistence.go`,
+   `coordinator/store/cache_routing_state.go`). Restored holders are parked by
+   the provider's cache epoch and become live only when a provider applies
+   capabilities with that epoch, model, artifact and contract
+   (`bindPendingLocked`, called from `UpdatePrefixCacheSnapshot`), so a bound
+   holder carries a live `*Provider` exactly like a fresh receipt; a
+   disconnect parks the holder instead of deleting its row, and every other
+   removal reason deletes it. Resident (memory-tier) holders are never
+   persisted. `lifecycle.persistence` on `GET /v1/cache/status` reports the
+   restored, parked and bound counts and the flush health.
 2. **Cache routing never rejects, delays or otherwise changes ordinary
    inference.** The activation cohort and the plan-QPS bucket only decline
    participation (`cacheActivationGate`,

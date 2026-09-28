@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-26 · commit `279224c5d`
+> Last updated: 2026-09-28 · commit `24aec06eb`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -168,7 +168,13 @@ the same request from the same account remains in or out of the cohort.
    `mode`, `activation_percent`, `max_plan_qps`, `ttl`, `max_holders`,
    `max_discount_ms` and `max_cost_fraction` (`coordinator/cmd/coordinator/main.go`);
    `null` means no optional clipping beyond avoidable prefill work. A rejected configuration logs `cache routing configuration rejected` and
-   exits before listening.
+   exits before listening. With `EIGENINFERENCE_CACHE_ROUTING_PERSIST` on (the
+   default) boot also logs `cache routing persistence restored` with the
+   parked holder and demand counts; the holder index refills as providers
+   reconnect and apply capabilities (`lifecycle.persistence.bound_holders` in
+   `GET /v1/cache/status`) instead of from scratch, and the final flush runs
+   after the drain on shutdown, so a swap costs seconds of evidence rather than
+   the 10–20 minute rebuild it used to.
 
    ```bash
    sudo docker logs coordinator 2>&1 | grep -E 'cache routing configuration rejected|provider-confirmed cache routing configured'

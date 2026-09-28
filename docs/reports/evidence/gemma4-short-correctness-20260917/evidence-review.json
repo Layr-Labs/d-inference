@@ -1,0 +1,1075 @@
+{
+  "absoluteTolerance": 0,
+  "actualResourcesReplayPassed": true,
+  "aliasRawRestorationReplayPassed": true,
+  "allBytesEqual": true,
+  "boundaryFrames": [
+    {
+      "boundarySHA256": "61e475f9a8f7cc5f3bc9515f71e662ac8f97ceb85c425da5f3d603d0e6601e38",
+      "frontier": 16,
+      "sequence": 0,
+      "tokenIDsSHA256": "4b8fe3c6402271089c5d0094a691ad1a543da0fe16b9a334ad1a90ca93ac07ed"
+    },
+    {
+      "boundarySHA256": "76b93ed169b7da535587bafe061ca0a16a7aea4eae700251bc8ff976d3880c13",
+      "frontier": 32,
+      "sequence": 1,
+      "tokenIDsSHA256": "ca7ebf1f91a0c6fe7438b2ac3ebd9069dbe03b0f7553818d1e54c8d65c8db457"
+    },
+    {
+      "boundarySHA256": "30cba829ccc41815a85d199e454659cda4a0aaf9d400679445d1775b387ca266",
+      "frontier": 33,
+      "sequence": 2,
+      "tokenIDsSHA256": "ce63ea0809ce32335dd7692f1e0c6c5f3493f2b4039351662b60741de4d9a9bd"
+    }
+  ],
+  "checkedFiles": {
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/actual-inputs-1/describe.stdout": {
+      "bytes": 2485,
+      "sha256": "b947d8fb2a3e4a6cc92e438911a6eb7b391c02ad368f09197ab7e9df6be5429e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned-collection.json": {
+      "bytes": 14837,
+      "sha256": "6ffe77a433384b912f041547c0a23c6c044824cc83ae73080fd1e4e243c1ebb3"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/gate.json": {
+      "bytes": 599,
+      "sha256": "f17986bbb55401b5f4d989cf2ef04c3f023d443a08ce9ab56abb7934e1b64460"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/input-binding.json": {
+      "bytes": 960,
+      "sha256": "ae5170d0bd8987b1c1abda046dc60a7692e96abfc1295328794940d640261e48"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/job.json": {
+      "bytes": 746,
+      "sha256": "4b20809f5d490636d9515bc6934b75a4392a2608e4cda8083412580c02ad1fda"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/journal-postflight.json": {
+      "bytes": 325,
+      "sha256": "33d9ea781a9bedcae43df29bf7bbfe8ea33793acd04b49a0411ab89bcd515a16"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/launch.json": {
+      "bytes": 555,
+      "sha256": "eb4716cddc8ae3405b02fb5e168d0404ebe8ea9b8b32f41b62bf199110cfe845"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/model-metadata.json": {
+      "bytes": 1259,
+      "sha256": "e92c6a36fa590ec406dcb3d902820a1fd7e2a14af375b8668ceac7ccabba201d"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/native/worker-0.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/native/worker-0.stdin": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/native/worker-0.stdout": {
+      "bytes": 229170,
+      "sha256": "04c3c96a63d4311f178581039cbc7e94622b6d2c94dbfe6d102d476a561a9d45"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/owner.json": {
+      "bytes": 646,
+      "sha256": "f98d5ddb692b0be5df336ef2d168f16538bc5d3680e562fb27fd300f412c0ec5"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/preflight.json": {
+      "bytes": 646,
+      "sha256": "9c8e1834fec542e3d43b3a7f5bc55570b4fbfd89d337d26a3b425887abfe3a0a"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/processes-postflight.json": {
+      "bytes": 267,
+      "sha256": "6db115003c75a79aba847e89051b15e645e0f8f3b06101aa4de19f21eb546482"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/resources.jsonl": {
+      "bytes": 156334,
+      "sha256": "9f08e1a869a99e7300692531cf56c2a7dbc5442a83b4132a5e900f2996ab864b"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/row-0.json": {
+      "bytes": 2749577,
+      "sha256": "31e4c07655472b8ca1cf24ea256043dc3788e2e5cc92208f7e593f0a5f9762b4"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/row-1.json": {
+      "bytes": 2744544,
+      "sha256": "4ba4957045ad3bdca9e869f7776b681dc53fe8f56dc1c3f0e8277a1640614e07"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-0-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "a97aba2dd4157c2924bb9f923d84c32f3a7dd29a13fb71fc4c0d5413f1087811"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-0-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-0-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "b0a4f8728056cacaf74e142ce2fa15535526965b4f406ea6772d071f71dc8ce2"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-1-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "3b02607b7a5da4f186dc6238b991504c42f0a78cde03a2bea731fb121a393ea8"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-1-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-1-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "4df2fd52ff493ed42c30002c7e9be37837e4ff28b3685168a93f8c5c008ada2e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-10-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "7bfff4fa1aaaa0a187f0707c0ffb309ba266c4643fe92651e2e896c5fe285c7f"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-10-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-10-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "09e8042c197a3aa22d352fb50e2794f2a6431722ecd3f0ba037bf4ee30cef99d"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-11-kv.keys.bin": {
+      "bytes": 67584,
+      "sha256": "45c1713037739c32a2243c601edc6daee70f30defd67068b42fc08223417b370"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-11-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-11-kv.values.bin": {
+      "bytes": 67584,
+      "sha256": "61f4ec5819b4e1deebcc4f28d223d2d2a0e771f802ce020f863c5642bb6f933b"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-12-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "eb31e6a045617a425b883bfa974a102260538760870b055b0dc72974cf7a86d3"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-12-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-12-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "8c72b3f5d930fb6621ef4d7753ee72c6750182943eedd6ff393412c8b39a6de0"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-13-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "c7bffec786b64bee9169c80150a1626b9113074657597eb2e13c4ba8b5fb650c"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-13-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-13-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "de336f635bca8dd62d76d679257c36eb89222a36b1099b5d94d63a1102e22ea9"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-14-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "8bc68dfdadde72e2bd2d1d91177396e561fed35ba95ece71d46a632079ddc6d5"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-14-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-14-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "af70c21a91bbb0c0ce07f0d29833922add8ac0e34fbdb36749d0b9a8794c8cd2"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-15-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "4526bfd8dbd7891a4e11e95b452a23a597a43732635637d40d3c795efb72b8b3"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-15-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-15-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "99e778d50c55474690d41929095fe7f07e26598ead5dae7a06875137feeb2f6e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-16-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "d51f61d8df1d5916769f68d94b89f4b22a0216b3bed395794ff45291e1229a39"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-16-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-16-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "a5f357c8983a2a1ee01f6792137a783e3de4f23e4c3606beeb1b491f80f22f38"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-17-kv.keys.bin": {
+      "bytes": 67584,
+      "sha256": "af6d15a4eff749abdaafd6e45fd99b0a402e509fcf54764a36e12af16288f611"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-17-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-17-kv.values.bin": {
+      "bytes": 67584,
+      "sha256": "c594d7c507bc8bb657c15bbd9d701ec2a29e2881c192b6b32baf99863c9fb5c4"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-18-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "7610aa4e80b1f094207eeb374c472442ce4ac6fe7102a526a63c421b5f454bd8"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-18-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-18-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "bf548cbc80ba22706282edad6f895f8a5f80ad1f8a8029cdaf397367b010b2e1"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-19-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "a895795bdc3683aef59fddbf7710fc080b3a44fa2ffd4d8bf233ba6eaabc6591"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-19-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-19-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "3f5dc9ce106241a88a60f4a835866c9b6b85ecab4653005d90daab36dd065acc"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-2-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "c4363d80ea66a376626867d8d0ffcc9ab3eead5a3434460d566c37399d75ad9f"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-2-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-2-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "331089743a1c329ad0432b99e2caed389edbaf6c8ebfc7ba01eddb2a00315c6d"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-20-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "d76e7e6f1d8441d0670238331cfd4e1a17ed803d9b164fa998d0aa7d827b526a"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-20-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-20-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "0dd4309efb83edf1fc90bbb0e3f022b72d10852be1f67f116534d456badff47b"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-21-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "2fe6f0de27d8a851615923c511b0ac67b69ca81e98ae839637c79f505c69903e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-21-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-21-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "78030fafdba24e94de2494d91354df8d0e48e407ff916bed1600df268af7ac38"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-22-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "b4b7c76f227de0acde8a19290b9acdaa58a170b77cadac1bfbdfd0d20b1b0691"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-22-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-22-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "392025245c54ea0628b2f85f0943c80b3253ec2cc16928f3581e56b873b92ce1"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-23-kv.keys.bin": {
+      "bytes": 67584,
+      "sha256": "97ed4f4df573ce17df76f3dd2841058147681152544b1c5d33b223e3e933fa54"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-23-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-23-kv.values.bin": {
+      "bytes": 67584,
+      "sha256": "12b5d9a49e00365a0616fd190b4fd3c048d2195a96a3efab48184ed45053ffeb"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-24-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "df1474460ce62623b428e7572263b1740c685a371b40123788a56223fae2658e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-24-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-24-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "446ad9b3ef2224209b66d47b360cb7ac5991bbe307fb1327a41ca2aa6ac7ee64"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-25-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "24ecf4c2c352e0f110d69d4c15e21604786d0ccb3dbf7103eeeb0051c28d6342"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-25-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-25-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "6443230c39c025710a298bcf35c974cc3e9cb0413dd87772789ae4a34a0d8e46"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-26-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "fe8ac6f670f9531bbc58fab2780794db40b7418a44f0f19e2edd381b9839a50e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-26-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-26-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "879763bce60da666405ba785228cdc9564c80abbeea013c8c589a41997219010"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-27-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "3f84a098fa38e9414738ad58eed00c5bc5f58da32642b1fca79a043e65a5a756"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-27-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-27-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "847cb661710fa2fbb11ed162d29221796e11d10bcd15e5bd8181fa3cd21ce062"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-28-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "06742c8d1157bc04d8b3e4c9d735c7009955aed285c72824e5df93c8d462dbdc"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-28-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-28-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "e95c2f56c48784ef4efb140fb229c0a4b066dc6faec63c324081c478e345e035"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-29-kv.keys.bin": {
+      "bytes": 67584,
+      "sha256": "181b9463eba96571851e3b19d349faef773908a88bf620b5f7b2af04d2548a11"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-29-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-29-kv.values.bin": {
+      "bytes": 67584,
+      "sha256": "f070ad4db4c6b1a589863cdc85877d03a2def7da32b42d2768d94f1ce1d25542"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-3-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "da13c719ccfba82aad79e4371d4e95c2b904e0080a6bf0824580323bfc74b492"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-3-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-3-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "b15cf43c7c5f3e84d0784579a9e65d8dd400fef0dd4e56da91e934e75f06d358"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-4-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "bbd11b6c570f25a1eb732bf336137d76c8a6971ed19a3ede0553a6a02cf42c58"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-4-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-4-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "e2aa5f524f4abf2e9add859ff91feef6957cb5292b3ce32461e3a96d4fc4cb4c"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-5-kv.keys.bin": {
+      "bytes": 67584,
+      "sha256": "f5fc3a70f057f2500196b1eab7daee9b2bb814edd6378a29964bc6d718708a16"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-5-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-5-kv.values.bin": {
+      "bytes": 67584,
+      "sha256": "fa17603ab6d3e55a9d9a545400d89e8dcfdd2c0397783941e0f3f85fb6c00489"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-6-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "6a565f5bc9b4e21b5a4ac3b4f4e698e1b6ea9b1761cd011c5da9b66366d7e392"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-6-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-6-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "c19c336d80475323eafb464775d1b4d81cd9148d26b368d68c6b6be57b9ba83a"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-7-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "d80ccd94eeb27cdedbfca65ffccf9faa4d9945f581fb4db79477b3fc7893e3f8"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-7-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-7-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "6c34d00c43c7601c0a010e95fe1ccbd0b60d72af75c12cb4b68c9b0c0ac7b7f3"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-8-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "65c6cce3d53aaa117ae0b91f4c4be121277a193df6c8c6413f7dbdd2a9a3a631"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-8-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-8-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "b68cf72f1b6c8abe4ee73f7d5e6b40e07d8114bed995107526969c633b8d0743"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-9-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "2b69e48df86ad48624efc8216d012cd4b736f45a050df739f3c0b45dfd3d635b"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-9-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/sidecars/state-9-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "81a48dacb8c1c71dfe004292a32d15d2d12cdac436dc040bd9252ab6675652f4"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-full/action/returned/terminal.json": {
+      "bytes": 2772,
+      "sha256": "32d64916d734efdc6758e9d729f51de3acbe5e520e82651d7d532dfb81b7e045"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/full/action/launch/terminal.json": {
+      "bytes": 273,
+      "sha256": "6a61a3c58e78e4561d01ca7111e2d18cc7914f6b8cec3aa4c6a177d5fe32a5a7"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/full/action/receipt.json": {
+      "bytes": 2211,
+      "sha256": "cbd5d3964fb241c9e70bfba4f478dda1ba21f5b366917ff4e9c9981e40c6778a"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned-collection.json": {
+      "bytes": 6496,
+      "sha256": "853a995ae7199e76513ebce2c25c6a45c7b82f353baa3c57a0d26902b90d4377"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/gate.json": {
+      "bytes": 597,
+      "sha256": "e8cb6f856f15594075feed6287d3f75bc482db81bfdefcb7653ceb503aaa9060"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/input-binding.json": {
+      "bytes": 962,
+      "sha256": "9f9b0d3b5f1f723dcc17649b973d15b573581252869067d6a543b50dcd3601b1"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/job.json": {
+      "bytes": 738,
+      "sha256": "819686bea5118332446773d15e082152d066bcc5d03473689055c38be563f8b7"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/journal-postflight.json": {
+      "bytes": 323,
+      "sha256": "d77eb14768505e262ec24df2c78642a19cd64ed6622c7f02a8657565ded79865"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/launch.json": {
+      "bytes": 703,
+      "sha256": "bd46983bdf4f9d72583c60c7af94d9aac763474b1ce1886bea33dde74d1759d5"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/model-metadata.json": {
+      "bytes": 1249,
+      "sha256": "38ee0b88eb8b94208fbf5559817b58101ab05cf59bf035af6735ca1ff43cf054"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/native/worker-0.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/native/worker-0.stdin": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/native/worker-0.stdout": {
+      "bytes": 80541,
+      "sha256": "2a9cde95596874f72b1e437c9cd358be4b047d42b7bfabf15100569fdebb985c"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/owner.json": {
+      "bytes": 640,
+      "sha256": "5ea293b8a828745af0b19158d9da4c2ca593aae91f9ca4f8392e140286eb1cae"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/preflight.json": {
+      "bytes": 644,
+      "sha256": "82e51be804bd62c596893deb093376a60a2ff10a36ed5205fbdd3f5b93951a84"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/processes-postflight.json": {
+      "bytes": 267,
+      "sha256": "88efa2a51af9ab183b3611a6ede15e8e112861c87cd6138ea5ded7488d00e2e9"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/resources.jsonl": {
+      "bytes": 139031,
+      "sha256": "8c87f331b0366bcb79715b3900894b0d3a6b127acfaa62168bfbd0f7b10a56c7"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-0-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "a97aba2dd4157c2924bb9f923d84c32f3a7dd29a13fb71fc4c0d5413f1087811"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-0-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-0-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "b0a4f8728056cacaf74e142ce2fa15535526965b4f406ea6772d071f71dc8ce2"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-1-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "3b02607b7a5da4f186dc6238b991504c42f0a78cde03a2bea731fb121a393ea8"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-1-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-1-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "4df2fd52ff493ed42c30002c7e9be37837e4ff28b3685168a93f8c5c008ada2e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-2-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "c4363d80ea66a376626867d8d0ffcc9ab3eead5a3434460d566c37399d75ad9f"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-2-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-2-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "331089743a1c329ad0432b99e2caed389edbaf6c8ebfc7ba01eddb2a00315c6d"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-3-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "da13c719ccfba82aad79e4371d4e95c2b904e0080a6bf0824580323bfc74b492"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-3-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-3-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "b15cf43c7c5f3e84d0784579a9e65d8dd400fef0dd4e56da91e934e75f06d358"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-4-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "bbd11b6c570f25a1eb732bf336137d76c8a6971ed19a3ede0553a6a02cf42c58"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-4-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-4-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "e2aa5f524f4abf2e9add859ff91feef6957cb5292b3ce32461e3a96d4fc4cb4c"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-5-kv.keys.bin": {
+      "bytes": 67584,
+      "sha256": "f5fc3a70f057f2500196b1eab7daee9b2bb814edd6378a29964bc6d718708a16"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-5-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-5-kv.values.bin": {
+      "bytes": 67584,
+      "sha256": "fa17603ab6d3e55a9d9a545400d89e8dcfdd2c0397783941e0f3f85fb6c00489"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-6-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "6a565f5bc9b4e21b5a4ac3b4f4e698e1b6ea9b1761cd011c5da9b66366d7e392"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-6-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-6-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "c19c336d80475323eafb464775d1b4d81cd9148d26b368d68c6b6be57b9ba83a"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-7-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "d80ccd94eeb27cdedbfca65ffccf9faa4d9945f581fb4db79477b3fc7893e3f8"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-7-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-7-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "6c34d00c43c7601c0a010e95fe1ccbd0b60d72af75c12cb4b68c9b0c0ac7b7f3"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-8-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "65c6cce3d53aaa117ae0b91f4c4be121277a193df6c8c6413f7dbdd2a9a3a631"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-8-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-8-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "b68cf72f1b6c8abe4ee73f7d5e6b40e07d8114bed995107526969c633b8d0743"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-9-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "2b69e48df86ad48624efc8216d012cd4b736f45a050df739f3c0b45dfd3d635b"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-9-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/sidecars/state-9-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "81a48dacb8c1c71dfe004292a32d15d2d12cdac436dc040bd9252ab6675652f4"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage0/action/returned/terminal.json": {
+      "bytes": 2900,
+      "sha256": "07118df2613f55ff385ec45f34034763426811632a9cbb894a50bff35d717607"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned-collection.json": {
+      "bytes": 10820,
+      "sha256": "52dd37d7b3c7afedd898d64be96121f3d79cd3689817085870ec9882ffb54d32"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/gate.json": {
+      "bytes": 599,
+      "sha256": "a46cf6278f5cec38d588306a272eda205b6435ce7f380623204c563ff76a7bac"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/input-binding.json": {
+      "bytes": 962,
+      "sha256": "8d21769302db19023e1ea327086c4c9b9d2c54d8ebd23f8c0b9a02090ac59711"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/job.json": {
+      "bytes": 738,
+      "sha256": "5147e2264e845af1c3039ba69128a1318fcbcde9f52e51b4ae25814aeae4361e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/journal-postflight.json": {
+      "bytes": 325,
+      "sha256": "33d9ea781a9bedcae43df29bf7bbfe8ea33793acd04b49a0411ab89bcd515a16"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/launch.json": {
+      "bytes": 704,
+      "sha256": "c81f7a32a9a858ba03c5123c58eeab151e4eb3b612bd38c47e5506aa0b78cafc"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/model-metadata.json": {
+      "bytes": 1259,
+      "sha256": "e92c6a36fa590ec406dcb3d902820a1fd7e2a14af375b8668ceac7ccabba201d"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/native/worker-0.stderr": {
+      "bytes": 45,
+      "sha256": "f919fe10e6c53df9cc31bff522c1b61eb3e9853d9ea5fff80cc870cb1bc6ebca"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/native/worker-0.stdin": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/native/worker-0.stdout": {
+      "bytes": 155605,
+      "sha256": "b6dc69fe42e13ba474695ff9747d034925023bc5ce68e2f7e97caaa7267bfb82"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/owner.json": {
+      "bytes": 640,
+      "sha256": "ea43822b18803a8d6becc19e735ae5fad6561a1849c2369ed6939ed57b16dd4e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/preflight.json": {
+      "bytes": 646,
+      "sha256": "5f04eb562774ff32abf756455dc5789f8e343a507aeae6513ad4a523c7a5b1f4"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/processes-postflight.json": {
+      "bytes": 267,
+      "sha256": "638f87fe5f84a7f13214483687d2c5a154578e7bff14784356df29ec1baa1378"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/resources.jsonl": {
+      "bytes": 139146,
+      "sha256": "4dbacb3eb4a9a6efbc02c1233273092b631057adb17114cb7a0f6acae1319970"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/row-0.json": {
+      "bytes": 2749577,
+      "sha256": "31e4c07655472b8ca1cf24ea256043dc3788e2e5cc92208f7e593f0a5f9762b4"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/row-1.json": {
+      "bytes": 2744544,
+      "sha256": "4ba4957045ad3bdca9e869f7776b681dc53fe8f56dc1c3f0e8277a1640614e07"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-10-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "7bfff4fa1aaaa0a187f0707c0ffb309ba266c4643fe92651e2e896c5fe285c7f"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-10-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-10-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "09e8042c197a3aa22d352fb50e2794f2a6431722ecd3f0ba037bf4ee30cef99d"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-11-kv.keys.bin": {
+      "bytes": 67584,
+      "sha256": "45c1713037739c32a2243c601edc6daee70f30defd67068b42fc08223417b370"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-11-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-11-kv.values.bin": {
+      "bytes": 67584,
+      "sha256": "61f4ec5819b4e1deebcc4f28d223d2d2a0e771f802ce020f863c5642bb6f933b"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-12-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "eb31e6a045617a425b883bfa974a102260538760870b055b0dc72974cf7a86d3"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-12-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-12-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "8c72b3f5d930fb6621ef4d7753ee72c6750182943eedd6ff393412c8b39a6de0"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-13-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "c7bffec786b64bee9169c80150a1626b9113074657597eb2e13c4ba8b5fb650c"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-13-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-13-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "de336f635bca8dd62d76d679257c36eb89222a36b1099b5d94d63a1102e22ea9"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-14-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "8bc68dfdadde72e2bd2d1d91177396e561fed35ba95ece71d46a632079ddc6d5"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-14-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-14-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "af70c21a91bbb0c0ce07f0d29833922add8ac0e34fbdb36749d0b9a8794c8cd2"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-15-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "4526bfd8dbd7891a4e11e95b452a23a597a43732635637d40d3c795efb72b8b3"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-15-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-15-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "99e778d50c55474690d41929095fe7f07e26598ead5dae7a06875137feeb2f6e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-16-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "d51f61d8df1d5916769f68d94b89f4b22a0216b3bed395794ff45291e1229a39"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-16-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-16-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "a5f357c8983a2a1ee01f6792137a783e3de4f23e4c3606beeb1b491f80f22f38"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-17-kv.keys.bin": {
+      "bytes": 67584,
+      "sha256": "af6d15a4eff749abdaafd6e45fd99b0a402e509fcf54764a36e12af16288f611"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-17-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-17-kv.values.bin": {
+      "bytes": 67584,
+      "sha256": "c594d7c507bc8bb657c15bbd9d701ec2a29e2881c192b6b32baf99863c9fb5c4"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-18-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "7610aa4e80b1f094207eeb374c472442ce4ac6fe7102a526a63c421b5f454bd8"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-18-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-18-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "bf548cbc80ba22706282edad6f895f8a5f80ad1f8a8029cdaf397367b010b2e1"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-19-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "a895795bdc3683aef59fddbf7710fc080b3a44fa2ffd4d8bf233ba6eaabc6591"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-19-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-19-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "3f5dc9ce106241a88a60f4a835866c9b6b85ecab4653005d90daab36dd065acc"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-20-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "d76e7e6f1d8441d0670238331cfd4e1a17ed803d9b164fa998d0aa7d827b526a"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-20-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-20-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "0dd4309efb83edf1fc90bbb0e3f022b72d10852be1f67f116534d456badff47b"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-21-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "2fe6f0de27d8a851615923c511b0ac67b69ca81e98ae839637c79f505c69903e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-21-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-21-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "78030fafdba24e94de2494d91354df8d0e48e407ff916bed1600df268af7ac38"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-22-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "b4b7c76f227de0acde8a19290b9acdaa58a170b77cadac1bfbdfd0d20b1b0691"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-22-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-22-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "392025245c54ea0628b2f85f0943c80b3253ec2cc16928f3581e56b873b92ce1"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-23-kv.keys.bin": {
+      "bytes": 67584,
+      "sha256": "97ed4f4df573ce17df76f3dd2841058147681152544b1c5d33b223e3e933fa54"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-23-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-23-kv.values.bin": {
+      "bytes": 67584,
+      "sha256": "12b5d9a49e00365a0616fd190b4fd3c048d2195a96a3efab48184ed45053ffeb"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-24-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "df1474460ce62623b428e7572263b1740c685a371b40123788a56223fae2658e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-24-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-24-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "446ad9b3ef2224209b66d47b360cb7ac5991bbe307fb1327a41ca2aa6ac7ee64"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-25-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "24ecf4c2c352e0f110d69d4c15e21604786d0ccb3dbf7103eeeb0051c28d6342"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-25-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-25-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "6443230c39c025710a298bcf35c974cc3e9cb0413dd87772789ae4a34a0d8e46"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-26-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "fe8ac6f670f9531bbc58fab2780794db40b7418a44f0f19e2edd381b9839a50e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-26-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-26-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "879763bce60da666405ba785228cdc9564c80abbeea013c8c589a41997219010"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-27-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "3f84a098fa38e9414738ad58eed00c5bc5f58da32642b1fca79a043e65a5a756"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-27-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-27-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "847cb661710fa2fbb11ed162d29221796e11d10bcd15e5bd8181fa3cd21ce062"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-28-kv.keys.bin": {
+      "bytes": 135168,
+      "sha256": "06742c8d1157bc04d8b3e4c9d735c7009955aed285c72824e5df93c8d462dbdc"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-28-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-28-kv.values.bin": {
+      "bytes": 135168,
+      "sha256": "e95c2f56c48784ef4efb140fb229c0a4b066dc6faec63c324081c478e345e035"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-29-kv.keys.bin": {
+      "bytes": 67584,
+      "sha256": "181b9463eba96571851e3b19d349faef773908a88bf620b5f7b2af04d2548a11"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-29-kv.position_offsets.bin": {
+      "bytes": 4,
+      "sha256": "9a090610d0aa9445db0890179a9dea330334e3b9086987e93af97dbc978fe311"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/sidecars/state-29-kv.values.bin": {
+      "bytes": 67584,
+      "sha256": "f070ad4db4c6b1a589863cdc85877d03a2def7da32b42d2768d94f1ce1d25542"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/collect-stage1/action/returned/terminal.json": {
+      "bytes": 2918,
+      "sha256": "083f9a976b53355dbbcd480b14fee850384a84e9a3bea05bcc79538a6cc372f6"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/compare/action/comparison-packet.json": {
+      "bytes": 1807,
+      "sha256": "57f41327bff65b0092b02c78bf2ae8072fac339cc435e5374dad0877a6eebdb3"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/compare/action/numerical.json": {
+      "bytes": 32151,
+      "sha256": "ec0a7c4dc73724a09062c1d15b8e2256d63d093caf6b1ea68e56c51bd04034ef"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/compare/action/receipt.json": {
+      "bytes": 4017,
+      "sha256": "4b80303f570be9a3e9a259c7d0d84941d6982cf3d8652eba838dc1e12e038fa9"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/stages/action/launch/terminal.json": {
+      "bytes": 400,
+      "sha256": "6b435a9f3a840f750668b1c9eef11f86c4b5919a0e120c96cc64e22a4acb632e"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-2/stages/action/receipt.json": {
+      "bytes": 15149,
+      "sha256": "92c5a0ed3d2a7aad9d0edde6986fc9ef8f4bad29446dacb8c1b767a1368a29cf"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-root-review-20260917/execute_gemma_attempt2.py": {
+      "bytes": 5613,
+      "sha256": "62ea391752ac5811d5c096863cefed642b7f703c95508950ce5a3f9cd9e3bb3a"
+    },
+    "/Users/developer/DarkbloomDev/cluster-research/gemma4-short-correctness-root-review-20260916/actual-inputs-1/prompt-1/prompt.ids.json": {
+      "bytes": 167,
+      "sha256": "4def99e2d08fa11ef6a3d655ce6252aada6a39c018b17a8884cf08c52733787d"
+    }
+  },
+  "comparedRows": 2,
+  "comparedStateEntries": 90,
+  "encryptedRDMA": false,
+  "expertParallelism": false,
+  "finalFrontier": 33,
+  "fullModelPayloadRehashed": false,
+  "logicalRowBytes": 2097152,
+  "maximumTokens": 34,
+  "modes": {
+    "full": {
+      "collectionMembers": 106,
+      "firstSampleUTC": "2026-09-17T05:03:01.314670+00:00",
+      "lastSampleUTC": "2026-09-17T05:03:25.553051+00:00",
+      "loadedTensorBytes": 14467688508,
+      "minimumActualFreeBytes": 16678240256,
+      "nativePIDs": [
+        83628
+      ],
+      "nativeStderrBytes": 0,
+      "observedNativePeakBytes": 14744438012,
+      "parentElapsedSeconds": 24.349652792,
+      "reportSHA256": "04c3c96a63d4311f178581039cbc7e94622b6d2c94dbfe6d102d476a561a9d45",
+      "resourceSamples": 91,
+      "rows": 2,
+      "selectedTensorCount": 1339,
+      "stateBytes": 7434360,
+      "stateEntries": 90,
+      "terminalSHA256": "32d64916d734efdc6758e9d729f51de3acbe5e520e82651d7d532dfb81b7e045"
+    },
+    "stage0": {
+      "collectionMembers": 44,
+      "firstSampleUTC": "2026-09-17T05:20:10.782845+00:00",
+      "lastSampleUTC": "2026-09-17T05:20:32.232144+00:00",
+      "loadedTensorBytes": 5093977620,
+      "minimumActualFreeBytes": 7099547648,
+      "nativePIDs": [
+        31973
+      ],
+      "nativeStderrBytes": 0,
+      "observedNativePeakBytes": 5238224684,
+      "parentElapsedSeconds": 21.561438458999998,
+      "reportSHA256": "2a9cde95596874f72b1e437c9cd358be4b047d42b7bfabf15100569fdebb985c",
+      "resourceSamples": 81,
+      "rows": 0,
+      "selectedTensorCount": 450,
+      "stateBytes": 2568232,
+      "stateEntries": 30,
+      "terminalSHA256": "07118df2613f55ff385ec45f34034763426811632a9cbb894a50bff35d717607"
+    },
+    "stage1": {
+      "collectionMembers": 76,
+      "firstSampleUTC": "2026-09-17T05:20:10.685523+00:00",
+      "lastSampleUTC": "2026-09-17T05:20:32.229825+00:00",
+      "loadedTensorBytes": 9788946984,
+      "minimumActualFreeBytes": 22257434624,
+      "nativePIDs": [
+        92157
+      ],
+      "nativeStderrBytes": 45,
+      "observedNativePeakBytes": 10000171816,
+      "parentElapsedSeconds": 21.655260417,
+      "reportSHA256": "b6dc69fe42e13ba474695ff9747d034925023bc5ce68e2f7e97caaa7267bfb82",
+      "resourceSamples": 81,
+      "rows": 2,
+      "selectedTensorCount": 892,
+      "stateBytes": 4866128,
+      "stateEntries": 60,
+      "terminalSHA256": "083f9a976b53355dbbcd480b14fee850384a84e9a3bea05bcc79538a6cc372f6"
+    }
+  },
+  "performanceQualification": false,
+  "productionServing": false,
+  "relativeTolerance": 0,
+  "reviewMethod": "Read-only local evidence parsing, SHA verification and independent logical-byte/resource replay; no comparator/test/compiler/model/remote invocation",
+  "rootWrapperSHA256": "62ea391752ac5811d5c096863cefed642b7f703c95508950ce5a3f9cd9e3bb3a",
+  "rowDType": "float32",
+  "sameInodeEmptyGateRetirementPassed": true,
+  "schema": "gemma_short_independent_evidence_review_v1",
+  "selectedTokenIDs": [
+    1813,
+    496
+  ],
+  "stateBytes": 7434360,
+  "stateDTypes": [
+    "bfloat16",
+    "int32"
+  ],
+  "status": "passed",
+  "toleranceApplied": false,
+  "vocabularySize": 262144,
+  "wholeProcessPeakProof": false
+}

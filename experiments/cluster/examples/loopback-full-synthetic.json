@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "backend": "loopback-test",
+  "partition": "full",
+  "ranks": [{"location": "local"}, {"location": "local"}],
+  "workload": {
+    "synthetic": true,
+    "prompt_tokens": 65,
+    "chunk_size": 32,
+    "decode_tokens": 8,
+    "teacher_tokens": [12, 25, 38, 51, 64, 77, 90],
+    "seed": 7,
+    "warmups": 0,
+    "repeats": 1
+  },
+  "capture_logits": true,
+  "timeout_seconds": 30
+}

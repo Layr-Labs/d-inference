@@ -20,6 +20,13 @@ extension ProviderLoop {
 
     public func run() async throws {
         defer { cancelAppAttestShadow() }
+        if isClusterMember { try prepareClusterMemberControl() }
+        defer {
+            if isClusterMember {
+                memberConnectionID = nil
+                finishMemberRegistrationWait(ClusterMemberControlError.connectionEnded)
+            }
+        }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
         // reached only the coordinator-serving modes.
@@ -32,8 +39,8 @@ extension ProviderLoop {
         // Maintain the entire encrypted SSD-cache root even when no model is
         // loaded. This is metadata/file-only work: no weights or KV arrays are
         // constructed. It closes TTL and shared disk-budget gaps for unloaded dirs.
-        SSDPrefixCacheFactory.startWholeRootMaintenance()
-        defer { SSDPrefixCacheFactory.stopWholeRootMaintenance() }
+        if !isClusterMember { SSDPrefixCacheFactory.startWholeRootMaintenance() }
+        defer { if !isClusterMember { SSDPrefixCacheFactory.stopWholeRootMaintenance() } }
 
         // Keep the network stack alive during sleep for APN/MDM push delivery.
         networkAssertion.acquire()
@@ -57,13 +64,13 @@ extension ProviderLoop {
         // installs too. KeepAlive stays false to avoid racing the updater.
 
         // Surface any prior-run OOM and react to live memory pressure. Best-effort.
-        startMemoryProtection()
+        if !isClusterMember { startMemoryProtection() }
         // On any controlled exit (return/throw — i.e. NOT a jetsam SIGKILL),
         // drop a memory-pressure marker so a survived pressure spike isn't
         // misreported as an OOM next launch. A real kill bypasses this.
         defer {
             memoryPressureMonitor?.cancel()
-            OOMDetector.clearMarker()
+            if !isClusterMember { OOMDetector.clearMarker() }
         }
 
         // 1. Apply security hardening
@@ -73,8 +80,10 @@ extension ProviderLoop {
         // prewarm before either startup preloads or the unified local endpoint
         // can perform the first normal cold target load. This never downloads
         // assistant bytes and fails open on timeout.
-        await prewarmSpecDecCatalog()
-        startMTPUpgradeMonitor()
+        if !isClusterMember {
+            await prewarmSpecDecCatalog()
+            startMTPUpgradeMonitor()
+        }
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. It starts after the bounded metadata prewarm, but still before
@@ -88,7 +97,7 @@ extension ProviderLoop {
         // Arm the loaded-models persistence now that this loop is actually
         // serving (test instances never flip this, so their unload paths
         // cannot clobber the real ~/.darkbloom/loaded-models.json).
-        loadedModelsPersistenceEnabled = true
+        loadedModelsPersistenceEnabled = !isClusterMember
 
         // 1.5 Startup preload + readiness gate (ProviderLoop+StartupPreload):
         // load the previously-served / configured model set BEFORE the
@@ -105,9 +114,11 @@ extension ProviderLoop {
         // after 90s, but the gate may defer for startup_preload_timeout_secs);
         // it is cancelled once the gate returns and the capacity loop takes over.
         writeDaemonState()
-        let preloadLivenessRefresh = startPreloadLivenessRefresh()
-        await runStartupPreloadGate()
-        preloadLivenessRefresh.cancel()
+        if !isClusterMember {
+            let preloadLivenessRefresh = startPreloadLivenessRefresh()
+            await runStartupPreloadGate()
+            preloadLivenessRefresh.cancel()
+        }
 
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
@@ -136,6 +147,10 @@ extension ProviderLoop {
         }
         #endif
 
+        if isClusterMember { try Task.checkCancellation() }
+        // Member mode receives late APNs tokens through the same live heartbeat
+        // source, without a detached watcher that can outlive control teardown.
+
         // 4. Create coordinator client config. The model list is filtered
         // through the live advertised set: identical to loopConfig.models at
         // defaults, minus any model the startup self-test retired when the
@@ -159,7 +174,8 @@ extension ProviderLoop {
             privateOnly: loopConfig.config.coordinator.privateOnly,
             apnsDeviceToken: apnsDeviceToken,
             apnsEnvironment: apnsDeviceToken != nil ? "production" : nil,
-            idleUnloadMins: loopConfig.config.backend.idleTimeoutMins
+            idleUnloadMins: isClusterMember ? nil : loopConfig.config.backend.idleTimeoutMins,
+            executionRole: loopConfig.executionRole
         )
 
         // 4. Create coordinator client and start connection
@@ -196,7 +212,7 @@ extension ProviderLoop {
         // session still coming up), keep watching: when it arrives, reconnect so
         // registration re-runs WITH the token. Otherwise the provider would stay
         // un-attested (and unroutable under enforcement) until the process restarts.
-        if apnsDeviceToken == nil {
+        if apnsDeviceToken == nil && !isClusterMember {
             let log = logger
             Task {
                 if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
@@ -212,15 +228,17 @@ extension ProviderLoop {
         // live connection without threading a handle through the prefetch
         // callbacks. (coordinatorClient was already retained above, at creation.)
         self.outboundSend = send
-        self.prefetchCoordinator = makePrefetchCoordinator()
+        if !isClusterMember { self.prefetchCoordinator = makePrefetchCoordinator() }
 
         // Start the idle-timeout monitor before processing events so that
         // a rogue model-load (e.g. during `attestation_challenge` priming)
         // followed by a long disconnect is still subject to the unload
         // timer.
-        startIdleMonitor()
-        startCapacityRefreshMonitor()
-        startAutoUpdateMonitor()
+        if !isClusterMember {
+            startIdleMonitor()
+            startCapacityRefreshMonitor()
+            startAutoUpdateMonitor()
+        }
 
         logger.info(.coordinatorClientStarted)
 
@@ -229,6 +247,11 @@ extension ProviderLoop {
         // unblocks instead of waiting for the next coordinator event.
         await withTaskCancellationHandler {
             for await event in events {
+                if consumeClusterMemberEvent(event, send: send) { continue }
+                if memberControlRequiresStop {
+                    await coordinator.shutdown()
+                    break
+                }
                 switch event {
                 case .connected:
                     logger.info(.coordinatorConnected)
@@ -236,7 +259,7 @@ extension ProviderLoop {
                     // (see `fireRetirementReconnect`) lifts with the new
                     // session: the register it carried excluded every
                     // retired id, so routed work is safe to admit again.
-                    setRetirementReconnectBarrier(false)
+                    if !isClusterMember { setRetirementReconnectBarrier(false) }
 
                 case .disconnected:
                     cancelAppAttestShadow()
@@ -323,6 +346,14 @@ extension ProviderLoop {
 
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        if isClusterMember {
+            memberConnectionID = nil
+            state.refusingNewWork = true
+            finishMemberRegistrationWait(ClusterMemberControlError.connectionEnded)
+            await coordinator.shutdownAndWait()
+            if await coordinator.memberRoleFailure { throw ClusterMemberControlError.negotiationFailed }
+            return
+        }
         // Quote path mirror (routing v2): a shutting-down provider quotes
         // `slot_state` rejections for the brief window the socket stays up.
         state.refusingNewWork = true

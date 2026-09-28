@@ -1,10 +1,10 @@
 # Configuration reference
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-17 · commit `605651bb9`
 
-Every environment variable read by the coordinator, the provider CLI
-(`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
-the code that reads it, and its effect. Defaults are the fallbacks at the cited
+Environment variables read by the coordinator, the provider CLI (`darkbloom`),
+console-ui and admin-ui, plus the experimental saved cluster setup: accepted
+values, defaults, readers and effects. Defaults are the fallbacks at the cited
 symbol; a production or dev host may pin a different value in its environment
 file. Secrets are named, never valued. Unless a row says *live*, the variable is
 read once at process start and a restart applies a change.
@@ -341,6 +341,123 @@ Media fetch (`coordinator/mediafetch/config.go`, `ConfigFromEnv`; a set-but-unpa
 ## Provider CLI (`darkbloom`)
 
 Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the LaunchAgent allow-list above reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+
+### Saved distributed setup (experimental)
+
+[`darkbloom cluster configure`](../provider/cli-reference.md#darkbloom-cluster-experimental)
+saves setup without enabling it. The optional `[cluster]` table has exactly two
+keys; omission preserves ordinary solo startup. Each installed `worker-owner`
+reads its own default `~/.config/darkbloom/provider.toml`. A leader started with
+an alternate `--config` must select that same saved reference
+(`provider-swift/Sources/darkbloom/StartCommand+Distributed.swift`, `Start.runLocalDistributed`).
+
+`start --cluster-member` uses this reference for foreground control-only
+registration. `start --local --distributed` registers the local leader in that
+same restrictive role before opening its listener. Both use `coordinator.url`
+or the explicit `--coordinator-url` override; saving a reference alone starts
+neither process (`provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift`,
+`Start.makeClusterMemberLoop`). See the [CLI flags](../provider/cli-reference.md#darkbloom-start).
+
+Coordinator native authorization has no environment-variable or provider-wire
+enable switch. `ServerConfig.NativePairCatalog` defaults to nil and must be
+constructed from explicit `NativeRuntimeApproval` entries. Each entry binds the
+model, plan, binary, libraries, capability, resource policy, profile, schedule,
+chip allowlist, limits and expiry. The current default leaves native-pair
+handlers disabled (`coordinator/api/server_config.go`, `ServerConfig`;
+`coordinator/registry/native_pair_approval.go`, `NewNativeRuntimeCatalog`).
+
+| TOML key | Default | Meaning | Source |
+|---|---|---|---|
+| `[cluster] configuration` | Absent | Absolute path to the saved canonical cluster JSON | `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationPaths.swift` (`ClusterConfigurationReference`) |
+| `[cluster] sha256` | Absent | Lowercase SHA-256 of that saved JSON | `provider-swift/Sources/ProviderCore/Config/ClusterConfigurationPaths.swift` (`ClusterConfigurationReference`) |
+
+The required setup JSON fields below are validated by
+`provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift`
+(`ClusterConfiguration.validate`) and its closed codec in
+`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift`.
+`prefillSchedule` is the only optional field: omission means `serial_v1` for
+existing setup. New saves always write the selected value explicitly. Unknown
+fields and unsupported capability adapters, profiles, partitions or schedules
+are refused; `null` is not an omitted selection.
+
+| Field | Accepted value / effect | Source symbol |
+|---|---|---|
+| `schema` | `darkbloom_cluster_configuration_v1` | `ClusterConfiguration.schemaName` |
+| `clusterID`, `memberID`, `role` | Cluster/member labels; local `leader` (rank 0) or `follower` (rank 1) | `ClusterConfiguration.validate` |
+| `publicModelID`, `capabilitySHA256`, `selectedPlanSHA256` | Public model route, exact capability-byte pin and a partition already described by that capability | `ClusterConfiguration.validate` |
+| `prefillSchedule` | `serial_v1` (omitted/default) or `one_chunk_lookahead_v1`, restricted to the pinned capability's supported schedules | `ClusterConfiguration.selectedPrefillSchedule`, `ClusterConfiguration.validate` |
+| `chunkTokens`, `requestTimeoutSeconds` | Positive integers within capability limits; current maxima 512 tokens and 300 seconds | `ClusterConfiguration.validate` |
+| `peers` | Exactly two distinct peers in rank order, with `id`, `rank`, `host`, `port`, `user`, `ownerExecutable`, `workerExecutable`, `modelDirectory`, `runtimeBinarySHA256`, `jacclDevice`; both worker hashes match the capability | `ClusterConfiguration.Peer`, `ClusterConfiguration.validate` |
+| `coordinator` | JACCL `address` (IPv4) and `port`; not the Darkbloom coordinator URL | `ClusterConfiguration.Coordinator`, `ClusterConfiguration.validate` |
+| `trust` | Existing local SSH `identityFile`, `knownHostsFile`, `knownHostsSHA256`; private-key contents are not embedded | `ClusterConfiguration.Trust`, `ClusterConfigurationStore.validateTrust` |
+| `tokenizerFiles` | Unique relative `path`, SHA-256 and `purpose` (`tokenizer` or `chatTemplate`) entries. Startup requires pinned `tokenizer.json`, `tokenizer_config.json` and `chat_template.jinja` or `chat_template.json` | `ClusterConfiguration.TokenizerFile`; `DistributedInstalledModel.make` |
+
+The current adapter describes only registered Qwen3.5 9B 4-bit
+(`registered_qwen35_9b_greedy_generation_v1`): two ranks, B1, one active request,
+greedy text, serial or one-chunk-lookahead prefill, MTP off and no prefix reuse.
+Its ceilings are 8,192
+prompt tokens, 128 output tokens, 512-token chunks and 8,320 total context tokens.
+A resident session allows at most 16 admitted requests and a fixed 300-second
+lifetime including startup. Request deadlines are also bounded by remaining
+session lifetime and earlier HTTP budgets. The local CLI replaces a session
+after request-quota exhaustion only after complete retirement and fresh
+preparation of the same installed configuration; its listener remains bound.
+Fixed lifetime expiry stops the host. These are software limits, not
+promised memory capacity or live product qualification
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift`;
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
+`DistributedInstalledSession.launch`;
+`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift`;
+`provider-swift/Sources/darkbloom/DistributedStartSessionFactory.swift`).
+
+The canonical capability advertises `supportedPrefillSchedules`; legacy descriptors
+that omit it support serial only and retain their original bytes. The native
+metadata producer obtains support from the same adapter definition used by native
+admission. A saved choice cannot add support to a worker
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift`,
+`ClusterRuntimeCapabilityCodec`;
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift`,
+`QwenResidentCapabilityMetadata.describe`).
+
+Lookahead reserves its additional producer boundary, host copy and bookkeeping
+before readiness and each request. It keeps one prepared prompt chunk, does not
+prefetch decode, and retains the existing live resource gates. Capability support
+is not available-memory admission: the actual workers report their local capacity
+and can refuse a request
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillAllowance.swift`,
+`QwenGenerationPrefillAllowance`;
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift`,
+`QwenResidentRuntime.load`;
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift`,
+`QwenResidentRuntime.reserve`).
+
+Saved configuration and capability files live under
+`~/.config/darkbloom/clusters/`; the device lease and unresolved ownership journal
+use `~/.darkbloom/cluster-device/`. An active lease or unresolved journal refuses
+configuration changes. Saving verifies local input pins, not remote installation,
+model payloads or readiness. Startup separately checks the installed worker and
+model/tokenizer metadata; serving readiness requires both loaded peers
+(`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift`,
+`ClusterConfigurationStore.save`;
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPreparation.swift`,
+`DistributedInstalledPreparation.prepare`).
+
+`cluster status` and `cluster doctor` consume the same saved reference without
+changing it. Status separates canonical saved pins from a fresh local leader
+response. Doctor reuses the local installed metadata validator for leader or
+follower and executes only the fixed `--describe-runtime` metadata child; peer
+connectivity, new physical collectives and recovery are not performed. Both
+commands treat a nonempty journal as unproven ownership and never infer device
+availability from a PID or empty journal
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift`,
+`ClusterDiagnostics`;
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledValidation.swift`,
+`DistributedInstalledValidation.validate`).
+
+The saved JACCL settings and fixed admitted arithmetic policy determine the
+native worker environment
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPlan.swift`,
+`DistributedInstalledPlan.nativeEnvironment`).
 
 ### Operator-facing: daemon, paths, updates
 

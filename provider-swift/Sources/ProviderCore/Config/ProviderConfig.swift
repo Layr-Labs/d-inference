@@ -447,6 +447,8 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
 }
 
 public struct ProviderConfig: Sendable, Equatable, Codable {
+    /// Inert saved setup; startup requires a separate explicit distributed opt-in.
+    public var cluster: ClusterConfigurationReference?
     public var provider: ProviderSettings
     public var backend: BackendSettings
     public var coordinator: CoordinatorSettings
@@ -486,7 +488,8 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         coordinator: CoordinatorSettings = CoordinatorSettings(),
         schedule: ScheduleConfig? = nil,
         gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
-        configVersion: Int = ProviderConfig.currentConfigVersion
+        configVersion: Int = ProviderConfig.currentConfigVersion,
+        cluster: ClusterConfigurationReference? = nil
     ) {
         self.provider = provider
         self.backend = backend
@@ -494,9 +497,11 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.schedule = schedule
         self.gemmaOptimizations = gemmaOptimizations
         self.configVersion = configVersion
+        self.cluster = cluster
     }
 
     enum CodingKeys: String, CodingKey {
+        case cluster
         case provider
         case backend
         case coordinator
@@ -520,6 +525,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.cluster = try container.decodeIfPresent(ClusterConfigurationReference.self, forKey: .cluster)
         self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: "darkbloom")
         let mtpProbe = try container.decodeIfPresent(
             BackendMTPMigrationProbe.self, forKey: .backend)

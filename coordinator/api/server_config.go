@@ -7,11 +7,16 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // ServerConfig holds coordinator HTTP server and URL configuration applied
 // when NewServer constructs an instance.
 type ServerConfig struct {
+	// NativePairCatalog must come from NewNativeRuntimeCatalog with explicitly
+	// reviewed coordinator policy. No environment or provider field populates it.
+	// Nil keeps all native-pair handlers disabled.
+	NativePairCatalog   *registry.NativeRuntimeCatalog
 	AppAttestShadow     AppAttestShadowConfig
 	Port                string
 	ConsoleURL          string

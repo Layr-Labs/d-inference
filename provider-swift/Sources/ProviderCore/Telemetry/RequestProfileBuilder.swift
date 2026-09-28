@@ -208,7 +208,8 @@ public final class RequestProfileBuilder: @unchecked Sendable {
 
     /// Anchor `t0p`: the WebSocket frame receipt instant.
     public let suspendingAnchor: SuspendingClock.Instant
-    /// The same instant on the deadline clock, read ONLY for `slept_us`.
+    /// The same provider-local receipt instant on the deadline clock. Used for
+    /// `slept_us` and the opt-in distributed generation lifetime ceiling.
     public let continuousAnchor: ContinuousClock.Instant
     /// Untrusted wall anchor (epoch ms) captured once at construction.
     public let wallMs: Int64

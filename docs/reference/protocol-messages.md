@@ -1,13 +1,14 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-15 · commit `a99ce680a`
+> Last updated: 2026-09-17 · commit `605651bb9`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
 (`coordinator/protocol/messages.go`, `capacity.go`, `profile.go`); Swift mirrors
 it (`provider-swift/Sources/ProviderCore/Protocol/Messages.swift`, `Types.swift`,
-`InferenceProfile.swift`). There are 16 provider→coordinator and 10
-coordinator→provider message types; nothing else is accepted.
+`InferenceProfile.swift`). The experimental
+[cluster control protocol](cluster-control-protocol.md) adds member-role
+negotiation and a separate bounded public authorization codec.
 
 Conventions: **req** = always present; **opt** = Go `omitempty`, Swift
 `encodeIfPresent` (absent when nil, and for scalars when zero/empty unless a
@@ -61,6 +62,11 @@ The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) us
 | coordinator → provider | `desired_models` | `DesiredModelsMessage` | `.desiredModels` |
 | coordinator → provider | `trust_status` | `TrustStatusMessage` | `.trustStatus` |
 | coordinator → provider | `capacity_probe` | `CapacityProbeMessage` (`capacity.go`) | `.capacityProbe` |
+| coordinator → provider | `cluster_member_accepted` | `ClusterMemberAcceptedMessage` (`execution_role.go`) | `.clusterMemberAccepted` |
+
+The nine distinct `native_pair_*` public-control types, directions, limits and
+current integration boundary are listed in
+[cluster control messages](cluster-control-protocol.md#native-pair-messages).
 
 There is no `unload` or `unload_model` message; see
 [Model unloading](#model-unloading-no-message).
@@ -76,6 +82,9 @@ connection, first.
 |---|---|---|---|---|
 | `hardware` | `Hardware` | `HardwareInfo` | req | [`hardware`](#hardware) |
 | `models` | `[]ModelInfo` | `[ModelInfo]` | req | [`models[]`](#models) |
+| `execution_role` | `ExecutionRole` | `ProviderExecutionRole` | opt | Omitted/empty means solo; `cluster_member` is control-only and immutable for the connection. Unknown values refuse registration. `execution_role.go` (`ValidateExecutionRole`) |
+| `member_registration_nonce` | `string` | `String?` | opt | Required 64 lowercase hex characters for `cluster_member`; forbidden for solo. Echoed by `cluster_member_accepted` |
+| `cluster_models` | `[]ModelInfo` | `[ModelInfo]?` | opt | Member-only inventory using the [`models[]`](#models) shape; ordinary `models` must be empty in member mode |
 | `backend` | `string` | `String` | req | e.g. `"mlx-swift"`; the coordinator sends `load_model`, `prefetch_model` and `desired_models` only to `backend == "mlx-swift"` |
 | `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty |
 | `version` | `string` | `String?` | opt | provider binary version, e.g. `"0.2.31"` |

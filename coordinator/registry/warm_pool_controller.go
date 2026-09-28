@@ -709,6 +709,8 @@ const (
 	warmColdTooLarge       warmColdReason = "model_too_large"
 	warmColdNoFreeForLoad  warmColdReason = "no_free_for_load"
 	warmColdStateRestoring warmColdReason = "state_restoring"
+	warmColdPairReserved   warmColdReason = "pair_reserved"
+	warmColdMemberOnly     warmColdReason = "member_only"
 )
 
 // warmColdReasonStrings converts a reason tally to a string-keyed map for
@@ -744,6 +746,12 @@ func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.T
 // the boolean helpers here would change the reported reason mix — a behavior
 // change — so the checks are kept inline.
 func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now time.Time) (warmPoolCandidate, warmColdReason) {
+	if !p.executionRolePermitsLocked(false) {
+		return warmPoolCandidate{}, warmColdMemberOnly
+	}
+	if r.providerPairHeldLocked(p, now, nil) {
+		return warmPoolCandidate{}, warmColdPairReserved
+	}
 	if p.Status == StatusOffline || p.Status == StatusUntrusted || p.PrivateOnly {
 		return warmPoolCandidate{}, warmColdOfflineUntrust
 	}

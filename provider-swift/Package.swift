@@ -19,6 +19,7 @@ let package = Package(
         .executable(name: "darkbloom-publish", targets: ["darkbloom-publish"]),
     ],
     dependencies: [
+        .package(path: "../libs/darkbloom-cluster"),
         .package(path: "../libs/mlx-swift"),
         .package(path: "../libs/mlx-swift-lm"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.4.0"),
@@ -125,6 +126,9 @@ let package = Package(
                 "ProviderAppAttest",
                 "ProviderCoreFoundation",
                 "ProviderMetallibControl",
+                .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterRemote", package: "darkbloom-cluster"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),

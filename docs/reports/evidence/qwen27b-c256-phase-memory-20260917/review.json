@@ -1,0 +1,475 @@
+{
+  "cases": {
+    "lookahead": {
+      "all128ExpectedTokensVerified": true,
+      "cleanRetirementVerified": true,
+      "comparison": {
+        "bytes": 59534,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/lookahead/phase-comparison.json",
+        "sha256": "08dd31764acf77c4fd14b72de00a2f07de3d15aee1f676c75ebba213faf0c26f"
+      },
+      "controller": {
+        "bytes": 2737,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/lookahead/physical-1/controller.stdout.jsonl",
+        "sha256": "f971b37b10a2f0a4ccb9946adbaf4e84bd4d418ceb72c7d1b450ca62ef5383d7"
+      },
+      "nativePIDs": [
+        33579,
+        4904
+      ],
+      "physicalExecution": {
+        "bytes": 14658,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/lookahead/physical-1/execution.json",
+        "sha256": "0fd4d1f0bca854f9402ce128227196fa6483351f00fa74322997c68a4ab8b9fb"
+      },
+      "ranks": [
+        {
+          "anchors": [
+            {
+              "activeBytes": 4140978452,
+              "actualFreeBytes": 9881010176,
+              "anonymousPages": 685468,
+              "cacheBytes": 0,
+              "completedNanoseconds": 196021094031041,
+              "fileBackedPages": 56415,
+              "pageSizeBytes": 16384,
+              "peakBytes": 4140978456,
+              "point": "loadComplete",
+              "requiredActualFreeBytes": 6442450944,
+              "startedNanoseconds": 196021093941958,
+              "wiredPages": 132247
+            },
+            {
+              "activeBytes": 4140978452,
+              "actualFreeBytes": 9881010176,
+              "anonymousPages": 685468,
+              "cacheBytes": 0,
+              "completedNanoseconds": 196021110769416,
+              "fileBackedPages": 56415,
+              "pageSizeBytes": 16384,
+              "peakBytes": 4140978456,
+              "point": "loadedRequestGuard",
+              "requiredActualFreeBytes": 6497095433,
+              "startedNanoseconds": 196021110413333,
+              "wiredPages": 132247
+            },
+            {
+              "activeBytes": 4140978452,
+              "actualFreeBytes": 8468594688,
+              "anonymousPages": 770990,
+              "cacheBytes": 0,
+              "completedNanoseconds": 196024160099291,
+              "fileBackedPages": 56998,
+              "pageSizeBytes": 16384,
+              "peakBytes": 4140978708,
+              "point": "requestBegin",
+              "requiredActualFreeBytes": 6491950856,
+              "startedNanoseconds": 196024159293625,
+              "wiredPages": 132349
+            },
+            {
+              "activeBytes": 4140806420,
+              "actualFreeBytes": 8648622080,
+              "anonymousPages": 485242,
+              "cacheBytes": 0,
+              "completedNanoseconds": 196088839915666,
+              "fileBackedPages": 66789,
+              "pageSizeBytes": 16384,
+              "peakBytes": 4985520098,
+              "point": "requestRetired",
+              "requiredActualFreeBytes": 6491950856,
+              "startedNanoseconds": 196088839449458,
+              "wiredPages": 397254
+            }
+          ],
+          "externalResources": {
+            "bytes": 505093,
+            "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/lookahead/physical-1/resources-0.jsonl",
+            "sha256": "aa862df8be2c0bb71f72fd2a5094e6a03d0183ddf5d9e27505fe515fc506b17d"
+          },
+          "memory": {
+            "anchors": {
+              "loadComplete": 2,
+              "loadedRequestGuard": 3,
+              "requestBegin": 4,
+              "requestRetired": 49
+            },
+            "continuousOSPeakProved": false,
+            "cumulativeAllocatorPeakBytes": 4985520098,
+            "maximumSampledActiveBytes": 4381193508,
+            "maximumSampledCacheBytes": 0,
+            "minimumSampledActualFreeBytes": 7751499776,
+            "placementPermissionGranted": false,
+            "sampleCount": 50,
+            "workspaceOwnershipInferred": false
+          },
+          "minimumExternalActualFreeBytes": 7229210624,
+          "rank": 0,
+          "rawResourceSampleCount": 281,
+          "rawResourcesIndependentlyRecomputed": true,
+          "requestThroughRetirementNanoseconds": 64678463708,
+          "requestToFirstTokenAgreementNanoseconds": 52461752458,
+          "sidecar": {
+            "bytes": 131838,
+            "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/lookahead/collection-1/rank0.json",
+            "sha256": "40802f8a291dcbaa16552e76ceea7bec970f46808164ae9077e8a7a6642d110c"
+          }
+        },
+        {
+          "anchors": [
+            {
+              "activeBytes": 10992622314,
+              "actualFreeBytes": 21886697472,
+              "anonymousPages": 1556059,
+              "cacheBytes": 0,
+              "completedNanoseconds": 199855056685250,
+              "fileBackedPages": 65719,
+              "pageSizeBytes": 16384,
+              "peakBytes": 10992622318,
+              "point": "loadComplete",
+              "requiredActualFreeBytes": 6442450944,
+              "startedNanoseconds": 199855056602750,
+              "wiredPages": 140770
+            },
+            {
+              "activeBytes": 10992622314,
+              "actualFreeBytes": 21886697472,
+              "anonymousPages": 1556059,
+              "cacheBytes": 0,
+              "completedNanoseconds": 199855084545250,
+              "fileBackedPages": 65719,
+              "pageSizeBytes": 16384,
+              "peakBytes": 10992622318,
+              "point": "loadedRequestGuard",
+              "requiredActualFreeBytes": 7638601409,
+              "startedNanoseconds": 199855084189666,
+              "wiredPages": 140770
+            },
+            {
+              "activeBytes": 10992622314,
+              "actualFreeBytes": 21886697472,
+              "anonymousPages": 1556059,
+              "cacheBytes": 0,
+              "completedNanoseconds": 199855470440541,
+              "fileBackedPages": 65719,
+              "pageSizeBytes": 16384,
+              "peakBytes": 10992622570,
+              "point": "requestBegin",
+              "requiredActualFreeBytes": 7628181185,
+              "startedNanoseconds": 199855470144833,
+              "wiredPages": 140770
+            },
+            {
+              "activeBytes": 10992106218,
+              "actualFreeBytes": 20676509696,
+              "anonymousPages": 910799,
+              "cacheBytes": 0,
+              "completedNanoseconds": 199920176677250,
+              "fileBackedPages": 82433,
+              "pageSizeBytes": 16384,
+              "peakBytes": 12513675816,
+              "point": "requestRetired",
+              "requiredActualFreeBytes": 7628181185,
+              "startedNanoseconds": 199920176270208,
+              "wiredPages": 843116
+            }
+          ],
+          "externalResources": {
+            "bytes": 509210,
+            "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/lookahead/physical-1/resources-1.jsonl",
+            "sha256": "f5ea008242d3c9090a169cd2454068366264d724511f7ea06fab7604d0558f1f"
+          },
+          "memory": {
+            "anchors": {
+              "loadComplete": 5,
+              "loadedRequestGuard": 6,
+              "requestBegin": 7,
+              "requestRetired": 51
+            },
+            "continuousOSPeakProved": false,
+            "cumulativeAllocatorPeakBytes": 12513675816,
+            "maximumSampledActiveBytes": 12014993178,
+            "maximumSampledCacheBytes": 0,
+            "minimumSampledActualFreeBytes": 19923107840,
+            "placementPermissionGranted": false,
+            "sampleCount": 52,
+            "workspaceOwnershipInferred": false
+          },
+          "minimumExternalActualFreeBytes": 19634814976,
+          "rank": 1,
+          "rawResourceSampleCount": 283,
+          "rawResourcesIndependentlyRecomputed": true,
+          "requestThroughRetirementNanoseconds": 64705452125,
+          "requestToFirstTokenAgreementNanoseconds": 52488908167,
+          "sidecar": {
+            "bytes": 133930,
+            "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/lookahead/collection-1/rank1.json",
+            "sha256": "d29c2da2d5a7e5c5d6ede7039a00fcfddf5a30b0f500278cfe65f53457d99896"
+          }
+        }
+      ]
+    },
+    "serial": {
+      "all128ExpectedTokensVerified": true,
+      "cleanRetirementVerified": true,
+      "comparison": {
+        "bytes": 59865,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/serial/phase-comparison.json",
+        "sha256": "8b3e478ffd6b5ba5114260b3f103d588898f527a654691a3c3522c3a1d53843b"
+      },
+      "controller": {
+        "bytes": 2737,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/serial/physical-1/controller.stdout.jsonl",
+        "sha256": "67499c020a72f64998951f251f7b2fafa14c8752571b2be9ea2f8b837da6cbe5"
+      },
+      "nativePIDs": [
+        32505,
+        3505
+      ],
+      "physicalExecution": {
+        "bytes": 14655,
+        "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/serial/physical-1/execution.json",
+        "sha256": "b0a349e370586bc2dc4ee7f629beef1e7552735edfe25fdf7970341667791d99"
+      },
+      "ranks": [
+        {
+          "anchors": [
+            {
+              "activeBytes": 4140978452,
+              "actualFreeBytes": 9763930112,
+              "anonymousPages": 685053,
+              "cacheBytes": 0,
+              "completedNanoseconds": 195850583045166,
+              "fileBackedPages": 64100,
+              "pageSizeBytes": 16384,
+              "peakBytes": 4140978456,
+              "point": "loadComplete",
+              "requiredActualFreeBytes": 6442450944,
+              "startedNanoseconds": 195850582965125,
+              "wiredPages": 132123
+            },
+            {
+              "activeBytes": 4140978452,
+              "actualFreeBytes": 9763930112,
+              "anonymousPages": 685053,
+              "cacheBytes": 0,
+              "completedNanoseconds": 195850599363375,
+              "fileBackedPages": 64100,
+              "pageSizeBytes": 16384,
+              "peakBytes": 4140978456,
+              "point": "loadedRequestGuard",
+              "requiredActualFreeBytes": 6497095433,
+              "startedNanoseconds": 195850599017000,
+              "wiredPages": 132123
+            },
+            {
+              "activeBytes": 4140978452,
+              "actualFreeBytes": 8364261376,
+              "anonymousPages": 770324,
+              "cacheBytes": 0,
+              "completedNanoseconds": 195853648997166,
+              "fileBackedPages": 64156,
+              "pageSizeBytes": 16384,
+              "peakBytes": 4140978708,
+              "point": "requestBegin",
+              "requiredActualFreeBytes": 6486609673,
+              "startedNanoseconds": 195853647942125,
+              "wiredPages": 132225
+            },
+            {
+              "activeBytes": 4140806420,
+              "actualFreeBytes": 8459567104,
+              "anonymousPages": 482188,
+              "cacheBytes": 0,
+              "completedNanoseconds": 195935686804000,
+              "fileBackedPages": 81347,
+              "pageSizeBytes": 16384,
+              "peakBytes": 4985520098,
+              "point": "requestRetired",
+              "requiredActualFreeBytes": 6486609673,
+              "startedNanoseconds": 195935686501000,
+              "wiredPages": 397286
+            }
+          ],
+          "externalResources": {
+            "bytes": 611176,
+            "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/serial/physical-1/resources-0.jsonl",
+            "sha256": "7bc3994ee11e4d17b8ce1b7d9b1bfbd621223a53c0d20b4bfea376a8e3b81f57"
+          },
+          "memory": {
+            "anchors": {
+              "loadComplete": 2,
+              "loadedRequestGuard": 3,
+              "requestBegin": 4,
+              "requestRetired": 50
+            },
+            "continuousOSPeakProved": false,
+            "cumulativeAllocatorPeakBytes": 4985520098,
+            "maximumSampledActiveBytes": 4381193508,
+            "maximumSampledCacheBytes": 0,
+            "minimumSampledActualFreeBytes": 7680688128,
+            "placementPermissionGranted": false,
+            "sampleCount": 51,
+            "workspaceOwnershipInferred": false
+          },
+          "minimumExternalActualFreeBytes": 7160250368,
+          "rank": 0,
+          "rawResourceSampleCount": 340,
+          "rawResourcesIndependentlyRecomputed": true,
+          "requestThroughRetirementNanoseconds": 82036566375,
+          "requestToFirstTokenAgreementNanoseconds": 69806361250,
+          "sidecar": {
+            "bytes": 125230,
+            "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/serial/collection-1/rank0.json",
+            "sha256": "e085db1a06c607cb0c131eebbc6e9e77aca2bbed4be11b34b62dc5c7927a6149"
+          }
+        },
+        {
+          "anchors": [
+            {
+              "activeBytes": 10992622314,
+              "actualFreeBytes": 21648719872,
+              "anonymousPages": 1558861,
+              "cacheBytes": 0,
+              "completedNanoseconds": 199684530367458,
+              "fileBackedPages": 77488,
+              "pageSizeBytes": 16384,
+              "peakBytes": 10992622318,
+              "point": "loadComplete",
+              "requiredActualFreeBytes": 6442450944,
+              "startedNanoseconds": 199684530283916,
+              "wiredPages": 140724
+            },
+            {
+              "activeBytes": 10992622314,
+              "actualFreeBytes": 21648719872,
+              "anonymousPages": 1558861,
+              "cacheBytes": 0,
+              "completedNanoseconds": 199684557948166,
+              "fileBackedPages": 77488,
+              "pageSizeBytes": 16384,
+              "peakBytes": 10992622318,
+              "point": "loadedRequestGuard",
+              "requiredActualFreeBytes": 7638601409,
+              "startedNanoseconds": 199684557481375,
+              "wiredPages": 140724
+            },
+            {
+              "activeBytes": 10992622314,
+              "actualFreeBytes": 21648719872,
+              "anonymousPages": 1558861,
+              "cacheBytes": 0,
+              "completedNanoseconds": 199684958659916,
+              "fileBackedPages": 77488,
+              "pageSizeBytes": 16384,
+              "peakBytes": 10992622570,
+              "point": "requestBegin",
+              "requiredActualFreeBytes": 7628115649,
+              "startedNanoseconds": 199684958350666,
+              "wiredPages": 140724
+            },
+            {
+              "activeBytes": 10992106218,
+              "actualFreeBytes": 20402814976,
+              "anonymousPages": 911459,
+              "cacheBytes": 0,
+              "completedNanoseconds": 199767024265541,
+              "fileBackedPages": 84379,
+              "pageSizeBytes": 16384,
+              "peakBytes": 12513675816,
+              "point": "requestRetired",
+              "requiredActualFreeBytes": 7628115649,
+              "startedNanoseconds": 199767023974583,
+              "wiredPages": 857279
+            }
+          ],
+          "externalResources": {
+            "bytes": 617210,
+            "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/serial/physical-1/resources-1.jsonl",
+            "sha256": "2bb6f846f429c7953ad9a86f9bab1443ee05a7c9b49455745a1922e8d4e43fea"
+          },
+          "memory": {
+            "anchors": {
+              "loadComplete": 5,
+              "loadedRequestGuard": 6,
+              "requestBegin": 7,
+              "requestRetired": 52
+            },
+            "continuousOSPeakProved": false,
+            "cumulativeAllocatorPeakBytes": 12513675816,
+            "maximumSampledActiveBytes": 12035440410,
+            "maximumSampledCacheBytes": 0,
+            "minimumSampledActualFreeBytes": 19758645248,
+            "placementPermissionGranted": false,
+            "sampleCount": 53,
+            "workspaceOwnershipInferred": false
+          },
+          "minimumExternalActualFreeBytes": 19453018112,
+          "rank": 1,
+          "rawResourceSampleCount": 343,
+          "rawResourcesIndependentlyRecomputed": true,
+          "requestThroughRetirementNanoseconds": 82064953709,
+          "requestToFirstTokenAgreementNanoseconds": 69834888542,
+          "sidecar": {
+            "bytes": 134733,
+            "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/serial/collection-1/rank1.json",
+            "sha256": "6dec2f3b598b17e2903424f16048ef46818f69d15dfc8676f55229ca26a4ffd8"
+          }
+        }
+      ]
+    }
+  },
+  "dateUTC": "2026-09-17",
+  "limitations": [
+    "One diagnostic request per scheduling policy; observer overhead included.",
+    "No new independent full-row/state comparison for the observer binary.",
+    "No external TTFT, encrypted transport, product TPS, MTP or M3 Ultra qualification.",
+    "OS samples are system-wide and discrete; VM categories overlap.",
+    "No new placement or resource-floor permission."
+  ],
+  "matchedSummary": {
+    "bytes": 135269,
+    "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Experiment/matched-summary.json",
+    "sha256": "338cdf53adae4d4962e236f31521afc7610bb69705fe55e367ce2f12942c1e0b"
+  },
+  "nativeBundle": {
+    "bytes": 916,
+    "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-draft-20260917/Build/runtime-bundle-1/bundle.json",
+    "sha256": "28c221b6464232730aa06e02fbeeabfa66466db010ffea935c6cc72f30d3e268"
+  },
+  "reference": {
+    "externalPhysicalReviewRequired": true,
+    "job": {
+      "bytes": 1138,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-c256-reference-retry-draft-20260917/prepared/reference/physical-collect-1/returned/job.json",
+      "sha256": "a3b98c6f6f245eb90a8fae48566aec185a9ece50a0432546bb5eceb64b9c2237"
+    },
+    "review": {
+      "bytes": 4547,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/resident-generation-phase-memory-root-review-20260917/root-reference-review-1.json",
+      "sha256": "7c10b879757aafb2f3d874ad8ce57bbbf2e8d8ad1a53d49e324990e1b193edc6"
+    },
+    "stdout": {
+      "bytes": 2566489,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-c256-reference-retry-draft-20260917/prepared/reference/physical-collect-1/returned/native/worker-0.stdout",
+      "sha256": "081b25eadccd353d4e18b83394f08375ecf8712f9f5e63995b660be56e2785d3"
+    },
+    "terminal": {
+      "bytes": 3105,
+      "path": "/Users/developer/DarkbloomDev/cluster-research/qwen27b-c256-reference-retry-draft-20260917/prepared/reference/physical-collect-1/returned/terminal.json",
+      "sha256": "4df3108f4ff77720312108a056e861b7060531c804dde748a50d46c11bcab797"
+    }
+  },
+  "schema": "qwen27b_c256_phase_memory_review_v1",
+  "workload": {
+    "chunkTokens": 256,
+    "mtpEnabled": false,
+    "outputTokens": 128,
+    "promptTokens": 8192,
+    "stageLayers": [
+      16,
+      48
+    ],
+    "stopTokenIDs": []
+  }
+}

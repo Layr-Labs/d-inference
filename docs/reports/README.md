@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-17 · commit `605651bb9`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,36 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Qwen27B C256 memory and scheduling diagnostics](2026-09-17-qwen27b-c256-phase-memory.md) — both 128-token runs pass with clean retirement; overlap reduces internal first-token agreement to 52.5 seconds, while the remaining memory gap stays unattributed.
+- [Cluster protected runtime software and TLS qualification](2026-09-17-cluster-protected-runtime-qualification.md) — selected coordinator, Provider and native checks plus six actual TLS cases pass; signing, device trust and encrypted hardware inference remain pending.
+- [Gemma4 26B short distributed correctness](2026-09-17-gemma4-26b-short-distributed-correctness.md) — two Macs exactly match both vocabulary rows, all 90 state components and two output tokens, with resource guards and clean retirement.
+- [Qwen27B placement from observed memory](2026-09-17-cluster-qwen27b-memory-calibration.md) — replayed memory samples rule out an 8K 24/40 pilot under current headroom; convolution backing and unattributed workspace remain part of placement.
+- [Qwen27B prefill phase measurements](2026-09-17-cluster-qwen27b-phase-profile.md) — serial and overlapped requests preserve 128 outputs; overlap reduces internal first-token agreement from 67.5 to 49.8 seconds, with the consumer stage still dominating.
+- [Cluster authorization and encrypted-buffer checks](2026-09-16-cluster-authorization-and-buffer-checks.md) — coordinator candidate passes 2,790 Go tests; all 35 native allocation cases pass on each Mac, with encrypted RDMA integration still pending.
+- [Distributed progress and first 27B timing](2026-09-16-cluster-delivery-progress.md) — first complete 27B samples reach 165 distributed versus 127 solo prefill tokens/s; 32/32 memory refusal, shared state checks and native key-prelude qualification are retained.
+- [Qwen27B 8K lookahead correctness](2026-09-16-cluster-qwen27b-lookahead-correctness.md) — overlapped prefill preserves all 128 outputs, the final BF16 row and exported states; matched throughput remains pending.
+- [Verified cluster pair reservation](2026-09-16-cluster-verified-pair-reservation.md) — atomic device holds and cleanup quarantine pass 15 focused and 1,051 full registry tests with the race detector; grant delivery and traffic keys remain pending.
+- [Cluster record encryption CPU cost](2026-09-15-cluster-record-encryption-cost.md) — actual M4 Pro codec measurements show 1.23–1.26 ms per 5 MiB encrypt/decrypt pair; integrated encrypted RDMA overhead remains unmeasured.
+- [Qwen27B 8K two-Mac correctness](2026-09-15-cluster-qwen27b-8k-correctness.md) — 128 output IDs, final BF16 row and all exported state records match the full reference after an 8K prompt; throughput remains unmeasured.
+- [Distributed local HTTP quota rotation](2026-09-15-cluster-local-quota-rotation.md) — 90 Provider tests and five actual owner-child cases pass; listener-preserving quota rotation is integrated, with CLI activation and physical rotation pending.
+- [Qwen27B two-Mac generation correctness](2026-09-15-cluster-qwen27b-generation-correctness.md) — 16/48 layers match all 128 tokens, final BF16 logits and complete state records; 8K performance remains unmeasured.
+- [Qwen target transactions through real stages](2026-09-15-cluster-target-session-transactions.md) — fifteen tiny-model GPU cases pass with exact state/logit comparisons and cleanup; real assistant and bilateral MTP remain open.
+- [Qwen9B matched solo and distributed comparison](2026-09-15-cluster-resident-solo-comparison.md) — optimized resident solo reaches 440 prompt tokens/s against 814 distributed, a 1.85× prefill gain with slower distributed decode.
+- [Balanced Qwen9B prefill and HTTP](2026-09-15-cluster-balanced-prefill-http.md) — 16/16 layers pass full correctness, reach 814 effective prompt tokens/s internally and first HTTP content at 10.503 seconds; representative SLA qualification remains open.
+- [MTP target verification native-state checks](2026-09-15-cluster-target-verification-native-state.md) — seven actual GPU state-transaction cases pass with synthetic inputs; real-model and bilateral acceptance remain open.
+- [Registered Qwen9B MTP proposal and owner release](2026-09-15-cluster-registered-mtp-owner-release.md) — a real unaccepted proposal and both authenticated release handshakes pass after a reproduced shutdown correction; speculative generation remains open.
+- [Installed configured-deadline terminal delivery](2026-09-15-cluster-configured-deadline-terminal.md) — a two-second deadline delivers a complete typed error, retires both workers and restores exact saved configurations; inference remains failed.
+- [Qwen MTP capture and history numerical check](2026-09-15-cluster-mtp-tiny-forward.md) — actual tiny GPU target/capture and assistant-history comparisons pass; registered and distributed MTP verification remain open.
+- [Installed Qwen9B first-request 8K observation](2026-09-15-cluster-first-request-8k.md) — a fresh-session request passes at 17.007 seconds TTFT; earlier misses remain and the intended deadline-error case is not exercised.
+- [Installed HTTP cancellation correction and recovery](2026-09-15-cluster-http-delivery-recovery.md) — both disconnect phases pass with cleanup observed in 1.58 seconds; a fresh normal 128-token response and live status pass on the tested build.
+- [Qwen9B MTP selected-weight loading](2026-09-15-cluster-mtp-selected-load.md) — actual final-stage target plus 34 additional tensors load and retire on the 48 GB Mac; forward computation and MTP generation remain unqualified.
+- [Installed cluster diagnostics and HTTP disconnects](2026-09-15-cluster-installed-diagnostics-disconnect.md) — live status, after-content cancellation and fresh recovery pass; pre-content cancellation fails; 512-token warmup precedes an 8K pass at 16.90 seconds.
+- [Installed two-Mac HTTP TTFT](2026-09-15-cluster-installed-http-ttft.md) — short/4K passes, cold 8K misses and a warmed-session 8K pass at 16.91 seconds; representative SLA qualification remains open.
+- [Two-Mac cancellation and fresh-epoch recovery](2026-09-15-cluster-cancellation-recovery.md) — two controlled native-owner cancellations, retained charges and matching 128-token restart; HTTP recovery remains open.
+- [Qwen9B lookahead correctness and internal timing](2026-09-15-cluster-lookahead-generation-and-timing.md) — matched 128-token/final-row/state correctness and bounded internal timing; provider HTTP and recovery qualification remain open.
+- [Two-Mac resident Qwen9B generation correctness](2026-09-15-cluster-resident-generation-correctness.md) — all 128 selected tokens, final BF16 row and complete state digests match the full reference; authenticated cleanup, with no throughput or external TTFT claim.
+- [Two-Mac Qwen9B resident prefill baseline](2026-09-15-cluster-rdma-prefill-baseline.md) — completed 4/28 JACCL cohort, matching reference digests and clean retirement; 426.98 internal TPS with no speedup yet.
+- [Cluster resident Qwen9B solo baseline](2026-09-15-cluster-resident-solo-baseline.md) — real four-request resident run, 441.68 internal prefill TPS median and clean retirement; external TTFT remains pending.
 - [App Attest 0.9.4 recovery qualification](2026-09-14-app-attest-recovery-validation.md) — recovery/identity tests, real Apple renewal format and current qualification limits.
 - [App Attest release-build disconnect investigation](2026-09-14-app-attest-release-disconnects.md) — reproduced 0.9.3 callback timer crash, retained evidence, containment and fixed-build validation.
 - [Physical macOS 27 App Attest validation](2026-09-14-app-attest-macos27-validation.md) — real Apple attestations/assertions, user-session launch behavior, full provider negotiation, and verifier/serializer corrections.

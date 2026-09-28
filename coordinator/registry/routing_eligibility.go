@@ -51,6 +51,16 @@ func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, 
 // The evaluation order is byte-for-byte the boolean gate's, so the two can
 // never disagree on the verdict. Allocation-free. Caller holds r.mu and p.mu.
 func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) (bool, GateReason) {
+	return r.providerLivenessGateReasonAllowPairLocked(p, minTrust, allowPrivate, now, nil, false)
+}
+
+func (r *Registry) providerLivenessGateReasonAllowPairLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time, pair *verifiedPairState, pairEligibility bool) (bool, GateReason) {
+	if !p.executionRolePermitsLocked(pairEligibility) {
+		return false, GateMemberOnly
+	}
+	if r.providerPairHeldLocked(p, now, pair) {
+		return false, GatePairReserved
+	}
 	if p.Status == StatusOffline {
 		return false, GateOffline
 	}

@@ -182,6 +182,12 @@ public actor ProviderLoop {
     internal var appAttestShadowClient: AppAttestShadowClient?
     internal var appAttestShadowTask: Task<Void, Never>?
     internal var appAttestShadowGeneration: UInt64 = 0
+    internal var memberControlRequiresStop = false
+    internal var memberHadAcceptedConnection = false
+    internal var memberConnectionID: UUID?
+    internal var memberRegistrationWaitID: UUID?
+    internal var memberRegistrationWaiter: CheckedContinuation<Void, Error>?
+    internal var memberRegistrationTimer: Task<Void, Never>?
     internal let loopConfig: ProviderLoopConfig
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?
@@ -633,7 +639,7 @@ public actor ProviderLoop {
                 ineligibleModelIds.append(model.id)
                 continue
             }
-            if EngineV2SupportedModels.isSupported(model: model) {
+            if config.executionRole == .clusterMember || EngineV2SupportedModels.isSupported(model: model) {
                 advertised[model.id] = model
             } else {
                 unsupportedModelIds.append(model.id)
@@ -674,7 +680,7 @@ public actor ProviderLoop {
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
         // so this cleanup cannot delete current cache data.
-        LegacyKVCacheSweeper.sweep()
+        if config.executionRole == .solo { LegacyKVCacheSweeper.sweep() }
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad

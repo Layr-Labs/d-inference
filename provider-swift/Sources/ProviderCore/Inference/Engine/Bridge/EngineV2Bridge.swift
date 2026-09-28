@@ -70,6 +70,8 @@ public actor EngineV2Bridge {
     /// construction so B=1 and batched behavior stay identical.
     let stopTokenIds: Set<Int>
     let defaultMaxTokens: Int
+    /// Opt-in distributed policy; ignored by ordinary local engines.
+    let distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
     let maxConcurrentRequests: Int
     /// Operational control for atomic first-token deadline admission.
     /// Parsed once per bridge so runtime behavior cannot change mid-request.
@@ -313,6 +315,7 @@ public actor EngineV2Bridge {
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
         kvBackendFallbackReason: String? = nil,
+        distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.ownedEngine = engine
@@ -329,6 +332,7 @@ public actor EngineV2Bridge {
             convertTokenToId: { [inner = tokenizer.inner] in inner.convertTokenToId($0) }
         )
         self.defaultMaxTokens = defaultMaxTokens
+        self.distributedFirstTokenBudgetPolicy = distributedFirstTokenBudgetPolicy
         self.maxConcurrentRequests = maxConcurrentRequests
         self.prefillDeadlineMode = prefillDeadlineMode
         self.prefillDeadlineProjectionEnabled = prefillDeadlineProjectionEnabled

@@ -1,0 +1,85 @@
+{
+  "files": [
+    {
+      "path": "FixtureSupport.swift",
+      "sha256": "5d4739d7414bb09f98b42064c37e708b6de9cad2fbe6575ff60e88a236f15094",
+      "sizeBytes": 1895
+    },
+    {
+      "path": "GemmaMetadataRefusalCheck.swift",
+      "sha256": "e6290b37ab04444bd71a017e05d769cb732447b4f234cc3f29ae5b10d02fbe68",
+      "sizeBytes": 4386
+    },
+    {
+      "path": "GemmaStagePlanCheck.swift",
+      "sha256": "0bb330f2a36c2a6c193e502c9aa9df47690e3b512b73bd63b0ac5de2ba818882",
+      "sizeBytes": 5935
+    },
+    {
+      "path": "LayerStageConservationCheck.swift",
+      "sha256": "57b9acb7622e0214643a1109078f1f4908746dfcf855886e1be82945c3646bfa",
+      "sizeBytes": 5347
+    },
+    {
+      "path": "Main.swift",
+      "sha256": "0a5cf50502574366f8fae79faa809547967a7588b730845a0c26656f05d20ed4",
+      "sizeBytes": 1291
+    },
+    {
+      "path": "QwenStagePreservationCheck.swift",
+      "sha256": "6b86070b9e4d8c5d385cd21131a3da8f47bb7a3ee9e4e5eb95418e2f010dd504",
+      "sizeBytes": 3814
+    },
+    {
+      "path": "Inputs/all-cuts.json",
+      "sha256": "181ef598071652f2ccbb9d073843549a73b1d8788d4bc32b18ea95083711f7d8",
+      "sizeBytes": 11852
+    },
+    {
+      "path": "Inputs/config.json",
+      "sha256": "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa",
+      "sizeBytes": 33376
+    },
+    {
+      "path": "Inputs/gemma-cut15-projections.json",
+      "sha256": "bc4d4106fdfe472481ae9ae00b18fef286c801ad96417a0ca2b62b6b568b8d67",
+      "sizeBytes": 411733
+    },
+    {
+      "path": "Inputs/manifest.json",
+      "sha256": "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd",
+      "sizeBytes": 1822
+    },
+    {
+      "path": "Inputs/model-00001-of-00003.safetensors.header.json",
+      "sha256": "5b3e8f2c593f5b291ffa3322540141bf909f454c917888957816273c53c9c735",
+      "sizeBytes": 63631
+    },
+    {
+      "path": "Inputs/model-00002-of-00003.safetensors.header.json",
+      "sha256": "f1624d695581287157a8472d87224197d0a67d50ce5fd439af3ff45444ddd6dc",
+      "sizeBytes": 65146
+    },
+    {
+      "path": "Inputs/model-00003-of-00003.safetensors.header.json",
+      "sha256": "52b3a65b791a2f0a1dd345291979ed5429388992ad12d824032b923bf9300a7a",
+      "sizeBytes": 95729
+    },
+    {
+      "path": "Inputs/model.safetensors.index.json",
+      "sha256": "5455e83705bbdd4e3702c7d4f9d49d4900e84533036628f74500538075dd5c80",
+      "sizeBytes": 176940
+    },
+    {
+      "path": "Inputs/qwen-plan-goldens.json",
+      "sha256": "32251c82aed4a0c2f9d7a78cf96479c01ccd7c940d7ac0a1da3329cce47a6037",
+      "sizeBytes": 1223
+    },
+    {
+      "path": "Inputs/qwen-retained-inputs.json",
+      "sha256": "1a7e2d74df5e055ec31c12478f49d1d07d1bb48cc64d150248859defb518cd25",
+      "sizeBytes": 362180
+    }
+  ],
+  "scope": "Retained metadata and exact tested Swift assertions; no payloads"
+}

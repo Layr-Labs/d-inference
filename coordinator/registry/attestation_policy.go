@@ -136,6 +136,11 @@ func (r *Registry) SetReleasePolicyGeneration(
 	stillApproved func(ApplicationEvidence) bool,
 ) (needChallenge []string) {
 	r.mu.Lock()
+	if generation != r.releasePolicyGeneration {
+		for state := range r.verifiedPairs.states {
+			r.endVerifiedPairLocked(state)
+		}
+	}
 	r.releasePolicyGeneration = generation
 	r.releasePolicyRequired = required
 	enforced := r.releasePolicyEnforcedLocked()
@@ -330,7 +335,8 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 		r.mu.Unlock()
 		return
 	}
-	hook := r.onHardUntrust // capture under r.mu (race-safe)
+	hook := r.onHardUntrust           // capture under r.mu (race-safe)
+	r.disconnectVerifiedPairLocked(p) // revoke even a transient pair grant; no resurrection
 
 	p.mu.Lock()
 	if p.Status != StatusUntrusted {
@@ -406,6 +412,10 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 		p.RuntimeCapabilities = nil
 	}
 	p.mu.Unlock()
+
+	if level != TrustHardware {
+		r.invalidateVerifiedPairForProvider(p)
+	}
 
 	// Persist trust state.
 	r.persistProviderNow(p)
@@ -536,6 +546,10 @@ func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool)
 		p.ChallengeVerifiedSIP = false
 	}
 	p.mu.Unlock()
+
+	if !transientOnly || count >= MaxFailedChallenges {
+		r.invalidateVerifiedPairForProvider(p)
+	}
 
 	// Persist challenge state and reputation.
 	r.persistProviderNow(p)

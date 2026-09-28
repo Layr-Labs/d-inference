@@ -1,6 +1,6 @@
 # Design records — what was decided, and whether it shipped
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-15 · commit `605651bb9`
 
 Plans, proposals, and architecture decision records. Each file is frozen at the
 moment it was written except for its **Status** line, which says whether the
@@ -36,6 +36,11 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [distributed-peer-owner.md](distributed-peer-owner.md) | In progress | 2026-09-15 | Configured SSH owner transport, native process ownership, original deadlines and recovery before reuse |
+| [distributed-cluster-calibration-and-confidentiality.md](distributed-cluster-calibration-and-confidentiality.md) | Proposed | 2026-09-15 | Measured placement across different Macs, MoE expert candidates and authenticated encryption over RDMA |
+| [distributed-cluster-execution-plan.md](distributed-cluster-execution-plan.md) | In progress | 2026-09-15 | Ordered engineering plan: source refresh, physical 9B, measured partitioning, MTP, model reuse and Darkbloom integration |
+| [distributed-cluster-delivery.md](distributed-cluster-delivery.md) | In progress | 2026-09-15 | Active goal: reusable Darkbloom cluster runtime, 9B → 27B → Gemma, measured prefill and MTP comparisons on the available Macs |
+| [distributed-inference-goal.md](distributed-inference-goal.md) | Superseded by [distributed cluster delivery](distributed-cluster-delivery.md) | 2026-09-13 | Original M3 Ultra target and architecture decision; hardware-dependent completion criteria refined by the current goal |
 | [release-090-acceptance.md](release-090-acceptance.md) | In progress | 2026-09-06 | Numerical, quality, cache and serving acceptance; backend wording differences and functional routing scope |
 | [release-090-paged-qwen-cache.md](release-090-paged-qwen-cache.md) | In progress | 2026-09-06 | Five-artifact paged migration with Qwen-only default caching, scoped acceptance and independent rollback controls |
 | [qwen-first-paged-ssd-rollout.md](qwen-first-paged-ssd-rollout.md) | Superseded | 2026-09-06 | Earlier three-Qwen paging scope, corrected by the five-artifact release decision |

@@ -197,6 +197,7 @@ extension ProviderLoop {
     internal func ensureModelLoaded(
         modelId: String, allowEviction: Bool = true
     ) async throws {
+        guard !isClusterMember else { throw ClusterMemberControlError.incompatibleConfiguration }
         await waitForMTPUpgrade(modelId)
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)

@@ -233,6 +233,7 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
+	var nativeConnection *registry.NativePairConnection
 	var appAttestShadow *appAttestShadowSession
 	tracker := newChallengeTracker()
 	var schedulerSEKey string
@@ -247,6 +248,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	// Cancel context for cleanup of the challenge loop goroutine.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
+		if s.nativePairs != nil {
+			s.nativePairs.Detach(nativeConnection)
+		}
 		loopCancel()
 		if s.mdmScheduler != nil {
 			s.mdmScheduler.Unbind(schedulerSEKey, schedulerGeneration)
@@ -267,6 +271,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	for {
 		_, data, err := conn.Read(loopCtx)
 		if err != nil {
+			// Stop pair admission before any slow session-store disconnect stamp.
+			if s.nativePairs != nil {
+				s.nativePairs.Detach(nativeConnection)
+			}
 			closeStatus := websocket.CloseStatus(err)
 			oomSuspected := false
 			readReason := readErrorReasonGeneric
@@ -392,6 +400,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				return
 			}
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
+			if err := regMsg.ValidateExecutionRole(); err != nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "invalid execution role")
+				return
+			}
 			// The version string is provider-controlled and flows into semver
 			// parsing memos, metric tags and logs; a legitimate build id is a
 			// few dozen bytes. Reject anything larger before it reaches the
@@ -412,6 +424,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				return
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
+			if regMsg.ExecutionRole == protocol.ExecutionRoleClusterMember {
+				ack, err := json.Marshal(protocol.ClusterMemberAcceptedMessage{
+					Type:                    protocol.TypeClusterMemberAccepted,
+					ExecutionRole:           protocol.ExecutionRoleClusterMember,
+					MemberRegistrationNonce: regMsg.MemberRegistrationNonce,
+					ProviderID:              providerID,
+				})
+				if err != nil || provider.WriteTextControl(loopCtx, ack) != nil {
+					return
+				}
+			}
 			s.attachProviderLocation(providerID, provider, r)
 			if err := s.verifyProviderAttestation(loopCtx, providerID, provider, regMsg); err != nil {
 				// No duplicate eviction or account/MDM continuation after failed
@@ -583,6 +606,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					schedulerGeneration = s.mdmScheduler.Submit(loopCtx, providerID, provider, priority)
 				}
 			}
+			if s.nativePairs != nil && regMsg.ExecutionRole == protocol.ExecutionRoleClusterMember {
+				var attachErr error
+				nativeConnection, attachErr = s.nativePairs.Attach(provider, regMsg.MemberRegistrationNonce, r.TLS)
+				if attachErr != nil {
+					_ = conn.Close(websocket.StatusPolicyViolation, "native pair transport refused")
+					return
+				}
+			}
 			// Start challenge loop after registration
 			saferun.Go(s.logger, "challengeLoop", func() {
 				s.challengeLoop(loopCtx, providerID, provider, tracker)
@@ -604,6 +635,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 
 			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
+
+		case protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
+			if s.nativePairs == nil || nativeConnection == nil || s.nativePairs.Handle(nativeConnection, msg.Payload.(*protocol.NativePairMessage)) != nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "native pair control refused")
+				return
+			}
 
 		case protocol.TypeAppAttestShadow:
 			if appAttestShadow != nil {

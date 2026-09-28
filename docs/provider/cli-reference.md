@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-17 · commit `605651bb9`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -26,7 +26,7 @@ set to any value skips it. Logging goes to stderr so launchd captures it in
 
 ## Subcommands
 
-Declaration order of `Darkbloom.configuration.subcommands` (21):
+Commands follow the declaration order in `Darkbloom.configuration.subcommands`:
 
 | Command | Purpose | `--config` | Source (`provider-swift/Sources/darkbloom/…`) |
 |---|---|---|---|
@@ -37,6 +37,7 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
+| `cluster` | Experimental saved setup (`configure`) and authenticated worker-owner entry (`worker-owner`) | `configure` only | `ClusterCommand.swift` (`Cluster`); `ClusterWorkerOwnerCommand.swift` (`Cluster.WorkerOwner`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
 | `logout` | Delete the device token | | `LogoutCommand.swift` (`Logout`) |
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
@@ -61,11 +62,49 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | `--all` | flag | `false` | Serve every local model the runtime supports; skips the picker |
 | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |
 | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
-| `--local` | flag | `false` | Coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)) |
+| `--local` | flag | `false` | Local OpenAI-compatible server; ordinary solo mode is coordinator-less ([direct mode](./direct-mode.md)) |
+| `--cluster-member` | flag | `false` | Foreground control-only member using the saved cluster; refuses solo serving and model loading (`Start.runClusterMember`) |
+| `--distributed` | flag | `false` | Experimental saved-cluster local serving plus control-only leader registration; requires `--local` (`Start.validate`) |
 | `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator; mutually exclusive with `--local` |
 | `--port <n>` | `UInt16` | `8000` | Local server port |
 | `--bind <addr>` | `String` | `127.0.0.1` | Local server bind address |
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
+
+`--local --distributed` starts the configured leader in this process. It refuses
+`--foreground`, `--local-endpoint`, `--model`, `--all` and `--idle-timeout`.
+It waits for nonce-bound coordinator acceptance of the control-only member role
+before opening the listener. `--coordinator-url` overrides that control endpoint.
+An alternate `--config` must contain the same `[cluster]`
+reference as `~/.config/darkbloom/provider.toml`, which the installed local owner
+reads. Only the current registered Qwen3.5 9B 4-bit greedy text profile with MTP
+off is supported; see [saved-cluster limits](../reference/configuration.md#saved-distributed-setup-experimental).
+Startup failure, runtime failure or unresolved cleanup exits unsuccessfully.
+This opt-in path is experimental; live product qualification remains pending.
+After registration, a control disconnect stops the local leader and retires its
+session. Acceptance confirms protocol support; it does not approve a native
+runtime or establish encrypted RDMA.
+
+`--cluster-member` starts a control-only foreground process without a local
+listener, native device lease, GPU probe, autonomous download or model load.
+It refuses `--distributed`, `--local`, `--local-endpoint`, `--model`, `--all`
+and `--idle-timeout`. It uses the saved artifact metadata and existing provider
+authentication, attestation and heartbeat paths. A fresh connection requires a
+fresh role acknowledgment (`provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift`,
+`Start.runClusterMember`; `provider-swift/Sources/ProviderCore/ProviderLoop+ClusterMember.swift`,
+`prepareClusterMemberControl`).
+
+Without either cluster flag, the command selects ordinary solo startup
+(`provider-swift/Sources/darkbloom/StartCommand.swift`, `Start.validate`;
+`provider-swift/Sources/darkbloom/StartCommand+Distributed.swift`, `Start.runLocalDistributed`).
+
+Distributed streaming keeps its first-content deadline armed until a nonempty
+content frame is accepted by the local writer. Role, reasoning and idle-comment
+frames do not satisfy that deadline. Full connection closure cancels the request;
+closing only the client's sending side permits continued reading. A bounded
+terminal-delivery interval does not extend inference or release native ownership
+(`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPResponse.swift`,
+`DistributedHTTPResponse`; `provider-swift/Sources/ProviderCore/Server/Distributed/DistributedHTTPEventStream.swift`,
+`DistributedHTTPEventStream`). Writer acceptance is not proof of client receipt.
 
 Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
@@ -148,6 +187,68 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
 
 Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`).
+
+### `darkbloom cluster` (experimental)
+
+| Command / option | Default | Effect | Source (`provider-swift/Sources/darkbloom/…`) |
+|---|---|---|---|
+| `configure --input <path>` | Required | Absolute path to the cluster setup JSON | `ClusterCommand.swift` (`Cluster.Configure`) |
+| `configure --capability <path>` | Required | Absolute path to canonical capability JSON from the installed native worker | `ClusterCommand.swift` (`Cluster.Configure`) |
+| `configure --capability-sha256 <sha256>` | Required | Lowercase SHA-256 of those exact capability bytes | `ClusterCommand.swift` (`Cluster.Configure.validate`) |
+| `configure --json` | `false` | Print saved references and the limited verification scope as JSON | `ClusterCommand.swift` (`Cluster.Configure.run`) |
+| `status [--json] [--config <absolute-path>]` | Local configured leader | Show saved setup separately from a fresh local serving observation; never start inference | `ClusterDiagnosticsCommand.swift` (`Cluster.Status`) |
+| `doctor [--json] [--config <absolute-path>]` | Local member only | Verify local installed metadata and report unperformed peer/physical checks; never recover or change setup | `ClusterDiagnosticsCommand.swift` (`Cluster.Doctor`) |
+| `worker-owner --stdio` | Required | Fixed entry used by the authenticated supervisor; reads the local default provider configuration, with no `--config` override | `ClusterWorkerOwnerCommand.swift` (`Cluster.WorkerOwner`) |
+
+`configure` accepts `--config` with an absolute path and saves the `[cluster]`
+reference there; by default it uses `~/.config/darkbloom/provider.toml`. It checks
+the setup, capability and existing local SSH trust-file inputs, but does not
+install software, contact peers, load a model or enable distributed startup.
+Configure each member's own leader/follower setup before explicit startup.
+Set `prefillSchedule` in both setup JSON files to `serial_v1` (the default) or
+`one_chunk_lookahead_v1`. Lookahead requires an installed capability that advertises
+it; unsupported selections are refused. `configure` saves the selection explicitly,
+and startup requires both native ranks to agree before loading their stages.
+There is no serving environment override for this choice
+(`provider-swift/Sources/ProviderCore/Config/ClusterConfigurationStore.swift`,
+`ClusterConfigurationStore.save`;
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdmission.swift`,
+`QwenResidentAdmission.loadAgreementFingerprint`).
+The [configuration schema](../reference/configuration.md#saved-distributed-setup-experimental)
+defines the required pins, installed paths and bounded session behavior.
+
+`start --local --distributed` keeps the listener bound when the request quota
+requires a fresh worker session. Replacement waits for the old workers and HTTP
+responses to retire, then rechecks the selected and default-owner setup
+references. A changed setup, unresolved cleanup or fixed lifetime expiry stops
+the host; requests during replacement receive an unavailable response
+(`StartCommand+Distributed.swift`, `Start.runLocalDistributed`;
+`DistributedStartSessionFactory.swift`, `DistributedStartSessionFactory.prepare`).
+
+`status` reads the private local discovery record only to locate the server. It
+accepts loopback or a numeric address assigned to this Mac, sends a fresh nonce,
+and requires a bounded matching response from `GET /v1/cluster/status`. The route
+uses the same bearer policy as inference routes, including explicit `--no-auth`;
+that case is labeled unauthenticated. Responses are `Cache-Control: no-store`.
+The sample shows actual retained peer readiness, epoch, selected schedule,
+lifetime/admissions, MTP-off reason and cleanup/quarantine evidence. It is an
+instant observation, not a reservation or a promise that the next request fits
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterStatusClient.swift`,
+`ClusterStatusClient.observe`;
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
+`DistributedInstalledSession.diagnosticObservation`).
+
+`doctor` works on either configured member. It checks the local worker executable,
+model/config/tokenizer metadata, existing SSH trust-file pins and the installed
+worker's bounded metadata-only description. It does not write a matrix, contact
+a peer, read weight payloads, run inference or perform a new collective test.
+Failed local checks produce a nonzero exit; unperformed checks remain explicit.
+A nonempty device journal means ownership is unproven, not orphaned. An empty or
+absent journal does not prove a free device; no journal is cleared
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift`,
+`ClusterDiagnostics.doctor`;
+`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDeviceJournalObservation.swift`,
+`ClusterDeviceJournalObservation.read`).
 
 ### `darkbloom login` / `darkbloom logout`
 
@@ -753,6 +854,7 @@ override `provider.toml` for one process, are in
 
 | Key | Default | Effect |
 |---|---|---|
+| `[cluster] configuration`, `sha256` | absent | Saved setup reference only; see [cluster configuration](../reference/configuration.md#saved-distributed-setup-experimental). Used by explicit `start --cluster-member` or `start --local --distributed` |
 | `[provider] memory_reserve_gb` | `4` | Unified memory withheld from model admission |
 | `[provider] auto_update` | `true` | Startup + periodic self-update |
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |

@@ -15,6 +15,7 @@
 
 import Foundation
 import Hummingbird
+import HTTPTypes
 import MLXLMServer
 import NIOCore
 
@@ -33,15 +34,15 @@ public struct LocalInferenceHTTPConfig: Sendable {
 }
 
 /// The concrete responder stack the local endpoint always uses:
-/// auth (outermost) → CORS → MTP-augmented /metrics → chat-upload
+/// receipt origin (outermost) → auth → CORS → MTP-augmented /metrics → chat-upload
 /// interception (32 MiB body ceiling for the media-bearing chat routes, see
 /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
 public typealias LocalInferenceApplication =
     Application<
-        LocalAuthResponder<
+        LocalRequestOriginResponder<LocalConnectionResponder<LocalAuthResponder<
             CORSResponder<
                 LocalMetricsResponder<
-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>
+                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -70,6 +71,8 @@ func makeLocalInferenceApplication(
     tokenizerProvider: @escaping @Sendable (String?) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution,
     availableModels: @escaping @Sendable () async -> [String],
     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
+    clusterStatus: (@Sendable (String) async throws -> ClusterLiveStatus)? = nil,
+    distributedResponses: (any DistributedHTTPResponseProviding)? = nil,
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
@@ -93,6 +96,21 @@ func makeLocalInferenceApplication(
     }
     let service = serviceForTemplateControls(.init())
     let router = MLXServerApplication.buildRouter(service: service)
+    if let clusterStatus {
+        router.get("/v1/cluster/status") { request, _ async throws -> Response in
+            let header = HTTPField.Name(ClusterStatusCodec.nonceHeader)!
+            guard let nonce = request.headers[header], (try? ClusterStatusCodec.nonce(nonce)) != nil else {
+                return Response(status: .badRequest, headers: [.cacheControl: "no-store"])
+            }
+            do {
+                let bytes = try ClusterStatusCodec.encode(await clusterStatus(nonce))
+                return Response(status: .ok, headers: [.contentType: "application/json", .cacheControl: "no-store"],
+                    body: .init(byteBuffer: ByteBuffer(bytes: bytes)))
+            } catch {
+                return Response(status: .serviceUnavailable, headers: [.cacheControl: "no-store"])
+            }
+        }
+    }
     // Chat-completions POSTs are served by the interception responder with
     // the 32 MiB body ceiling (the upstream router's BasicRequestContext
     // pins the Hummingbird 2 MiB default, which 413s inline media — see
@@ -100,19 +118,21 @@ func makeLocalInferenceApplication(
     // upstream router unchanged.
     let uploadResponder = LocalChatUploadResponder(
         inner: router.buildResponder(), service: service,
-        serviceForTemplateControls: serviceForTemplateControls)
+        serviceForTemplateControls: serviceForTemplateControls,
+        distributedResponses: distributedResponses)
     // GET /metrics is served by the metrics responder: the upstream
     // ServerMetrics body plus the provider-owned MTP posture lines (see
     // LocalMetricsResponder for why the upstream route cannot be extended).
     let metricsResponder = LocalMetricsResponder(
         inner: uploadResponder, service: service, mtpSlots: mtpSlots)
     let corsResponder = CORSResponder(inner: metricsResponder)
-    // Auth is the outermost layer so an unauthenticated request is rejected
+    // Auth rejects an unauthenticated request
     // before reaching the engine. Pass-through when no token is configured.
     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
 
     return Application(
-        responder: authedResponder,
+        responder: LocalRequestOriginResponder(inner: LocalConnectionResponder(
+            inner: authedResponder, observeConnection: distributedResponses != nil)),
         configuration: .init(
             address: .hostname(config.host, port: Int(config.port)),
             serverName: "darkbloom-provider"

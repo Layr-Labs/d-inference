@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-17 · commit `605651bb9`
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -126,6 +126,75 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | `POST /v1/telemetry/events` answers `telemetry_ingest_disabled` ([api-contracts](../../reference/api-contracts.md#telemetry-1)) and never reads the body, because provider telemetry has free-form `message` / `stack` fields | `coordinator/api/telemetry_handlers.go` (`handleTelemetryIngest`) |
 | Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/sender_encryption.go` (`isSealedRequest`) |
 | Session private key and memoized shared key are dropped at request end | `coordinator/api/chunk_key_cache.go` (`forget`) |
+
+### Experimental cluster pair authorization
+
+The registry can reserve two current connections for distributed preparation.
+`coordinator/registry/verified_pair_membership.go` (`verifiedPairMemberLocked`)
+requires ordinary routing eligibility plus current hardware trust, MDA and
+Secure Enclave binding, the SE-attested registration X25519 key, fresh challenge
+and heartbeat observations, and evidence from the current approved-release
+policy. Owner self-routing does not relax these cluster requirements.
+
+The membership transcript binds rank order, connection/device/process identities,
+provider release evidence, model, plan, epoch and fixed deadlines. Its proposed
+native-runtime digest remains a proposal; it does not approve a child executable.
+`coordinator/registry/verified_pair_types.go` defines the contract, and
+[the reservation lifecycle](../routing.md#verified-cluster-pair-reservations)
+excludes those devices from ordinary scheduling.
+
+Control-only members advertise a separate cluster inventory and receive a
+nonce-bound role acknowledgment. That acknowledgment grants no trust, runtime
+approval or readiness (`coordinator/protocol/execution_role.go`,
+`ClusterMemberAcceptedMessage`).
+
+The coordinator now implements a bounded public authorization relay through
+the actual provider WebSocket handler. `BeginNativePair` requires an explicit
+coordinator-owned runtime catalog and two exact current member connections;
+the attachment requires the accepted request's completed TLS handshake.
+Providers cannot choose peers or submit an approval through a public route.
+The relay checks SE signatures, connection nonces and sequences, commits both
+owners before emitting start records, and relays native public keys and
+confirmation MACs. It never computes the traffic key. See the
+[wire contract](../../reference/cluster-control-protocol.md) and
+`coordinator/api/native_pair.go` (`BeginNativePair`).
+
+The default catalog is empty. The Swift public-frame codec is implemented, but
+the member loop does not yet invoke the native authorization prelude or start
+an encrypted worker from these messages. Quarantine survives reconnects within
+one registry process; it is not durable across coordinator restart. Local
+canonical lease checks and actual owner cleanup remain required before new
+preparation. The full encrypted distributed serving path remains unfinished.
+
+### Experimental cluster record implementation
+
+The cluster library contains an AES-256-GCM record codec and a bounded byte
+transport adapter. Current serving call sites do not enable them, so their
+presence does not establish encrypted RDMA or verified cluster membership.
+The intended endpoints are trusted Macs; an endpoint owner can inspect inference
+data in that Mac's process.
+
+`libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordChannel.swift`
+(`ClusterAuthenticatedRecordChannel`) derives separate directional keys from a
+caller-supplied fresh session key, epoch, plan and membership transcript. Records
+authenticate request and phase expectations, enforce sequential counters, and
+refuse replay and byte-budget exhaustion. Supplying a transcript hash does not
+prove membership or establish that key.
+
+`libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordTransport.swift`
+(`ClusterAuthenticatedRecordTransport`) uses one sealed frame for exact-length
+payloads and a bounded prefix/body pair for variable controls. It authenticates
+received data and rechecks cancellation before returning plaintext. The native
+bridge in `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAuthenticatedRecords.swift`
+(`CollectiveAuthenticatedRecords`) preserves array dtype bytes and reconstructs
+arrays only after authentication.
+
+Enabling this path still requires coordinator-bound authorization, fresh-key
+establishment, complete control and activation coverage, hardware qualification
+of send-buffer tail sanitization, and qualified memory admission. The
+[CPU checks](../../../libs/darkbloom-cluster/Tests/SecurityChecks/README.md)
+exercise codec and adapter behavior without establishing those integration
+properties.
 
 ## Invariants
 

@@ -1,0 +1,32 @@
+[
+  {
+    "configurationSHA256": "c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423",
+    "cut": 4,
+    "label": "nineCut4",
+    "planSHA256": "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f",
+    "stageSHA256": [
+      "7d5ebf4cec108854b7a5375a208301ca58d00a33d1fb8ef3e3bb59923f482f0a",
+      "7b362c5c14e45c17ce1327bc23179dc58b61f8d6a96ca2bc5752976f9fe53264"
+    ]
+  },
+  {
+    "configurationSHA256": "c8e767de4953e58352fbc1acbf6615329075ed02fe16a36b8065714d85ee4423",
+    "cut": 16,
+    "label": "nineCut16",
+    "planSHA256": "2b5aa52cab49c12cfa44f2348326f956127d2ca15b1c55b5632f447901e56293",
+    "stageSHA256": [
+      "65cb10e0fc8ef439b035ee141695132ca76f88160e8920bd8c72cd780fedbb76",
+      "90eb156179c547bf6024b8f6756d725b6f33af26f379d5aa549e241f15dbb22e"
+    ]
+  },
+  {
+    "configurationSHA256": "4691da94a1b4ef415aad112ec46abebd33f8a41ad07380e486c0526eb945c1ff",
+    "cut": 32,
+    "label": "twentySevenCut32",
+    "planSHA256": "980b0f6ece0a078c284143d8af05c1532c2fdd7f0a6b1a06682b7bcc94b377d3",
+    "stageSHA256": [
+      "c70505baf644e14d223c7e5905d5760978054bcb070b7e05e21ba5de9eed181d",
+      "f0847477d245360a2c77b5923963e44eae69790b746a3d5279046ebff362fe98"
+    ]
+  }
+]

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — experimental local distributed serving (2026-09-15)
+
+- Preserve buffered final release acknowledgments when a distributed worker owner exits, while retaining normal-exit, diagnostic-drain and cleanup checks.
+- Add `start --cluster-member` and nonce-bound control-only registration for distributed members. Local distributed leaders now require coordinator role acceptance and stop on control disconnect.
+- Add coordinator pair authorization with signed public-message relay, explicit runtime policy, bounded queues and cleanup quarantine. Native worker invocation and encrypted cluster startup remain in development; the default approval catalog stays empty.
+- Keep the distributed local listener available across request-quota session replacement, with complete old-worker retirement, fresh epochs and unchanged installed setup. Lifetime expiry and unresolved cleanup still stop serving.
+- Detect distributed HTTP disconnects during prefill, retain the first-content deadline through role-only and reasoning frames, and allow bounded terminal-error delivery after native cleanup. A client that closes only its sending side can continue reading the response.
+- Add `cluster status` with fresh local serving/session evidence and `cluster doctor` with read-only installed metadata checks on either member. Saved setup, live readiness and unperformed physical checks stay distinct; no inference or automatic journal recovery is launched.
+- Add `cluster configure` for pinned per-member setup and the authenticated `cluster worker-owner --stdio` entry. Saving setup does not install software, connect to peers or enable serving.
+- Add explicit `start --local --distributed` for the saved leader configuration, with matching default-provider references, bounded native ownership and cleanup failure propagation. Ordinary solo startup remains the default.
+- Add explicit saved prefill selection between serial (default) and one-chunk lookahead when the installed capability advertises it. Native peers agree before weight loading and retain the additional lookahead reservation and live resource gates; no benchmark capture or environment override is used by serving.
+- Limit the current adapter to registered Qwen3.5 9B 4-bit greedy text with MTP off. This integration remains experimental; broader workload qualification and release acceptance remain open. See the [CLI reference](docs/provider/cli-reference.md#darkbloom-cluster-experimental) and [configuration limits](docs/reference/configuration.md#saved-distributed-setup-experimental).
+
 ## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
 
 - Fix the released 0.9.3 App Attest callback-timer abort. Require the callback completion/expiry smoke in the optimized signed bundle, installer and updater; distinguish callback failures from Metal failures.

@@ -332,6 +332,11 @@ public final class MockCoordinator: @unchecked Sendable {
 
     // MARK: Push helpers
 
+    public func pushClusterMemberAcceptance(nonce: String, providerID: String = "mock-member") async throws {
+        try await sendCoordinatorMessage(.clusterMemberAccepted(.init(
+            executionRole: .clusterMember, memberRegistrationNonce: nonce, providerID: providerID)))
+    }
+
     public func pushAttestationChallenge(
         nonce: String,
         timestamp: String

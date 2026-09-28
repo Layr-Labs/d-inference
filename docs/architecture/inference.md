@@ -1,11 +1,12 @@
 # Provider inference engine
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-15 · commit `605651bb9`
 
-How a chat-completion request is served inside the `darkbloom` provider
-process in v0.9.1: one in-process engine (`mlx-swift-lm`
-ContinuousBatchingV2, "CBv2"), one `EngineV2Bridge` per resident model, no
-legacy engine and no subprocess. For the memory model see
+How a chat-completion request is served inside the `darkbloom` provider.
+The ordinary solo path uses one in-process engine (`mlx-swift-lm`
+ContinuousBatchingV2, "CBv2") and one `EngineV2Bridge` per resident model.
+The experimental local distributed host instead owns native worker processes
+through installed sessions. For the memory model see
 [`hardware-support.md`](hardware-support.md); for KV/prefix caching see
 [`prefix-cache.md`](prefix-cache.md).
 
@@ -442,6 +443,39 @@ are not reparsed as reasoning markers. `MLXOpenAIService.streamChatCompletionFra
 serializes SSE frames; the provider encrypts and sends them back over the
 coordinator connection. This integration does not start a local HTTP endpoint
 or change consumer/OpenRouter routing.
+
+### Experimental local distributed host
+
+`DistributedLocalServer` can retain its HTTP listener and discovery record
+across normal request-quota exhaustion when initialized with a
+`replacementSessionFactory`. `Start.runLocalDistributed` supplies a
+`DistributedStartSessionFactory` that prepares a fresh epoch and rechecks both
+the selected provider configuration and the owner's default reference before
+and after preparation. A changed reference refuses replacement. Fixed lifetime
+expiry still stops the host. See
+`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift`,
+`provider-swift/Sources/darkbloom/StartCommand+Distributed.swift` and
+`provider-swift/Sources/darkbloom/DistributedStartSessionFactory.swift`.
+
+Each `DistributedLocalServerGeneration` owns one session, bridge, response
+registry and acquisition. `DistributedHTTPResponseRouter` withdraws the old
+registry permanently while the listener stays bound. `rotateAfterQuota` starts the old
+session's drain before waiting for HTTP holds, then requires bridge shutdown
+and the installed session's released barrier before calling the factory. The
+new session must be prepared, retain the initial installed/model/profile
+binding and use an epoch never seen by this host. Requests during replacement
+are unavailable; their deadlines are not extended. See
+`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer+Rotation.swift`
+(`rotateAfterQuota`) and
+`provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServerGeneration.swift`
+(`DistributedLocalSessionBinding`).
+
+Stop retains and joins pending preparation, including a factory result returned
+after cancellation. Missing native cleanup, authenticated owner release or
+clean transport termination prevents reuse and leaves quarantine. This local
+host does not attach cluster membership or joint capacity to coordinator
+routing. The [dated quota-rotation report](../reports/2026-09-15-cluster-local-quota-rotation.md)
+records its model-free qualification and remaining limits.
 
 ## Invariants
 

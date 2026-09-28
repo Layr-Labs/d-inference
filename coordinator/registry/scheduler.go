@@ -1540,6 +1540,12 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 // wrapper — so the verdict and the reason can never drift. Allocation-free.
 // Caller holds r.mu and p.mu.
 func (r *Registry) providerRoutingGateReasonLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) (bool, GateReason) {
+	return r.providerRoutingGateReasonAllowPairLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, nil, false)
+}
+
+// The pair revalidation path may pass only its own exact hold. All ordinary
+// dispatch/plan/preflight callers pass nil and remain excluded.
+func (r *Registry) providerRoutingGateReasonAllowPairLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool, pair *verifiedPairState, pairEligibility bool) (bool, GateReason) {
 	// Catalog membership + dedicated-box isolation: a request for a dedicated
 	// model family (e.g. Gemma 4) may ONLY route to a provider whose ENTIRE
 	// advertised catalog is that family. This single gate is shared by the
@@ -1569,7 +1575,7 @@ func (r *Registry) providerRoutingGateReasonLockedEx(p *Provider, model string, 
 	if selfRouteOwner {
 		minTrust = TrustNone
 	}
-	if ok, reason := r.providerLivenessGateReasonLocked(p, minTrust, selfRouteOwner, now); !ok {
+	if ok, reason := r.providerLivenessGateReasonAllowPairLocked(p, minTrust, selfRouteOwner, now, pair, pairEligibility); !ok {
 		return false, reason
 	}
 	// Trait eligibility: a render-broken build is fenced for EVERY request shape

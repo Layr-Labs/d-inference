@@ -220,6 +220,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     public func streamChatCompletion(
         request: OpenAIChatCompletionRequest
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        // Capture before acquisition/tokenization; the outer HTTP task scope
+        // may end once a response is returned, so carry this value explicitly.
+        let distributedRequestOrigin = DistributedRequestOrigin.current
         let templateControls = self.templateControls.resolvingPromptDate()
         try checkFirstContentDeadline()
 
@@ -445,7 +448,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         multimodal: visionPrepared.multimodalInput(),
                         mediaKind: visionPrepared.mediaKind,
                         firstContentDeadline: firstContentDeadline,
-                        profile: profile
+                        profile: profile,
+                        distributedRequestOrigin: distributedRequestOrigin
                     )
                     do {
                         try checkFirstContentDeadline()
@@ -713,7 +717,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     usageSignal: engineV2Usage,
                     tokenConstraint: tokenConstraint,
                     firstContentDeadline: firstContentDeadline,
-                    profile: profile
+                    profile: profile,
+                    distributedRequestOrigin: distributedRequestOrigin
                 )
                 do {
                     try checkFirstContentDeadline()

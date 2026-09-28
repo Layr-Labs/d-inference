@@ -121,6 +121,11 @@ public enum ProviderProtocolCodec {
         // Messages.swift, so EVERY Register field must be mirrored here too or it
         // silently drops for every ATTESTED registration (the production-common
         // case). private_only was historically missing here; apns_* added v0.6.0.
+        if register.executionRole != .solo {
+            try fields.append(("execution_role", encodeValue(register.executionRole)))
+            try appendIfPresent(register.memberRegistrationNonce, key: "member_registration_nonce", to: &fields)
+            try appendIfPresent(register.clusterModels, key: "cluster_models", to: &fields)
+        }
         if register.privateOnly {
             try fields.append(("private_only", encodeValue(true)))
         }

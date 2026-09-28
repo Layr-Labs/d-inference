@@ -46,6 +46,8 @@ const (
 	GateAllowlist
 	GateNotServingModel
 	GateStateRestoring
+	GatePairReserved
+	GateMemberOnly
 	// GateReasonCount is the number of reasons; it sizes the tally arrays and
 	// is not itself a reason.
 	GateReasonCount
@@ -80,6 +82,8 @@ var gateReasonNames = [GateReasonCount]string{
 	GateAllowlist:            "allowlist",
 	GateNotServingModel:      "not_serving_model",
 	GateStateRestoring:       "state_restoring",
+	GatePairReserved:         "pair_reserved",
+	GateMemberOnly:           "member_only",
 }
 
 // String returns the snake_case name of the reason ("unknown" for an

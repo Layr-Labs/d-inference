@@ -27,6 +27,7 @@ extension ProviderLoop {
     /// `succeeded` -- the coordinator can use this as an idempotent
     /// "ensure warm" call.
     internal func handleLoadModelRequest(modelId: String, send: SendHandle) {
+        if isClusterMember { rejectClusterMemberLoad(modelId, send: send); return }
         let eligibility = ModelRuntimeRequirements.evaluate(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         guard eligibility.isEligible else {

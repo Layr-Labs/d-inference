@@ -140,6 +140,13 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 message: ProviderLoop.sanitizedInferenceFailure(
                     from: error, phase: .generation).message
             )
+        } catch let error as PreContentDeadlineFailure {
+            // Opt-in distributed HTTP budgets use the existing pre-content
+            // refusal mapping, before any SSE headers or content are returned.
+            return Self.openAIErrorResponse(
+                status: HTTPResponse.Status(code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
+                message: ProviderLoop.sanitizedInferenceFailure(
+                    from: error, phase: .generation).message)
         } catch let error as MLXOpenAIServiceError {
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(

@@ -90,7 +90,10 @@ public actor CoordinatorClient {
     /// a fresh connection (frames before `register` are a protocol violation);
     /// the baseline heartbeat task starts after registration and needs no
     /// gate.
+    var memberNegotiation: ClusterMemberNegotiation?
+    internal var memberRoleFailure = false
     internal var sessionRegistered = false
+    private var connectionTask: Task<Void, Never>?
 
     private let shutdownFlag = ShutdownFlag()
 
@@ -210,12 +213,21 @@ public actor CoordinatorClient {
             router.yield(msg)
         }
 
-        Task { [weak self] in
+        connectionTask = Task { [weak self] in
             guard let self else { return }
             await self.runLoop()
         }
 
         return (eventStream, sendFn)
+    }
+
+    /// Member hosts join the real transport loop before dropping control state.
+    /// Native/device release remains independently owned by the installed host.
+    internal func shutdownAndWait() async {
+        shutdown()
+        connectionTask?.cancel()
+        await connectionTask?.value
+        connectionTask = nil
     }
 
     public func shutdown() {

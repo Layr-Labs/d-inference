@@ -1,0 +1,406 @@
+{
+  "coordinator": {
+    "allEightRecordedControllersNaturalZeroReapedGroupsAbsent": true,
+    "artifacts": [
+      {
+        "bytes": 51029986,
+        "executed": false,
+        "private": false,
+        "sha256": "97d37d394de97c3e8acf945c711912f5a0c894945fdee8f82a40dbc026678f75"
+      },
+      {
+        "bytes": 51065586,
+        "executed": false,
+        "private": true,
+        "sha256": "2ae4fd17e0c088b5dd1246a8f4e12742d40a04f23b64b075a747dc19b9543c0d"
+      }
+    ],
+    "coverage": {
+      "default-command": {
+        "completed": 8,
+        "explicitSkips": 1,
+        "passed": 7
+      },
+      "default-focused": {
+        "completed": 51,
+        "explicitSkips": 0,
+        "passed": 51
+      },
+      "private-command": {
+        "completed": 11,
+        "explicitSkips": 1,
+        "passed": 10
+      },
+      "private-focused": {
+        "completed": 54,
+        "explicitSkips": 0,
+        "passed": 54
+      }
+    },
+    "databaseMaintenanceBehaviorTested": false,
+    "defaultDriverExcluded": true,
+    "exactSkipReason": "    maintenance_test.go:30: DATABASE_URL not set\n",
+    "explicitSkippedMethod": "TestMaintenanceProcessDoesNotServeOrSeedAdmin",
+    "privateBuildTag": "native_pair_hardware_experiment",
+    "raceDetector": true,
+    "sourceInventorySHA256": "614a84427c6ce8cbb9ce7349047def533d862b89b91039c08d2dc6775e60bd39",
+    "trustOnlyModeCreatesPairSelector": false,
+    "trustOnlyModeHasApprovalCatalog": false
+  },
+  "evidence": {
+    "coverage-default-command": {
+      "bytes": 477,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/check-1/default-command.coverage.json",
+      "sha256": "5ca63278e228597178242f99592136cb460d9ddcfed1bd9a651498edc1cb1f2c"
+    },
+    "coverage-default-focused": {
+      "bytes": 3775,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/check-1/default-focused.coverage.json",
+      "sha256": "63228a54c006a4e2636b5a36000239a257812efa05a3150d8325f3b1cbbc0a8b"
+    },
+    "coverage-private-command": {
+      "bytes": 668,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/check-1/private-command.coverage.json",
+      "sha256": "79c20690d5600040ae87260a50894189dcbd55dc2883321e94787eb851844fbc"
+    },
+    "coverage-private-focused": {
+      "bytes": 3993,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/check-1/private-focused.coverage.json",
+      "sha256": "213ba98ea1a8ef05d7fa235658d5644696228cdca3e848022183558474169691"
+    },
+    "go-default-build": {
+      "bytes": 573,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/build-1/default-build.json",
+      "sha256": "79ff3dcc5de22bbb73368f8e5d6e6028e8f64fd9a94fae8fa1b33fc7a39096fb"
+    },
+    "go-default-command": {
+      "bytes": 478,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/check-1/default-command.json",
+      "sha256": "4b602ccc09cc226b5092fcd939606ae8af0dc85a827675fc0b5a14a2cafadaa5"
+    },
+    "go-default-focused": {
+      "bytes": 607,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/check-1/default-focused.json",
+      "sha256": "d61abc33b57eb19086943fb2fb6881c3d77ef829abc64e3bd0a3ada633b25888"
+    },
+    "go-default-tag-selection": {
+      "bytes": 472,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/check-1/default-tag-selection.json",
+      "sha256": "18bdb2b50e94d53eeb879ee9bdc535f29887f5597d9747a3e79c987f09ac2006"
+    },
+    "go-private-build": {
+      "bytes": 618,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/build-1/private-build.json",
+      "sha256": "f238834e85954edf751ac2bdcd0a62664c1f7df96397d17213ac5f78a278395e"
+    },
+    "go-private-command": {
+      "bytes": 536,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/check-1/private-command.json",
+      "sha256": "e39aba2bf1a2d2a711df404b59e2588f1fa6a980b5c3846624d413e4c3de8dcb"
+    },
+    "go-private-focused": {
+      "bytes": 651,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/check-1/private-focused.json",
+      "sha256": "f389a69166f69b8387f928fcf99ec0155dd773fb564741796450d2ac439eda18"
+    },
+    "go-private-tag-selection": {
+      "bytes": 524,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/check-1/private-tag-selection.json",
+      "sha256": "fda77f9d1bfbb5778395ca874030d6d420ac1566c5ecba73e7f81a7b5d6ce83a"
+    },
+    "goBuild": {
+      "bytes": 1214,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/build-1/checks.json",
+      "sha256": "4b963194fc1af3408d8f8b5acf99677a4535f1bddd6e23c6fc4b9e7b8713547a"
+    },
+    "goChecks": {
+      "bytes": 1427,
+      "path": "cluster-native-hardware-go-maintenance-skip-correction-20260917/check-1/checks.json",
+      "sha256": "deae5d6018abea89d0d611770e7c5c822ebb95e79ae112a99ad69d2cb7164282"
+    },
+    "native-native": {
+      "bytes": 4834,
+      "path": "qwen9b-protected-scoped-publisher-build-20260917/native-7/receipt.json",
+      "sha256": "655a912de2564c2f56a4f31e25f3c72d036d37d51b6abb6a7e19f22ff2e2caf0"
+    },
+    "native-runtime": {
+      "bytes": 5856,
+      "path": "qwen9b-protected-scoped-publisher-build-20260917/runtime-7/receipt.json",
+      "sha256": "cb678b6f32a99e85483191e50fa386e1d2b6b146306f5d4b6a3294d66c062a9e"
+    },
+    "native-worker": {
+      "bytes": 3577,
+      "path": "qwen9b-protected-scoped-publisher-build-20260917/worker-7/receipt.json",
+      "sha256": "5b575286207df1a9268acdbbd9a930511dda588640df31b83d6dce791bf5fcf7"
+    },
+    "nativeCapability": {
+      "bytes": 4828,
+      "path": "qwen9b-protected-scoped-publisher-build-20260917/capability-7/receipt.json",
+      "sha256": "0737e9a2c8606c22753b4721dd555a0b1c549e92ad85ebb17d0d2f510116fc25"
+    },
+    "nativeDescription": {
+      "bytes": 11703,
+      "path": "qwen9b-protected-scoped-publisher-build-20260917/runtime-bundle-7/protected-runtime-description.json",
+      "sha256": "7153b9cf97de89fc9ac2e21a4f94dffeb06a192a683f5bfd39a0d8cf067df2db"
+    },
+    "observedArtifactJoin": {
+      "bytes": 8791,
+      "path": "cluster-native-observed-unsigned-bindings-20260917/receipt.json",
+      "sha256": "2b5c982d4bbe91ab580acde26a2e0e84a2db5d0dd2fe6fd9851fa082d34f1426"
+    },
+    "observedArtifacts": {
+      "bytes": 9785,
+      "path": "cluster-native-observed-unsigned-bindings-20260917/observed-bindings.json",
+      "sha256": "dc2a81b2aa6e5d4bfedbca0be0bb48731b2193d9c3533850e6a24a21f4389390"
+    },
+    "owner-baseline-drain-valid": {
+      "bytes": 200,
+      "path": "cluster-native-numerical-provider-checks-20260917/helper-2/baseline-drain/cases/valid/result.json",
+      "sha256": "0aaa10e705ff86b85ac10bcffb00ed0e59984eec797c94e053c9a4130ad12cd9"
+    },
+    "owner-candidate-drain-abnormal": {
+      "bytes": 201,
+      "path": "cluster-native-numerical-provider-checks-20260917/helper-2/candidate-drain/cases/abnormal/result.json",
+      "sha256": "05cd5dc584edc4270e53e039d86200bc722c497ca3887215cb077bccbe8b0269"
+    },
+    "owner-candidate-drain-missing": {
+      "bytes": 201,
+      "path": "cluster-native-numerical-provider-checks-20260917/helper-2/candidate-drain/cases/missing/result.json",
+      "sha256": "894eb01101b7723335ac462d96e90ecc1182a896051b24d465e6f95a4b58d812"
+    },
+    "owner-candidate-drain-valid": {
+      "bytes": 198,
+      "path": "cluster-native-numerical-provider-checks-20260917/helper-2/candidate-drain/cases/valid/result.json",
+      "sha256": "e87d9995a4deaf5d3b1aa1018684329824c77e92ac954d3e0adff0e256171cb1"
+    },
+    "owner-candidate-drain-wrong": {
+      "bytes": 199,
+      "path": "cluster-native-numerical-provider-checks-20260917/helper-2/candidate-drain/cases/wrong/result.json",
+      "sha256": "b19d6dd4a81bb6e481d00d77f10017819ce7e1ca036bf57c5a9f62f16cb2aefe"
+    },
+    "ownerEOFSourceReview": {
+      "bytes": 517,
+      "path": "cluster-owner-release-eof-root-review-20260917/source-review.json",
+      "sha256": "889a6dcc8f8135ee3f6ceb7f4d9678026eba4cd993ae468f1fa0aa8ca9817628"
+    },
+    "ownerHelper": {
+      "bytes": 79500,
+      "path": "cluster-native-numerical-provider-checks-20260917/helper-2/checks.json",
+      "sha256": "9af71c63a19c43118361bc77c50cc9db12c5a8929c76f92df1e21a979f9b91e9"
+    },
+    "providerBuild": {
+      "bytes": 1131,
+      "path": "cluster-native-numerical-ready-fixture-correction-20260917/build-1/checks.json",
+      "sha256": "99ee6dc831e0a12ddf1ed2f39061448fffe9720010fdc9e6ccf38c21f29d1b07"
+    },
+    "providerTests": {
+      "bytes": 2599,
+      "path": "cluster-native-numerical-ready-fixture-correction-20260917/tests-1/checks.json",
+      "sha256": "28e4f9f7c862a2b9a55748ac6fc1de2931e1c76549d8866a1c708d931cd8c5b8"
+    },
+    "scopedPublisherHandoff": {
+      "bytes": 4547,
+      "path": "qwen9b-protected-scoped-publisher-build-20260917/HANDOFF.md",
+      "sha256": "076dd9bf6e14374be11443dec5a13dfed0aecb69b35a361ddb46063da4508704"
+    },
+    "signingHandoff": {
+      "bytes": 7697,
+      "path": "cluster-native-signing-attestation-handoff-20260917/HANDOFF.md",
+      "sha256": "f704d603642c1ee3ebed3fb7d08e3ac7ec54edf2b0059f7312bbec0186ac1930"
+    },
+    "tlsChildren": {
+      "bytes": 2814,
+      "path": "cluster-native-hardware-tls-upgrade-correction-20260917/tls-check-1/receipt.json",
+      "sha256": "a8376c750b17d0f5c96606803ec05764c36f47698881baf63d689e160eb30914"
+    },
+    "tlsClient": {
+      "bytes": 244,
+      "path": "cluster-native-hardware-tls-upgrade-correction-20260917/tls-check-1/client-result.json",
+      "sha256": "a63e5396330008f40dbb5b91d518621a768371315414c86dfd03b5c7ec10b8b0"
+    },
+    "tlsQualification": {
+      "bytes": 2063,
+      "path": "cluster-native-tls-upgrade-root-review-20260917/qualified-tls.json",
+      "sha256": "468aa527ddaad3a5377da9fa8df0e761c1332c2d6118123ef37322a33904b31e"
+    },
+    "tlsServer": {
+      "bytes": 228,
+      "path": "cluster-native-hardware-tls-upgrade-correction-20260917/tls-check-1/server-http-observation.json",
+      "sha256": "54e9ef93aa3a4375959a762970206f7c3578b26b069861bb654c29dce844497b"
+    }
+  },
+  "native": {
+    "additionalOperationalChargeBytes": 196788480,
+    "bundleManifestSHA256": "cc85862c0f5cf53060bbdddbaeb20cc6214e3c1991bfaf277a3624cb5b7249aa",
+    "capabilityCommandChildrenPassed": 5,
+    "capabilityInputProducerAccepted": 4,
+    "capabilityInputProducerRejected": 13,
+    "dependencyMembers": 9832,
+    "dependencySnapshotSHA256": "9711b7a5386bb205806614d7b36ac1af7003d74c8806772b59f52faec5c76f71",
+    "files": {
+      "darkbloom-cluster-worker": {
+        "bytes": 44874104,
+        "path": "darkbloom-cluster-worker",
+        "sha256": "3d9c016f5e1946e004c4ad7ea9f002e008534722e48d79faf24aa09b27822c39"
+      },
+      "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": {
+        "bytes": 24804,
+        "path": "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal",
+        "sha256": "4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149"
+      },
+      "mlx.metallib": {
+        "bytes": 182425984,
+        "path": "mlx.metallib",
+        "sha256": "2129f6132794d84243c02631bc7478417dba0e0dbd10467beab56c11bf20bdd2"
+      },
+      "ordinary-capability.json": {
+        "bytes": 3771,
+        "path": "ordinary-capability.json",
+        "sha256": "8dea283e4896547615b42fe8a3e87627c08b9cf90dfd37d3add083b10aa08723"
+      },
+      "protected-runtime-description.json": {
+        "bytes": 11703,
+        "path": "protected-runtime-description.json",
+        "sha256": "7153b9cf97de89fc9ac2e21a4f94dffeb06a192a683f5bfd39a0d8cf067df2db"
+      },
+      "source-identity.json": {
+        "bytes": 16040,
+        "path": "source-identity.json",
+        "sha256": "e2c0cc74a4602bc4303454ae1a83f38927fa9017671e52eec3e54a85605a0db5"
+      }
+    },
+    "numericalEvidenceHostAllowanceBytes": 10485760,
+    "numericalEvidenceMaximumEncodedBytes": 8388608,
+    "planSHA256": "2b5aa52cab49c12cfa44f2348326f956127d2ca15b1c55b5632f447901e56293",
+    "profileFingerprint": "73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff",
+    "protectedModelNumericalComparisonProduced": false,
+    "resourcePolicySHA256": "dc910813838e3d06a7fcdc1a93ee3b2e8529247839048bff84f50353fb052db5",
+    "runtimeSwiftTestingPassed": 7,
+    "runtimeXCTestPassed": 38,
+    "scope": {
+      "chunkTokens": 16,
+      "cut": 16,
+      "model": "registered_qwen35_9b",
+      "outputTokens": 2,
+      "prefillSchedule": "serial_v1",
+      "promptTokens": 32,
+      "stopTokenIDs": []
+    },
+    "sourceMembers": 3081,
+    "sourceSnapshotSHA256": "7b494433ed48fb96ad43c73c2915f1a33d828a576b00993f92d34421e6578dd4",
+    "wholeProcessPeakProven": false,
+    "workerXCTestPassed": 19
+  },
+  "ownerReleaseEOF": {
+    "caseResults": {
+      "baseline-drain/valid": {
+        "journalEmpty": true,
+        "nativeCleanupObserved": true,
+        "ownerACKObserved": false,
+        "ownerExitedDuringTerminalCallback": true,
+        "released": false
+      },
+      "candidate-drain/abnormal": {
+        "journalEmpty": true,
+        "nativeCleanupObserved": true,
+        "ownerACKObserved": true,
+        "ownerExitedDuringTerminalCallback": true,
+        "released": false
+      },
+      "candidate-drain/missing": {
+        "journalEmpty": true,
+        "nativeCleanupObserved": true,
+        "ownerACKObserved": false,
+        "ownerExitedDuringTerminalCallback": true,
+        "released": false
+      },
+      "candidate-drain/valid": {
+        "journalEmpty": true,
+        "nativeCleanupObserved": true,
+        "ownerACKObserved": true,
+        "ownerExitedDuringTerminalCallback": true,
+        "released": true
+      },
+      "candidate-drain/wrong": {
+        "journalEmpty": true,
+        "nativeCleanupObserved": true,
+        "ownerACKObserved": false,
+        "ownerExitedDuringTerminalCallback": true,
+        "released": false
+      }
+    },
+    "change": "Drain actual pipe EOF instead of using post-terminal process liveness as EOF; preserve original ACK and successful exit requirements",
+    "priorProviderFailureAloneProvesAttribution": false,
+    "qualifiedHelperOwnedSteps": 23
+  },
+  "pending": {
+    "currentRank0Attestation": null,
+    "currentRank1Attestation": null,
+    "privateCoordinatorConfiguration": null,
+    "privateReleaseBinding": null,
+    "requirements": [
+      "Authorized signing of the exact Provider composition",
+      "Genuine APNs/code proof and current SE/MDA evidence for both Macs",
+      "Matching private release/coordinator configuration and explicit native approval",
+      "Actual protected pair request, independent full-row/state comparison and original owner cleanup"
+    ],
+    "signedProviderArtifact": null
+  },
+  "provider": {
+    "explicitMemberAcknowledgmentCases": [
+      false,
+      true
+    ],
+    "releaseSigningQualified": false,
+    "signedCLI": null,
+    "sourceInventoryMembers": 13859,
+    "sourceInventorySHA256": "13bbf9c4b62ee71ffb3e2204ae30e1b08925ddb7da0b379cb67842aaf35cc079",
+    "suitesPassed": 19,
+    "testsPassed": 117,
+    "unsignedCLI": {
+      "bytes": 145761856,
+      "sha256": "8bb652d7bc43d57ed4899487c27ae4e5abf4fd26731cdf00fd687867cdf7c786"
+    }
+  },
+  "reportDate": "2026-09-17",
+  "repositoryHEAD": "605651bb95d71c1da9bb122107925143e9441973",
+  "retainedEvidenceRoot": "/Users/developer/DarkbloomDev/cluster-research",
+  "schema": "cluster_protected_runtime_software_qualification_v1",
+  "scope": {
+    "actualLoopbackTLSQualified": true,
+    "deploymentPerformed": false,
+    "deviceTrustQualified": false,
+    "docsCheckerRunForReport": false,
+    "encryptedTwoMacInferenceQualified": false,
+    "largeArtifactHashesRecomputedForReport": false,
+    "performanceQualified": false,
+    "privateCompositions": true,
+    "servingEnabled": false,
+    "softwareQualified": true,
+    "testsRerunForReport": false
+  },
+  "scopedPublisher": {
+    "beforeAfterLiveChecksPreserved": true,
+    "call": "withoutActuallyEscaping(publisher)",
+    "checkerRemainsBorrowed": true,
+    "publicNonescapingSignaturesPreserved": true,
+    "publisherStoredReturnedOrQueued": false,
+    "sourceSHA256": "82ec33138efb8d5b6f19f00b5500adfbb81a63326962a17d739169507edd15b8"
+  },
+  "tls": {
+    "actualTLSVersion": "1.3",
+    "cases": {
+      "expired": "tls-refused",
+      "untrusted": "tls-refused",
+      "valid": "ready",
+      "wrong-anchor": "tls-refused",
+      "wrong-host": "tls-refused",
+      "wrong-url": "refused-before-connect"
+    },
+    "droppedObservations": 0,
+    "runtimeVerifierSHA256": "b68c522383747f1f59222b008e6c44fddb6fd5047c8152bb0d08550bf239a635",
+    "scope": "Loopback test certificates and exact configured URL; no deployed coordinator or device-attestation qualification",
+    "successfulWebSocketUpgrades": 1,
+    "systemTrustChanged": false
+  }
+}

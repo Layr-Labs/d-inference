@@ -177,6 +177,7 @@ extension ProviderLoop {
         profile requestProfile: RequestProfileBuilder? = nil,
         send: SendHandle
     ) async {
+        if isClusterMember { rejectClusterMemberInference(requestId, send: send); return }
         // Profiler accumulator anchored at frame receipt (a fresh one for
         // direct/test callers). Registered so `handleCancellation` can stamp
         // cancel receipt; removed on every exit that does not hand it to the

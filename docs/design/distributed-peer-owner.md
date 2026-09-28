@@ -1,0 +1,49 @@
+# First authenticated remote worker owner
+
+> Last updated: 2026-09-15 · commit `605651bb9`
+
+Status: **In progress** — 2026-09-15 — SSH owner service, endpoint, durable device journal, private local bootstrap channel and paired native bootstrap relay are integrated; local child/process and ownership-state tests pass, including cancellation during bootstrap. Cross-host qualification, installed CLI and orphan recovery remain pending.
+
+Decision: 2026-09-15. Source base: `605651bb95d71c1da9bb122107925143e9441973`, including the current uncommitted shared cluster package. This addendum supersedes the execution plan's restriction of SSH to bootstrap: **the first product transport is explicitly configured SSH stdio between installed Darkbloom binaries**. The typed owner boundary permits TLS later. No transport, security, recovery or physical qualification is claimed by the accompanying pure state code.
+
+The leader runs one local native child and connects to `darkbloom cluster worker-owner --stdio` on the follower. That remote Darkbloom process owns its native child, resource checks, independent hard deadline, cancellation, actual exit observation and device lease. Python orchestration is not part of this product path.
+
+## Existing pieces and the missing boundary
+
+| Reuse | Required change |
+| --- | --- |
+| [Worker codec/session](../../libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterWorkerSession.swift), with strict bounded commands, epoch/request identity and clean-stop/cancel distinction | Keep generation frames unchanged. Translate remote remaining durations into the follower's local deadlines before constructing a native reservation. |
+| [Direct-child owner](../../libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerProcess.swift), with independent pipe pump, watchdog, cancellation and actual exit latch | Factor an endpoint interface for [Pair](../../libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerPair.swift) and [Request](../../libs/darkbloom-cluster/Sources/DarkbloomClusterProcess/ClusterWorkerRequest.swift). An SSH process exit is a transport failure, never the remote native exit latch. |
+| [Distributed provider owner contract](../../provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift) | Preserve bilateral retirement/fencing and exactly-once release. The follower returns native observations only after its local supervisor observes them. |
+| [Kernel update-lock pattern](../../provider-swift/Sources/ProviderCore/Update/UpdateProcessLock.swift), [process identity](../../provider-swift/Sources/ProviderCore/Service/ProcessIdentity.swift), [daemon status](../../provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift) | Add a separate device lease and bounded durable ownership record; an updater lock or PID-file lock is not this lease. |
+
+The current [pipe adapter](../../provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift) starts a fresh timeout; the separate deadline overlay corrects this with `DistributedRequestDeadlineContext`. Preserve the engine's original generation/first-token deadlines and provider receipt anchor. Serialize **bounded remaining durations at send time**, never `ContinuousClock.Instant` or another Mac's uptime. Each receiver subtracts its own queue age, applies the remaining response/transit allowance and local lifetime cap, and installs a non-extending local deadline. The origin still rejects late results; unsynchronized remote duration alone cannot prove an identical wall-clock deadline.
+
+## SSH command and trust constraints
+
+Use a directly owned `/usr/bin/ssh` process, dedicated pipes and a bounded diagnostic stream. Configuration explicitly records the destination, user, installed executable path, user-key selection and approved host-key pin. No first-use trust acceptance occurs during start. `configure` may present/import the fingerprint; it must not silently trust an unauthenticated key scan.
+
+Use explicit `BatchMode=yes`, `StrictHostKeyChecking=yes`, a cluster-specific `UserKnownHostsFile`, `IdentitiesOnly=yes`, public-key-only authentication, no TTY, no agent/X11 forwarding, no inherited proxy/local-command hooks and no inherited multiplexed connection. Disable automatic host-key updates. Keep private key material in the existing user credential mechanism. Bound connection startup and SSH lifetime independently of user callbacks.
+
+OpenSSH dispatches a remote command through the remote shell. Therefore use a **fixed** `exec <configured installed darkbloom> cluster worker-owner --stdio` command, with the executable restricted to an installer-owned absolute path or correctly shell-quoted configuration. Never interpolate a request, model path, arbitrary environment, coordinator address or user-supplied command into it. Send launch selection and request data through the authenticated bounded protocol; the remote saved configuration decides allowed executable/model/device paths. `-F` selects an intentionally controlled configuration; no arbitrary user `ProxyCommand` or `LocalCommand` is inherited.
+
+This authenticates the configured host and user, not hardware or native build measurements. Keep existing source/artifact/plan and arithmetic checks. A future TLS endpoint can reuse [Network.framework connection handling](../../provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift), Security/Keychain and a cluster-specific [persistent SecKey](../../provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift). Apple X509 already resolved by the provider supports `Certificate.PrivateKey(SecKey)`. TLS still needs a listener, certificate identity and explicit mutual peer-pin verification; the local HTTP bearer policy and coordinator trust status are not substitutes. Do not auto-remint a pinned key during start.
+
+## Native bootstrap must cross the same trust boundary
+
+JACCL currently accepts an unauthenticated raw rank and exchanges peer destination data in [TCPAllGather](../../libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/rdma.cpp). Those values feed queue-pair setup in [MeshGroup](../../libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/mesh.cpp). Authenticating outer commands while leaving that TCP listener on a LAN is insufficient.
+
+The preferred small native bridge exposes the existing C++ [AllGatherFactory initializer](../../libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/distributed.h) through an owned local descriptor/callback. Carry bounded raw contributions over a dedicated authenticated owner channel, with exact membership, rank, sequence and length checks. Reuse native serialization; do not copy RDMA struct layout into Swift. Install this before the first strict JACCL initialization: [the backend cache ignores a later factory](../../libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/distributed.cpp). Start a fresh native child for every new membership epoch.
+
+An interim fixed-purpose loopback tunnel is viable because [TCP binds the supplied address](../../libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/jaccl/lib/jaccl/tcp.cpp): rank0 native listens on its loopback; rank1 native connects to its own loopback proxy, which reaches only rank0's selected listener through the authenticated owner. Admit only the configured rank and fixed destination, bound reads/writes and preserve bootstrap barriers. This trusts local processes: native `SO_REUSEPORT` and unchecked initial rank make loopback alone unsuitable for a hostile-local-process threat model. No general forwarding proxy is exposed.
+
+RDMA payload traffic is not encrypted by SSH. Initial opt-in scope is the explicitly trusted two-machine group and direct Thunderbolt fabric, with checked local device/GID association and an actual collective. Do not advertise arbitrary untrusted-fabric security or hardware attestation.
+
+## Ownership, recovery and implementation order
+
+1. Add the pure binding/lease state and factor the endpoint interface without changing existing direct-child behavior. Add an installed remote owner plus SSH transport; retain raw bounded records, one active request and the existing bilateral barriers.
+2. Acquire the local device lease before load or advertisement. Leader advertises one distributed slot; follower is worker-only and does not separately advertise its leased GPU. Keep Pair's checked sum of named allowances and sequential remaining-capacity admission.
+3. Persist native launch identity before spawn. Disconnect immediately withdraws readiness and starts independent local cancellation/fencing. SSH EOF, a sent signal, timeout or loss of contact cannot release reservations. On recovery, reconnect only for status/fencing; new work uses a new membership after old ownership is resolved. A CLOEXEC owner lock can disappear while an orphan child survives, so lock acquisition alone is insufficient. Keep unresolved records unavailable, preserve a child-held lease where appropriate, and require validated old-process retirement/fencing. A failed `ProcessIdentity.read` is not proof of absence.
+4. Bind native bootstrap through the authenticated channel, then wire `cluster configure`, `cluster doctor`, `cluster status` and `start --distributed`. Doctor checks trust, installed build/model identity, local resources, actual physical link/collective and rollback; status reports readiness and unresolved leases honestly.
+
+The pure slice deliberately does not resolve orphan recovery, authenticate a frame, implement an SSH/TLS wire codec, spawn a worker or grant memory. Its 15 fabricated lifecycle tests exercise bookkeeping and failure transitions only. Production endpoint acceptance requires real two-host disconnect, owner death, stale-epoch, withheld-retirement and restart tests in addition to successful generation.

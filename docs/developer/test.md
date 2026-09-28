@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `53e537e4f`
+> Last updated: 2026-09-15 · commit `605651bb9`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -9,6 +9,445 @@ the docs lint locally; CI runs a subset per pull request (see the CI workflow
 map: the console UI job lints and builds but does not run vitest, and the
 benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
+
+The [Qwen projection arithmetic controls](../../experiments/cluster/inference/QWEN_GDN_ARITHMETIC_VALIDATION.md)
+compare native, FP32 and padded matrix shapes on one captured input. Their
+correctness observations do not qualify distributed throughput.
+The [Qwen whole-layer stage checks](../../experiments/cluster/inference/QWEN_LAYER_STAGE_VALIDATION.md)
+compare verified stage loading and complete CBv2 state/logits against an
+independent full-model request on small saved fixtures.
+The [candidate metadata fixtures](../../experiments/cluster/inference/Tests/LayerStageCandidates/README.md)
+compile production planning code without MLX and cover unequal splits,
+parameter/state ownership, quantization remapping and supported output gates.
+
+Run the [offline prefill planner tests](../../experiments/cluster/planning/README.md)
+without model loads or SSH:
+
+```sh
+python3 -B -m unittest discover -s experiments/cluster -p 'test_planning*.py'
+```
+
+The 41 tests check the bounded lookahead cost model, unequal chunk costs,
+first-token completion, missing measurements, memory exclusion, comparable
+device groups and the [recorded-service adapter](../../experiments/cluster/planning/measurements/README.md).
+The latter covers pinned file inputs, separate clock origins, phase mutations,
+exact candidate identities and contradictory partial ownership. Tests use
+fabricated records and costs; saved-run replay is separate from these fixtures.
+
+Run the [paired prefill study tests](../../experiments/cluster/benchmarking/README.md)
+with injected CPU cohort adapters:
+
+```sh
+PYTHONPATH=experiments/cluster python3 -B -m unittest -v \
+  benchmarking.test_specification benchmarking.test_aggregate benchmarking.test_coordinator
+```
+
+The 35 tests cover the balanced ten-prompt schedule, warmup exclusion,
+median-of-prompt-medians aggregation, failure retention, context cleanup,
+interrupts and event-sink errors. They launch no model or native process;
+resident execution adapters and target-hardware qualification remain separate.
+
+### Distributed provider lifecycle
+
+Run the experimental engine's focused tests from `provider-swift`:
+
+```sh
+swift test --jobs 2 --disable-automatic-resolution \
+  --filter 'Cluster|Distributed|StartCommandTests|ProcessLifecycleTests'
+```
+
+The tests in `Tests/ProviderCoreTests/Inference/Distributed` exercise committed
+token streaming, normal completion, cancellation, peer readiness loss, deadline
+projection and rechecks, originating deadlines across queue/admission, and
+reservations retained until retirement. An injected
+owner controls execution and acknowledgements; these tests load no model and
+contact no peers. The same selection includes saved configuration, installed
+references, distributed CLI argument handling, authenticated HTTP streaming,
+listener startup/shutdown and request-origin propagation. The installed host
+uses `DistributedEngineFactory` to return the existing provider bridge;
+physical execution remains a separate qualification.
+
+Run the [installed-session control checks](../../provider-swift/Tests/ClusterInstalledSessionChecks/README.md)
+from the repository root:
+
+```sh
+bash provider-swift/Tests/ClusterInstalledSessionChecks/run.sh
+```
+
+These compile the current installed-session and control sources without MLX.
+Actual local child processes exercise metadata joins, bounded file/command IO,
+partial startup, graceful drain, request-quota exhaustion, missing owner release
+acknowledgements, nonzero owner exits and lifetime expiry. The model workers are
+fabricated; these checks do not establish native inference or remote SSH trust.
+
+Run the [cluster diagnostics checks](../../provider-swift/Tests/ClusterDiagnosticsChecks/README.md)
+to verify read-only installed metadata on either role, fresh status decoding,
+local-interface discovery and uncertain device-journal states:
+
+```sh
+bash provider-swift/Tests/ClusterDiagnosticsChecks/run.sh
+cd provider-swift
+swift test --jobs 2 --filter 'clusterStatus|clusterDiagnostics|DistributedRequestObservation'
+```
+
+The first runner uses fabricated runtime descriptions and no model. The Swift
+tests additionally exercise the real local HTTP authentication/status route and
+bounded request logging. Physical peer/collective checks remain separate.
+
+The `DistributedHTTP` suites in `Tests/ProviderCoreTests/Server` cover first-content
+deadlines, bounded frame delivery, discarded response bodies, admission races and
+terminal usage after actual fixture-owner retirement. Local TCP cases distinguish
+full disconnect from a client write-half-close and verify error delivery after
+role-only output. Run them with the distributed regression selection:
+
+```sh
+cd provider-swift
+swift test --jobs 2 --filter 'Cluster|Distributed|distributedLocalServer|FirstContentDeadlineTests'
+```
+
+These tests use fabricated inference owners. Real model cancellation, native
+retirement and fresh-session recovery require separate installed-cluster checks.
+
+Run the [authenticated-record CPU checks](../../libs/darkbloom-cluster/Tests/SecurityChecks/README.md)
+with a new output directory:
+
+```sh
+python3 -B libs/darkbloom-cluster/Tests/SecurityChecks/run.py --output /tmp/darkbloom-record-checks
+```
+
+These compile the current CryptoKit codec and byte adapter without MLX. Fixed
+OpenSSL vectors, replay/tamper cases, cancellation races, bounded framing and
+budget checks exercise the security module. Native transport, key establishment
+and verified cluster membership require separate integration checks.
+
+Run the [native send-buffer checks](../../libs/darkbloom-cluster/Tests/NativeSendChecks/README.md)
+to verify full posted-frame padding, valid payload and buffer lifetime using the
+actual JACCL headers with simulated verbs and sanitizers:
+
+```sh
+python3 -B libs/darkbloom-cluster/Tests/NativeSendChecks/run.py --output /tmp/darkbloom-send-checks
+```
+
+These CPU checks also reproduce the original stale-tail bug with retained test
+headers. They do not establish physical RDMA compatibility or encrypted inference.
+
+Run the shared worker protocol and process-owner checks from the repository root:
+
+```sh
+bash libs/darkbloom-cluster/Tests/ProtocolChecks/run.sh
+bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
+bash libs/darkbloom-cluster/Tests/DeadlineChecks/run.sh
+bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh
+bash libs/darkbloom-cluster/Tests/SSHChecks/run.sh
+bash libs/darkbloom-cluster/Tests/BootstrapChecks/run.sh
+```
+
+These compile the actual shared modules with Swift 6 and warnings as errors.
+They check bounded framing, membership/request sequencing, asymmetric named
+capacity, clean stop, partial admission failure, deadlines, and cancellation
+with blocked callbacks. The process tests launch and observe real local test
+children; they require actual exit or matching retirement acknowledgments before
+resource release. Their provider contract check uses explicit MLX value
+stand-ins, so the full `swift test` command above remains necessary for actual
+ProviderCore integration. None of these runners loads a model or establishes remote
+process ownership. The deadline runner separately exercises checked conversion
+between the provider's continuous clock and local worker uptime; the process
+runner verifies remaining budgets against actual local test children.
+The endpoint fixture withholds simulated owner proof after an actual test child
+exits and checks that capacity remains charged. The remote runner compiles the
+current pure control sources separately from MLX and checks lease identity,
+pending admission, non-clean retirement, deadlines and unresolved ownership.
+These state fixtures do not authenticate or contact remote hosts.
+The SSH runner checks the actual owner service, endpoint and durable device
+journal using local test processes, including asynchronous native failure,
+deadline conversion and withheld cleanup proof. It does not make an SSH connection.
+Its paired-bootstrap fixtures include two local owners/native children and a
+forced cancellation race: a delayed valid bootstrap round must not discard the
+subsequent actual native terminal or prevent journal release.
+The bootstrap runner checks actual direct-child Unix sockets and worker argument
+admission, then the actual C/Swift callback bridge with explicit native
+factory/cache stand-ins. Its facade and argument checks use runtime value
+stand-ins; native compilation and physical execution remain separate checks.
+
+### External streaming latency
+
+Run the CPU and local HTTP fixture tests:
+
+```sh
+python3 -B -m unittest discover -s scripts/benchmarks -p 'test_streaming_latency.py'
+```
+
+For a real request, prepare a JSON body with `stream: true`, one text completion
+and `stream_options: {"include_usage": true}`. Use `max_tokens: 128` for MTP
+comparisons; one output token cannot establish active speculation. Then run
+against the intended already-running endpoint, with a new output directory:
+
+```sh
+python3 scripts/benchmarks/benchmark_streaming.py \
+  --endpoint http://127.0.0.1:18120/v1/chat/completions \
+  --request /tmp/cluster-request.json --output /tmp/cluster-stream-result \
+  --client-label development-client --prompt-tokens 8192
+```
+
+Use `DARKBLOOM_API_KEY` in the environment when authentication is required.
+The request, raw SSE bytes, client arrival times and final receipt are retained
+in the output directory. The API key is not written to the receipt. The client
+uses one monotonic clock including connection setup, excludes role-only frames
+and keepalives, and records first reasoning and first answer content separately.
+TTFT begins at request send and ends at the first complete streamed text event,
+including reasoning. An absolute timeout bounds trickling responses too.
+
+The receipt evaluates `10 seconds + 1 ms per prompt token` separately for
+reported prompt usage and optional caller-declared counts. A failed request
+does not become a passing SLA sample because it emitted partial output.
+HTTP chunk counts are not token counts: engine prefill/decode rates and actual
+MTP engagement require corresponding server evidence. A direct endpoint run
+does not verify the OpenRouter route, and a repeated request does not establish
+uncached prefill unless the serving configuration and cache telemetry confirm it.
+
+Run the [native candidate exporter checks](../../experiments/cluster/inference/Tools/LayerStageCandidates/README.md)
+without MLX or model payloads:
+
+```sh
+bash experiments/cluster/inference/Tests/LayerStageCandidateExport/run.sh
+```
+
+The 14-source Swift runner passed 23 accepted/39 rejected checks, including
+retained 9B/27B metadata, wrapper forms, complete ownership, strict input pins,
+regular-file snapshots and bounded output. Actual catalog exports joined both
+saved 9B partitions to their reported active mappings; this is metadata and
+recorded timing validation, not a physical throughput result.
+
+Run the [registered dense-profile fixtures](../../experiments/cluster/inference/QWEN_DENSE_PROFILE.md)
+without MLX or model payloads:
+
+```sh
+bash experiments/cluster/inference/Tests/RegisteredDenseProfiles/run.sh
+```
+
+Run the [observed descriptor and checkpoint IO fixtures](../../experiments/cluster/inference/QWEN_DENSE_LOADING.md)
+under Swift 6 without MLX or downloaded model payloads:
+
+```sh
+bash experiments/cluster/inference/Tests/ObservedDenseLoader/run.sh
+```
+
+These pass 22 accepted/104 rejected cases and reuse the registered-profile
+metadata fixture. The actual checkpoint constructor verifies tiny synthetic
+temporary files; this does not qualify 27B model loading or resource admission.
+
+Run the [constructor-probe admission and checkpoint-reuse fixtures](../../experiments/cluster/inference/QWEN_DENSE_CONSTRUCTOR_PROBE.md)
+without MLX or downloaded model payloads:
+
+```sh
+bash experiments/cluster/inference/Tests/ConstructorProbes/run.sh
+```
+
+The standalone fixture and 15-source public runner both pass 11 accepted/41
+rejected checks and share the retained metadata input. Native constructor execution is a
+separate guarded mode; these fixtures do not qualify model loading, numerics or
+memory safety.
+
+Run the [selected-stage loading admission fixtures](../../experiments/cluster/inference/QWEN_DENSE_STAGE_LOADING.md)
+without MLX or downloaded model payloads:
+
+```sh
+bash experiments/cluster/inference/Tests/SelectedStageLoading/run.sh
+```
+
+The updated standalone fixture passed 21 accepted/122 rejected checks
+with empty stderr.
+The 32-source public runner shares the registered-profile metadata input. These
+pure CLI, budget and resource predicates do not execute the private live gate
+or materialization. Separate guarded native runs passed for both 9B halves;
+see the linked loading page for the scope of that evidence.
+These checks charge aligned scratch only while selected reads remain; allocator thresholds retain
+their existing formula.
+
+Run the [short request memory-ledger fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_LEDGER.md)
+without MLX or model payloads:
+
+```sh
+bash experiments/cluster/inference/Tests/ShortRequestLedger/run.sh
+```
+
+The public runner passed 31 accepted/42 rejected checks with empty stderr. The 21-source runner reuses the shared
+registered-profile metadata. Invented allocator callbacks test exact short state,
+fusion and evidence allowances without qualifying resource admission or native
+forward execution.
+
+Run the [short full-reference loading fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_REFERENCE_LOADING.md)
+without MLX or model payloads:
+
+```sh
+bash experiments/cluster/inference/Tests/ShortReferenceLoading/run.sh
+```
+
+The public runner passed 22 accepted/101 rejected checks with
+empty stderr. The 38-source runner
+reuses the shared retained metadata. Synthetic allocator/resource observations
+exercise the pure predicates, without running the private loading gate or a
+forward pass.
+
+Run the [short pair loading fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_PAIR_LOADING.md)
+without MLX or model payloads:
+
+```sh
+bash experiments/cluster/inference/Tests/ShortPairLoading/run.sh
+```
+
+The updated standalone fixture passed 24 accepted/82 rejected checks with empty stderr. The 41-source runner reuses the shared
+retained metadata. Synthetic resource and allocator observations test ownership,
+ordered progress and retained inert allowances without executing the private pair
+owner, model loading or forward arithmetic.
+The checks include the scratch addition to actual-free thresholds and unchanged
+completed-state terms.
+
+Run the [short parity entry fixtures](../../experiments/cluster/inference/QWEN_DENSE_SHORT_PARITY.md)
+without MLX or model payloads:
+
+```sh
+bash experiments/cluster/inference/Tests/ShortParity/run.sh
+```
+
+The standalone 40-source fixture and public runner passed 19 accepted/83 rejected
+checks with empty stderr. It uses the real strict parser and request admission, synthetic token
+files and fabricated CPU publication values. It checks encoded byte limits and
+no-write failure boundaries; actual forward execution remains pending.
+
+Run the [resident lifecycle fixtures](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md)
+under Swift 6 without MLX:
+
+```sh
+bash experiments/cluster/inference/Tests/ResidentLayerStages/run.sh
+```
+
+These 21 cases include four joined threads exercising overlapping request and
+release attempts. They check CPU ownership and cleanup, not native model reuse.
+
+The native experiment's `--mode adapter-check` passes 43 records, preserving the
+preceding 42 byte-for-byte and in order. The new
+[`checkpoint_aligned_selected_read_check`](../../experiments/cluster/inference/Sources/ClusterInference/CheckpointAlignedReadCheck.swift)
+passes nine accepted/ten rejected cases using real temporary files, without
+model arrays: selected-byte equality, aligned/edge reads, bounds and overflow,
+EOF/interruption and mutation. This does not measure file-cache savings. The
+[resident worker checks](../../experiments/cluster/inference/QWEN_RESIDENT_STAGES.md#cpu-checks)
+also pass six CPU groups; physical model completion and throughput remain
+separate from these checks.
+
+The `--stage-cut` admission checks passed eight accepted/50 rejected comparison
+cases and eight accepted/47 rejected rank cases, including stale plan binding
+and foreign modes that reuse preflight. The public short `ranks` launcher
+forwards the cut and derives parameter/state ownership from it. The
+[unequal-stage numerical checks](../../experiments/cluster/inference/QWEN_UNEQUAL_STAGE_VALIDATION.md)
+passed for a tiny 4+8 fixture and the registered 9B 12+20 split against fresh
+full-model baselines. A private two-process 12+20 run on one GPU also passed
+against the retained reference; the public model entry remains unqualified.
+Execution and audit limits are recorded separately.
+The native registered 8K reference, pair and rank modes also accept a selected
+cut. Their new admission check passed 13 accepted/58 rejected CLI cases plus
+eight accepted/14 rejected synthetic plan cases, including nil/default binding,
+all seven legal ranges, exact state ownership and rejection before file reads.
+All solo modes reject the cut. The
+[8K 12+20 checks](../../experiments/cluster/inference/QWEN_LONG_PREFILL_UNEQUAL_VALIDATION.md)
+passed within one process and across two serial loopback processes against a
+fresh same-plan reference, with separately validated local phase traces.
+The [public long-rank command](../../experiments/cluster/runtime/stage_checks/LONG_PREFILL.md)
+now forwards explicit cut 12 with serial scheduling; default halves retain both
+policies. All 109 integrated stage tests and 21 saved-default comparisons passed.
+The public cut-12 serial model entry subsequently passed on the M4 Pro against
+the same qualified reference. Other public model-entry options and unequal
+lookahead remain unqualified.
+The [registered 9B stage comparison](../../experiments/cluster/inference/QWEN_LAYER_STAGE_REAL_VALIDATION.md)
+releases the full baseline before loading stages and compares native logits
+and per-component state digests on a fixed short workload.
+The [two-process residual check](../../experiments/cluster/inference/STAGE_P2P_VALIDATION.md)
+checks native transfer bytes and owned buffers, strict frame admission,
+bootstrap timeout and peer-loss cleanup. It does not load a model. The
+[registered 9B two-process stage check](../../experiments/cluster/inference/QWEN_LAYER_STAGE_RANK_VALIDATION.md)
+then compares complete state digests and native logit bytes with the separate
+full-model baseline.
+The [registered 9B prompt-lookahead check](../../experiments/cluster/inference/QWEN_LAYER_STAGE_LOOKAHEAD_VALIDATION.md)
+adds explicit received/consumed acknowledgement phases, bounded prompt work
+ahead of the consumer, and independent replay of the host action trace.
+The [registered 9B prefill compute control](../../experiments/cluster/inference/QWEN_LAYER_STAGE_PREFILL_VALIDATION.md)
+defers candidate state/logit captures until the final prompt frontier, then
+checks complete final state, native logit equality and first-token selection
+against the separately recorded full model.
+The [v3 prefill rank protocol](../../experiments/cluster/inference/QWEN_LAYER_STAGE_PREFILL_RANK_PROTOCOL.md)
+adds explicit start, first-token return and post-stop release. Both schedules
+passed the [registered 9B two-process prefill check](../../experiments/cluster/inference/QWEN_LAYER_STAGE_PREFILL_RANK_VALIDATION.md),
+including independent final-state/logit digests, token selection and host trace
+validation. The separate [14-cohort timing diagnostic](../../experiments/cluster/inference/QWEN_LAYER_STAGE_PREFILL_TIMING_DIAGNOSTIC.md)
+retains two excluded priming trials and six measured pairs; its descriptive
+ratios do not qualify causal acceleration or physical-cluster throughput.
+The [matched-chunk solo reference contract](../../experiments/cluster/inference/QWEN_LAYER_STAGE_SOLO_PREFILL.md)
+describes the additive full-model control, strict reference admission and timer
+boundaries. The [guarded registered-9B solo validation](../../experiments/cluster/inference/QWEN_LAYER_STAGE_SOLO_PREFILL_VALIDATION.md)
+passed independently checked final-state/logit digests and selection; its
+single timing point remains unqualified for acceleration or resident throughput.
+
+The [long-prefill profile](../../experiments/cluster/inference/QWEN_LAYER_STAGE_LONG_PREFILL.md)
+has a [passing tiny 8K native check](../../experiments/cluster/inference/QWEN_LAYER_STAGE_LONG_PREFILL_VALIDATION.md).
+The separate [registered 9B reference command](../../experiments/cluster/inference/QWEN_LONG_PREFILL_REFERENCE.md)
+passed its [guarded native validation](../../experiments/cluster/inference/QWEN_LONG_PREFILL_REFERENCE_VALIDATION.md).
+The [full-model/two-stage check](../../experiments/cluster/inference/QWEN_LONG_PREFILL_PAIR.md)
+passed its [guarded native comparison](../../experiments/cluster/inference/QWEN_LONG_PREFILL_PAIR_VALIDATION.md).
+The new [8K rank path](../../experiments/cluster/inference/QWEN_LONG_PREFILL_RANKS.md)
+passed [guarded serial and lookahead validation](../../experiments/cluster/inference/QWEN_LONG_PREFILL_RANK_VALIDATION.md).
+The [8K solo control](../../experiments/cluster/inference/QWEN_LONG_PREFILL_SOLO.md)
+passed its [matched-workload validation](../../experiments/cluster/inference/QWEN_LONG_PREFILL_SOLO_VALIDATION.md)
+with fresh-state-through-argmax timing and post-stop evidence.
+These checks preserve the older short-prompt limits.
+The [public 8K launch commands](../../experiments/cluster/runtime/stage_checks/LONG_PREFILL.md)
+passed the 259-test cluster Python suite and saved-output schema replay;
+native execution through these public commands is still unqualified.
+The [phase tracing tests](../../experiments/cluster/inference/QWEN_PREFILL_PHASE_TRACE.md)
+compile Foundation/Darwin fixtures separately and exercise bounded event
+recording, exclusive file creation and failure before publication, without MLX.
+The [first guarded phase validation](../../experiments/cluster/inference/QWEN_PREFILL_PHASE_VALIDATION.md)
+also passed the numerical and phase-correlation audits on actual 8K execution.
+The [serial rank phase validation](../../experiments/cluster/inference/QWEN_PREFILL_RANK_PHASE_VALIDATION.md)
+checks both local stage traces separately. The public phase-forwarding option
+passed 81 integrated CPU/fake launcher tests.
+The [selected-owner trace tests](../../experiments/cluster/inference/QWEN_PREFILL_OWNER_TRACE.md)
+cover eight ordered observations, native-error precedence and publication
+after outer success; the standalone collector passed six synthetic traces,
+90 rejected calls and 11 capture/output cases.
+The [recorded owner validation](../../experiments/cluster/inference/QWEN_PREFILL_OWNER_VALIDATION.md)
+passed separate numerical and timing audits for a solo invocation and both
+serial ranks on one GPU; it does not qualify physical cluster performance.
+
+The optional [cluster launcher tests](../../experiments/cluster/runtime/README.md)
+exercise artifact/report validation and actual local process cleanup without
+models or SSH. The full Python suite passes 297 tests, including a subprocess
+regression that verifies worker imports leave the complete bundle tree, modes
+and file bytes unchanged. The [native cluster checks](../../experiments/cluster/inference/README.md)
+separately cover partition loading and numerical diagnostics; they do not qualify real-model or
+two-machine performance and are not included in `make test`.
+The [local stage launcher](../../experiments/cluster/runtime/stage_checks/README.md)
+has separate fake-process tests for bounded P2P/stage records, optional baseline
+comparison and cohort supervision. Its optional `prefill-ranks` command requires
+explicit policy/dtype and pinned baseline evidence; CPU and saved-schema checks
+are separate from the native proofs executed through the private guarded launcher.
+The [persistent worker checks](../../experiments/cluster/runtime/PERSISTENT_WORKERS.md)
+cover command framing, request ownership and whole-cohort cancellation. Their
+CPU process fixtures are separate from native synthetic cache-isolation checks.
+The [dense Qwen CBv2 checks](../../experiments/cluster/inference/CBV2_VALIDATION.md)
+exercise the production model adapter and request state with contiguous KV;
+they separately report numerical failures and do not qualify the production scheduler.
+The [Qwen output-precision checks](../../experiments/cluster/inference/QWEN_OUTPUT_PRECISION.md)
+cover down-projection storage and arithmetic, same-hidden output narrowing,
+and bounded registered 9B solo comparisons; performance qualification remains separate.
+The [registered 9B local TP checks](../../experiments/cluster/inference/REAL_QWEN_TP_VALIDATION.md)
+add bounded real-artifact admission, direct partition loading and paired solo/TP
+captures. Their numerical failures remain separate from successful execution checks.
+The [GDN input-projection checks](../../experiments/cluster/inference/QWEN_GDN_INPUT_VALIDATION.md)
+isolate full-versus-selected arithmetic on one captured input, with verified
+full loading and an independent solo control. They do not qualify model quality.
+The [Gemma checks](../../experiments/cluster/inference/README.md) also cover
+unequal aligned shard metadata and direct loading; whole-model numerical
+qualification remains separate from storage and lifecycle checks.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
 and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`

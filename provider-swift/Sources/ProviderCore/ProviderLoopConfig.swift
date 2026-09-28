@@ -5,6 +5,10 @@ import Foundation
 /// Split out of `ProviderLoop.swift` so the loop file holds the actor and its
 /// behavior, not its value-type inputs.
 public struct ProviderLoopConfig: Sendable {
+    public let executionRole: ProviderExecutionRole
+    /// A local leader ends its native host if this accepted connection is lost.
+    /// Follower-only control processes may reconnect with a fresh negotiation.
+    public let clusterMemberStopsOnDisconnect: Bool
     public let coordinatorURL: String
     public let hardware: HardwareInfo
     public let models: [ModelInfo]
@@ -33,8 +37,12 @@ public struct ProviderLoopConfig: Sendable {
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         modelHashes: [String: String] = [:],
         modelHashFingerprints: [String: String] = [:],
-        localEndpoint: LocalInferenceHTTPConfig? = nil
+        localEndpoint: LocalInferenceHTTPConfig? = nil,
+        executionRole: ProviderExecutionRole = .solo,
+        clusterMemberStopsOnDisconnect: Bool = false
     ) {
+        self.executionRole = executionRole
+        self.clusterMemberStopsOnDisconnect = clusterMemberStopsOnDisconnect
         self.coordinatorURL = coordinatorURL
         self.hardware = hardware
         self.models = models

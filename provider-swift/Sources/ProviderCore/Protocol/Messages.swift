@@ -191,6 +191,9 @@ public enum ProviderMessage: Sendable, Equatable {
     case capacityQuote(CapacityQuote)
 
     public struct Register: Sendable, Equatable {
+        public var executionRole: ProviderExecutionRole
+        public var memberRegistrationNonce: String?
+        public var clusterModels: [ModelInfo]?
         public var hardware: HardwareInfo
         public var models: [ModelInfo]
         public var backend: String
@@ -255,8 +258,14 @@ public enum ProviderMessage: Sendable, Equatable {
             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
             toolConstraintProtocol: Int? = nil,
             toolConstraintModels: [String]? = nil,
-            appAttestProtocol: Int? = nil
+            appAttestProtocol: Int? = nil,
+            executionRole: ProviderExecutionRole = .solo,
+            memberRegistrationNonce: String? = nil,
+            clusterModels: [ModelInfo]? = nil
         ) {
+            self.executionRole = executionRole
+            self.memberRegistrationNonce = memberRegistrationNonce
+            self.clusterModels = clusterModels
             self.hardware = hardware
             self.models = models
             self.backend = backend
@@ -883,6 +892,9 @@ extension ProviderMessage: Codable {
         case templateHashes = "template_hashes"
         case privacyCapabilities = "privacy_capabilities"
         case runtimeCapabilities = "runtime_capabilities"
+        case executionRole = "execution_role"
+        case memberRegistrationNonce = "member_registration_nonce"
+        case clusterModels = "cluster_models"
         case privateOnly = "private_only"
         case apnsDeviceToken = "apns_device_token"
         case apnsEnvironment = "apns_environment"
@@ -993,6 +1005,11 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(r.privacyCapabilities, forKey: .privacyCapabilities)
             if !r.runtimeCapabilities.isEmpty {
                 try container.encode(r.runtimeCapabilities.sorted(), forKey: .runtimeCapabilities)
+            }
+            if r.executionRole != .solo {
+                try container.encode(r.executionRole, forKey: .executionRole)
+                try container.encodeIfPresent(r.memberRegistrationNonce, forKey: .memberRegistrationNonce)
+                try container.encodeIfPresent(r.clusterModels, forKey: .clusterModels)
             }
             if r.privateOnly {
                 try container.encode(true, forKey: .privateOnly)
@@ -1265,7 +1282,10 @@ extension ProviderMessage: Codable {
                     Int.self, forKey: .toolConstraintProtocol),
                 toolConstraintModels: try container.decodeIfPresent(
                     [String].self, forKey: .toolConstraintModels),
-                appAttestProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestProtocol)
+                appAttestProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestProtocol),
+                executionRole: try container.decodeIfPresent(ProviderExecutionRole.self, forKey: .executionRole) ?? .solo,
+                memberRegistrationNonce: try container.decodeIfPresent(String.self, forKey: .memberRegistrationNonce),
+                clusterModels: try container.decodeIfPresent([ModelInfo].self, forKey: .clusterModels)
             ))
 
         case .heartbeat:
@@ -1500,6 +1520,7 @@ extension ProviderMessage: Codable {
 // MARK: - Coordinator -> Provider
 
 public enum CoordinatorMessage: Sendable, Equatable {
+    case clusterMemberAccepted(ClusterMemberAccepted)
     case inferenceRequest(InferenceRequest)
     case cancel(Cancel)
     case attestationChallenge(AttestationChallenge)
@@ -1691,6 +1712,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
 
 extension CoordinatorMessage: Codable {
     enum TypeValue: String, Codable {
+        case clusterMemberAccepted = "cluster_member_accepted"
         case inferenceRequest = "inference_request"
         case cancel
         case attestationChallenge = "attestation_challenge"
@@ -1738,6 +1760,10 @@ extension CoordinatorMessage: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
 
         switch self {
+        case .clusterMemberAccepted(let ack):
+            try container.encode(TypeValue.clusterMemberAccepted, forKey: .type)
+            try ack.encode(to: encoder)
+
         case .inferenceRequest(let r):
             try container.encode(TypeValue.inferenceRequest, forKey: .type)
             try container.encode(r.requestId, forKey: .requestId)
@@ -1825,6 +1851,9 @@ extension CoordinatorMessage: Codable {
         let type = try container.decode(TypeValue.self, forKey: .type)
 
         switch type {
+        case .clusterMemberAccepted:
+            self = .clusterMemberAccepted(try ClusterMemberAccepted(from: decoder))
+
         case .inferenceRequest:
             self = .inferenceRequest(InferenceRequest(
                 requestId: try container.decode(String.self, forKey: .requestId),

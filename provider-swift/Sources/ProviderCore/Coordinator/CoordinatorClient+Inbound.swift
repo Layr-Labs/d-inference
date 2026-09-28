@@ -5,6 +5,21 @@ import Foundation
 import Network
 
 extension CoordinatorClient {
+    /// An already-resumed old timer must not poison a replacement connection.
+    /// The nonce check and refusal run without an actor suspension between them.
+    internal func expireMemberNegotiation(nonce: String, now: ContinuousClock.Instant = .now) {
+        guard !Task.isCancelled, !sessionRegistered,
+              let current = memberNegotiation, current.nonce == nonce,
+              now >= current.deadline else { return }
+        refuseMemberNegotiation()
+    }
+    internal func refuseMemberNegotiation() {
+        memberRoleFailure = true
+        sessionRegistered = false
+        memberNegotiation = nil
+        nwConnection?.cancel()
+    }
+
     /// Send a pre-encoded JSON frame on the current connection, if any. The
     /// receive path's rejections (missing/invalid encrypted body) are
     /// low-frequency, so routing them straight to the live NWConnection — rather
@@ -29,8 +44,24 @@ extension CoordinatorClient {
         }
 
         switch parsed {
+        case .clusterMemberAccepted(let ack):
+            guard config.executionRole == .clusterMember else { return }
+            do {
+                guard var negotiation = memberNegotiation else { throw ClusterMemberControlError.negotiationFailed }
+                try negotiation.accept(ack)
+                memberNegotiation = negotiation
+                sessionRegistered = true
+                eventContinuation?.yield(.connected)
+            } catch { refuseMemberNegotiation() }
+
         case .inferenceRequest(let request):
             let requestId = request.requestId
+            if config.executionRole == .clusterMember {
+                sendOnCurrentConnection(encodeInferenceError(requestId: requestId,
+                    failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)),
+                    identifier: "inference_error")
+                return
+            }
             // The receive callback anchored this before executor scheduling,
             // UTF-8 materialization, JSON parsing, logging, validation, or
             // base64 decoding. Downstream work must not restart the clock.
@@ -104,6 +135,10 @@ extension CoordinatorClient {
             eventContinuation?.yield(.cancel(requestId: requestId))
 
         case .capacityProbe(let probe):
+            if config.executionRole == .clusterMember {
+                // Advisory quotes may be omitted; never evaluate solo geometry.
+                return
+            }
             // Routing v2: answer from the lock-free published snapshot — the
             // capacity payload of the last heartbeat this connection sent —
             // plus the advertised catalog and the TTFT tracker. No hop to the

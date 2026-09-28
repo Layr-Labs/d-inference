@@ -198,6 +198,7 @@ type releaseTrustPolicySnapshot struct {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
+	nativePairs                   *registry.NativePairCoordinator // nil unless startup supplies an explicit native approval catalog
 	appAttestShadow               AppAttestShadowConfig
 	appAttestShadowSlots          chan struct{}
 	appAttestStorageOnce          sync.Once
@@ -819,6 +820,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 
 	s := &Server{
 		registry:                 reg,
+		nativePairs:              registry.NewNativePairCoordinator(reg, cfg.NativePairCatalog),
 		store:                    st,
 		ledger:                   payments.NewLedger(st),
 		logger:                   logger,
@@ -946,6 +948,9 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 
 // Close releases background resources owned by the Server.
 func (s *Server) Close() {
+	if s.nativePairs != nil {
+		s.nativePairs.Close()
+	}
 	// Graceful-shutdown continuity sweep: stop the periodic coverage loop,
 	// then persist the exact shutdown instant for every covered provider so a
 	// short deploy reconnects into the continuity fast-skip on the next

@@ -42,10 +42,13 @@ func BackendUsesSwiftRuntime(backend string) bool {
 
 // Provider represents a connected provider agent.
 type Provider struct {
-	ID       string
-	Hardware protocol.Hardware
-	Models   []protocol.ModelInfo
-	Backend  string
+	// Immutable per connection; never restored from durable provider history.
+	executionRole protocol.ExecutionRole
+	memberNonce   string // immutable nonce of the negotiated control-only registration
+	ID            string
+	Hardware      protocol.Hardware
+	Models        []protocol.ModelInfo
+	Backend       string
 	// ReportedRuntimeCapabilities is normalized but untrusted Register input.
 	// RuntimeCapabilities remains empty until ReconcileAttestedRuntimeCapabilities
 	// binds that report to signed claims and approved runtime evidence.
@@ -278,7 +281,9 @@ type Provider struct {
 	runtimeCapabilitiesReconciled     bool
 	lastReconciledRuntimeCapabilities []string
 	lastDesiredModels                 []protocol.DesiredModelEntry
-	desiredModelsSendMu               sync.Mutex
+	// Counts command writes that could race pair preparation, under mu.
+	pairModelCommandsInFlight int
+	desiredModelsSendMu       sync.Mutex
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingRequest

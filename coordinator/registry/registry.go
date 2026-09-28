@@ -26,6 +26,8 @@ import (
 type Registry struct {
 	mu        sync.RWMutex
 	providers map[string]*Provider
+	// Opt-in pair membership and exclusive physical-device holds; guarded by mu.
+	verifiedPairs verifiedPairRegistry
 
 	queue *RequestQueue
 	// drainSuppress rate-limits HEARTBEAT-triggered queue drains per model

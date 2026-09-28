@@ -52,7 +52,14 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		}
 	}
 
+	// Direct in-process callers also fail closed on malformed roles. The API
+	// rejects these before Register; an unknown role is never normalized to solo.
 	models := msg.Models
+	if msg.ValidateExecutionRole() == nil && msg.ExecutionRole == protocol.ExecutionRoleClusterMember {
+		models = msg.ClusterModels
+	} else if msg.ValidateExecutionRole() != nil {
+		models = nil
+	}
 	modelInventory, _ := uniqueProviderModels(models)
 	cacheStatuses, cacheStatusReported := sanitizePrefixCacheStatuses(
 		msg.PrefixCacheStatuses, modelInventory)
@@ -86,6 +93,8 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Hardware:                    msg.Hardware,
 		Models:                      models,
 		Backend:                     msg.Backend,
+		executionRole:               msg.ExecutionRole,
+		memberNonce:                 msg.MemberRegistrationNonce,
 		ReportedRuntimeCapabilities: normalizeRuntimeCapabilities(msg.RuntimeCapabilities, msg.Hardware),
 		RuntimeCapabilities:         nil,
 		PublicKey:                   pubKey,
@@ -299,6 +308,7 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 			r.mu.Unlock()
 			return false
 		}
+		r.disconnectVerifiedPairLocked(p)
 		delete(r.providers, id)
 		// Clear any pending model load entries for this provider.
 		for key := range r.pendingModelLoads {

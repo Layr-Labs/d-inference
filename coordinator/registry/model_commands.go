@@ -29,6 +29,11 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 		return fmt.Errorf(
 			"provider %q does not satisfy requirements for model %q", providerID, modelID)
 	}
+	done, err := r.beginVerifiedPairAwareModelCommand(p, true)
+	if err != nil {
+		return err
+	}
+	defer done()
 	if r.loadModelSender != nil {
 		if err := r.loadModelSender(providerID, modelID); err != nil {
 			return err
@@ -82,6 +87,11 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 		return fmt.Errorf(
 			"provider %q does not satisfy requirements for model %q", providerID, modelID)
 	}
+	done, err := r.beginVerifiedPairAwareModelCommand(p, true)
+	if err != nil {
+		return err
+	}
+	defer done()
 	if r.prefetchModelSender != nil {
 		return r.prefetchModelSender(providerID, modelID, priority)
 	}
@@ -132,6 +142,12 @@ func (r *Registry) SendDesiredModels(providerID string, entries []protocol.Desir
 	if !ok {
 		return fmt.Errorf("provider %q not found", providerID)
 	}
+
+	done, err := r.beginVerifiedPairAwareModelCommand(p, originallyNonEmpty)
+	if err != nil {
+		return err
+	}
+	defer done()
 
 	// Serialize compute → wire write → last-snapshot update per connection.
 	// Registry/provider locks are released before I/O; sendMu preserves order so

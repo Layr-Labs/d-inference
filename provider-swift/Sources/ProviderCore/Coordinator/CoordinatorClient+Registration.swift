@@ -37,7 +37,8 @@ extension CoordinatorClient {
             prefixCacheMemoryModels: prefixCache.protocolVersion == 2
                 ? prefixCache.memoryModels : nil,
             prefixCacheStatuses: prefixCache.statuses,
-            prefixCacheDonationOutcomes: prefixCache.donationOutcomes
+            prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
+            memberRegistrationNonce: memberNegotiation?.nonce
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed
@@ -68,9 +69,9 @@ extension CoordinatorClient {
     // MARK: - Heartbeat
 
     func buildHeartbeatJSON() -> String {
-        let isActive = state.inferenceActive
-        let activeModel = state.currentModel
-        let warmModels = state.warmModels
+        let isActive = config.executionRole == .solo && state.inferenceActive
+        let activeModel = config.executionRole == .solo ? state.currentModel : nil
+        let warmModels = config.executionRole == .solo ? state.warmModels : []
         // Stamp this heartbeat's capacity payload with the next per-connection
         // capacity_seq and publish it as the quote snapshot (routing v2).
         // EVERY heartbeat build flows through here — the 5s baseline and the
@@ -104,7 +105,7 @@ extension CoordinatorClient {
         // be decoding in-flight work, but it refuses new work, and the
         // coordinator must stop selecting it now rather than after enough
         // 503 bounces trip a cooldown.
-        let status: ProviderStatus = state.refusingNewWork
+        let status: ProviderStatus = config.executionRole == .clusterMember ? .idle : state.refusingNewWork
             ? .draining : (isActive ? .serving : .idle)
         let message = CoordinatorClientCodec.heartbeatMessage(
             status: status,

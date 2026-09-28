@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `f6b5e111c`
+> Last updated: 2026-09-17 · commit `605651bb9`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -110,23 +110,25 @@ Gates run in the order below. The first failing gate names the rejection;
 | 7 | `GateCapacityCooldown` | `capacity_cooldown` | `providerRoutingGateReasonLockedEx` | Pair is in capacity-reject cooldown (black-hole 503s). |
 | 8 | `GateBreaker` | `breaker` | `providerRoutingGateReasonLockedEx` | Node-health breaker open for genuine-fault errors. |
 | 9 | `GateEjection` | `ejection` | `providerRoutingGateReasonLockedEx` | Stable-identity health ejection open. |
-| 10 | `GateOffline` | `offline` | `providerLivenessGateReasonLocked` | `Status == StatusOffline` — set by the provider socket handler (`coordinator/api/provider.go`) the moment the WebSocket dies, before the deferred `Disconnect()` removes the record ([`scheduling.md`](scheduling.md#disconnect)). |
-| 11 | `GateUntrusted` | `untrusted` | `providerLivenessGateReasonLocked` | `Status == StatusUntrusted`. |
-| 12 | `GateStateRestoring` | `state_restoring` | `providerLivenessGateReasonLocked` | Verified SE identity is still awaiting durable account/counter/reputation restoration. Also excludes owner self-route, capacity and model loading. |
-| 13 | `GatePrivateOnly` | `private_only` | `providerLivenessGateReasonLocked` | Provider is `PrivateOnly` and the request is not from its owner. |
-| 14 | `GateTrustFloor` | `trust_floor` | `providerLivenessGateReasonLocked` | `TrustLevel` ranks below the floor ([below](#trust-floor-and-self-route-relaxation)). |
-| 15 | `GateRuntimeUnverified` | `runtime_unverified` | `providerLivenessGateReasonLocked` | `RuntimeVerified` is false. |
-| 16 | `GatePrivateText` | `private_text` | `providerLivenessGateReasonLocked` | `providerSupportsPrivateTextLocked` is false (code attestation not proven). |
-| 17 | `GateChallengeStale` | `challenge_stale` | `providerLivenessGateReasonLocked` | Last passed challenge is missing or older than `challengeFreshnessMaxAge` ([below](#challenge-freshness)). |
-| 18 | `GateTraitFloor` | `trait_floor` | `providerRoutingGateReasonLockedEx` | Provider cannot satisfy a request trait (for example inference-time tool constraints). |
-| 19 | `GateVision` | `vision` | `providerServesVisionModelLocked` | Request `RequiresVision` and the provider's build of the model does not serve vision. |
-| 20 | `GateSlotCrashed` | `slot_crashed` | `buildCandidateInto` / `slotStatePenalty` | Slot state `crashed`. |
-| 21 | `GateSlotReloading` | `slot_reloading` | `buildCandidateInto` / `slotStatePenalty` | Slot state `reloading`. |
-| 22 | `GateNoHeadroom` | `no_headroom` | `hasConcurrencyHeadroomForModelCapResolvedLocked` | Provider or slot is at its concurrency cap ([`scheduling.md`](scheduling.md#concurrency-caps)). |
-| 23 | `GateThermalCritical` | `thermal_critical` | `buildCandidateInto` | `SystemMetrics.ThermalState == "critical"`. |
-| 24 | `GateModelTooLarge` | `model_too_large` | `modelFitsHardware` | Model is not resident and cannot fit the node's total memory. Permanent, not capacity. |
-| 25 | `GateFreeMemory` | `free_memory` | `freeMemoryAdmits` | Token-budget or memory admission fails, or the pair is budget-clamped. |
-| 26 | `GateTTFTCeiling` | `ttft_ceiling` | `scanCandidatesLocked` | Estimated TTFT exceeds `pr.MaxTTFTMs` (public non-vision requests with a ceiling only). |
+| 10 | `GateMemberOnly` | `member_only` | `providerLivenessGateReasonAllowPairLocked` | Control-only cluster members cannot serve ordinary inference; only pair eligibility may pass this gate. |
+| 11 | `GatePairReserved` | `pair_reserved` | `providerLivenessGateReasonAllowPairLocked` | Physical device belongs to a pending, active or quarantined verified cluster pair; ordinary routing cannot use it. |
+| 12 | `GateOffline` | `offline` | `providerLivenessGateReasonLocked` | `Status == StatusOffline` — set by the provider socket handler (`coordinator/api/provider.go`) the moment the WebSocket dies, before the deferred `Disconnect()` removes the record ([`scheduling.md`](scheduling.md#disconnect)). |
+| 13 | `GateUntrusted` | `untrusted` | `providerLivenessGateReasonLocked` | `Status == StatusUntrusted`. |
+| 14 | `GateStateRestoring` | `state_restoring` | `providerLivenessGateReasonLocked` | Verified SE identity is still awaiting durable account/counter/reputation restoration. Also excludes owner self-route, capacity and model loading. |
+| 15 | `GatePrivateOnly` | `private_only` | `providerLivenessGateReasonLocked` | Provider is `PrivateOnly` and the request is not from its owner. |
+| 16 | `GateTrustFloor` | `trust_floor` | `providerLivenessGateReasonLocked` | `TrustLevel` ranks below the floor ([below](#trust-floor-and-self-route-relaxation)). |
+| 17 | `GateRuntimeUnverified` | `runtime_unverified` | `providerLivenessGateReasonLocked` | `RuntimeVerified` is false. |
+| 18 | `GatePrivateText` | `private_text` | `providerLivenessGateReasonLocked` | `providerSupportsPrivateTextLocked` is false (code attestation not proven). |
+| 19 | `GateChallengeStale` | `challenge_stale` | `providerLivenessGateReasonLocked` | Last passed challenge is missing or older than `challengeFreshnessMaxAge` ([below](#challenge-freshness)). |
+| 20 | `GateTraitFloor` | `trait_floor` | `providerRoutingGateReasonLockedEx` | Provider cannot satisfy a request trait (for example inference-time tool constraints). |
+| 21 | `GateVision` | `vision` | `providerServesVisionModelLocked` | Request `RequiresVision` and the provider's build of the model does not serve vision. |
+| 22 | `GateSlotCrashed` | `slot_crashed` | `buildCandidateInto` / `slotStatePenalty` | Slot state `crashed`. |
+| 23 | `GateSlotReloading` | `slot_reloading` | `buildCandidateInto` / `slotStatePenalty` | Slot state `reloading`. |
+| 24 | `GateNoHeadroom` | `no_headroom` | `hasConcurrencyHeadroomForModelCapResolvedLocked` | Provider or slot is at its concurrency cap ([`scheduling.md`](scheduling.md#concurrency-caps)). |
+| 25 | `GateThermalCritical` | `thermal_critical` | `buildCandidateInto` | `SystemMetrics.ThermalState == "critical"`. |
+| 26 | `GateModelTooLarge` | `model_too_large` | `modelFitsHardware` | Model is not resident and cannot fit the node's total memory. Permanent, not capacity. |
+| 27 | `GateFreeMemory` | `free_memory` | `freeMemoryAdmits` | Token-budget or memory admission fails, or the pair is budget-clamped. |
+| 28 | `GateTTFTCeiling` | `ttft_ceiling` | `scanCandidatesLocked` | Estimated TTFT exceeds `pr.MaxTTFTMs` (public non-vision requests with a ceiling only). |
 
 Gates 5–9 are the coordinator's own fault memory and are evaluated *before*
 liveness so a breaker-open provider is counted as `breaker`, not as whatever
@@ -142,6 +144,33 @@ verified identity out of routing, public capacity and warm-pool candidates.
 A sustained failure closes the new connection for retry before evicting an
 existing session; it cannot serve with account history silently missing.
 Providers without verified SE evidence retain the existing Open Mode gates.
+
+### Verified cluster pair reservations
+
+`ReserveVerifiedPair` in `coordinator/registry/verified_pair_reservation.go`
+atomically holds two exact live connections under the registry write lock and
+deterministically ordered provider locks. Holds also cover device serial and
+Secure Enclave identity, so aliases and reconnects cannot turn a held device
+into ordinary capacity. Common liveness, warm-pool and model-load gates consult
+that hold; `verified_pair_commands.go` closes the model-command selection-to-write
+gap. `NativePairCoordinator.Reserve` now drives this API for the explicit
+in-process `Server.BeginNativePair` hook. The default native catalog disables
+that hook; no public route or automatic cluster scheduler selects pairs yet
+(`coordinator/registry/native_pair_reservation.go`; `coordinator/api/native_pair.go`).
+
+The immutable `cluster_member` connection role also excludes members from
+ordinary routing, capacity, warm pools and solo model commands, even when no
+pair owns them. Only pair eligibility may pass `GateMemberOnly`, and every
+ordinary trust and model requirement still follows
+(`coordinator/registry/execution_role.go`, `executionRolePermitsLocked`).
+
+The lifecycle is pending preparation → active ownership → release. Both original
+connections must acknowledge local preparation before `CommitVerifiedPairOwners`
+authorizes startup. Active expiry, disconnect or trust revocation quarantines
+both devices until both original trusted connections report actual native cleanup
+and owner lease-release acknowledgment. Pending cancellation can release its
+holds because it never authorized owners. See `verified_pair_lifecycle.go` and
+[the cluster authorization boundary](security/encryption.md#experimental-cluster-pair-authorization).
 
 ### Trust floor and self-route relaxation
 
@@ -495,12 +524,13 @@ returning `no_provider`.
 ### Concurrency: scan, commit and fault-state gates
 
 `Registry.mu` is a writer-preferring `sync.RWMutex`: a pending writer blocks
-every new reader and drains the active batch of fleet scans first. Nothing on
-the request path takes it for writing.
+every new reader and drains the active batch of fleet scans first. Ordinary
+solo selection uses the shared-lock commit mode described below; cluster pair
+reservation takes the write lock to hold both devices atomically.
 
 | Lock | Guards | Request-path holders |
 |---|---|---|
-| `Registry.mu` (`sync.RWMutex`, `coordinator/registry/registry.go`) | The provider map, catalog, aliases and routing configuration. | The scan and the commit, for READING (`scanProviderReservation`, `commitLock`). Writers are `Register`, `Disconnect`, `evictStale`, the swap planner and the config setters. |
+| `Registry.mu` (`sync.RWMutex`, `coordinator/registry/registry.go`) | The provider map, catalog, aliases, pair holds and routing configuration. | The scan and the commit, for READING (`scanProviderReservation`, `commitLock`). Writers include `Register`, `Disconnect`, `evictStale`, the swap planner, config setters and verified-pair lifecycle methods. |
 | `Provider.mu` | One provider's heartbeat state, pending set, attestation and cached gate pointer (`Provider.gate`). | The scan per provider (`snapshotProviderIntoLockedEx`); the commit's whole decide-and-debit section; the identity bind (`bindStableFaultKey`). |
 | `Registry.gatesMu` (`sync.RWMutex`) | The gate index: fault key → `gateState`, session → `Provider` (`coordinator/registry/gate_index.go`). | Recorders for READING (session → gate resolution), first insertion (`ensureGateLocked`), and the rare validated retry fallback (`lockGateWithIndex`). Also written by `attachSessionGate`, `detachSessionGate`, `bindStableFaultKey` and `sweepGates`. |
 | `gateState.mu` | One identity's fault trackers (`coordinator/registry/gate_state.go`). | Recorders (`lockGate`), the commit's probe claim (`tryClaimCapacityProbe`), the per-model gate reads. Microseconds, per identity. |

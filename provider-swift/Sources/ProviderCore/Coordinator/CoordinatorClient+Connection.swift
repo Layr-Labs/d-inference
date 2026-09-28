@@ -17,11 +17,12 @@ extension CoordinatorClient {
 
             do {
                 try await connectAndRun()
+                if memberRoleFailure { break }
                 logger.info(.coordinatorConnectionClosed)
                 backoff.reset()
                 continue
             } catch {
-                if shutdownRequested { break }
+                if shutdownRequested || memberRoleFailure { break }
 
                 eventContinuation?.yield(.disconnected)
                 let delay = backoff.nextDelay()
@@ -97,6 +98,8 @@ extension CoordinatorClient {
         // Mid-session connection drops are published here by the persistent state
         // handler and rethrown by a task-group child to drive the reconnect loop.
         let (failureStream, failureCont) = AsyncStream<Error>.makeStream()
+        var memberTimeout: Task<Void, Never>?
+        defer { memberTimeout?.cancel() }
         defer {
             failureCont.finish()
             // Tear down this connection on every exit (error OR clean reconnect),
@@ -109,6 +112,7 @@ extension CoordinatorClient {
             // quote snapshot is dropped with it so quotes never answer from a
             // session the new coordinator connection has not seen.
             self.sessionRegistered = false
+            self.memberNegotiation = nil
             self.state.resetCapacitySession()
             // Detach the inference-chunk fast path from this connection (drops any
             // queued chunks; their requests are cancelled on disconnect). Guarded
@@ -163,13 +167,21 @@ extension CoordinatorClient {
 
         logger.info(.coordinatorTransportReady)
 
+        memberNegotiation = config.executionRole == .clusterMember ? .init() : nil
+        if let negotiation = memberNegotiation {
+            memberTimeout = Task { [weak self] in
+                do { try await ContinuousClock().sleep(until: negotiation.deadline) } catch { return }
+                guard !Task.isCancelled else { return }
+                await self?.expireMemberNegotiation(nonce: negotiation.nonce)
+            }
+        }
         try await sendRegistration(connection: connection)
         logger.info(.coordinatorRegistrationSent)
         // Fresh capacity-seq session for this connection (routing v2): seq
         // restarts at 1 on the first heartbeat and out-of-band event
         // heartbeats are permitted from here on.
         state.resetCapacitySession()
-        sessionRegistered = true
+        sessionRegistered = config.executionRole == .solo
 
         // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
         // its iterator is terminated when the previous session's consumer task is
@@ -191,7 +203,7 @@ extension CoordinatorClient {
             chunkWriter.write(frames)
         }
 
-        eventContinuation?.yield(.connected)
+        if config.executionRole == .solo { eventContinuation?.yield(.connected) }
 
         try await sessionLoop(
             connection: connection,

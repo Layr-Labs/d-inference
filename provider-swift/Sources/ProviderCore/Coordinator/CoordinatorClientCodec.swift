@@ -15,7 +15,8 @@ public enum CoordinatorClientCodec {
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
         prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+        memberRegistrationNonce: String? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -41,10 +42,10 @@ public enum CoordinatorClientCodec {
         } else {
             effectiveModels = baseModels
         }
-        let constrainedModels = toolConstraintModelIDs(effectiveModels)
+        let constrainedModels = config.executionRole == .solo ? toolConstraintModelIDs(effectiveModels) : []
         return .register(ProviderMessage.Register(
             hardware: config.hardware,
-            models: effectiveModels,
+            models: config.executionRole == .clusterMember ? [] : effectiveModels,
             backend: config.backendName,
             version: version,
             publicKey: config.publicKey,
@@ -67,7 +68,10 @@ public enum CoordinatorClientCodec {
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
             toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels,
-            appAttestProtocol: 3
+            appAttestProtocol: 3,
+            executionRole: config.executionRole,
+            memberRegistrationNonce: memberRegistrationNonce,
+            clusterModels: config.executionRole == .clusterMember ? effectiveModels : nil
         ))
     }
 
@@ -82,7 +86,8 @@ public enum CoordinatorClientCodec {
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
         prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+        memberRegistrationNonce: String? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -96,7 +101,8 @@ public enum CoordinatorClientCodec {
                 prefixCacheV2Models: prefixCacheV2Models,
                 prefixCacheMemoryModels: prefixCacheMemoryModels,
                 prefixCacheStatuses: prefixCacheStatuses,
-                prefixCacheDonationOutcomes: prefixCacheDonationOutcomes
+                prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
+                memberRegistrationNonce: memberRegistrationNonce
             )
         )
     }

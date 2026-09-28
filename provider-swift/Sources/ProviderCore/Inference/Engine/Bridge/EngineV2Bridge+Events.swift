@@ -16,7 +16,8 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
-        profile: RequestProfileBuilder? = nil
+        profile: RequestProfileBuilder? = nil,
+        httpResponse: DistributedHTTPResponse? = nil
     ) {
         let bridge = self
         usageSignal?.beginTerminalObservation()
@@ -29,7 +30,8 @@ extension EngineV2Bridge {
                 usageSignal: usageSignal,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 readyReceiptRegistered: readyReceiptRegistered,
-                profile: profile
+                profile: profile,
+                httpResponse: httpResponse
             )
             await bridge.clearPumpTask(id: id)
         }
@@ -52,7 +54,8 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
-        profile: RequestProfileBuilder? = nil
+        profile: RequestProfileBuilder? = nil,
+        httpResponse: DistributedHTTPResponse? = nil
     ) async {
         // Resolve only after record(usage:) has delivered the lookup callback
         // or teardown has finalized its failure, and owned resources retire.
@@ -121,6 +124,17 @@ extension EngineV2Bridge {
                 }
                 #endif
                 sawTerminal = true
+                let httpCause: InferenceTerminalCause?
+                switch reason {
+                case .stop, .length: httpCause = nil
+                case .cancelled: httpCause = .cancelled
+                case .terminal(let cause, _): httpCause = Self.wireTerminalCause(cause) ?? .engineError
+                case .error: httpCause = .engineError
+                }
+                // Distributed .finished is emitted only after lease retirement.
+                // EOF/pump cancellation deliberately never fills this value.
+                httpResponse?.recordTerminal(.init(promptTokens: usage.promptTokens,
+                    completionTokens: usage.completionTokens, cause: httpCause))
                 if reason == .stop || reason == .length {
                     usageSignal?.record(matchedStopSequence: matchedStopSequence(
                         candidates: stopSequences,

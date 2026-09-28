@@ -1,0 +1,99 @@
+[
+  {
+    "case": "initial full",
+    "directory": "/Users/developer/DarkbloomDev/cluster-research/gemma4-short-correctness-root-review-20260916/physical-actions-1/collect-full/action/returned",
+    "stderr": "Attention geometry needs ordinary independent observed storage owners\n",
+    "stderrSHA256": "de75449b6226c00b0c4bb39e61098deda6690607fdf58cac794902513df87eb1",
+    "terminal": {
+      "cleanupErrors": [],
+      "journalEmptyAfterExit": true,
+      "nativeExitCodes": [
+        -9
+      ],
+      "nativeLeaderReaped": true,
+      "ownedGroupsAbsent": true,
+      "postflightErrors": [],
+      "primaryFailure": "ValueError: Unexpected worker stderr",
+      "status": "failed"
+    },
+    "terminalSHA256": "9c53e0f61271e143abd3a15441e178008839a98caf0f269704e2b5327527f913"
+  },
+  {
+    "case": "original stage0",
+    "directory": "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-stage0/action/returned",
+    "stderr": "",
+    "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "terminal": {
+      "cleanupErrors": [
+        "killpg:26825:PermissionError: [Errno 1] Operation not permitted"
+      ],
+      "journalEmptyAfterExit": true,
+      "nativeExitCodes": [
+        124
+      ],
+      "nativeLeaderReaped": true,
+      "ownedGroupsAbsent": true,
+      "postflightErrors": [],
+      "primaryFailure": "ValueError: Worker EOF before expected event",
+      "status": "failed"
+    },
+    "terminalSHA256": "114242c9cf554486722f2413bea3ccac6b30ca1fe61a870963b95045e7723f2d"
+  },
+  {
+    "case": "original stage1",
+    "directory": "/Users/developer/DarkbloomDev/cluster-research/gemma4-attention-identity-physical-draft-20260917/physical-actions-1/collect-stage1/action/returned",
+    "stderr": "[jaccl] Connection attempt 0 waiting 1000 ms\n",
+    "stderrSHA256": "f919fe10e6c53df9cc31bff522c1b61eb3e9853d9ea5fff80cc870cb1bc6ebca",
+    "terminal": {
+      "cleanupErrors": [],
+      "journalEmptyAfterExit": true,
+      "nativeExitCodes": [
+        -9
+      ],
+      "nativeLeaderReaped": true,
+      "ownedGroupsAbsent": true,
+      "postflightErrors": [],
+      "primaryFailure": "ValueError: Unexpected worker stderr",
+      "status": "failed"
+    },
+    "terminalSHA256": "78b7c329e3b8d4f1fb046ccf8e0ed3fd1900af929b6311d73183fa34c9a99ad4"
+  },
+  {
+    "case": "progress attempt1 stage0",
+    "directory": "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-1/collect-stage0/action/returned",
+    "stderr": "Gemma resources refused: completed=0/450, pending=none, actualFree=11574362112, requiredFree=11785238263, active=0, cache=0, requiredAllocator=9251452663, allocatorLimit=24481313587\n",
+    "stderrSHA256": "4d24e5db4c4e8c8cebd0a94efd5da579b97b6e68c37aad16ea29f24cfff1d27c",
+    "terminal": {
+      "cleanupErrors": [],
+      "journalEmptyAfterExit": true,
+      "nativeExitCodes": [
+        -9
+      ],
+      "nativeLeaderReaped": true,
+      "ownedGroupsAbsent": true,
+      "postflightErrors": [],
+      "primaryFailure": "ValueError: Unexpected worker stderr",
+      "status": "failed"
+    },
+    "terminalSHA256": "158c2cfc1a142a120a03e620c42a278249be3260e7cea63961866ce50f7a321b"
+  },
+  {
+    "case": "progress attempt1 stage1",
+    "directory": "/Users/developer/DarkbloomDev/cluster-research/gemma4-jaccl-startup-progress-draft-20260917/physical-actions-1/collect-stage1/action/returned",
+    "stderr": "[jaccl] Connection attempt 0 waiting 1000 ms\n",
+    "stderrSHA256": "f919fe10e6c53df9cc31bff522c1b61eb3e9853d9ea5fff80cc870cb1bc6ebca",
+    "terminal": {
+      "cleanupErrors": [],
+      "journalEmptyAfterExit": true,
+      "nativeExitCodes": [
+        -9
+      ],
+      "nativeLeaderReaped": true,
+      "ownedGroupsAbsent": true,
+      "postflightErrors": [],
+      "primaryFailure": "TimeoutError: Resident worker lifetime expired",
+      "status": "failed"
+    },
+    "terminalSHA256": "84d5a79e46331b2ad29da332b83241fd890d7d728670d22e0423fb4e7cdd0b04"
+  }
+]

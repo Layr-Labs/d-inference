@@ -139,6 +139,7 @@ public enum CoordinatorEvent: Sendable {
 // MARK: - Configuration
 
 public struct CoordinatorClientConfig: Sendable {
+    public let executionRole: ProviderExecutionRole
     public let url: String
     public let hardware: HardwareInfo
     public let models: [ModelInfo]
@@ -187,8 +188,10 @@ public struct CoordinatorClientConfig: Sendable {
         privateOnly: Bool = false,
         apnsDeviceToken: String? = nil,
         apnsEnvironment: String? = nil,
-        idleUnloadMins: UInt64? = nil
+        idleUnloadMins: UInt64? = nil,
+        executionRole: ProviderExecutionRole = .solo
     ) {
+        self.executionRole = executionRole
         self.url = url
         self.hardware = hardware
         self.models = models

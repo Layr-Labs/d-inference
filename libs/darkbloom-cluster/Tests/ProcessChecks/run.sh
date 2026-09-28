@@ -33,9 +33,9 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-l
   -I "$task_build" -L "$task_build" -lMLXLMCommon -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
   -Xlinker -rpath -Xlinker "$task_build" \
   -module-name ProviderPipeContract -emit-module-path "$task_build/ProviderPipeContract.swiftmodule" \
-  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedRequestDeadlineContext.swift" \
-  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedResidentExecution.swift" \
-  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
+  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
+  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Execution/DistributedResidentExecution.swift" \
+  "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Execution/DistributedPipeExecutionOwner.swift" \
   -o "$task_build/libProviderPipeContract.dylib"
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
   -I "$task_build" -L "$task_build" -lMLXLMCommon -lProviderPipeContract -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \

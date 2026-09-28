@@ -14,9 +14,9 @@ xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name Darkbloo
   -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
   "$task_package"/Sources/DarkbloomClusterProtocol/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
 xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol \
-  "$task_runtime/ClusterRuntimeError.swift" "$task_runtime/QwenLongPrefillTensorBudget.swift" \
-  "$task_runtime/QwenGenerationPrefillPolicy.swift" "$task_runtime/QwenGenerationPrefillAllowance.swift" \
-  "$task_runtime/QwenResidentPrefillSelection.swift" \
+  "$task_runtime/Support/ClusterRuntimeError.swift" "$task_runtime/Models/Qwen/Resources/QwenLongPrefillTensorBudget.swift" \
+  "$task_runtime/Models/Qwen/Prefill/QwenGenerationPrefillPolicy.swift" "$task_runtime/Models/Qwen/Prefill/QwenGenerationPrefillAllowance.swift" \
+  "$task_runtime/Models/Qwen/Prefill/QwenResidentPrefillSelection.swift" \
   "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPrefillSelection.swift" \
   "$task_fixtures/NativePrefillSelectionCheck.swift" \
   -o "$task_build/schedule-check"
@@ -29,6 +29,6 @@ xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name Darkbloo
   "$task_bootstrap_tests/LoadConfiguration.swift" -o "$task_build/libDarkbloomClusterRuntime.dylib"
 xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" \
   -lDarkbloomClusterProtocol -lDarkbloomClusterRuntime -lDarkbloomClusterBootstrap \
-  "$task_worker/WorkerConfiguration.swift" "$task_worker/WorkerBootstrapConfiguration.swift" \
+  "$task_worker/Startup/WorkerConfiguration.swift" "$task_worker/Startup/WorkerBootstrapConfiguration.swift" \
   "$task_bootstrap_tests/WorkerBootstrapAdmissionCheck.swift" -o "$task_build/worker-check"
 "$task_build/worker-check"

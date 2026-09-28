@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-17 · commit `605651bb9`
+> Last updated: 2026-09-28 · commit `b3dc525e2`
 
 Environment variables read by the coordinator, the provider CLI (`darkbloom`),
 console-ui and admin-ui, plus the experimental saved cluster setup: accepted
@@ -404,7 +404,7 @@ after request-quota exhaustion only after complete retirement and fresh
 preparation of the same installed configuration; its listener remains bound.
 Fixed lifetime expiry stops the host. These are software limits, not
 promised memory capacity or live product qualification
-(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentAdapterDefinition.swift`;
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentAdapterDefinition.swift`;
 `provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift`,
 `DistributedInstalledSession.launch`;
 `provider-swift/Sources/ProviderCore/Server/Distributed/DistributedLocalServer.swift`;
@@ -416,7 +416,7 @@ metadata producer obtains support from the same adapter definition used by nativ
 admission. A saved choice cannot add support to a worker
 (`libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/ClusterRuntimeCapabilityCodec.swift`,
 `ClusterRuntimeCapabilityCodec`;
-`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentCapabilityMetadata.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentCapabilityMetadata.swift`,
 `QwenResidentCapabilityMetadata.describe`).
 
 Lookahead reserves its additional producer boundary, host copy and bookkeeping
@@ -424,11 +424,11 @@ before readiness and each request. It keeps one prepared prompt chunk, does not
 prefetch decode, and retains the existing live resource gates. Capability support
 is not available-memory admission: the actual workers report their local capacity
 and can refuse a request
-(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenGenerationPrefillAllowance.swift`,
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Prefill/QwenGenerationPrefillAllowance.swift`,
 `QwenGenerationPrefillAllowance`;
-`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime+Load.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime+Load.swift`,
 `QwenResidentRuntime.load`;
-`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenResidentRuntime.swift`,
+`libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentRuntime.swift`,
 `QwenResidentRuntime.reserve`).
 
 Saved configuration and capability files live under

@@ -6,6 +6,11 @@ modules retain macOS 14. The provider's explicit `start --local --distributed`
 path launches installed owner processes, each supervising its local native worker.
 Ordinary provider startup remains solo.
 
+`WorkerMain.swift` is the entry point. `Startup/` parses native startup and
+bootstrap configuration; `Capabilities/` serves metadata; `Execution/` holds
+`WorkerRuntime`, `WorkerCoordinator` and `NativeWorkerRuntime`; `Transport/`
+contains bounded pipe IO. See the [full source map](../../docs/developer/navigation.md#follow-distributed-serving-through-its-owners).
+
 Build from the repository root with an explicitly source-matched metallib:
 
 ```sh
@@ -38,7 +43,7 @@ The optional bootstrap attachment requires all three flags together:
 and connects before native group initialization. The owning launcher must
 require this attachment for the authenticated peer path; omitting it retains
 the experimental native bootstrap. The shared control module includes the paired
-relay and a private configured owner for qualification. The installed
+relay and the configured owner service. The installed
 `cluster worker-owner --stdio` entry requires the authenticated attachment and
 uses the saved local configuration.
 The worker's optional `--prefill-schedule` accepts only `serial_v1` and

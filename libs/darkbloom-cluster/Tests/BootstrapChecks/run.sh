@@ -30,7 +30,7 @@ module Cmlx [system] {
 EOF
 xcrun swiftc -swift-version 6 -warnings-as-errors -parse-as-library \
   -I "$task_build/abi" -Xcc -I -Xcc "$task_cmlx/mlx-c" \
-  "$task_root/Sources/DarkbloomClusterRuntime/JACCLBootstrap.swift" \
+  "$task_root/Sources/DarkbloomClusterRuntime/Transport/JACCLBootstrap.swift" \
   "$task_tests/NativeABI/BootstrapABICheck.swift" \
   "$task_build/abi/bridge.o" "$task_build/abi/stub.o" -lc++ -o "$task_build/abi/check"
 "$task_build/abi/check"
@@ -65,11 +65,11 @@ xcrun swiftc -target "$task_target" -swift-version 6 -warnings-as-errors -parse-
   -I "$task_channel" -L "$task_channel" -lDarkbloomClusterRuntime \
   -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \
   -Xlinker -rpath -Xlinker "$task_channel" \
-  "$task_worker/WorkerConfiguration.swift" "$task_worker/WorkerBootstrapConfiguration.swift" \
+  "$task_worker/Startup/WorkerConfiguration.swift" "$task_worker/Startup/WorkerBootstrapConfiguration.swift" \
   "$task_tests/Channel/WorkerBootstrapAdmissionCheck.swift" -o "$task_channel/admission-check"
 "$task_channel/admission-check"
 xcrun swiftc -target "$task_target" -swift-version 6 -warnings-as-errors -typecheck \
   -I "$task_channel" "$task_tests/Channel/LoadConfiguration.swift" \
   "$task_tests/Channel/FacadeTypecheckSupport.swift" \
-  "$task_root/Sources/DarkbloomClusterRuntime/QwenResidentBootstrap.swift"
+  "$task_root/Sources/DarkbloomClusterRuntime/Models/Qwen/Resident/QwenResidentBootstrap.swift"
 printf '%s\n' 'PASS facade adapter typecheck with explicit native-type stand-ins'

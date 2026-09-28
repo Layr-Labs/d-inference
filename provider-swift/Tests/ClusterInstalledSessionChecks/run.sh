@@ -41,9 +41,9 @@ build_module InstalledContract \
   "$task_sources/Config/ClusterConfigurationFiles.swift" \
   "$task_sources/Config/ClusterConfigurationPaths.swift" \
   "$task_sources/Config/ClusterConfigurationStore.swift" \
-  "$task_sources/Inference/Distributed/DistributedRequestDeadlineContext.swift" \
-  "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
-  "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
+  "$task_sources/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
+  "$task_sources/Inference/Distributed/Execution/DistributedResidentExecution.swift" \
+  "$task_sources/Inference/Distributed/Execution/DistributedPipeExecutionOwner.swift" \
   "$task_sources"/Inference/Distributed/Installed/*.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift

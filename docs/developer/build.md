@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-28 · commit `39ab57dc6`
+> Last updated: 2026-09-28 · commit `5719ebd3a`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -53,9 +53,9 @@ the separate [native worker package](../../libs/darkbloom-cluster-worker/README.
 sets a macOS 26.2 deployment minimum and verifies actual JACCL symbols plus the
 final executable's deployment target. The control modules now include a configured
 SSH owner service, a private local bootstrap socket and the paired native bootstrap
-relay. A [private configured owner](../../libs/darkbloom-cluster/Tools/ConfiguredOwner/README.md)
-builds separately for cross-host qualification. The installed provider now has
-its own `cluster worker-owner --stdio` entry point and an opt-in
+relay. The installed provider supplies `cluster worker-owner --stdio` using saved
+configuration; the separate owner qualification executable is retired. It also
+provides an opt-in
 `start --local --distributed` path, described in the
 [CLI reference](../provider/cli-reference.md). Build the Provider and native
 worker separately, install compatible artifacts on both members, then save

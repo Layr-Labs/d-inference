@@ -2,6 +2,8 @@
 
 ## Unreleased — cluster source cleanup (2026-09-28)
 
+- Retire the private standalone owner qualification tool; use the installed `cluster worker-owner --stdio` with saved configuration. Remove unused probe-only stage request modes and loader entry points from the shared runtime while retaining registered generation, memory gates and cleanup checks.
+
 - Retire the standalone cluster inference probe, copied runtime and offline study harness. Distributed serving continues through the shared cluster modules and native worker; their safety and integration checks remain. Historical experiments are recoverable from the source import commit.
 
 ## Unreleased — experimental local distributed serving (2026-09-15)

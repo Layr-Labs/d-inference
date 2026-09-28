@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `39ab57dc6`
+> Last updated: 2026-09-28 · commit `5719ebd3a`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -134,7 +134,9 @@ journal using local test processes, including asynchronous native failure,
 deadline conversion and withheld cleanup proof. It does not make an SSH connection.
 Its paired-bootstrap fixtures include two local owners/native children and a
 forced cancellation race: a delayed valid bootstrap round must not discard the
-subsequent actual native terminal or prevent journal release.
+subsequent actual native terminal or prevent journal release. It no longer
+builds the retired standalone owner qualification executable; the installed CLI
+uses this same shared ownership service.
 The bootstrap runner checks actual direct-child Unix sockets and worker argument
 admission, then the actual C/Swift callback bridge with explicit native
 factory/cache stand-ins. Its facade and argument checks use runtime value
@@ -154,6 +156,20 @@ bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
 These check selected-stage ownership, Qwen/Gemma metadata, pinned capability
 identities and schedule admission without model payloads. They complement the
 lifecycle and security checks above; they do not establish hardware performance.
+
+Run the native runtime package tests on Apple Silicon with the native deployment
+target and retained metadata fixture:
+
+```sh
+DARKBLOOM_RETAINED_PROFILE_FIXTURE="$PWD/libs/darkbloom-cluster/Tests/StageMetadataChecks/Inputs/qwen-retained-inputs.json" \
+  swift test --package-path libs/darkbloom-cluster --jobs 2 \
+  --triple arm64-apple-macosx26.2 -Xcc -target -Xcc arm64-apple-macosx26.2
+```
+
+The runtime tests cover resident admission, recording/accounting, and generation
+frontiers: rejected or replayed frames cannot advance the schedule, and EOS,
+length and client stop must match committed inputs and selected outputs. They
+compile the actual runtime without loading model weights or exercising RDMA.
 
 ### External streaming latency
 

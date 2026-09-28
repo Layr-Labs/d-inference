@@ -3,33 +3,6 @@ import MLX
 import MLXLMCommon
 import MLXNN
 
-/// Verified, full-width layer loading. No ordinary full-model loader or
-/// eval(model) call is used. The returned compact model is for the guarded stage
-/// session only; it is not a token-to-logit replacement for the complete model.
-func loadVerifiedQwenLayerStage(directory: URL, originalConfiguration: Data,
-    plan: QwenLayerStagePlan, stageIndex: Int, expectedAggregateSHA256: String
-) throws -> LoadedQwenLayerStage {
-    guard (0..<2).contains(stageIndex), plan.stages.count == 2,
-          plan.stages.enumerated().allSatisfy({ $0.offset == $0.element.index }) else {
-        throw ProbeError("Layer-stage index must select one of the two ordered stages")
-    }
-    return try MLX.withError { error in
-        let source = try prepareVerifiedQwenLayerSource(directory: directory,
-            originalConfiguration: originalConfiguration, plan: plan,
-            expectedAggregateSHA256: expectedAggregateSHA256, check: { try error.check() })
-        let other = try inspectOtherQwenLayerStage(source: source,
-            stage: plan.stages[1 - stageIndex], check: { try error.check() })
-        let prepared = try prepareQwenLayerStageModel(source: source,
-            stage: plan.stages[stageIndex], check: { try error.check() })
-        let model = prepared.model, inventory = prepared.inventory
-        let inventories = [inventory, other].sorted { $0.summary.stageIndex < $1.summary.stageIndex }
-        let commitment = try qwenLayerStageStorageCommitment(source: source,
-            originalConfiguration: originalConfiguration, plan: plan, inventories: inventories)
-        return try materializeVerifiedQwenLayerStage(source: source, plan: plan, stageIndex: stageIndex,
-            model: model, inventory: inventory, commitment: commitment, check: { try error.check() })
-    }
-}
-
 /// Shared conservation/commitment assembly; callers already admitted their source and inventories.
 func qwenLayerStageStorageCommitment(source: PreparedQwenLayerSource, originalConfiguration: Data,
     plan: QwenLayerStagePlan, inventories: [QwenStagePreparedInventory]
@@ -52,12 +25,11 @@ func qwenLayerStageStorageCommitment(source: PreparedQwenLayerSource, originalCo
         stages: inventories.map(\.summary))
 }
 
-/// Common existing materialization sequence. Registered loading alone supplies
-/// a pre-read resource hook; legacy callers perform no extra sample or clock read.
+/// Materialize registered tensors with a mandatory resource check before each read.
 func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource, plan: QwenLayerStagePlan,
     stageIndex: Int, model: any LanguageModel, inventory: QwenStagePreparedInventory,
     commitment: QwenLayerStageStorageCommitment, check: () throws -> Void,
-    beforeTensor: ((QwenStageActiveTensor) throws -> Void)? = nil
+    beforeTensor: (QwenStageActiveTensor) throws -> Void
 ) throws -> LoadedQwenLayerStage {
     // All source/stage geometry, policies, inventory ownership and caps
     // have now passed. This is the first checkpoint tensor materialization.
@@ -70,7 +42,7 @@ func materializeVerifiedQwenLayerStage(source: PreparedQwenLayerSource, plan: Qw
             guard let tensor = source.prepared.canonical[entry.sourceName] else {
                 throw ProbeError("Verified stage descriptor disappeared")
             }
-            if let beforeTensor { try beforeTensor(entry) }
+            try beforeTensor(entry)
             let read = try tensor.read(.all)
             let sanitized = model.sanitize(weights: [entry.localName: read.array])
             guard sanitized.count == 1, var array = sanitized[entry.localName],

@@ -1,0 +1,38 @@
+name: Threat Model Review (advisory)
+
+on:
+  pull_request_target:
+    branches: [master, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: threat-model-advisory-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Threat Model Review (advisory)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    # Operational failures as well as findings must never become merge gates.
+    continue-on-error: true
+    if: ${{ !github.event.pull_request.draft }}
+    steps:
+      - name: Check out trusted base only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Review PR patches as data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          THREAT_REVIEW_MODEL: ${{ vars.THREAT_REVIEW_MODEL }}
+        run: python3 .github/scripts/threat-model-review.py
+      - name: Report infrastructure failure without blocking
+        if: ${{ failure() }}
+        run: echo 'Threat-model review unavailable; this advisory does not block merging.' >> "$GITHUB_STEP_SUMMARY"

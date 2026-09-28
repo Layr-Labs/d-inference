@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-28 · commit `ae4925180`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -727,3 +727,10 @@ and the provider/nested CI jobs invoke this helper. A missing test runner or
 failed source verification is an error; an existing library is always replaced.
 See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
 opt-in encrypted transport gate.
+
+## Advisory review tooling
+
+The [threat-model PR review](threat-model-review.md) uses Python 3.9+ standard-library
+HTTP/JSON modules and requires no package installation. CI runs its regression
+tests against local HTTP fixtures; the live workflow uses a repository Actions
+secret and the trusted base checkout.

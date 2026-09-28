@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — advisory threat-model review
+
+- Restore PR threat-model review through OpenRouter. Findings update one advisory comment; clean reviews stay quiet, and model/service failures do not block merging. The workflow executes only the trusted base revision.
+
 ## Unreleased — coordinator legacy-compat cleanup
 
 - `EIGENINFERENCE_MIN_PROVIDER_VERSION` now also excludes providers that report no version from routing. The reference `deploy/environments/prod.env` now says 0.9.5 instead of 0.7.5, but that file changes nothing on the host: the live value in `/etc/d-inference/env` must be raised to at least 0.9.5 by a human, after a fleet-version census, before this coordinator is deployed (`docs/operations/coordinator-deploy.md`). Every registration attestation must carry a fresh timestamp, including from a provider that reports no version.

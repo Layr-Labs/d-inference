@@ -1,0 +1,37 @@
+--- e0/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift
++++ corrected/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift
+@@ -115,6 +115,7 @@
+             // so a stale NWConnection (and its internal retry) never lingers.
+             // Nil the stored reference so sendOnCurrentConnection fast-returns
+             // during the reconnect window instead of firing on a cancelled connection.
++            self.detachNativePairMember()
+             self.nwConnection = nil
+             // Routing v2: this connection's capacity-seq session is over. A
+             // reconnect re-registers and restarts seq at 1; the published
+@@ -449,7 +450,7 @@
+             }
+ 
+             await handleIncomingFrame(
+-                data, receivedAt: receivedAt, profileAnchor: profileAnchor)
++                data, receivedAt: receivedAt, profileAnchor: profileAnchor, sourceConnection: connection)
+         }
+     }
+ 
+--- e0/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift
++++ corrected/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift
+@@ -19,6 +19,7 @@
+     // MARK: - Main Run Loop
+ 
+     public func run() async throws {
++        nativePairConfigurationClosed = true
+         defer { cancelAppAttestShadow() }
+         if isClusterMember { try prepareClusterMemberControl() }
+         defer {
+@@ -197,6 +198,7 @@
+             state: state
+         )
+         #endif
++        if let nativePairMemberControl { try await coordinator.installNativePairMember(nativePairMemberControl) }
+         coordinatorClient = coordinator
+         // Seed the client with the current map: a model loaded before the
+         // client existed (e.g. a local-endpoint request during startup) may

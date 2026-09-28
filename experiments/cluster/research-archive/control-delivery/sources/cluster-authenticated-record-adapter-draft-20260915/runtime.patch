@@ -1,0 +1,1004 @@
+--- a/libs/darkbloom-cluster/Package.swift
++++ b/libs/darkbloom-cluster/Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomCluster",
+     platforms: [.macOS(.v14)],
+     products: [
++        .library(name: "DarkbloomClusterSecurity", targets: ["DarkbloomClusterSecurity"]),
+         .library(name: "DarkbloomClusterBootstrap", targets: ["DarkbloomClusterBootstrap"]),
+         .library(name: "DarkbloomClusterProtocol", targets: ["DarkbloomClusterProtocol"]),
+         .library(name: "DarkbloomClusterProcess", targets: ["DarkbloomClusterProcess"]),
+@@ -18,12 +19,13 @@
+         .package(path: "../mlx-swift-lm"),
+     ],
+     targets: [
++        .target(name: "DarkbloomClusterSecurity"),
+         .target(name: "DarkbloomClusterBootstrap"),
+         .target(name: "DarkbloomClusterProtocol"),
+         .target(name: "DarkbloomClusterProcess", dependencies: ["DarkbloomClusterProtocol"]),
+         .target(name: "DarkbloomClusterRemote", dependencies: ["DarkbloomClusterProtocol", "DarkbloomClusterProcess", "DarkbloomClusterBootstrap"]),
+         .target(name: "DarkbloomClusterRuntime", dependencies: [
+-            "DarkbloomClusterProtocol", "DarkbloomClusterBootstrap",
++            "DarkbloomClusterProtocol", "DarkbloomClusterBootstrap", "DarkbloomClusterSecurity",
+             .product(name: "Cmlx", package: "mlx-swift"),
+             .product(name: "MLX", package: "mlx-swift"),
+             .product(name: "MLXNN", package: "mlx-swift"),
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAuthenticatedRecords.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveAuthenticatedRecords.swift
+@@ -0,0 +1,99 @@
++import CryptoKit
++import DarkbloomClusterSecurity
++import Foundation
++import MLX
++
++/// Model-independent native adapter. No constructor establishes peer authority:
++/// supplied keys/transcripts need separate coordinator membership and fresh-key
++/// establishment. This source candidate is not installed or enabled by config.
++final class CollectiveAuthenticatedRecords {
++    private let bytes: CollectiveRecordByteIO
++    private let records: ClusterAuthenticatedRecordTransport
++
++    init(collective: Collective, sessionKey: SymmetricKey, binding: ClusterRecordBinding,
++         limits: ClusterRecordLimits, maximumFrameBytes: Int) throws {
++        let io = try CollectiveRecordByteIO(collective: collective, maximumFrameBytes: maximumFrameBytes)
++        self.bytes = io
++        self.records = try .init(sessionKey: sessionKey, binding: binding, limits: limits, io: io)
++    }
++
++    var status: ClusterRecordTransportStatus { records.status }
++    func invalidate() { records.invalidate() }
++    func maximumNativeFrameAllocation(for length: ClusterRecordTransferLength) throws -> Int {
++        try bytes.maximumNativeFrameAllocation(for: length)
++    }
++    func send(_ data: Data, expecting expected: ClusterRecordTransferExpectation,
++              check: () throws -> Void) throws {
++        try records.send(data, expecting: expected, check: check)
++    }
++    func receive(expecting expected: ClusterRecordTransferExpectation,
++                 check: () throws -> Void) throws -> Data {
++        try records.receive(expecting: expected, check: check)
++    }
++
++    /// Keeps native dtype bytes unchanged. No payload is placed in AAD; only
++    /// independently expected shape/dtype and the caller's metadata digest.
++    func sendArray(_ input: MLXArray, context: ClusterRecordContext,
++                   expectedShape: [Int], expectedDType: DType,
++                   check: () throws -> Void) throws {
++        do {
++            func checked() throws {
++                try check()
++                guard records.status.active else { throw ClusterRecordTransferError.inactive }
++            }
++            let (geometry, expectation) = try arrayExpectation(context: context,
++                shape: expectedShape, dtype: expectedDType)
++            try geometry.validateMetadata(input)
++            try checked()
++            let plaintext = try CollectivePointToPoint.copyCompletedBytes(input,
++                maximumBytes: geometry.byteCount, check: checked)
++            try records.send(plaintext, expecting: expectation, check: checked)
++        } catch { records.invalidate(); throw error }
++    }
++
++    /// Authentication and post-open cancellation check precede the native array
++    /// constructor. Caller retains its ordinary semantic/frontier/ownership check.
++    func receiveArray(context: ClusterRecordContext, expectedShape: [Int], expectedDType: DType,
++                      check: () throws -> Void) throws -> MLXArray {
++        do {
++            let (geometry, expectation) = try arrayExpectation(context: context,
++                shape: expectedShape, dtype: expectedDType)
++            let plaintext = try records.receive(expecting: expectation, check: check)
++            try check()
++            guard records.status.active else { throw ClusterRecordTransferError.inactive }
++            let array = try CollectivePointToPoint.materializeCompletedBytes(plaintext,
++                shape: geometry.shape, dtype: geometry.dtype, maximumBytes: geometry.byteCount,
++                check: {
++                    try check()
++                    guard self.records.status.active else { throw ClusterRecordTransferError.inactive }
++                })
++            try check()
++            return array
++        } catch { records.invalidate(); throw error }
++    }
++
++    private func arrayExpectation(context: ClusterRecordContext, shape: [Int], dtype: DType)
++        throws -> (CollectivePointToPointShape, ClusterRecordTransferExpectation) {
++        let geometry = try CollectivePointToPointShape(shape: shape, dtype: dtype,
++            maximumBytes: records.maximumPlaintextBytes)
++        let type: UInt8
++        switch dtype {
++        case .uint8: type = 1
++        case .uint32: type = 2
++        case .int32: type = 3
++        case .float16: type = 4
++        case .bfloat16: type = 5
++        case .float32: type = 6
++        default: throw ProbeError("Encrypted residual has unsupported native dtype")
++        }
++        var metadata = Data("darkbloom/rdma-record/native-array-layout/v1\0".utf8)
++        metadata.append(context.expectationSHA256); metadata.append(type); metadata.append(UInt8(shape.count))
++        for dimension in shape {
++            var value = UInt32(dimension).bigEndian
++            withUnsafeBytes(of: &value) { metadata.append(contentsOf: $0) }
++        }
++        let bound = try ClusterRecordContext(requestID: context.requestID, type: context.type,
++            expectationSHA256: Data(SHA256.hash(data: metadata)))
++        return (geometry, try .init(context: bound, length: .exact(geometry.byteCount)))
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectivePointToPoint.swift
+@@ -74,6 +74,48 @@
+         }
+     }
+ 
++    /// Reuse the same checked native evaluation/fences for host encryption input.
++    /// Only called by the serialized native owner; no concurrent model evaluation.
++    static func copyCompletedBytes(_ input: MLXArray, maximumBytes: Int,
++                                   check: () throws -> Void) throws -> Data {
++        let geometry = try CollectivePointToPointShape(shape: input.shape, dtype: input.dtype,
++            maximumBytes: maximumBytes)
++        operationLock.lock(); defer { operationLock.unlock() }
++        return try MLX.withError { error in
++            func checked() throws { try error.check(); try check(); try error.check() }
++            try checked()
++            try geometry.validateMetadata(input)
++            try complete(input, communication: .cpu, gpu: .gpu, check: checked)
++            let copied = input.asData(access: .copy)
++            try checked()
++            guard copied.shape == geometry.shape, copied.dType == geometry.dtype,
++                  copied.data.count == geometry.byteCount else {
++                throw ProbeError("Completed native byte copy changed layout")
++            }
++            return copied.data
++        }
++    }
++
++    /// Reconstruct bytes only after the caller has authenticated them. This raw
++    /// utility does not itself grant authentication, consumption or lease release.
++    static func materializeCompletedBytes(_ bytes: Data, shape: [Int], dtype: DType,
++                                         maximumBytes: Int, check: () throws -> Void) throws -> MLXArray {
++        let geometry = try CollectivePointToPointShape(shape: shape, dtype: dtype,
++            maximumBytes: maximumBytes)
++        guard bytes.count == geometry.byteCount else { throw ProbeError("Native reconstruction byte count differs") }
++        operationLock.lock(); defer { operationLock.unlock() }
++        return try MLX.withError { error in
++            func checked() throws { try error.check(); try check(); try error.check() }
++            try checked()
++            let array = MLXArray(bytes, shape, dtype: dtype)
++            try checked()
++            try complete(array, communication: .cpu, gpu: .gpu, check: checked)
++            try geometry.validateOwnedReceive(array)
++            try checked()
++            return array
++        }
++    }
++
+     private static func validatePeer(_ peer: Int, group: mlx_distributed_group,
+                                      rank: Int, size: Int, check: () throws -> Void) throws {
+         guard size == 2, (0..<2).contains(rank), (0..<2).contains(peer), peer != rank,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordByteIO.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CollectiveRecordByteIO.swift
+@@ -0,0 +1,70 @@
++import DarkbloomClusterSecurity
++import Foundation
++import MLX
++
++/// Logical ciphertext frames only. Existing completed P2P still owns all native
++/// fences. The current JACCL full-buffer tail needs its separate native fix
++/// before this logical adapter can qualify confidential RDMA wire bytes.
++final class CollectiveRecordByteIO: ClusterRecordByteIO {
++    private let collective: Collective
++    let localRank: Int
++    let worldSize: Int
++    let maximumFrameBytes: Int
++
++    init(collective: Collective, maximumFrameBytes: Int) throws {
++        guard collective.size == 2, (0...1).contains(collective.rank),
++              maximumFrameBytes > ClusterRecordTransferAccounting.framingBytes,
++              maximumFrameBytes <= CollectivePointToPointShape.hardByteLimit else {
++            throw ProbeError("Encrypted record byte IO requires bounded two-rank P2P")
++        }
++        self.collective = collective; localRank = collective.rank; worldSize = collective.size
++        self.maximumFrameBytes = maximumFrameBytes
++    }
++
++    func sendCompleted(_ bytes: Data, check: () throws -> Void) throws {
++        guard !bytes.isEmpty, bytes.count <= maximumFrameBytes else {
++            throw ProbeError("Encrypted native send frame exceeds its admitted ceiling")
++        }
++        try MLX.withError { error in
++            func checked() throws { try error.check(); try check(); try error.check() }
++            try checked()
++            // Direct Data initializer avoids a separate Array<UInt8> staging copy.
++            // It still copies into native storage; no zero-copy claim is made.
++            try withExtendedLifetime(bytes) {
++                let array = MLXArray(bytes, [bytes.count], type: UInt8.self)
++                try checked()
++                _ = try collective.sendCompleted(array, to: 1 - localRank,
++                    maximumBytes: bytes.count, check: checked)
++                try checked()
++            }
++        }
++    }
++
++    func receiveCompleted(byteCount: Int, check: () throws -> Void) throws -> Data {
++        guard byteCount > 0, byteCount <= maximumFrameBytes else {
++            throw ProbeError("Encrypted native receive frame exceeds its admitted ceiling")
++        }
++        return try MLX.withError { error in
++            func checked() throws { try error.check(); try check(); try error.check() }
++            try checked()
++            let array = try collective.receiveCompleted(shape: [byteCount], dtype: .uint8,
++                from: 1 - localRank, maximumBytes: byteCount, check: checked)
++            let copied = array.asData(access: .copy)
++            try checked()
++            guard copied.shape == [byteCount], copied.dType == .uint8, copied.data.count == byteCount else {
++                throw ProbeError("Encrypted native frame copy changed layout")
++            }
++            return copied.data
++        }
++    }
++
++    /// Native frame allocation bound only. Caller must additionally charge host
++    /// plaintext/record/copy allocations, crypto workspace and model state.
++    func maximumNativeFrameAllocation(for length: ClusterRecordTransferLength) throws -> Int {
++        let accounting = try ClusterRecordTransferAccounting(length: length,
++            maximumTransportFrameBytes: maximumFrameBytes)
++        return try accounting.maximumFrameByteCounts.map {
++            try Memory.allocationFootprintUpperBound(byteCount: $0)
++        }.max()!
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordChannel.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordChannel.swift
+@@ -0,0 +1,89 @@
++import CryptoKit
++import Foundation
++
++/// A bounded, fail-closed two-rank record codec. This is not peer authentication,
++/// a transport, a deadline, a native state owner, or a memory admission grant.
++/// The caller must supply a fresh 256-bit secret for this authenticated epoch and
++/// must never construct another sending channel for the same key/binding/rank.
++/// No reset, plaintext fallback or model callback is provided.
++public final class ClusterAuthenticatedRecordChannel: @unchecked Sendable {
++    public static let framingPrefixBytes = ClusterRecordHeader.byteCount
++    public static let tagBytes = ClusterRecordHeader.tagByteCount
++    public let limits: ClusterRecordLimits
++    private let state: ClusterRecordState
++
++    public init(sessionKey: SymmetricKey, binding: ClusterRecordBinding,
++                localRank: Int, limits: ClusterRecordLimits) throws {
++        self.limits = limits
++        state = try ClusterRecordState(sessionKey: sessionKey, binding: binding,
++            localRank: localRank, limits: limits)
++    }
++
++    public var status: ClusterRecordStatus { state.status }
++    public var maximumSealedRecordBytes: Int {
++        Self.framingPrefixBytes + limits.maximumPlaintextBytes + Self.tagBytes
++    }
++
++    /// Immediate lock-only invalidation. An operation already inside CryptoKit
++    /// finishes locally, then refuses publication if invalidation won the lock.
++    /// Caller cancellation/fencing must not wait for crypto or this codec's ARC.
++    public func invalidate() { state.invalidate() }
++
++    /// Cap-only, UNAUTHENTICATED framing observation for a bounded RDMA receive.
++    /// It neither identifies a peer nor permits state consumption. Receive exactly
++    /// this bounded total, then call open with locally expected context. On any
++    /// framing/transport failure the caller must invalidate and fence the session.
++    public static func boundedRecordByteCount(fromPrefix prefix: Data,
++                                              maximumPlaintextBytes: Int) throws -> Int {
++        try ClusterRecordHeader.decode(prefix, maximumPlaintextBytes: maximumPlaintextBytes).recordByteCount
++    }
++
++    public func seal(_ plaintext: Data, context: ClusterRecordContext) throws -> Data {
++        var work: ClusterRecordState.Work?
++        do {
++            let current = try state.beginSeal(byteCount: plaintext.count, context: context)
++            work = current
++            let nonce = try AES.GCM.Nonce(data: current.header.nonceBytes)
++            let sealed = try AES.GCM.seal(plaintext, using: current.key, nonce: nonce,
++                authenticating: current.authenticatedData)
++            guard sealed.ciphertext.count == plaintext.count, sealed.tag.count == Self.tagBytes else {
++                throw ClusterRecordError.encryptionFailed
++            }
++            var record = current.header.encoded
++            record.append(sealed.ciphertext); record.append(sealed.tag)
++            try state.finish(current)
++            return record
++        } catch {
++            state.fail(operation: work?.id)
++            throw (error as? ClusterRecordError) ?? .encryptionFailed
++        }
++    }
++
++    /// finish is the publication linearization point, after AEAD verification.
++    /// Invalidation can follow finish before the caller receives the returned Data. The caller must still enforce its unchanged
++    /// request deadline and payload/shape/frontier invariants before consumption.
++    public func open(_ record: Data, expecting context: ClusterRecordContext) throws -> Data {
++        var work: ClusterRecordState.Work?
++        do {
++            guard record.count >= Self.framingPrefixBytes + Self.tagBytes + 1,
++                  record.count <= maximumSealedRecordBytes else {
++                throw ClusterRecordError.recordTooLarge
++            }
++            let header = try ClusterRecordHeader.decode(Data(record.prefix(Self.framingPrefixBytes)),
++                maximumPlaintextBytes: limits.maximumPlaintextBytes)
++            let current = try state.beginOpen(header: header, recordByteCount: record.count, context: context)
++            work = current
++            let nonce = try AES.GCM.Nonce(data: header.nonceBytes)
++            let box = try AES.GCM.SealedBox(nonce: nonce,
++                ciphertext: Data(record.dropFirst(Self.framingPrefixBytes).dropLast(Self.tagBytes)),
++                tag: Data(record.suffix(Self.tagBytes)))
++            let plaintext = try AES.GCM.open(box, using: current.key, authenticating: current.authenticatedData)
++            guard plaintext.count == header.plaintextBytes else { throw ClusterRecordError.authenticationFailed }
++            try state.finish(current)
++            return plaintext
++        } catch {
++            state.fail(operation: work?.id)
++            throw (error as? ClusterRecordError) ?? .authenticationFailed
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordTransport.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterAuthenticatedRecordTransport.swift
+@@ -0,0 +1,142 @@
++import CryptoKit
++import Foundation
++
++/// Serialized, bounded encrypted-record transfer. No raw fallback, model state,
++/// cleanup ACK, logger, retry/reset, or membership authority is provided here.
++/// The caller supplies an independently authorized fresh secret and retains all
++/// native/request ownership until its existing real retirement/release proofs.
++public final class ClusterAuthenticatedRecordTransport: @unchecked Sendable {
++    private let io: any ClusterRecordByteIO
++    private let channel: ClusterAuthenticatedRecordChannel
++    private let lock = NSLock()
++    private var active = true
++    private var inOperation = false
++    public let localRank: Int
++    public let maximumFrameBytes: Int
++    public let maximumPlaintextBytes: Int
++
++    public init(sessionKey: SymmetricKey, binding: ClusterRecordBinding,
++                limits: ClusterRecordLimits, io: any ClusterRecordByteIO) throws {
++        guard io.worldSize == 2, (0...1).contains(io.localRank) else {
++            throw ClusterRecordTransferError.invalidConfiguration
++        }
++        _ = try ClusterRecordTransferAccounting(length: .exact(limits.maximumPlaintextBytes),
++            maximumTransportFrameBytes: io.maximumFrameBytes)
++        self.io = io; localRank = io.localRank; maximumFrameBytes = io.maximumFrameBytes
++        maximumPlaintextBytes = limits.maximumPlaintextBytes
++        channel = try .init(sessionKey: sessionKey, binding: binding, localRank: io.localRank, limits: limits)
++    }
++
++    public var status: ClusterRecordTransportStatus {
++        lock.lock(); defer { lock.unlock() }
++        return .init(active: active, operationInFlight: inOperation, codec: channel.status)
++    }
++
++    /// Lock-only fail-closed signal; never invokes IO or waits for a blocked peer.
++    /// It does not cancel native work, release state, or clear a device journal.
++    public func invalidate() {
++        lock.lock(); active = false; lock.unlock()
++        channel.invalidate()
++    }
++
++    /// Exact-size payloads: one combined ciphertext frame and one completed send.
++    /// Variable controls: prefix + ciphertext body, with two completed sends.
++    public func send(_ plaintext: Data, expecting expected: ClusterRecordTransferExpectation,
++                     check: () throws -> Void) throws {
++        try operation {
++            try checked(check); try validate(expected)
++            guard expected.length.accepts(plaintext.count) else {
++                throw ClusterRecordTransferError.unexpectedByteCount
++            }
++            let record = try channel.seal(plaintext, context: expected.authenticatedContext)
++            try checked(check)
++            try withExtendedLifetime(record) {
++                switch expected.length {
++                case .exact:
++                    try io.sendCompleted(record, check: { try self.checked(check) })
++                case .bounded:
++                    let prefix = Data(record.prefix(ClusterAuthenticatedRecordChannel.framingPrefixBytes))
++                    try io.sendCompleted(prefix, check: { try self.checked(check) })
++                    try checked(check)
++                    let body = Data(record.dropFirst(ClusterAuthenticatedRecordChannel.framingPrefixBytes))
++                    try io.sendCompleted(body, check: { try self.checked(check) })
++                }
++            }
++            try checked(check)
++        }
++    }
++
++    /// No payload escapes before full AEAD verification and a post-open local
++    /// deadline/cancellation check. The caller still validates semantic payload
++    /// invariants before reconstruction/consumption. Invalidation can race after
++    /// this publication point; existing request-state checks remain necessary.
++    public func receive(expecting expected: ClusterRecordTransferExpectation,
++                        check: () throws -> Void) throws -> Data {
++        try operation {
++            try checked(check); try validate(expected)
++            let record = try receiveRecord(expected, check: check)
++            try checked(check)
++            let plaintext = try channel.open(record, expecting: expected.authenticatedContext)
++            guard expected.length.accepts(plaintext.count) else {
++                throw ClusterRecordTransferError.unexpectedByteCount
++            }
++            try checked(check)
++            return plaintext
++        }
++    }
++
++    private func receiveRecord(_ expected: ClusterRecordTransferExpectation,
++                               check: () throws -> Void) throws -> Data {
++        switch expected.length {
++        case .exact(let count):
++            return try receiveFrame(count + ClusterRecordTransferAccounting.framingBytes, check: check)
++        case .bounded(let maximum):
++            var record = try receiveFrame(ClusterAuthenticatedRecordChannel.framingPrefixBytes, check: check)
++            // This observation is unauthenticated and used ONLY for a bounded
++            // receive allocation. It cannot authorize state or model work.
++            let total = try ClusterAuthenticatedRecordChannel.boundedRecordByteCount(
++                fromPrefix: record, maximumPlaintextBytes: maximum)
++            guard total <= maximum + ClusterRecordTransferAccounting.framingBytes,
++                  total <= maximumFrameBytes else { throw ClusterRecordTransferError.unexpectedByteCount }
++            try checked(check)
++            let body = try receiveFrame(total - ClusterAuthenticatedRecordChannel.framingPrefixBytes, check: check)
++            record.append(body)
++            guard record.count == total else { throw ClusterRecordTransferError.unexpectedByteCount }
++            return record
++        }
++    }
++
++    private func receiveFrame(_ count: Int, check: () throws -> Void) throws -> Data {
++        guard count > 0, count <= maximumFrameBytes else { throw ClusterRecordTransferError.unexpectedByteCount }
++        let bytes = try io.receiveCompleted(byteCount: count, check: { try self.checked(check) })
++        guard bytes.count == count else { throw ClusterRecordTransferError.unexpectedByteCount }
++        try checked(check)
++        return bytes
++    }
++    private func validate(_ expected: ClusterRecordTransferExpectation) throws {
++        guard io.localRank == localRank, io.worldSize == 2, io.maximumFrameBytes == maximumFrameBytes,
++              expected.length.maximumPlaintextBytes <= channel.limits.maximumPlaintextBytes else {
++            throw ClusterRecordTransferError.invalidConfiguration
++        }
++        _ = try ClusterRecordTransferAccounting(length: expected.length, maximumTransportFrameBytes: maximumFrameBytes)
++    }
++    private func checked(_ check: () throws -> Void) throws {
++        try check()
++        lock.lock(); let live = active; lock.unlock()
++        guard live else { throw ClusterRecordTransferError.inactive }
++    }
++    private func operation<T>(_ body: () throws -> T) throws -> T {
++        lock.lock()
++        guard active, !inOperation else {
++            let error: ClusterRecordTransferError = active ? .concurrentOperation : .inactive
++            active = false; lock.unlock(); channel.invalidate(); throw error
++        }
++        inOperation = true; lock.unlock()
++        defer { lock.lock(); inOperation = false; lock.unlock() }
++        do {
++            let result = try body()
++            try checked({})
++            return result
++        } catch { invalidate(); throw error }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordByteIO.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordByteIO.swift
+@@ -0,0 +1,20 @@
++import Foundation
++
++/// One immutable two-rank endpoint, exclusively used by one record adapter.
++/// A successful call means actual native completion, NOT peer consumption.
++/// Implementations must apply the supplied check around allocation/completion
++/// and must never return partial receives. A blocking backend still requires an
++/// independent process deadline; adapter invalidation does not interrupt it.
++public protocol ClusterRecordByteIO: AnyObject {
++    var localRank: Int { get }
++    var worldSize: Int { get }
++    var maximumFrameBytes: Int { get }
++    func sendCompleted(_ bytes: Data, check: () throws -> Void) throws
++    func receiveCompleted(byteCount: Int, check: () throws -> Void) throws -> Data
++}
++
++public struct ClusterRecordTransportStatus: Sendable, Equatable {
++    public let active: Bool
++    public let operationInFlight: Bool
++    public let codec: ClusterRecordStatus
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordFraming.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordFraming.swift
+@@ -0,0 +1,54 @@
++import Foundation
++
++/// This prefix is public framing, authenticated by AEAD only when open succeeds.
++/// No inference payload or unbounded/variable-length field belongs in it.
++struct ClusterRecordHeader: Sendable {
++    static let byteCount = 24
++    static let tagByteCount = 16
++    static let magic: [UInt8] = [0x44, 0x42, 0x52, 0x44] // DBRD
++    let direction: UInt8
++    let type: ClusterRecordType
++    let sequence: UInt64
++    let plaintextBytes: Int
++
++    var encoded: Data {
++        var result = Data(Self.magic)
++        result.append(contentsOf: [1, ClusterRecordSuite.aes256GcmHkdfSha256V1.rawValue, direction, type.rawValue])
++        result.clusterAppendBigEndian(sequence)
++        result.clusterAppendBigEndian(UInt32(plaintextBytes))
++        result.append(contentsOf: [0, 0, 0, 0])
++        return result
++    }
++
++    static func decode(_ prefix: Data, maximumPlaintextBytes: Int) throws -> Self {
++        guard (1...ClusterRecordLimits.hardMaximumPlaintextBytes).contains(maximumPlaintextBytes) else {
++            throw ClusterRecordError.invalidConfiguration
++        }
++        guard prefix.count == byteCount else { throw ClusterRecordError.malformedRecord }
++        let bytes = Array(prefix) // Exactly 24 bytes; independent of Data slice indices.
++        guard Array(bytes[0..<4]) == magic, bytes[4] == 1,
++              bytes[5] == ClusterRecordSuite.aes256GcmHkdfSha256V1.rawValue,
++              bytes[6] <= 1, let type = ClusterRecordType(rawValue: bytes[7]),
++              bytes[20..<24].allSatisfy({ $0 == 0 }) else {
++            throw ClusterRecordError.malformedRecord
++        }
++        var sequence: UInt64 = 0
++        for byte in bytes[8..<16] { sequence = (sequence << 8) | UInt64(byte) }
++        var length: UInt32 = 0
++        for byte in bytes[16..<20] { length = (length << 8) | UInt32(byte) }
++        guard length > 0, UInt64(length) <= UInt64(maximumPlaintextBytes) else {
++            throw ClusterRecordError.recordTooLarge
++        }
++        return .init(direction: bytes[6], type: type, sequence: sequence, plaintextBytes: Int(length))
++    }
++
++    var recordByteCount: Int { Self.byteCount + plaintextBytes + Self.tagByteCount }
++
++    var nonceBytes: Data {
++        // Directional keys are distinct too. Sequence is global to the session,
++        // including setup records; it is never reset for a new request.
++        var result = Data([0x44, 0x42, 1, direction])
++        result.clusterAppendBigEndian(sequence)
++        return result
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordState.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordState.swift
+@@ -0,0 +1,148 @@
++import CryptoKit
++import Foundation
++
++/// Owns sequencing and publication only. A copied operation key may remain on
++/// its synchronous crypto stack until that call returns; invalidation prevents
++/// publication immediately but does not claim immediate key-memory erasure.
++final class ClusterRecordState: @unchecked Sendable {
++    struct Work: Sendable {
++        let id: UInt64
++        let outbound: Bool
++        let key: SymmetricKey
++        let header: ClusterRecordHeader
++        let authenticatedData: Data
++    }
++
++    private let lock = NSLock()
++    private let binding: ClusterRecordBinding
++    private let limits: ClusterRecordLimits
++    private let localRank: UInt8
++    private var sendKey: SymmetricKey?
++    private var receiveKey: SymmetricKey?
++    private var active = true
++    private var inFlight: UInt64?
++    private var nextOperation: UInt64 = 0
++    private var sent: UInt64 = 0
++    private var received: UInt64 = 0
++    private var sentBytes: UInt64 = 0
++    private var receivedBytes: UInt64 = 0
++
++    init(sessionKey: SymmetricKey, binding: ClusterRecordBinding,
++         localRank: Int, limits: ClusterRecordLimits) throws {
++        guard sessionKey.bitCount == 256 else { throw ClusterRecordError.invalidKeySize }
++        guard (0...1).contains(localRank) else { throw ClusterRecordError.invalidConfiguration }
++        self.binding = binding; self.localRank = UInt8(localRank); self.limits = limits
++        var salt = Data("darkbloom/rdma-record/hkdf-salt/v1\0".utf8)
++        salt.append(binding.canonicalBytes); salt.append(limits.canonicalBytes)
++        func derive(_ rank: UInt8) -> SymmetricKey {
++            var info = Data("darkbloom/rdma-record/directional-aes256-gcm/v1\0".utf8)
++            info.append(contentsOf: [rank, 1 - rank])
++            return HKDF<SHA256>.deriveKey(inputKeyMaterial: sessionKey, salt: salt,
++                info: info, outputByteCount: 32)
++        }
++        sendKey = derive(UInt8(localRank)); receiveKey = derive(UInt8(1 - localRank))
++    }
++
++    var status: ClusterRecordStatus {
++        lock.lock(); defer { lock.unlock() }
++        return .init(active: active, operationInFlight: inFlight != nil,
++            sealedRecords: sent, openedRecords: received,
++            sealedPlaintextBytes: sentBytes, openedPlaintextBytes: receivedBytes)
++    }
++
++    func invalidate() {
++        lock.lock(); defer { lock.unlock() }
++        invalidateLocked()
++    }
++
++    /// Aborts only the caller's ticket; a racing reject must not falsely report
++    /// that another synchronous crypto operation has finished.
++    func fail(operation: UInt64?) {
++        lock.lock(); defer { lock.unlock() }
++        invalidateLocked()
++        if let operation, inFlight == operation { inFlight = nil }
++    }
++
++    func beginSeal(byteCount: Int, context: ClusterRecordContext) throws -> Work {
++        lock.lock(); defer { lock.unlock() }
++        do {
++            try requireIdleLocked()
++            try requireBudgetLocked(bytes: byteCount, count: sent, used: sentBytes)
++            guard let sendKey else { throw ClusterRecordError.inactive }
++            let header = ClusterRecordHeader(direction: localRank, type: context.type,
++                sequence: sent, plaintextBytes: byteCount)
++            return installLocked(outbound: true, key: sendKey, header: header, context: context)
++        } catch { invalidateLocked(); throw error }
++    }
++
++    func beginOpen(header: ClusterRecordHeader, recordByteCount: Int,
++                   context: ClusterRecordContext) throws -> Work {
++        lock.lock(); defer { lock.unlock() }
++        do {
++            try requireIdleLocked()
++            guard header.direction == 1 - localRank, header.type == context.type,
++                  header.recordByteCount == recordByteCount else {
++                throw ClusterRecordError.unexpectedRecord
++            }
++            guard header.sequence == received else { throw ClusterRecordError.sequenceMismatch }
++            try requireBudgetLocked(bytes: header.plaintextBytes, count: received, used: receivedBytes)
++            guard let receiveKey else { throw ClusterRecordError.inactive }
++            return installLocked(outbound: false, key: receiveKey, header: header, context: context)
++        } catch { invalidateLocked(); throw error }
++    }
++
++    /// The codec calls this only after seal or authenticated open succeeds.
++    /// Authentication failure never advances a receive counter or byte budget.
++    func finish(_ work: Work) throws {
++        lock.lock(); defer { lock.unlock() }
++        guard inFlight == work.id else {
++            invalidateLocked(); throw ClusterRecordError.inactive
++        }
++        inFlight = nil
++        guard active else { throw ClusterRecordError.inactive }
++        if work.outbound {
++            guard work.header.sequence == sent else {
++                invalidateLocked(); throw ClusterRecordError.sequenceMismatch
++            }
++            sent += 1; sentBytes += UInt64(work.header.plaintextBytes)
++        } else {
++            guard work.header.sequence == received else {
++                invalidateLocked(); throw ClusterRecordError.sequenceMismatch
++            }
++            received += 1; receivedBytes += UInt64(work.header.plaintextBytes)
++        }
++    }
++
++    private func requireIdleLocked() throws {
++        guard active else { throw ClusterRecordError.inactive }
++        guard inFlight == nil else { throw ClusterRecordError.concurrentOperation }
++    }
++
++    private func requireBudgetLocked(bytes: Int, count: UInt64, used: UInt64) throws {
++        guard bytes > 0, bytes <= limits.maximumPlaintextBytes else {
++            throw ClusterRecordError.recordTooLarge
++        }
++        // The hard record cap is below UInt64.max. Check before any addition,
++        // nonce construction or operation ticket; exhaustion poisons the channel.
++        guard count < limits.maximumRecordsPerDirection,
++              used <= limits.maximumCumulativePlaintextBytesPerDirection,
++              UInt64(bytes) <= limits.maximumCumulativePlaintextBytesPerDirection - used else {
++            throw ClusterRecordError.usageLimitReached
++        }
++    }
++
++    private func installLocked(outbound: Bool, key: SymmetricKey,
++                               header: ClusterRecordHeader, context: ClusterRecordContext) -> Work {
++        let id = nextOperation
++        nextOperation += 1 // At most 2 * hardMaximumRecords for this channel.
++        inFlight = id
++        var aad = Data("darkbloom/rdma-record/aad/v1\0".utf8)
++        aad.append(binding.canonicalBytes); aad.append(limits.canonicalBytes)
++        aad.append(context.canonicalBytes); aad.append(header.encoded)
++        return .init(id: id, outbound: outbound, key: key, header: header, authenticatedData: aad)
++    }
++
++    private func invalidateLocked() {
++        active = false; sendKey = nil; receiveKey = nil
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferAccounting.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferAccounting.swift
+@@ -0,0 +1,90 @@
++import Foundation
++
++/// Exact logical record/frame sizes. These are NOT an allocator/scratch bound,
++/// a Ready/capacity claim, or a native/device reservation. The additional host
++/// allocator, CryptoKit workspace and native allocator policy remain external.
++public struct ClusterRecordTransferAccounting: Sendable, Equatable {
++    public static let framingBytes = ClusterAuthenticatedRecordChannel.framingPrefixBytes
++        + ClusterAuthenticatedRecordChannel.tagBytes
++    public let maximumPlaintextBytes: Int
++    public let maximumSealedRecordBytes: Int
++    public let maximumFrameByteCounts: [Int]
++    public let additionalFramingDataBytes: Int
++    public let codecCiphertextAndTagLogicalBytes: Int
++
++    public init(length: ClusterRecordTransferLength, maximumTransportFrameBytes: Int) throws {
++        let bytes = length.maximumPlaintextBytes
++        guard bytes > 0, bytes <= ClusterRecordLimits.hardMaximumPlaintextBytes,
++              maximumTransportFrameBytes > Self.framingBytes,
++              maximumTransportFrameBytes <= ClusterRecordLimits.hardMaximumPlaintextBytes,
++              bytes <= maximumTransportFrameBytes - Self.framingBytes else {
++            throw ClusterRecordTransferError.invalidConfiguration
++        }
++        maximumPlaintextBytes = bytes
++        maximumSealedRecordBytes = bytes + Self.framingBytes
++        codecCiphertextAndTagLogicalBytes = bytes + ClusterAuthenticatedRecordChannel.tagBytes
++        switch length {
++        case .exact:
++            maximumFrameByteCounts = [maximumSealedRecordBytes]
++            additionalFramingDataBytes = 0
++        case .bounded:
++            maximumFrameByteCounts = [ClusterAuthenticatedRecordChannel.framingPrefixBytes,
++                bytes + ClusterAuthenticatedRecordChannel.tagBytes]
++            // Prefix/body copies may overlap the assembled record. Logical
++            // lengths only: Foundation allocation capacities are not exposed.
++            additionalFramingDataBytes = maximumSealedRecordBytes
++        }
++    }
++}
++
++/// A directional, worst-case record envelope for pre-admission accounting.
++/// Include setup/control/ACK records, every possible output, and all requests.
++/// This check is a pure observation, NOT atomic request admission. The existing
++/// serialized owner must reserve it before starting any known transfer work.
++public struct ClusterRecordTransferEnvelope: Sendable, Equatable {
++    public let records: UInt64
++    public let plaintextBytes: UInt64
++    public let sealedBytes: UInt64
++    public let nativeTransfers: UInt64
++    public let maximumRecordPlaintextBytes: Int
++
++    public init(entries: [(ClusterRecordTransferLength, UInt64)], maximumTransportFrameBytes: Int) throws {
++        guard !entries.isEmpty else { throw ClusterRecordTransferError.invalidConfiguration }
++        var records: UInt64 = 0, plaintext: UInt64 = 0, sealed: UInt64 = 0, transfers: UInt64 = 0
++        var maximumRecord = 0
++        for (length, count) in entries {
++            guard count > 0 else { throw ClusterRecordTransferError.invalidConfiguration }
++            let layout = try ClusterRecordTransferAccounting(length: length,
++                maximumTransportFrameBytes: maximumTransportFrameBytes)
++            records = try Self.add(records, count)
++            plaintext = try Self.add(plaintext, Self.multiply(UInt64(layout.maximumPlaintextBytes), count))
++            sealed = try Self.add(sealed, Self.multiply(UInt64(layout.maximumSealedRecordBytes), count))
++            transfers = try Self.add(transfers, Self.multiply(UInt64(length.nativeTransferCount), count))
++            maximumRecord = max(maximumRecord, layout.maximumPlaintextBytes)
++        }
++        self.records = records; plaintextBytes = plaintext; sealedBytes = sealed; nativeTransfers = transfers
++        maximumRecordPlaintextBytes = maximumRecord
++    }
++
++    public func requireRemaining(usedRecords: UInt64, usedPlaintextBytes: UInt64,
++                                 limits: ClusterRecordLimits) throws {
++        guard maximumRecordPlaintextBytes <= limits.maximumPlaintextBytes,
++              usedRecords <= limits.maximumRecordsPerDirection,
++              usedPlaintextBytes <= limits.maximumCumulativePlaintextBytesPerDirection,
++              records <= limits.maximumRecordsPerDirection - usedRecords,
++              plaintextBytes <= limits.maximumCumulativePlaintextBytesPerDirection - usedPlaintextBytes else {
++            throw ClusterRecordTransferError.insufficientSessionBudget
++        }
++    }
++
++    private static func add(_ a: UInt64, _ b: UInt64) throws -> UInt64 {
++        let value = a.addingReportingOverflow(b)
++        guard !value.overflow else { throw ClusterRecordTransferError.arithmeticOverflow }
++        return value.partialValue
++    }
++    private static func multiply(_ a: UInt64, _ b: UInt64) throws -> UInt64 {
++        let value = a.multipliedReportingOverflow(by: b)
++        guard !value.overflow else { throw ClusterRecordTransferError.arithmeticOverflow }
++        return value.partialValue
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferExpectation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTransferExpectation.swift
+@@ -0,0 +1,54 @@
++import CryptoKit
++import Foundation
++
++public enum ClusterRecordTransferError: Error, Sendable, Equatable {
++    case invalidConfiguration, unexpectedByteCount, inactive, concurrentOperation
++    case arithmeticOverflow, insufficientSessionBudget
++}
++
++/// Locally selected framing. Exact hot-path records use one native transfer.
++/// Variable controls use a fixed prefix followed by a capped ciphertext body.
++public enum ClusterRecordTransferLength: Sendable, Equatable {
++    case exact(Int)
++    case bounded(maximum: Int)
++
++    public var maximumPlaintextBytes: Int {
++        switch self { case .exact(let count), .bounded(let count): count }
++    }
++    public var nativeTransferCount: Int {
++        switch self { case .exact: 1; case .bounded: 2 }
++    }
++    func accepts(_ count: Int) -> Bool {
++        switch self {
++        case .exact(let expected): count == expected
++        case .bounded(let maximum): count > 0 && count <= maximum
++        }
++    }
++}
++
++/// Caller-supplied expectation, never learned from a received record/header.
++/// Source metadata digest excludes payload bytes; framing mode and length are
++/// additionally bound here, so equal payload sizes cannot hide a policy mismatch.
++public struct ClusterRecordTransferExpectation: Sendable {
++    public let context: ClusterRecordContext
++    public let length: ClusterRecordTransferLength
++
++    public init(context: ClusterRecordContext, length: ClusterRecordTransferLength) throws {
++        guard (1...ClusterRecordLimits.hardMaximumPlaintextBytes).contains(length.maximumPlaintextBytes) else {
++            throw ClusterRecordTransferError.invalidConfiguration
++        }
++        self.context = context; self.length = length
++    }
++
++    var authenticatedContext: ClusterRecordContext {
++        get throws {
++            var material = Data("darkbloom/rdma-record/transfer-expectation/v1\0".utf8)
++            material.append(context.expectationSHA256)
++            material.append(length.nativeTransferCount == 1 ? 1 : 2)
++            var count = UInt32(length.maximumPlaintextBytes).bigEndian
++            withUnsafeBytes(of: &count) { material.append(contentsOf: $0) }
++            return try .init(requestID: context.requestID, type: context.type,
++                expectationSHA256: Data(SHA256.hash(data: material)))
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTypes.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterRecordTypes.swift
+@@ -0,0 +1,132 @@
++import Foundation
++
++/// Closed, payload-free failures. Never include keys, AAD, ciphertext or plaintext.
++public enum ClusterRecordError: Error, Sendable, Equatable {
++    case invalidKeySize, invalidConfiguration, invalidContext, inactive
++    case concurrentOperation, malformedRecord, recordTooLarge, unexpectedRecord
++    case sequenceMismatch, usageLimitReached, authenticationFailed, encryptionFailed
++}
++
++public enum ClusterRecordSuite: UInt8, Sendable {
++    case aes256GcmHkdfSha256V1 = 1
++}
++
++/// Authority is external: this value does not prove membership or key freshness.
++public struct ClusterRecordBinding: Sendable {
++    public let epoch: UUID
++    public let planSHA256: Data
++    public let membershipTranscriptSHA256: Data
++    public let suite: ClusterRecordSuite
++
++    public init(epoch: UUID, planSHA256: Data, membershipTranscriptSHA256: Data,
++                suite: ClusterRecordSuite = .aes256GcmHkdfSha256V1) throws {
++        guard !clusterRecordUUIDBytes(epoch).allSatisfy({ $0 == 0 }),
++              planSHA256.count == 32, membershipTranscriptSHA256.count == 32 else {
++            throw ClusterRecordError.invalidContext
++        }
++        self.epoch = epoch; self.planSHA256 = planSHA256
++        self.membershipTranscriptSHA256 = membershipTranscriptSHA256; self.suite = suite
++    }
++
++    // Fixed-width canonical encoding; no JSON, optional fields or ambiguous joins.
++    var canonicalBytes: Data {
++        var result = Data("darkbloom/rdma-record/binding/v1\0".utf8)
++        result.append(suite.rawValue)
++        result.append(clusterRecordUUIDBytes(epoch))
++        result.append(planSHA256); result.append(membershipTranscriptSHA256)
++        return result
++    }
++}
++
++public enum ClusterRecordType: UInt8, Sendable {
++    case keyConfirmation = 1, loadAgreement, loadedReady
++    case requestAgreement, residualHeader, residualPayload, targetToken
++    case generationDecision, acknowledgement, requestRetired
++
++    var requiresRequest: Bool {
++        switch self {
++        case .keyConfirmation, .loadAgreement, .loadedReady: false
++        default: true
++        }
++    }
++}
++
++/// Expected locally, never adopted from received bytes. expectationSHA256 binds
++/// the caller's canonical phase/geometry/frontier metadata, not inference data.
++public struct ClusterRecordContext: Sendable {
++    public let requestID: UUID?
++    public let type: ClusterRecordType
++    public let expectationSHA256: Data
++
++    public init(requestID: UUID?, type: ClusterRecordType, expectationSHA256: Data) throws {
++        guard type.requiresRequest == (requestID != nil), expectationSHA256.count == 32 else {
++            throw ClusterRecordError.invalidContext
++        }
++        if let requestID, clusterRecordUUIDBytes(requestID).allSatisfy({ $0 == 0 }) {
++            throw ClusterRecordError.invalidContext
++        }
++        self.requestID = requestID; self.type = type; self.expectationSHA256 = expectationSHA256
++    }
++
++    var canonicalBytes: Data {
++        var result = Data([requestID == nil ? 0 : 1, type.rawValue])
++        result.append(requestID.map(clusterRecordUUIDBytes) ?? Data(repeating: 0, count: 16))
++        result.append(expectationSHA256)
++        return result
++    }
++}
++
++/// Additional protocol bounds, not a native memory reservation. The membership
++/// transcript must bind the agreed limits. Resource admission remains external.
++public struct ClusterRecordLimits: Sendable {
++    public static let hardMaximumPlaintextBytes = 16 * 1024 * 1024
++    public static let hardMaximumRecords: UInt64 = 1_048_576
++    public static let hardMaximumCumulativePlaintextBytes: UInt64 = 4_294_967_296
++    public let maximumPlaintextBytes: Int
++    public let maximumRecordsPerDirection: UInt64
++    public let maximumCumulativePlaintextBytesPerDirection: UInt64
++
++    public init(maximumPlaintextBytes: Int,
++                maximumRecordsPerDirection: UInt64 = Self.hardMaximumRecords,
++                maximumCumulativePlaintextBytesPerDirection: UInt64 = Self.hardMaximumCumulativePlaintextBytes) throws {
++        guard (1...Self.hardMaximumPlaintextBytes).contains(maximumPlaintextBytes),
++              maximumRecordsPerDirection > 0, maximumRecordsPerDirection <= Self.hardMaximumRecords,
++              maximumCumulativePlaintextBytesPerDirection > 0,
++              maximumCumulativePlaintextBytesPerDirection <= Self.hardMaximumCumulativePlaintextBytes,
++              UInt64(maximumPlaintextBytes) <= maximumCumulativePlaintextBytesPerDirection else {
++            throw ClusterRecordError.invalidConfiguration
++        }
++        self.maximumPlaintextBytes = maximumPlaintextBytes
++        self.maximumRecordsPerDirection = maximumRecordsPerDirection
++        self.maximumCumulativePlaintextBytesPerDirection = maximumCumulativePlaintextBytesPerDirection
++    }
++
++    var canonicalBytes: Data {
++        var result = Data()
++        result.clusterAppendBigEndian(UInt32(maximumPlaintextBytes))
++        result.clusterAppendBigEndian(maximumRecordsPerDirection)
++        result.clusterAppendBigEndian(maximumCumulativePlaintextBytesPerDirection)
++        return result
++    }
++}
++
++public struct ClusterRecordStatus: Sendable, Equatable {
++    public let active: Bool
++    public let operationInFlight: Bool
++    public let sealedRecords: UInt64
++    public let openedRecords: UInt64
++    public let sealedPlaintextBytes: UInt64
++    public let openedPlaintextBytes: UInt64
++}
++
++func clusterRecordUUIDBytes(_ value: UUID) -> Data {
++    var bytes = value.uuid
++    return withUnsafeBytes(of: &bytes) { Data($0) }
++}
++
++extension Data {
++    mutating func clusterAppendBigEndian<T: FixedWidthInteger>(_ value: T) {
++        var value = value.bigEndian
++        Swift.withUnsafeBytes(of: &value) { append(contentsOf: $0) }
++    }
++}

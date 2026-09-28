@@ -1,0 +1,106 @@
+--- original/audit-dense-constructor-metadata-20260914.py
++++ v2/audit_dense_constructor_metadata_v2.py
+@@ -5,8 +5,10 @@
+ import hashlib
+ import json
+ import math
++import os
+ from pathlib import Path
+ import re
++import sys
+ 
+ ROOT = Path('/Users/developer/DarkbloomDev')
+ FIXTURE = ROOT / 'd-inference/experiments/cluster/inference/Tests/RegisteredDenseProfiles/retained-inputs.json'
+@@ -65,7 +67,41 @@
+         assert actual[key] is False, key
+ 
+ 
++def require_integer_metadata(report):
++    """Exact Int fields from the existing DTO; Boolean flags keep their old checks."""
++    def fields(value, names, path):
++        for name in names:
++            if type(value[name]) is not int:
++                raise ValueError('Expected integer metadata at ' + path + '.' + name)
++    def tensors(values, byte_field, path):
++        for index, value in enumerate(values):
++            local = path + '[' + str(index) + ']'
++            fields(value, [byte_field], local)
++            if type(value['shape']) is not list or any(type(x) is not int for x in value['shape']):
++                raise ValueError('Expected integer tensor shape at ' + local + '.shape')
++    def constructor(value, path):
++        fields(value, ['layerCount', 'logicalParameterBytes'], path)
++        tensors(value['parameters'], 'logicalByteCount', path + '.parameters')
++    fields(report, ['schemaVersion', 'sourceTensorCount', 'sourceTensorBytes',
++        'largestSourceTensorBytes', 'fullCheckpointVerificationPasses', 'constructorsInspected'], 'report')
++    fields(report['arithmeticEnvironment'], ['full512TokenChunkQueryBlocks'], 'report.arithmeticEnvironment')
++    tensors(report['sourceTensors'], 'byteCount', 'report.sourceTensors')
++    for index, value in enumerate(report['sourceTensors']):
++        fields(value, ['offset'], 'report.sourceTensors[' + str(index) + ']')
++    constructor(report['fullConstructor'], 'report.fullConstructor')
++    for index, stage in enumerate(report['stages']):
++        local = 'report.stages[' + str(index) + ']'
++        constructor(stage['constructor'], local + '.constructor')
++        tensors(stage['expectedActiveTensors'], 'byteCount', local + '.expectedActiveTensors')
++        for module_index, module in enumerate(stage['installedLazyInertModules']):
++            tensors(module['parameters'], 'byteCount', local + '.installedLazyInertModules[' +
++                    str(module_index) + '].parameters')
++        fields(stage['expectedPostLoadSummary'], ['stageIndex', 'loadedTensorBytes',
++            'activeTensorCount', 'inertTensorBytes', 'inertTensorCount'], local + '.expectedPostLoadSummary')
++
++
+ def audit(report, fixture):
++    require_integer_metadata(report)
+     assert report['kind'] == 'qwen_dense_constructor_report' and report['schemaVersion'] == 1
+     assert report['scope'] == 'registered_dense_constructor_metadata_only_v1'
+     arithmetic = report['arithmeticEnvironment']
+@@ -184,20 +220,42 @@
+         modelNumericsQualified=False, performanceQualified=False)
+ 
+ 
++def audit_files(stdout_path, output_path):
++    """Publish one new success or failure receipt; never rewrite native evidence."""
++    if output_path.exists():
++        raise FileExistsError('Audit output must be new')
++    result = dict(kind='independent_dense_constructor_metadata_audit', schemaVersion=1,
++        passed=False, status='failed', stdoutSHA256=None, fixtureSHA256=FIXTURE_SHA,
++        auditorSHA256=sha(Path(__file__).read_bytes()), primaryFailure=None,
++        modelNumericsQualified=False, performanceQualified=False)
++    try:
++        assert stdout_path.stat().st_size <= 8 * 1024**2
++        fixture_raw = FIXTURE.read_bytes(); assert sha(fixture_raw) == FIXTURE_SHA
++        with stdout_path.open('rb') as stream:
++            raw = stream.read(8 * 1024**2 + 1)
++        assert len(raw) <= 8 * 1024**2
++        result['stdoutSHA256'] = sha(raw)
++        lines = raw.splitlines(); assert len(lines) == 1
++        result.update(audit(decode(lines[0]), decode(fixture_raw)))
++        result['status'] = 'passed'
++    except Exception as error:
++        result['primaryFailure'] = dict(type=type(error).__name__, message=str(error))
++    raw_result = json.dumps(result, indent=2, sort_keys=True, allow_nan=False).encode() + b'\n'
++    descriptor = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
++    with os.fdopen(descriptor, 'wb') as stream:
++        stream.write(raw_result)
++    return result
++
++
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument('--stdout', type=Path, required=True)
+     parser.add_argument('--output', type=Path, required=True)
+     args = parser.parse_args()
+-    assert not args.output.exists() and args.stdout.stat().st_size <= 8 * 1024**2
+-    fixture_raw = FIXTURE.read_bytes(); assert sha(fixture_raw) == FIXTURE_SHA
+-    raw = args.stdout.read_bytes(); lines = raw.splitlines(); assert len(lines) == 1
+-    result = audit(decode(lines[0]), decode(fixture_raw))
+-    result.update(kind='independent_dense_constructor_metadata_audit', schemaVersion=1,
+-        stdoutSHA256=sha(raw), fixtureSHA256=FIXTURE_SHA, auditorSHA256=sha(Path(__file__).read_bytes()))
+-    args.output.write_bytes(json.dumps(result, indent=2, sort_keys=True).encode() + b'\n')
++    result = audit_files(args.stdout, args.output)
+     print(json.dumps(result, sort_keys=True))
++    return 0 if result['passed'] else 1
+ 
+ 
+ if __name__ == '__main__':
+-    main()
++    sys.exit(main())

@@ -1,0 +1,23 @@
+--- a/test_client.py
++++ b/test_client.py
+@@ -235,7 +235,7 @@
+     def test_8k_content_deadline_miss_is_retained_as_miss(self):
+         response, connection = self.response_fixture(dict(prompt_tokens=8192, completion_tokens=128, total_tokens=8320))
+         ticks = iter([0, 0, 1, 18_192_000_000, 18_192_000_001,
+-                      18_192_000_002, 18_192_000_003, 18_192_000_004, 18_192_000_005])
++                      18_192_000_002, 18_192_000_003, 18_192_000_004, 18_192_000_005, 18_192_000_006])
+         with patch("client.http.client.HTTPConnection", return_value=connection), \
+                 patch("client.time.monotonic_ns", side_effect=lambda: next(ticks)):
+             receipt = run("http://127.0.0.1:1/v1/chat/completions", MODEL, self.prompt,
+--- a/test_terminal.py
++++ b/test_terminal.py
+@@ -129,7 +129,8 @@
+         self.assertIsNone(result['measurement']['typed_error'])
+ 
+     def test_actual_fake_http_missing_eof_obeys_absolute_bound(self):
+-        result, _ = self.request([(0, frame(failure())), (0, DONE), (.4, b': late\n\n')], timeout=.15)
++        result, _ = self.request([(0, frame(failure())), (0, DONE)]
++                                 + [(.025, b': keep-alive\n\n')] * 20, timeout=.15)
+         self.assertEqual(result['error']['code'], 'absolute_timeout')
+         self.assertFalse(result['http_body_eof_observed'])
+         self.assertFalse(result['capture_complete'])

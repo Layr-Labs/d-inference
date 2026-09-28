@@ -1,0 +1,19 @@
+--- a/Tests/context.py
++++ b/Tests/context.py
+@@ -8,9 +8,15 @@
+ SOURCE = Path('/Users/developer/DarkbloomDev/d-inference')
+ A = BASE.parent / 'cluster-native-key-prelude-validation-3-20260916/source'
+ A_SHA = '61f28887e6165c6f488071882868216c6e92bb1f1f6f81cec826c7de0349c5bf'
+-SWIFT_FILTER = 'ClusterMemberRegistrationTests|ClusterMemberLoopTests|DistributedStartCommandTests|DistributedStartSessionFactoryTests|CoordinatorClient|StartupPreload|EngineV2SupportedSetGateTests|MetallibHashTests|NativePairMessageTests|NativePairMemberInvocationTests|NativePairMemberControlTests|NativePairMemberMeshTests'
++SWIFT_FILTER = 'ClusterMemberRegistrationTests|ClusterMemberLoopTests|DistributedStartCommandTests|DistributedStartSessionFactoryTests|CoordinatorClient|StartupPreload|EngineV2SupportedSetGateTests|MetallibHashTests|NativePairMessageTests|NativePairMemberInvocationTests|NativePairMemberControlTests|NativePairMemberMeshTests|ClusterConfigurationTests|ClusterNativeMemberAttachmentTests'
+ NATIVE_PAIR_METHODS = ('publicSigningBytesMatchIndependentGoAndPythonFixture', 'ambiguousOrUnknownPublicRecordsAreRefused')
+ INVOCATION_METHODS = (
++    'omissionRetainsExactLegacyConfigurationBytes',
++    'savedNativeChoiceRoundTripsWithBothLocalRanks',
++    'attachmentRefusesUnknownNullSecretsAndMalformedPins',
++    'policyModelAndEveryRuntimeCommitmentAreBoundToSavedSetup',
++    'protectedSetupCannotSelectOrdinarySessionRoute',
++    'protectedDescriptionRequiresExactProducerContractAndSavedDigest',
+     'meshPublicVectorAndClosedBoundsMatchGo',
+     'onlyCombinedOwnerProfileAdmitsExtendedPublicSequence',
+     'actualMeshFourRoundsUseAuthenticatedSocketAndRetireWithoutReady',

@@ -1,0 +1,28 @@
+--- checks-7/InstalledSessionCheck.swift
++++ repository/InstalledSessionCheck.swift
+@@ -141,7 +141,10 @@
+     }
+     static func failedStart(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
+         let(s,box)=try session(f,p,failSecond:true)
+-        do {try await s.start();throw CheckFailure(message:"second launch refusal accepted")} catch is CheckFailure {}
++        var refused = false
++        do { try await s.start() }
++        catch let error as CheckFailure where error.message == "fabricated second launch refusal" { refused = true }
++        try require(refused, "second launch refusal accepted")
+         let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+6_000_000_000)
+         try require(box.snapshot.count==1 && box.snapshot[0].nativeCleanupObserved,"partial startup lost first endpoint")
+         try require(result == .released || result == .quarantined,"partial startup returned live readiness")
+@@ -166,6 +169,13 @@
+             let(s,box)=try session(f,p,behavior:behavior);try await s.start()
+             let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+3_000_000_000)
+             try require(result == .quarantined && !s.canRotate && box.snapshot.allSatisfy(\.nativeCleanupObserved),"owner failure/release loss fabricated reusable slot")
++            if behavior == "drop-release" {
++                try require(box.snapshot.allSatisfy { !$0.ownerDeviceLeaseReleasedObserved && $0.ownerTermination == .exited(0) },
++                    "missing-ACK case did not reach the intended natural owner exit")
++            } else {
++                try require(box.snapshot.allSatisfy { $0.ownerDeviceLeaseReleasedObserved && $0.ownerTermination == .exited(7) },
++                    "nonzero-owner case did not retain the intended ACK and exit status")
++            }
+         }
+     }
+ }

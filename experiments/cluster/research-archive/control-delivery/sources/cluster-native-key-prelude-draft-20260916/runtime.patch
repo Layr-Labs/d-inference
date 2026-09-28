@@ -1,0 +1,719 @@
+--- a/libs/darkbloom-cluster/Package.swift
++++ b/libs/darkbloom-cluster/Package.swift
+@@ -19,7 +19,7 @@
+         .package(path: "../mlx-swift-lm"),
+     ],
+     targets: [
+-        .target(name: "DarkbloomClusterSecurity"),
++        .target(name: "DarkbloomClusterSecurity", dependencies: ["DarkbloomClusterBootstrap"]),
+         .target(name: "DarkbloomClusterBootstrap"),
+         .target(name: "DarkbloomClusterProtocol"),
+         .target(name: "DarkbloomClusterProcess", dependencies: ["DarkbloomClusterProtocol"]),
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapAuthorization.swift
+@@ -0,0 +1,130 @@
++import Foundation
++
++/// Opt-in is explicit at BOTH ends. Existing mesh2 framing and rounds retain
++/// their original bytes; a protected connection cannot start mesh prematurely.
++public enum ClusterBootstrapMode: Sendable {
++    case mesh2, nativeKeyPreludeV1
++}
++
++/// All fields are public metadata. No private/shared/traffic key belongs here.
++/// Opaque construction requires the actual native-side owned socket exchange.
++public final class ClusterNativePreludeContext: @unchecked Sendable {
++    private let connection: ClusterBootstrapConnection
++    private let claimLock = NSLock()
++    private var claimed = false, cancelled = false
++    private var cancellation: (@Sendable () -> Void)?
++    public let startBytes: Data
++    public var identity: ClusterBootstrapIdentity { connection.identity }
++    public var deadlineUptimeNanoseconds: UInt64 { connection.deadlineUptimeNanoseconds }
++    init(connection: ClusterBootstrapConnection, start: Data) {
++        self.connection = connection; startBytes = start
++    }
++    /// Single holder, no reset. A second attempted claim poisons this socket.
++    public func claimNativeKeyHolder(onCancellation: @escaping @Sendable () -> Void) throws {
++        do {
++            try claimLock.withLock {
++                guard !claimed, !cancelled else { throw ClusterBootstrapError.invalid("Native key context already claimed or cancelled") }
++                claimed = true; cancellation = onCancellation
++            }
++            try connection.checkKeyPrelude()
++        } catch { cancel(); throw error }
++    }
++    public func requireLive() throws { try connection.checkKeyPrelude() }
++    public func exchangeHello(_ publicHello: Data) throws -> Data {
++        try connection.nativeKeyExchange(publicHello, confirmation: false)
++    }
++    public func exchangeConfirmation(_ tag: Data) throws -> Data {
++        try connection.nativeKeyExchange(tag, confirmation: true)
++    }
++    public func complete(transcriptSHA256: Data) throws {
++        try connection.nativeKeyComplete(transcriptSHA256)
++    }
++    public func cancel() {
++        let callback = claimLock.withLock {
++            cancelled = true
++            let value = cancellation; cancellation = nil
++            return value
++        }
++        connection.cancel()
++        callback?() // Never under the context lock; recursive cancellation is inert.
++    }
++}
++
++/// Public-record relay only, never native approval or a cleanup receipt.
++public final class ClusterOwnerPreludeContext: @unchecked Sendable {
++    private let connection: ClusterBootstrapConnection
++    init(connection: ClusterBootstrapConnection) { self.connection = connection }
++    public func receiveHello() throws -> Data { try connection.ownerKeyRead(confirmation: false) }
++    public func sendBinding(_ bytes: Data) throws { try connection.ownerKeyWrite(bytes, confirmation: false) }
++    public func receiveConfirmation() throws -> Data { try connection.ownerKeyRead(confirmation: true) }
++    public func sendPeerConfirmation(_ tag: Data) throws { try connection.ownerKeyWrite(tag, confirmation: true) }
++    public func requireComplete(transcriptSHA256: Data) throws { try connection.ownerKeyComplete(transcriptSHA256) }
++    public func cancel() { connection.cancel() }
++}
++
++/// Mutated only inside ClusterBootstrapConnection.operation. A socket error,
++/// concurrent entry or cancellation poisons the owning connection permanently.
++final class BootstrapAuthorization {
++    private enum Phase: Equatable {
++        case mesh, nativeStart, nativeHello, nativeConfirmation, nativeComplete
++        case ownerStart, ownerHello, ownerBinding, ownerConfirmation, ownerPeerConfirmation, ownerComplete
++    }
++    private var phase: Phase
++    init(worker: Bool, mode: ClusterBootstrapMode) {
++        switch mode {
++        case .mesh2: phase = .mesh
++        case .nativeKeyPreludeV1: phase = worker ? .nativeStart : .ownerStart
++        }
++    }
++    func requireMesh() throws {
++        guard phase == .mesh else { throw ClusterBootstrapError.invalid("Native authorization is incomplete") }
++    }
++    func nativeStart(_ expected: Data, socket: BootstrapSocket, identity: ClusterBootstrapIdentity) throws {
++        guard phase == .nativeStart else { throw ClusterBootstrapError.invalid("Unexpected native authorization start") }
++        guard (1...PreludePacket.maximumBytes).contains(expected.count) else { throw ClusterBootstrapError.invalid("Native expected start size differs") }
++        let observed = try PreludePacket.read(.start, socket: socket, identity: identity)
++        guard expected == observed else { throw ClusterBootstrapError.invalid("Local native start binding differs") }
++        phase = .nativeHello
++    }
++    func ownerStart(_ start: Data, socket: BootstrapSocket, identity: ClusterBootstrapIdentity) throws {
++        guard phase == .ownerStart else { throw ClusterBootstrapError.invalid("Unexpected owner authorization start") }
++        try PreludePacket.write(start, kind: .start, socket: socket, identity: identity)
++        phase = .ownerHello
++    }
++    func nativeExchange(_ bytes: Data, confirmation: Bool, socket: BootstrapSocket,
++                        identity: ClusterBootstrapIdentity) throws -> Data {
++        guard phase == (confirmation ? .nativeConfirmation : .nativeHello) else {
++            throw ClusterBootstrapError.invalid("Unexpected native authorization exchange")
++        }
++        try PreludePacket.write(bytes, kind: confirmation ? .confirmation : .hello, socket: socket, identity: identity)
++        let result = try PreludePacket.read(confirmation ? .peerConfirmation : .binding, socket: socket, identity: identity)
++        phase = confirmation ? .nativeComplete : .nativeConfirmation
++        return result
++    }
++    func nativeComplete(_ digest: Data, socket: BootstrapSocket, identity: ClusterBootstrapIdentity) throws {
++        guard phase == .nativeComplete else { throw ClusterBootstrapError.invalid("Unexpected native authorization completion") }
++        try PreludePacket.write(digest, kind: .complete, socket: socket, identity: identity)
++        phase = .mesh
++    }
++    func ownerRead(confirmation: Bool, socket: BootstrapSocket, identity: ClusterBootstrapIdentity) throws -> Data {
++        guard phase == (confirmation ? .ownerConfirmation : .ownerHello) else {
++            throw ClusterBootstrapError.invalid("Unexpected owner authorization read")
++        }
++        let result = try PreludePacket.read(confirmation ? .confirmation : .hello, socket: socket, identity: identity)
++        phase = confirmation ? .ownerPeerConfirmation : .ownerBinding
++        return result
++    }
++    func ownerWrite(_ bytes: Data, confirmation: Bool, socket: BootstrapSocket, identity: ClusterBootstrapIdentity) throws {
++        guard phase == (confirmation ? .ownerPeerConfirmation : .ownerBinding) else {
++            throw ClusterBootstrapError.invalid("Unexpected owner authorization write")
++        }
++        try PreludePacket.write(bytes, kind: confirmation ? .peerConfirmation : .binding, socket: socket, identity: identity)
++        phase = confirmation ? .ownerComplete : .ownerConfirmation
++    }
++    func ownerComplete(_ digest: Data, socket: BootstrapSocket, identity: ClusterBootstrapIdentity) throws {
++        guard phase == .ownerComplete else { throw ClusterBootstrapError.invalid("Unexpected owner authorization completion") }
++        let observed = try PreludePacket.read(.complete, socket: socket, identity: identity)
++        guard observed == digest else { throw ClusterBootstrapError.invalid("Native authorization transcript differs") }
++        phase = .mesh
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapConnection.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapConnection.swift
+@@ -8,18 +8,22 @@
+     public let deadlineUptimeNanoseconds: UInt64
+     private let socket: BootstrapSocket
+     private let worker: Bool
++    private let authorization: BootstrapAuthorization
+     private let lock = NSLock()
+     private var busy = false, failed = false
+     private var sequence: UInt64 = 0
+     private var pending: ClusterBootstrapRound?
+ 
+-    init(socket: BootstrapSocket, identity: ClusterBootstrapIdentity, worker: Bool) {
++    init(socket: BootstrapSocket, identity: ClusterBootstrapIdentity, worker: Bool,
++         mode: ClusterBootstrapMode = .mesh2) {
+         self.socket = socket; self.identity = identity; self.worker = worker
++        authorization = .init(worker: worker, mode: mode)
+         deadlineUptimeNanoseconds = socket.deadline
+     }
+ 
+     public static func connect(path: String, ownerProcessID: Int32, identity: ClusterBootstrapIdentity,
+-                               deadlineUptimeNanoseconds: UInt64) throws -> ClusterBootstrapConnection {
++                               deadlineUptimeNanoseconds: UInt64,
++                               mode: ClusterBootstrapMode = .mesh2) throws -> ClusterBootstrapConnection {
+         guard ownerProcessID == getppid(), ownerProcessID > 1 else { throw ClusterBootstrapError.peer }
+         let directory = URL(fileURLWithPath: path).deletingLastPathComponent().path
+         var directoryMetadata = stat()
+@@ -48,7 +52,7 @@
+             }
+         }
+         try socket.requirePeer(processID: ownerProcessID)
+-        return .init(socket: socket, identity: identity, worker: true)
++        return .init(socket: socket, identity: identity, worker: true, mode: mode)
+     }
+ 
+     public func cancel() { lock.withLock { failed = true }; socket.cancel() }
+@@ -68,6 +72,7 @@
+ 
+     public func exchange(sequence: UInt64, contribution: Data) throws -> Data {
+         try operation {
++            try authorization.requireMesh()
+             guard worker, sequence == self.sequence else { throw ClusterBootstrapError.invalid("Unexpected worker round") }
+             let round = try ClusterBootstrapRound(identity: identity, sequence: sequence, contribution: contribution)
+             try socket.write(BootstrapHeader(round: round, reply: false).encoded()); try socket.write(contribution)
+@@ -82,6 +87,7 @@
+ 
+     public func receiveRound() throws -> ClusterBootstrapRound {
+         try operation {
++            try authorization.requireMesh()
+             guard !worker, pending == nil else { throw ClusterBootstrapError.invalid("Unexpected owner read") }
+             let header = try BootstrapHeader(socket.readExactly(BootstrapHeader.byteCount))
+             guard !header.reply, header.identity == identity, header.sequence == sequence else {
+@@ -95,11 +101,53 @@
+ 
+     public func reply(to round: ClusterBootstrapRound, gathered: Data) throws {
+         try operation {
++            try authorization.requireMesh()
+             guard !worker, pending == round else { throw ClusterBootstrapError.invalid("Unexpected owner reply") }
+             try requireEcho(gathered, round: round)
+             try socket.write(BootstrapHeader(round: round, reply: true).encoded()); try socket.write(gathered)
+             pending = nil; sequence += 1
+         }
++    }
++
++    /// Only the actual native-side PID-authenticated connection can mint this
++    /// context. Public start bytes alone cannot initialize a native key holder.
++    public func beginNativeKeyPrelude(expecting start: Data) throws -> ClusterNativePreludeContext {
++        try operation {
++            guard worker else { throw ClusterBootstrapError.peer }
++            try authorization.nativeStart(start, socket: socket, identity: identity)
++            return .init(connection: self, start: start)
++        }
++    }
++
++    /// The caller must already own a current coordinator start grant and actual
++    /// child. This local transport does not approve native code or membership.
++    public func beginOwnerKeyPrelude(start: Data) throws -> ClusterOwnerPreludeContext {
++        try operation {
++            guard !worker else { throw ClusterBootstrapError.peer }
++            try authorization.ownerStart(start, socket: socket, identity: identity)
++            return .init(connection: self)
++        }
++    }
++
++    func nativeKeyExchange(_ bytes: Data, confirmation: Bool) throws -> Data {
++        try operation { try authorization.nativeExchange(bytes, confirmation: confirmation,
++            socket: socket, identity: identity) }
++    }
++    func nativeKeyComplete(_ digest: Data) throws {
++        try operation { try authorization.nativeComplete(digest, socket: socket, identity: identity) }
++    }
++    func ownerKeyRead(confirmation: Bool) throws -> Data {
++        try operation { try authorization.ownerRead(confirmation: confirmation, socket: socket, identity: identity) }
++    }
++    func ownerKeyWrite(_ bytes: Data, confirmation: Bool) throws {
++        try operation { try authorization.ownerWrite(bytes, confirmation: confirmation, socket: socket, identity: identity) }
++    }
++    func ownerKeyComplete(_ digest: Data) throws {
++        try operation { try authorization.ownerComplete(digest, socket: socket, identity: identity) }
++    }
++    func checkKeyPrelude() throws {
++        guard !lock.withLock({ failed }) else { throw ClusterBootstrapError.closed }
++        try socket.check()
+     }
+ 
+     private func requireEcho(_ bytes: Data, round: ClusterBootstrapRound) throws {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapListener.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapListener.swift
+@@ -33,7 +33,8 @@
+     public func cancel() { socket.cancel() }
+ 
+     public func accept(processID: Int32, identity: ClusterBootstrapIdentity,
+-                       deadlineUptimeNanoseconds: UInt64) throws -> ClusterBootstrapConnection {
++                       deadlineUptimeNanoseconds: UInt64,
++                       mode: ClusterBootstrapMode = .mesh2) throws -> ClusterBootstrapConnection {
+         do {
+             try lock.withLock {
+                 guard !attempted, processID > 1, deadlineUptimeNanoseconds <= socket.deadline else {
+@@ -50,7 +51,7 @@
+                 let accepted = try BootstrapSocket(taking: fd, deadline: deadlineUptimeNanoseconds)
+                 try accepted.requirePeer(processID: processID)
+                 socket.cancel()
+-                return .init(socket: accepted, identity: identity, worker: false)
++                return .init(socket: accepted, identity: identity, worker: false, mode: mode)
+             }
+         } catch { socket.cancel(); throw error }
+     }
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterBootstrap/ClusterBootstrapPreludePacket.swift
+@@ -0,0 +1,41 @@
++import Foundation
++
++/// Closed, fixed header. No JSON duplicate fields, optional downgrade, arbitrary
++/// operation or allocation based on an unbounded received length is permitted.
++enum PreludePacket {
++    enum Kind: UInt8 {
++        case start = 1, hello, binding, confirmation, peerConfirmation, complete
++        var sequence: UInt32 { UInt32(rawValue - 1) }
++        var fixedCount: Int? {
++            switch self { case .confirmation, .peerConfirmation, .complete: 32; default: nil }
++        }
++    }
++    static let maximumBytes = 32 * 1024
++    static let headerBytes = 32
++    static func header(kind: Kind, count: Int, identity: ClusterBootstrapIdentity) throws -> Data {
++        guard (1...maximumBytes).contains(count), kind.fixedCount.map({ $0 == count }) ?? true else {
++            throw ClusterBootstrapError.invalid("Native authorization packet size differs")
++        }
++        var result = Data([0x44, 0x42, 0x4e, 0x50, 1, kind.rawValue, UInt8(identity.rank), 0])
++        var uuid = identity.membershipEpoch.uuid
++        withUnsafeBytes(of: &uuid) { result.append(contentsOf: $0) }
++        for value in [kind.sequence, UInt32(count)] {
++            var n = value.bigEndian; withUnsafeBytes(of: &n) { result.append(contentsOf: $0) }
++        }
++        return result
++    }
++    static func write(_ bytes: Data, kind: Kind, socket: BootstrapSocket, identity: ClusterBootstrapIdentity) throws {
++        try socket.write(header(kind: kind, count: bytes.count, identity: identity))
++        try socket.write(bytes)
++    }
++    static func read(_ kind: Kind, socket: BootstrapSocket, identity: ClusterBootstrapIdentity) throws -> Data {
++        let observed = try socket.readExactly(headerBytes)
++        let values = Array(observed)
++        let count = values[28..<32].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
++        guard count <= UInt32(maximumBytes),
++              observed == (try header(kind: kind, count: Int(count), identity: identity)) else {
++            throw ClusterBootstrapError.invalid("Native authorization header differs")
++        }
++        return try socket.readExactly(Int(count))
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationCodec.swift
+@@ -0,0 +1,110 @@
++import CryptoKit
++import Foundation
++
++extension ClusterNativeAuthorizationCommon {
++    static let domain = Data("darkbloom/native-authorization/common/v1\0".utf8)
++    static let encodedCount = domain.count + 16 + 8 + 8 + 8 * 32 + 3 + 4 + 4 + 8 + 8
++    public var canonicalBytes: Data {
++        var bytes = Self.domain
++        bytes.append(clusterRecordUUIDBytes(epoch))
++        bytes.clusterAppendBigEndian(membershipGeneration); bytes.clusterAppendBigEndian(nativePolicyGeneration)
++        for digest in [membershipTranscriptSHA256, approvedNativeBindingSHA256, planSHA256, artifactSHA256,
++                       nativeRuntimeSHA256, capabilitySHA256, resourcePolicySHA256, profileSHA256] { bytes.append(digest) }
++        // Closed suite, transport (JACCL P2P), and selected schedule.
++        bytes.append(contentsOf: [1, 1, schedule.rawValue])
++        bytes.clusterAppendBigEndian(UInt32(maximumTransportFrameBytes))
++        bytes.append(limits.canonicalBytes)
++        return bytes
++    }
++    init(cursor: inout NativeAuthorizationCursor) throws {
++        try cursor.expect(Self.domain)
++        let epoch = try cursor.uuid(), generation: UInt64 = try cursor.integer(), policy: UInt64 = try cursor.integer()
++        var digests: [Data] = []
++        for _ in 0..<8 { digests.append(try cursor.data(32)) }
++        try cursor.expect(Data([1, 1]))
++        guard let schedule = ClusterNativePrefillSchedule(rawValue: try cursor.byte()) else { throw ClusterNativeKeyError.invalidBinding }
++        let frame: UInt32 = try cursor.integer(), plaintext: UInt32 = try cursor.integer()
++        let records: UInt64 = try cursor.integer(), total: UInt64 = try cursor.integer()
++        let limits = try ClusterRecordLimits(maximumPlaintextBytes: Int(plaintext),
++            maximumRecordsPerDirection: records, maximumCumulativePlaintextBytesPerDirection: total)
++        try self.init(epoch: epoch, membershipGeneration: generation, nativePolicyGeneration: policy,
++            membershipTranscriptSHA256: digests[0], approvedNativeBindingSHA256: digests[1], planSHA256: digests[2],
++            artifactSHA256: digests[3], nativeRuntimeSHA256: digests[4], capabilitySHA256: digests[5],
++            resourcePolicySHA256: digests[6], profileSHA256: digests[7], schedule: schedule,
++            maximumTransportFrameBytes: Int(frame), limits: limits)
++    }
++}
++
++extension ClusterNativeAuthorizationStart {
++    static let prefix = Data([0x44, 0x42, 0x4e, 0x53, 1])
++    static let encodedCount = prefix.count + ClusterNativeAuthorizationCommon.encodedCount + 1 + 3 * 16
++    public var canonicalBytes: Data {
++        var bytes = Self.prefix; bytes.append(common.canonicalBytes); bytes.append(UInt8(rank))
++        for id in [ownerIncarnation, leaseID, launchID] { bytes.append(clusterRecordUUIDBytes(id)) }
++        return bytes
++    }
++    public init(encoded: Data) throws {
++        var cursor = try NativeAuthorizationCursor(encoded, exactCount: Self.encodedCount)
++        try cursor.expect(Self.prefix)
++        let common = try ClusterNativeAuthorizationCommon(cursor: &cursor), rank = try cursor.byte()
++        try self.init(common: common, rank: Int(rank), ownerIncarnation: cursor.uuid(), leaseID: cursor.uuid(), launchID: cursor.uuid())
++        try cursor.finish()
++    }
++}
++
++extension ClusterNativeKeyHello {
++    static let prefix = Data([0x44, 0x42, 0x4e, 0x48, 1])
++    static let encodedCount = prefix.count + ClusterNativeAuthorizationStart.encodedCount + 32
++    public var canonicalBytes: Data {
++        var bytes = Self.prefix; bytes.append(start.canonicalBytes); bytes.append(publicKey); return bytes
++    }
++    public init(encoded: Data) throws {
++        var cursor = try NativeAuthorizationCursor(encoded, exactCount: Self.encodedCount)
++        try cursor.expect(Self.prefix)
++        let start = try ClusterNativeAuthorizationStart(encoded: cursor.data(ClusterNativeAuthorizationStart.encodedCount))
++        try self.init(start: start, publicKey: cursor.data(32)); try cursor.finish()
++    }
++}
++
++extension ClusterNativeKeyBinding {
++    static let prefix = Data([0x44, 0x42, 0x4e, 0x42, 1])
++    public static let encodedCount = prefix.count + 2 * ClusterNativeKeyHello.encodedCount
++    public var canonicalBytes: Data {
++        var bytes = Self.prefix
++        for hello in hellos { bytes.append(hello.canonicalBytes) }
++        return bytes
++    }
++    public var transcriptSHA256: Data { Data(SHA256.hash(data: canonicalBytes)) }
++    public init(encoded: Data) throws {
++        var cursor = try NativeAuthorizationCursor(encoded, exactCount: Self.encodedCount)
++        try cursor.expect(Self.prefix)
++        var hellos: [ClusterNativeKeyHello] = []
++        for _ in 0..<2 { hellos.append(try .init(encoded: cursor.data(ClusterNativeKeyHello.encodedCount))) }
++        try cursor.finish(); try self.init(hellos: hellos)
++    }
++}
++
++struct NativeAuthorizationCursor {
++    private let bytes: [UInt8]
++    private var index = 0
++    init(_ data: Data, exactCount: Int) throws {
++        guard data.count == exactCount, exactCount <= 32 * 1024 else { throw ClusterNativeKeyError.invalidBinding }
++        bytes = Array(data)
++    }
++    mutating func data(_ count: Int) throws -> Data {
++        guard count >= 0, count <= bytes.count - index else { throw ClusterNativeKeyError.invalidBinding }
++        defer { index += count }; return Data(bytes[index..<index + count])
++    }
++    mutating func expect(_ value: Data) throws {
++        guard try data(value.count) == value else { throw ClusterNativeKeyError.invalidBinding }
++    }
++    mutating func byte() throws -> UInt8 { try data(1).first! }
++    mutating func integer<T: FixedWidthInteger & UnsignedInteger>() throws -> T {
++        try data(MemoryLayout<T>.size).reduce(T(0)) { ($0 << 8) | T($1) }
++    }
++    mutating func uuid() throws -> UUID {
++        let b = Array(try data(16))
++        return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]))
++    }
++    func finish() throws { guard index == bytes.count else { throw ClusterNativeKeyError.invalidBinding } }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeAuthorizationTypes.swift
+@@ -0,0 +1,100 @@
++import Foundation
++
++/// Closed public metadata. These values do not approve a runtime, attest a
++/// process, authorize launch or permit constructing a traffic key by themselves.
++public enum ClusterNativeKeyError: Error, Equatable, Sendable {
++    case invalidBinding, invalidKey, wrongContext, authenticationFailed
++    case inactive, concurrentOperation, deadline, alreadyConsumed
++}
++public enum ClusterNativePrefillSchedule: UInt8, Sendable { case serial = 1, oneChunkLookahead = 2 }
++
++public struct ClusterNativeAuthorizationCommon: Sendable {
++    public let epoch: UUID
++    public let membershipGeneration: UInt64
++    public let nativePolicyGeneration: UInt64
++    public let membershipTranscriptSHA256: Data
++    public let approvedNativeBindingSHA256: Data
++    public let planSHA256: Data
++    public let artifactSHA256: Data
++    public let nativeRuntimeSHA256: Data
++    public let capabilitySHA256: Data
++    public let resourcePolicySHA256: Data
++    public let profileSHA256: Data
++    public let schedule: ClusterNativePrefillSchedule
++    public let maximumTransportFrameBytes: Int
++    public let limits: ClusterRecordLimits
++
++    public init(epoch: UUID, membershipGeneration: UInt64, nativePolicyGeneration: UInt64,
++                membershipTranscriptSHA256: Data, approvedNativeBindingSHA256: Data,
++                planSHA256: Data, artifactSHA256: Data, nativeRuntimeSHA256: Data,
++                capabilitySHA256: Data, resourcePolicySHA256: Data, profileSHA256: Data,
++                schedule: ClusterNativePrefillSchedule, maximumTransportFrameBytes: Int,
++                limits: ClusterRecordLimits) throws {
++        let digests = [membershipTranscriptSHA256, approvedNativeBindingSHA256, planSHA256,
++            artifactSHA256, nativeRuntimeSHA256, capabilitySHA256, resourcePolicySHA256, profileSHA256]
++        guard !clusterRecordUUIDBytes(epoch).allSatisfy({ $0 == 0 }), membershipGeneration > 0,
++              nativePolicyGeneration > 0, digests.allSatisfy({ $0.count == 32 && !$0.allSatisfy({ $0 == 0 }) }),
++              maximumTransportFrameBytes >= limits.maximumPlaintextBytes + 40,
++              maximumTransportFrameBytes <= ClusterRecordLimits.hardMaximumPlaintextBytes + 40 else {
++            throw ClusterNativeKeyError.invalidBinding
++        }
++        self.epoch = epoch; self.membershipGeneration = membershipGeneration
++        self.nativePolicyGeneration = nativePolicyGeneration
++        self.membershipTranscriptSHA256 = membershipTranscriptSHA256
++        self.approvedNativeBindingSHA256 = approvedNativeBindingSHA256
++        self.planSHA256 = planSHA256; self.artifactSHA256 = artifactSHA256
++        self.nativeRuntimeSHA256 = nativeRuntimeSHA256; self.capabilitySHA256 = capabilitySHA256
++        self.resourcePolicySHA256 = resourcePolicySHA256; self.profileSHA256 = profileSHA256
++        self.schedule = schedule; self.maximumTransportFrameBytes = maximumTransportFrameBytes; self.limits = limits
++    }
++}
++
++public struct ClusterNativeAuthorizationStart: Sendable {
++    public let common: ClusterNativeAuthorizationCommon
++    public let rank: Int
++    public let ownerIncarnation: UUID
++    public let leaseID: UUID
++    public let launchID: UUID
++    public init(common: ClusterNativeAuthorizationCommon, rank: Int, ownerIncarnation: UUID,
++                leaseID: UUID, launchID: UUID) throws {
++        guard (0...1).contains(rank), [ownerIncarnation, leaseID, launchID].allSatisfy({
++            !clusterRecordUUIDBytes($0).allSatisfy({ $0 == 0 })
++        }) else { throw ClusterNativeKeyError.invalidBinding }
++        self.common = common; self.rank = rank; self.ownerIncarnation = ownerIncarnation
++        self.leaseID = leaseID; self.launchID = launchID
++    }
++}
++
++public struct ClusterNativeKeyHello: Sendable {
++    public let start: ClusterNativeAuthorizationStart
++    public let publicKey: Data
++    public init(start: ClusterNativeAuthorizationStart, publicKey: Data) throws {
++        guard nativeCanonicalX25519PublicKey(publicKey) else { throw ClusterNativeKeyError.invalidKey }
++        self.start = start; self.publicKey = publicKey
++    }
++}
++
++public struct ClusterNativeKeyBinding: Sendable {
++    public let hellos: [ClusterNativeKeyHello]
++    public init(hellos: [ClusterNativeKeyHello]) throws {
++        guard hellos.count == 2, hellos[0].start.rank == 0, hellos[1].start.rank == 1,
++              hellos[0].start.common.canonicalBytes == hellos[1].start.common.canonicalBytes,
++              hellos[0].publicKey != hellos[1].publicKey,
++              hellos[0].start.ownerIncarnation != hellos[1].start.ownerIncarnation,
++              hellos[0].start.leaseID != hellos[1].start.leaseID,
++              hellos[0].start.launchID != hellos[1].start.launchID else { throw ClusterNativeKeyError.invalidBinding }
++        self.hellos = hellos
++    }
++}
++
++// The native CryptoKit public key has a canonical little-endian field encoding.
++// Reject alternate encodings rather than let transcript identities alias them.
++func nativeCanonicalX25519PublicKey(_ data: Data) -> Bool {
++    guard data.count == 32, !data.allSatisfy({ $0 == 0 }) else { return false }
++    let value = Array(data)
++    let modulus: [UInt8] = [0xed] + Array(repeating: 0xff, count: 30) + [0x7f]
++    for index in (0..<32).reversed() {
++        if value[index] != modulus[index] { return value[index] < modulus[index] }
++    }
++    return false
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeKeyDerivation.swift
+@@ -0,0 +1,49 @@
++import CryptoKit
++import Foundation
++
++/// Internal-only key material. No Codable, wire encoding, public initializer,
++/// debug description or arbitrary key export callback exists on the authority.
++struct NativeDerivedTrafficKeys {
++    let recordMaster: SymmetricKey
++    let confirmation: SymmetricKey
++}
++
++enum NativeTrafficKeyDerivation {
++    static let recordDomain = Data("darkbloom/native-rdma/record-master/v1".utf8)
++    static let confirmationDomain = Data("darkbloom/native-rdma/key-confirmation/v1".utf8)
++    static let proofDomain = Data("darkbloom/native-rdma/key-confirmation-proof/v1\0".utf8)
++
++    static func derive(privateKey: Curve25519.KeyAgreement.PrivateKey, peerPublicKey: Data,
++                       transcriptSHA256: Data) throws -> NativeDerivedTrafficKeys {
++        guard nativeCanonicalX25519PublicKey(peerPublicKey), transcriptSHA256.count == 32 else {
++            throw ClusterNativeKeyError.invalidKey
++        }
++        do {
++            let publicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerPublicKey)
++            let shared = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
++            // Fail closed even if an implementation returns an all-zero result
++            // rather than rejecting a low-order point. Bytes never leave this scope.
++            guard shared.withUnsafeBytes({ bytes in bytes.reduce(UInt8(0)) { $0 | $1 } }) != 0 else {
++                throw ClusterNativeKeyError.invalidKey
++            }
++            let master = shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: transcriptSHA256,
++                sharedInfo: recordDomain, outputByteCount: 32)
++            let confirmation = shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: transcriptSHA256,
++                sharedInfo: confirmationDomain, outputByteCount: 32)
++            return .init(recordMaster: master, confirmation: confirmation)
++        } catch { throw ClusterNativeKeyError.invalidKey }
++    }
++    static func confirmationMessage(rank: Int, transcriptSHA256: Data) throws -> Data {
++        guard (0...1).contains(rank), transcriptSHA256.count == 32 else { throw ClusterNativeKeyError.wrongContext }
++        var result = proofDomain; result.append(UInt8(rank)); result.append(transcriptSHA256); return result
++    }
++    static func confirmation(rank: Int, transcriptSHA256: Data, key: SymmetricKey) throws -> Data {
++        Data(HMAC<SHA256>.authenticationCode(for: try confirmationMessage(rank: rank, transcriptSHA256: transcriptSHA256), using: key))
++    }
++    static func verify(_ tag: Data, rank: Int, transcriptSHA256: Data, key: SymmetricKey) throws {
++        guard tag.count == 32, HMAC<SHA256>.isValidAuthenticationCode(tag,
++            authenticating: try confirmationMessage(rank: rank, transcriptSHA256: transcriptSHA256), using: key) else {
++            throw ClusterNativeKeyError.authenticationFailed
++        }
++    }
++}
+--- /dev/null
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterSecurity/ClusterNativeRecordAuthority.swift
+@@ -0,0 +1,133 @@
++import CryptoKit
++import DarkbloomClusterBootstrap
++import Foundation
++
++public struct ClusterNativeKeyReceipt: Sendable {
++    public let epoch: UUID
++    public let rank: Int
++    public let localPublicKey: Data
++    public let peerPublicKey: Data
++    public let transcriptSHA256: Data
++}
++
++/// Native-only private-key owner. Construction requires the opaque context
++/// returned by an actual parent-PID-authenticated prelude, not public grant data.
++/// It supplies the existing record transport once without exporting any secret.
++/// The native session retains this authority through transport retirement;
++/// destroying the authority invalidates its transport.
++/// This does not approve a runtime, reserve native memory, or release a lease.
++public final class ClusterNativeRecordAuthority: @unchecked Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
++    private enum Phase: Equatable { case fresh, establishing, confirmed, consuming, consumed, failed }
++    private let context: ClusterNativePreludeContext
++    private let start: ClusterNativeAuthorizationStart
++    private let lock = NSLock()
++    private var phase: Phase = .fresh
++    private var privateKey: Curve25519.KeyAgreement.PrivateKey?
++    private var recordMaster: SymmetricKey?
++    private var acceptedBinding: ClusterNativeKeyBinding?
++    private var transport: ClusterAuthenticatedRecordTransport?
++    public var description: String { "ClusterNativeRecordAuthority(redacted)" }
++    public var debugDescription: String { description }
++    public var customMirror: Mirror { Mirror(self, children: EmptyCollection<(String?, Any)>()) }
++
++    public init(ownedPrelude context: ClusterNativePreludeContext) throws {
++        do {
++            let start = try ClusterNativeAuthorizationStart(encoded: context.startBytes)
++            guard start.common.epoch == context.identity.membershipEpoch, start.rank == context.identity.rank else {
++                throw ClusterNativeKeyError.wrongContext
++            }
++            let key = Curve25519.KeyAgreement.PrivateKey()
++            try context.requireLive()
++            self.context = context; self.start = start; privateKey = key
++            try context.claimNativeKeyHolder { [weak self] in self?.invalidate() }
++            try context.requireLive()
++        } catch {
++            context.cancel()
++            throw (error as? ClusterNativeKeyError) ?? .authenticationFailed
++        }
++    }
++
++    deinit { invalidate() }
++
++    /// Blocking socket waits have the original local bootstrap deadline and are
++    /// interruptible through invalidate(). No lock is held during IO or crypto.
++    public func establish() throws -> ClusterNativeKeyReceipt {
++        do {
++            let key: Curve25519.KeyAgreement.PrivateKey = try lock.withLock {
++                guard phase == .fresh, let key = privateKey else { throw ClusterNativeKeyError.concurrentOperation }
++                phase = .establishing; return key
++            }
++            try context.requireLive()
++            let hello = try ClusterNativeKeyHello(start: start, publicKey: key.publicKey.rawRepresentation)
++            let binding = try ClusterNativeKeyBinding(encoded: context.exchangeHello(hello.canonicalBytes))
++            guard binding.hellos[start.rank].canonicalBytes == hello.canonicalBytes else {
++                throw ClusterNativeKeyError.wrongContext
++            }
++            try context.requireLive()
++            let digest = binding.transcriptSHA256
++            let peer = binding.hellos[1 - start.rank].publicKey
++            let keys = try NativeTrafficKeyDerivation.derive(privateKey: key, peerPublicKey: peer, transcriptSHA256: digest)
++            let ownTag = try NativeTrafficKeyDerivation.confirmation(rank: start.rank, transcriptSHA256: digest, key: keys.confirmation)
++            try context.requireLive()
++            let peerTag = try context.exchangeConfirmation(ownTag)
++            try NativeTrafficKeyDerivation.verify(peerTag, rank: 1 - start.rank, transcriptSHA256: digest, key: keys.confirmation)
++            try context.requireLive()
++            try context.complete(transcriptSHA256: digest)
++            try context.requireLive()
++            try lock.withLock {
++                guard phase == .establishing else { throw ClusterNativeKeyError.inactive }
++                guard DispatchTime.now().uptimeNanoseconds < context.deadlineUptimeNanoseconds else { throw ClusterNativeKeyError.deadline }
++                recordMaster = keys.recordMaster; privateKey = nil; acceptedBinding = binding; phase = .confirmed
++            }
++            return .init(epoch: start.common.epoch, rank: start.rank, localPublicKey: hello.publicKey,
++                         peerPublicKey: peer, transcriptSHA256: digest)
++        } catch {
++            invalidate()
++            throw (error as? ClusterNativeKeyError) ?? .authenticationFailed
++        }
++    }
++
++    /// Called once as the protected group is constructed, before weights/load
++    /// readiness. Creation must finish within the original bootstrap deadline.
++    /// Afterward native session/request checks retain their original lifetime;
++    /// this key helper neither refreshes those deadlines nor owns model state.
++    public func makeRecordTransport(io: any ClusterRecordByteIO) throws -> ClusterAuthenticatedRecordTransport {
++        do {
++            let values: (SymmetricKey, ClusterNativeKeyBinding) = try lock.withLock {
++                guard phase == .confirmed, let key = recordMaster, let binding = acceptedBinding else {
++                    throw ClusterNativeKeyError.alreadyConsumed
++                }
++                guard DispatchTime.now().uptimeNanoseconds < context.deadlineUptimeNanoseconds else { throw ClusterNativeKeyError.deadline }
++                phase = .consuming; recordMaster = nil
++                return (key, binding)
++            }
++            guard io.localRank == start.rank, io.worldSize == 2,
++                  io.maximumFrameBytes == start.common.maximumTransportFrameBytes else { throw ClusterNativeKeyError.wrongContext }
++            let recordBinding = try ClusterRecordBinding(epoch: start.common.epoch, planSHA256: start.common.planSHA256,
++                membershipTranscriptSHA256: values.1.transcriptSHA256)
++            let created = try ClusterAuthenticatedRecordTransport(sessionKey: values.0, binding: recordBinding,
++                limits: start.common.limits, io: io)
++            do {
++                try lock.withLock {
++                    guard phase == .consuming else { throw ClusterNativeKeyError.inactive }
++                    guard DispatchTime.now().uptimeNanoseconds < context.deadlineUptimeNanoseconds else { throw ClusterNativeKeyError.deadline }
++                    transport = created; phase = .consumed
++                }
++            } catch { created.invalidate(); throw error }
++            return created
++        } catch {
++            invalidate()
++            throw (error as? ClusterNativeKeyError) ?? .authenticationFailed
++        }
++    }
++
++    /// Immediate local invalidation. It interrupts prelude IO and poisons any
++    /// constructed codec; native cancellation/retirement remain caller-owned.
++    public func invalidate() {
++        let value = lock.withLock {
++            phase = .failed; privateKey = nil; recordMaster = nil
++            return transport
++        }
++        context.cancel(); value?.invalidate()
++    }
++}

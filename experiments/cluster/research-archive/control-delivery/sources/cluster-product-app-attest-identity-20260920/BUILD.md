@@ -1,0 +1,7 @@
+# Prospective model-free checks
+
+No preparation or compilation is authorized by this package. Root should compose the exact five current-master preimages and five new runtime files plus five new test files from overlay.json into the isolated latest-master/private union, after the tracked conflict resolutions. It must preserve the currently qualified HTTP source and automatic-initiation freeze; this package touches neither. No old-base workspace should silently substitute for cc225365.
+
+Run bounded Go protocol/registry/appattest-service/API scopes with their existing upstream tests and all new TestNativeIdentity/TestAppAttestNativeIdentity/TestAppAttestGrantRechecksCarriedControlBinding/TestAppAttestAuthorizerCarries*/TestAppAttestAuthorizerDoesNotCarry*/TestAppAttestRuntimeBinding* names. The existing service and API newAuthorizationFixture names are separate packages. Run Swift NativeMemberIdentityTests plus existing member/configuration suites. Use root's reviewed owned-child runner, original compile/test diagnostics, jobs 2 and fresh receipts. No native/model check is needed for the codec. Actual verified App Attest exchanges and bilateral owner lifecycle qualification remain separate from these fabricated unit controls.
+
+python3 check_sources.py is source-only and checks all manifest members, upstream git blobs, exact patch replay, independent field vectors, 17 declared method names and unchanged private admission files. It does not invoke either codec or any test/compiler.

@@ -1,0 +1,118 @@
+--- a/coordinator/api/provider.go
++++ b/coordinator/api/provider.go
+@@ -234,14 +234,8 @@
+ // them. It runs until the connection closes or the context is cancelled.
+ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
+ 	var provider *registry.Provider
+-<<<<<<< cluster-work
+ 	var nativeConnection *registry.NativePairConnection
+-	var appAttestShadow *appAttestShadowSession
+-||||||| old-master
+-	var appAttestShadow *appAttestShadowSession
+-=======
+ 	var appAttestShadow *attestservice.Session
+->>>>>>> current-master
+ 	tracker := newChallengeTracker()
+ 	var schedulerSEKey string
+ 	var schedulerGeneration uint64
+@@ -448,7 +442,9 @@
+ 				resolveAccount()
+ 			}
+ 			provider = s.registry.Register(providerID, conn, regMsg)
+-<<<<<<< cluster-work
++			if s.appAttestIdentityCandidate(regMsg, authenticatedAccountID) {
++				provider.RequireVerifiedMachineIdentity()
++			}
+ 			if regMsg.ExecutionRole == protocol.ExecutionRoleClusterMember {
+ 				ack, err := json.Marshal(protocol.ClusterMemberAcceptedMessage{
+ 					Type:                    protocol.TypeClusterMemberAccepted,
+@@ -460,12 +456,6 @@
+ 					return
+ 				}
+ 			}
+-||||||| old-master
+-=======
+-			if s.appAttestIdentityCandidate(regMsg, authenticatedAccountID) {
+-				provider.RequireVerifiedMachineIdentity()
+-			}
+->>>>>>> current-master
+ 			s.attachProviderLocation(providerID, provider, r)
+ 			if err := s.verifyProviderAttestation(loopCtx, providerID, provider, regMsg, authenticatedAccountID); err != nil {
+ 				// No duplicate eviction or account/MDM continuation after failed
+--- a/coordinator/registry/attestation_policy.go
++++ b/coordinator/registry/attestation_policy.go
+@@ -150,14 +150,11 @@
+ 	stillApproved func(ApplicationEvidence) bool,
+ ) (needChallenge []string) {
+ 	r.mu.Lock()
+-<<<<<<< cluster-work
+ 	if generation != r.releasePolicyGeneration {
+ 		for state := range r.verifiedPairs.states {
+ 			r.endVerifiedPairLocked(state)
+ 		}
+ 	}
+-||||||| old-master
+-=======
+ 	// The same release snapshot generation binds both authorization paths.
+ 	// App Attest is re-evaluated by the API under the refreshed qualification
+ 	// and revocation policy; carrying a stale verdict forward is not safe.
+@@ -169,7 +166,6 @@
+ 			p.mu.Unlock()
+ 		}
+ 	}
+->>>>>>> current-master
+ 	r.releasePolicyGeneration = generation
+ 	r.releasePolicyRequired = required
+ 	enforced := r.releasePolicyEnforcedLocked()
+--- a/coordinator/registry/provider_capabilities.go
++++ b/coordinator/registry/provider_capabilities.go
+@@ -72,32 +72,14 @@
+ //   - signed claims exactly match the outer Register report;
+ //   - the same metallib digest passed the existing approved runtime manifest.
+ //
+-<<<<<<< cluster-work
+-// Apple hardware trust and APNs code identity are promotion prerequisites, not
+-// merely exact-model routing gates. Legacy attestations have no signed claim
+-// fields; they stay trusted for unrelated models but receive no capabilities.
+-func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) (reconcileError error) {
+-||||||| old-master
+-// Apple hardware trust and APNs code identity are promotion prerequisites, not
+-// merely exact-model routing gates. Legacy attestations have no signed claim
+-// fields; they stay trusted for unrelated models but receive no capabilities.
+-func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error {
+-=======
+ // Promotion requires either Apple hardware trust plus APNs code identity, or a
+ // current qualified App Attest lease that binds this SE verification key.
+ // Legacy attestations without signed claim fields remain trusted for unrelated
+ // models but receive no capabilities.
+-func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error {
+->>>>>>> current-master
++func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) (reconcileError error) {
+ 	r.mu.RLock()
+ 	provider := r.providers[providerID]
+-<<<<<<< cluster-work
+ 	pair := r.verifiedPairs.connections[provider]
+-	r.mu.RUnlock()
+-||||||| old-master
+-	r.mu.RUnlock()
+-=======
+->>>>>>> current-master
+ 	if provider == nil {
+ 		r.mu.RUnlock()
+ 		return fmt.Errorf("provider not found")
+@@ -126,14 +108,10 @@
+ 			!provider.RuntimeManifestChecked || !provider.MetallibVerified ||
+ 			!provider.CodeAttested || !provider.FreshCodeAttested
+ 		provider.mu.Unlock()
+-<<<<<<< cluster-work
++		r.mu.RUnlock()
+ 		if pair != nil && pairRevoked {
+ 			r.invalidateVerifiedPairState(pair)
+ 		}
+-||||||| old-master
+-=======
+-		r.mu.RUnlock()
+->>>>>>> current-master
+ 		if changed {
+ 			r.notifyRuntimeCapabilitiesPromoted(providerID)
+ 		}

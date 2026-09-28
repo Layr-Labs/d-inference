@@ -1,0 +1,46 @@
+--- qualified/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift
++++ corrected/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift
+@@ -60,7 +60,16 @@
+         // WebSocket server-response validation fail.
+         let scheme = url.scheme?.lowercased()
+         let useTLS = (scheme == "wss" || scheme == "https")
++        #if NATIVE_PAIR_HARDWARE_EXPERIMENT
++        let params: NWParameters
++        if let anchor = config.privateTLSAnchor {
++            params = try anchor.parameters(for: url)
++        } else {
++            params = useTLS ? NWParameters.tls : NWParameters.tcp
++        }
++        #else
+         let params = useTLS ? NWParameters.tls : NWParameters.tcp
++        #endif
+ 
+         // Disable Nagle's algorithm (TCP_NODELAY). Without this, the kernel
+         // batches small WebSocket frames (~200 bytes each) and delays sending
+--- qualified/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift
++++ corrected/provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift
+@@ -180,11 +180,24 @@
+         )
+ 
+         // 4. Create coordinator client and start connection
++        #if NATIVE_PAIR_HARDWARE_EXPERIMENT
++        var privateCoordinatorConfig = coordinatorConfig
++        privateCoordinatorConfig.privateTLSAnchor = try PrivateClusterTLSAnchor.load(
++            environment: ProcessInfo.processInfo.environment,
++            endpoint: loopConfig.coordinatorURL,
++            member: isClusterMember)
++        let coordinator = CoordinatorClient(
++            config: privateCoordinatorConfig,
++            stats: stats,
++            state: state
++        )
++        #else
+         let coordinator = CoordinatorClient(
+             config: coordinatorConfig,
+             stats: stats,
+             state: state
+         )
++        #endif
+         if let nativePairMemberControl { try await coordinator.installNativePairMember(nativePairMemberControl) }
+         coordinatorClient = coordinator
+         // Seed the client with the current map: a model loaded before the

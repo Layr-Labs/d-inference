@@ -1,0 +1,22 @@
+--- a/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift
++++ b/provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift
+@@ -172,7 +172,7 @@
+             memberTimeout = Task { [weak self] in
+                 do { try await ContinuousClock().sleep(until: negotiation.deadline) } catch { return }
+                 guard !Task.isCancelled else { return }
+-                self?.expireMemberNegotiation(nonce: negotiation.nonce)
++                await self?.expireMemberNegotiation(nonce: negotiation.nonce)
+             }
+         }
+         try await sendRegistration(connection: connection)
+--- a/provider-swift/Sources/ProviderCore/ProviderLoop+ClusterMember.swift
++++ b/provider-swift/Sources/ProviderCore/ProviderLoop+ClusterMember.swift
+@@ -87,7 +87,7 @@
+                 memberRegistrationTimer = Task { [weak self] in
+                     do { try await ContinuousClock().sleep(until: deadline) } catch { return }
+                     guard !Task.isCancelled else { return }
+-                    self?.finishMemberRegistrationWait(ClusterMemberControlError.negotiationFailed, expected: waitID)
++                    await self?.finishMemberRegistrationWait(ClusterMemberControlError.negotiationFailed, expected: waitID)
+                 }
+             }
+         } onCancel: {

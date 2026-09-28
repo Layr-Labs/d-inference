@@ -1,0 +1,231 @@
+{
+  "effectiveSourceSHA256": "23f761a8ddf01e8b6ebd45dd040f5aa54c01c412af06457a1c86f768e76bf09f",
+  "files": [
+    {
+      "afterSHA256": "40888c2356cf510d1aa6cccf2a98f19ffe1cd2fdd75f8e958d7c4c243efaa5d3",
+      "beforeSHA256": "8f9aac065c54b8e19724dd740f2e1ee023d4f76a1ba51f0d9d3f6fddb4e775c1",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapAttachment.swift"
+    },
+    {
+      "afterSHA256": "e7e8d834a2586dbe7c4a8b63e6d2f5e649d9e30bfe2e1b8a368a9bc60cfc1def",
+      "beforeSHA256": "d731b7e58548ac79f81a503cb451755b1a60e762f533cc12d715d1afa565c0bb",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerBootstrapProfile.swift"
+    },
+    {
+      "afterSHA256": "00563cddb263e014ee0c1ac81c393f792a04e7536b1ad645b57aa4ea178930a3",
+      "beforeSHA256": "da0f454e7bd18530ed15ad52f13059fd6ef1427e932bcaf7c9f22860d0c56087",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerNativeKeyRelay.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerNativeKeyRelay.swift"
+    },
+    {
+      "afterSHA256": "7e279198d435b89b68287021d16624dd431a39b2820afa8d88caa3a06dd38b24",
+      "beforeSHA256": null,
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerProtectedReady.swift"
+    },
+    {
+      "afterSHA256": "bf66493d7f2610bc0cacd441ed277c6938ab6f4986d4a0875e2829ecea489534",
+      "beforeSHA256": "56006e80d470edb37ba15c3eccc5d202adec4910c58e0b8623f23be0b5cc2aed",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterOwnerWire.swift"
+    },
+    {
+      "afterSHA256": "6cfe6e914f4d6d46cd872da9c9179fa3f2af34fc04d1d74e66a1dc72d060b0f3",
+      "beforeSHA256": "39b5f128b3b9e94c8a29858542193a868b569b225ce696a01397be7db38a96b5",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterRemoteWorkerEndpoint.swift"
+    },
+    {
+      "afterSHA256": "405a2edd286403e1f9a2ea915b181b51993218a15fe18cf06e6e105704d748a7",
+      "beforeSHA256": "7730973e15ca26da664d20ce8efba34533a668a4d555db34239e4f2f70f70e11",
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRemote/ClusterWorkerOwnerService.swift"
+    },
+    {
+      "afterSHA256": "7e4706fceebbdaeb080bf9e39b82f8aad0540044838285311b08a7fb60d6742e",
+      "beforeSHA256": "5515cf89cc2937db3ebf1d52082e97931ea62dfe75ad06d181f78107f9b555ad",
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfiguration.swift"
+    },
+    {
+      "afterSHA256": "3b9cdbfca7bf5c8e94fd610fd932487f85ee8348bff7d4c40159d2e0143ac51e",
+      "beforeSHA256": "5247b974f0395c547ee8877214a33f01341f8dfc84fa168a17a0ebd36bf29fd7",
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Config/ClusterConfigurationCodec.swift"
+    },
+    {
+      "afterSHA256": "5dd1cbce7e15f7e4a1d679e244e952d8fd86386465f14215e29b357acb13529f",
+      "beforeSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Config/ClusterNativeMemberAttachment.swift"
+    },
+    {
+      "afterSHA256": "068e222956a25524d4ba3040aa7aff74420be0333df8e17b67f9d994ea443f83",
+      "beforeSHA256": "3ea78074c5cbd1925160f2d896488f73686808c300a58813d087707c0aeb4af4",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberConnection.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberConnection.swift"
+    },
+    {
+      "afterSHA256": "b543b80ff9af848bd85dcd0d0d1d5a26fe108d6cf3abc19bf82fbdd5d7cb1438",
+      "beforeSHA256": "ea2d1cd0745024194198f5b82ab6e6ae8c5f709cc0fcd1029f4996fc8fa7d590",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberControl.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberControl.swift"
+    },
+    {
+      "afterSHA256": "7495812bbfb9c9a427d8763da2c96632fd196553365ce5befac03aaadc763437",
+      "beforeSHA256": "93edbfb121631335339b684421137b497b3e57195d2504b968a3e0f8a8bd60c8",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift"
+    },
+    {
+      "afterSHA256": "17825a172c8fad44de741af5f795a1132d778a6f24113309bfb172978e711ec4",
+      "beforeSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy+NativeStart.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy+NativeStart.swift"
+    },
+    {
+      "afterSHA256": "90d862d02c771ebf53850f046cf9af31d525885cb24e948271cebd9226d3db90",
+      "beforeSHA256": "ae2d18afcda17f1a56f32bbaf1fce18b135883fa37a9cfc46679555d3ce22269",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberPolicy.swift"
+    },
+    {
+      "afterSHA256": "76ec1ef5202db460f21c0bb5c3f70cd5ce5f1902ae0258cc3740e2cfc4ca90ec",
+      "beforeSHA256": "50653ab98efacc79a422499c13988b55e6a5be731172524a06d183c430aa4c71",
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberSession.swift"
+    },
+    {
+      "afterSHA256": "c8956960670986bc216af0c9b13040bd460e96450a937c05cef8d4f5b63d23d7",
+      "beforeSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestBridge.swift"
+    },
+    {
+      "afterSHA256": "02d0f6d163c4eea219ea0e0acceb5d4396123b767dad7e5ec42b12d969dcce82",
+      "beforeSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestExecutionOwner.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestExecutionOwner.swift"
+    },
+    {
+      "afterSHA256": "2c9eb6b2bb9badab53ae5adda6ab0f1f19ca72d377205036d7fc6f9b4ab24969",
+      "beforeSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestWriter.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRequestWriter.swift"
+    },
+    {
+      "afterSHA256": "77d99cf09e53580ac510f60927131eb658606c1aa9085ddfd4c45f6725a76aee",
+      "beforeSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/NativePairRetainedEndpoint.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Coordinator/NativePairRetainedEndpoint.swift"
+    },
+    {
+      "afterSHA256": "505e7239b3487691e0468156d7fbf7c079e583fc88c7f127500572c399e5674c",
+      "beforeSHA256": "19718036b51472df9ae759cc78ca87b8243d621f1470de84a0b143b34b947b94",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/ClusterDiagnostics.swift"
+    },
+    {
+      "afterSHA256": "78c544d5c00fe89847b8ada82dde67a5fb411ecc7b71a30456036b7c6afc5ad0",
+      "beforeSHA256": "13ad5fb8f2a265d7f229a6bbf42cb976140b1ec3533d9686bf03470cde1613f8",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/ClusterMemberPreparation.swift"
+    },
+    {
+      "afterSHA256": "af8d9a3f8fccf5c355f38006e7aac9b029b2fbf0c1b7f885fc5763af557c9188",
+      "beforeSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeAttachment.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledNativeAttachment.swift"
+    },
+    {
+      "afterSHA256": "dedfc0ed9e812988f128222a9cb61769ec7ecddf7e70553eeeb6237e0fa04713",
+      "beforeSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner+NativeMember.swift"
+    },
+    {
+      "afterSHA256": "38c4e23bfd508143db83fec6ed58177ea2738008f2b89e32a087b80650fa3697",
+      "beforeSHA256": "7ea32e38e9a3d45737b45b5c15abd5c6636821200075de92b130ec5ae5e7b797",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledOwner.swift"
+    },
+    {
+      "afterSHA256": "19636285b5c2d29ff7ec6a18115aac33944f9b93841eabde9177d1d55c8125a6",
+      "beforeSHA256": "ee6b587c26b9ad38b0cd2920fc1d1d5db3ef18d0e97a36c4586218d2c8ffd38e",
+      "path": "provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledSession.swift"
+    },
+    {
+      "afterSHA256": "9012cfdc2ab1163d569fffc88dc35b89644bc8250f067e8ba801492205718804",
+      "beforeSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Protocol/NativePairMesh.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Protocol/NativePairMesh.swift"
+    },
+    {
+      "afterSHA256": "e4cf380e6dd8736ff63a3ac3d34df8c367c14864132d0dd5eeff8b38558cddb4",
+      "beforeSHA256": "b74bfb547105bbcca078f3e3292c6bb7f54a3bd57b4c89cbba8b5e41d3ea3d23",
+      "path": "provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift"
+    },
+    {
+      "afterSHA256": "97c0f52d20117f2397bc0a4393b2d390c6cb14b7337adc75f052201463d9c401",
+      "beforeSHA256": null,
+      "path": "provider-swift/Sources/ProviderCore/Protocol/NativePairWorkerPacket.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/Protocol/NativePairWorkerPacket.swift"
+    },
+    {
+      "afterSHA256": "57b6d5ff047db0dde791572856efe210499180dfee28b0e68f475af6d58ef685",
+      "beforeSHA256": "583f47f7dc7a50fdd9b7c1068f11bc7094dbfd6cafb269592c338b30fee5ea53",
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+NativePair.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Sources/ProviderCore/ProviderLoop+NativePair.swift"
+    },
+    {
+      "afterSHA256": "190c737c02c5ddd71fc552c1b973c05645384c8be3a4280731cf787e87f41801",
+      "beforeSHA256": "f1b401bdb11a09354ca4424f7bdcbd217cb0eccc6d852e79146a91964bbf5974",
+      "path": "provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Sources/darkbloom/StartCommand+ClusterMember.swift"
+    },
+    {
+      "afterSHA256": "a91cdccc1d5e0da315f0d08ff9d23b7fe9f80fdda82b171ab7243a89f99f3607",
+      "beforeSHA256": "8a5b52b56b800c595de03e9a54aa270ec2b15ec864c17a20b07bfce15945abe0",
+      "path": "provider-swift/Tests/ClusterConfigurationChecks/run.sh",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Tests/ClusterConfigurationChecks/run.sh"
+    },
+    {
+      "afterSHA256": "dc739cf5b43042a7025aae93cd00826375dc06c60b5ae1fb82f2b13df4717f86",
+      "beforeSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-installed-attachment-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Config/ClusterNativeMemberAttachmentTests.swift"
+    },
+    {
+      "afterSHA256": "576511151cc3ef9f148876c8fd4f5eafe7bd512a27fa2ed541b4695fd9766835",
+      "beforeSHA256": "bf7128c1a891c84e677496eaa97550959ca7586f6d1d61367c0b18113b93d313",
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/MemberFixtureConfiguration.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/MemberFixtureConfiguration.swift"
+    },
+    {
+      "afterSHA256": "2b2cb7985edda696ed6ccd69a1c32f0c9209496405d546386fe11e8628867f3e",
+      "beforeSHA256": "8df6f1efd59e27628254ce49bc971a4ca668b193eba51f7da90aec4ace7cfb9c",
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberFixture.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberFixture.swift"
+    },
+    {
+      "afterSHA256": "2d0ca4586906609d94755b2294c067a2ecc58d3f53954ac51e389161e8aacf7e",
+      "beforeSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberMeshTests.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-mesh-bridge-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairMemberMeshTests.swift"
+    },
+    {
+      "afterSHA256": "8563ef58e4f51a60e17b0a261c58968c30526c0686982d256f907df611bd1702",
+      "beforeSHA256": null,
+      "path": "provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift",
+      "sourcePath": "/Users/developer/DarkbloomDev/cluster-research/cluster-native-member-shared-requests-draft-20260917/proposed/provider-swift/Tests/ProviderCoreTests/Coordinator/NativePairMember/NativePairSharedRequestTests.swift"
+    }
+  ],
+  "finalFiles": 13853,
+  "oldCandidateSHA256": "c0042cf96bf736a47e7f7ba792376cb31336c6aef6b1343555e0e76306a78d84",
+  "oldFiles": 13839,
+  "schema": "incremental-member-request-swift-v1"
+}

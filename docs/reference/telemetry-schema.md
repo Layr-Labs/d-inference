@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-27 · commit `4320091ca`
+> Last updated: 2026-09-28 · commit `0bd16a9fa`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors

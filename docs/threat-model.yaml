@@ -1,5 +1,9 @@
 version: "1.1"
 created: "2026-05-14"
+# T-036 ARV claim corrected 2026-09-28 against 2b714c427: Verify records
+# AuthenticatedRootEnabled as informational; it is not a security requirement.
+# T-051 references the defined malicious-provider adversary (ADV-001), replacing
+# its undefined ADV-004 reference; the threat description is unchanged.
 # Hybrid provider authorization re-verified 2026-09-27 against 0bd16a9fa:
 # scope, provider identity assets, TB-002/TB-009/TB-011, T-023/T-033/T-036 and
 # T-052..T-058 describe the independent legacy and App Attest serving paths.
@@ -2402,8 +2406,6 @@ threats:
         status: implemented
       - description: MDM webhook shared secret is optional; where unset, an injected callback matching a live CommandUUID can manipulate SecurityInfo state (SEC-004).
         status: open
-      - description: Attestation tests require AuthenticatedRootEnabled=true or earlier errors are overwritten.
-        status: implemented
       - description: >
           DAR-326 trust-reuse fast-skip (coordinator/api/trust_reuse.go tryTrustReuseFastSkip)
           lets a reconnecting, recently-fully-verified provider regain hardware trust from a
@@ -3151,7 +3153,7 @@ threats:
       free-form text through its profile object, a client could plant a
       spreadsheet-formula or PII string via X-Request-ID, or a hardware serial /
       stable identity could re-enter a bulk-export surface.
-    adversaries: [ADV-002, ADV-004]
+    adversaries: [ADV-001, ADV-002]
     affected_assets: [A-007, A-009]
     affected_files:
       - coordinator/api/profiler*.go

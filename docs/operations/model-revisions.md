@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-09-28 · commit `a8b7d3318`
+> Last updated: 2026-09-28 · commit `291d83ee9`
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)

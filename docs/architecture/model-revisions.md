@@ -1,6 +1,6 @@
 # Model artifact revisions
 
-> Last updated: 2026-09-28 · commit `a8b7d3318`
+> Last updated: 2026-09-28 · commit `291d83ee9`
 
 An existing model can acquire new weights without changing its model ID or
 releasing another provider binary. Publishers upload an immutable revision and
@@ -73,6 +73,14 @@ model directory. `ModelDownloader.remove` acquires the same lease without waitin
 and refuses removal while a download or update owns it. Keeping the lock inode
 through removal prevents another process from acquiring a second lock on a
 recreated model tree; the operating system releases a crashed process's lease.
+
+After prefetch and catalog prewarming, `protectPreparedModelRevision` reacquires
+that lease and revalidates the replacement against its manifest and the selected
+rollback snapshot against the live hash. It derives the replacement's model
+metadata from those protected files, then rechecks desired state and the serving
+selection after the hash work. Missing, corrupt or superseded snapshots abort
+preparation before admission draining or engine unloading begins; the successful
+attempt retains the lease through activation or recovery.
 
 Completed snapshots live at `snapshots/.revision-<identity_sha256>`. The snapshot
 key hashes the model ID, version, R2 prefix, aggregate hash and path-sorted file
@@ -171,6 +179,7 @@ random rollout jitter is not a fleet availability guarantee.
 | Desired state and routing hash admission | `coordinator/registry/model_commands.go`, `model_revisions.go`, `model_catalog.go` |
 | Immutable files and atomic selection | `provider-swift/Sources/ProviderCore/Models/ModelArtifactRevision.swift`, `ModelArtifactWriteLease.swift` |
 | Reconciliation and backoff | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelRevisions.swift` |
+| Snapshot revalidation before draining | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelRevisionPreparation.swift` (`protectPreparedModelRevision`) |
 | Guarded inventory publication | `provider-swift/Sources/ProviderCore/ProviderLoop+PrefetchPublication.swift` (`publishVerifiedPrefetch`) |
 | Activation and recovery | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelRevisionActivation.swift`, `ProviderLoop+ModelRevisionRecovery.swift` |
 | Shared target/assistant drain lifecycle | `provider-swift/Sources/ProviderCore/Models/ModelIdleUpgrade.swift` |

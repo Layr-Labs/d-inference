@@ -1,9 +1,7 @@
-// The hero of every machine card: a full-width banner that states, in the
-// load-bearing verb EARNING / NOT EARNING, whether this machine is making
-// money right now — plus the single most important WHY and the FIX, so the
-// next action is always one click away without expanding anything.
+// Show routing readiness and the next diagnostic action, independently of earnings.
 
 import { AlertTriangle, CheckCircle2, CircleSlash, XCircle, type LucideIcon } from "lucide-react";
+import { GITHUB_REPO_URL } from "@/components/community/constants";
 import type { MyProvider } from "../types";
 import type { Warning } from "../warnings";
 import { routingMeta, type RoutingState } from "./routing";
@@ -31,7 +29,7 @@ export function CardRoutingVerdict({
   const Icon = ICON[state];
 
   // Offline machines describe themselves by last-seen; everyone else by the
-  // top warning. Routable machines have nothing to fix.
+  // top warning. A ready machine can still receive no requests.
   const verb =
     state === "offline"
       ? `OFFLINE — last seen ${formatRelative(provider.last_heartbeat || provider.last_seen)}`
@@ -51,12 +49,19 @@ export function CardRoutingVerdict({
           {why ? (
             <p className="text-xs text-text-secondary mt-1 leading-snug">{why}</p>
           ) : state === "routable" ? (
-            <p className="text-xs text-text-tertiary mt-1">Full routing priority — no action needed.</p>
+            <p className="text-xs text-text-tertiary mt-1">No blocking warnings reported. Traffic depends on model demand and routing.</p>
           ) : null}
         </div>
 
         {state === "routable" ? (
-          <span className="text-[11px] font-mono text-text-tertiary shrink-0 mt-0.5">priority: normal</span>
+          <a
+            href={`${GITHUB_REPO_URL}/blob/master/docs/provider/troubleshooting.md#healthy-but-no-requests`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-text-secondary underline shrink-0 mt-0.5 focus-ring"
+          >
+            Healthy but no requests?
+          </a>
         ) : fix ? (
           <div className="shrink-0">
             <FixAffordance fix={fix} compact showNote={false} />

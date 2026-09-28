@@ -104,7 +104,7 @@ export function deriveFleetVerdict(
 
   if (counts.blocked > 0) {
     state = "blocked";
-    headline = `${counts.blocked} machine${counts.blocked === 1 ? "" : "s"} not earning`;
+    headline = `${counts.blocked} machine${counts.blocked === 1 ? "" : "s"} blocked`;
     sub = "Blocked from routing — fix below.";
   } else if (counts.offline > 0 && counts.offline === total) {
     state = "offline";
@@ -113,15 +113,15 @@ export function deriveFleetVerdict(
   } else if (counts.offline > 0) {
     state = "offline";
     headline = `${counts.offline} machine${counts.offline === 1 ? "" : "s"} offline`;
-    sub = "Not connected — earning $0 while down.";
+    sub = "Reconnect to receive network requests.";
   } else if (counts.degraded > 0) {
     state = "degraded";
     headline = `${counts.degraded} machine${counts.degraded === 1 ? "" : "s"} degraded`;
-    sub = "Still earning at reduced priority.";
+    sub = "Routing priority may be reduced.";
   } else {
     state = "routable";
-    headline = "Everything's earning";
-    sub = total === 1 ? "Your machine is routable. No action needed." : `All ${total} machines routable. No action needed.`;
+    headline = total === 0 ? "No machines linked" : "Fleet ready for routing";
+    sub = total === 0 ? "Link a Mac to start serving." : "Readiness does not guarantee traffic. Check requests and earnings below.";
   }
 
   return { state, counts, headline, sub };

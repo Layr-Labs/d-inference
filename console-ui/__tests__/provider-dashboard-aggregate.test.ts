@@ -48,11 +48,11 @@ describe("buildAttentionGroups", () => {
 });
 
 describe("deriveFleetVerdict", () => {
-  it("is routable + 'Everything's earning' when all machines are healthy", () => {
+  it("reports readiness when all machines have no blocking warnings", () => {
     const v = deriveFleetVerdict([baseProvider(), baseProvider({ id: "x" })], ctx);
     expect(v.state).toBe("routable");
     expect(v.counts.routable).toBe(2);
-    expect(v.headline).toMatch(/earning/i);
+    expect(v.headline).toBe("Fleet ready for routing");
   });
 
   it("escalates to blocked when any machine is blocked", () => {

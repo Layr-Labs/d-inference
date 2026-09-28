@@ -1,4 +1,4 @@
-// The two-second glance: one verdict cell (is the whole fleet earning?) beside
+// The two-second glance: one verdict cell (is the fleet ready for routing?) beside
 // a segmented capacity bar and the money KPIs. Worst fleet state drives the
 // left rail color so the page's health is signaled at the very top.
 
@@ -90,9 +90,9 @@ export function FleetHealthStrip({
               dot={summary?.payout_ready}
             />
             <KPI
-              label="Earning now"
+              label="Routable"
               value={`${verdict.counts.routable + verdict.counts.degraded}/${verdict.counts.total}`}
-              sub={verdict.counts.degraded > 0 ? `${verdict.counts.routable} full priority` : "machines routable"}
+              sub={verdict.counts.degraded > 0 ? `${verdict.counts.routable} ready, ${verdict.counts.degraded} degraded` : "machines routable"}
             />
           </div>
         </div>

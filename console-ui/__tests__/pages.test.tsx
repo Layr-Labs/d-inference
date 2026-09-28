@@ -314,11 +314,11 @@ describe("ProvidersPage", () => {
     await screen.findByText("Apple M3 Max");
     expect(screen.getByRole("heading", { name: "Fleet" })).toBeInTheDocument();
     expect(
-      screen.getByText("All clear — every machine is routable and earning.")
+      screen.getByText("No provider warnings reported. Traffic depends on demand and routing.")
     ).toBeInTheDocument();
   });
 
-  it("surfaces problems: attention feed, NOT-EARNING verdict, and a fix for a mixed fleet", async () => {
+  it("surfaces problems: attention feed, ROUTING-BLOCKED verdict, and a fix for a mixed fleet", async () => {
     const machine = (over: Record<string, unknown>) => ({
       id: "x",
       account_id: "acct-test",
@@ -382,10 +382,10 @@ describe("ProvidersPage", () => {
     // Attention feed renders for an unhealthy fleet (not the all-clear strip).
     await screen.findByText("Needs attention");
     expect(
-      screen.queryByText("All clear — every machine is routable and earning.")
+      screen.queryByText("No provider warnings reported. Traffic depends on demand and routing.")
     ).not.toBeInTheDocument();
-    // The blocked machine's card shows the NOT-EARNING hero verb.
-    expect(screen.getAllByText(/NOT EARNING/i).length).toBeGreaterThan(0);
+    // The blocked machine's card shows the ROUTING-BLOCKED hero verb.
+    expect(screen.getAllByText(/ROUTING BLOCKED/i).length).toBeGreaterThan(0);
     // The offline machine surfaces its start command as the fix.
     expect(screen.getAllByText("darkbloom start").length).toBeGreaterThan(0);
   });

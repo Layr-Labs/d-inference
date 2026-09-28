@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-28 · commit `2496ac833`
+> Last updated: 2026-09-28 · commit `60863dd96`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -138,6 +138,46 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 | Log: `WebSocket pong timeout (no response in 30s)` | No pong within `pongTimeout` of a `pingInterval` ping closes the socket and the backoff restarts it ([runtime constants](./cli-reference.md#runtime-constants)) | Network path stalls; nothing to configure on the provider |
 | Heartbeats arrive but requests do not | A heartbeat every `heartbeat_interval_secs` proves the connection, not routability | `darkbloom doctor` → `trust level`, `coordinator trust`; the routing gates are listed in [`../architecture/security/attestation.md#routing-gate`](../architecture/security/attestation.md#routing-gate) |
 | `minimum version` ✗ | Coordinator rejects this `ProviderCore.version` | `darkbloom update` |
+
+## Healthy but no requests
+
+Use this sequence when local checks pass but requests or inference earnings
+stop. **Ready for routing** on My Macs means the dashboard found no blocking
+warning; it does not confirm delivered requests or new earnings
+(`console-ui/src/app/providers/dashboard/routing.ts`, `deriveRouting`).
+
+1. Save `darkbloom status` and `darkbloom doctor --support` output before
+   restarting. Record when traffic last arrived, the timezone, provider
+   version, exact model IDs and whether the issue followed an update or model
+   switch. Note which models are warm and advertised; a downloaded model is
+   not evidence that the coordinator can route to it.
+2. Check the machine's request counters and earnings over the same interval.
+   A healthy connection or a historical total does not prove new traffic.
+   Keep base rewards separate from inference earnings: their allocation rules
+   differ ([billing](../architecture/billing.md#base-rewards-implemented-disabled-by-default)). If your fleet
+   and balance both disappeared after signing in, verify the account used to
+   link the Mac before relinking it.
+3. Test the coordinator path with **exclusive self-route**, following
+   [self-route](./self-route.md#steps). Use an API key from the linked account
+   and `X-Darkbloom-Route: self`, or a My Machine only key. The chat preference
+   alone can fall back to paid network traffic. With multiple owned Macs,
+   confirm in the target Mac's logs which machine actually served the test.
+4. If self-route fails, retain the returned error code and use the
+   [self-route troubleshooting table](./self-route.md#troubleshooting).
+   Local inference succeeding does not establish coordinator routability.
+5. If self-route succeeds but public traffic stays absent, check the model's
+   demand in the console's network stats and your public-serving settings.
+   Self-route relaxes the hardware-trust floor and private-only restriction;
+   success therefore does not prove eligibility for public requests. Multiple
+   warm models also do not guarantee traffic for each model.
+6. If traffic remains absent, [collect a report](#collect-a-report) and send
+   support its `report_id`, the time interval, model IDs and self-route result.
+   If a restart or test request restores traffic, include the recovery time;
+   that is useful evidence, not confirmation that the underlying issue is fixed.
+
+For missing or returned withdrawals, follow
+[billing and withdrawal history](../consumer/billing.md#9-withdraw-international-earnings).
+A routing readiness badge cannot establish payout or balance state.
 
 ## Updates
 

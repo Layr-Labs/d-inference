@@ -47,10 +47,10 @@ describe("deriveRouting", () => {
 });
 
 describe("routingMeta", () => {
-  it("uses the load-bearing EARNING/NOT EARNING verbs", () => {
-    expect(routingMeta("routable").verb).toContain("EARNING");
-    expect(routingMeta("blocked").verb).toContain("NOT EARNING");
-    expect(routingMeta("degraded").verb).toContain("EARNING");
+  it("describes readiness without inferring request delivery or earnings", () => {
+    expect(routingMeta("routable").verb).toBe("READY FOR ROUTING");
+    expect(routingMeta("blocked").verb).toBe("ROUTING BLOCKED");
+    expect(routingMeta("degraded").verb).toBe("ROUTING DEGRADED");
     expect(routingMeta("offline").verb).toContain("OFFLINE");
   });
 

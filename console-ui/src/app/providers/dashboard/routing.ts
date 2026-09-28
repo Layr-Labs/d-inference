@@ -1,14 +1,6 @@
-// Routing eligibility — the single source of truth for "is this machine
-// earning right now?". The fleet strip, the attention feed, and each machine
-// card all derive their verdict from here so the glance, the list, and the
-// detail can never disagree.
-//
-// A machine earns only if the coordinator routes work to it. We map the
-// existing warning severities onto an earning verdict:
-//   offline  -> not connected (status offline/never_seen)
-//   blocked  -> connected but receives ZERO requests (any blocking warning)
-//   degraded -> routable at reduced priority (any degrading warning)
-//   routable -> healthy, full priority, earning
+// Dashboard routing readiness derived from connection state and warnings.
+// Readiness does not establish that a request was routed or earnings accrued;
+// traffic and payment counters are displayed separately.
 
 import type { MyProvider, MyProvidersResponse } from "../types";
 import { computeWarnings, type Warning, type WarningSeverity } from "../warnings";
@@ -32,7 +24,7 @@ export const DEFAULT_CTX: RoutingCtx = {
   challenge_max_age_seconds: 360,
 };
 
-/** Derive the earning verdict from a machine + its computed warnings. */
+/** Derive the routing verdict from a machine + its computed warnings. */
 export function deriveRouting(p: MyProvider, warnings: Warning[]): RoutingState {
   if (p.status === "offline" || p.status === "never_seen") return "offline";
   if (warnings.some((w) => w.severity === "blocking")) return "blocked";
@@ -53,7 +45,7 @@ export interface RoutingMeta {
   tint: string;
   /** Tailwind border color for the left rail. */
   rail: string;
-  /** Short status label ("Earning", "Degraded", ...). */
+  /** Short status label ("Ready", "Degraded", ...). */
   label: string;
   /** Load-bearing verb shown on the card hero. */
   verb: string;
@@ -67,8 +59,8 @@ const META: Record<RoutingState, RoutingMeta> = {
     color: "text-accent-green",
     tint: "bg-accent-green/8",
     rail: "border-l-accent-green",
-    label: "Earning",
-    verb: "EARNING — receiving traffic",
+    label: "Ready",
+    verb: "READY FOR ROUTING",
     segment: "bg-accent-green",
   },
   degraded: {
@@ -77,7 +69,7 @@ const META: Record<RoutingState, RoutingMeta> = {
     tint: "bg-accent-amber/8",
     rail: "border-l-accent-amber",
     label: "Degraded",
-    verb: "EARNING (reduced priority)",
+    verb: "ROUTING DEGRADED",
     segment: "bg-accent-amber",
   },
   blocked: {
@@ -85,8 +77,8 @@ const META: Record<RoutingState, RoutingMeta> = {
     color: "text-accent-red",
     tint: "bg-accent-red/10",
     rail: "border-l-accent-red",
-    label: "Not earning",
-    verb: "NOT EARNING — 0 requests",
+    label: "Blocked",
+    verb: "ROUTING BLOCKED",
     segment: "bg-accent-red",
   },
   offline: {

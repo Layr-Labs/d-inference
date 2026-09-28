@@ -22,7 +22,7 @@ export function AttentionFeed({ groups }: { groups: AttentionGroup[] }) {
       <div className="rounded-xl bg-accent-green/8 border border-accent-green/20 p-4 flex items-center gap-3">
         <CheckCircle2 size={18} className="text-accent-green shrink-0" />
         <p className="text-sm font-medium text-text-primary">
-          All clear — every machine is routable and earning.
+          No provider warnings reported. Traffic depends on demand and routing.
         </p>
       </div>
     );

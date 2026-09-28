@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-28 · commit `1902940eb`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -9,6 +9,16 @@ derived from them, demand-driven model loads, and the warm-pool controller
 that keeps enough providers resident for each model. Choosing *which*
 eligible provider gets a request is the subject of
 [`routing.md`](routing.md); this page stops where that choice begins.
+
+For automatic same-ID weight updates, desired state includes a revision and
+aggregate hash for providers advertising `model_revisions_v1`. The provider
+stages the update without occupying a GPU slot. If an alias target is ineligible,
+its eligible previous or retired lineage build still receives revision updates.
+Only an emitted alias target suppresses competing lineage targets. The provider
+then closes admission for that
+model and drains accepted work before activation. Other resident models remain
+available; new cold loads wait through the activation boundary. See
+[model revisions](model-revisions.md) for backoff, snapshot selection and rollback.
 
 ## Draining providers
 
@@ -33,7 +43,7 @@ snapshot through `RefreshDesiredModels` in `coordinator/registry/model_commands.
 The API then sends `models_replace_resumed`, and the provider waits for the
 matching receipt before reporting success.
 That refresh bypasses per-connection delivery deduplication, retains the existing
-capability/version guards and retired-alias lineage, and emits an empty snapshot
+backend/capability guards and retired-alias lineage, and emits an empty snapshot
 when deselected aliases no longer apply. The provider preserves a snapshot that
 arrives while its commit is awaiting acknowledgement and resumes convergence
 after reopening admission. A failed receipt write or missing readiness neither

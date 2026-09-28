@@ -190,6 +190,7 @@ type releaseTrustPolicySnapshot struct {
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
 	appAttestRuntimeRefreshPending atomic.Bool
+	modelCatalogSyncMu             sync.Mutex // serialize catalog snapshots and desired-state publication
 
 	appAttestShadow               AppAttestShadowConfig
 	appAttest                     *attestservice.Service
@@ -1231,22 +1232,38 @@ func (s *Server) SetMDMWebhookSecret(secret string) {
 
 // SyncModelCatalog reads active models from the store and updates the
 // registry's model catalog. Call this at startup and after admin catalog changes.
-func (s *Server) SyncModelCatalog() {
+func (s *Server) SyncModelCatalog() { s.syncModelCatalog() }
+
+// Return whether the committed registry state reached the live routing policy
+// and connected providers. Revision callers must retry after either failure.
+func (s *Server) syncModelCatalog() bool {
+	s.modelCatalogSyncMu.Lock()
+	defer s.modelCatalogSyncMu.Unlock()
 	registryRows, err := s.store.ListActiveModelRegistryWithError()
 	if err != nil {
 		s.logger.Error("model registry catalog sync failed", "error", err)
-		return
+		return false
 	}
 	entries := make([]registry.CatalogEntry, 0, len(registryRows))
 	for _, row := range registryRows {
 		if row.ActiveVersion == nil {
 			continue
 		}
+		servingHashes := make([]string, 0, len(row.ServingVersions))
+		sizeBytes := row.ActiveVersion.TotalSizeBytes
+		for _, v := range row.ServingVersions {
+			servingHashes = append(servingHashes, v.AggregateSHA256)
+			if v.TotalSizeBytes > sizeBytes {
+				sizeBytes = v.TotalSizeBytes
+			}
+		}
 		entries = append(entries, registry.CatalogEntry{
-			ID:         row.ID,
-			WeightHash: row.ActiveVersion.AggregateSHA256,
-			SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
-			MinRAMGB:   row.MinRAMGB,
+			Revision:            row.ActiveVersion.Version,
+			ServingWeightHashes: servingHashes,
+			ID:                  row.ID,
+			WeightHash:          row.ActiveVersion.AggregateSHA256,
+			SizeGB:              float64(sizeBytes) / 1e9,
+			MinRAMGB:            row.MinRAMGB,
 			RequiredProviderCapabilities: append(
 				[]string{}, row.RequiredProviderCapabilities...),
 		})
@@ -1260,24 +1277,28 @@ func (s *Server) SyncModelCatalog() {
 	s.registry.SetModelCatalog(entries)
 	s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
 
-	s.syncModelAliases(registryRows)
+	// The catalog has changed even if alias refresh fails. Invalidate its read
+	// caches, but do not publish desired state computed from stale aliases.
+	defer s.invalidateCatalogCache()
+	if !s.syncModelAliases(registryRows) {
+		return false
+	}
 	// Catalog capability changes can invalidate an in-flight desired-model
 	// prefetch even when alias pointers did not change. Re-publish the filtered
 	// desired state immediately; newly ineligible providers receive an empty
 	// set, which cancels stale reconciliation work.
-	s.fanOutDesiredModels()
-	s.invalidateCatalogCache()
+	return s.fanOutDesiredModels()
 }
 
 // syncModelAliases loads standard rollout aliases first, then resolves
 // OpenRouter-only aliases through either a standard alias or an active concrete
 // catalog model. OpenRouter-only targets route requests but do not participate
 // in provider convergence or canonical public naming.
-func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) {
+func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) bool {
 	aliases, err := s.store.ListModelAliases()
 	if err != nil {
 		s.logger.Error("model alias sync failed", "error", err)
-		return
+		return false
 	}
 	resolved := make(map[string]registry.AliasTarget, len(aliases))
 	activeConcreteModels := make(map[string]struct{}, len(registryRows))
@@ -1318,6 +1339,7 @@ func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) {
 	}
 	s.registry.SetModelAliases(resolved)
 	s.logger.Info("model aliases synced to registry", "active_aliases", len(resolved))
+	return true
 }
 
 // invalidateCatalogCache removes all cached model catalog responses so the

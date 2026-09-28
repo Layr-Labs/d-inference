@@ -54,7 +54,7 @@ public struct ModelDownloader: Sendable {
     /// catalog entry without `r2_prefix`/`aggregate_sha256` is refused.
     ///
     /// On success, the model is laid out under
-    /// `{hf-cache}/models--{org}--{name}/snapshots/local/` (see
+    /// an immutable `{hf-cache}/models--{org}--{name}/snapshots/.revision-…/` (see
     /// `cacheModelDirectory(for:)` for how the cache root is resolved)
     /// with a `refs/main` pointer so `ModelScanner` discovers it the next
     /// time `darkbloom status` runs.
@@ -62,6 +62,8 @@ public struct ModelDownloader: Sendable {
         model: CatalogModel,
         onProgress: (@Sendable (ProgressEvent) -> Void)? = nil
     ) async throws {
+        let lease = try await ModelArtifactWriteLease.acquire(modelID: model.id)
+        defer { lease.release() }
         let eligibility = ModelRuntimeRequirements.evaluate(
             modelID: model.id,
             catalogRequirements: model.requiredProviderCapabilities,
@@ -83,9 +85,12 @@ public struct ModelDownloader: Sendable {
     }
 
     /// Remove a downloaded model from the cache. Returns true if anything was
-    /// removed, false if the model was not present.
+    /// removed, false if the model was not present. An active download or
+    /// revision activation must finish before removal can acquire its lease.
     @discardableResult
     public static func remove(modelID: String) throws -> Bool {
+        let lease = try ModelArtifactWriteLease.acquireIfAvailable(modelID: modelID)
+        defer { lease.release() }
         let modelDir = cacheModelDirectory(for: modelID)
         guard FileManager.default.fileExists(atPath: modelDir.path) else { return false }
         try FileManager.default.removeItem(at: modelDir)

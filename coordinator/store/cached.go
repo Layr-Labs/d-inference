@@ -214,8 +214,20 @@ func (c *CachedStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelV
 	return err
 }
 
+func (c *CachedStore) SetExistingModelVersion(version *ModelVersion, files []ModelVersionFile) error {
+	err := c.Store.SetExistingModelVersion(version, files)
+	c.models.invalidate()
+	return err
+}
+
 func (c *CachedStore) PromoteModelVersion(modelID, version string) error {
 	err := c.Store.PromoteModelVersion(modelID, version)
+	c.models.invalidate()
+	return err
+}
+
+func (c *CachedStore) RetireModelVersion(modelID, version string) error {
+	err := c.Store.RetireModelVersion(modelID, version)
 	c.models.invalidate()
 	return err
 }

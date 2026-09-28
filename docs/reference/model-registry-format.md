@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-28 · commit `18fad5efe`
+> Last updated: 2026-09-28 · commit `ac63cefa7`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -162,9 +162,9 @@ DDL in `coordinator/store/postgres.go`; Go types in `coordinator/store/interface
 | `model_id` | text | FK → `model_registry.id`, cascade delete |
 | `version` | text | unique per `model_id` |
 | `r2_prefix`, `aggregate_sha256`, `total_size_bytes`, `file_count` | | copied from the manifest |
-| `status` | text | `'ready'` on registration |
-| `uploaded_by` | text | publishing key name, `env-bootstrap`, or `admin` |
-| `uploaded_at`, `promoted_at` | timestamptz | `promoted_at` set by `PromoteModelVersion` |
+| `status` | text | `'ready'` on new registration; an existing `'retired'` version stays retired across re-registration |
+| `uploaded_by` | text | original publishing key name, `env-bootstrap`, or `admin`; preserved by identical registration/publication retries |
+| `uploaded_at`, `promoted_at` | timestamptz | original `uploaded_at` survives identical retries; `promoted_at` set by `PromoteModelVersion` |
 | `metadata` | jsonb | the registration `metadata` |
 
 ### `model_version_files` ↔ `ModelVersionFile`
@@ -230,6 +230,11 @@ Omitting the field or sending `null` on re-registration clears the source for
 that version. Existing entries and older providers continue using R2. Adding or
 clearing it on an existing version uses the normal registration endpoint;
 production registration still requires approval.
+The metadata-preserving `publish-revision` action has a different retry contract:
+an existing version retains its stored source, including R2-only, regardless of
+an omitted or different valid locator in the retry. It does not undo an explicit
+source edit through normal registration (`SetExistingModelVersion` versus
+`SetModelVersion` in `coordinator/store/postgres_model_registry.go` and `memory.go`).
 
 ### Pinned assistant download artifact
 
@@ -287,6 +292,14 @@ must leave no published assistant. Inspect the provider's assistant revision
 and active MTP metrics after loading; downloading alone does not prove the
 assistant has been installed in a serving engine.
 
+A registered `(model_id, version)` is immutable for R2 prefix, aggregate hash,
+size, file count and file manifest. `SetModelVersion` rejects changes with
+`ErrModelVersionImmutable` (HTTP 409); publish a new version instead.
+Previously promoted `ready` versions remain accepted while providers converge.
+`ModelRegistryRecord.ServingVersions` and its cache clone retain these records;
+`RetireModelVersion` explicitly withdraws an inactive version. The active catalog
+and manifest endpoints continue to describe only the desired version.
+
 ## Admin actions
 
 `POST /v1/admin/models/{model_id}/{action}` — `handleAdminModelRegistryAction`
@@ -295,13 +308,29 @@ successful action calls `SyncModelCatalog()`.
 
 | `action` | Body | Effect | Response |
 |---|---|---|---|
-| `promote` | `{"version": "..."}` | `PromoteModelVersion` — point `model_active_versions` at this version | `{"status":"promoted","model_id","version"}` |
+| `publish-revision` | `{"version":"...","hugging_face_artifact":{"repo_id":"owner/repo","revision":"<40-character SHA>","path_prefix":"optional/subdir"}}` | `handlePublishModelRevision` in `coordinator/api/model_revision_handlers.go` validates the optional per-revision HF locator, verifies the R2 manifest/files, records the initial authenticated publisher, preserves original upload attribution on retries and model metadata/pricing, promotes and refreshes live desired state | `{"status":"promoted","model_id","version","aggregate_sha256"}`; 503 with `Retry-After` if promotion committed but live policy refresh or desired-state delivery to a provider failed |
+| `retire-revision` | `{"version":"..."}` | `RetireModelVersion` removes an inactive revision from accepted hashes; active revision returns 409. Re-registration preserves retired status; no file deletion | `{"status":"retired","model_id","version"}`; 503 if live policy refresh or desired-state delivery failed |
+| `promote` | `{"version": "..."}` | `PromoteModelVersion` — point `model_active_versions` at this version | `{"status":"promoted","model_id","version"}`; 503 with `Retry-After: 5` if promotion committed but live policy refresh or desired-state delivery failed; retry the same version |
 | `status` | `{"status": "..."}` | `SetModelStatus`; value must be `beta`, `active`, `deprecated`, or `retired` | `{"status":"updated","model_id","model_status"}` |
 | `runtime-parameters` | `{"runtime_parameters": {...}}` | **merge** keys into the existing object (partial update) | `{"status":"updated","model_id","runtime_parameters"}` |
 | `capabilities` | `{"capabilities": [...]}` | **replace** wholesale; trimmed, de-duplicated, sorted (`normalizeCapabilities`) | `{"status":"updated","model_id","capabilities"}` |
 | `deprecation` | `{"deprecation_date": "YYYY-MM-DD"}` or `{}` | set, or clear when empty/omitted | `{"status":"updated","model_id","deprecation_date"}` (+ `note` when cleared) |
 | `openrouter-slug` | `{"slug": "..."}` or `{}` | set, or clear when empty/omitted | `{"status":"updated","model_id","openrouter_slug"}` |
 | `hugging-face-id` | `{"hugging_face_id": "owner/repository"}` or `{}` | set, or clear when empty/omitted | `{"status":"updated","model_id","hugging_face_id"}` |
+
+For `publish-revision`, omit `hugging_face_artifact` to select R2-only when creating
+a new version. The locator is never inherited from another version; an existing
+version instead retains its stored locator on retry. It is separate from upstream
+`hugging_face_id` metadata. Its [pinned artifact validation](#hugging-face-download-artifact)
+applies before registration or promotion. A 503 can occur after the durable
+promotion and live catalog update when sending desired state to a provider fails;
+an alias-store read failure also returns 503 and suppresses desired-state fan-out
+until alias synchronization succeeds (`syncModelCatalog`, `syncModelAliases` in
+`coordinator/api/server.go`). Neither failure implies rollback. Retry with the same version and source fields. An
+identical retry preserves the original `uploaded_by` and `uploaded_at`, plus the
+currently stored download source. Use normal registration for deliberate source edits.
+Promoting a retired revision returns 409 (`ErrModelVersionRetired`);
+publish a new version to approve those bytes again.
 
 Unknown action → `404 model action not found`.
 

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `0bd16a9fa`
+> Last updated: 2026-09-28 · commit `a1e64a532`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -620,6 +620,15 @@ scripted compute. It does not require model downloads or production access.
 The CI formatting step checks tracked Go files with `gofmt`. It excludes
 `docs/reports/evidence/`, whose captured source bytes are immutable and bound
 by evidence manifests. Live Go source remains subject to the formatting gate.
+
+`TestCacheIndexConcurrentTrackerOperations` in
+`coordinator/registry/cache_index_invariant_test.go` races tracker operations
+with a bounded fake-clock advance while new lookup/ready transactions finish,
+then expires the late holders while the workers remain active. The initial
+advance already expires the old holders. Deferred worker shutdown also runs on
+fatal assertions, preventing leaked background allocations from contaminating
+`TestReserveProviderExAllocBudget`. The production TTLs, receipt acceptance,
+index invariants and allocation ceiling are unchanged.
 
 ```bash
 make coordinator-test                      # cd coordinator && go test ./...

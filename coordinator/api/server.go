@@ -1277,25 +1277,28 @@ func (s *Server) syncModelCatalog() bool {
 	s.registry.SetModelCatalog(entries)
 	s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
 
-	s.syncModelAliases(registryRows)
+	// The catalog has changed even if alias refresh fails. Invalidate its read
+	// caches, but do not publish desired state computed from stale aliases.
+	defer s.invalidateCatalogCache()
+	if !s.syncModelAliases(registryRows) {
+		return false
+	}
 	// Catalog capability changes can invalidate an in-flight desired-model
 	// prefetch even when alias pointers did not change. Re-publish the filtered
 	// desired state immediately; newly ineligible providers receive an empty
 	// set, which cancels stale reconciliation work.
-	delivered := s.fanOutDesiredModels()
-	s.invalidateCatalogCache()
-	return delivered
+	return s.fanOutDesiredModels()
 }
 
 // syncModelAliases loads standard rollout aliases first, then resolves
 // OpenRouter-only aliases through either a standard alias or an active concrete
 // catalog model. OpenRouter-only targets route requests but do not participate
 // in provider convergence or canonical public naming.
-func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) {
+func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) bool {
 	aliases, err := s.store.ListModelAliases()
 	if err != nil {
 		s.logger.Error("model alias sync failed", "error", err)
-		return
+		return false
 	}
 	resolved := make(map[string]registry.AliasTarget, len(aliases))
 	activeConcreteModels := make(map[string]struct{}, len(registryRows))
@@ -1336,6 +1339,7 @@ func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) {
 	}
 	s.registry.SetModelAliases(resolved)
 	s.logger.Info("model aliases synced to registry", "active_aliases", len(resolved))
+	return true
 }
 
 // invalidateCatalogCache removes all cached model catalog responses so the

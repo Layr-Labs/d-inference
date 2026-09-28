@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parent.parent
 RELEASE = (ROOT / '.github/workflows/release-swift.yml').read_text()
 WARM = (ROOT / '.github/workflows/provider-release-cache.yml').read_text()
 ACTION = (ROOT / '.github/actions/provider-release-build/action.yml').read_text()
+RUST_BOOTSTRAP = (ROOT / 'scripts/install-release-rust.sh').read_text()
+CMAKE_BOOTSTRAP = (ROOT / 'scripts/install-release-cmake.sh').read_text()
 
 
 def job(workflow, name):
@@ -106,6 +108,24 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('cargo +1.88.0 clean --manifest-path coordinator/promptsidecar/Cargo.toml -p promptsidecar', step)
         self.assertLess(ACTION.index('- name: Invalidate workspace Rust outputs'),
                         ACTION.index('- name: Verify production prompt parity'))
+
+    def test_qualification_bootstraps_verified_rust_before_parity(self):
+        self.assertIn('run: ./scripts/install-release-rust.sh', ACTION)
+        self.assertIn('rustup/archive/1.28.2/aarch64-apple-darwin/rustup-init', RUST_BOOTSTRAP)
+        self.assertIn('20ef5516c31b1ac2290084199ba77dbbcaa1406c45c1d978ca68558ef5964ef5', RUST_BOOTSTRAP)
+        self.assertIn('shasum -a 256 --check', RUST_BOOTSTRAP)
+        self.assertIn('rustup toolchain install 1.88.0 --profile minimal', RUST_BOOTSTRAP)
+        self.assertLess(ACTION.index('run: ./scripts/install-release-rust.sh'),
+                        ACTION.index('- name: Verify production prompt parity'))
+
+    def test_metal_build_bootstraps_verified_cmake_without_brew(self):
+        self.assertIn('run: ./scripts/install-release-cmake.sh', ACTION)
+        self.assertIn('v3.31.12/cmake-3.31.12-macos-universal.tar.gz', CMAKE_BOOTSTRAP)
+        self.assertIn('799af7fd545db9bf1b9cfe72f8095880e727a2d4e0df0e3dffc3bc7b95c2d3b0', CMAKE_BOOTSTRAP)
+        self.assertIn('shasum -a 256 --check', CMAKE_BOOTSTRAP)
+        self.assertNotIn('brew install cmake', ACTION)
+        self.assertLess(ACTION.index('run: ./scripts/install-release-cmake.sh'),
+                        ACTION.index('Build or validate source-matched metallib'))
 
     def test_warming_cannot_publish_or_seed_default_branch_from_pr(self):
         self.assertIn('branches: [master]', WARM)

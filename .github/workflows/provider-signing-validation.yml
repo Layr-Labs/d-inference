@@ -56,7 +56,9 @@ jobs:
         with:
           go-version-file: candidate/go.mod
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.88.0 --profile minimal
+        run: bash tooling/scripts/install-release-rust.sh
+      - name: Install pinned CMake for Metal build
+        run: bash tooling/scripts/install-release-cmake.sh
       - name: Build exact source and stage unsigned app
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
@@ -67,7 +69,7 @@ jobs:
           set -euo pipefail
           test "$(git -C candidate rev-parse HEAD)" = "$EXPECTED_SOURCE"
           candidate/scripts/check-release-version.sh "$EXPECTED_VERSION"
-          command -v cmake >/dev/null 2>&1 || brew install cmake
+          cmake --version
           cd candidate/provider-swift
           sdk=$(xcrun --sdk macosx --show-sdk-path)
           swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom

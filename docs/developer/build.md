@@ -75,6 +75,11 @@ The image's default `python3` may be older than the release helpers require.
 Every macOS 27 release job pins Python 3.12.10 with `actions/setup-python`
 after checkout and before invoking those helpers; the runner-policy check
 enforces that order.
+Blacksmith's macOS 27 image also lacks `rustup`. Qualification and signing
+validation install a checksum-verified Rustup 1.28.2 bootstrap from the Rust
+project, then the exact Rust 1.88.0 toolchain required by prompt parity.
+It also lacks Homebrew and CMake; release Metal builds use a checksum-verified
+Kitware CMake 3.31.12 archive instead of a Homebrew fallback.
 
 Release artifacts pass through GitHub Actions, but Tenki does not compile or
 cache their release inputs. Blacksmith is trusted to execute the release and

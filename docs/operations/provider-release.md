@@ -165,7 +165,11 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
    caches in the default branch's scope, which release tags can restore. PR
    validation caches stay isolated to their PR and do not seed `master`.
    Each macOS 27 job selects the image's Xcode 27 and pins Python 3.12.10
-   after checkout, before running the release helpers.
+   after checkout, before running the release helpers. Qualification also
+   installs checksum-verified Rustup and the pinned Rust 1.88.0 toolchain
+   before running prompt parity. Both lanes install the checksum-verified
+   CMake 3.31.12 distribution for the Metal library build; no Homebrew is
+   required on Blacksmith.
    Pipeline shutdown changes run these lanes on their PR as well; the
    [shutdown drain regression](../developer/test.md#sdk-27-release-qualification)
    must pass before retrying a release that failed that assertion.

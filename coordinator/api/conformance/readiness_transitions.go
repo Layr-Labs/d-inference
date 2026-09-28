@@ -1,4 +1,4 @@
-package api
+package conformance
 
 import (
 	"bytes"
@@ -17,19 +17,23 @@ import (
 // Registration is the existing authenticated metadata mutation seam; there is
 // no fabricated readiness endpoint. The manifest and file HEAD checks go only
 // to an owned loopback fixture, never a real artifact/CDN.
-func TestOpenRouterConformanceReadinessFeed(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceReadinessFeed(t *testing.T) {
 	const publishingKey = "fixture-only-publishing-key"
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", publishingKey)
-	f := newORFixture(t, true)
-	manifest := validTestManifest()
+	f := s.newORFixture(t, true)
+	manifest := s.NewManifest()
 	manifest.ModelID = f.model
-	manifest.R2Prefix = modelR2Prefix(f.model, "v1")
+	manifest.R2Prefix = s.ModelR2Prefix(f.model, "v1")
 	var manifestReads atomic.Int32
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/"+manifest.R2Prefix+"/manifest.json":
 			manifestReads.Add(1)
-			writeJSON(w, 200, manifest)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			if err := json.NewEncoder(w).Encode(manifest); err != nil {
+				t.Error(err)
+			}
 		case r.Method == http.MethodHead && r.URL.Path == "/"+manifest.R2Prefix+"/config.json":
 			w.Header().Set("Content-Length", "123")
 			w.WriteHeader(200)
@@ -133,7 +137,7 @@ func TestOpenRouterConformanceReadinessFeed(t *testing.T) {
 				t.Fatalf("readiness transition/cached identity got=%v,%v want=%v", ready, again, state.ready)
 			}
 			// No provider is online. Ready is launch metadata, not load/serve evidence.
-			if f.srv.registry.ProviderCount() != 0 {
+			if f.srv.Registry.ProviderCount() != 0 {
 				t.Fatal("unexpected provider")
 			}
 			t.Logf("OR_READINESS {\"phase\":%q,\"feed_ready\":%t,\"alias_visible\":true,\"online_providers\":0,\"actual_load_serve\":\"not_run\"}", state.name, ready)
@@ -144,8 +148,8 @@ func TestOpenRouterConformanceReadinessFeed(t *testing.T) {
 	}
 }
 
-func TestOpenRouterConformanceReadinessCapabilities(t *testing.T) {
-	f := newORModelFixture(t, true, orIncidentBuild, orIncidentAlias)
+func (s Suite) TestOpenRouterConformanceReadinessCapabilities(t *testing.T) {
+	f := s.newORModelFixture(t, true, orIncidentBuild, orIncidentAlias)
 	p := f.provider("0.9.0")
 	requests := 0
 	charges := 0

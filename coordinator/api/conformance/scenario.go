@@ -1,4 +1,4 @@
-package api
+package conformance
 
 import (
 	"encoding/json"

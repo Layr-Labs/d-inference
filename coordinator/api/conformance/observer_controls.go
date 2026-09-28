@@ -1,10 +1,11 @@
-package api
+package conformance
 
 import (
 	"context"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -12,7 +13,10 @@ import (
 )
 
 func orFrame(delta, finish string) string {
-	return `data: {"id":"fixture-response","object":"chat.completion.chunk","created":1700000000,"model":"conformance-alias","choices":[{"index":0,"delta":` + delta + `,"finish_reason":` + finish + `}]}` + "\n\n"
+	return orModelFrame(orAlias, delta, finish)
+}
+func orModelFrame(model, delta, finish string) string {
+	return `data: {"id":"fixture-response","object":"chat.completion.chunk","created":1700000000,"model":` + strconv.Quote(model) + `,"choices":[{"index":0,"delta":` + delta + `,"finish_reason":` + finish + `}]}` + "\n\n"
 }
 func orResponse(body io.ReadCloser) *http.Response {
 	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: body}
@@ -26,7 +30,7 @@ type orBrokenReader struct{}
 
 func (orBrokenReader) Read([]byte) (int, error) { return 0, errors.New("injected read failure") }
 
-func TestOpenRouterConformanceObserver(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceObserver(t *testing.T) {
 	content := orFrame(`{"content":"héllo"}`, "null")
 	finish := orFrame(`{}`, `"stop"`)
 	done := "data: [DONE]\n\n"

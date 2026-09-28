@@ -38,6 +38,7 @@ Production ran exact prefix-cache routing at 100% and measured a 1.4–5.2% hit 
 - Capture recurrent (Qwen, Nemotron, Bonsai) complete checkpoints at every 256-token-aligned prefill range end, whatever chunk produced it. The uniform-chunk rule disarmed capture when decode company left mid-prompt, so long Qwen prompts published only the boundaries before the first chunk change; measured on real weights, dense Qwen3.5-9B state is bit-identical across chunk partitions and the MoE varies cold already ([report](docs/reports/2026-09-27-qwen-chunk-partition-parity.md)). Files written under the old rule stay valid; adopters resume under ordinary chunking.
 - Retain the coordinator's fork target for recurrent donors too: first boundary, deepest boundary at or below `cache_repeated_prefix_tokens`, and the rolling latest, with a fixed 1,024-token adjacency drop for every layout.
 - Count recurrent donors whose capture a packed prefill cohort disarmed, once per request, in the heartbeat's `recurrent_capture_disarmed_packed_total` (DogStatsD `provider.prefix_cache.recurrent_capture_disarmed_packed`).
+- Enable SSD prefix caching and the paged KV backend by default for the exact catalog ID `Qwen3.5-9B`. Providers reported `config_disabled` for it and served it on contiguous KV under `auto`, so it could not join cache routing; the coordinator's `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` tuple for it is a separate operations change.
 
 ### Coordinator
 

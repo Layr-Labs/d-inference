@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-28 · commit `0bd16a9fa`
+> Last updated: 2026-09-28 · commit `ae4925180`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -43,6 +43,8 @@ SSD snapshots survive beyond a request without retaining their KV in resident me
 The default setting remains `"auto"`. In the candidate, it prefers paged only
 for these exact fleet/private-candidate identities, not family names, aliases or substrings:
 
+- `Qwen3.5-9B` (the production catalog ID, matched case-sensitively; the
+  lowercase `qwen3.5-9b` and the `Qwen/Qwen3.5-9B` repo path are not listed)
 - `qwen3.5-35b-a3b`
 - `qwen3.6-35b-a3b-vl-mtp-mxfp8`
 - `EigenLabs/Qwen3.8-27B-4bit-mtp`

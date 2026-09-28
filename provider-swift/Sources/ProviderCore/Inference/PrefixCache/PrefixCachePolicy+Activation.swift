@@ -33,7 +33,7 @@ extension PrefixCachePolicy {
             || EngineV2SupportedModels.isQwen4ExpListingModelID(modelId)
             || EngineV2SupportedModels.isBonsai2ListingModelID(modelId)
         switch modelId {
-        case "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+        case "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
             "EigenLabs/Qwen3.8-27B-4bit-mtp", "gemma-4-26b-qat-4bit", "gpt-oss-20b":
             defaultEnabled = true
         default:

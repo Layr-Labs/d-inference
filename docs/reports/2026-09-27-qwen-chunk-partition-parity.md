@@ -1,6 +1,6 @@
 # Qwen chunk-partition parity and chunk-agnostic recurrent capture (2026-09-27)
 
-> Last updated: 2026-09-27 · commit `4b8ef6717`
+> Last updated: 2026-09-28 · commit `b51e21d95`
 
 **Question.** Does a hybrid recurrent Qwen (GatedDeltaNet + full attention)
 reach the same complete-checkpoint state at a prefill boundary whatever chunk
@@ -80,23 +80,26 @@ opt-in via `DARKBLOOM_EXACT_CACHE_RECURRENT_MODEL`) runs the shape above
 through a real coordinator, prompt sidecar, Postgres and a release-built
 provider: an 18,438-token prompt is primed once (fleet-novel, the coordinator
 sends a 0 repeat hint, the provider settles `skipped_novel`, no holder), sent
-again while a second tenant is decoding on the same provider (the donor
-prefills in plain chunks beside it, the company finishes inside the donor's
-lifetime, the coordinator's observed demand names the hint, the provider
-writes), and then repeated. With Qwen thinking disabled so the 16-token
-answers are comparable:
+again once a second tenant's streamed request has produced its first token
+(so the donor's first chunks share the step with a decoding row), the second
+tenant is cancelled 12 seconds later while the donor is still prefilling
+(the donor's own first streamed token marks the end of its prefill), so the
+donor's remaining ranges run solo on the 4,096 stripe, and the prompt is
+then repeated. With Qwen thinking disabled so the 16-token answers are
+comparable:
 
-| Checkpoint (release provider, paged KV) | Prime, cold | Donor under company | Repeat | Restored |
+| Checkpoint (release provider, paged KV) | Prime, cold | Donor, company cancelled at 12 s | Repeat | Restored |
 |---|---:|---:|---:|---:|
-| Qwen3.5-9B | 84.3 s | 73.3 s (company 73.6 s) | 1.39 s | 18,432 of 18,438 |
-| Qwen3.5-35B-A3B (`qwen3.5-35b-a3b`) | 39.5 s | 48.0 s (company 48.5 s) | 0.83 s | 18,432 of 18,438 |
+| Qwen3.5-9B | 57.7 s | 57.2 s | 5.69 s | 16,896 of 18,438 |
+| Qwen3.5-35B-A3B (`qwen3.5-35b-a3b`) | 31.3 s | 32.8 s | 1.93 s | 17,920 of 18,438 |
 
-Under the earlier uniform-chunk rule the donor's capture disarmed at the
-first cap change and the repeat could restore at most the last plain chunk
-before it (3,072); the test asserts at least the last full chunk end
-(prompt minus 2,048). The wall times are the testbed provider's cold prefill
-at its default geometry for a non-catalog ID plus a 16-token answer; the
-restore removes all of it.
+The restored depth is the last full range end before the ragged tail, at
+most one 4,096 stripe below the prompt end; the test allows that and
+separately requires more than 8,192 restored tokens, which the earlier
+uniform-chunk rule could never reach because it disarmed at the cap switch a
+handful of plain chunks in. The wall times are the testbed provider's cold
+prefill at its default geometry for a non-catalog ID plus a 16-token answer;
+the restore removes all but the tail.
 
 ## Coverage by checkpoint
 

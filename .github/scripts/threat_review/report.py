@@ -15,7 +15,7 @@ def render(repository, head, base, model, findings, evidence, limits, diff_base=
     lines = ["## Private threat model review — unconfirmed", "",
              f"Reviewed head [`{head[:12]}`]({root}/commit/{head}) against base `{base[:12]}`.", "",
              "This is a historical snapshot of this revision, not the PR's current status. "
-             "Validate each finding before taking action. Later runs do not update this draft.", ""]
+             + "Validate each finding before taking action. Later runs do not update this draft.", ""]
     if findings:
         for finding in findings:
             path = finding["file"]

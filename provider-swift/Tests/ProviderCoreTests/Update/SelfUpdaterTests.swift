@@ -158,20 +158,8 @@ struct SelfUpdaterTests {
         #expect(reason.contains("unsupported release platform"))
     }
 
-    @Test("ReleaseInfo sha256 compatibility returns bundle hash")
-    func releaseInfoShaCompatibility() {
-        let hash = String(repeating: "d", count: 64)
-        let release = ReleaseInfo(
-            version: "1.0.0",
-            platform: "macos-arm64",
-            url: "https://example.test/bundle.tar.gz",
-            bundleHash: hash
-        )
-        #expect(release.sha256 == hash)
-    }
-
-    @Test("installBundle installs flat bundle files into bin/ subdirectory")
-    func installBundleInstallsBundleFiles() throws {
+    @Test("installBundle refuses a flat-only bundle and leaves the live install untouched")
+    func installBundleRefusesFlatOnlyBundle() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("self-updater-test-\(UUID().uuidString)", isDirectory: true)
         let stage = root.appendingPathComponent("stage", isDirectory: true)
@@ -212,16 +200,15 @@ struct SelfUpdaterTests {
             release: release,
             installDir: install
         )
-        guard case .success = result else {
-            Issue.record("installBundleForTesting failed: \(result)")
+        guard case .failure(let error) = result else {
+            Issue.record("a flat-only bundle (no Darkbloom.app) must not install")
             return
         }
+        #expect("\(error)".contains("Darkbloom.app"))
 
-        let installedBin = install.appendingPathComponent("bin")
-        #expect((try String(contentsOf: installedBin.appendingPathComponent("darkbloom"), encoding: .utf8)) == "new darkbloom")
-        #expect((try String(contentsOf: installedBin.appendingPathComponent("darkbloom-enclave"), encoding: .utf8)) == "new enclave")
-        #expect((try String(contentsOf: installedBin.appendingPathComponent("mlx.metallib"), encoding: .utf8)) == "new metallib")
-        #expect(FileManager.default.fileExists(atPath: installedBin.appendingPathComponent("eigeninference-enclave").path))
+        #expect((try String(contentsOf: oldBin.appendingPathComponent("darkbloom"), encoding: .utf8)) == "old darkbloom")
+        #expect((try String(contentsOf: oldBin.appendingPathComponent("darkbloom-enclave"), encoding: .utf8)) == "old enclave")
+        #expect((try String(contentsOf: oldBin.appendingPathComponent("mlx.metallib"), encoding: .utf8)) == "old metallib")
     }
 
     @Test("installBundle with .app bundle creates symlinks from bin/ to .app")
@@ -329,11 +316,9 @@ struct SelfUpdaterTests {
         #expect((try String(contentsOf: installedBin.appendingPathComponent("darkbloom"), encoding: .utf8)) == "app darkbloom")
         #expect((try String(contentsOf: installedBin.appendingPathComponent("darkbloom-enclave"), encoding: .utf8)) == "app enclave")
 
-        // Legacy symlink should exist.
-        let legacyDest = try FileManager.default.destinationOfSymbolicLink(
-            atPath: installedBin.appendingPathComponent("eigeninference-enclave").path
-        )
-        #expect(legacyDest == "darkbloom-enclave")
+        // The Rust-era `eigeninference-enclave` alias is no longer created.
+        #expect(!FileManager.default.fileExists(
+            atPath: installedBin.appendingPathComponent("eigeninference-enclave").path))
     }
 
     // MARK: - Stage / Commit
@@ -519,25 +504,6 @@ struct SelfUpdaterTests {
         return (tarball, release, install)
     }
 
-    @Test("v0.8.9 parent can bootstrap a v0.8.10 runtime-smoke child")
-    func oldParentBootstrapsCandidateSmoke() throws {
-        _ = LiveInferenceFixtures.ensureMetallibColocated()
-        let executable = try activeBuildProduct("darkbloom")
-        let output = try BoundedProcess.runCapturingStandardOutput(
-            executable,
-            arguments: ["runtime-smoke"],
-            environment: [
-                "DARKBLOOM_NO_UPDATE_CHECK": "1",
-                GemmaOptimizationEnvironment.prefillLayer18Key: "0",
-                GemmaOptimizationEnvironment.weightedUnsortKey: "0",
-                GemmaOptimizationEnvironment.safeR1Key: "0",
-            ],
-            timeout: 30)
-        #expect(PackagedRuntimeSmoke.containsGemmaOptimizationSuccessMarker(output))
-        #expect(String(data: output, encoding: .utf8)?.contains(
-            "paged-kernel-runtime-smoke: ok") == true)
-    }
-
     @Test("signed extracted child proves retained Gemma marker before staging succeeds")
     func signedAppRunsRealVerification() throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
@@ -687,6 +653,67 @@ struct SelfUpdaterTests {
             ofItemAtPath: helper.path
         )
         return (app, executable, helper)
+    }
+
+    /// A staged app skeleton for the paged-marker check. The real `darkbloom`
+    /// product always carries the paged capability string, so the signed
+    /// runtime fixture cannot reach the pre-paged branch; this one can.
+    private func makePagedMarkerFixture(
+        root: URL,
+        pagedCode: Bool,
+        marker: String?
+    ) throws -> (app: URL, executable: URL) {
+        let app = root.appendingPathComponent("Darkbloom.app")
+        let executable = app.appendingPathComponent("Contents/MacOS/darkbloom")
+        try FileManager.default.createDirectory(
+            at: executable.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        let body = pagedCode
+            ? "binary \(PagedRuntimeCapabilityVerifier.binaryCapability) body"
+            : "binary without the paged runtime"
+        try Data(body.utf8).write(to: executable)
+        if let marker {
+            let markerURL = app.appendingPathComponent(
+                PackagedRuntimeSmoke.pagedCapabilityRelativePath)
+            try FileManager.default.createDirectory(
+                at: markerURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            try Data(marker.utf8).write(to: markerURL)
+        }
+        return (app, executable)
+    }
+
+    private func pagedMarkerFailure(pagedCode: Bool, marker: String?) throws -> String? {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("paged-marker-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (app, executable) = try makePagedMarkerFixture(
+            root: root, pagedCode: pagedCode, marker: marker)
+        do {
+            try PagedRuntimeCapabilityVerifier.verifyMarker(app: app, executable: executable)
+            return nil
+        } catch UpdateError.replaceFailed(let reason) {
+            return reason
+        }
+    }
+
+    @Test("a pre-paged artifact (no paged code, no marker) is refused")
+    func prePagedArtifactIsRefused() throws {
+        // This state used to return silently so v0.7.5/v0.7.7 artifacts stayed
+        // installable; the throw is what refuses them now.
+        let reason = try pagedMarkerFailure(pagedCode: false, marker: nil)
+        #expect(reason?.contains("predates the paged runtime") == true)
+    }
+
+    @Test("paged code and the signed marker must agree")
+    func pagedMarkerParityIsEnforced() throws {
+        #expect(try pagedMarkerFailure(pagedCode: true, marker: nil)
+            == "paged-capable artifact is missing its signed capability marker")
+        #expect(try pagedMarkerFailure(pagedCode: false, marker: "1\n")
+            == "artifact advertises paged capability without paged runtime code")
+        #expect(try pagedMarkerFailure(pagedCode: true, marker: "0\n")
+            == "paged runtime capability marker is invalid")
+        #expect(try pagedMarkerFailure(pagedCode: true, marker: "1\n") == nil)
     }
 
     @Test("staging extracts and verifies WITHOUT touching the live layout")
@@ -869,8 +896,8 @@ private func runTestProcess(
 @Suite("SelfUpdater.installRoot")
 struct SelfUpdaterInstallRootTests {
 
-    @Test("flat bin layout derives the darkbloom root")
-    func flatLayout() {
+    @Test("bin/ entry point derives the darkbloom root")
+    func binEntryPointLayout() {
         let root = SelfUpdater.installRoot(
             forExecutablePath: "/Users/op/.darkbloom/bin/darkbloom")
         #expect(root.path.hasSuffix("/.darkbloom"))

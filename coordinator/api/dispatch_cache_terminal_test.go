@@ -38,6 +38,7 @@ func TestWaitFirstChunkDeferredRetryUsesCapturedCacheTerminal(t *testing.T) {
 	pr.ErrorCh <- protocol.InferenceErrorMessage{
 		Type: protocol.TypeInferenceError, RequestID: pr.RequestID,
 		Error: "provider disconnected", StatusCode: 502,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	}
 	d := &dispatchState{
 		s: srv, r: httptest.NewRequest("POST", "/v1/chat/completions", nil),

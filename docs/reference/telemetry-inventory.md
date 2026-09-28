@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-15 · commit `dfe0260c6`
+> Last updated: 2026-09-28 · commit `0bd16a9fa`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -16,7 +16,7 @@ design and failure modes are in [`../architecture/telemetry.md`](../architecture
 | Coordinator-emitted telemetry events → slog + in-process counter + Datadog Logs API | live |
 | Per-request rows (`inference_routes`, `request_rejections`, `usage`, `request_profiles`) and 60 s `fleet_snapshots` | live |
 | DogStatsD / HTTPS series metrics from request handling, routing, billing, cache | live |
-| Provider or console client telemetry events (`POST /v1/telemetry/events`) | retired — `telemetry_ingest_disabled`, body never read ([retired paths](#retired-paths-that-emit-nothing)); provider and console facades are no-ops |
+| Provider or console client telemetry events (`POST /v1/telemetry/events`) | retired — the coordinator route is gone (404) ([retired paths](#retired-paths-that-emit-nothing)); provider and console facades are no-ops |
 | `telemetry_events` table | removed |
 | Datadog APM spans | tracer is started (`ddtracer.Start`) but no code creates spans; `dd.trace_id`/`dd.span_id` therefore never appear in logs |
 
@@ -38,12 +38,12 @@ Producer: the Swift provider over the `GET /ws/provider` WebSocket. Consumer:
 | `slots[].paged_storage` | `heartbeat` | `PagedKVPool.segmentStorageSnapshot` on the engine queue; `PagedStorageTelemetryAdapter` preserves capture sequence/time through heartbeat polling | `recordPagedStorageTelemetry` (`coordinator/api/provider_paged_storage_telemetry.go`), after registry clone/clamp and sample freshness reconciliation | live registry baseline and Datadog; no admission changes or new Postgres columns |
 | `backend_capacity.telemetry.process_memory` | `heartbeat` | `ProcessMemoryTelemetrySampler` at coherent provider capacity refresh; heartbeat stamps preserve capture sequence and age | `recordProcessMemoryTelemetry` (`coordinator/api/provider_process_memory_telemetry.go`) after accepted registry replacement and freshness reconciliation | live registry baseline and Datadog; no routing authority or new Postgres columns |
 | GPU memory and `mlx_cache_reclaimer` | `heartbeat` | same | `recordMLXCacheTelemetry` (`coordinator/api/provider_mlx_cache_telemetry.go`) → histograms (DogStatsD-only) or latest-value gauges (HTTPS), and counter deltas tagged `chip_family`, `provider_version` | Datadog |
-| `prefix_cache_statuses`, `prefix_cache_donation_outcomes`, `prefix_cache_v2_models` | `register`, `heartbeat` | same | registry exact-cache state; `exact_cache.*` gauges; `routing.cache_telemetry_rejected{source:heartbeat}` on validation failure | memory |
+| `prefix_cache_statuses`, `prefix_cache_donation_outcomes`, `prefix_cache_v2_models` | `register`, `heartbeat` | same | registry exact-cache state; `exact_cache.*` gauges; `routing.cache_telemetry_rejected{source:heartbeat}` on validation failure. `prefix_cache_donation_outcomes` aggregates 23 known outcomes including `skipped_novel` (`PrefixCacheDonationOutcomes`, `coordinator/registry/cache_eligibility.go`); unknown future outcomes are dropped entry-wise | memory |
 | `apns_device_token`, `apns_environment` | `register`, `heartbeat` | when changed | code-attestation re-arm (`maybeRearmCodeAttest`) | memory |
 | `usage`, `stop_sequence`, `response_hash`, `se_signature` | `inference_complete` | per attempt | `handleComplete` → `inference_routes` outcome columns, `usage` row, billing; `inference.completions`, `inference.ttft_ms`, `inference.decode_tps` | `inference_routes`/`usage` unbounded |
 | `error`, `status_code`, `error_reason`, `failure_code`, `terminal_cause`, `attempt_usage`, capacity fields | `inference_error` | per failed attempt | `sanitizeProviderInferenceError` then `handleInferenceError` → route outcome, `inference.typed_terminal{cause}`, `inference.typed_terminal_unknown_cause`, `inference.invalid_failure_code`; classification in [`../architecture/request-outcome-observability.md`](../architecture/request-outcome-observability.md) | `inference_routes` unbounded |
 | `profile` (on both terminals) | `inference_complete`, `inference_error` | per attempt, ≤ `MaxInferenceProfileBytes` ([`protocol-messages.md#inference_complete`](protocol-messages.md#inference_complete)) | raw bytes retained on the attempt, decoded on the profile-sink worker → `request_profiles`; `profiler.provider_profile{valid, reason}` | `request_profiles` retention ([below](#coordinator-per-request-records-postgres)) |
-| `cache_stage_ms` and prefix-cache receipts | `inference_complete.usage`, `prefix_cache_lookup*`, `prefix_cache_ready*` | per attempt | `routing.cache_stage_ms`, `routing.cache_lookup_receipt`, `routing.cache_ready_receipt`, `routing.cache_receipt_rejected`, `exact_cache.*` | Datadog |
+| `cache_stage_ms` and prefix-cache receipts | `inference_complete.usage`, `prefix_cache_lookup*`, `prefix_cache_ready*` | per attempt | `routing.cache_stage_ms`, `routing.cache_lookup_receipt`, `routing.cache_ready_receipt`, `routing.cache_receipt_rejected`, `exact_cache.*`. A receipt mismatch opens or escalates a proof fence, reported by the gauges `exact_cache.fence` tagged `event:applied` or `event:expired` and `exact_cache.fenced_capabilities` (Prometheus `exact_cache_fence{event}`, `exact_cache_fenced_capabilities`; `emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`). Holder removals are `exact_cache.holder_removed` tagged `reason`, including `reason:shorter_hit` for a hit below a recorded boundary (Prometheus `exact_cache_holder_removed{reason}`). The observed-demand index reports `exact_cache.demand_entries` and `exact_cache.demand_cap_evictions` (Prometheus `exact_cache_demand_entries`, `exact_cache_demand_cap_evictions`) | Datadog |
 | `capacity_quote` | reply to `capacity_probe` | per probed request, within `capacityProbeWindow` ([`../architecture/routing.md#entry-points`](../architecture/routing.md#entry-points)) | `Registry.HandleCapacityQuote` — ledger drift correction | memory |
 | Disconnect | WebSocket close / read error | per session | `ws.disconnects{reason:peer_close, code}` or `{reason:read_error|read_error_control_frame}`; `provider.oom_suspected` when `ClassifyDisconnectReason` (`coordinator/registry/disconnect_classify.go`) sees `memory_pressure ≥ 0.90`, or `≥ 0.80` with in-flight work; `provider_sessions.disconnect_reason` via `CloseProviderSession` (`oom_suspected`, `ws_close_<code>`, `read_error`, `read_error_control_frame`, sweep default `disconnect`) | `provider_sessions` unbounded |
 | `darkbloom report` log bundle | `POST /v1/provider/log-report` (`handleUploadLogReport`, `coordinator/api/log_report_handlers.go`) | operator-initiated | `provider_log_reports`, ≤ 10 MiB (`maxLogReportBodySize`); `?serial` → `426` | unbounded |
@@ -73,7 +73,7 @@ lists every name).
 | `provider.mlx_cache.sweep_signals`, `.reclaims`, `.reclaimed_bytes` | count | `chip_family`, `provider_version` | positive deltas from the previous accepted snapshot; first observation/reset contributes no delta (`ddCountDelta`) |
 | `provider.prefix_cache.sample_age_ms`, `.sample_fresh` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | `chip_family`, `provider_version`, `cache_kind` | Every accepted instrumented slot heartbeat; fresh means age ≤ five minutes (`recordPrefixCacheTelemetry`) |
 | `provider.prefix_cache.entries`, `.disk_bytes`, `.staging_bytes`, `.staging_peak_bytes` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | same | A new fresh store observation; peak is complete-store only |
-| `provider.prefix_cache.stages`, `.files_written`, `.written_bytes`, `.donation_drops`, `.corrupt_drops`, `.evictions`, `.ttl_expired` | count | same | Positive store-lifetime counter deltas; first observation/reload/reset/missing baseline contributes no count (`recordPrefixCacheTelemetry`). Complete `.donation_drops` covers queued-write `writesDropped`, while prequeue refusals use donation outcome telemetry |
+| `provider.prefix_cache.stages`, `.files_written`, `.written_bytes`, `.donation_drops`, `.corrupt_drops`, `.evictions`, `.ttl_expired`, `.recurrent_capture_disarmed_packed` | count | same | Positive store-lifetime counter deltas; first observation/reload/reset/missing baseline contributes no count (`recordPrefixCacheTelemetry`). Complete `.donation_drops` covers queued-write `writesDropped`, while prequeue refusals use donation outcome telemetry |
 | `provider.prefix_cache.files_read`, `.read_bytes`, `.stage_read_bytes`, `.donation_read_bytes`, `.stage_duration_us`, `.write_duration_us` | count | same | Complete-store deltas only; duration counters sum elapsed microseconds, never request-latency distributions |
 | `provider.prefix_cache.sweep.ttl_expired`, `.budget_evicted`, `.temp_removed` | count | `chip_family`, `provider_version` | Whole-root maintenance deltas across all models, including unloaded stores; distinct from active-store eviction counters |
 | `provider.paged_storage.sample_age_ms`, `.sample_fresh` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | `chip_family`, `provider_version` | Each accepted instrumented slot heartbeat; Swift producer preserves native capture age (`recordPagedStorageTelemetry`, `coordinator/api/provider_paged_storage_telemetry.go`) |
@@ -93,7 +93,7 @@ lists every name).
 | `routing.cache_telemetry_rejected`, `routing.cache_capability_rejected` | count | `source:heartbeat` | heartbeat prefix-cache payload failed validation |
 | `inference.unknown_request_frames` | count | `kind:chunk`, `complete`, `duplicate_complete`, `error`, `duplicate_error` | frame for an unknown or already-closed request |
 | `routing.throughput_anomaly` | count | `model`, `chip_family` | observed vs advertised throughput divergence (`coordinator/api/throughput_anomaly.go`); mirrored to the in-process registry |
-| `provider_version_below_minimum` (no `provider.` prefix) | count | `gate:registration`, `challenge_revalidation`, `manifest_sync`; `version` | provider below `EIGENINFERENCE_MIN_PROVIDER_VERSION` at one of the three gates |
+| `provider_version_below_minimum` (no `provider.` prefix) | count | `gate:registration`, `challenge_revalidation`, `manifest_sync`; `version` (`version:unknown` when the provider reported none) | provider below `EIGENINFERENCE_MIN_PROVIDER_VERSION` (or version-less while a floor is set) at one of the three gates |
 | `provider.load_model_status_rejected` | count | `reason:invalid_status`, `no_pending_command` | `load_model_status` frame that did not match an outstanding `load_model` |
 | `attestation.challenges_sent`, `attestation.challenges` (`outcome:passed`, `failed`, `status_sig_missing`, `status_sig_failed`), `attestation.failures{reason}`, `attestation.force_reconnect{reason}` | count | as listed | SE challenge lifecycle per provider session |
 
@@ -265,15 +265,16 @@ two profiler tables: [`../architecture/system-profiler.md`](../architecture/syst
 | Component | State |
 |---|---|
 | `TelemetryClient.emit` (`provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift`) | discards the event; `configure` logs that client telemetry is disabled |
-| `TelemetryOverflowQueue` (`provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift`) | `push` discards, `drain` returns `[]`, `purge` deletes the legacy `telemetry-queue.jsonl` |
+| `TelemetryOverflowQueue` (`provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift`) | `purge` deletes the legacy `telemetry-queue.jsonl` |
 | Console `emit`, `installGlobalHandlers` (`console-ui/src/lib/telemetry.ts`) | no-ops |
-| `POST /v1/telemetry/events` (`handleTelemetryIngest`) and console `POST /api/telemetry` (`console-ui/src/app/api/telemetry/route.ts`) | `telemetry_ingest_disabled` ([`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1)); body never read |
+| Coordinator `POST /v1/telemetry/events` | not registered; 404 |
+| Console `POST /api/telemetry` (`console-ui/src/app/api/telemetry/route.ts`) | `telemetry_ingest_disabled` (410); body never read |
 | `telemetry_events` table | dropped; the migration slice in `coordinator/store/postgres.go` keeps only a "Telemetry events table + indices removed" comment, and `TelemetryStore` (`coordinator/store/interface_domains.go`) has no method that writes an event |
 
 ## Related
 
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — mechanism, invariants, failure modes
-- [`telemetry-schema.md`](telemetry-schema.md) — event contract and allowlist
+- [`telemetry-schema.md`](telemetry-schema.md) — event contract and its Go/Swift/TypeScript mirrors
 - [`protocol-messages.md`](protocol-messages.md) — heartbeat and terminal field tables
 - [`../architecture/system-profiler.md`](../architecture/system-profiler.md) — `profile`, `request_profiles`, `fleet_snapshots`
 - [`../architecture/request-outcome-observability.md`](../architecture/request-outcome-observability.md) — outcome vocabularies behind the request metrics

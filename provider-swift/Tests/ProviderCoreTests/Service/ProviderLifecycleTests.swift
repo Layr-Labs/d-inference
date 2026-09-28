@@ -9,7 +9,7 @@ private func lifecycleLoop() async throws -> (ProviderLoop, URL) {
         chipTier: .max, memoryGb: 128, memoryAvailableGb: 124,
         cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4), gpuCores: 40, memoryBandwidthGbs: 546)
     let loop = try ProviderLoop(config: ProviderLoopConfig(coordinatorURL: "ws://127.0.0.1:0/unused",
-        hardware: hardware, models: [], config: ProviderConfig(provider: ProviderSettings(name: "lifecycle-test"))), purgeLegacyFiles: false, attestationSigner: nil)
+        hardware: hardware, models: [], config: ProviderConfig(provider: ProviderSettings(name: "lifecycle-test"))), attestationSigner: nil)
     await loop.setDaemonStateFileForTesting(root.appendingPathComponent("state.json"))
     return (loop, root)
 }

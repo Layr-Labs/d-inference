@@ -49,11 +49,8 @@ public enum CoordinatorClientCodec {
             version: version,
             publicKey: config.publicKey,
             encryptedResponseChunks: true,
-            walletAddress: config.walletAddress,
             attestation: config.registrationAttestation(),
             authToken: config.authToken,
-            pythonHash: config.runtimeHashes?.pythonHash,
-            runtimeHash: config.runtimeHashes?.runtimeHash,
             templateHashes: config.runtimeHashes?.templateHashes ?? [:],
             privacyCapabilities: privacyCapabilities,
             runtimeCapabilities: config.runtimeCapabilities.sorted(),
@@ -186,8 +183,6 @@ public enum CoordinatorClientCodec {
                 secureBootEnabled: payload.secureBootEnabled,
                 binaryHash: payload.binaryHash,
                 activeModelHash: payload.activeModelHash,
-                pythonHash: payload.pythonHash,
-                runtimeHash: payload.runtimeHash,
                 templateHashes: payload.templateHashes,
                 modelHashes: payload.modelHashes
             ))

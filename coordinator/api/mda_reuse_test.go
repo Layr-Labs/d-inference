@@ -215,9 +215,9 @@ func TestStageDurableMDAChain_LiveStoreReusedAcrossReconnect(t *testing.T) {
 
 	// The reuse must persist the chain under THIS session's record, so a later
 	// reconnect can reuse it again instead of re-hitting Apple's rate limit. Look
-	// it up by serial (which now indexes this session) and confirm the chain is
-	// durable.
-	rec, err := mem.GetProviderBySerial(context.Background(), serial)
+	// up the newest record for the serial (this session's) and confirm the chain
+	// is durable.
+	rec, err := mem.GetProviderForRestore(context.Background(), serial, "", nil)
 	if err != nil || rec == nil {
 		t.Fatalf("expected a persisted record for serial after reuse: %v", err)
 	}

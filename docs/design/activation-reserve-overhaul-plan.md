@@ -1,8 +1,8 @@
 # Activation reserve overhaul — plan
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-27 · commit `eafeab723`
 
-Status: **In progress** — 2026-08-30 — Phase 1 (`measuredActivationFloorsBytes`, `provider-swift/Sources/ProviderCore/Inference/UnifiedMemoryCap.swift`) and a narrowed Phase 3a (`servabilityMeasuredResidentGiB`, `coordinator/registry/servability.go`) are in v0.8.16; Phase 2's qwen floor and Phase 3b's default retune are not built; as built: [`../architecture/hardware-support.md`](../architecture/hardware-support.md#constants).
+Status: **In progress** — 2026-08-30 — Phase 1 (`measuredActivationFloorsBytes`, `provider-swift/Sources/ProviderCore/Inference/UnifiedMemoryCap.swift`) and a narrowed Phase 3a (`servabilityMeasuredResidentGiB`, `coordinator/registry/servability.go`) are in v0.8.16; Phase 2's qwen floor and Phase 3b's default retune are not built; the coordinator's v0.8.16 gate (`servabilityPerModelFloorMinVersion`) was removed 2026-09-27 once the routing floor passed it; as built: [`../architecture/hardware-support.md`](../architecture/hardware-support.md#constants).
 
 Fixes the over-reservation class that leaves machines online but unable to load (or
 serve) models they should fit: issue #653 (the 32 GB gpt-oss flap band, and the

@@ -160,34 +160,13 @@ func TestPostgresCreditIsOneRoundTripAndByteIdentical(t *testing.T) {
 	}
 }
 
-// TestPostgresTransactionalCreditCallersUseOneStatement covers the callers
-// that keep their own transaction around the credit: the credit inside it is
-// now one statement, so CreditProviderWallet is BEGIN + credit + payout row +
-// COMMIT and CreditWithdrawableOnce is BEGIN + advisory lock + existence
-// check + credit + COMMIT (the duplicate skips the credit).
+// TestPostgresTransactionalCreditCallersUseOneStatement covers the caller
+// that keeps its own transaction around the credit: the credit inside it is
+// one statement, so CreditWithdrawableOnce is BEGIN + advisory lock +
+// existence check + credit + COMMIT (the duplicate skips the credit).
 func TestPostgresTransactionalCreditCallersUseOneStatement(t *testing.T) {
 	counter := &statementCounter{}
 	s := tracedPostgresStore(t, counter)
-
-	wallet := uniqueID("wallet")
-	fixedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	counter.reset()
-	if err := s.CreditProviderWallet(&ProviderPayout{ProviderAddress: wallet, AmountMicroUSD: 700, Model: "m", JobID: uniqueID("job"), Timestamp: fixedAt}); err != nil {
-		t.Fatalf("CreditProviderWallet: %v", err)
-	}
-	if q, _, _ := counter.snapshot(); q != 4 {
-		t.Fatalf("CreditProviderWallet: %d statements, want 4 (BEGIN, credit, payout, COMMIT)", q)
-	}
-	// The caller's timestamp must reach the ledger row ($5 binding), not NOW().
-	if entries := s.LedgerHistory(wallet); len(entries) != 1 || !entries[0].CreatedAt.Equal(fixedAt) {
-		t.Fatalf("wallet ledger created_at = %v, want %v", entries, fixedAt)
-	}
-	if b, w := s.GetBalanceWithWithdrawable(wallet); b != 700 || w != 700 {
-		t.Fatalf("wallet balance/withdrawable = (%d,%d), want (700,700)", b, w)
-	}
-	if rows := ledgerShapes(s, wallet); len(rows) != 1 || rows[0].Type != LedgerPayout || rows[0].Amount != 700 || rows[0].After != 700 {
-		t.Fatalf("wallet ledger = %+v", rows)
-	}
 
 	acct, ref := uniqueID("once"), uniqueID("ref")
 	counter.reset()

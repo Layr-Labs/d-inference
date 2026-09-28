@@ -90,6 +90,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// False only for remote requests from a legacy/malformed coordinator
     /// that did not provide an authenticated outer cache scope.
     private let cacheEnabled: Bool
+    /// Coordinator repeat-demand hint for the complete-checkpoint write gate
+    /// (`cache_repeated_prefix_tokens`). Nil for local HTTP, tests and older
+    /// coordinators: the store then writes every captured checkpoint.
+    private let donationDemand: SSDCheckpointDonationDemand?
     /// Per-request usage-detail signal: the bridge
     /// records the engine's terminal matched/saved token detail here so the
     /// caller's frames loop can splice OpenAI-standard
@@ -134,6 +138,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         templateControls: ChatTemplateControls = .init(),
         cacheScope: String = "",
         cacheEnabled: Bool = true,
+        donationDemand: SSDCheckpointDonationDemand? = nil,
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
         engineV2Sampling: EngineV2SamplingOverrides? = nil,
         engineV2Vision: EngineV2VisionPlumbing? = nil,
@@ -151,6 +156,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.cacheScope = cacheScope
         self.nativeLocalCacheScope = nil
         self.cacheEnabled = cacheEnabled
+        self.donationDemand = donationDemand
         self.engineV2Logprobs = engineV2Logprobs
         self.engineV2Sampling = engineV2Sampling
         self.engineV2Vision = engineV2Vision
@@ -194,6 +200,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.cacheScope = ""
         self.nativeLocalCacheScope = nativeLocalCacheScope
         self.cacheEnabled = true
+        self.donationDemand = nil
         // The --local path serves SSE frames inside the upstream router, so
         // there is no provider seam to decorate frames with logprobs on this
         // init (same visible behavior as the legacy engine: none emitted).
@@ -521,6 +528,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         multimodal: visionPrepared.multimodalInput(),
                         hybridPrefixIdentity: mediaPrefixIdentity,
                         mediaKind: visionPrepared.mediaKind,
+                        donationDemand: donationDemand,
                         firstContentDeadline: firstContentDeadline,
                         profile: profile
                     )
@@ -736,6 +744,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     logprobsChannel: engineV2Logprobs?.channel,
                     usageSignal: requestUsage,
                     tokenConstraint: tokenConstraint,
+                    donationDemand: donationDemand,
                     firstContentDeadline: firstContentDeadline,
                     profile: profile
                 )
@@ -959,9 +968,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             severity: .error)
                     }
                     await releaseBox.fire()
-                    // P2 #6: parse the scheduler's structured error
-                    // prefix (`token_budget_exhausted: ...`, `... queue
-                    // full`, `timed out waiting for capacity`, etc.)
+                    // P2 #6: parse the bridge's structured error prefix
+                    // (`token_budget_exhausted: ...`, `... queue full`,
+                    // `multimodal_rejected: ...`, etc.)
                     // into a typed error so the status mapper can
                     // return 429/503 instead of collapsing every
                     // admission failure into 500.

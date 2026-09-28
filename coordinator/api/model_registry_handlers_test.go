@@ -414,8 +414,8 @@ func TestRegisteringNewVersionPreservesRetiredStatus(t *testing.T) {
 	if err := st.PromoteModelVersion(entry.ID, "v2"); err != nil {
 		t.Fatal(err)
 	}
-	if active := st.ListActiveModelRegistry(); len(active) != 0 {
-		t.Fatalf("expected retired model to remain hidden after registering a new version, got %#v", active)
+	if active, err := st.ListActiveModelRegistryWithError(); err != nil || len(active) != 0 {
+		t.Fatalf("expected retired model to remain hidden after registering a new version, got %#v (err %v)", active, err)
 	}
 }
 

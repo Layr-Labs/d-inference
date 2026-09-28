@@ -112,12 +112,13 @@ struct ReportConfigPathTests {
     @Test func sudoReportReadsTheInvokingUsersConfig() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("report-home-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: home) }
-        let appSupport = home.appendingPathComponent("Library/Application Support/darkbloom")
-        try FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
-        let legacy = appSupport.appendingPathComponent("provider.toml")
-        try Data("[provider]\n".utf8).write(to: legacy)
-        #expect(ReportAppAttestEvidence.configPath(explicit: nil, invokingHome: home) == legacy.path)
         let xdg = home.appendingPathComponent(".config/darkbloom/provider.toml")
+        // Retired locations are never consulted, whether or not the canonical
+        // file exists yet.
+        let retired = home.appendingPathComponent("Library/Application Support/darkbloom/provider.toml")
+        try FileManager.default.createDirectory(at: retired.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("[provider]\n".utf8).write(to: retired)
+        #expect(ReportAppAttestEvidence.configPath(explicit: nil, invokingHome: home) == xdg.path)
         try FileManager.default.createDirectory(at: xdg.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("[provider]\n".utf8).write(to: xdg)
         #expect(ReportAppAttestEvidence.configPath(explicit: nil, invokingHome: home) == xdg.path)

@@ -67,8 +67,6 @@ extension ProviderLoop {
                 secureBootEnabled: response.secureBootEnabled,
                 binaryHash: response.binaryHash,
                 activeModelHash: response.activeModelHash,
-                pythonHash: response.pythonHash,
-                runtimeHash: response.runtimeHash,
                 templateHashes: response.templateHashes,
                 modelHashes: response.modelHashes
             )))

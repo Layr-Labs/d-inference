@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-27 · commit `e8d00933d`
+> Last updated: 2026-09-27 · commit `eafeab723`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -146,7 +146,7 @@ flowchart TD
     C -->|ttft_ceiling| X5[tallyGate]
     C --> D[applyCacheRoutingCost]
     D --> P[pool narrowing: prefer owner, avoid version, min decode TPS]
-    P --> SEL[selectRoutingCandidateWithAffinity: unique_min / tie_queue / tie_pending / random / prefix_affinity]
+    P --> SEL[selectRoutingCandidateWithAffinity: unique_min / tie_queue / tie_pending / random / prefix_affinity / cache_credit]
     SEL --> PLAN[dispatch plan: winner + alternates]
     PLAN --> DISP[dispatch to winner]
     DISP -->|no first content by speculativeAt| H[runSpeculative: hedge governor + backup]
@@ -403,23 +403,27 @@ leaves at least one candidate (`scanCandidatesLocked`):
 (`coordinator/registry/candidate_selection.go`):
 
 1. **Best cost.** The minimum `costMs`.
-2. **Cost ties.** When any candidate has a cache credit or restore penalty, keep only
-   exact minimum-cost candidates. Otherwise keep every candidate within
-   `nearTieCostWindowMs` ([cost model](#cost-model)), preserving ordinary load
-   spreading. Among the retained candidates choose the lowest `effectiveQueue`,
-   then the lowest `totalPending`.
+2. **Cost ties.** Every candidate within `nearTieCostWindowMs`
+   ([cost model](#cost-model)) of the minimum is retained; a candidate with a
+   restore penalty is retained only at the exact minimum. If the retained set
+   has more than one member and any carries a cache credit, the cheapest
+   credited candidate wins (`cache_credit`; ranking in
+   [cache-aware routing](cache-aware-routing.md#scheduler)); otherwise choose
+   the lowest `effectiveQueue`, then the lowest `totalPending`.
 3. **Equivalents.** More than one candidate sharing the retained cost range,
    queue and pending count normally resolves uniformly by `random`. With active
-   cache routing, observed repeat demand and no cache cost adjustment in the
-   pool, a stable keyed ranking prefers a matching, non-quarantined cache
+   cache routing and observed repeat demand, a stable keyed ranking prefers a
+   matching, non-quarantined cache
    capability (`prefix_affinity`). See [cache affinity](cache-aware-routing.md#observed-demand-and-soft-prefix-affinity).
-4. **Path label**: `unique_min` when only one candidate is retained;
+4. **Path label**: `cache_credit` when a credited candidate wins a retained set
+   of more than one member; `unique_min` when only one candidate is retained;
    `tie_pending` when pending count decides between equal queue depths;
    otherwise `tie_queue`. Equivalent choices use `random` or `prefix_affinity`
    under the conditions above; an empty pool uses `none`.
 
 `SelectionPath` values (`coordinator/registry/gate_reason.go`): `none`,
-`unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`. Historical profiler rows may
+`unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`,
+`cache_credit`. Historical profiler rows may
 still contain the retired `cache_tiebreak` string. The
 runner-up (the lowest-cost candidate other than the winner) is recorded for telemetry
 and as the first alternate in the dispatch plan.
@@ -493,7 +497,7 @@ A provider's structural budget (`snapshotStructuralBudget`) is its reported
 resident it is `coldTokenBudgetEstimate`:
 
 ```text
-weightsGiB   = measured resident GiB (version ≥ 0.8.16 and model in table) else catalogGB × coldLoadCatalogGBToMemGiB
+weightsGiB   = measured resident GiB (model in servabilityMeasuredResidentGiB) else catalogGB × coldLoadCatalogGBToMemGiB
 postLoadGiB  = servabilityCapFraction × totalMemoryGB − weightsGiB        # mirrors the provider cap fraction
 tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  # kvCacheBytesPerToken when unreported
 ```
@@ -503,14 +507,13 @@ tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  #
 `servabilityActivationFloorGB` and `servabilityModelActivationFloorsGB` mirror
 the provider's `UnifiedMemoryCap` constants, whose values are stated once in
 [`hardware-support.md`](hardware-support.md#constants); the two tables move in
-the same commit. The activation floor is version-gated
-(`servabilityActivationFloor`):
-
-| Provider version | Floor |
-|---|---|
-| empty or `< 0.8.0` (`servabilityActivationFloorMinVersion = "0.8.0"`) | `servabilityLegacyActivationFloorGB = 3.0` |
-| `< 0.8.16` (`servabilityPerModelFloorMinVersion = "0.8.16"`) | `servabilityActivationFloorGB` |
-| `≥ 0.8.16` | per-model table, else `servabilityActivationFloorGB` |
+the same commit. The activation floor (`servabilityActivationFloor`) is the
+model's entry in `servabilityModelActivationFloorsGB`, else
+`servabilityActivationFloorGB`. Neither term depends on the provider version:
+they mirror the per-model reserve that v0.8.16 and later providers hold, and
+older providers are expected to sit below the routing floor
+(`EIGENINFERENCE_MIN_PROVIDER_VERSION`,
+[`configuration.md`](../reference/configuration.md#release-policy-version-floor-and-binary-hashes)).
 
 Per-model tables (`coordinator/registry/servability.go`):
 

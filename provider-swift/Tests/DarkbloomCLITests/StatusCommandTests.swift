@@ -17,6 +17,26 @@ func bootSecurityStatusLine() throws {
     #expect(passing.contains("[PASS]"))
 }
 
+@Test("status withholds load-memory verdict from stale or legacy daemon snapshots")
+func statusLoadReadinessUsesFreshDaemonSnapshot() {
+    let model = ModelInfo(id: "qwen", sizeBytes: 1, estimatedMemoryGb: 18.2)
+    let state = DaemonState(
+        pid: 123, version: "0.9.10", writtenAt: 100, startedAt: 50,
+        capacity: .init(totalMemoryGb: 48, gpuMemoryActiveGb: 0,
+                        loadUsableGb: 14.3, loadHeadroomGb: 6.5))
+    let current = Status.liveLoadReadiness(
+        state: state, models: [model], now: 101, heartbeatIntervalSecs: 5)
+    #expect(abs((current["qwen"]?.shortfallGb ?? 0) - 10.4) < 0.0001)
+    #expect(Status.liveLoadReadiness(
+        state: state, models: [model], now: 120,
+        heartbeatIntervalSecs: 5).isEmpty)
+    var legacy = state
+    legacy.capacity?.loadUsableGb = nil
+    #expect(Status.liveLoadReadiness(
+        state: legacy, models: [model], now: 101,
+        heartbeatIntervalSecs: 5).isEmpty)
+}
+
 /// The daemon line has been wrong in both directions: once calling a
 /// 30-second-old snapshot healthy while the slot-posture block fourteen
 /// lines below called the same file STALE, and once calling an 11-second

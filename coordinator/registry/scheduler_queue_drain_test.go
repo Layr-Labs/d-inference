@@ -54,13 +54,13 @@ func TestDrainQueuedRequestsPopulatesDecision(t *testing.T) {
 	}
 }
 
-func TestDrainQueuedRequestsForProvider(t *testing.T) {
+func TestDrainQueuedRequestsForProviderWithReason(t *testing.T) {
 	reg := New(testLogger())
 	model := "attest-drain-model"
 	p := makeSchedulerProvider(t, reg, "p1", model, 90)
 
 	// nil provider is a safe no-op (never panics).
-	reg.DrainQueuedRequestsForProvider(nil)
+	reg.DrainQueuedRequestsForProviderWithReason(nil, DrainTriggerUnknown)
 
 	req := &QueuedRequest{
 		RequestID:  "queued-attest",
@@ -79,7 +79,7 @@ func TestDrainQueuedRequestsForProvider(t *testing.T) {
 
 	// Draining by provider (as on a CodeAttested flip) must dispatch the queued
 	// request to that provider's model without waiting for a heartbeat.
-	reg.DrainQueuedRequestsForProvider(p)
+	reg.DrainQueuedRequestsForProviderWithReason(p, DrainTriggerUnknown)
 
 	select {
 	case assigned := <-req.ResponseCh:

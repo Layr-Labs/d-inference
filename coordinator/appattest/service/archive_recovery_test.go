@@ -34,14 +34,15 @@ func TestQueuedAssertionCannotAbsorbLaterInboxDrop(t *testing.T) {
 		t.Fatal(err)
 	}
 	x := &Session{s: &Service{store: st, config: Config{AppID: "TEST.app", Environment: "production"}},
-		provider: p, in: make(chan protocol.AppAttestShadowPayload, 1), id: "session", owner: "owner", publicKey: endpoint,
+		provider: p, in: make(chan protocol.AppAttestShadowPayload, 1), id: "session", owner: "owner", publicKey: endpoint, protocolVersion: 3,
 		challenge: "challenge-a", expected: "assertion", key: &record, store: st, archive: st,
 		verifier: appattest.New(appattest.Policy{AppID: "TEST.app", Environment: "production"})}
 	proof := func(counter byte) protocol.AppAttestShadowPayload {
 		t.Helper()
 		rp := sha256.Sum256([]byte("TEST.app"))
 		auth := append(append([]byte{}, rp[:]...), 0, 0, 0, 0, counter)
-		hash := protocol.AppAttestShadowHash("assert", x.id, "production", record.KeyID, x.challenge, x.publicKey)
+		status := testShadowStatus()
+		hash := testAssertionHash(x, record.KeyID, status)
 		signed := sha256.Sum256(append(auth, hash[:]...))
 		signed = sha256.Sum256(signed[:])
 		signature, err := ecdsa.SignASN1(rand.Reader, key, signed[:])
@@ -53,7 +54,7 @@ func TestQueuedAssertionCannotAbsorbLaterInboxDrop(t *testing.T) {
 			t.Fatal(err)
 		}
 		return protocol.AppAttestShadowPayload{Session: x.id, Action: "assertion", Result: "ok", KeyID: record.KeyID,
-			Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(body)}
+			Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(body), ProtocolVersion: 3, Status: status}
 	}
 	x.beginAssertionChallenge()
 	x.offer(proof(1)) // A waits in the one-slot inbox.

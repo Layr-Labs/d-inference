@@ -46,8 +46,10 @@ RUN test -n "$BUILD_VERSION" && test -n "$BUILD_COMMIT" && test -n "$BUILD_DATE"
         -X github.com/eigeninference/d-inference/coordinator/telemetry.CoordinatorVersion=$BUILD_VERSION" \
       -o /app/coordinator-bin ./coordinator/cmd/coordinator
 
-# Pre-built base with MicroMDM v1.13.1 (also carries step-ca/step CLI, unused
-# since the dormant ACME device-attest leg was removed).
+# Pre-built base with MicroMDM v1.13.1. The pinned digest still carries the
+# step-ca/step CLI binaries, unused since the ACME device-attest leg was
+# removed; Dockerfile.base no longer installs them, so the next base rebuild
+# (and re-pin of this digest) drops them.
 # Rebuild base only when tool versions change: docker build -f Dockerfile.base -t eigengajesh/d-inference-base:latest . && docker push
 FROM eigengajesh/d-inference-base:v1-amd64@sha256:4ea05ea089ac61f8d5999f175fbfaeb20171f74cf721dac7ce278a4f28fe9671
 ARG BUILD_VERSION=dev

@@ -15,7 +15,6 @@ type MachineRewardStore interface {
 	GetMachineRewardBindings(context.Context, []string) (map[string]MachineRewardBinding, error)
 	SumProviderEarningsByKeysForAccount(context.Context, string, []string, time.Time, time.Time) (int64, error)
 	SettleMachineFloorDraw(context.Context, string, *ProviderFloorDraw) (bool, error)
-	SettleProviderFloorDrawForSession(context.Context, string, *ProviderFloorDraw) (bool, error)
 }
 
 type MachineRewardBinding struct {

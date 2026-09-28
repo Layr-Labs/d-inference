@@ -26,7 +26,7 @@ private func switchLoop(url: String = "ws://127.0.0.1:0/unused", initialConfig: 
     let loop = try ProviderLoop(config: .init(coordinatorURL: url, hardware: switchHardware(),
         models: [switchModel("old-model")], config: config,
         modelHashes: ["old-model": switchModel("old-model").weightHash!], configPath: configPath),
-        purgeLegacyFiles: false, attestationSigner: nil)
+        attestationSigner: nil)
     await loop.setDaemonStateFileForTesting(root.appendingPathComponent("state.json"))
     await loop.isolateSwitchRuntime()
     return (loop, root)

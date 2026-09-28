@@ -14,6 +14,6 @@ struct Logout: AsyncParsableCommand {
 
         try AuthTokenStore.delete()
         print("Logged out. This machine is no longer linked to an account.")
-        print("Provider earnings will use the local wallet until you log in again.")
+        print("Provider earnings are not credited to an account until you log in again.")
     }
 }

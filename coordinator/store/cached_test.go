@@ -619,8 +619,8 @@ func TestCachedStoreForwardsProfilerMethods(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RecordRequestProfiles through the wrapper: %v", err)
 	}
-	if got := cached.RequestProfilesSince(time.Time{}); len(got) != 2 {
-		t.Fatalf("RequestProfilesSince(zero) = %d rows, want 2", len(got))
+	if got := cached.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{}); len(got) != 2 {
+		t.Fatalf("RequestProfilesSinceFiltered(zero) = %d rows, want 2", len(got))
 	}
 	if got := cached.RequestProfilesSinceFiltered(recent.Add(-time.Minute), RequestProfileFilter{}); len(got) != 1 || got[0].RequestID != "req-new" {
 		t.Fatalf("RequestProfilesSinceFiltered(recent) = %+v, want only req-new", got)
@@ -635,8 +635,8 @@ func TestCachedStoreForwardsProfilerMethods(t *testing.T) {
 		t.Fatalf("FleetSnapshotsSince(zero) = %d rows, want 2", len(got))
 	}
 	// The rows live in the inner store; the wrapper keeps nothing of its own.
-	if got := inner.RequestProfilesSince(time.Time{}); len(got) != 2 {
-		t.Fatalf("inner RequestProfilesSince = %d rows, want 2", len(got))
+	if got := inner.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{}); len(got) != 2 {
+		t.Fatalf("inner RequestProfilesSinceFiltered = %d rows, want 2", len(got))
 	}
 	if got := inner.FleetSnapshotsSince(time.Time{}); len(got) != 2 {
 		t.Fatalf("inner FleetSnapshotsSince = %d rows, want 2", len(got))
@@ -647,8 +647,8 @@ func TestCachedStoreForwardsProfilerMethods(t *testing.T) {
 	if err != nil || deleted != 2 {
 		t.Fatalf("PruneTelemetry through the wrapper = (%d, %v), want (2, nil)", deleted, err)
 	}
-	if got := cached.RequestProfilesSince(time.Time{}); len(got) != 1 || got[0].RequestID != "req-new" {
-		t.Fatalf("after prune RequestProfilesSince = %+v, want only req-new", got)
+	if got := cached.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{}); len(got) != 1 || got[0].RequestID != "req-new" {
+		t.Fatalf("after prune RequestProfilesSinceFiltered = %+v, want only req-new", got)
 	}
 	if got := cached.FleetSnapshotsSince(time.Time{}); len(got) != 1 || got[0].ProviderID != "p-new" {
 		t.Fatalf("after prune FleetSnapshotsSince = %+v, want only p-new", got)

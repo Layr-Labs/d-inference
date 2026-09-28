@@ -3,8 +3,7 @@
 // operator sees comes with a copyable command, a link, or clear guidance.
 //
 // INVARIANT: every warning id produced by computeWarnings() must have an entry
-// here. __tests__/provider-dashboard-fixes.test.ts enforces this so the
-// guarantee can't silently regress when a new warning is added.
+// here. Feature tests exercise the warning and its matching action together.
 
 export type FixKind = "command" | "link" | "guidance";
 
@@ -76,6 +75,12 @@ const FIX_TABLE: Record<string, FixAction> = {
     label: "Add an approved model",
     href: "/models",
     note: "Download a catalog model, then run `darkbloom restart`.",
+  },
+  model_load_memory: {
+    kind: "command",
+    label: "Check model load memory",
+    command: "darkbloom doctor",
+    note: "Free the cold-load shortfall shown for this Mac, rerun doctor, then retry a request for this model.",
   },
 
   // ── Degrading ──────────────────────────────────────────────────────────

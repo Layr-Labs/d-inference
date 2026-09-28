@@ -28,9 +28,6 @@ const (
 // maybeRequestKeyRotation runs on a ready reply for a known, owner-matched key.
 // It returns true only after durably recording a rotation request.
 func (x *Session) maybeRequestKeyRotation(ctx context.Context, key *store.AppAttestShadowKey) bool {
-	if x.protocolVersion < 2 {
-		return false
-	}
 	rotations, ok := store.As[store.AppAttestKeyRotationStore](x.s.store)
 	if !ok {
 		return false
@@ -145,7 +142,7 @@ func (x *Session) rotationRetryDue(failure string) bool {
 	if failure == "key_unregistered" && x.rotationRequested {
 		return true
 	}
-	if failure != "apple_error" || x.expected != "assertion" || x.key == nil || x.protocolVersion < 2 {
+	if failure != "apple_error" || x.expected != "assertion" || x.key == nil {
 		return false
 	}
 	rotations, ok := store.As[store.AppAttestKeyRotationStore](x.s.store)

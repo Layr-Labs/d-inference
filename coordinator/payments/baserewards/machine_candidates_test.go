@@ -63,9 +63,6 @@ func (s *machineEngineStore) SumProviderEarningsByKeysForAccount(_ context.Conte
 func (s *machineEngineStore) SettleMachineFloorDraw(ctx context.Context, machine string, draw *store.ProviderFloorDraw) (bool, error) {
 	return s.inner.SettleMachineFloorDraw(ctx, machine, draw)
 }
-func (s *machineEngineStore) SettleProviderFloorDrawForSession(ctx context.Context, session string, draw *store.ProviderFloorDraw) (bool, error) {
-	return s.inner.SettleProviderFloorDrawForSession(ctx, session, draw)
-}
 
 func addMachineRewardProvider(t *testing.T, st *machineEngineStore, reg *registry.Registry, id, endpoint, account, credential string) (*registry.Provider, string) {
 	t.Helper()
@@ -143,6 +140,9 @@ func TestAppAttestMachineRewardsPreserveEarlierLegacyFloor(t *testing.T) {
 	epoch, start, end, clock := closedEpoch()
 	st := &machineEngineStore{engineStore: newEngineStore()}
 	reg := registry.New(testLogger())
+	// The legacy floor was paid under the raw endpoint key before the machine
+	// inventory bound that key.
+	settlePriorFloor(t, st.inner, store.ProviderFloorDraw{ProviderKey: "legacy-key", AccountID: "account", EpochID: epoch, AmountMicroUSD: 123})
 	p, _ := addMachineRewardProvider(t, st, reg, "migrated", "legacy-key", "account", "apple")
 	// A hybrid connection has both paths; it still contributes one candidate.
 	p.Mu().Lock()
@@ -150,9 +150,6 @@ func TestAppAttestMachineRewardsPreserveEarlierLegacyFloor(t *testing.T) {
 	p.TrustLevel = registry.TrustHardware
 	p.Mu().Unlock()
 	st.sessions = []store.ProviderSession{fullUptimeSession(p.ID, "legacy-key", "serial", "account", start, end)}
-	if paid, err := st.SettleProviderFloorDraw(context.Background(), &store.ProviderFloorDraw{ProviderKey: "legacy-key", AccountID: "account", EpochID: epoch, AmountMicroUSD: 123}); err != nil || !paid {
-		t.Fatal("legacy setup", err)
-	}
 	e := newTestEngine(st, reg, clock)
 	result, err := e.SettleEpoch(context.Background(), epoch)
 	if err != nil || result.Settled != 0 || result.AlreadySettled != 1 {

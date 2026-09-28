@@ -140,7 +140,7 @@ private func makeUnwindLoop() throws -> ProviderLoop {
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    return try ProviderLoop(config: config, attestationSigner: nil)
 }
 
 private func sizing(weightsGiB: UInt64, kvRate: Int, maxContext: Int = 131_072) -> SlotSizingSnapshot {

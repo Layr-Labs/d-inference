@@ -116,6 +116,9 @@ func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T
 	if s.registry.ProviderDraining(p.ID) {
 		t.Fatal("matching provider readiness and capacity failed to resume admission")
 	}
+	// Resuming admission refreshes the Swift provider's desired_models
+	// snapshot before the receipt.
+	readReplacementFrame(t, ctx, peer, protocol.TypeDesiredModels, nil)
 	var resumed protocol.ModelsReplaceResumedMessage
 	readReplacementFrame(t, ctx, peer, protocol.TypeModelsReplaceResumed, &resumed)
 	if resumed.RequestID != "retry" || resumed.DrainRequestID != "reconcile" || resumed.CapacitySeq != 1 {
@@ -164,8 +167,10 @@ func TestModelsReplaceResumedReceiptCanBeRetriedAfterWriteFailure(t *testing.T) 
 	if s.registry.ProviderDraining(p.ID) {
 		t.Fatal("failed resumed-ack write re-fenced routing")
 	}
-	// An identical frame on this session resends only the receipt; it does not
-	// repeat the inventory or queue transition.
+	// The failed attempt still refreshed desired_models before its receipt
+	// write failed. An identical frame on this session resends only the
+	// receipt; it does not repeat the inventory, queue or desired transition.
+	readReplacementFrame(t, ctx, peer, protocol.TypeDesiredModels, nil)
 	s.handleModelsReplaceReady(ctx, p, ready)
 	var resumed protocol.ModelsReplaceResumedMessage
 	readReplacementFrame(t, ctx, peer, protocol.TypeModelsReplaceResumed, &resumed)
@@ -185,9 +190,6 @@ func TestModelsReplaceRefreshesDesiredSnapshotAfterAck(t *testing.T) {
 	for _, lineage := range []string{"previous", "retired", "deselected"} {
 		t.Run(lineage, func(t *testing.T) {
 			s, p, peer := dispatchAccountingProvider(t)
-			p.Mu().Lock()
-			p.Version = minProviderVersionForDesiredModels
-			p.Mu().Unlock()
 			s.registry.SetModelCatalog([]registry.CatalogEntry{
 				{ID: dispatchAccountingModel}, {ID: "desired"}, {ID: "previous"}, {ID: "selected"},
 				{ID: "protected", RequiredProviderCapabilities: []string{"unavailable"}},

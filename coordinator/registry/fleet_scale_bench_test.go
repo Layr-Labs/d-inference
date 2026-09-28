@@ -99,14 +99,12 @@ func buildBenchFleet(tb testing.TB, providers, models int) *benchFleet {
 			PublicKey:               benchFleetPublicKey,
 			EncryptedResponseChunks: true,
 			PrivacyCapabilities: &protocol.PrivacyCapabilities{
-				TextBackendInprocess:    true,
-				TextProxyDisabled:       true,
-				PythonRuntimeLocked:     true,
-				DangerousModulesBlocked: true,
-				SIPEnabled:              true,
-				AntiDebugEnabled:        true,
-				CoreDumpsDisabled:       true,
-				EnvScrubbed:             true,
+				TextBackendInprocess: true,
+				TextProxyDisabled:    true,
+				SIPEnabled:           true,
+				AntiDebugEnabled:     true,
+				CoreDumpsDisabled:    true,
+				EnvScrubbed:          true,
 			},
 		}
 		p := reg.Register(id, nil, msg)

@@ -30,7 +30,7 @@ func TestPostgresSeedKey(t *testing.T) {
 		t.Fatalf("SeedKey: %v", err)
 	}
 
-	if !s.ValidateKey("my-admin-key") {
+	if !keyAuthenticates(s, "my-admin-key") {
 		t.Error("seeded key should be valid")
 	}
 
@@ -40,8 +40,8 @@ func TestPostgresSeedKey(t *testing.T) {
 		t.Fatalf("SeedKey (duplicate): %v", err)
 	}
 
-	if s.KeyCount() != 1 {
-		t.Errorf("key count = %d, want 1", s.KeyCount())
+	if n := activeKeyCount(t, s, ""); n != 1 {
+		t.Errorf("key count = %d, want 1", n)
 	}
 }
 
@@ -211,9 +211,7 @@ func TestPostgresStripeWithdrawalCRUD(t *testing.T) {
 		Method:          "standard",
 		Status:          "pending",
 	}
-	if err := s.CreateStripeWithdrawal(wd); err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	seedStripeWithdrawal(t, s, wd)
 
 	// Round-trip by id.
 	got, err := s.GetStripeWithdrawal("wd-pg-1")
@@ -304,9 +302,7 @@ func TestPostgresStripeWithdrawalRefundFlag(t *testing.T) {
 		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 		Method: "standard", Status: "transferred", PayoutID: "po_rf",
 	}
-	if err := s.CreateStripeWithdrawal(wd); err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	seedStripeWithdrawal(t, s, wd)
 
 	wd.Status = "failed"
 	wd.Refunded = true
@@ -334,11 +330,16 @@ func TestPostgresStripeWithdrawalDuplicateIDRejected(t *testing.T) {
 		ID: "wd-dup", AccountID: "acct-pg-dup", StripeAccountID: "acct_dup",
 		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000, Method: "standard", Status: "pending",
 	}
-	if err := s.CreateStripeWithdrawal(wd); err != nil {
-		t.Fatalf("create #1: %v", err)
+	// Fund a second debit so the duplicate can only fail on its ID.
+	if err := s.CreditWithdrawable("acct-pg-dup", wd.AmountMicroUSD, LedgerPayout, "seed-extra:wd-dup"); err != nil {
+		t.Fatalf("seed: %v", err)
 	}
-	if err := s.CreateStripeWithdrawal(wd); err == nil {
+	seedStripeWithdrawal(t, s, wd)
+	if err := s.CreateStripeWithdrawalWithDebit(wd, LedgerStripePayout, "stripe_withdraw:wd-dup#2"); err == nil {
 		t.Fatal("expected duplicate ID to be rejected")
+	}
+	if bal := s.GetBalance("acct-pg-dup"); bal != wd.AmountMicroUSD {
+		t.Errorf("duplicate attempt moved the balance: %d, want %d", bal, wd.AmountMicroUSD)
 	}
 }
 
@@ -497,98 +498,49 @@ func TestPoolExhaustion_AdequatePool(t *testing.T) {
 	t.Logf("pool_max_conns=20: all %d upserts succeeded", numProviders)
 }
 
-// TestPostgresWalletPriceCleanupPreservesPlatform guards against the regression
-// where the one-time model_prices cleanup wiped platform-default pricing. When
-// the cleanup runs it must remove orphan wallet-keyed rows (account_id not in
-// users) but preserve the synthetic account_id="platform" (which holds platform
-// pricing and is never a users row) and real user-backed prices. The marker is
-// cleared first so the guarded cleanup actually executes.
-func TestPostgresWalletPriceCleanupPreservesPlatform(t *testing.T) {
+// TestPostgresMigrateNeverDeletesModelPrices pins the removal of the one-time
+// Solana-era wallet-price cleanup. That DELETE ran before the users table
+// existed on a fresh database, failed silently, left no marker and then ran on
+// the next boot. A restart must now leave every model_prices row alone:
+// platform defaults, user-backed prices, and rows whose account is not a user.
+func TestPostgresMigrateNeverDeletesModelPrices(t *testing.T) {
 	s := testPostgresStore(t)
 	ctx := context.Background()
 
 	// model_prices and schema_migrations are not in the harness truncate list;
-	// reset them explicitly so the cleanup runs and assertions are deterministic.
+	// reset them so the old cleanup's marker cannot mask a DELETE.
 	if _, err := s.pool.Exec(ctx, "DELETE FROM model_prices"); err != nil {
 		t.Fatalf("clean model_prices: %v", err)
 	}
 	if _, err := s.pool.Exec(ctx, "DELETE FROM schema_migrations WHERE id = 'cleanup_wallet_model_prices_v1'"); err != nil {
-		t.Fatalf("clear migration marker: %v", err)
+		t.Fatalf("clear old migration marker: %v", err)
 	}
-
-	// A real, user-backed custom price (must survive the cleanup).
 	if err := s.CreateUser(&User{AccountID: "acct-real", PrivyUserID: "did:privy:real"}); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	if err := s.SetModelPrice("acct-real", "gemma-4-26b", 65_000, 200_000); err != nil {
-		t.Fatalf("set user price: %v", err)
+	prices := []struct {
+		account string
+		model   string
+	}{
+		{"acct-real", "gemma-4-26b"},
+		{"platform", "gpt-oss-20b"},
+		{"acct-not-a-user", "gemma-4-26b"},
 	}
-	// Platform-default pricing (the bug under test — must survive).
-	if err := s.SetModelPrice("platform", "gpt-oss-20b", 50_000, 200_000); err != nil {
-		t.Fatalf("set platform price: %v", err)
-	}
-	// An orphan wallet-keyed price whose account is NOT in users (exactly what
-	// the cleanup is meant to remove).
-	if err := s.SetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b", 1, 2); err != nil {
-		t.Fatalf("set orphan wallet price: %v", err)
+	for _, p := range prices {
+		if err := s.SetModelPrice(p.account, p.model, 50_000, 200_000); err != nil {
+			t.Fatalf("set %s price: %v", p.account, err)
+		}
 	}
 
-	// Re-run migrations (simulated restart). With the marker cleared, the
-	// guarded cleanup executes exactly once.
+	// Simulated restart.
 	if err := s.migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	if in, out, ok := s.GetModelPrice("platform", "gpt-oss-20b"); !ok || in != 50_000 || out != 200_000 {
-		t.Errorf("platform price = (%d, %d, %v), want (50000, 200000, true) — platform pricing must never be wiped", in, out, ok)
-	}
-	if in, out, ok := s.GetModelPrice("acct-real", "gemma-4-26b"); !ok || in != 65_000 || out != 200_000 {
-		t.Errorf("user price = (%d, %d, %v), want (65000, 200000, true)", in, out, ok)
-	}
-	if _, _, ok := s.GetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b"); ok {
-		t.Error("orphan wallet-keyed price should be removed by the cleanup")
-	}
-
-	// The cleanup must record its marker so it does not run again.
-	var marked bool
-	if err := s.pool.QueryRow(ctx,
-		"SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE id = 'cleanup_wallet_model_prices_v1')").Scan(&marked); err != nil {
-		t.Fatalf("check marker: %v", err)
-	}
-	if !marked {
-		t.Error("cleanup marker should be set after the cleanup runs")
-	}
-}
-
-// TestPostgresWalletPriceCleanupRunsOnce verifies the destructive cleanup is
-// gated behind its schema_migrations marker and does NOT run on every boot. Once
-// the marker is set, a subsequent migrate() leaves even orphan wallet-keyed rows
-// untouched — stopping the destructive DELETE from running repeatedly.
-func TestPostgresWalletPriceCleanupRunsOnce(t *testing.T) {
-	s := testPostgresStore(t)
-	ctx := context.Background()
-
-	if _, err := s.pool.Exec(ctx, "DELETE FROM model_prices"); err != nil {
-		t.Fatalf("clean model_prices: %v", err)
-	}
-	// Mark the cleanup as already done.
-	if _, err := s.pool.Exec(ctx,
-		"INSERT INTO schema_migrations (id) VALUES ('cleanup_wallet_model_prices_v1') ON CONFLICT (id) DO NOTHING"); err != nil {
-		t.Fatalf("set migration marker: %v", err)
-	}
-
-	// An orphan wallet-keyed row added after the marker is set must survive,
-	// because the guarded cleanup is skipped on subsequent boots.
-	if err := s.SetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b", 1, 2); err != nil {
-		t.Fatalf("set orphan wallet price: %v", err)
-	}
-
-	if err := s.migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	if _, _, ok := s.GetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b"); !ok {
-		t.Error("orphan row should survive when the cleanup marker is already set (run-once)")
+	for _, p := range prices {
+		if in, out, ok := s.GetModelPrice(p.account, p.model); !ok || in != 50_000 || out != 200_000 {
+			t.Errorf("%s price = (%d, %d, %v) after restart, want (50000, 200000, true)", p.account, in, out, ok)
+		}
 	}
 }
 
@@ -630,22 +582,22 @@ func TestPostgresDeleteProvidersBySerial(t *testing.T) {
 		t.Fatalf("rows_removed = %d, want 1", n)
 	}
 
-	if rec, _ := s.GetProviderBySerial(ctx, "SER"); rec != nil {
+	if rec, _ := s.GetProviderForRestore(ctx, "SER", "", nil); rec != nil {
 		t.Fatal("provider row still present after delete")
 	}
 	if rep, _ := s.GetReputation(ctx, "a"); rep != nil {
 		t.Fatal("reputation row still present after delete")
 	}
 	// Earnings (money history) must survive.
-	earnings, err := s.GetProviderEarnings("key-a", 10)
+	earnings, err := s.GetAccountEarnings("acct-1", 10)
 	if err != nil {
-		t.Fatalf("GetProviderEarnings: %v", err)
+		t.Fatalf("GetAccountEarnings: %v", err)
 	}
-	if len(earnings) != 1 {
+	if len(earnings) != 1 || earnings[0].ProviderKey != "key-a" {
 		t.Fatalf("earnings count = %d, want 1 (money history must survive)", len(earnings))
 	}
 	// Cross-account guard row must survive.
-	if rec, _ := s.GetProviderBySerial(ctx, "SER-G"); rec == nil {
+	if rec, _ := s.GetProviderForRestore(ctx, "SER-G", "", nil); rec == nil {
 		t.Fatal("cross-account guard row was deleted")
 	}
 }
@@ -667,7 +619,7 @@ func TestPostgresDeleteProvidersBySerial_WrongOwner(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("rows_removed = %d, want 0 for non-owner", n)
 	}
-	if rec, _ := s.GetProviderBySerial(ctx, "SER"); rec == nil {
+	if rec, _ := s.GetProviderForRestore(ctx, "SER", "", nil); rec == nil {
 		t.Fatal("record deleted by non-owner")
 	}
 }
@@ -726,5 +678,47 @@ func TestPostgresCreateStripeWithdrawalWithDebit(t *testing.T) {
 	}
 	if bal, _ := s.GetBalanceWithWithdrawable("acct-pg-wdb"); bal != 6_000_000 {
 		t.Errorf("duplicate attempt leaked a debit: balance = %d", bal)
+	}
+}
+
+// TestFreshDatabaseSchemaServesWithdrawableAndUsageTotals boots NewPostgres on
+// an empty database and exercises the two things the retired one-shot
+// backfills used to provide there: the balances.withdrawable_micro_usd column
+// and the single usage_totals counter row that RecordUsage only UPDATEs.
+// Without the row, usage is silently never counted.
+func TestFreshDatabaseSchemaServesWithdrawableAndUsageTotals(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	databaseURL := newThrowawayTestDatabase(t)
+	s, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("NewPostgres on an empty database: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.CreditWithdrawable("fresh-acct", 700, LedgerPayout, "fresh-ref"); err != nil {
+		t.Fatalf("CreditWithdrawable: %v", err)
+	}
+	if got := s.GetWithdrawableBalance("fresh-acct"); got != 700 {
+		t.Fatalf("withdrawable balance = %d, want 700", got)
+	}
+
+	s.RecordUsage("prov", "consumer", "model", 11, 13)
+	totals, err := s.UsageTotals()
+	if err != nil {
+		t.Fatalf("UsageTotals: %v", err)
+	}
+	if totals.Requests != 1 || totals.PromptTokens != 11 || totals.CompletionTokens != 13 {
+		t.Fatalf("usage totals = %+v, want 1 request / 11 prompt / 13 completion", totals)
+	}
+
+	// A second boot on the same database is a no-op for both.
+	again, err := NewPostgres(ctx, Config{DatabaseURL: databaseURL})
+	if err != nil {
+		t.Fatalf("second NewPostgres: %v", err)
+	}
+	defer again.Close()
+	if totals, err := again.UsageTotals(); err != nil || totals.Requests != 1 {
+		t.Fatalf("usage totals after reboot = %+v, %v; want the counter preserved", totals, err)
 	}
 }

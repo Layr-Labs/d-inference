@@ -80,7 +80,7 @@ func TestOffloadedColdAdmissionPreservesKnownFullAndLegacyPolicy(t *testing.T) {
 	}
 	snap := routingSnapshot{totalMemoryGB: 128, modelSizeGB: 106.294664646,
 		estimatedOffloadedMemoryGB: 83.03058636859059, freeForLoadGB: &free,
-		availableOnDisk: true, binaryVersion: "0.9.0"}
+		availableOnDisk: true}
 	budget, known := snapshotStructuralBudget(&snap)
 	if !known || budget <= 0 {
 		t.Fatalf("no post-load budget: %d %v", budget, known)
@@ -134,7 +134,7 @@ func TestFlash096ColdBudgetFitsReported32810TokensWithoutOverridingWarmCeiling(t
 		EstimatedMemoryGB: 75.02614405564964, NativeLoadTransientBytes: 6264197720}
 	p := &Provider{Version: "0.9.6", Models: []protocol.ModelInfo{info}}
 	snap := routingSnapshot{model: qwen4RegistryModelID, totalMemoryGB: 128,
-		modelSizeGB: 106.294664646, availableOnDisk: true, binaryVersion: p.Version}
+		modelSizeGB: 106.294664646, availableOnDisk: true}
 	if fits, known := providerBudgetFits(&snap, 42, 32768); fits || !known {
 		t.Fatal("the legacy full-disk estimate should reproduce the cold-capacity rejection")
 	}

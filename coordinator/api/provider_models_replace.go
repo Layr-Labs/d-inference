@@ -48,9 +48,9 @@ func (s *Server) finishModelsReplaceReady(ctx context.Context, provider *registr
 	}
 	if resumed {
 		provider.Mu().Lock()
-		backend, version := provider.Backend, provider.Version
+		backend := provider.Backend
 		provider.Mu().Unlock()
-		if s.providerSupportsDesiredModels(backend, version) {
+		if s.providerSupportsDesiredModels(backend) {
 			if err := s.registry.RefreshDesiredModels(provider); err != nil {
 				s.logger.Warn("failed to refresh desired_models after replacement", "provider_id", provider.ID, "error", err)
 			}

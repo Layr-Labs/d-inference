@@ -25,8 +25,8 @@ func (x *Session) observeBuildPolicy(status *protocol.AppAttestStatus, metadata 
 	snapshot := x.s.currentReleasePolicySnapshot()
 	evidence.CatalogKnown = snapshot != nil && snapshot.Known
 	if status != nil {
-		evidence.HardwareKnown, evidence.HardwareMatched = appAttestHardwareComparison(x.protocolVersion, status, x.hardware)
-		evidence.VerificationKeyKnown = x.protocolVersion == 3 && x.attestationKey != "" && status.AttestationPublicKey != ""
+		evidence.HardwareKnown, evidence.HardwareMatched = appAttestHardwareComparison(status, x.hardware)
+		evidence.VerificationKeyKnown = x.attestationKey != "" && status.AttestationPublicKey != ""
 		evidence.VerificationKeyMatched = evidence.VerificationKeyKnown && status.AttestationPublicKey == x.attestationKey
 		evidence.ReportedVersion = status.AppVersion
 		candidate := metadata.CodeDirectorySHA256Candidate()

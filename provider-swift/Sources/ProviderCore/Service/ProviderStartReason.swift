@@ -58,6 +58,6 @@ public enum ProviderStartReason {
     /// launchd sets XPC_SERVICE_NAME to the job label for agents it spawns.
     public static func launchedByLaunchd(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard let name = environment["XPC_SERVICE_NAME"] else { return false }
-        return LaunchAgent.supportedLabels.contains(name)
+        return name == LaunchAgent.label
     }
 }

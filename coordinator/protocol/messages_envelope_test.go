@@ -28,22 +28,24 @@ func TestProviderMessageUnmarshalRegister(t *testing.T) {
 	}
 }
 
-// TestProviderMessageUnmarshalRegisterLegacyHypervisorCapability is the
-// legacy-fleet wire guard for the retired hypervisor_active capability.
-// Old providers (< v0.6.31) still send it inside privacy_capabilities;
-// the Go field was removed, so it must decode as a harmless unknown
-// field — no error, all remaining capabilities intact.
-func TestProviderMessageUnmarshalRegisterLegacyHypervisorCapability(t *testing.T) {
-	raw := `{"type":"register","hardware":{"chip_name":"Apple M3 Max","memory_gb":64},"models":[{"id":"m1","model_type":"chat","quantization":"4bit"}],"backend":"mlx_swift","privacy_capabilities":{"text_backend_inprocess":true,"text_proxy_disabled":true,"python_runtime_locked":true,"dangerous_modules_blocked":true,"sip_enabled":true,"anti_debug_enabled":true,"core_dumps_disabled":true,"env_scrubbed":true,"hypervisor_active":false}}`
+// TestProviderMessageUnmarshalIgnoresRetiredFields is the wire guard for the
+// retired Python-era fields (python_hash, runtime_hash, the Python privacy
+// capabilities) and the retired hypervisor_active flag. Their Go fields are
+// gone; a provider that still emits them — empty, null or populated — must
+// decode as before, with every live field intact.
+func TestProviderMessageUnmarshalIgnoresRetiredFields(t *testing.T) {
+	register := `{"type":"register","hardware":{"chip_name":"Apple M3 Max","memory_gb":64},"models":[{"id":"m1","model_type":"chat","quantization":"4bit"}],"backend":"mlx-swift","python_hash":"","runtime_hash":null,"template_hashes":{"mlx_metallib":"abc"},"privacy_capabilities":{"text_backend_inprocess":true,"text_proxy_disabled":true,"python_runtime_locked":false,"dangerous_modules_blocked":false,"sip_enabled":true,"anti_debug_enabled":true,"core_dumps_disabled":true,"env_scrubbed":true,"hypervisor_active":false}}`
 
 	var pm ProviderMessage
-	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
-		t.Fatalf("legacy register frame with hypervisor_active must decode: %v", err)
+	if err := json.Unmarshal([]byte(register), &pm); err != nil {
+		t.Fatalf("register frame with retired fields must decode: %v", err)
 	}
-
 	reg, ok := pm.Payload.(*RegisterMessage)
 	if !ok {
 		t.Fatalf("payload type = %T, want *RegisterMessage", pm.Payload)
+	}
+	if reg.TemplateHashes["mlx_metallib"] != "abc" {
+		t.Fatalf("template_hashes lost around retired fields: %+v", reg.TemplateHashes)
 	}
 	caps := reg.PrivacyCapabilities
 	if caps == nil {
@@ -51,7 +53,21 @@ func TestProviderMessageUnmarshalRegisterLegacyHypervisorCapability(t *testing.T
 	}
 	if !caps.TextBackendInprocess || !caps.TextProxyDisabled || !caps.SIPEnabled ||
 		!caps.AntiDebugEnabled || !caps.CoreDumpsDisabled || !caps.EnvScrubbed {
-		t.Fatalf("privacy capabilities lost around the ignored hypervisor_active field: %+v", caps)
+		t.Fatalf("privacy capabilities lost around the retired fields: %+v", caps)
+	}
+
+	response := `{"type":"attestation_response","nonce":"n","signature":"sig","status_signature":"ssig","public_key":"pk","hypervisor_active":false,"sip_enabled":true,"python_hash":"","runtime_hash":null,"template_hashes":{"mlx_metallib":"abc"}}`
+	pm = ProviderMessage{}
+	if err := json.Unmarshal([]byte(response), &pm); err != nil {
+		t.Fatalf("attestation_response with retired fields must decode: %v", err)
+	}
+	resp, ok := pm.Payload.(*AttestationResponseMessage)
+	if !ok {
+		t.Fatalf("payload type = %T, want *AttestationResponseMessage", pm.Payload)
+	}
+	if resp.Nonce != "n" || resp.StatusSignature != "ssig" || resp.SIPEnabled == nil ||
+		!*resp.SIPEnabled || resp.TemplateHashes["mlx_metallib"] != "abc" {
+		t.Fatalf("attestation_response live fields lost around retired fields: %+v", resp)
 	}
 }
 

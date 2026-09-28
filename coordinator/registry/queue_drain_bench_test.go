@@ -65,8 +65,7 @@ func buildDrainBenchFleet(b testing.TB, n, depth int) *Registry {
 			Backend: BackendMLXSwift, DecodeTPS: 25 + float64(i%10),
 			PublicKey: drainBenchPubKey, EncryptedResponseChunks: true, Version: "0.8.15",
 			PrivacyCapabilities: &protocol.PrivacyCapabilities{
-				TextBackendInprocess: true, TextProxyDisabled: true, PythonRuntimeLocked: true,
-				DangerousModulesBlocked: true, SIPEnabled: true, AntiDebugEnabled: true,
+				TextBackendInprocess: true, TextProxyDisabled: true,
 				CoreDumpsDisabled: true, EnvScrubbed: true,
 			},
 		}

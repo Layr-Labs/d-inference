@@ -832,7 +832,7 @@ func (d *dispatchState) noteProviderBodyTooLarge(errText string, bodyBytes int) 
 }
 
 func (d *dispatchState) preflightLegacyCacheBust() {
-	_, err := minimumLegacyCacheBustOverflow(d.rawBody, d.requiresVision)
+	_, err := minimumLegacyCacheBustOverflow(d.rawBody)
 	if errors.Is(err, errProviderBodyTooLarge) {
 		d.minPrefixCacheProtocol = 1
 	}
@@ -849,8 +849,7 @@ func (d *dispatchState) noteProviderBodyTooLargeFor(
 		d.excludeProviders = make(map[string]struct{})
 	}
 	d.excludeProviders[provider.ID] = struct{}{}
-	bodyBytes, _ := providerBodySizeError(
-		d.rawBody, d.requiresVision, provider)
+	bodyBytes, _ := providerBodySizeError(d.rawBody, provider)
 	d.noteProviderBodyTooLarge(errText, bodyBytes)
 }
 
@@ -1665,9 +1664,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", http.StatusInternalServerError))
 			return outcomeRetry
 		}
-		// Version-gated penalty strip plus protocol-0 cache isolation. The queued
-		// path seals here, separately from dispatchOneProvider.
-		sealedBody, err := bodyForCacheAttempt(d.rawBody, d.requiresVision, d.provider, d.pr)
+		// Protocol-0 cache isolation. The queued path seals here, separately
+		// from dispatchOneProvider.
+		sealedBody, err := bodyForCacheAttempt(d.rawBody, d.pr)
 		if err != nil {
 			s.registry.ForgetCacheAttempt(d.pr)
 			d.provider.RemovePending(d.requestID)

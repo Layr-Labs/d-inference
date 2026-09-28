@@ -14,12 +14,6 @@ export function formatUsd(usd: number, decimals = 2): string {
   return `$${usd.toFixed(decimals)}`;
 }
 
-/** Whole-dollar with thousands separators, signed. */
-export function formatUsdWhole(usd: number): string {
-  const abs = Math.abs(usd).toLocaleString(undefined, { maximumFractionDigits: 0 });
-  return usd < 0 ? `-$${abs}` : `$${abs}`;
-}
-
 /**
  * Micro-USD → "$x.xx", keeping more precision for sub-cent amounts so tiny
  * per-request costs don't all collapse to "$0.00".

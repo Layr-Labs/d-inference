@@ -3,24 +3,19 @@ name: Release Provider Bundle (Swift)
 # CLI-only Swift release pipeline.
 #
 # Builds and ships:
-#   - bin/darkbloom          (provider CLI)
-#   - bin/darkbloom-enclave  (Secure Enclave attestation/sign helper)
-#   - bin/mlx.metallib       (compiled Metal kernels for the matching MLX)
+#   - Darkbloom.app          (signed, notarized app; the only installed artifact)
 #   - Darkbloom.app/Contents/Helpers/darkbloom-fan-helper (dormant opt-in root helper)
 #   - Darkbloom.app/Contents/Resources/*.bundle (SwiftPM resources)
-#
-# install.sh creates a backward-compatibility symlink from the legacy
-# `eigeninference-enclave` name to `darkbloom-enclave` for existing
-# installations that referenced the old binary name.
+#   - bin/darkbloom, bin/darkbloom-enclave, bin/mlx.metallib: regular-file
+#     copies of the app's CLI, Secure Enclave helper and Metal kernels. Release
+#     hashes are computed from them; installers verify them, then install the app.
 #
 # No SwiftUI app, no DMG, and no Python runtime — this is a pure Swift CLI
 # build. The legacy `release.yml` was deleted alongside `app/` once we
 # committed to a CLI-only migration.
 #
-# Swift cutover tag conventions:
+# Tag convention:
 #   - vX.Y.Z           -> prod Swift release (reviewer approval required)
-#   - vX.Y.Z-swift     -> accepted alias while the migration is in progress
-#   - vX.Y.Z-swift.N   -> accepted alias while the migration is in progress
 # Dev releases use workflow_dispatch so the requested version can remain
 # byte-identical to the checked-in provider and coordinator source constants.
 #
@@ -40,8 +35,6 @@ on:
   push:
     tags:
       - 'v*.*.*'
-      - 'v*-swift'
-      - 'v*-swift.*'
   workflow_dispatch:
     inputs:
       environment:
@@ -525,9 +518,10 @@ jobs:
           fi
           echo "Entitlement verification passed: $EXPECTED_ACCESS_GROUP authorized via embedded provisioning profile"
 
-          # Flat layout alongside the .app bundle. Coordinator's release
-          # artifact verifier (release_handlers.go:413) requires bin/darkbloom
-          # to be a regular file — symlinks fail the tar.TypeReg check.
+          # Regular-file copies alongside the .app bundle. The coordinator's
+          # release artifact verifier (release_handlers.go, verifyReleaseArtifact)
+          # requires bin/darkbloom to be a regular file — symlinks fail the
+          # tar.TypeReg check.
           mkdir -p "$STAGE/bin"
           cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
           cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"
@@ -1030,7 +1024,13 @@ jobs:
           APP="$ARTIFACT/extracted/Darkbloom.app"
           codesign --verify --deep --strict "$APP"
           xcrun stapler validate "$APP"
-          OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
+          # The child validates the retained Gemma latches, which MLX reads at
+          # its first Metal touch — seed them exactly as SelfUpdater does.
+          OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
+            DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
+            MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
+            MLX_GATHER_QMM_EXPERT_SLICES=1 \
+            "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$OUTPUT"
           for marker in app-attest-callback-runtime-smoke gemma-optimizations-runtime-smoke paged-kernel-runtime-smoke qwen4-metal-resources-runtime-smoke; do
             printf '%s\n' "$OUTPUT" | grep -Fqx "$marker: ok"

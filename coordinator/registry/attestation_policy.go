@@ -80,9 +80,6 @@ func (r *Registry) providerSupportsPrivateTextAuthorizationAtLocked(p *Provider,
 		return false
 	}
 	// Only mlx-swift is routable (enforced by privateTextBackendSupported above).
-	// Python-specific caps (PythonRuntimeLocked, DangerousModulesBlocked) are
-	// retained in the protocol struct for wire backward compat but are no longer
-	// required for routing.
 	return caps.TextBackendInprocess &&
 		caps.TextProxyDisabled &&
 		caps.AntiDebugEnabled &&
@@ -91,8 +88,7 @@ func (r *Registry) providerSupportsPrivateTextAuthorizationAtLocked(p *Provider,
 }
 
 func privateTextBackendSupported(backend string) bool {
-	// Python/legacy inprocess-mlx backend is deprecated and no longer
-	// routable. Only Swift (mlx-swift) providers are admitted.
+	// Only the Swift (mlx-swift) backend is routable.
 	return backend == BackendMLXSwift
 }
 

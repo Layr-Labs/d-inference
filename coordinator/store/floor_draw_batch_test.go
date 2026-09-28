@@ -16,6 +16,30 @@ func floorBatchFixture(epoch string) []FloorDrawBatchItem {
 	}
 }
 
+// settleFloorDraw settles one draw through the production batch path under a
+// session no machine inventory knows, so the draw keeps its own provider key.
+// It reports whether the row was newly inserted; false means the epoch was
+// already settled for that key. Any other outcome fails the test.
+func settleFloorDraw(t *testing.T, backend Store, draw *ProviderFloorDraw) bool {
+	t.Helper()
+	batch, ok := As[FloorDrawBatchStore](backend)
+	if !ok {
+		t.Fatal("store does not settle floor draw batches")
+	}
+	item := FloorDrawBatchItem{SessionID: uniqueID("floor-session"), Draw: *draw}
+	result, err := batch.SettleProviderFloorDrawBatch(context.Background(), []FloorDrawBatchItem{item}, func(int) bool { return true })
+	if err != nil {
+		t.Fatalf("settle floor draw: %v", err)
+	}
+	if result.Committed {
+		return true
+	}
+	if len(result.Rejections) != 1 || result.Rejections[0].Reason != FloorDrawAlreadyPaid {
+		t.Fatalf("settle floor draw rejected: %+v", result)
+	}
+	return false
+}
+
 func assertFloorBatchEmpty(t *testing.T, backend Store, epoch string) {
 	t.Helper()
 	draws, err := backend.ListFloorDrawsForEpoch(context.Background(), epoch)
@@ -159,8 +183,8 @@ func TestFloorDrawBatchLateIdempotencyConflictPreservesOnlyPriorCredit(t *testin
 			items := floorBatchFixture("late-conflict")
 			prior := items[1].Draw
 			prior.AmountMicroUSD = 7
-			if paid, err := backend.SettleProviderFloorDraw(ctx, &prior); err != nil || !paid {
-				t.Fatal("prior setup", err)
+			if !settleFloorDraw(t, backend, &prior) {
+				t.Fatal("prior setup was not credited")
 			}
 			result, err := batch.SettleProviderFloorDrawBatch(ctx, items, func(int) bool { return true })
 			if err != nil || result.Committed || len(result.Rejections) != 1 || result.Rejections[0].Index != 1 || result.Rejections[0].Reason != FloorDrawAlreadyPaid {

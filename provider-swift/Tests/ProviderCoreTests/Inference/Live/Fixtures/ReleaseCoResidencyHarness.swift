@@ -28,7 +28,7 @@ actor ReleaseCoResidencyHarness {
                     engineV2MaxConcurrent: 1, engineV2KVBackend: "paged", mtpMode: .auto),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)),
             runtimeCapabilities: runtimeCapabilities),
-            purgeLegacyFiles: false, attestationSigner: nil)
+            attestationSigner: nil)
     }
 
     func run() async throws {

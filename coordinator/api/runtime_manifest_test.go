@@ -50,23 +50,21 @@ func TestSyncRuntimeManifestIncludesSwiftMetallibHash(t *testing.T) {
 	}
 }
 
-func TestVerifyRuntimeHashesForSwiftRequiresMetallibButNotLegacyRuntime(t *testing.T) {
+func TestVerifyRuntimeHashesForSwiftRequiresOnlyMetallib(t *testing.T) {
 	srv, _ := runtimeManifestTestServer(t)
 	metallibHash := strings.Repeat("a", 64)
 	srv.SetRuntimeManifest(&RuntimeManifest{
-		PythonHashes:   map[string]bool{"legacy-python": true},
-		RuntimeHashes:  map[string]bool{"legacy-runtime": true},
 		TemplateHashes: map[string]map[string]bool{"qwen3.5": {"legacy-template": true}, "mlx_metallib": {metallibHash: true}},
 	})
 
-	ok, mismatches := srv.verifyRuntimeHashesForBackend("mlx-swift", "", "", map[string]string{
+	ok, mismatches := srv.verifyRuntimeHashesForBackend("mlx-swift", map[string]string{
 		"mlx_metallib": metallibHash,
 	})
 	if !ok {
 		t.Fatalf("swift runtime verification failed with matching metallib: %#v", mismatches)
 	}
 
-	ok, mismatches = srv.verifyRuntimeHashesForBackend("mlx-swift", "", "", map[string]string{
+	ok, mismatches = srv.verifyRuntimeHashesForBackend("mlx-swift", map[string]string{
 		"mlx_metallib": strings.Repeat("b", 64),
 	})
 	if ok {
@@ -93,19 +91,18 @@ func TestRuntimeManifestApprovalRequiresExplicitMetallibEntry(t *testing.T) {
 	}
 }
 
-func TestVerifyRuntimeHashesForLegacyBackendRejected(t *testing.T) {
+func TestVerifyRuntimeHashesForNonSwiftBackendRejected(t *testing.T) {
 	srv, _ := runtimeManifestTestServer(t)
+	metallibHash := strings.Repeat("a", 64)
 	srv.SetRuntimeManifest(&RuntimeManifest{
-		PythonHashes:   map[string]bool{"legacy-python": true},
-		RuntimeHashes:  map[string]bool{"legacy-runtime": true},
-		TemplateHashes: map[string]map[string]bool{"qwen3.5": {"legacy-template": true}, "mlx_metallib": {strings.Repeat("a", 64): true}},
+		TemplateHashes: map[string]map[string]bool{"mlx_metallib": {metallibHash: true}},
 	})
 
-	ok, mismatches := srv.verifyRuntimeHashesForBackend("vllm-mlx", "legacy-python", "legacy-runtime", map[string]string{
-		"qwen3.5": "legacy-template",
+	ok, mismatches := srv.verifyRuntimeHashesForBackend("not-mlx-swift", map[string]string{
+		"mlx_metallib": metallibHash,
 	})
 	if ok {
-		t.Fatal("legacy (vllm-mlx) backend should be rejected — only mlx-swift is supported")
+		t.Fatal("non-Swift backend should be rejected — only mlx-swift is supported")
 	}
 	if len(mismatches) != 1 || mismatches[0].Component != "backend" {
 		t.Fatalf("mismatches = %#v, want one backend mismatch", mismatches)
@@ -123,8 +120,6 @@ func TestSyncRuntimeManifestUnionsTemplateHashesAcrossActiveReleases(t *testing.
 		Platform:       "macos-arm64",
 		BinaryHash:     "old-binary",
 		BundleHash:     "old-bundle",
-		PythonHash:     "old-python",
-		RuntimeHash:    "old-runtime",
 		TemplateHashes: "qwen3.5=old-template",
 		URL:            "https://example.com/old.tar.gz",
 		Active:         true,
@@ -137,8 +132,6 @@ func TestSyncRuntimeManifestUnionsTemplateHashesAcrossActiveReleases(t *testing.
 		Platform:       "macos-arm64",
 		BinaryHash:     "new-binary",
 		BundleHash:     "new-bundle",
-		PythonHash:     "new-python",
-		RuntimeHash:    "new-runtime",
 		TemplateHashes: "qwen3.5=new-template,minimax=new-minimax-template",
 		URL:            "https://example.com/new.tar.gz",
 		Active:         true,
@@ -156,18 +149,6 @@ func TestSyncRuntimeManifestUnionsTemplateHashesAcrossActiveReleases(t *testing.
 	}
 
 	manifest := srv.knownRuntimeManifest
-	if !manifest.PythonHashes["new-python"] {
-		t.Fatal("latest python hash missing from runtime manifest")
-	}
-	if !manifest.PythonHashes["old-python"] {
-		t.Fatal("old python hash should remain accepted so older providers still pass")
-	}
-	if !manifest.RuntimeHashes["new-runtime"] {
-		t.Fatal("latest runtime hash missing from runtime manifest")
-	}
-	if !manifest.RuntimeHashes["old-runtime"] {
-		t.Fatal("old runtime hash should remain accepted so older providers still pass")
-	}
 	if got := manifest.TemplateHashes["qwen3.5"]; len(got) != 2 || !got["new-template"] || !got["old-template"] {
 		t.Fatalf("qwen3.5 accepted hashes = %v, want both old-template and new-template", sortedTemplateHashes(got))
 	}
@@ -184,8 +165,6 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 		Platform:       "macos-arm64",
 		BinaryHash:     "old-binary",
 		BundleHash:     "old-bundle",
-		PythonHash:     "old-python",
-		RuntimeHash:    "old-runtime",
 		TemplateHashes: "qwen3.5=old-template",
 		URL:            "https://example.com/old.tar.gz",
 		Active:         true,
@@ -220,8 +199,8 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 	if srv.knownRuntimeManifest == nil {
 		t.Fatal("manifest should retain old release hashes")
 	}
-	if !srv.knownRuntimeManifest.PythonHashes["old-python"] {
-		t.Fatal("old python hash should still be accepted")
+	if got := srv.knownRuntimeManifest.TemplateHashes["qwen3.5"]; !got["old-template"] {
+		t.Fatalf("old template hash should still be accepted, got %v", sortedTemplateHashes(got))
 	}
 }
 

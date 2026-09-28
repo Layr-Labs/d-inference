@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   computeWarnings,
-  highestSeverity,
   semverLess,
 } from "@/app/providers/warnings";
 import type { MyProvider, MyProvidersResponse } from "@/app/providers/types";
@@ -275,7 +274,7 @@ describe("computeWarnings", () => {
 
   it("flags no payout configured (info)", () => {
     const warnings = computeWarnings(
-      baseProvider({ account_id: "", wallet_address: undefined }),
+      baseProvider({ account_id: "" }),
       ctx
     );
     expect(warnings.find((w) => w.id === "no_payout")?.severity).toBe("info");
@@ -317,27 +316,5 @@ describe("computeWarnings", () => {
     );
     expect(warnings.find((w) => w.id === "trust_self_signed")).toBeUndefined();
     expect(warnings.find((w) => w.id === "offline")).toBeDefined();
-  });
-});
-
-describe("highestSeverity", () => {
-  it("returns blocking when present", () => {
-    expect(
-      highestSeverity([
-        { id: "a", severity: "info", title: "", detail: "" },
-        { id: "b", severity: "blocking", title: "", detail: "" },
-      ])
-    ).toBe("blocking");
-  });
-  it("returns degrading when no blocking", () => {
-    expect(
-      highestSeverity([
-        { id: "a", severity: "info", title: "", detail: "" },
-        { id: "b", severity: "degrading", title: "", detail: "" },
-      ])
-    ).toBe("degrading");
-  });
-  it("returns null on empty", () => {
-    expect(highestSeverity([])).toBeNull();
   });
 });

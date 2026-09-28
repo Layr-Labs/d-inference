@@ -102,7 +102,7 @@ struct Update: AsyncParsableCommand {
 
         case .updated(let from, let to):
             print("Updated: v\(from) -> v\(to)")
-            if LaunchAgent.isAnySupportedLabelLoaded() {
+            if LaunchAgent.isLoaded() {
                 try await restartInstalledProvider(updater, operation: "manual-update-restart")
             } else {
                 print("Restart the provider for the new version to take effect.")
@@ -110,7 +110,7 @@ struct Update: AsyncParsableCommand {
 
         case .restartRequired(let from, let to):
             print("v\(to) is already installed (current process: v\(from)).")
-            if LaunchAgent.isAnySupportedLabelLoaded() {
+            if LaunchAgent.isLoaded() {
                 try await restartInstalledProvider(updater, operation: "manual-candidate-restart")
             } else {
                 print("Restart the provider for v\(to) to take effect.")
@@ -153,7 +153,7 @@ struct Update: AsyncParsableCommand {
         defer { session.release() }
         // A stop that won the update lease while download/install completed
         // must not be resurrected by a late updater restart.
-        guard LaunchAgent.isAnySupportedLabelLoaded() else {
+        guard LaunchAgent.isLoaded() else {
             print("Provider is stopped; the installed update will be used on the next start.")
             return
         }

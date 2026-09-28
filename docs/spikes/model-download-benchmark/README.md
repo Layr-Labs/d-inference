@@ -1,6 +1,6 @@
 # Model download benchmark: small immutable R2 objects vs. large shards
 
-> Last updated: 2026-09-27 · commit `93d556533`
+> Last updated: 2026-09-27 · commit `0bd16a9fa`
 
 **Status: experiment; measurements from 2026-09-01.** This synthetic, single-client
 record compares 64 MiB objects with 1 GiB objects. All seven recorded passes passed
@@ -202,9 +202,13 @@ The steps below create cloud resources and download multiple GiB. They require
 a separately authorized isolated environment. The pass runner removes the selected
 benchmark model from the local provider cache before each download.
 
-Prerequisites: Docker, Node 22, the shipped provider bundle (`Darkbloom.app`), an
-account-owned Cloudflare API token if you need to (re)create the bucket, hostname,
-cache rule or seed data.
+Prerequisites: Docker, Node 22, and the **v0.8.15** provider bundle (`Darkbloom.app`)
+matching the bundle and binary SHA-256 values in
+[provider-binary.txt](results/provider-binary.txt). Set `DARKBLOOM_BIN` explicitly
+to that bundle; the runner otherwise defaults to the currently installed app.
+A run with another provider version is a new experiment and must record that
+version and its hashes separately. Creating the isolated bucket, hostname, cache
+rule or seed data also requires an account-owned Cloudflare API token.
 
 1. `cd docs/spikes/model-download-benchmark && docker build -t darkbloom-bench-harness harness`
 2. Generate expected hashes, catalog and manifests (writes `out/`; add `-e RUN_ID=<id>`

@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-27 · commit `329312fff`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -18,7 +18,7 @@ Terminal `profile` objects can include optional schema-1
 [`deadline_decision`](prediction-decision-telemetry.md#provider-fields).
 This does not add a message type or change the public error code.
 
-The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
+The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` and `app_attest_shadow` frames; the coordinator serves protocol 3 only, and a registration announcing protocol 1 or 2 gets no frames. Protocol 3 binds the account, status, static hardware and the existing verification key. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 
 App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds both fields. `ready` replies may also carry optional `launch_session`, `boot_time` and `operation_stalled_seconds`; `coordinator/protocol/app_attest_runtime_diagnostic.go` (`SanitizeRuntimeDiagnostics`) strips invalid values without rejecting the frame. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).
 
@@ -162,10 +162,8 @@ connection, first.
 | `tool_constraint_models` | `[]string` | `[String]?` | opt | concrete model IDs the provider enforces |
 | `apns_device_token` | `string` | `String?` | opt | hex APNs token for the `E_K(nonce)` code-identity push |
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
-| `python_hash`, `runtime_hash` | `string` | `String?` | opt | SHA-256 |
-| `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256; Swift omits when empty |
-| `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities); providers `< v0.6.31` also send `hypervisor_active` inside it, which Go drops |
-| `wallet_address` | — | `String?` | Swift only | legacy key; Go has no field and drops it |
+| `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
+| `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities) |
 
 A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
@@ -221,9 +219,8 @@ existing catalog/measurement policy. See [offloaded-weight admission](../archite
 
 #### `privacy_capabilities`
 
-Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Eight required
-booleans: `text_backend_inprocess`, `text_proxy_disabled`,
-`python_runtime_locked`, `dangerous_modules_blocked`, `sip_enabled`,
+Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Six required
+booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
 `anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`.
 
 #### Prefix-cache objects
@@ -501,7 +498,7 @@ these fields: [`../architecture/request-outcome-observability.md`](../architectu
 | `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` (`coordinator/api/inference_error_sanitize.go`) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
 | `status_code` | `int` | `UInt16` | req | |
 | `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge (`coordinator/api/consumer.go`, `noteInferenceError`; `coordinator/api/dispatch.go`, `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
-| `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure` |
+| `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure`. Swift always sets it (`InferenceFailure.code` is non-optional). A missing or unknown value is drift: `sanitizeProviderInferenceError` fails it closed as `generation_failure` and counts `inference.invalid_failure_code`; status, `error_reason` and `terminal_cause` never reclassify it |
 | `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric (`coordinator/api/terminal_cause.go`); platform-policy terminals never strike health breakers |
 | `attempt_usage` | `*UsageInfo` | `UsageInfo?` | opt | engine-reconciled usage of the failed attempt; observability only, never billing |
 | `rejection_reason` | `CapacityRejectionReason` | `CapacityRejectionReason?` | opt | routing-v2 enriched rejection; enum shared with [`capacity_quote`](#capacity_quote) |
@@ -520,11 +517,10 @@ Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
 |---|---|---|---|---|
 | `nonce` | `string` | `String` | req | echoed |
 | `signature` | `string` | `String` | req | base64 SE signature over nonce + timestamp (liveness) |
-| `status_signature` | `string` | `String?` | opt | v0.3.11+; signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, `coordinator/attestation/`); absent ⇒ status fields are advisory only |
+| `status_signature` | `string` | `String?` | opt | signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, `coordinator/attestation/`). Swift always sends it; for a provider with an attested SE key an absent or empty value fails the challenge |
 | `public_key` | `string` | `String` | req | base64 |
-| `hypervisor_active` | `*bool` | — | legacy | `< v0.6.31` providers only; Swift omits it; Go keeps decoding it so their status signature verifies |
-| `rdma_disabled`, `sip_enabled`, `secure_boot_enabled` | `*bool` | `Bool?` | opt | fresh posture at challenge time |
-| `binary_hash`, `active_model_hash`, `python_hash`, `runtime_hash` | `string` | `String?` | opt | SHA-256 |
+| `rdma_disabled`, `sip_enabled`, `secure_boot_enabled` | `*bool` | `Bool?` | opt | fresh posture at challenge time; Swift always sends all three, and an omitted value fails the challenge |
+| `binary_hash`, `active_model_hash` | `string` | `String?` | opt | SHA-256 |
 | `template_hashes`, `model_hashes` | `map[string]string` | `[String: String]` | opt | Swift omits when empty |
 
 ### `code_attestation_response`
@@ -747,8 +743,7 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | attempt UUID |
-| `body` | `InferenceRequestBody` | `JSONValue` | opt | plain body: `model`, `messages[]{role, content}`, `stream` (`bool`), `max_tokens` (`*int`, opt), `temperature` (`*float64`, opt), `endpoint` (`string`, opt; defaults to `/v1/chat/completions`). Empty when `encrypted_body` is set |
-| `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; set whenever the provider registered a `public_key` |
+| `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; the only request body. There is no plaintext `body` key: the coordinator never sends one and Swift rejects a request without `encrypted_body` |
 | `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding |
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
 | `cache_scope` | `string` | `String?` | opt | |
@@ -835,9 +830,10 @@ set is pinned by `TestCapacityProbeShapeClosed` (`coordinator/protocol/capacity_
 `register.app_attest_protocol=3` negotiates the account/endpoint-bound shadow
 exchange plus signed static hardware claims. `AppAttestStatus` adds optional
 string fields `machine_model`, `memory_gb`, `cpu_total`, `cpu_performance`,
-`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; version 3 hashes them after the version 2 status
-fields under its own domain. Old transcripts remain unchanged. Original enrollment
-protocol is retained for cached-response recovery across upgrades. These fields
+`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; the version 3
+transcript hashes them after the status fields under its own domain. It is the
+only transcript: cached-response recovery resumes only a protocol-3 enrollment.
+These fields
 are app measurements, not Apple-certified hardware. See
 [the App Attest reference](app-attest-shadow.md) and
 `coordinator/protocol/app_attest_hardware.go` (`AppAttestShadowHashV3`).

@@ -91,7 +91,7 @@ final class KeyHistoryAndPreflightTests: XCTestCase {
         let clock = HistoryClock(now)
         var key = ShadowKeyRecord(keyID: "history-key", attested: false, createdAt: now.addingTimeInterval(-60))
         key.createdBootTime = 7
-        storage.save(key, scope: "s:production")
+        storage.save(key, scope: "s:production:account:" + String(repeating: "a", count: 64))
         var budget = ShadowKeyRecord(keyID: "budget", attested: false, createdAt: key.createdAt)
         budget.generationHistory = [key.createdAt]
         storage.save(budget, scope: "s:production:generation-budget")
@@ -102,10 +102,12 @@ final class KeyHistoryAndPreflightTests: XCTestCase {
         let publicKey = Data(repeating: 3, count: 32).base64EncodedString()
         func request(_ action: String, key: String? = nil) -> AppAttestShadowPayload {
             var p = AppAttestShadowPayload(action: action, session: session)
+            p.protocolVersion = 3; p.accountScope = String(repeating: "a", count: 64)
             p.environment = "production"; p.keyID = key
             if action != "prepare" { p.challenge = Data(repeating: 2, count: 32).base64EncodedString() }
             return p
         }
+        let proofStatus = AppAttestStatus(osVersion: "27.0.0", osBuild: "test", appVersion: "0.9.10", chip: "test", binaryHash: String(repeating: "b", count: 64))
         let ready = await client.respond(to: request("prepare"), publicKey: publicKey)
         XCTAssertEqual(ready.keyHistory?.generationsLast24h, 1)
         XCTAssertEqual(ready.keyHistory?.createdBootMatches, true)
@@ -114,7 +116,7 @@ final class KeyHistoryAndPreflightTests: XCTestCase {
         XCTAssertNil(prepared?.keyHistory?.lastSuccessAgeSeconds)
         let readsAfterPrepare = storage.loadCount
 
-        let attested = await client.respond(to: request("attest", key: ready.keyID), publicKey: publicKey)
+        let attested = await client.respond(to: request("attest", key: ready.keyID), publicKey: publicKey, status: proofStatus)
         XCTAssertEqual(attested.result, "ok")
         XCTAssertNil(attested.keyHistory, "history is ready-only on the wire")
         let enrolled = await client.currentLocalStatus()
@@ -122,7 +124,7 @@ final class KeyHistoryAndPreflightTests: XCTestCase {
         XCTAssertEqual(enrolled?.keyHistory?.lastSuccessAgeSeconds, 0)
 
         clock.advance(600)
-        let assertion = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey)
+        let assertion = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey, status: proofStatus)
         XCTAssertEqual(assertion.result, "ok")
         XCTAssertNil(assertion.keyHistory)
         let succeeded = await client.currentLocalStatus()
@@ -133,30 +135,30 @@ final class KeyHistoryAndPreflightTests: XCTestCase {
 
         await service.failAssertions(with: ShadowFailure.operationTimeout)
         clock.advance(10)
-        _ = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey)
+        _ = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey, status: proofStatus)
         let firstFailure = await client.currentLocalStatus()
         XCTAssertEqual(firstFailure?.keyHistory?.consecutiveAssertionFailures, 1)
         XCTAssertEqual(firstFailure?.keyHistory?.lastSuccessAgeSeconds, 10)
         clock.advance(10)
-        _ = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey)
+        _ = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey, status: proofStatus)
         let secondFailure = await client.currentLocalStatus()
         XCTAssertEqual(secondFailure?.keyHistory?.consecutiveAssertionFailures, 2)
         XCTAssertEqual(secondFailure?.keyHistory?.lastSuccessAgeSeconds, 20)
         await service.failAssertions(with: ShadowFailure.busy)
-        _ = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey)
+        _ = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey, status: proofStatus)
         let busy = await client.currentLocalStatus()
         XCTAssertEqual(busy?.keyHistory?.consecutiveAssertionFailures, 2, "local admission is not an Apple failure")
 
         await service.failAssertions(with: nil)
         clock.advance(10)
-        _ = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey)
+        _ = await client.respond(to: request("assert", key: ready.keyID), publicKey: publicKey, status: proofStatus)
         let recovered = await client.currentLocalStatus()
         XCTAssertEqual(recovered?.keyHistory?.consecutiveAssertionFailures, 0)
         XCTAssertEqual(recovered?.keyHistory?.lastSuccessAgeSeconds, 0)
         XCTAssertEqual(recovered?.lastAppleFailure, secondFailure?.lastAppleFailure, "success retains the last failure for diagnosis")
         XCTAssertEqual(storage.loadCount, readsAfterPrepare, "proof diagnostics reuse the authoritative record and generation budget")
-        XCTAssertEqual(storage.load(scope: "s:production")?.consecutiveAssertionFailures, 0)
-        XCTAssertEqual(storage.load(scope: "s:production")?.lastSuccessAt, clock.read())
+        XCTAssertEqual(storage.load(scope: "s:production:account:" + String(repeating: "a", count: 64))?.consecutiveAssertionFailures, 0)
+        XCTAssertEqual(storage.load(scope: "s:production:account:" + String(repeating: "a", count: 64))?.lastSuccessAt, clock.read())
     }
 
     func testLocalHistoryAgesAdvanceFromOwnAnchorAndKeepUnknowns() {

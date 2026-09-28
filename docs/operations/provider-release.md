@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-27 · commit `2c140e7fa`
+> Last updated: 2026-09-27 · commit `c2fa18e02`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -310,9 +310,7 @@ The provider and coordinator versions must be identical strings:
 (`check-release-version.sh v0.9.10`) and an optional reported string from a
 built binary (`darkbloom 0.9.10` or `0.9.10`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
-push. Do not touch `minProviderVersionForDesiredModels` (`"0.5.17"`, same file)
-for a routine release; it is the floor for desired-model fan-out, not the
-current version.
+push.
 
 ### 2. Write the changelog entry
 
@@ -343,11 +341,11 @@ git tag -a v0.9.10 -m "v0.9.10 — <one-line theme>
 git push origin v0.9.10
 ```
 
-Accepted tag patterns (`on.push.tags`): `v*.*.*`, `v*-swift`, `v*-swift.*`.
+Accepted tag pattern (`on.push.tags`): `v*.*.*`.
 Tags containing `-dev.` are rejected by `resolve-env` ("`-dev` tags are
 unsupported by the exact-version release contract"); use step 5 for dev.
-The version is derived from the tag (`v` stripped, `-swift*` suffix stripped)
-and must equal the source constants. `scripts/resolve-provider-release.sh` checks
+The version is the tag with `v` stripped and must equal the source constants,
+so a retired `vX.Y.Z-swift` alias fails resolution. `scripts/resolve-provider-release.sh` checks
 this before writing job outputs or requesting environment approval.
 
 ### 5. Dev release (manual dispatch)
@@ -419,7 +417,7 @@ The relevant signing steps run in this order:
 | 1 | Checkout · Validate release version integrity · Select SDK 27 signing toolchain · Ensure matching Metal compiler is available | Verify the source version and exact SDK before signing |
 | 2 | Fetch and verify this run's unsigned build | Download the build job's same-run artifact and validate source SHA, version and SDK |
 | 3 | Import Developer ID certificate · Embed provisioning profile | Prepare the temporary keychain and validate profile-authorized entitlements |
-| 4 | Stage and sign bundle | Build the app and flat compatibility layout, preserve SwiftPM resources, sign with hardened runtime, and verify signatures |
+| 4 | Stage and sign bundle | Build and sign the app with hardened runtime, preserve SwiftPM resources, and copy its `darkbloom`, `darkbloom-enclave` and `mlx.metallib` to regular files under `bin/`. Release hashes are computed from those copies: the coordinator's artifact check reads `bin/darkbloom`, and `install.sh` and self-update verify `bin/darkbloom` and `bin/mlx.metallib` before installing the app. They also keep older updaters working. Current installers never install them as a flat layout |
 | 5 | Notarize bundle | Notarize, staple, rebuild and extract the final archive, run runtime smoke, then calculate final binary/bundle/metallib and full CodeDirectory SHA-256 values |
 | 6 | Prepare signed release qualification evidence | `scripts/provider-release-publication.py prepare` retains the registration payload, annotated-tag changelog and independent operator qualification template |
 | 7 | Retain exact signed publication artifact | Retain the final bundle and metadata in `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days |

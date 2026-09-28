@@ -73,18 +73,18 @@ struct GemmaOptimizationReport: Sendable, Equatable {
                 kind: .engineHealth,
                 message: "engine_v2: gemma optimization "
                     + state.compactDescription)
-            event.fields = TelemetryFieldFilter.filter([
+            event.fields = [
                 "component": .string("engine"),
                 "operation": .string("gemma_optimization_\(state.name)"),
                 "backend": .string("engine_v2"),
                 "model": .string(modelId),
-                // Existing allowlisted field, carrying the bounded 2-bit
+                // Existing `target` key, carrying the bounded 2-bit
                 // requested/effective state without a telemetry schema change.
                 "target": .string(
                     "requested_\(state.requested ? 1 : 0)_effective_"
                         + "\(state.effective ? 1 : 0)"),
                 "reason": .string(state.reason.rawValue),
-            ])
+            ]
             return event
         }
     }

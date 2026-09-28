@@ -61,6 +61,7 @@ func makeValidChallengeResponse(data []byte, publicKey string) []byte {
 		SIPEnabled:        &sipEnabled,
 		SecureBootEnabled: &secureBootEnabled,
 	}
+	resp.StatusSignature = testResponseStatusSignature(challenge.Nonce, challenge.Timestamp, publicKey, &resp)
 	respData, _ := json.Marshal(resp)
 	return respData
 }

@@ -6,8 +6,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-func appAttestHardwareComparison(version int, s *protocol.AppAttestStatus, h protocol.Hardware) (known, matched bool) {
-	if version != 3 || s == nil {
+func appAttestHardwareComparison(s *protocol.AppAttestStatus, h protocol.Hardware) (known, matched bool) {
+	if s == nil {
 		return false, false
 	}
 	for _, value := range s.HardwareValues() {

@@ -41,7 +41,8 @@ enum ReportAppAttestEvidence {
         return home
     }
 
-    /// Sudo reports may read legacy credentials, but must not migrate them as root.
+    /// Sudo reports read the invoking user's credential but never write auth
+    /// files as root.
     static func authToken(invokingHome: URL?, environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
         guard let invokingHome else { return AuthTokenStore.load() }
         return AuthTokenStore.loadReadOnly(home: invokingHome, overridePath: environment["DARKBLOOM_AUTH_TOKEN_PATH"])

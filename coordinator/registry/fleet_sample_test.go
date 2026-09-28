@@ -424,7 +424,7 @@ func TestFleetSampleCopiesHeartbeatTelemetry(t *testing.T) {
 
 // TestFleetSampleCopiesModelCapabilities: every provider row carries the
 // folded provider version and every slot row its model's advertised
-// IsVision / TemplateRenderOK — the inputs of the tools floor, the vision
+// IsVision / TemplateRenderOK — the inputs of the version floors, the vision
 // gate and the template-render gate — copied by value from p.Models; the
 // coordinator row carries none of them.
 func TestFleetSampleCopiesModelCapabilities(t *testing.T) {
@@ -520,13 +520,13 @@ func TestProviderVersionFold(t *testing.T) {
 			t.Errorf("ProviderVersionFold(%q) = %q exceeds 32 bytes", in, got)
 		}
 	}
-	// A folded value that is not the sentinel ranks against the capability
+	// A folded value that is not the sentinel ranks against the version
 	// floors the way the live provider's version does.
-	if CompareVersions(ProviderVersionFold("0.8.13"), capabilityVersionFloors["tools"]) < 0 {
-		t.Fatal("folded version must compare above the tools floor")
+	if CompareVersions(ProviderVersionFold("0.9.9"), qwen4RegistryMinimumProviderVersion) < 0 {
+		t.Fatal("folded version must compare above the qwen4 catalog-policy floor")
 	}
-	if CompareVersions(ProviderVersionFold("junk"), capabilityVersionFloors["tools"]) >= 0 {
-		t.Fatal("the sentinel must compare below the tools floor")
+	if CompareVersions(ProviderVersionFold("junk"), qwen4RegistryMinimumProviderVersion) >= 0 {
+		t.Fatal("the sentinel must compare below the qwen4 catalog-policy floor")
 	}
 }
 

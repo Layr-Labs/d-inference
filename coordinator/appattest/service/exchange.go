@@ -24,31 +24,27 @@ func (x *Session) send(ctx context.Context, action string) bool {
 	if x.key != nil {
 		p.KeyID = x.key.KeyID
 	}
-	if x.protocolVersion >= 2 {
-		p.ProtocolVersion = x.protocolVersion
-		p.AccountScope = x.accountScope()
-	}
+	p.ProtocolVersion = x.protocolVersion
+	p.AccountScope = x.accountScope()
 	if action == "attest" {
 		p.Challenge = x.challenge
-		if x.protocolVersion >= 2 {
-			enrollments, ok := store.As[store.AppAttestEnrollmentStore](x.s.store)
-			if !ok {
-				x.observe(action, "storage_unavailable", nil)
-				return false
-			}
-			release, ok := x.acquireStorage()
-			if !ok {
-				x.observe(action, "storage_busy", nil)
-				return false
-			}
-			operation, cancel := context.WithTimeout(ctx, 2*time.Second)
-			err := enrollments.SaveAppAttestEnrollment(operation, store.AppAttestEnrollment{ProtocolVersion: x.protocolVersion, ID: x.id, Owner: x.owner, KeyID: x.key.KeyID, CreatedAt: time.Now().UTC(), Environment: x.s.config.Environment, AppID: x.s.config.AppID, Challenge: x.challenge, PublicKey: x.publicKey, AccountScope: x.accountScope()})
-			cancel()
-			release()
-			if err != nil {
-				x.observe(action, "storage_error", nil)
-				return false
-			}
+		enrollments, ok := store.As[store.AppAttestEnrollmentStore](x.s.store)
+		if !ok {
+			x.observe(action, "storage_unavailable", nil)
+			return false
+		}
+		release, ok := x.acquireStorage()
+		if !ok {
+			x.observe(action, "storage_busy", nil)
+			return false
+		}
+		operation, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err := enrollments.SaveAppAttestEnrollment(operation, store.AppAttestEnrollment{ProtocolVersion: x.protocolVersion, ID: x.id, Owner: x.owner, KeyID: x.key.KeyID, CreatedAt: time.Now().UTC(), Environment: x.s.config.Environment, AppID: x.s.config.AppID, Challenge: x.challenge, PublicKey: x.publicKey, AccountScope: x.accountScope()})
+		cancel()
+		release()
+		if err != nil {
+			x.observe(action, "storage_error", nil)
+			return false
 		}
 	}
 	if action == "assert" {

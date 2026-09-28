@@ -20,7 +20,7 @@ extension ProviderLoop {
 
     public func run() async throws {
         startLifecycleMonitor()
-        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow() }
+        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(); cancelAppAttestStallMonitor() }
         if servingDrain.refusing { return }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
@@ -70,12 +70,24 @@ extension ProviderLoop {
 
         // 1. Apply security hardening
         try await applySecurityHardening()
+        if Task.isCancelled || servingDrain.refusing {
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
+            return
+        }
 
         // MTP catalog metadata is process-local. Give it one short, owned
         // prewarm before either startup preloads or the unified local endpoint
         // can perform the first normal cold target load. This never downloads
         // assistant bytes and fails open on timeout.
         await prewarmSpecDecCatalog()
+        if Task.isCancelled || servingDrain.refusing {
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
+            return
+        }
         startMTPUpgradeMonitor()
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
@@ -110,7 +122,12 @@ extension ProviderLoop {
         let preloadLivenessRefresh = startPreloadLivenessRefresh()
         await runStartupPreloadGate()
         preloadLivenessRefresh.cancel()
-        if servingDrain.phase == .drained { return }
+        if Task.isCancelled || servingDrain.refusing {
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
+            return
+        }
 
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
@@ -151,7 +168,6 @@ extension ProviderLoop {
             backendName: "mlx-swift",
             heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
             publicKey: keyPair.publicKeyBase64,
-            walletAddress: nil,
             attestation: nil,
             registrationAttestation: registrationAttestation,
             authToken: loopConfig.authToken,
@@ -167,7 +183,12 @@ extension ProviderLoop {
 
         // A termination received during the APNs/startup awaits can already
         // have drained a process that has no coordinator connection yet.
-        if servingDrain.phase == .drained { return }
+        if Task.isCancelled || servingDrain.refusing {
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
+            return
+        }
         // 4. Create coordinator client and start connection
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
@@ -180,8 +201,20 @@ extension ProviderLoop {
         // already have refreshed a hash, and registration must carry it.
         await coordinator.updateModelWeightHashes(liveModelHashes)
 
-        if servingDrain.phase == .drained { await coordinator.shutdown(); return }
+        if Task.isCancelled || servingDrain.refusing {
+            await coordinator.shutdown()
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
+            return
+        }
         let (events, sendFn) = await coordinator.start()
+        if Task.isCancelled || servingDrain.refusing {
+            guard await shutdownBeforeRegistration() else {
+                throw InferenceError.modelLoadFailed("Native MiMo startup shutdown remains pending or requires process restart")
+            }
+            return
+        }
         // Wire the direct inference-chunk fast path (Optimizations 1-3) alongside
         // the control path. `chunkSender` is a nonisolated handle on the actor;
         // its connection sink is (re)bound per session inside the client.
@@ -192,11 +225,18 @@ extension ProviderLoop {
         // replying over THIS WebSocket. The app delegate delivers pushes via the
         // bridge; we hop into the actor to use K + the signer + this send handle.
         #if os(macOS)
+        let pushHistory = apnsPushHistory
+        APNsBridge.shared.trackDeviceToken(in: pushHistory)
         APNsBridge.shared.setPushHandler { [weak self] userInfo in
+            // Receipt is recorded before any parsing or validation so doctor
+            // and `push_history` can tell "never delivered" from "not answered".
+            pushHistory.recordReceipt()
             // Extract the Sendable EncryptedPayload synchronously here so the
             // non-Sendable [String: Any] never crosses into the actor Task.
             guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
-            Task { await self.handleCodeChallenge(challenge, send: send) }
+            // Only a push-delivered challenge counts as a push reply; resume
+            // challenges arrive over the WebSocket through the same handler.
+            Task { await self.handleCodeChallenge(challenge, send: send, onWritten: { pushHistory.recordReply() }) }
         }
 
         // If the device token wasn't ready at registration (APNs slow / GUI
@@ -234,6 +274,7 @@ extension ProviderLoop {
         // 5. The event reader outlives cancellation of the calling task.
         // Lifecycle shutdown closes admission and drains accepted work plus
         // terminal accounting before ending this stream.
+        coordinatorEventLoopStarted = true
         let eventTask = Task {
             for await event in events {
                 switch event {
@@ -250,6 +291,7 @@ extension ProviderLoop {
 
                 case .disconnected:
                     clearConnectionAuthorization()
+                    modelSwitchTask?.cancel()
                     cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
@@ -259,7 +301,7 @@ extension ProviderLoop {
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
-                    let cacheReceiptBoundaryMode,
+                    let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
                     let profile
@@ -272,6 +314,7 @@ extension ProviderLoop {
                         authenticatedCacheScope: cacheScope,
                         prefixCacheProtocol: prefixCacheProtocol,
                         cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+                        cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
                         toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                         firstContentDeadline: firstContentDeadline,
                         receivedAt: receivedAt,
@@ -313,16 +356,7 @@ extension ProviderLoop {
                     }
 
                 case .desiredModels(let entries):
-                    if isDraining {
-                        // Keep only the latest push (desired state is
-                        // declarative). A successful restart makes it moot —
-                        // registration receives fresh desired state — but an
-                        // aborted restart replays it via resumeServingAfterUpdate.
-                        deferredDesiredModels = entries
-                        logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
-                    } else {
-                        await reconcileDesiredModels(entries, send: send)
-                    }
+                    await handleDesiredModels(entries, send: send)
 
                 case .trustStatus(let trustLevel, let status, let reason, let authorization):
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason,
@@ -340,6 +374,7 @@ extension ProviderLoop {
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
         closeNativeMiMoLifecycle() // close native generation before teardown awaits
+        await cancelModelSwitchAndWait()
         // Quote path mirror (routing v2): a shutting-down provider quotes
         // `slot_state` rejections for the brief window the socket stays up.
         state.refusingNewWork = true
@@ -432,14 +467,9 @@ extension ProviderLoop {
         // textBackendInprocess + textProxyDisabled: always true on the Swift
         //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
         //   proxy is involved.
-        // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
-        //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
-        //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
         return PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
-            pythonRuntimeLocked: false,
-            dangerousModulesBlocked: false,
             sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
             antiDebugEnabled: securityPosture?.antiDebugEnabled ?? false,
             coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
@@ -471,8 +501,6 @@ extension ProviderLoop {
         }
 
         return RuntimeHashes(
-            pythonHash: existing?.pythonHash,
-            runtimeHash: existing?.runtimeHash,
             templateHashes: templates
         )
     }

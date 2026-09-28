@@ -849,10 +849,8 @@ func TestResolveRemoteMediaSelfRouteUsesFullTraits(t *testing.T) {
 		if p := srv.registry.GetProvider(id); p != nil {
 			p.Mu().Lock()
 			p.AccountID = owner
-			// Well above the tools version floor, so HasTools alone is satisfied
-			// and ToolConstraintProtocol (left unset, i.e. not v1) is the ONLY
-			// reason the request is ineligible. Without this the provider fails
-			// the floor either way and the test cannot see the trait delta.
+			// HasTools alone is satisfied, so ToolConstraintProtocol (left
+			// unset, i.e. not v1) is the ONLY reason the request is ineligible.
 			p.Version = "0.7.6"
 			p.Mu().Unlock()
 		}
@@ -860,7 +858,7 @@ func TestResolveRemoteMediaSelfRouteUsesFullTraits(t *testing.T) {
 	// Sanity: the partial trait set the gate used to reconstruct MUST consider
 	// this provider serviceable, or the assertion below proves nothing.
 	if !srv.registry.HasToolCapableProviderForModel("test") {
-		t.Fatal("setup: provider must satisfy the plain tools floor")
+		t.Fatal("setup: provider must satisfy the plain tools gate")
 	}
 
 	var hits int32

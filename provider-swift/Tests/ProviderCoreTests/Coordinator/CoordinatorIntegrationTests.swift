@@ -150,7 +150,7 @@ struct CoordinatorIntegrationTests {
             for await event in events {
                 switch event {
                 case .inferenceRequest(
-                    let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _,
+                    let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _, _,
                     let firstContentDeadline, _, _
                 ):
                     #expect(rid == requestId)
@@ -550,7 +550,7 @@ struct CoordinatorIntegrationTests {
 
         await TelemetryClient.shared.shutdown()
         try await Task.sleep(for: .milliseconds(100))
-        #expect(mock.snapshot().telemetryBatches.isEmpty)
+        #expect(mock.snapshot().telemetryPosts.isEmpty)
     }
 
     // MARK: 7. UpdateBanner -- silent on same version
@@ -599,7 +599,7 @@ struct CoordinatorIntegrationTests {
 // MARK: - Helpers
 
 /// Build a CoordinatorClient configured for tests against a mock URL. Uses a
-/// fixed hardware/model profile and skips registering wallet, attestation, etc.
+/// fixed hardware/model profile and skips registering attestation, etc.
 private func makeClient(
     url: String,
     publicKey: String,
@@ -615,8 +615,6 @@ private func makeClient(
         privacyCapabilities: PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
-            pythonRuntimeLocked: false,
-            dangerousModulesBlocked: false,
             sipEnabled: true,
             antiDebugEnabled: false,
             coreDumpsDisabled: false,

@@ -235,8 +235,7 @@ func TestFleetSpecBuildRegistersRoutableProviders(t *testing.T) {
 // export and a fleet_snapshots export → trace + fleet → the existing
 // ClassifyWithGate → Report. The arrivals carry the production traits
 // (coord-a has tools, coord-c requires vision), so the replay only serves
-// them when the snapshot lets the reconstructed fleet pass the tools version
-// floor and the vision gate.
+// coord-c when the snapshot lets the reconstructed fleet pass the vision gate.
 func TestClassifyWithGateFromNDJSON(t *testing.T) {
 	defer routingsim_setRatio(t, 12.0)()
 	t0 := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
@@ -257,9 +256,9 @@ func TestClassifyWithGateFromNDJSON(t *testing.T) {
 
 	// A warm, idle three-provider fleet for simModel at the sampler tick
 	// preceding the first arrival. withCapabilities stamps what a current
-	// sampler records: a provider version past the tools floor on every row
-	// and the vision advertisement on prov-2's slot (the provider that served
-	// coord-c in production).
+	// sampler records: a provider version on every row and the vision
+	// advertisement on prov-2's slot (the provider that served coord-c in
+	// production).
 	buildFleet := func(t *testing.T, withCapabilities bool) *registry.Registry {
 		t.Helper()
 		var rows []store.FleetSnapshotRow
@@ -313,28 +312,28 @@ func TestClassifyWithGateFromNDJSON(t *testing.T) {
 	})
 
 	// An export from before the capability columns (provider_version "",
-	// model_vision false): the reconstructed providers have no version, so
-	// the tools floor rejects coord-a, and no slot advertises vision, so
-	// coord-c finds no provider. The replay must say so (no_provider, never
-	// served) rather than invent capabilities the snapshot did not record.
+	// model_vision false): no slot advertises vision, so coord-c finds no
+	// provider. The replay must say so (no_provider, never served) rather than
+	// invent capabilities the snapshot did not record. Tools carry no version
+	// gate, so the version-less fleet still serves coord-a.
 	t.Run("legacy export without capabilities", func(t *testing.T) {
 		reg := buildFleet(t, false)
 		results := routingsim.RunWithGate(reg, trace, true)
 		report := routingsim.Summarize(results)
 		t.Logf("legacy ndjson replay:\n%s", report.String())
-		if report.Total != 3 || report.MachineBusy != 0 || report.Served != 1 {
-			t.Fatalf("soft-gate report = %+v, want only the plain-text arrival served", report)
+		if report.Total != 3 || report.MachineBusy != 0 || report.Served != 2 {
+			t.Fatalf("soft-gate report = %+v, want the tools and plain-text arrivals served", report)
 		}
-		if b, ok := report.Bucket("750-1000"); !ok || b.Total != 1 || b.Served != 1 {
-			t.Fatalf("bucket 750-1000 = %+v, want the plain-text arrival served", b)
-		}
-		for _, label := range []string{"0-500", "1000-2000"} {
-			if b, ok := report.Bucket(label); !ok || b.Total != 1 || b.Served != 0 || b.NoProvider != 1 {
-				t.Fatalf("bucket %s = %+v, want the gated arrival unserved", label, b)
+		for _, label := range []string{"0-500", "750-1000"} {
+			if b, ok := report.Bucket(label); !ok || b.Total != 1 || b.Served != 1 {
+				t.Fatalf("bucket %s = %+v, want the arrival served", label, b)
 			}
 		}
-		if results[0].Outcome != routingsim.OutcomeNoProvider {
-			t.Fatalf("tools arrival outcome = %q, want no_provider (no provider version → below the tools floor)", results[0].Outcome)
+		if b, ok := report.Bucket("1000-2000"); !ok || b.Total != 1 || b.Served != 0 || b.NoProvider != 1 {
+			t.Fatalf("bucket 1000-2000 = %+v, want the vision arrival unserved", b)
+		}
+		if results[0].Outcome != routingsim.OutcomeServed {
+			t.Fatalf("tools arrival outcome = %q, want served (no tools version gate)", results[0].Outcome)
 		}
 		if results[1].Outcome != routingsim.OutcomeServed {
 			t.Fatalf("plain arrival outcome = %q, want served", results[1].Outcome)
@@ -415,11 +414,10 @@ func TestFleetSpecCarriesCapabilities(t *testing.T) {
 		t.Fatalf("prov-l = version %q models %+v, want no version and no flags", lVersion, lModels)
 	}
 
-	// The gates read them: prov-v serves tools (version ≥ floor) and vision
-	// (IsVision) for simModel but never simModel2 (render-broken); prov-l
-	// serves neither trait.
+	// The gates read them: prov-v serves tools and vision (IsVision) for
+	// simModel but never simModel2 (render-broken).
 	if !reg.HasToolCapableProviderForModel(simModel) || !reg.HasVisionProviderForModel(simModel) {
-		t.Fatal("prov-v must pass the tools floor and the vision gate for simModel")
+		t.Fatal("prov-v must pass the tools and vision gates for simModel")
 	}
 	if reg.HasToolCapableProviderForModel(simModel2) {
 		t.Fatal("a template_render_ok=false slot must not pass the tools gate")

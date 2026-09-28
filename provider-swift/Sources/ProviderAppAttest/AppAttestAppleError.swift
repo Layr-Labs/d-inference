@@ -41,9 +41,11 @@ public struct AppAttestAppleError: Codable, Sendable, Equatable {
 struct AppleAppAttestFailure: Error, Sendable {
     let failure: ShadowFailure
     let details: AppAttestAppleError
+    let chain: [AppAttestNativeErrorEntry]
 
     init(_ error: NSError) {
         details = AppAttestAppleError(error)
+        chain = AppAttestNativeErrorChain.entries(error)
         guard error.domain == DCErrorDomain else { failure = .appleError; return }
         switch error.code {
         case DCError.Code.featureUnsupported.rawValue: failure = .unsupported

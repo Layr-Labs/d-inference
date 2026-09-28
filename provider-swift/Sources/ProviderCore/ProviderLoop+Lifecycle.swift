@@ -3,6 +3,11 @@ import Foundation
 extension ProviderLoop {
     internal func beginServingDrain(owner: ProviderDrain.Owner) {
         servingDrain.begin(owner)
+        // Before registration there is no event reader to wake the startup
+        // gate. Stop its driver and release the wait as soon as draining owns
+        // admission; the serve task performs slot teardown before returning.
+        startupPreloadTask?.cancel()
+        startupPreloadGateWaiter?.cancel()
         if servingDrain.owner != .lifecycle { lifecycleStatus = .init(outcome: .draining, remaining: lifecycleRemaining) }
         localResponseTracker.setAccepting(false)
         state.refusingNewWork = true
@@ -40,6 +45,9 @@ extension ProviderLoop {
         beginServingDrain(owner: .lifecycle)
         pendingRetirementReconnect?.cancel()
         pendingRetirementReconnect = nil
+        // Stop/signal preempts read-only validation, but inventory transactions
+        // must settle before the final lifecycle barrier.
+        await cancelModelSwitchAndWait()
         let deadline = ContinuousClock.now.advanced(by: .seconds(request.timeoutSeconds))
         lifecycleStatus = ProviderDrainStatus(requestID: request.id, outcome: .draining,
             remaining: lifecycleRemaining, deadline: Date().timeIntervalSince1970 + Double(request.timeoutSeconds))
@@ -119,9 +127,15 @@ extension ProviderLoop {
                     handled = request.id
                     Task { await self?.handleLifecycleCommand(request) }
                 }
+                _ = await self?.acceptPendingModelSwitch(from: mailbox)
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
+    }
+
+    internal func acceptPendingModelSwitch(from mailbox: LifecycleMailbox) -> Task<ProviderModelSwitchStatus, Never>? {
+        guard let request = mailbox.claimSwitchRequest(), request.isValid(for: mailbox.identity) else { return nil }
+        return Task { await self.switchModels(request: request) }
     }
 
     private func handleLifecycleCommand(_ request: ProviderDrainRequest) async {
@@ -146,7 +160,8 @@ extension ProviderLoop {
     ) async -> Bool {
         if servingDrain.phase == .drained {
             guard await drainNativeMiMoOwners() else { return false }
-            await coordinatorClient?.shutdown()
+            if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
+            else if !(await shutdownBeforeRegistration()) { return false }
             return true
         }
         guard let identity = ProcessIdentity.current() else { return false }
@@ -163,7 +178,8 @@ extension ProviderLoop {
         // the already-drained path: retain pending/faulted owners and refuse
         // shutdown success until their actual transaction retirement finishes.
         guard await drainNativeMiMoOwners() else { return false }
-        await coordinatorClient?.shutdown()
+        if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
+        else if !(await shutdownBeforeRegistration()) { return false }
         return true
     }
 }

@@ -10,7 +10,7 @@
 // gate lives in `PrefixCachePolicy`; this file owns SSD-specific knobs.
 //
 // Threat model: T-041 (the SSD tier reintroduces an at-rest artifact —
-// leak #2 is closed by HMAC-keyed names, `SSDLookupKeys`; the 15-minute
+// leak #2 is closed by HMAC-keyed names, `SSDLookupKeys`; the 30-minute
 // sliding TTL below bounds the at-rest window and the cross-restart
 // TTFT-oracle window). SEC-035 stays the accepted residual.
 
@@ -20,15 +20,20 @@ enum SSDPrefixCachePolicy {
 
     // MARK: - TTL
 
-    /// Sliding TTL override (seconds). Ship decision (Gaj, 2026-07-07):
-    /// **15 minutes MAXIMUM**, sliding on hit — pairs with the
-    /// coordinator's 10-minute cache-affinity routing window and bounds
-    /// both the at-rest window and the cross-restart TTFT-oracle window
-    /// (T-041). The env var can only SHORTEN the TTL; values ≤ 0, above
-    /// the maximum, or malformed fall back to the 15-minute default.
+    /// Sliding TTL override (seconds): **30 minutes MAXIMUM**, sliding on
+    /// hit. The original ship decision (Gaj, 2026-07-07) was 15 minutes,
+    /// set while every capacity eviction also rotated the cache epoch.
+    /// Eviction no longer rotates (2026-09-26, prefix-cache hit-rate
+    /// analysis), so the TTL is what bounds reuse; it is raised to 30
+    /// minutes, which still outlasts the coordinator's 10-minute holder TTL
+    /// and bounds both the at-rest window and the cross-restart TTFT-oracle
+    /// window (T-041). Default and maximum stay equal, so the env var can
+    /// only SHORTEN the TTL; values ≤ 0, above the maximum, or malformed
+    /// fall back to the 30-minute default. Any longer TTL needs a fresh
+    /// SEC-035 sign-off.
     static let ttlEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS"
-    static let maxTTLSeconds: Int64 = 900
-    static let defaultTTLSeconds: Int64 = 900
+    static let maxTTLSeconds: Int64 = 1_800
+    static let defaultTTLSeconds: Int64 = 1_800
 
     static func ttlSeconds(
         environment: [String: String] = ProcessInfo.processInfo.environment

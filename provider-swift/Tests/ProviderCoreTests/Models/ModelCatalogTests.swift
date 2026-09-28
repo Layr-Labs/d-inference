@@ -80,33 +80,6 @@ struct ModelCatalogTests {
         #expect(str.contains(#""min_ram_gb":8"#))
     }
 
-    @Test("cacheModelDirectory mirrors the HuggingFace cache layout")
-    func cacheModelDirectoryShape() {
-        let url = ModelDownloader.cacheModelDirectory(for: "mlx-community/Foo-Bar")
-        #expect(url.path.hasSuffix(".cache/huggingface/hub/models--mlx-community--Foo-Bar"))
-    }
-
-    @Test("parseShardNames returns sorted unique values from weight_map")
-    func parseShardNamesDedupAndSort() throws {
-        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("test-index-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: tmp) }
-
-        let json = #"""
-        {
-          "weight_map": {
-            "lm_head.weight": "model-00002.safetensors",
-            "embed.weight":   "model-00001.safetensors",
-            "block.0.q":      "model-00001.safetensors"
-          }
-        }
-        """#
-        try Data(json.utf8).write(to: tmp)
-
-        let names = try ModelDownloader.parseShardNames(indexPath: tmp)
-        #expect(names == ["model-00001.safetensors", "model-00002.safetensors"])
-    }
-
     @Test("manifest paths reject traversal and preserve nested files")
     func manifestPathValidation() throws {
         #expect(try ModelDownloader.validatedManifestRelativePath("config.json") == "config.json")
@@ -547,6 +520,34 @@ struct ModelCatalogTests {
         #expect(!snapshotEntries.contains { $0.hasPrefix(".local-staging-") })
     }
 
+    // The retired CDN path fetched config/tokenizer/weights by name with no
+    // SHA-256 check. Without a verified manifest the download must fail closed
+    // before any network or cache work.
+    @Test("download refuses a catalog entry without a verified manifest")
+    func downloadRefusesUnverifiedCatalogEntry() async throws {
+        let modelID = "test-unverified/\(UUID().uuidString)"
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+        // An unroutable CDN: any network attempt would fail differently.
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.invalid")
+
+        for (prefix, aggregate) in [(nil, "a" + String(repeating: "0", count: 63)), ("v2/x/v1", nil)] as [(String?, String?)] {
+            let model = CatalogModel(
+                id: modelID, s3Name: "unverified", displayName: "Unverified", sizeGb: 0.001,
+                r2Prefix: prefix, aggregateSHA256: aggregate)
+            do {
+                try await downloader.download(model: model)
+                Issue.record("an entry without r2_prefix + aggregate_sha256 must not download")
+            } catch let error as ModelCatalogError {
+                guard case .downloadFailed(let message) = error else {
+                    Issue.record("unexpected catalog error: \(error)")
+                    continue
+                }
+                #expect(message.contains("no verified manifest"))
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: modelDir.path))
+    }
 }
 
 // Mirror of the private wrapper used inside ModelCatalog.swift so we can

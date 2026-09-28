@@ -43,13 +43,13 @@ const scenarios: { p: MyProvider; ctxOverride?: typeof ctx }[] = [
   {
     p: baseProvider({
       reputation: {
-        score: 0.3, total_jobs: 20, successful_jobs: 10, failed_jobs: 10,
+        total_jobs: 20, successful_jobs: 10, failed_jobs: 10,
         total_uptime_seconds: 100, avg_response_time_ms: 500, challenges_passed: 5, challenges_failed: 0,
       },
     }),
   },
   { p: baseProvider({ models: [] }) },
-  { p: baseProvider({ account_id: "", wallet_address: undefined }) },
+  { p: baseProvider({ account_id: "" }) },
   { p: baseProvider({ version: "0.5.10" }), ctxOverride: { ...ctx, latest_provider_version: "0.5.16", min_provider_version: "0.5.0" } },
   { p: baseProvider({ last_challenge_verified: undefined }) },
 ];

@@ -304,8 +304,10 @@ actor PrefixCacheEvidenceSequencer {
         else { return }
         let anchors: [PrefixCacheAnchor]
         if explicitCheckpoints {
-            anchors = result.readyAnchors
-            guard !anchors.isEmpty, anchors.count <= 16,
+            // More anchors than the wire carries is not a reason to withhold
+            // the receipt: keep the deepest 16, which end at the final anchor.
+            anchors = Array(result.readyAnchors.suffix(16))
+            guard !anchors.isEmpty,
                 anchors.last == finalAnchor,
                 anchors.allSatisfy({
                     valid(anchor: $0, capability: context.capability)

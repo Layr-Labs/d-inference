@@ -179,8 +179,8 @@ struct Benchmark: AsyncParsableCommand {
         }
 
         let snapshot = try loadRuntimeSnapshot(
-            configPath: configOptions.config,
-            migrateOnDisk: false)
+            configPath: configOptions.config)
+        ModelScanner.configureCacheDirectory(snapshot.configuredModelCacheDirectory)
 
         // The low-level Gemma controls are process-start latches, so
         // `provider.toml` must be projected BEFORE the first MLX device

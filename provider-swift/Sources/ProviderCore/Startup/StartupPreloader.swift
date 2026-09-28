@@ -69,6 +69,17 @@ public struct StartupPreloader: Sendable {
         /// refreshed load gate admits. nil (tests/legacy) keeps the
         /// planned figure; a nil RESULT for one id falls back likewise.
         public var currentRequiredGb: (@Sendable (String) async -> Double?)?
+        /// Live resident-slot gate. A skipped or failed candidate must not
+        /// consume a slot, so plans retain overflow candidates and stop only
+        /// when the serving set is actually full.
+        public var canLoadMore: (@Sendable () async -> Bool)?
+        /// Called when the driver reaches a candidate, including one it later
+        /// skips. Lets daemon status distinguish pending startup work from
+        /// models that will need a request-time load.
+        public var onCandidateStarted: (@Sendable (String) async -> Void)?
+        /// Closed-category operational warning; detailed model and memory
+        /// values remain in owner-only state/diagnostics, not public logs.
+        public var onInsufficientMemory: (@Sendable () -> Void)?
 
         public init(
             freeMemoryGb: @escaping @Sendable () async -> Double,
@@ -78,7 +89,10 @@ public struct StartupPreloader: Sendable {
             retire: @escaping @Sendable (String) async -> Void = { _ in },
             onSelfTestFailed: @escaping @Sendable (String, String) -> Void = { _, _ in },
             log: @escaping @Sendable (String) -> Void = { _ in },
-            currentRequiredGb: (@Sendable (String) async -> Double?)? = nil
+            currentRequiredGb: (@Sendable (String) async -> Double?)? = nil,
+            canLoadMore: (@Sendable () async -> Bool)? = nil,
+            onCandidateStarted: (@Sendable (String) async -> Void)? = nil,
+            onInsufficientMemory: (@Sendable () -> Void)? = nil
         ) {
             self.freeMemoryGb = freeMemoryGb
             self.load = load
@@ -88,6 +102,9 @@ public struct StartupPreloader: Sendable {
             self.onSelfTestFailed = onSelfTestFailed
             self.log = log
             self.currentRequiredGb = currentRequiredGb
+            self.canLoadMore = canLoadMore
+            self.onCandidateStarted = onCandidateStarted
+            self.onInsufficientMemory = onInsufficientMemory
         }
     }
 
@@ -116,7 +133,11 @@ public struct StartupPreloader: Sendable {
         var summary = Summary()
         for candidate in candidates {
             if Task.isCancelled { break }
+            if let canLoadMore = deps.canLoadMore, !(await canLoadMore()) { break }
             let modelId = candidate.modelId
+            if let onCandidateStarted = deps.onCandidateStarted {
+                await onCandidateStarted(modelId)
+            }
 
             // Memory admission WITHOUT eviction (see the design rules above).
             // Requirement recomputed LIVE when the hook is wired: an earlier
@@ -128,6 +149,7 @@ public struct StartupPreloader: Sendable {
             }
             let freeGb = await deps.freeMemoryGb()
             guard freeGb >= requiredGb else {
+                deps.onInsufficientMemory?()
                 deps.log(
                     "WARN: startup preload skipping '\(modelId)': needs "
                         + "\(Self.gb(requiredGb)) GB, \(Self.gb(freeGb)) GB free — "
@@ -145,6 +167,11 @@ public struct StartupPreloader: Sendable {
             } catch is CancellationError {
                 break
             } catch {
+                // The fast pre-check can pass and the authoritative load gate
+                // can still refuse after an interleaved load changes memory.
+                // The gate and its pending-load rechecks use two bounded
+                // insufficient-memory message shapes. Keep public text closed.
+                if Self.isInsufficientMemoryLoad(error) { deps.onInsufficientMemory?() }
                 deps.log(
                     "WARN: startup preload failed for '\(modelId)': "
                         + "\(error.localizedDescription) — will lazy-load on first request")
@@ -180,6 +207,21 @@ public struct StartupPreloader: Sendable {
             }
         }
         return summary
+    }
+
+    private static func isInsufficientMemoryLoad(_ error: any Error) -> Bool {
+        guard let loadError = error as? InferenceError,
+              case .modelLoadFailed(let message) = loadError else { return false }
+        return message.hasPrefix("Insufficient memory (")
+            || message.hasPrefix("Insufficient memory for '")
+            || (message.hasPrefix("Model '")
+                && (message.contains("' loaded but has insufficient KV headroom under the memory cap")
+                    || message.contains("' loaded but its engine build left insufficient KV headroom under the memory cap")))
+            || ((message.hasPrefix("loading '")
+                    || (message.hasPrefix("Model '")
+                        && message.contains(" MTP fallback engine construction failed:")))
+                && message.contains("' would re-slice some model's KV grant below the ")
+                && message.contains(" GB serviceability floor "))
     }
 
     // MARK: - Formatting helpers

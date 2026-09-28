@@ -224,6 +224,53 @@ struct ModelPrefetchDownloaderTests {
         #expect(lastDone == lastTotal && lastTotal == manifest.totalSizeBytes)
     }
 
+    @Test("downloads recover a dangling model symlink without losing its target", arguments: [false, true])
+    func downloadWithDanglingModelLink(prefetch: Bool) async throws {
+        PrefetchURLProtocol.reset()
+        let fm = FileManager.default
+        let modelID = "test-org/dangling-link-\(UUID().uuidString)"
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let cacheRoot = modelDir.deletingLastPathComponent()
+        let missingTarget = fm.temporaryDirectory.appendingPathComponent("offline-model-\(UUID().uuidString)")
+        let backupPrefix = ".\(modelDir.lastPathComponent).unavailable-link-"
+        defer {
+            try? fm.removeItem(at: modelDir)
+            for name in (try? fm.contentsOfDirectory(atPath: cacheRoot.path)) ?? [] where name.hasPrefix(backupPrefix) {
+                try? fm.removeItem(atPath: cacheRoot.appendingPathComponent(name).path)
+            }
+        }
+        try fm.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(atPath: modelDir.path, withDestinationPath: missingTarget.path)
+
+        let prefix = "v2/dangling-link/v1"
+        let payload = Data("downloaded weights".utf8)
+        let aggregate = aggregateHash(files: [("model.safetensors", payload)])
+        let manifest = ModelManifest(
+            schemaVersion: 1, modelID: modelID, version: "v1", r2Prefix: prefix,
+            aggregateSHA256: aggregate, totalSizeBytes: Int64(payload.count), fileCount: 1,
+            files: [ManifestFile(path: "model.safetensors", sizeBytes: Int64(payload.count),
+                                 sha256: sha256Hex(payload), role: "weight")],
+            createdAt: Date(timeIntervalSince1970: 0))
+        PrefetchURLProtocol.files = ["/\(prefix)/model.safetensors": payload]
+        let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Symlink", sizeGb: 0.001,
+                                 r2Prefix: prefix, aggregateSHA256: aggregate)
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        if prefetch {
+            try await downloader.prefetch(model: model, manifest: manifest)
+        } else {
+            try await downloader.downloadManifestModel(model: model, manifest: manifest, onProgress: nil)
+        }
+
+        let snapshot = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        #expect(try Data(contentsOf: snapshot.appendingPathComponent("model.safetensors")) == payload)
+        #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == "local")
+        #expect(!fm.fileExists(atPath: missingTarget.path))
+        let backups = try fm.contentsOfDirectory(atPath: cacheRoot.path).filter { $0.hasPrefix(backupPrefix) }
+        #expect(backups.count == 1)
+        let backup = try #require(backups.first)
+        #expect(try fm.destinationOfSymbolicLink(atPath: cacheRoot.appendingPathComponent(backup).path) == missingTarget.path)
+    }
+
     @Test("prefetch resumes: already-valid files are skipped, only missing files fetched")
     func prefetchResumesSkipsValidFiles() async throws {
         PrefetchURLProtocol.reset()

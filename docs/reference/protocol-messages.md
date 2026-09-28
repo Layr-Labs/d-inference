@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-23 · commit `afb71c63d`
+> Last updated: 2026-09-28 · commit `2496ac833`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -18,9 +18,11 @@ Terminal `profile` objects can include optional schema-1
 [`deadline_decision`](prediction-decision-telemetry.md#provider-fields).
 This does not add a message type or change the public error code.
 
-The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
+The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` and `app_attest_shadow` frames; the coordinator serves protocol 3 only, and a registration announcing protocol 1 or 2 gets no frames. Protocol 3 binds the account, status, static hardware and the existing verification key. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 
-App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds both fields. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).
+App Attest error replies optionally carry `apple_error: {domain, code, underlying_domain?, underlying_code?}`. Domain buckets and signed 32-bit bounds are defined by `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`) and mirrored in `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`. Failed `ready` replies may also carry closed `availability_reason`; synthetic `apple_error` replies may carry closed `apple_error_source`. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds both fields. `ready` replies may also carry optional `launch_session`, `boot_time` and `operation_stalled_seconds`; `coordinator/protocol/app_attest_runtime_diagnostic.go` (`SanitizeRuntimeDiagnostics`) strips invalid values without rejecting the frame. These untrusted diagnostics are excluded from the signed transcript and cannot authorize serving; missing fields preserve older peers. See [wire details](app-attest-shadow.md#wire-exchange).
+
+`ready` replies may also carry optional deep diagnostics (`process_started_at`, `previous_exit`, `start_reason`, `console_user_active`, `sip_enabled`, `authenticated_root`, `preflight`, `key_history`, `push_history`), and failed `attestation`/`assertion` replies with result `apple_error` or `apple_invalid_key` may carry `native_error_chain`; `coordinator/protocol/app_attest_deep_diagnostic.go` strips each invalid or misplaced member without rejecting the frame. See [Provider diagnostics](app-attest-shadow.md#provider-diagnostics).
 
 ## Provider lifecycle drain
 
@@ -30,19 +32,30 @@ App Attest error replies optionally carry `apple_error: {domain, code, underlyin
 | Coordinator → provider | `provider_drain_ack` | Matching `request_id` | Swift `CoordinatorMessage.drainAck`; only the issuing connection's current waiter can consume it |
 
 The registered provider closes admission first, then sends a barrier over the
-FIFO control writer. The coordinator permanently fences that connection from
-new dispatch and asynchronously waits for all earlier completion/billing workers
-before acknowledging. Heartbeat/challenge reads continue during that wait; the
-connection has at most two pending acknowledgement workers. A final barrier
-after accepted requests and local response writes finish establishes that prior
-terminal usage has been processed. The Swift acknowledgement also passes through
-the ordered provider event queue, so earlier inbound inference frames are refused
-before the barrier completes. It is not a bearer credential or permission
-to serve. A stale idle heartbeat or drain TTL cannot reopen this connection; a
-restart registers and authorizes a new connection. Code:
+FIFO control writer. The coordinator fences that connection from new dispatch
+and asynchronously waits for held/queued inference reservations to be removed,
+then for completion/billing workers to settle. Pending removal signals an event;
+there is no polling and ordinary serving allocates no reservation-wait tracking.
+Billing begun during reservation cleanup or settlement is included before the
+receipt. Heartbeat/challenge reads continue during that wait. Each connection
+has one acknowledgement worker and one coalesced latest barrier, so overlapping
+switch, preliminary-stop, and final-stop barriers cannot strand the final waiter.
+Every received barrier gets a new internal generation. The control writer checks
+that generation again at handoff: reusing a wire `request_id` cannot let an earlier
+worker or queued receipt settle the latest drain. Disconnect cancels the wait and
+clears its reservation tracking. A final barrier after accepted requests and local
+response writes finish establishes that prior terminal usage has been processed.
+The Swift acknowledgement also passes through the ordered provider event queue,
+so earlier inbound inference frames are refused before the barrier completes.
+It is not a bearer credential or permission to serve. A stale idle heartbeat or
+drain TTL cannot reopen this connection. Only a committing `models_replace`
+(`validate_only` omitted or false) against the latest settled drain, followed by
+successful receipt delivery and matching provider readiness, resumes the same connection; a restart instead
+registers and authorizes a new connection. Code:
 `coordinator/api/provider_completion_barrier.go` (`providerCompletionBarrier`),
+`coordinator/api/provider_drain_ack.go` (`providerDrainAcker`),
 `coordinator/api/provider.go` (`providerReadLoop`),
-`coordinator/registry/drain_state.go` (`CommitProviderDrain`),
+`coordinator/registry/drain_state.go` (`CommitProviderDrain`, `ProviderDrainPending`, `WriteProviderDrainAck`),
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Drain.swift`
 (`acknowledgeDrain`).
 
@@ -97,6 +110,10 @@ deliver a graceful-drain acknowledgement.
 | provider → coordinator | `load_model_status` | `LoadModelStatusMessage` | `.loadModelStatus` |
 | provider → coordinator | `prefetch_model_status` | `PrefetchModelStatusMessage` | `.prefetchModelStatus` |
 | provider → coordinator | `models_update` | `ModelsUpdateMessage` | `.modelsUpdate` |
+| provider → coordinator | `models_replace` | `ModelsReplaceMessage` | `.modelsReplace` |
+| coordinator → provider | `models_replace_ack` | `ModelsReplaceAckMessage` | `.modelsReplaceAck` |
+| provider → coordinator | `models_replace_ready` | `ModelsReplaceReadyMessage` | `.modelsReplaceReady` |
+| coordinator → provider | `models_replace_resumed` | `ModelsReplaceResumedMessage` | `.modelsReplaceResumed` |
 | provider → coordinator | `prefix_cache_lookup` | `PrefixCacheLookupMessage` | `.prefixCacheLookup` |
 | provider → coordinator | `prefix_cache_ready` | `PrefixCacheReadyMessage` | `.prefixCacheReady` |
 | provider → coordinator | `prefix_cache_lookup_v2` | `PrefixCacheLookupV2Message` | `.prefixCacheLookupV2` |
@@ -145,10 +162,8 @@ connection, first.
 | `tool_constraint_models` | `[]string` | `[String]?` | opt | concrete model IDs the provider enforces |
 | `apns_device_token` | `string` | `String?` | opt | hex APNs token for the `E_K(nonce)` code-identity push |
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
-| `python_hash`, `runtime_hash` | `string` | `String?` | opt | SHA-256 |
-| `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256; Swift omits when empty |
-| `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities); providers `< v0.6.31` also send `hypervisor_active` inside it, which Go drops |
-| `wallet_address` | — | `String?` | Swift only | legacy key; Go has no field and drops it |
+| `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
+| `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities) |
 
 A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
@@ -204,9 +219,8 @@ existing catalog/measurement policy. See [offloaded-weight admission](../archite
 
 #### `privacy_capabilities`
 
-Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Eight required
-booleans: `text_backend_inprocess`, `text_proxy_disabled`,
-`python_runtime_locked`, `dangerous_modules_blocked`, `sip_enabled`,
+Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Six required
+booleans: `text_backend_inprocess`, `text_proxy_disabled`, `sip_enabled`,
 `anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`.
 
 #### Prefix-cache objects
@@ -215,7 +229,7 @@ booleans: `text_backend_inprocess`, `text_proxy_disabled`,
 |---|---|
 | `PrefixCacheV2Capability` | Required: `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `block_hash_version` (`string`); `block_size` (`uint32`); `cache_epoch` (`string`); `enabled`, `ready` (`bool`). Optional `ready_boundary_mode` (`string`): absent/empty retains legacy SSD coverage; `checkpoint` permits only explicitly committed input endpoints. Unknown values are rejected; the field is invalid on resident capabilities. `coordinator/registry/cache_capabilities_v2.go`, `validatePrefixCacheCapability` / `validateMemoryPrefixCacheCapabilities` |
 | `PrefixCacheModelStatus` | `model_id`; `backend` ∈ {`contiguous`, `paged`, `unknown`}; `replay_strategy` ∈ {`direct`, `frozen_full`, `tail_replay`, `none`, `unknown`}; `state` ∈ {`ready`, `pending`, `disabled`, `error`}; `reason` ∈ {`ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed`}. Enums validated at the coordinator boundary; Swift `PrefixCacheStatusBackend` / `ReplayStrategy` / `State` / `Reason` (`Messages.swift`) |
-| `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_priority_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`}; `count` (`uint64`, monotonic per process). Unknown future outcomes are ignored individually by older coordinators. `coordinator/registry/cache_eligibility.go`, `PrefixCacheDonationOutcomes`; Swift `PrefixCacheDonationOutcome` (`Messages.swift`). |
+| `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_priority_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`, `skipped_novel`}; `count` (`uint64`, monotonic per process). `cache_maintenance_busy` is emitted only by providers older than the per-file eviction change. Unknown future outcomes are ignored individually by older coordinators. `coordinator/registry/cache_eligibility.go`, `PrefixCacheDonationOutcomes`; Swift `PrefixCacheDonationOutcome` (`Messages.swift`). |
 | `PrefixCacheAnchor` | `chain_hash` (lowercase SHA-256 hex), `token_count` (block-aligned `int`) |
 
 ### `heartbeat`
@@ -267,6 +281,9 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 | `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `gpu_memory_cache_gb` | `float64` | `Double` | req | Metal active / peak / reclaimable cache, shared across slots |
 | `total_memory_gb` | `float64` | `Double` | req | |
 | `free_for_load_gb` | `*float64` | `Double` (always encoded) | ptr | **The single source of truth for cold-load admission**: max additional model-weight GB loadable now, net of the unified-memory cap (`defaultCapFraction`, [`../architecture/hardware-support.md#constants`](../architecture/hardware-support.md#constants)), the OS/operator reserve and activation + minimum-KV headroom, clamped to real OS-available memory, with idle resident models counted as evictable. Nil (legacy provider) → the coordinator falls back to its total-memory heuristic |
+| `load_usable_gb` | `*float64` | `Double?` | opt | Owner diagnostic: live GB available to the no-eviction load gate before activation/minimum-KV headroom. Zero is an observed zero; omission means an older provider or invalid sample. Not a routing input. |
+| `load_headroom_gb` | `*float64` | `Double?` | opt | Owner diagnostic: current serving-set activation + minimum-KV reserve. A cold model needs `estimated_memory_gb + load_headroom_gb` out of `load_usable_gb`. Not a routing input. |
+| `load_transition_active` | `*bool` | `Bool?` | opt | Owner diagnostic: a model load or load-gate update is in flight, possibly before a slot exists. When true, defer a cold-load memory verdict; omission means older provider. Not a routing input. |
 | `mlx_cache_reclaimer` | `*MLXCacheReclaimerTelemetry` | `MLXCacheReclaimerTelemetry?` | opt | cumulative allocator-reclaim counters (`uint64`, reset on restart): `cache_limit_bytes`, `sweep_signals`, `reclaims`, `reclaimed_bytes`, `last_reclaimed_bytes`, `last_reclaim_duration_ms` |
 | `capacity_seq` | `uint64` | `UInt64` | opt | per-connection monotonic snapshot sequence; the coordinator discards stale or reordered snapshots, and any `seq > 0` marks the connection quote-capable (`capacity_probe`). 0/omitted = legacy last-write-wins |
 | `telemetry` | `*CapacityTelemetry` | `CapacityTelemetry?` | opt | [`backend_capacity.telemetry`](#backend_capacitytelemetry) |
@@ -318,6 +335,7 @@ These heartbeat-only additions do not change canonical registration signatures.
 | `stages_total`, `files_written_total`, `written_bytes_total` | Store-lifetime successful stages, writes and bytes; attention writes include sidecars |
 | `donation_drops_total`, `corrupt_drops_total`, `evictions_total` | Existing store drop counters and active-store disk-budget removals. For complete checkpoints, `donation_drops_total` is queued-write `writesDropped`; prequeue refusals appear only in the separate donation outcome snapshot, which classifies every exported endpoint attempt |
 | `ttl_expired_total` | Optional attention-store TTL removal counter; whole-root TTL maintenance uses the process counters above |
+| `recurrent_capture_disarmed_packed_total` | Optional complete-store counter: recurrent (GDN/SSM) donors whose checkpoint capture a packed prefill cohort disarmed, once per request (requests, including prompts below the 1,024-token floor that could never have written a file); absent from attention stores and from providers before the chunk-agnostic capture rule |
 | `io` | Optional complete-store `PrefixCacheIOTelemetry`; absent for attention stores whose read/duration counters are not instrumented |
 | `io.staging_peak_bytes` | Peak charged staging reservation over this store's lifetime |
 | `io.files_read_total`, `read_bytes_total`, `stage_read_bytes_total`, `donation_read_bytes_total` | Store-lifetime read attempts/bytes, with stage and donor-authentication byte components |
@@ -484,7 +502,7 @@ these fields: [`../architecture/request-outcome-observability.md`](../architectu
 | `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` (`coordinator/api/inference_error_sanitize.go`) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
 | `status_code` | `int` | `UInt16` | req | |
 | `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge (`coordinator/api/consumer.go`, `noteInferenceError`; `coordinator/api/dispatch.go`, `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
-| `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure` |
+| `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure`. Swift always sets it (`InferenceFailure.code` is non-optional). A missing or unknown value is drift: `sanitizeProviderInferenceError` fails it closed as `generation_failure` and counts `inference.invalid_failure_code`; status, `error_reason` and `terminal_cause` never reclassify it |
 | `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric (`coordinator/api/terminal_cause.go`); platform-policy terminals never strike health breakers |
 | `attempt_usage` | `*UsageInfo` | `UsageInfo?` | opt | engine-reconciled usage of the failed attempt; observability only, never billing |
 | `rejection_reason` | `CapacityRejectionReason` | `CapacityRejectionReason?` | opt | routing-v2 enriched rejection; enum shared with [`capacity_quote`](#capacity_quote) |
@@ -503,11 +521,10 @@ Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
 |---|---|---|---|---|
 | `nonce` | `string` | `String` | req | echoed |
 | `signature` | `string` | `String` | req | base64 SE signature over nonce + timestamp (liveness) |
-| `status_signature` | `string` | `String?` | opt | v0.3.11+; signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, `coordinator/attestation/`); absent ⇒ status fields are advisory only |
+| `status_signature` | `string` | `String?` | opt | signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, `coordinator/attestation/`). Swift always sends it; for a provider with an attested SE key an absent or empty value fails the challenge |
 | `public_key` | `string` | `String` | req | base64 |
-| `hypervisor_active` | `*bool` | — | legacy | `< v0.6.31` providers only; Swift omits it; Go keeps decoding it so their status signature verifies |
-| `rdma_disabled`, `sip_enabled`, `secure_boot_enabled` | `*bool` | `Bool?` | opt | fresh posture at challenge time |
-| `binary_hash`, `active_model_hash`, `python_hash`, `runtime_hash` | `string` | `String?` | opt | SHA-256 |
+| `rdma_disabled`, `sip_enabled`, `secure_boot_enabled` | `*bool` | `Bool?` | opt | fresh posture at challenge time; Swift always sends all three, and an omitted value fails the challenge |
+| `binary_hash`, `active_model_hash` | `string` | `String?` | opt | SHA-256 |
 | `template_hashes`, `model_hashes` | `map[string]string` | `[String: String]` | opt | Swift omits when empty |
 
 ### `code_attestation_response`
@@ -538,6 +555,90 @@ encoding as `register`); `tool_constraint_protocol` (`int`, opt);
 `tool_constraint_models` (`[]string`, opt). The coordinator cross-checks each
 `weight_hash` against the catalog before merging, so a verified build becomes
 routable without a re-register.
+
+### `models_replace` / `models_replace_ack` / `models_replace_ready` / `models_replace_resumed`
+
+Non-destructive target validation followed by atomic full inventory replacement
+and resume on the same registered connection; `models_update` retains its existing
+merge semantics.
+
+| Message | Fields | Contract / source |
+|---|---|---|
+| `models_replace` | `request_id`, `drain_request_id`, nonempty `models`; optional `validate_only` (Bool, omitted means false), `tool_constraint_protocol`, `tool_constraint_models` | `coordinator/protocol/messages.go` (`ModelsReplaceMessage`); Swift `provider-swift/Sources/ProviderCore/Protocol/ModelsReplace.swift` (`ModelsReplace`) |
+| `models_replace_ack` | matching `request_id`, `drain_request_id`, and echoed `validate_only` (Bool, always present), `accepted`; optional `error` | `coordinator/protocol/messages.go` (`ModelsReplaceAckMessage`); Swift `ModelsReplaceAck` |
+| `models_replace_ready` | matching `request_id`, `drain_request_id`, and nonzero `capacity_seq` stamped after the provider opens local admission | `coordinator/protocol/messages.go` (`ModelsReplaceReadyMessage`); Swift `ModelsReplaceReady` |
+| `models_replace_resumed` | exact `request_id`, `drain_request_id`, and `capacity_seq` from the accepted readiness frame | `coordinator/protocol/messages.go` (`ModelsReplaceResumedMessage`); Swift `ModelsReplaceResumed` |
+
+`request_id` is nonempty and at most 64 bytes. `drain_request_id` must name the
+latest committed **and settled** `provider_drain` on this exact live connection.
+Every model ID must be unique and nonempty and meet the attested runtime
+capability floor. Catalog-tracked models must carry their catalog-pinned hash.
+As with registration, off-catalog local models may be advertised regardless of
+`private_only` or whether the provider has a linked owner; advertising them does
+not grant trust or ownership. With a configured catalog, they are eligible only
+for their owner's self-route or preferred-owner requests, never public routing.
+Sources: `coordinator/registry/provider_lifecycle.go` (`Register`),
+`coordinator/registry/model_catalog.go` (`modelServableForOwnerLocked`,
+`providerServesCatalogModelLocked`).
+The tool allowlist must contain unique selected IDs and use protocol 1; protocol
+0 has no tool allowlist. The coordinator validates the entire set before mutation.
+Pending inference reservations must be gone. Both phases require the same committed
+and settled drain and validate the entire target. Rejection (`invalid_drain`,
+`invalid_models`, or `disconnected`) does not mutate inventory or reopen the drain;
+the provider may resubmit its old full set with `validate_only` false and the same
+valid drain ID to resume.
+
+Successful `validate_only: true` does not mutate any provider or registry state:
+the old model/hash inventory, resident warm/current/slot evidence, trust, reputation,
+challenge state, tool/cache/template capabilities, pending loads, routing indexes,
+and settled drain are unchanged. The handler does not drain or reject queued work.
+It is a preflight, not a reservation: the committing request revalidates the target.
+
+Committing success preserves the provider object, session, trust, reputation, and
+challenge state. Removed or hash-changed models lose warm/current/slot, pending-load,
+template, and cache evidence; tool capabilities become the complete new allowlist.
+Routing indexes reflect the new set immediately, but admission stays fenced until
+the accepted committing acknowledgement is successfully written and the provider
+reopens its own admission. It then sends `models_replace_ready` on the same
+connection and emits a refreshed capacity heartbeat. The coordinator checks
+the ready frame's request and drain IDs, then waits for an accepted `idle` or
+`serving` heartbeat with `backend_capacity.capacity_seq` at least as new as the
+nonzero sequence in readiness before resuming routing; either message may arrive
+first. Earlier or stale `capacity_seq`, draining status, and omitted
+capacity cannot release the fence. A failed write or missing readiness
+does not dispatch or reject queued work and does not force a reconnect. A later
+drain or another session cannot be reopened by stale readiness. Removed-model
+queue cleanup survives a later same-session reconciliation drain and is consumed
+only when routing resumes or the session disconnects. After resume the
+coordinator sends a fresh `desired_models` snapshot
+for the replaced inventory, bypassing its prior-snapshot deduplication, then
+reconciles queues including requests for removed models. It then sends
+`models_replace_resumed` on the same connection. The provider reports switch
+success only after receiving the matching receipt. Before sending readiness,
+the provider restores its prefetch subsystem; a desired snapshot received in
+the brief restoration gap is deferred and a newer snapshot supersedes it.
+If the receipt is lost or the connection drops, the result is unconfirmed even though routing may have
+resumed; retrying the same readiness frame on that connection resends the
+receipt without repeating the routing transition. A newer drain invalidates
+that retry. A drain remains reusable
+after validation but not after commit or disconnect. Sources:
+`coordinator/registry/provider_models_replace.go` (`ReplaceProviderModels`, `ResumeProviderModels`),
+`coordinator/api/provider_models_replace.go` (`handleModelsReplace`, `handleModelsReplaceReady`).
+
+Swift `prepareModelSwitch(timeout:)` returns the settled drain ID or nil.
+`validateModelSelectionAfterDrain(_:drainID:timeout:)` checks the candidate before
+the runtime unloads any resident model; it neither stages the candidate advertisement
+or hashes nor consumes the acknowledged drain, including on rejection or timeout.
+`replaceModelsAfterDrain(_:drainID:timeout:)` then commits. Both use the same sender
+and receipt waiter, correlating the request ID, drain ID, phase, and exact connection
+without reconnecting. A validation timeout is not validation success, but cannot
+change the inventory. A committing timeout or dropped connection is an **unknown
+outcome**, never success: the intended inventory and hashes remain staged for any
+ordinary reconnect, and the runtime keeps admission closed until reconciliation.
+An explicit commit rejection restores the client's pre-call advertisement; the
+runtime owns local and durable rollback. Sources:
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Drain.swift`,
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+ModelSwitch.swift`.
 
 ### `prefix_cache_lookup`
 
@@ -646,13 +747,13 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | attempt UUID |
-| `body` | `InferenceRequestBody` | `JSONValue` | opt | plain body: `model`, `messages[]{role, content}`, `stream` (`bool`), `max_tokens` (`*int`, opt), `temperature` (`*float64`, opt), `endpoint` (`string`, opt; defaults to `/v1/chat/completions`). Empty when `encrypted_body` is set |
-| `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; set whenever the provider registered a `public_key` |
+| `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; the only request body. There is no plaintext `body` key: the coordinator never sends one and Swift rejects a request without `encrypted_body` |
 | `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding |
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
 | `cache_scope` | `string` | `String?` | opt | |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | |
 | `cache_receipt_boundary_mode` | `string` | `String?` | opt | `checkpoint` echoes support for the selected SSD capability. A provider emits checkpoint-mode receipts only with this echo; an older coordinator omits it and remains cold for this format. Copied from the prepared attempt and cleared on retry/fallback; `coordinator/api/provider_wire.go`, `snapshotProviderInferenceFrame` / `wireMessage`; `coordinator/registry/cache_receipts.go`, `ForgetCacheAttempt` |
+| `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, `coordinator/registry/cache_attempt_ownership.go`). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, `e2e/testbed/provider_wire_relay.go`) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
 
 ### `cancel`
@@ -695,9 +796,15 @@ replies with `prefetch_model_status` and then `models_update`.
 
 Go `DesiredModelsMessage` · Swift `DesiredModels`. `models` (`[]DesiredModelEntry`):
 `model_name` (public alias), `desired_build` (concrete build id),
-`previous_build` (opt; still acceptable mid-rollout). Sent once right after
-`register` and again whenever a desired build changes. The provider reconciles:
-background-prefetch any missing desired build, hard-swap, emit `models_update`.
+`previous_build` (opt; still acceptable mid-rollout). Sent right after `register`,
+when desired builds or eligible capabilities change, and freshly recomputed after
+matching provider readiness for a committed replacement even when the alias snapshot
+equals the one sent before switching. The same backend/version and attested
+capability guards apply. Entries describe aliases whose desired, previous, or
+retired build is in the provider's advertised inventory; an empty set revokes old
+targets. The provider reconciles by background-prefetching a missing desired
+build, hard-swapping, and emitting `models_update`. Source:
+`coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `RefreshDesiredModels`).
 
 ### `trust_status`
 
@@ -727,9 +834,10 @@ set is pinned by `TestCapacityProbeShapeClosed` (`coordinator/protocol/capacity_
 `register.app_attest_protocol=3` negotiates the account/endpoint-bound shadow
 exchange plus signed static hardware claims. `AppAttestStatus` adds optional
 string fields `machine_model`, `memory_gb`, `cpu_total`, `cpu_performance`,
-`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; version 3 hashes them after the version 2 status
-fields under its own domain. Old transcripts remain unchanged. Original enrollment
-protocol is retained for cached-response recovery across upgrades. These fields
+`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; the version 3
+transcript hashes them after the status fields under its own domain. It is the
+only transcript: cached-response recovery resumes only a protocol-3 enrollment.
+These fields
 are app measurements, not Apple-certified hardware. See
 [the App Attest reference](app-attest-shadow.md) and
 `coordinator/protocol/app_attest_hardware.go` (`AppAttestShadowHashV3`).

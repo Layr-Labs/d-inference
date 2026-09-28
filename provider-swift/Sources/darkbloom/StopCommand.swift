@@ -13,7 +13,7 @@ struct Stop: AsyncParsableCommand {
     var uninstall = false
 
     mutating func run() async throws {
-        let wasLoaded = LaunchAgent.isAnySupportedLabelLoaded()
+        let wasLoaded = LaunchAgent.isLoaded()
         let session = try await ServiceDrain.prepare(options: drain)
         defer { session.release() }
 

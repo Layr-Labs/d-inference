@@ -1,14 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  applyGoogleAnalyticsConsentState,
   buildTrackedPageLocation,
-  getGoogleAnalyticsMeasurementId,
   getGoogleAnalyticsConsentStatus,
-  grantGoogleAnalyticsConsent,
   hasGoogleAnalyticsConsent,
   initializeGoogleAnalytics,
   isGoogleAnalyticsEnabled,
-  revokeGoogleAnalyticsConsent,
   trackEvent,
   trackRouteChange,
 } from "@/lib/google-analytics";
@@ -60,19 +56,6 @@ describe("google analytics helpers", () => {
     expect(isGoogleAnalyticsEnabled()).toBe(false);
   });
 
-  it("enables analytics by default without requiring explicit consent", () => {
-    expect(getGoogleAnalyticsConsentStatus()).toBe("granted");
-    expect(hasGoogleAnalyticsConsent()).toBe(true);
-    expect(isGoogleAnalyticsEnabled()).toBe(true);
-    grantGoogleAnalyticsConsent();
-    expect(getGoogleAnalyticsConsentStatus()).toBe("granted");
-    expect(hasGoogleAnalyticsConsent()).toBe(true);
-    expect(isGoogleAnalyticsEnabled()).toBe(true);
-    revokeGoogleAnalyticsConsent();
-    expect(getGoogleAnalyticsConsentStatus()).toBe("granted");
-    expect(hasGoogleAnalyticsConsent()).toBe(true);
-  });
-
   it("ignores stale local opt-out state from the removed consent prompt", () => {
     localStorage.setItem("darkbloom_ga_consent", "denied");
     document.cookie = "darkbloom_ga_consent=denied; path=/; max-age=60";
@@ -81,32 +64,8 @@ describe("google analytics helpers", () => {
     expect(hasGoogleAnalyticsConsent()).toBe(true);
   });
 
-  it("syncs runtime state when consent changes externally", () => {
-    grantGoogleAnalyticsConsent();
-    initializeGoogleAnalytics();
-
-    expect(window.__googleAnalyticsInitialized).toBe(true);
-    expect(
-      (
-        window as typeof window & Record<string, boolean | undefined>
-      )[`ga-disable-${getGoogleAnalyticsMeasurementId()}`]
-    ).toBe(false);
-
-    localStorage.setItem("darkbloom_ga_consent", "denied");
-    applyGoogleAnalyticsConsentState();
-
-    expect(getGoogleAnalyticsConsentStatus()).toBe("granted");
-    expect(window.__googleAnalyticsInitialized).toBe(true);
-    expect(
-      (
-        window as typeof window & Record<string, boolean | undefined>
-      )[`ga-disable-${getGoogleAnalyticsMeasurementId()}`]
-    ).toBe(false);
-  });
-
   it("keeps only allowed attribution params on the initial page view", () => {
     const origin = window.location.origin;
-    grantGoogleAnalyticsConsent();
     const trackedLocation = buildTrackedPageLocation("/pricing");
 
     expect(trackedLocation).toBe(
@@ -116,7 +75,6 @@ describe("google analytics helpers", () => {
 
   it("drops unapproved utm-style params on the initial page view", () => {
     const origin = window.location.origin;
-    grantGoogleAnalyticsConsent();
     window.history.replaceState(
       {},
       "",
@@ -132,7 +90,6 @@ describe("google analytics helpers", () => {
 
   it("drops query params after the initial page view", () => {
     const origin = window.location.origin;
-    grantGoogleAnalyticsConsent();
     window.__googleAnalyticsCurrentPageLocation = `${origin}/?utm_source=search&gclid=abc123`;
     window.history.replaceState({}, "", "/settings?invite=abc&utm_campaign=spring");
 
@@ -143,7 +100,6 @@ describe("google analytics helpers", () => {
 
   it("initializes gtag with manual pageview mode and tracks sanitized routes", () => {
     const origin = window.location.origin;
-    grantGoogleAnalyticsConsent();
     Object.defineProperty(document, "referrer", {
       configurable: true,
       value: `${origin}/login?next=%2Fbilling&invite=secret&utm_source=mail`,
@@ -151,6 +107,9 @@ describe("google analytics helpers", () => {
     initializeGoogleAnalytics();
     trackRouteChange("/billing");
 
+    expect(
+      (window as typeof window & Record<string, boolean | undefined>)["ga-disable-G-TEST123"],
+    ).toBe(false);
     expect(window.dataLayer?.[0]).not.toBeInstanceOf(Array);
     expect(normalizeDataLayer()).toEqual([
       ["js", expect.any(Date)],
@@ -170,7 +129,6 @@ describe("google analytics helpers", () => {
 
   it("uses the sanitized initial page location as the next page referrer", () => {
     const origin = window.location.origin;
-    grantGoogleAnalyticsConsent();
     Object.defineProperty(document, "referrer", {
       configurable: true,
       value: `${origin}/login?next=%2Fbilling&invite=secret`,
@@ -214,7 +172,6 @@ describe("google analytics helpers", () => {
 
   it("attaches sanitized page context to custom events", () => {
     const origin = window.location.origin;
-    grantGoogleAnalyticsConsent();
     Object.defineProperty(document, "referrer", {
       configurable: true,
       value: `${origin}/login?next=%2Fbilling&invite=secret`,
@@ -249,7 +206,6 @@ describe("google analytics helpers", () => {
 
   it("uses the tracked current page context for custom events after navigation", () => {
     const origin = window.location.origin;
-    grantGoogleAnalyticsConsent();
     Object.defineProperty(document, "referrer", {
       configurable: true,
       value: `${origin}/login?next=%2Fbilling&invite=secret`,

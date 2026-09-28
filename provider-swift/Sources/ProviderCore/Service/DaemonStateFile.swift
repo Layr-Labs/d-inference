@@ -1,4 +1,5 @@
 import Foundation
+import ProviderAppAttest
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -10,10 +11,9 @@ import Glibc
 /// and — critically — the coordinator's latest `trust_status` reason, which is
 /// otherwise only logged.
 ///
-/// The daemon and CLI run as separate processes with no IPC today (only a PID
-/// file). A state file is the smallest addition that fits: the daemon already
-/// assembles this exact data every heartbeat; writing it atomically lets the CLI
-/// read it with zero IPC, and it survives the daemon being asleep or wedged.
+/// The daemon assembles this data every heartbeat and writes it atomically,
+/// allowing read-only status inspection even while asleep or wedged. Lifecycle
+/// commands use a separate owner-only, process-identity-bound mailbox.
 public struct DaemonState: Codable, Sendable, Equatable {
     public static let currentSchema = 1
 
@@ -45,8 +45,20 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// memory filters) — doctor's serving-set floor basis when fresh.
     /// Optional so state files from older daemons continue to decode.
     public var advertisedModels: [String]?
+    /// Remaining startup preload plan, including the candidate currently
+    /// loading. nil means an older daemon did not report this field.
+    public var startupPreloadPendingModels: [String]?
     public var lifecycle: ProviderDrainStatus?
+    public var modelSwitch: ProviderModelSwitchStatus?
+    public var configPath: String?
+    public var runtimeCapabilities: [String]?
     public var inferenceActive: Bool
+    /// Accepted or queued work, including local-endpoint requests that have
+    /// not begun decoding. Nil for older daemon state files.
+    public var requestWorkPending: Bool?
+    /// Written directly from the loop even before backend capacity exists,
+    /// so doctor can defer a verdict during pre-registration preload.
+    public var loadTransitionActive: Bool?
     public var stats: Stats
     public var system: SystemInfo?
     public var capacity: Capacity?
@@ -64,6 +76,10 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// reported and has nothing loaded.
     public var slots: [SlotPosture]?
     public var connectivity: Connectivity?
+    /// The daemon's last local App Attest observation (launch session, boot
+    /// time, key state, stalled Apple call). Diagnostic only; optional so
+    /// older daemons' files keep decoding.
+    public var appAttest: AppAttestLocalStatus?
 
     public struct Trust: Codable, Sendable, Equatable {
         public var trustLevel: String
@@ -112,10 +128,24 @@ public struct DaemonState: Codable, Sendable, Equatable {
         /// `ProviderLoop.availableMemoryGb()` even when the OS-available reading
         /// is unavailable.
         public var gpuMemoryCacheGb: Double?
-        public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil) {
+        /// Live no-eviction load figures; nil for older daemon snapshots.
+        public var loadUsableGb: Double?
+        public var loadHeadroomGb: Double?
+        /// Eviction-aware model-weight allowance for request-time cold loads.
+        public var freeForLoadGb: Double?
+        /// A backend slot is transitioning, so current load memory is not a
+        /// stable idle verdict. Nil for older daemon snapshots.
+        public var loadTransitionActive: Bool?
+        public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil,
+                    loadUsableGb: Double? = nil, loadHeadroomGb: Double? = nil,
+                    freeForLoadGb: Double? = nil, loadTransitionActive: Bool? = nil) {
             self.totalMemoryGb = totalMemoryGb
             self.gpuMemoryActiveGb = gpuMemoryActiveGb
             self.gpuMemoryCacheGb = gpuMemoryCacheGb
+            self.loadUsableGb = loadUsableGb
+            self.loadHeadroomGb = loadHeadroomGb
+            self.freeForLoadGb = freeForLoadGb
+            self.loadTransitionActive = loadTransitionActive
         }
     }
 
@@ -218,14 +248,21 @@ public struct DaemonState: Codable, Sendable, Equatable {
         currentModel: String? = nil,
         warmModels: [String] = [],
         advertisedModels: [String]? = nil,
+        startupPreloadPendingModels: [String]? = nil,
         inferenceActive: Bool = false,
+        requestWorkPending: Bool? = nil,
+        loadTransitionActive: Bool? = nil,
         lifecycle: ProviderDrainStatus? = nil,
+        modelSwitch: ProviderModelSwitchStatus? = nil,
+        configPath: String? = nil,
+        runtimeCapabilities: [String]? = nil,
         stats: Stats = Stats(),
         system: SystemInfo? = nil,
         capacity: Capacity? = nil,
         lastModelLoadError: ModelLoadError? = nil,
         slots: [SlotPosture]? = nil,
-        connectivity: Connectivity? = nil
+        connectivity: Connectivity? = nil,
+        appAttest: AppAttestLocalStatus? = nil
     ) {
         self.schema = schema
         self.pid = pid
@@ -239,14 +276,21 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.currentModel = currentModel
         self.warmModels = warmModels
         self.advertisedModels = advertisedModels
+        self.startupPreloadPendingModels = startupPreloadPendingModels
         self.lifecycle = lifecycle
+        self.modelSwitch = modelSwitch
+        self.configPath = configPath
+        self.runtimeCapabilities = runtimeCapabilities
         self.inferenceActive = inferenceActive
+        self.requestWorkPending = requestWorkPending
+        self.loadTransitionActive = loadTransitionActive
         self.stats = stats
         self.system = system
         self.capacity = capacity
         self.lastModelLoadError = lastModelLoadError
         self.slots = slots
         self.connectivity = connectivity
+        self.appAttest = appAttest
     }
 
     // MARK: - Reader helpers

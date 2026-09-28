@@ -71,7 +71,7 @@ func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 // the paid fleet, so "can't serve" is an explicit failure rather than a
 // silent reroute. Distinguishes: no machine linked (409), machine offline
 // (503), model absent (503), and model-present-but-request-shape-unsupported
-// (503) — e.g. a tool call to a node below the tools capability floor, or a
+// (503) — e.g. a tool call to a node whose chat template fails to render, or a
 // media request to a text-only build. traits/requiresVision mirror the
 // dispatch-time gates; without them such requests pass this preflight, queue
 // for up to 120s, and die as machine_busy instead of failing fast with the
@@ -100,8 +100,8 @@ func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, ow
 		return true
 	}
 	// Online and the model is served for plain requests, but not for THIS
-	// request's shape: the machine is below a capability floor (tools) or the
-	// build isn't vision-capable (media). Deterministic for this machine, so
+	// request's shape: the machine lacks a request-shape capability (tools,
+	// tool constraints) or the build isn't vision-capable (media). Deterministic for this machine, so
 	// say the real cause rather than "not loaded".
 	if _, servesBase := s.registry.OwnedProviderSummary(owner, model, registry.RequestTraits{}, false); servesBase > 0 {
 		var reason string
@@ -109,7 +109,7 @@ func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, ow
 		case requiresVision && !traits.HasTools:
 			reason = "image/video input needs a vision-capable build of the model"
 		case traits.HasTools && !requiresVision:
-			reason = "tool calls need a newer node version with a healthy chat template"
+			reason = "tool calls need a node whose chat template renders cleanly"
 		default:
 			reason = "this request needs capabilities your node build doesn't advertise (vision-capable model / tool support)"
 		}

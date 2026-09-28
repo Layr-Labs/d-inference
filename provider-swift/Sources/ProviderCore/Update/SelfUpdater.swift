@@ -25,10 +25,6 @@ public struct ReleaseInfo: Sendable {
         self.binaryHash = binaryHash
         self.metallibHash = metallibHash
     }
-
-    public var sha256: String {
-        bundleHash
-    }
 }
 
 /// Result of an update check.
@@ -303,10 +299,7 @@ public struct SelfUpdater: Sendable {
             guard platform == "macos-arm64" else {
                 return .failed("coordinator returned unsupported release platform \(platform)")
             }
-            guard let bundleHash = (json["bundle_hash"] as? String)
-                    ?? (json["sha256"] as? String)
-                    ?? (json["binary_hash"] as? String)
-            else {
+            guard let bundleHash = json["bundle_hash"] as? String else {
                 return .failed("missing release hash field")
             }
 
@@ -389,13 +382,8 @@ public struct SelfUpdater: Sendable {
         /// Directory owning the extracted, verified bundle contents. Lives
         /// inside `installDir` so the commit swap is a same-volume rename.
         public let stagingRoot: URL
-        /// Extracted `Darkbloom.app` inside `stagingRoot` (nil for legacy
-        /// flat-only tarballs).
-        let extractedApp: URL?
-        /// Flat-layout binaries inside `stagingRoot` (legacy install sources).
-        let flatDarkbloom: URL
-        let flatEnclave: URL
-        let flatMetallib: URL
+        /// Extracted, verified `Darkbloom.app` inside `stagingRoot`.
+        let extractedApp: URL
         /// The darkbloom root directory the commit will write into.
         let installDir: URL
         let release: ReleaseInfo
@@ -413,9 +401,9 @@ public struct SelfUpdater: Sendable {
     /// live install. Safe to call while serving requests.
     ///
     /// Release tarballs contain a signed `Darkbloom.app/` bundle alongside
-    /// flat `bin/` copies. The .app bundle is the canonical signed artifact;
-    /// older flat-only tarballs (no .app bundle) are staged for the legacy
-    /// direct-file install.
+    /// flat `bin/` verifier copies. The .app bundle is the only installable
+    /// artifact; a flat-only tarball (releases before the .app layout) is
+    /// refused.
     public func stageBundle(
         from downloadedFile: URL,
         release: ReleaseInfo,
@@ -501,17 +489,13 @@ public struct SelfUpdater: Sendable {
                 timeout: Self.artifactVerificationTimeout)
 
             // Use the flat bin/ copies for hash verification (release hashes
-            // are computed from the flat layout).
-            var flatDarkbloom = try requiredBundleFile(
-                names: ["bin/darkbloom", "darkbloom"],
+            // are computed from the flat verifier copies).
+            let flatDarkbloom = try requiredBundleFile(
+                names: ["bin/darkbloom"],
                 root: stagingRoot
             )
-            var flatEnclave = try requiredBundleFile(
-                names: ["bin/darkbloom-enclave", "darkbloom-enclave", "bin/eigeninference-enclave", "eigeninference-enclave"],
-                root: stagingRoot
-            )
-            var flatMetallib = try requiredBundleFile(
-                names: ["bin/mlx.metallib", "mlx.metallib"],
+            let flatMetallib = try requiredBundleFile(
+                names: ["bin/mlx.metallib"],
                 root: stagingRoot
             )
 
@@ -522,110 +506,58 @@ public struct SelfUpdater: Sendable {
                 try verifyHash(file: flatMetallib, expected: metallibHash, label: "mlx.metallib")
             }
 
-            // Check for .app bundle layout (new signed bundle format).
             // The .app bundle is the canonical signed artifact; the flat
             // bin/ copies carry a bundle-contextual code signature that
             // fails codesign --verify when run standalone, causing macOS
-            // to SIGKILL the process.
+            // to SIGKILL the process — they are verifier inputs only.
             let extractedApp = stagingRoot.appendingPathComponent("Darkbloom.app")
-            let hasAppBundle = fm.fileExists(atPath: extractedApp.path)
-            if !hasAppBundle {
-                let canonicalBin = stagingRoot.appendingPathComponent("bin")
-                try fm.createDirectory(
-                    at: canonicalBin,
-                    withIntermediateDirectories: true
-                )
-                func canonicalize(_ source: URL, name: String) throws -> URL {
-                    let destination = canonicalBin.appendingPathComponent(name)
-                    if source.standardizedFileURL != destination.standardizedFileURL {
-                        try fm.moveItem(at: source, to: destination)
-                    }
-                    return destination
-                }
-                flatDarkbloom = try canonicalize(
-                    flatDarkbloom,
-                    name: "darkbloom"
-                )
-                flatEnclave = try canonicalize(
-                    flatEnclave,
-                    name: "darkbloom-enclave"
-                )
-                flatMetallib = try canonicalize(
-                    flatMetallib,
-                    name: "mlx.metallib"
-                )
-                let legacy = canonicalBin.appendingPathComponent(
-                    "eigeninference-enclave"
-                )
-                if !UpdateAtomicFilesystem.itemExists(legacy) {
-                    try fm.createSymbolicLink(
-                        atPath: legacy.path,
-                        withDestinationPath: "darkbloom-enclave"
-                    )
-                }
+            guard fm.fileExists(atPath: extractedApp.path) else {
+                throw UpdateError.replaceFailed(
+                    "release bundle has no Darkbloom.app; flat-only bundles are no longer installable")
             }
             if let signaturePolicy = verification.codeSignaturePolicy {
-                if hasAppBundle {
-                    let appDarkbloom = extractedApp
-                        .appendingPathComponent("Contents/MacOS/darkbloom")
-                    let appMetallib = extractedApp
-                        .appendingPathComponent("Contents/MacOS/mlx.metallib")
-                    if let binaryHash = release.binaryHash {
-                        try verifyHash(
-                            file: appDarkbloom,
-                            expected: binaryHash,
-                            label: "Darkbloom.app darkbloom"
-                        )
-                    }
-                    if let metallibHash = release.metallibHash {
-                        try verifyHash(
-                            file: appMetallib,
-                            expected: metallibHash,
-                            label: "Darkbloom.app mlx.metallib"
-                        )
-                    }
-                    try verifyCodeSignature(
+                let appDarkbloom = extractedApp
+                    .appendingPathComponent("Contents/MacOS/darkbloom")
+                let appMetallib = extractedApp
+                    .appendingPathComponent("Contents/MacOS/mlx.metallib")
+                if let binaryHash = release.binaryHash {
+                    try verifyHash(
                         file: appDarkbloom,
-                        label: "darkbloom",
-                        policy: signaturePolicy
+                        expected: binaryHash,
+                        label: "Darkbloom.app darkbloom"
                     )
-                    try verifyCodeSignature(
-                        file: extractedApp,
-                        label: "Darkbloom.app",
-                        deep: true,
-                        policy: signaturePolicy
+                }
+                if let metallibHash = release.metallibHash {
+                    try verifyHash(
+                        file: appMetallib,
+                        expected: metallibHash,
+                        label: "Darkbloom.app mlx.metallib"
                     )
-                    if verification.verifyRuntimeCapabilities {
-                        try verifyRuntimeCapabilities(
-                            app: extractedApp,
-                            executable: appDarkbloom,
-                            fileManager: fm,
-                            signaturePolicy: signaturePolicy)
-                    }
-                } else {
-                    if verification.verifyRuntimeCapabilities {
-                        try FanHelperCapabilityVerifier.rejectFanCapableFlatExecutable(
-                            flatDarkbloom
-                        )
-                    }
-                    try verifyCodeSignature(
-                        file: flatDarkbloom,
-                        label: "darkbloom",
-                        policy: signaturePolicy)
+                }
+                try verifyCodeSignature(
+                    file: appDarkbloom,
+                    label: "darkbloom",
+                    policy: signaturePolicy
+                )
+                try verifyCodeSignature(
+                    file: extractedApp,
+                    label: "Darkbloom.app",
+                    deep: true,
+                    policy: signaturePolicy
+                )
+                if verification.verifyRuntimeCapabilities {
+                    try verifyRuntimeCapabilities(
+                        app: extractedApp,
+                        executable: appDarkbloom,
+                        fileManager: fm,
+                        signaturePolicy: signaturePolicy)
                 }
             }
 
-            let stagedTreeHash = try UpdateAtomicFilesystem.treeHash(
-                root: hasAppBundle
-                    ? extractedApp
-                    : stagingRoot.appendingPathComponent("bin")
-            )
+            let stagedTreeHash = try UpdateAtomicFilesystem.treeHash(root: extractedApp)
             return .success(StagedBundle(
                 stagingRoot: stagingRoot,
-                extractedApp: hasAppBundle ? extractedApp : nil,
-                flatDarkbloom: flatDarkbloom,
-                flatEnclave: flatEnclave,
-                flatMetallib: flatMetallib,
+                extractedApp: extractedApp,
                 installDir: installDir,
                 release: release,
                 stagedTreeHash: stagedTreeHash
@@ -655,33 +587,26 @@ public struct SelfUpdater: Sendable {
             return .failure(.replaceFailed("staged bundle belongs to a different install root"))
         }
         do {
-            let stagedRoot = staged.extractedApp
-                ?? staged.stagingRoot.appendingPathComponent("bin")
-            let currentTreeHash = try UpdateAtomicFilesystem.treeHash(root: stagedRoot)
+            let currentTreeHash = try UpdateAtomicFilesystem.treeHash(
+                root: staged.extractedApp)
             guard currentTreeHash == staged.stagedTreeHash else {
                 return .failure(.replaceFailed(
                     "staged bundle changed after verification; refusing commit"))
             }
             if session.store.verifyCodeSignatures {
-                if let app = staged.extractedApp {
-                    try verifyCodeSignature(
-                        file: app,
-                        label: "Darkbloom.app",
-                        deep: true
-                    )
-                    try FanHelperCapabilityVerifier.verify(
-                        app: app,
-                        executable: app.appendingPathComponent(
-                            "Contents/MacOS/darkbloom"
-                        ),
-                        signaturePolicy: .darkbloomProduction
-                    )
-                } else {
-                    try verifyCodeSignature(
-                        file: staged.flatDarkbloom,
-                        label: "darkbloom"
-                    )
-                }
+                let app = staged.extractedApp
+                try verifyCodeSignature(
+                    file: app,
+                    label: "Darkbloom.app",
+                    deep: true
+                )
+                try FanHelperCapabilityVerifier.verify(
+                    app: app,
+                    executable: app.appendingPathComponent(
+                        "Contents/MacOS/darkbloom"
+                    ),
+                    signaturePolicy: .darkbloomProduction
+                )
             }
             try session.store.commit(
                 staged: staged,
@@ -870,7 +795,8 @@ public struct SelfUpdater: Sendable {
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
         }
-        // Flat bin/ layout or unknown: bin -> root
+        // A bare binary outside an .app (e.g. a dev build in some bin/):
+        // bin -> root
         return parentDir.deletingLastPathComponent()
     }
 
@@ -1107,29 +1033,10 @@ public struct SelfUpdater: Sendable {
             executable: executable,
             signaturePolicy: signaturePolicy
         )
-        let marker = app.appendingPathComponent(
-            PackagedRuntimeSmoke.pagedCapabilityRelativePath)
-        let markerPresent = fileManager.fileExists(atPath: marker.path)
-        let binary = try Data(contentsOf: executable, options: [.mappedIfSafe])
-        let pagedCodePresent = binary.range(
-            of: Data("engine_v2_kv_backend".utf8)) != nil
-
-        guard markerPresent == pagedCodePresent else {
-            throw UpdateError.replaceFailed(
-                pagedCodePresent
-                    ? "paged-capable artifact is missing its signed capability marker"
-                    : "artifact advertises paged capability without paged runtime code")
-        }
-        guard markerPresent else {
-            return // pre-paged v0.7.5/v0.7.7 compatibility
-        }
-        guard
-            let markerValue = try? String(contentsOf: marker, encoding: .utf8),
-            markerValue.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
-        else {
-            throw UpdateError.replaceFailed(
-                "paged runtime capability marker is invalid")
-        }
+        try PagedRuntimeCapabilityVerifier.verifyMarker(
+            app: app,
+            executable: executable,
+            fileManager: fileManager)
 
         let resourceRoot = app.appendingPathComponent(
             "Contents/Resources",

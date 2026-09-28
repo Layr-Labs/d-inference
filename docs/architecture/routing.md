@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-22 · commit `73f8c13f`
+> Last updated: 2026-09-27 · commit `eafeab723`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -13,8 +13,8 @@ eligible providers.
 
 ## Provider lifecycle drain boundary
 
-`provider_drain` permanently fences a live connection until disconnect, unlike
-the existing TTL-bounded update heartbeat. `authorizeInferenceHandoff` in
+`provider_drain` fences a live connection until disconnect or an explicit,
+validated model replacement; heartbeat TTL expiry cannot reopen it. `authorizeInferenceHandoff` in
 `coordinator/registry/inference_authorization.go` rechecks the drain after writer
 queueing and reservation: direct, queued, cold, retry and hedge reservations
 cannot send a new inference frame across the boundary. A late reservation gets
@@ -29,6 +29,38 @@ a model may still receive 503; acquired local requests and their HTTP response
 writes are drained. See [the terminal barrier](../reference/protocol-messages.md#provider-lifecycle-drain)
 for the asynchronous settlement boundary. Existing draining-capacity preflight
 semantics (transient 429/capacity, not structural absence) remain unchanged.
+
+`darkbloom switch` resumes the same provider session through `models_replace`
+(`coordinator/registry/provider_models_replace.go`, `ReplaceProviderModels`).
+The latest drain must be settled, and its generation must match both completion
+and the control-writer handoff even if a provider reuses a request ID. One
+connection-bound acknowledgement worker coalesces the latest barrier rather than
+dropping it when prior settlement is slow. It waits for pre-barrier reservations
+to leave the writer/pending set and for terminal billing before acknowledgement
+(`providerReadLoop` in `coordinator/api/provider.go`).
+
+A validation-only request checks the complete model set without changing routing.
+A committed replacement updates model indexes and stale residency/cache evidence
+but keeps the fence until its acknowledgement is written successfully and the
+provider confirms that local admission has reopened for that replacement and
+an accepted `idle`/`serving` heartbeat supplies its refreshed `BackendCapacity`
+at or after the `capacity_seq` named in `models_replace_ready`.
+Ack failure, missing readiness, or stale/draining capacity never dispatches
+queued work. The readiness frame is matched to the current session, replacement
+and drain; its sequence was stamped after local admission opened. Either
+readiness or that heartbeat may arrive first. Only after both does
+the coordinator force desired-model reconciliation and dispatch queued work.
+The provider restores prefetching before it sends readiness, so the refreshed
+`desired_models` snapshot can be processed even if it arrives before the final
+receipt. Snapshots received while prefetching was unavailable remain deferred.
+It sends `models_replace_resumed` after those steps. The provider reports a
+successful switch only when that receipt matches the current connection,
+replacement, drain and capacity sequence; a missing receipt leaves the outcome
+unconfirmed even if routing already resumed.
+Removed model IDs remain queued for cleanup across a failed receipt and another
+same-session drain, until routing resumes or disconnect.
+Invalid selections leave inventory and drain unchanged. See
+[the replacement contract](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready--models_replace_resumed).
 
 
 ## Context
@@ -114,7 +146,7 @@ flowchart TD
     C -->|ttft_ceiling| X5[tallyGate]
     C --> D[applyCacheRoutingCost]
     D --> P[pool narrowing: prefer owner, avoid version, min decode TPS]
-    P --> SEL[selectRoutingCandidateWithAffinity: unique_min / tie_queue / tie_pending / random / prefix_affinity]
+    P --> SEL[selectRoutingCandidateWithAffinity: unique_min / tie_queue / tie_pending / random / prefix_affinity / cache_credit]
     SEL --> PLAN[dispatch plan: winner + alternates]
     PLAN --> DISP[dispatch to winner]
     DISP -->|no first content by speculativeAt| H[runSpeculative: hedge governor + backup]
@@ -371,23 +403,27 @@ leaves at least one candidate (`scanCandidatesLocked`):
 (`coordinator/registry/candidate_selection.go`):
 
 1. **Best cost.** The minimum `costMs`.
-2. **Cost ties.** When any candidate has a cache credit or restore penalty, keep only
-   exact minimum-cost candidates. Otherwise keep every candidate within
-   `nearTieCostWindowMs` ([cost model](#cost-model)), preserving ordinary load
-   spreading. Among the retained candidates choose the lowest `effectiveQueue`,
-   then the lowest `totalPending`.
+2. **Cost ties.** Every candidate within `nearTieCostWindowMs`
+   ([cost model](#cost-model)) of the minimum is retained; a candidate with a
+   restore penalty is retained only at the exact minimum. If the retained set
+   has more than one member and any carries a cache credit, the cheapest
+   credited candidate wins (`cache_credit`; ranking in
+   [cache-aware routing](cache-aware-routing.md#scheduler)); otherwise choose
+   the lowest `effectiveQueue`, then the lowest `totalPending`.
 3. **Equivalents.** More than one candidate sharing the retained cost range,
    queue and pending count normally resolves uniformly by `random`. With active
-   cache routing, observed repeat demand and no cache cost adjustment in the
-   pool, a stable keyed ranking prefers a matching, non-quarantined cache
+   cache routing and observed repeat demand, a stable keyed ranking prefers a
+   matching, non-quarantined cache
    capability (`prefix_affinity`). See [cache affinity](cache-aware-routing.md#observed-demand-and-soft-prefix-affinity).
-4. **Path label**: `unique_min` when only one candidate is retained;
+4. **Path label**: `cache_credit` when a credited candidate wins a retained set
+   of more than one member; `unique_min` when only one candidate is retained;
    `tie_pending` when pending count decides between equal queue depths;
    otherwise `tie_queue`. Equivalent choices use `random` or `prefix_affinity`
    under the conditions above; an empty pool uses `none`.
 
 `SelectionPath` values (`coordinator/registry/gate_reason.go`): `none`,
-`unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`. Historical profiler rows may
+`unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`,
+`cache_credit`. Historical profiler rows may
 still contain the retired `cache_tiebreak` string. The
 runner-up (the lowest-cost candidate other than the winner) is recorded for telemetry
 and as the first alternate in the dispatch plan.
@@ -461,7 +497,7 @@ A provider's structural budget (`snapshotStructuralBudget`) is its reported
 resident it is `coldTokenBudgetEstimate`:
 
 ```text
-weightsGiB   = measured resident GiB (version ≥ 0.8.16 and model in table) else catalogGB × coldLoadCatalogGBToMemGiB
+weightsGiB   = measured resident GiB (model in servabilityMeasuredResidentGiB) else catalogGB × coldLoadCatalogGBToMemGiB
 postLoadGiB  = servabilityCapFraction × totalMemoryGB − weightsGiB        # mirrors the provider cap fraction
 tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  # kvCacheBytesPerToken when unreported
 ```
@@ -471,14 +507,13 @@ tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  #
 `servabilityActivationFloorGB` and `servabilityModelActivationFloorsGB` mirror
 the provider's `UnifiedMemoryCap` constants, whose values are stated once in
 [`hardware-support.md`](hardware-support.md#constants); the two tables move in
-the same commit. The activation floor is version-gated
-(`servabilityActivationFloor`):
-
-| Provider version | Floor |
-|---|---|
-| empty or `< 0.8.0` (`servabilityActivationFloorMinVersion = "0.8.0"`) | `servabilityLegacyActivationFloorGB = 3.0` |
-| `< 0.8.16` (`servabilityPerModelFloorMinVersion = "0.8.16"`) | `servabilityActivationFloorGB` |
-| `≥ 0.8.16` | per-model table, else `servabilityActivationFloorGB` |
+the same commit. The activation floor (`servabilityActivationFloor`) is the
+model's entry in `servabilityModelActivationFloorsGB`, else
+`servabilityActivationFloorGB`. Neither term depends on the provider version:
+they mirror the per-model reserve that v0.8.16 and later providers hold, and
+older providers are expected to sit below the routing floor
+(`EIGENINFERENCE_MIN_PROVIDER_VERSION`,
+[`configuration.md`](../reference/configuration.md#release-policy-version-floor-and-binary-hashes)).
 
 Per-model tables (`coordinator/registry/servability.go`):
 
@@ -666,30 +701,20 @@ of a live gate is never pruned.
 `site:`, via `SetGateWaitObserver`) records a recorder's `gate.mu`
 acquisition wait when it exceeds `gateWaitReportThreshold = time.Millisecond`.
 
-### Reputation
+### Provider operational history
 
-`Reputation.Score` (`coordinator/registry/reputation.go`) is
+`Reputation` (`coordinator/registry/reputation.go`) retains job success/failure
+counts, accumulated uptime, attestation challenge counts, and the
+prefill-adjusted first-content latency EWMA (`RecordLatency`,
+`ttftEWMAAlpha = 0.2`). These values are persisted and exposed as raw metrics
+in the owner provider API. There is no composite reputation score.
 
-```text
-score = 0.4 × jobRate + 0.3 × uptimeRate + 0.2 × challengeRate + 0.1 × responseTimeFactor
-```
-
-- `jobRate` = `SuccessfulJobs / TotalJobs` (`0.5` with no jobs).
-- `uptimeRate` = `TotalUptime / 24h`, floored at `0.5`, capped at `1.0`.
-- `challengeRate` = passed / (passed + failed) (`0.5` with no challenges).
-- `responseTimeFactor` = `1.0` at ≤ 1 000 ms average, `0.0` at ≥ 10 000 ms,
-  linear between (`0.5` with no data). The average is an EWMA of
-  prefill-adjusted first-content latency, `ttftEWMAAlpha = 0.2`
-  (`RecordLatency`).
-
-A provider with no history scores `0.5`. The score is exposed on the
-provider-facing `/me` endpoints (`coordinator/api/me_handlers.go`) and
-persisted; **it is not a term in the routing cost** — `buildCandidateInto`
-never reads it. The header comment in `reputation.go` still says the score
-factors into routing; the code does not. Reputation inputs do reach routing
-indirectly: `RecordChallengeFailure` feeds `challenge_stale`, and the latency
-EWMA is fed only by non-cache, non-hedge first-content samples
-(`coordinator/api/dispatch.go`).
+The dashboard presents job counts; low historical success rate is an
+informational warning, not a reduced-routing-priority signal
+(`console-ui/src/app/providers/warnings.ts`, `computeWarnings`). Routing uses
+the cost function and live gates described above, not these historical
+counters. Attestation failures still update their separate live trust state
+through `RecordChallengeFailure`.
 
 ### `Retry-After` derivation
 
@@ -819,7 +844,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Budget clamp | `coordinator/registry/budget_clamp.go` — `recordBudgetClampLocked`, `releaseBudgetClampsOnHeartbeat` |
 | Capacity-rate penalty and cooldown | `coordinator/registry/capacity_rate.go`, `coordinator/registry/capacity_cooldown.go` |
 | Breakers and ejection | `coordinator/registry/error_cooldown.go`, `coordinator/registry/provider_breaker.go`, `coordinator/registry/health_ejection.go` |
-| Reputation | `coordinator/registry/reputation.go` — `Score`, `RecordLatency` |
+| Provider operational history | `coordinator/registry/reputation.go` — `Reputation`, `RecordLatency` |
 | TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/settlement.go` |
 | Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |
 | Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |

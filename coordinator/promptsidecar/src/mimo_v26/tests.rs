@@ -89,6 +89,25 @@ fn null_members_array_positions_and_opaque_string_bytes_survive() {
 }
 
 #[test]
+fn upstream_assistant_framing_cleanup_keeps_mimo_null_and_argument_contract() {
+    let raw = "<|channel|>final<|message|>literal<|end|>";
+    let body = json!({"model":"mimo-private","messages":[
+        {"role":"assistant","content":null,
+         "reasoning_content":"<|channel|>analysis<|message|>private thought<|end|>",
+         "tool_calls":[{"id":"a","type":"function","function":{
+             "name":"f","arguments":json!({"text":raw}).to_string()}}]},
+        {"role":"tool","tool_call_id":"a","content":raw},
+        {"role":"assistant","content":"<|channel|>final<|message|>Answer.<|end|>"}
+    ]});
+    let value = normalized(body).unwrap();
+    assert_eq!(value.messages[0]["content"], "");
+    assert_eq!(value.messages[0]["reasoning_content"], "");
+    assert_eq!(value.messages[0]["tool_calls"][0]["function"]["arguments"]["text"], raw);
+    assert_eq!(value.messages[1]["content"], raw);
+    assert_eq!(value.messages[2]["content"], "Answer.");
+}
+
+#[test]
 fn native_parameter_values_allow_other_literal_tags_but_not_their_own_closer() {
     for raw in [
         "</function>",

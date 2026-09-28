@@ -142,7 +142,7 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
             config: ProviderConfig(provider: ProviderSettings(name: "native-loop-lifetime-test", memoryReserveGB: 4),
                 backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 2),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)))
-        return try ProviderLoop(config: configuration, purgeLegacyFiles: false, attestationSigner: nil,
+        return try ProviderLoop(config: configuration, attestationSigner: nil,
             kvBudgetForTesting: budget, nativeMiMoRegistryForTesting: registry)
     }
     private func fixture() throws -> URL {
@@ -751,5 +751,35 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         XCTAssertFalse(allowed)
         XCTAssertFalse(retired)
         XCTAssertEqual(slots, 0)
+        // A failed native newcomer can be absent from modelSlots before
+        // coordinator registration. The new startup cleanup must not treat
+        // that empty slot map as permission to reclaim or report completion.
+        await owner.setDaemonStateFileForTesting(directory.appendingPathComponent("startup-state.json"))
+        let startupStopped = await owner.shutdownBeforeRegistration()
+        XCTAssertFalse(startupStopped)
+        XCTAssertTrue(transaction.snapshot().hasBundle)
+        XCTAssertTrue(transaction.snapshot().hasContainer)
+        XCTAssertTrue(registry.hasRetainedFault)
+        XCTAssertGreaterThan(actualBudget.processLedger.snapshot().chargedBytes, 0)
+        let retryStopped = await owner.shutdownBeforeRegistration()
+        XCTAssertFalse(retryStopped)
+        XCTAssertTrue(registry.hasRetainedFault)
+    }
+
+    func testStartupShutdownRetiresActualNativeSlotBeforeReportingCompletion() async throws {
+        try nativeLane()
+        let (owner, load, registry) = try await loaded()
+        try await isolateLifecycleState(owner)
+        let transaction = try XCTUnwrap(load.transaction)
+        var stopped = await owner.shutdownBeforeRegistration()
+        for _ in 0..<4 where !stopped {
+            await owner.nativeLifetimeJoinObserver(modelID: modelID)
+            stopped = await owner.shutdownBeforeRegistration()
+        }
+        XCTAssertTrue(stopped)
+        XCTAssertEqual(transaction.snapshot().phase, .retired)
+        XCTAssertTrue(registry.retainedTransactionIDs.isEmpty)
+        let count = await owner.nativeLifetimeSlotCount()
+        XCTAssertEqual(count, 0)
     }
 }

@@ -39,7 +39,7 @@ private func makeDrainTestLoop() throws -> ProviderLoop {
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    return try ProviderLoop(config: config, attestationSigner: nil)
 }
 
 /// A `CoordinatorClient` sharing `state` with the loop — exactly how the

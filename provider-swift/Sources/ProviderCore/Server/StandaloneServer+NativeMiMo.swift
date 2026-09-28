@@ -163,7 +163,8 @@ extension StandaloneServer {
     /// CachedSlot/container across failure cleanup or survivor regrowth.
     func loadNativeMiMoSlot(
         modelID: String, modelInfo: ModelInfo, directory: URL,
-        load: MiMoV26ServingLoad, preparation: SpecDecPreparation
+        load: MiMoV26ServingLoad, preparation: SpecDecPreparation,
+        allowEviction: Bool = true
     ) async throws {
         guard !lifecycleDraining, lifecycleState != .stopping else {
             isLoadingAny = false; releaseLoadGateWaiters()
@@ -182,7 +183,8 @@ extension StandaloneServer {
         // Both results are Void and cannot retain a hidden model/slot alias.
         let control = Task {
             try await self.prepareAndPublishNativeMiMo(modelID: modelID, modelInfo: modelInfo,
-                directory: directory, load: load, preparation: preparation)
+                directory: directory, load: load, preparation: preparation,
+                allowEviction: allowEviction)
         }
         state.controlTask = control
         do {
@@ -223,20 +225,21 @@ extension StandaloneServer {
 
     private func prepareAndPublishNativeMiMo(
         modelID: String, modelInfo: ModelInfo, directory: URL,
-        load: MiMoV26ServingLoad, preparation: SpecDecPreparation
+        load: MiMoV26ServingLoad, preparation: SpecDecPreparation,
+        allowEviction: Bool
     ) async throws {
         try requireNativeMiMoNewWorkAllowed()
         let lifecycle = try nativeMiMoLifecycleForLoad()
         await pushActivationReserve()
         try Task.checkCancellation()
         try requireNativeMiMoNewWorkAllowed()
-        try await evictIfNeededForLoad()
+        try await evictIfNeededForLoad(allowEviction: allowEviction)
         try requireNativeMiMoNewWorkAllowed()
         let required = ModelLoadAdmission.requiredToLoadGb(
             weightsGb: load.estimatedWeightsGb,
             headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes(
                 activationReserveBytes: resolvedActivationReserveBytes)) / (1024 * 1024 * 1024))
-        try await ensureMemoryHeadroomForLoad(requiredGb: required)
+        try await ensureMemoryHeadroomForLoad(requiredGb: required, allowEviction: allowEviction)
         try Task.checkCancellation()
         try requireNativeMiMoNewWorkAllowed()
         try load.claim(budget: kvBudget, lifecycle: lifecycle, registry: nativeMiMoRegistry)

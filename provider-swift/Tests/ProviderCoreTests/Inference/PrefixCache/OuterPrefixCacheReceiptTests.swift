@@ -59,7 +59,6 @@ struct OuterPrefixCacheReceiptTests {
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)))
         return try ProviderLoop(
             config: config,
-            purgeLegacyFiles: false,
             attestationSigner: nil)
     }
 

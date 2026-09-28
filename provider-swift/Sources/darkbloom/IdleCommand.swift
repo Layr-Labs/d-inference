@@ -131,14 +131,13 @@ enum IdleUnloadPolicy {
 @discardableResult
 func setIdleUnloadMinutes(
     _ minutes: UInt64,
-    configPath: String?,
-    migrateOnDisk: Bool = true
+    configPath: String?
 ) throws -> (path: URL, changed: Bool) {
     if let problem = IdleUnloadPolicy.validate(minutes: minutes) {
         throw ValidationError(problem)
     }
 
-    return try withMutableConfig(configPath: configPath, migrateOnDisk: migrateOnDisk) { savePath, config in
+    return try withMutableConfig(configPath: configPath) { savePath, config in
         if config.backend.idleTimeoutMins == minutes,
            let content = try? String(contentsOf: savePath, encoding: .utf8),
            tomlKeyPresent(content, section: "backend", key: "idle_timeout_mins") {

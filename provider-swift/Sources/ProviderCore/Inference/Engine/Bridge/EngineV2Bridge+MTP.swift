@@ -205,10 +205,9 @@ extension EngineV2Bridge {
         // Emitting a hardcoded 0 would be indistinguishable from a measured
         // zero and would make the dashboard assert a fact nothing observed.
         //
-        // For the same reason the two keys are no longer ALLOWLISTED either:
-        // a key that survives the filter but is never written reads as a
-        // legitimate zero to anyone building a panel on it. Add each key in
-        // the same change as its mechanism, across all three mirrors.
+        // Add each key in the same change as its mechanism: a key that is
+        // declared but never written reads as a legitimate zero to anyone
+        // building a panel on it.
         emit(
             EngineHealthEvent.make(
                 severity: .info,

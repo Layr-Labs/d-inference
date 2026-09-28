@@ -83,6 +83,7 @@ private actor EnrollmentService: AppAttestService {
     func failNatively(_ error: AppleAppAttestFailure) { nativeEnrollmentFailure = error }
     func calls() -> [(String, Data)] { enrollmentCalls }
     func assertions() -> [(String, Data)] { assertionCalls }
+    func operationHeldSince() -> Date? { nil }
 }
 
 final class EnrollmentRecoveryTests: XCTestCase {
@@ -93,7 +94,7 @@ final class EnrollmentRecoveryTests: XCTestCase {
 
     private func request(_ action: String, key: String? = nil) -> AppAttestShadowPayload {
         var p = AppAttestShadowPayload(action: action, session: Data(repeating: 3, count: 32).base64EncodedString())
-        p.protocolVersion = 2; p.accountScope = String(repeating: "a", count: 64); p.environment = "production"; p.keyID = key
+        p.protocolVersion = 3; p.accountScope = String(repeating: "a", count: 64); p.environment = "production"; p.keyID = key
         if action != "prepare" { p.challenge = Data(repeating: 4, count: 32).base64EncodedString() }
         return p
     }
@@ -369,7 +370,7 @@ final class EnrollmentRecoveryTests: XCTestCase {
         let count = await service.generated(); XCTAssertEqual(count, 0)
     }
 
-    func testUnavailableEnrollmentKeepsOriginalHashAcrossRestartAndProtocolUpgrade() async {
+    func testUnavailableEnrollmentKeepsOriginalHashAcrossRestart() async {
         let storage = EnrollmentStorage(); let service = EnrollmentService(enrollmentFailure: .appleUnavailable)
         storage.save(ShadowKeyRecord(keyID: oldKey, attested: false, createdAt: Date(timeIntervalSinceNow: -7200)), scope: scope)
         let first = AppAttestShadowClient(scope: "test", service: service, storage: storage)
@@ -381,10 +382,9 @@ final class EnrollmentRecoveryTests: XCTestCase {
         let newEndpoint = Data(repeating: 8, count: 32).base64EncodedString()
         var prepare = request("prepare")
         prepare.session = Data(repeating: 11, count: 32).base64EncodedString()
-        prepare.protocolVersion = 3
         let ready = await restarted.respond(to: prepare, publicKey: newEndpoint)
         var retry = request("attest", key: ready.keyID)
-        retry.session = prepare.session; retry.protocolVersion = 3
+        retry.session = prepare.session
         retry.challenge = Data(repeating: 12, count: 32).base64EncodedString()
         var newStatus = status; newStatus.appVersion = "0.9.9"
         let recovered = await restarted.respond(to: retry, publicKey: newEndpoint, status: newStatus)
@@ -440,14 +440,14 @@ final class EnrollmentRecoveryTests: XCTestCase {
     }
 
     func testExpiredOrInvalidRetryTranscriptIsRetiredBeforeAppleUse() async {
-        for scenario in ["expired", "future", "wrong key", "short hash", "legacy session"] {
+        for scenario in ["expired", "future", "wrong key", "short hash", "pre-v3 protocol"] {
             let storage = EnrollmentStorage(); let service = EnrollmentService()
             var key = ShadowKeyRecord(keyID: oldKey, attested: false, createdAt: Date(timeIntervalSinceNow: -90000))
             key.retryEnrollment = ShadowEnrollmentAttempt(
                 keyID: scenario == "wrong key" ? "different" : oldKey,
                 clientHash: Data(repeating: 1, count: scenario == "short hash" ? 31 : 32),
                 session: Data(repeating: 17, count: 32).base64EncodedString(),
-                protocolVersion: scenario == "legacy session" ? 1 : 2, status: status,
+                protocolVersion: scenario == "pre-v3 protocol" ? 2 : 3, status: status,
                 createdAt: Date(timeIntervalSinceNow: scenario == "expired" ? -86401 : scenario == "future" ? 3600 : -60))
             storage.save(key, scope: scope)
             let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)

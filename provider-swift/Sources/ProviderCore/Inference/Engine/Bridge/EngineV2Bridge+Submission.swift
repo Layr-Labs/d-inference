@@ -57,7 +57,8 @@ extension EngineV2Bridge {
         positionState: CBv2PositionState? = nil,
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
-        tokenConstraint: (any CBv2TokenConstraint)? = nil
+        tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        donationDemand: SSDCheckpointDonationDemand? = nil
     ) async -> AsyncStream<GenerationEvent> {
         do {
             return try await submitTokenized(
@@ -73,6 +74,7 @@ extension EngineV2Bridge {
                 hybridPrefixIdentity: hybridPrefixIdentity,
                 mediaKind: mediaKind,
                 tokenConstraint: tokenConstraint,
+                donationDemand: donationDemand,
                 firstContentDeadline: nil)
         } catch MultiModelBatchSchedulerEngineError.advertisedContextExceeded {
             // Preserve the typed client rejection across the nonthrowing stream
@@ -110,6 +112,9 @@ extension EngineV2Bridge {
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        /// Coordinator repeat-demand hint for the complete-checkpoint write
+        /// gate; nil keeps the legacy write-every-checkpoint behaviour.
+        donationDemand: SSDCheckpointDonationDemand? = nil,
         firstContentDeadline: FirstContentDeadline?,
         profile: RequestProfileBuilder? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
@@ -182,7 +187,10 @@ extension EngineV2Bridge {
             cacheScope: cacheScope,
             cacheEnabled: cacheEnabled,
             multimodal: multimodal,
-            tokenConstraint: tokenConstraint
+            tokenConstraint: tokenConstraint,
+            // The same coordinator hint that gates the write also tells the
+            // engine which fork boundary is worth staging.
+            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
@@ -268,6 +276,13 @@ extension EngineV2Bridge {
                 store.registerReadyReceipt(requestID: receiptID, promptTokens: promptTokens,
                                            cacheScope: checkpointScope, callback: callback)
                 readyReceiptRegistered = true
+            }
+            // The donate contract has no slot for coordinator metadata, so the
+            // demand hint rides the receipt ID. It survives an abandoned stage
+            // (the same receipt retries cold) and clears at terminal or when the
+            // request ends in error below.
+            if let donationDemand, let store = ssdHybridCheckpointStore {
+                store.registerDonationDemand(donationDemand, requestID: receiptID)
             }
             if multimodal == nil, let evidence = residentPrefixCacheEvidence, let usageSignal,
                 let proof = evidence.promptProof(tokens: promptTokens, scope: cacheScope)
@@ -442,6 +457,9 @@ extension EngineV2Bridge {
                     if readyReceiptRegistered {
                         discardPrefixReadyReceipt(requestID: prefixCacheReceiptID)
                     }
+                    // The request ends here, so its demand hint is no longer
+                    // needed (abandoning staging alone keeps it for a cold retry).
+                    ssdHybridCheckpointStore?.discardDonationDemand(requestID: prefixCacheReceiptID)
                 }
                 usageSignal?.finalizeLookup(
                     failure: .capacity,
@@ -756,7 +774,7 @@ extension EngineV2Bridge {
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
 
-        // Emit one allowlisted engagement event for an accepted media request.
+        // Emit one engagement event for an accepted media request.
         if multimodal != nil {
             emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
         }

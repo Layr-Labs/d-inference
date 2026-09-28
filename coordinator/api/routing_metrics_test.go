@@ -136,14 +136,12 @@ func makeRoutableProvider(t *testing.T, reg *registry.Registry, id, model string
 		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities: &protocol.PrivacyCapabilities{
-			TextBackendInprocess:    true,
-			TextProxyDisabled:       true,
-			PythonRuntimeLocked:     true,
-			DangerousModulesBlocked: true,
-			SIPEnabled:              true,
-			AntiDebugEnabled:        true,
-			CoreDumpsDisabled:       true,
-			EnvScrubbed:             true,
+			TextBackendInprocess: true,
+			TextProxyDisabled:    true,
+			SIPEnabled:           true,
+			AntiDebugEnabled:     true,
+			CoreDumpsDisabled:    true,
+			EnvScrubbed:          true,
 		},
 	}
 	p := reg.Register(id, nil, msg)

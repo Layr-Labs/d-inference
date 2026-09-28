@@ -9,7 +9,7 @@ private func lifecycleLoop() async throws -> (ProviderLoop, URL) {
         chipTier: .max, memoryGb: 128, memoryAvailableGb: 124,
         cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4), gpuCores: 40, memoryBandwidthGbs: 546)
     let loop = try ProviderLoop(config: ProviderLoopConfig(coordinatorURL: "ws://127.0.0.1:0/unused",
-        hardware: hardware, models: [], config: ProviderConfig(provider: ProviderSettings(name: "lifecycle-test"))), purgeLegacyFiles: false, attestationSigner: nil)
+        hardware: hardware, models: [], config: ProviderConfig(provider: ProviderSettings(name: "lifecycle-test"))), attestationSigner: nil)
     await loop.setDaemonStateFileForTesting(root.appendingPathComponent("state.json"))
     return (loop, root)
 }
@@ -115,5 +115,38 @@ struct ProviderLifecycleTests {
         await loop.resumeServingAfterUpdate()
         #expect(await loop.state.refusingNewWork)
         #expect(await loop.servingDrain.refusing)
+    }
+
+    @Test func lifecycleDrainTakesOwnershipFromAnAppAttestStallRestart() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(await !loop.appAttestStallRestartOwnsDrain)
+        await loop.beginUpdateDraining()
+        #expect(await loop.appAttestStallRestartOwnsDrain)
+        await loop.holdLifecycleRequests(["accepted"])
+        let identity = try #require(ProcessIdentity.current())
+        let stop = Task { await loop.drainForLifecycle(request: .init(target: identity, timeoutSeconds: 2)) }
+        for _ in 0..<100 {
+            if await loop.servingDrain.owner == .lifecycle { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(await !loop.appAttestStallRestartOwnsDrain)
+        await loop.completeLifecycleRequest("accepted")
+        #expect(await stop.value.outcome == .drained)
+        // The finished stop keeps ownership: the stall path must not restart.
+        #expect(await !loop.appAttestStallRestartOwnsDrain)
+    }
+
+    @Test func abandonedAppAttestStallRestartReopensServingAndDefersTheNextDrain() async throws {
+        let (loop, root) = try await lifecycleLoop()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(await !loop.appAttestStallRetryDeferred)
+        await loop.beginUpdateDraining()
+        #expect(await loop.servingDrain.refusing)
+        await loop.abandonAppAttestStallRestart(after: .markerNotPersisted)
+        // Serving reopens at once, but the monitor may not drain again on its next tick.
+        #expect(await !loop.servingDrain.refusing)
+        #expect(await loop.updatePhase == .idle)
+        #expect(await loop.appAttestStallRetryDeferred)
     }
 }

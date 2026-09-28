@@ -177,6 +177,7 @@ extension ProviderLoop {
         authenticatedCacheScope: String?,
         prefixCacheProtocol: Int? = nil,
         cacheReceiptBoundaryMode: String? = nil,
+        cacheRepeatedPrefixTokens: Int? = nil,
         toolSchemaMetadataProtocol: Int? = nil,
         firstContentDeadline: FirstContentDeadline? = nil,
         receivedAt: ContinuousClock.Instant = .now,
@@ -210,7 +211,8 @@ extension ProviderLoop {
         // reaches EngineV2Bridge.submitTokenized.
         let remoteCache = RemotePrefixCacheContext(
             cacheScope: authenticatedCacheScope,
-            cacheReceiptNonce: cacheReceiptNonce)
+            cacheReceiptNonce: cacheReceiptNonce,
+            repeatedPrefixTokens: cacheRepeatedPrefixTokens)
         var receiptCallbacks: PrefixCacheReceiptEmitter.Callbacks = (nil, nil)
         if prefixCacheProtocol != 2 {
             receiptCallbacks = PrefixCacheReceiptEmitter.callbacks(
@@ -816,6 +818,7 @@ extension ProviderLoop {
                 templateControls: templateControls,
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
+                donationDemand: remoteCache.donationDemand,
                 engineV2Logprobs: logprobsChannel.map {
                     EngineV2LogprobsPlumbing(
                         topLogprobs: logprobsSpec?.topLogprobs, channel: $0)

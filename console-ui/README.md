@@ -19,7 +19,7 @@ Client-side variables used by the app:
 - `NEXT_PUBLIC_PRIVY_APP_ID` - Privy application ID
 - `NEXT_PUBLIC_GA_MEASUREMENT_ID` - optional public Google Analytics 4 measurement ID
 
-Analytics stays disabled unless `NEXT_PUBLIC_GA_MEASUREMENT_ID` is set **and** consent is granted. When a measurement ID is configured, the app shows a small in-app prompt so users can allow or decline privacy-filtered usage analytics. Consent is persisted in `localStorage` under `darkbloom_ga_consent` (`granted` or `denied`) and mirrored to a `.darkbloom.dev` cookie so the landing page and console share the same choice. A declined choice keeps analytics disabled until the user explicitly changes it later from Settings.
+Google Analytics is on by default: with `NEXT_PUBLIC_GA_MEASUREMENT_ID` unset the app uses its built-in measurement ID, and setting it to an empty string disables GA. There is no consent prompt or opt-out; a `darkbloom_ga_consent` value left in `localStorage` by the removed prompt is ignored.
 
 ### Google Analytics setup
 

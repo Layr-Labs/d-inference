@@ -45,7 +45,11 @@ type Provider struct {
 	ID       string
 	Hardware protocol.Hardware
 	Models   []protocol.ModelInfo
-	Backend  string
+	// CapacityModelIDs is the catalog/capability-accepted inventory used by
+	// the last applied heartbeat to canonicalize warm models and slots.
+	// Guarded by mu; nil until the first applied heartbeat.
+	CapacityModelIDs []string
+	Backend          string
 	// ReportedRuntimeCapabilities is normalized but untrusted Register input.
 	// RuntimeCapabilities remains empty until ReconcileAttestedRuntimeCapabilities
 	// binds that report to signed claims and approved runtime evidence.
@@ -105,14 +109,24 @@ type Provider struct {
 	// draining (heartbeat status "draining" or a typed draining rejection);
 	// routing skips it until its next idle/serving heartbeat or the TTL
 	// (drain_state.go). Guarded by p.mu.
-	drainCommitted   bool // lifecycle drain stays fenced until this connection ends
-	drainingUntil    time.Time
-	Conn             *websocket.Conn
-	writer           *providerWriter
-	LastHeartbeat    time.Time
-	registeredAt     time.Time               // immutable connection creation order for verified duplicate arbitration
-	Stats            protocol.HeartbeatStats // lifetime counters shown to users
-	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
+	drainCommitted              bool // fenced until matching provider readiness or disconnect
+	drainRequestID              string
+	drainGeneration             uint64 // increases per barrier, including reused wire request IDs
+	drainReady                  bool   // preceding reservations and terminal usage have settled
+	drainReplacementPending     bool   // inventory committed, waiting for receipt and provider readiness
+	drainReplacementAcked       bool
+	drainReplacementReadySeq    uint64 // heartbeat seq built after local admission reopened
+	drainReplacementAppliedSeq  uint64 // accepted serving heartbeat for this replacement
+	drainReplacementID          string
+	drainRemovedModels          []string                             // accumulated across reconciliation drains until readiness
+	lastResumedModelReplacement protocol.ModelsReplaceResumedMessage // exact-session duplicate receipt
+	drainingUntil               time.Time
+	Conn                        *websocket.Conn
+	writer                      *providerWriter
+	LastHeartbeat               time.Time
+	registeredAt                time.Time               // immutable connection creation order for verified duplicate arbitration
+	Stats                       protocol.HeartbeatStats // lifetime counters shown to users
+	lastSessionStats            protocol.HeartbeatStats // raw counters from the current provider process
 
 	// Until restore finishes, verified identities cannot route, and persisted
 	// records must not advertise a reusable serial/SE identity. Includes
@@ -188,6 +202,10 @@ type Provider struct {
 
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
+	// CapacityAcceptedAt advances only when the backend-capacity frame is
+	// applied. Rejected sequence frames advance LastHeartbeat but leave this
+	// owner-diagnostic clock unchanged. Guarded by p.mu.
+	CapacityAcceptedAt time.Time
 
 	// capacitySamplesAt is the coordinator time of the last accepted slot
 	// sample reconciliation. Separate from LastHeartbeat: rejected capacity
@@ -226,8 +244,6 @@ type Provider struct {
 	RuntimeManifestChecked  bool   `json:"runtime_manifest_checked"`            // true only when a manifest was present and hashes were verified (fail-closed for text)
 	MetallibVerified        bool   `json:"metallib_verified"`                   // explicit mlx_metallib entry matched the approved runtime manifest
 	EncryptedResponseChunks bool   `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are encrypted to the coordinator
-	PythonHash              string `json:"python_hash,omitempty"`
-	RuntimeHash             string `json:"runtime_hash,omitempty"`
 	TemplateHashes          map[string]string
 
 	// Phase 7: Privacy invariant attestation.
@@ -300,8 +316,9 @@ type Provider struct {
 	lastDesiredModels                 []protocol.DesiredModelEntry
 	desiredModelsSendMu               sync.Mutex
 
-	mu          sync.Mutex
-	pendingReqs map[string]*PendingRequest
+	mu               sync.Mutex
+	pendingReqs      map[string]*PendingRequest
+	drainPendingDone chan struct{} // allocated only while a committed drain has reservations
 
 	// registry back-pointer, set once in Register (nil for bare test Providers).
 	// SetAttestationResult uses it to bind this session's id to its stable
@@ -329,6 +346,9 @@ func (p *Provider) AddPending(pr *PendingRequest) {
 func (p *Provider) addPendingLocked(pr *PendingRequest) {
 	pr.providerAuthorizationBinding = providerRequestAuthorizationBindingLocked(p)
 	p.pendingReqs[pr.RequestID] = pr
+	if p.drainCommitted && p.drainPendingDone == nil {
+		p.drainPendingDone = make(chan struct{})
+	}
 }
 
 // RemovePending removes and returns a pending request.
@@ -368,6 +388,9 @@ func (p *Provider) RemovePendingForFirstContentTimeout(
 func (p *Provider) removePendingLocked(requestID string) *PendingRequest {
 	pr := p.pendingReqs[requestID]
 	delete(p.pendingReqs, requestID)
+	if len(p.pendingReqs) == 0 {
+		p.settleDrainPendingLocked()
+	}
 	return pr
 }
 

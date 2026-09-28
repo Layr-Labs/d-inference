@@ -8,21 +8,19 @@ import (
 
 // QuickCapacityCheck must mirror the routing path's per-provider gates: for a
 // tools request it must exclude (a) a pair in the shape-keyed inference-error
-// cooldown for the tools shape and (b) a trait-ineligible provider (below the
-// tools floor or render-broken). Without this the preflight reports phantom
-// capacity that routing then refuses, queueing the request to a misleading 429.
+// cooldown for the tools shape and (b) a trait-ineligible (render-broken)
+// provider. Without this the preflight reports phantom capacity that routing
+// then refuses, queueing the request to a misleading 429.
 func TestQuickCapacityCheckExcludesShapeCooledAndTraitIneligible(t *testing.T) {
 	reg := New(testLogger())
 	model := "preflight-tools-model"
 	toolTraits := RequestTraits{HasTools: true}
 
-	// All providers at/above the tools floor unless stated; render verdict nil.
+	// Render verdict nil unless stated.
 	cooled := makeSchedulerProvider(t, reg, "cooled", model, 100)
-	belowFloor := makeSchedulerProvider(t, reg, "below-floor", model, 100)
 	renderBroken := makeSchedulerProvider(t, reg, "render-broken", model, 100)
 	healthy := makeSchedulerProvider(t, reg, "healthy", model, 100)
 	setProviderVersion(cooled, "0.6.5")
-	setProviderVersion(belowFloor, "0.6.2") // below the 0.6.3 tools floor
 	setProviderVersion(renderBroken, "0.6.5")
 	setProviderVersion(healthy, "0.6.5")
 	renderBroken.mu.Lock()
@@ -41,12 +39,12 @@ func TestQuickCapacityCheckExcludesShapeCooledAndTraitIneligible(t *testing.T) {
 		t.Fatalf("tools QuickCapacityCheck = (cand=%d rej=%d tooLarge=%d), want 1/0/0 (only healthy)", candidates, rejections, tooLarge)
 	}
 
-	// For a BASE request, the tools cooldown and tools floor do not apply, so the
-	// cooled, below-floor, and healthy providers all qualify — but render-broken
-	// is still excluded for every shape.
+	// For a BASE request, the tools cooldown does not apply, so the cooled and
+	// healthy providers both qualify — but render-broken is still excluded for
+	// every shape.
 	baseCandidates, baseRej, _ := reg.QuickCapacityCheck(model, 100, 128, RequestTraits{})
-	if baseCandidates != 3 || baseRej != 0 {
-		t.Fatalf("base QuickCapacityCheck = (cand=%d rej=%d), want 3/0 (render-broken excluded; tools gates inactive)", baseCandidates, baseRej)
+	if baseCandidates != 2 || baseRej != 0 {
+		t.Fatalf("base QuickCapacityCheck = (cand=%d rej=%d), want 2/0 (render-broken excluded; tools cooldown inactive)", baseCandidates, baseRej)
 	}
 }
 

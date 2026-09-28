@@ -74,6 +74,15 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 			bc.FreeForLoadGB = nil
 		}
 	}
+	// Owner-facing load diagnostics must remain optional for older providers.
+	// Drop malformed samples rather than emitting invalid JSON or a false
+	// "fits" verdict in /v1/me/providers.
+	if bc.LoadUsableGB != nil && !validLoadDiagnosticGB(*bc.LoadUsableGB) {
+		bc.LoadUsableGB = nil
+	}
+	if bc.LoadHeadroomGB != nil && !validLoadDiagnosticGB(*bc.LoadHeadroomGB) {
+		bc.LoadHeadroomGB = nil
+	}
 	if m := bc.PrefixCacheMaintenance; m != nil {
 		m.TTLExpiredTotal = min(m.TTLExpiredTotal, maxCapacitySampleValue)
 		m.BudgetEvictedTotal = min(m.BudgetEvictedTotal, maxCapacitySampleValue)
@@ -192,6 +201,10 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 	}
 }
 
+func validLoadDiagnosticGB(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= maxMemoryGBFloat
+}
+
 // System-profiler heartbeat telemetry bounds (CONTRACT-WIRE.md §2). Pointer
 // numerics are clamped in place into [0, max]; nil (absent) is left alone so
 // presence semantics survive.
@@ -305,6 +318,17 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = backendCapacity
+	p.CapacityAcceptedAt = time.Time{}
+	if backendCapacity != nil {
+		p.CapacityAcceptedAt = now
+	}
+	// Bind the owner-facing readiness model set to this exact applied capacity
+	// snapshot. Catalog changes or model replacements take effect on the next
+	// heartbeat, never halfway through an owner read.
+	p.CapacityModelIDs = make([]string, 0, len(eligibleModels))
+	for _, model := range eligibleModels {
+		p.CapacityModelIDs = append(p.CapacityModelIDs, model.ID)
+	}
 	// Per-slot KV backend (v0.8.0 paged rollout). Recorded from the canonical
 	// report after unaccepted model identifiers have been removed,
 	// BEFORE the nil-clearing semantics above take effect for it: the record is
@@ -346,9 +370,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 			}
 		}
 	}
-	// Credit wall-clock time since the previous heartbeat as uptime, so an
-	// always-online provider's uptimeRate reaches 1.0 and its reputation can
-	// exceed the old 0.85 cap (RecordUptime was never called in prod).
+	// Credit wall-clock time since the previous heartbeat as provider uptime.
 	// Bound the credit to a window just above the heartbeat interval (30s) and
 	// within the eviction staleness (90s): a larger gap means the provider was
 	// effectively offline (it would have been reaped, or this is an in-process
@@ -374,6 +396,13 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// "idle"/"serving" clear it. Independent of p.Status below — a draining
 	// provider keeps its online/serving accounting; only routing changes.
 	applyHeartbeatDrainStateLocked(p, msg.Status, now)
+	// A post-commit serving heartbeat is the provider's refreshed capacity
+	// snapshot. Only an applied, non-nil backend report may release a model
+	// replacement; a pre-resume draining frame or stale capacity_seq cannot.
+	if p.drainReplacementPending && p.drainReplacementAcked && backendCapacity != nil &&
+		backendCapacity.CapacitySeq > 0 && (msg.Status == "idle" || msg.Status == "serving") {
+		p.drainReplacementAppliedSeq = backendCapacity.CapacitySeq
+	}
 	// Only update status from heartbeat if provider is not actively serving
 	// (serving status is managed by request lifecycle). Crucially, an
 	// untrusted provider must NOT transition back to StatusOnline here —
@@ -608,6 +637,14 @@ func cloneBackendCapacityFields(capacity, in *protocol.BackendCapacity) {
 	if in.FreeForLoadGB != nil {
 		free := *in.FreeForLoadGB
 		capacity.FreeForLoadGB = &free
+	}
+	if in.LoadUsableGB != nil {
+		usable := *in.LoadUsableGB
+		capacity.LoadUsableGB = &usable
+	}
+	if in.LoadHeadroomGB != nil {
+		headroom := *in.LoadHeadroomGB
+		capacity.LoadHeadroomGB = &headroom
 	}
 	if in.MLXCacheReclaimer != nil {
 		reclaimer := *in.MLXCacheReclaimer

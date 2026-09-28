@@ -63,9 +63,6 @@ public struct StandaloneServerConfig: Sendable {
     /// Bearer token required on every inference route (direct/local mode).
     /// nil = no auth (library default / explicit `--no-auth`).
     public let authToken: String?
-    /// Detected local hardware. Was the adaptive-prefill ladder seed;
-    /// retained for CLI compatibility, currently unused on the v2 path.
-    public let hardware: HardwareInfo?
     public let runtimeCapabilities: Set<ProviderRuntimeCapability>
     /// Box-wide concurrent-decode cap per v2 engine
     /// (`[backend] engine_v2_max_concurrent`), clamped to [1, 8]. Defaults to
@@ -84,8 +81,6 @@ public struct StandaloneServerConfig: Sendable {
     /// MTP policy inherited from provider config, including exact Gemma QAT.
     /// External assistants download asynchronously through the configured catalog.
     public let mtpMode: MTPMode
-    /// Source-compatible view for callers that still inspect the old boolean.
-    public var mtp: Bool { mtpMode == .on }
     public let mtpDrafterPath: String?
     public let coordinatorURL: String
 
@@ -94,14 +89,12 @@ public struct StandaloneServerConfig: Sendable {
         host: String = "127.0.0.1",
         maxCachedModels: Int = 3,
         authToken: String? = nil,
-        hardware: HardwareInfo? = nil,
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         engineV2MaxConcurrent: UInt64 = BackendSettings.defaultEngineV2MaxConcurrent,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
-        mtp: Bool? = nil,
         mtpMode: MTPMode = .auto,
         mtpDrafterPath: String? = nil,
         coordinatorURL: String = CoordinatorSettings().url
@@ -110,14 +103,13 @@ public struct StandaloneServerConfig: Sendable {
         self.host = host
         self.maxCachedModels = max(1, maxCachedModels)
         self.authToken = authToken
-        self.hardware = hardware
         self.runtimeCapabilities = runtimeCapabilities
         self.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
         self.prefillDeadlineMode = prefillDeadlineMode
-        self.mtpMode = mtp.map { $0 ? .on : .off } ?? mtpMode
+        self.mtpMode = mtpMode
         self.mtpDrafterPath = mtpDrafterPath
         self.coordinatorURL = coordinatorURL
     }
@@ -355,9 +347,6 @@ public actor StandaloneServer {
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
             catalog: SpecDecCatalogLookup(coordinatorURL: config.coordinatorURL))
-        // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
-        // EngineV2 SSD data lives under the separate `darkbloom/kv3` root.
-        LegacyKVCacheSweeper.sweep()
         // Pin the MLX memory ceiling before any model weights load on this path
         // (the coordinator path does this in ProviderLoop.startMemoryProtection).
         MLXMemoryGuard.configureOnce()
@@ -395,30 +384,6 @@ public actor StandaloneServer {
     /// Internal access so the +HTTP extension can pass the same
     /// default through to ``MultiModelBatchSchedulerEngine``.
     static let slotDefaultMaxTokens = 4096
-
-    /// Map an engine-side admission error message to an HTTP status. Used
-    /// by tests and by any custom error-mapping middleware. The keyword set
-    /// matches the canonical `token_budget_exhausted:` message contract the
-    /// v2 bridge preserves from the legacy scheduler.
-    static func schedulerErrorStatus(for message: String) -> HTTPResponse.Status {
-        let lowercased = message.lowercased()
-        if lowercased.contains("invalid token")
-            || lowercased.contains("duplicate request")
-            || lowercased.contains("batch token budget")
-        {
-            return .badRequest
-        }
-        if lowercased.contains("queue full") {
-            return .tooManyRequests
-        }
-        if lowercased.contains("token_budget_exhausted")
-            || lowercased.contains("timed out waiting for capacity")
-            || lowercased.contains("insufficient global kv cache headroom")
-        {
-            return .serviceUnavailable
-        }
-        return .internalServerError
-    }
 
     /// Update the advertised model list (e.g. after a rescan). Applies the
     /// same CBv2 supported-set filter as init. The serving set is part of
@@ -1406,10 +1371,10 @@ public actor StandaloneServer {
         return true
     }
 
-    func evictIfNeededForLoad() async throws {
+    func evictIfNeededForLoad(allowEviction: Bool = true) async throws {
         guard slots.count >= config.maxCachedModels else { return }
 
-        guard await evictLRUIdleSlot() else {
+        guard allowEviction, await evictLRUIdleSlot() else {
             throw StandaloneServerError.capacityUnavailable(
                 "All \(config.maxCachedModels) cached model slot(s) are active; try again when a request finishes"
             )
@@ -1417,7 +1382,8 @@ public actor StandaloneServer {
     }
 
     func ensureMemoryHeadroomForLoad(
-        requiredGb: Double, waitForQwen4Retirement: Bool = false
+        requiredGb: Double, waitForQwen4Retirement: Bool = false,
+        allowEviction: Bool = true
     ) async throws {
         guard requiredGb.isFinite, requiredGb > 0 else { return }
 
@@ -1425,7 +1391,7 @@ public actor StandaloneServer {
             try Task.checkCancellation()
             if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
                 try await retirement.pauseForRecheck() { continue }
-            guard await evictLRUIdleSlot() else {
+            guard allowEviction, await evictLRUIdleSlot() else {
                 throw StandaloneServerError.capacityUnavailable(
                     String(format: "Insufficient memory headroom to load model (needs %.1f GB available)", requiredGb)
                 )
@@ -1618,10 +1584,10 @@ public actor StandaloneServer {
         }.value
     }
 
-    /// Lazy-load a model if it isn't already resident. Serializes loads and
-    /// applies LRU + memory-headroom eviction, then builds the v2 slot
-    /// through the shared sizing → re-slice → bridge path.
-    func ensureModelLoaded(_ modelId: String) async throws {
+    /// Load a model if it isn't already resident. Request loads may evict idle
+    /// slots; startup preloads pass `allowEviction = false` to preserve earlier
+    /// warm models while still using the authoritative memory gate.
+    func ensureModelLoaded(_ modelId: String, allowEviction: Bool = true) async throws {
         try requireNativeMiMoNewWorkAllowed()
         await waitForMTPUpgrade(modelId)
         try requireNativeMiMoNewWorkAllowed()
@@ -1642,7 +1608,7 @@ public actor StandaloneServer {
                 touchSlot(modelId)
                 return
             }
-            try await ensureModelLoaded(modelId)
+            try await ensureModelLoaded(modelId, allowEviction: allowEviction)
             return
         }
 
@@ -1690,7 +1656,7 @@ public actor StandaloneServer {
             return
         }
         if modelsLoading.contains(modelId) {
-            try await ensureModelLoaded(modelId)
+            try await ensureModelLoaded(modelId, allowEviction: allowEviction)
             return
         }
 
@@ -1720,7 +1686,8 @@ public actor StandaloneServer {
 
         if let nativeLoad {
             try await loadNativeMiMoSlot(modelID: modelId, modelInfo: modelInfo,
-                directory: modelPath, load: nativeLoad, preparation: mtpPreparation)
+                directory: modelPath, load: nativeLoad, preparation: mtpPreparation,
+                allowEviction: allowEviction)
             return
         }
         let pendingLoadID = "pending-load:\(modelId)"
@@ -1734,7 +1701,7 @@ public actor StandaloneServer {
         await pushActivationReserve()
         do {
             try Task.checkCancellation()
-            try await evictIfNeededForLoad()
+            try await evictIfNeededForLoad(allowEviction: allowEviction)
             let targetRequiredGb = ModelLoadAdmission.requiredToLoadGb(
                     // Includes the validated native load-copy envelope or
                     // legacy padding; never substitute bare steady residency.
@@ -1747,7 +1714,8 @@ public actor StandaloneServer {
                         / (1024.0 * 1024.0 * 1024.0))
             try await ensureMemoryHeadroomForLoad(
                 requiredGb: targetRequiredGb,
-                waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
+                waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType),
+                allowEviction: allowEviction)
             // Inline assistants ride the target checkpoint's own shards,
             // already counted in estimatedMemoryGb -> targetRequiredGb; only
             // separately staged assistants add bytes on top

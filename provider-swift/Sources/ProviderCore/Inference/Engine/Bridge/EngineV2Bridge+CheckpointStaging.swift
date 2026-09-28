@@ -10,5 +10,6 @@ extension EngineV2Bridge {
     func discardPrefixReadyReceipt(requestID: CBv2RequestID) {
         ssdPrefixCache?.discardReadyReceipt(requestID: requestID)
         ssdHybridCheckpointStore?.discardReadyReceipt(requestID: requestID)
+        ssdHybridCheckpointStore?.discardDonationDemand(requestID: requestID)
     }
 }

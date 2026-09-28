@@ -13,13 +13,6 @@ func (s *PostgresStore) UsageRecords() []UsageRecord {
 	return s.readUsageRecords(`SELECT ` + usageRecordColumns + ` FROM usage ORDER BY created_at DESC LIMIT 10000`)
 }
 
-// UsageRecordsSince returns records at or after since, oldest first.
-func (s *PostgresStore) UsageRecordsSince(since time.Time) []UsageRecord {
-	return s.readUsageRecords(`SELECT `+usageRecordColumns+`
-		FROM usage WHERE ($1::timestamptz IS NULL OR created_at >= $1)
-		ORDER BY created_at ASC`, nullSince(since))
-}
-
 // readUsageRecords preserves the historical read contract: query failures
 // return nil, individual scan failures are skipped, and a successful empty
 // query returns a non-nil slice. It does not reinterpret terminal rows.Err().

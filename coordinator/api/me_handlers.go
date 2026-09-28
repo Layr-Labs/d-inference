@@ -27,14 +27,13 @@ import (
 
 // myReputation is the wire shape for a provider's reputation snapshot.
 type myReputation struct {
-	Score              float64 `json:"score"`
-	TotalJobs          int     `json:"total_jobs"`
-	SuccessfulJobs     int     `json:"successful_jobs"`
-	FailedJobs         int     `json:"failed_jobs"`
-	TotalUptimeSeconds int64   `json:"total_uptime_seconds"`
-	AvgResponseTimeMs  int64   `json:"avg_response_time_ms"`
-	ChallengesPassed   int     `json:"challenges_passed"`
-	ChallengesFailed   int     `json:"challenges_failed"`
+	TotalJobs          int   `json:"total_jobs"`
+	SuccessfulJobs     int   `json:"successful_jobs"`
+	FailedJobs         int   `json:"failed_jobs"`
+	TotalUptimeSeconds int64 `json:"total_uptime_seconds"`
+	AvgResponseTimeMs  int64 `json:"avg_response_time_ms"`
+	ChallengesPassed   int   `json:"challenges_passed"`
+	ChallengesFailed   int   `json:"challenges_failed"`
 }
 
 // myProvider is the per-machine payload for /v1/me/providers.
@@ -49,14 +48,21 @@ type myProvider struct {
 	Status        string     `json:"status"`
 	Online        bool       `json:"online"`
 	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
+	// Last applied backend-capacity frame; rejected sequence frames only advance
+	// LastHeartbeat and must not freshen owner load diagnostics.
+	CapacityAcceptedAt *time.Time `json:"capacity_accepted_at,omitempty"`
 
 	// Identity / hardware
-	Hardware     protocol.Hardware    `json:"hardware"`
-	Models       []protocol.ModelInfo `json:"models"`
-	Backend      string               `json:"backend,omitempty"`
-	Version      string               `json:"version,omitempty"`
-	OSVersion    string               `json:"os_version,omitempty"` // Current or last app-reported macOS version.
-	serialNumber string
+	Hardware protocol.Hardware    `json:"hardware"`
+	Models   []protocol.ModelInfo `json:"models"`
+	// CapacityModelIDs is the catalog/capability-accepted subset used to
+	// canonicalize warm models and backend slots. Present-empty means none;
+	// omitted means no live capacity evidence (offline/legacy).
+	CapacityModelIDs *[]string `json:"capacity_model_ids,omitempty"`
+	Backend          string    `json:"backend,omitempty"`
+	Version          string    `json:"version,omitempty"`
+	OSVersion        string    `json:"os_version,omitempty"` // Current or last app-reported macOS version.
+	serialNumber     string
 
 	// Trust & attestation
 	TrustLevel  string `json:"trust_level"`
@@ -86,9 +92,7 @@ type myProvider struct {
 	MDASEPVersion     string `json:"mda_sepos_version,omitempty"`
 
 	// Runtime integrity
-	RuntimeVerified bool   `json:"runtime_verified"`
-	PythonHash      string `json:"python_hash,omitempty"`
-	RuntimeHash     string `json:"runtime_hash,omitempty"`
+	RuntimeVerified bool `json:"runtime_verified"`
 
 	// Challenge state
 	LastChallengeVerified *time.Time `json:"last_challenge_verified,omitempty"`
@@ -255,6 +259,9 @@ func needsAttention(mp *myProvider, minVersion string) bool {
 	if minVersion != "" && mp.Version != "" && semverLess(mp.Version, minVersion) {
 		return true
 	}
+	if coldModelLoadBlocked(mp) {
+		return true
+	}
 	return false
 }
 
@@ -340,7 +347,7 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 		Providers:             fleet,
 		LatestProviderVersion: s.latestReleasedVersion(),
 		MinProviderVersion:    s.minProviderVersion,
-		HeartbeatTimeoutSec:   90,
+		HeartbeatTimeoutSec:   ownerHeartbeatTimeoutSeconds,
 		ChallengeMaxAgeSec:    int((6 * time.Minute).Seconds()),
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -456,23 +463,14 @@ func needsStoredReputation(mp *myProvider) bool {
 }
 
 func applyStoredReputation(mp *myProvider, rep *store.ReputationRecord) {
-	r := registry.NewReputation()
-	r.TotalJobs = rep.TotalJobs
-	r.SuccessfulJobs = rep.SuccessfulJobs
-	r.FailedJobs = rep.FailedJobs
-	r.TotalUptime = time.Duration(rep.TotalUptimeSeconds) * time.Second
-	r.AvgResponseTime = time.Duration(rep.AvgResponseTimeMs) * time.Millisecond
-	r.ChallengesPassed = rep.ChallengesPassed
-	r.ChallengesFailed = rep.ChallengesFailed
 	mp.Reputation = myReputation{
-		Score:              r.Score(),
-		TotalJobs:          r.TotalJobs,
-		SuccessfulJobs:     r.SuccessfulJobs,
-		FailedJobs:         r.FailedJobs,
-		TotalUptimeSeconds: int64(r.TotalUptime / time.Second),
-		AvgResponseTimeMs:  int64(r.AvgResponseTime / time.Millisecond),
-		ChallengesPassed:   r.ChallengesPassed,
-		ChallengesFailed:   r.ChallengesFailed,
+		TotalJobs:          rep.TotalJobs,
+		SuccessfulJobs:     rep.SuccessfulJobs,
+		FailedJobs:         rep.FailedJobs,
+		TotalUptimeSeconds: rep.TotalUptimeSeconds,
+		AvgResponseTimeMs:  rep.AvgResponseTimeMs,
+		ChallengesPassed:   rep.ChallengesPassed,
+		ChallengesFailed:   rep.ChallengesFailed,
 	}
 }
 
@@ -498,8 +496,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		// it with live.PublicKey when the machine is currently connected.
 		mp.ProviderKey = rec.PublicKey
 		mp.RuntimeVerified = rec.RuntimeVerified
-		mp.PythonHash = rec.PythonHash
-		mp.RuntimeHash = rec.RuntimeHash
 		mp.LastChallengeVerified = rec.LastChallengeVerified
 		mp.FailedChallenges = rec.FailedChallenges
 		mp.LifetimeRequestsServed = rec.LifetimeRequestsServed
@@ -559,6 +555,10 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		// the provider may have re-registered with new specs.
 		mp.Hardware = live.Hardware
 		mp.Models = append([]protocol.ModelInfo{}, live.Models...)
+		if live.CapacityModelIDs != nil {
+			ids := append([]string{}, live.CapacityModelIDs...)
+			mp.CapacityModelIDs = &ids
+		}
 		mp.Backend = live.Backend
 		mp.Version = live.Version
 		mp.OSVersion = "" // A live connection must not inherit a previous OS report.
@@ -567,8 +567,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.MDAVerified = live.MDAVerified
 		mp.SEKeyBound = live.SEKeyBound
 		mp.RuntimeVerified = live.RuntimeVerified
-		mp.PythonHash = live.PythonHash
-		mp.RuntimeHash = live.RuntimeHash
 		if !live.LastChallengeVerified.IsZero() {
 			t := live.LastChallengeVerified
 			mp.LastChallengeVerified = &t
@@ -610,6 +608,10 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		if live.BackendCapacity != nil {
 			cap := *live.BackendCapacity
 			mp.BackendCapacity = &cap
+			if !live.CapacityAcceptedAt.IsZero() {
+				acceptedAt := live.CapacityAcceptedAt
+				mp.CapacityAcceptedAt = &acceptedAt
+			}
 		}
 		if live.IdleUnloadMins != nil {
 			v := *live.IdleUnloadMins
@@ -619,7 +621,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.CurrentModel = live.CurrentModel
 		// Reputation snapshot.
 		mp.Reputation = myReputation{
-			Score:              live.Reputation.Score(),
 			TotalJobs:          live.Reputation.TotalJobs,
 			SuccessfulJobs:     live.Reputation.SuccessfulJobs,
 			FailedJobs:         live.Reputation.FailedJobs,

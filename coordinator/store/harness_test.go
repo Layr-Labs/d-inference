@@ -3,9 +3,14 @@ package store
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // testPostgresStore returns a PostgresStore connected to the test database.
@@ -56,11 +61,14 @@ func testPostgresStore(t testing.TB) *PostgresStore {
 		"inference_routes",
 		"request_rejections",
 		"request_outcomes",
+		"model_demand_requests",
+		"model_demand_hourly",
 		"provider_trust_reuse",
 		"provider_floor_draws",
 		"code_attestations",
 		"code_attest_push_budgets",
 		"app_attest_build_qualifications",
+		"app_attest_key_rotations",
 		"app_attest_shadow_keys",
 		"app_attest_enrollments",
 		"app_attest_receipts",
@@ -105,4 +113,52 @@ var idSeq int64
 func uniqueID(prefix string) string {
 	idSeq++
 	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), idSeq)
+}
+
+// newThrowawayTestDatabase creates an empty database on the DATABASE_URL
+// server, returns its URL and drops it at cleanup. Tests that must boot
+// NewPostgres against a fresh schema use it instead of the shared database.
+var throwawayTestDatabaseSequence atomic.Uint64
+
+func newThrowawayTestDatabase(t *testing.T) string {
+	t.Helper()
+
+	sourceURL := os.Getenv("DATABASE_URL")
+	if sourceURL == "" {
+		t.Skip("DATABASE_URL not set — skipping PostgreSQL integration test")
+	}
+	targetURL, err := url.Parse(sourceURL)
+	if err != nil {
+		t.Fatalf("parse database URL: %v", err)
+	}
+	if targetURL.Scheme == "" || targetURL.Host == "" {
+		t.Fatalf("DATABASE_URL must be a PostgreSQL URL for isolated database tests")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	admin, err := pgxpool.New(ctx, sourceURL)
+	if err != nil {
+		t.Fatalf("connect database server: %v", err)
+	}
+
+	databaseName := fmt.Sprintf("dinf_throwaway_%d_%d",
+		time.Now().UnixNano(), throwawayTestDatabaseSequence.Add(1))
+	quotedDatabase := pgx.Identifier{databaseName}.Sanitize()
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+quotedDatabase+" TEMPLATE template0"); err != nil {
+		admin.Close()
+		t.Fatalf("create isolated throwaway database: %v", err)
+	}
+
+	targetURL.Path = "/" + databaseName
+
+	t.Cleanup(func() {
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer dropCancel()
+		if _, err := admin.Exec(dropCtx, "DROP DATABASE "+quotedDatabase+" WITH (FORCE)"); err != nil {
+			t.Errorf("drop isolated throwaway database: %v", err)
+		}
+		admin.Close()
+	})
+	return targetURL.String()
 }

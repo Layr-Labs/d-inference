@@ -74,7 +74,7 @@ public enum EngineV2Config {
 // MARK: - Refusal reasons
 
 /// Machine-classifiable reason for a v2 engine refusal, carried on the
-/// `engine_v2_refusal` telemetry event's allowlisted `reason` field.
+/// `engine_v2_refusal` telemetry event's `reason` field.
 public enum EngineV2RefusalReason: String, Sendable {
     /// No KV byte headroom under the unified-memory cap
     /// (`EngineV2ProductionError.noKVHeadroom`).
@@ -247,10 +247,8 @@ public enum EngineV2Factory {
     /// ERROR `engine_health` event for a v2 refusal (construction failure
     /// or re-slice floor). Replaces the retired WARN `engine_v2_fallback`:
     /// with no legacy engine left, a refusal is an ERROR the fleet
-    /// dashboard must alarm on, not a degradation note. Fields are drawn
-    /// from the existing telemetry allowlist (`component`, `operation`,
-    /// `backend`, `model`, `reason`, `error_class`, `error`) — no new wire
-    /// fields.
+    /// dashboard must alarm on, not a degradation note. Fields: `component`,
+    /// `operation`, `backend`, `model`, `reason`, `error_class`, `error`.
     static func emitRefusalTelemetry(
         modelId: String,
         reason: EngineV2RefusalReason,
@@ -260,7 +258,7 @@ public enum EngineV2Factory {
         var extra: [String: AnyCodableValue] = ["reason": .string(reason.rawValue)]
         if let error {
             extra["error_class"] = .string(String(reflecting: type(of: error)))
-            // Human-readable detail ("error" is allowlisted on both sides).
+            // Human-readable detail.
             extra["error"] = .string(String(describing: error))
         }
         // No `kv_backend`: a refusal can happen before the backend is
@@ -283,7 +281,7 @@ public enum EngineV2Factory {
     /// a fleet inventory — the sink drops on full behind a rate limit. The
     /// recurring per-slot inventory is `engine_v2_slot_posture`
     /// (`EngineV2Bridge+MTP`) plus `BackendSlotCapacity.kv_backend` on every
-    /// heartbeat. Allowlisted fields only — no wire changes.
+    /// heartbeat. Fixed operational keys only.
     static func emitKVBackendTelemetry(
         modelId: String,
         kind: EngineV2KVBackendKind,

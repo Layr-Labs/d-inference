@@ -9,7 +9,13 @@ extension CoordinatorClient {
     /// only after processing them and fencing its final dispatch handoff.
     /// A dropped connection/unsupported coordinator never counts as a drain.
     public func acknowledgeDrain(timeout: Duration) async -> Bool {
-        guard sessionRegistered, !shutdownRequested, nwConnection != nil else { return false }
+        await prepareModelSwitch(timeout: timeout) != nil
+    }
+
+    /// Returns a connection-scoped settled barrier for an inventory replacement.
+    public func prepareModelSwitch(timeout: Duration) async -> String? {
+        guard hasRegisteredConnection(), let connection = nwConnection else { return nil }
+        acknowledgedSwitchDrain = nil
         let id = UUID().uuidString
         let (stream, continuation) = AsyncStream<Bool>.makeStream()
         drainAcknowledgements[id] = continuation
@@ -18,7 +24,7 @@ extension CoordinatorClient {
         }
         chunkSender.flush()
         outboundRouter.yield(.drainBarrier(id))
-        return await withTaskGroup(of: Bool.self) { group in
+        let acknowledged = await withTaskGroup(of: Bool.self) { group in
             group.addTask {
                 for await result in stream { return result }
                 return false
@@ -31,6 +37,9 @@ extension CoordinatorClient {
             group.cancelAll()
             return result
         }
+        guard acknowledged, nwConnection === connection, hasRegisteredConnection() else { return nil }
+        acknowledgedSwitchDrain = id
+        return id
     }
 
     /// ProviderLoop calls this only after handling all earlier queued events.
@@ -40,6 +49,7 @@ extension CoordinatorClient {
     }
 
     internal func failDrainBarriers() {
+        acknowledgedSwitchDrain = nil
         for continuation in drainAcknowledgements.values {
             continuation.yield(false)
             continuation.finish()

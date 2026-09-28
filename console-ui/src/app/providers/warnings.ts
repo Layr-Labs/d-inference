@@ -13,6 +13,7 @@ import type { MyProvider, MyProvidersResponse } from "./types";
 import { formatIdleWindow } from "@/lib/format";
 import { hasCurrentAppAttestAuthorization } from "./authorization";
 import { needsMacOSUpgrade } from "./macos-upgrade";
+import { coldModelReadiness } from "./dashboard/load-readiness";
 
 export type WarningSeverity = "blocking" | "degrading" | "info";
 
@@ -222,6 +223,29 @@ export function computeWarnings(
     });
   }
 
+  const coldModels = coldModelReadiness(p, ctx.heartbeat_timeout_seconds);
+  const blockedLoads = coldModels.filter(
+    (model) => !model.busyServing && model.shortfallGb > 0 && model.canLoadAfterEviction === false);
+  if (blockedLoads.length > 0) {
+    const first = blockedLoads[0];
+    const accepted = new Set(p.capacity_model_ids ?? []);
+    const blockedIDs = new Set(blockedLoads.map((model) => model.model));
+    const anyResident = (p.backend_capacity?.slots ?? []).some(
+      (slot) => slot.state === "idle" || slot.state === "running");
+    const allModelsBlocked = accepted.size > 0 && !anyResident &&
+      [...accepted].every((id) => blockedIDs.has(id));
+    out.push({
+      id: "model_load_memory",
+      severity: allModelsBlocked ? "blocking" : "degrading",
+      title: allModelsBlocked ? "No selected model fits live memory" : "Some cold models cannot load now",
+      detail: `${first.model} needs ${first.requiredGb.toFixed(1)} GB to load, but this Mac has `
+        + `${first.usableGb.toFixed(1)} GB usable without eviction. `
+        + `Even after idle eviction the cold load is ${first.coldLoadShortfallGb?.toFixed(1)} GB short. `
+        + `${blockedLoads.length > 1 ? `${blockedLoads.length - 1} more model(s) are blocked. ` : ""}`
+        + "The hardware RAM figure is not live free memory. Free memory, run `darkbloom doctor`, then retry a request for this model.",
+    });
+  }
+
   const idleSlots =
     p.backend_capacity?.slots?.filter((s) => s.state === "idle_shutdown") ?? [];
   if (idleSlots.length > 0) {
@@ -243,9 +267,9 @@ export function computeWarnings(
     if (successRate < 0.8 && p.reputation.total_jobs >= 10) {
       out.push({
         id: "low_success_rate",
-        severity: "degrading",
+        severity: "info",
         title: `Job success rate low (${(successRate * 100).toFixed(0)}%)`,
-        detail: `Reputation score: ${p.reputation.score.toFixed(2)}. Investigate failed jobs in the logs to recover routing priority.`,
+        detail: `${p.reputation.successful_jobs} of ${p.reputation.total_jobs} jobs succeeded; ${p.reputation.failed_jobs} failed. Check provider logs for failure details.`,
       });
     }
   }
@@ -281,7 +305,6 @@ export function computeWarnings(
   }
   if (
     !p.account_id &&
-    !p.wallet_address &&
     p.status !== "offline" &&
     p.status !== "never_seen"
   ) {
@@ -290,7 +313,7 @@ export function computeWarnings(
       severity: "info",
       title: "No payout method configured",
       detail:
-        "This machine has no account link and no wallet address. Earnings cannot be claimed. Run `darkbloom login` to link to your account.",
+        "This machine is not linked to an account. Earnings cannot be claimed. Run `darkbloom login` to link to your account.",
     });
   }
 
@@ -333,11 +356,4 @@ export function computeWarnings(
   }
 
   return out;
-}
-
-export function highestSeverity(warnings: Warning[]): WarningSeverity | null {
-  if (warnings.some((w) => w.severity === "blocking")) return "blocking";
-  if (warnings.some((w) => w.severity === "degrading")) return "degrading";
-  if (warnings.some((w) => w.severity === "info")) return "info";
-  return null;
 }

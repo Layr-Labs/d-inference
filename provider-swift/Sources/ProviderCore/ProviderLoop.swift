@@ -145,9 +145,17 @@ struct RetryNotifyingPrefetchSink: PrefetchStatusSink {
 internal final class OneShotBoolContinuation: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
+    private var cancelled = false
 
-    init(_ continuation: CheckedContinuation<Bool, Never>) {
+    func install(_ continuation: CheckedContinuation<Bool, Never>) {
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            continuation.resume(returning: false)
+            return
+        }
         self.continuation = continuation
+        lock.unlock()
     }
 
     func resume(returning value: Bool) {
@@ -156,6 +164,15 @@ internal final class OneShotBoolContinuation: @unchecked Sendable {
         self.continuation = nil
         lock.unlock()
         continuation?.resume(returning: value)
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: false)
     }
 }
 
@@ -182,6 +199,16 @@ public actor ProviderLoop {
     internal var appAttestShadowClient: AppAttestShadowClient?
     internal var appAttestShadowTask: Task<Void, Never>?
     internal var appAttestShadowGeneration: UInt64 = 0
+    /// Last local App Attest observation, published in the daemon state file.
+    internal var appAttestLocalStatus: AppAttestLocalStatus?
+    /// Watches a stalled DeviceCheck operation until a restart is safe.
+    internal var appAttestStallMonitorTask: Task<Void, Never>?
+    /// Last logged reason for deferring the stall restart (log on change only).
+    internal var appAttestStallLastSkip: AppAttestStallRestartPolicy.SkipReason?
+    /// After a stall-restart attempt drained but could not restart, the next
+    /// attempt waits until this instant (monotonic; this process only, since a
+    /// new process has no stalled call).
+    internal var appAttestStallRetryAt: ContinuousClock.Instant?
     internal let loopConfig: ProviderLoopConfig
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?
@@ -350,6 +377,17 @@ public actor ProviderLoop {
     internal var lifecycleDrainRequestID: String?
     internal var lifecycleCommandReceived = false
     internal var lifecycleMonitorTask: Task<Void, Never>?
+    internal var modelSwitchTask: Task<ProviderModelSwitchStatus, Never>?
+    internal var modelSwitchStatus = ProviderModelSwitchStatus()
+    /// IO-only seams keep validation on real scanner/hash paths in lifecycle tests.
+    internal var modelSwitchSnapshotResolver: @Sendable (String) -> URL? = { ModelScanner.resolveLocalPath(modelID: $0) }
+    internal var modelSwitchWeightHasher: @Sendable (URL, String) -> String? = { WeightHasher.computeHash(snapshotDir: $0, modelID: $1) }
+    /// Invalidates prefetch work begun before an operator replaced the set.
+    internal var modelSelectionRevision: UInt64 = 0
+    internal var modelAdvertisementsInFlight = 0
+    /// Distinguishes an explicit switch back to the already-saved IDs from
+    /// unchanged TOML while a manual foreground override was serving.
+    public internal(set) var hasPersistedModelSwitch = false
     internal var acceptedLifecycleRequests: Set<String> = []
     internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()
@@ -384,11 +422,10 @@ public actor ProviderLoop {
     /// durable commit.
     internal var updateSession: SelfUpdater.UpdateSession?
 
-    /// Latest `desired_models` push received while update-draining. Normally
-    /// the restart makes it moot (registration gets fresh desired state), but
-    /// if the restart is aborted (commit/restart failure) the deferred state
-    /// is replayed by `resumeServingAfterUpdate` so the provider does not keep
-    /// serving from a desired set the coordinator has since changed.
+    /// Latest desired_models push received while admission is closed. A switch
+    /// clears obsolete state before committing, then replays the fresh snapshot
+    /// after reopening; an aborted update likewise replays its deferred state.
+    /// Reconnecting providers receive a new snapshot during registration.
     internal var deferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
 
     /// Models remain tracked while their scheduler is tearing down so
@@ -518,12 +555,23 @@ public actor ProviderLoop {
     internal var preloadTasks: [String: Task<Void, Never>] = [:]
 
     /// Startup preload driver (`ProviderLoop+StartupPreload`). Non-nil while
-    /// the boot-time preload of the configured/previously-served model set is
+    /// the boot-time preload of the selected model set is
     /// still running — it may outlive the registration gate when the
     /// `startup_preload_timeout_secs` deadline passes (loads continue in the
     /// background). Cancelled and awaited on shutdown alongside the
     /// coordinator-driven preloads.
     internal var startupPreloadTask: Task<Void, Never>?
+    /// Wakes the registration gate when lifecycle draining starts, even if
+    /// the preload driver is inside a slow model load.
+    internal var startupPreloadGateWaiter: OneShotBoolContinuation?
+    /// Coalesces pre-registration teardown requested by the serve task and a
+    /// concurrent signal handler. Detached from a cancelled schedule task.
+    internal var preRegistrationCleanupTask: Task<Bool, Never>?
+    /// Set once the coordinator event reader owns the normal shutdown path.
+    internal var coordinatorEventLoopStarted = false
+    /// Suffix of the startup plan not yet completed by the driver. Exposed in
+    /// the daemon state so status can distinguish warmup from request loading.
+    internal var startupPreloadPendingModels: [String] = []
 
     /// Test seam: overrides the loaded-models persistence file
     /// (default: `LoadedModelsStore.path()`).
@@ -536,6 +584,11 @@ public actor ProviderLoop {
     /// other's temp files (swift-testing runs suites in parallel;
     /// `.serialized` only orders tests WITHIN a suite).
     internal var daemonStateFileOverride: URL?
+
+    /// APNs code-identity push receipt/reply history beside the state file.
+    internal var apnsPushHistory: APNsPushHistoryStore {
+        APNsPushHistoryStore(directory: (daemonStateFileOverride ?? DaemonStateFile.path()).deletingLastPathComponent())
+    }
 
     /// Gate on the loaded-models persistence writes. `run()` flips it on at
     /// startup; it stays FALSE for `ProviderLoop` instances that never serve
@@ -635,14 +688,12 @@ public actor ProviderLoop {
     public init(config: ProviderLoopConfig) throws {
         try self.init(
             config: config,
-            purgeLegacyFiles: true,
             attestationSigner: Self.createAttestationSigner()
         )
     }
 
     init(
         config: ProviderLoopConfig,
-        purgeLegacyFiles: Bool,
         attestationSigner: (any AttestationSigner)?,
         preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
@@ -682,9 +733,6 @@ public actor ProviderLoop {
         }
         self.advertisedModels = advertised
         self.modelHashes = config.modelHashes
-        if purgeLegacyFiles {
-            NodeKeyPair.purgeLegacyFiles()
-        }
         self.keyPair = NodeKeyPair.generate()
         self.signer = attestationSigner
         self.attestationBuilder = signer.map { AttestationBuilder(identity: $0) }
@@ -712,10 +760,6 @@ public actor ProviderLoop {
             activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
                 modelIDs: Array(advertised.keys)),
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
-        // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
-        // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
-        // so this cleanup cannot delete current cache data.
-        if purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad

@@ -191,11 +191,10 @@ let package = Package(
         // ----------------------------------------------------------------
         // darkbloom-enclave: small CLI wrapper around the Secure Enclave
         // identity helpers in ProviderCore (the Secure Enclave FFI bridge
-        // lives in ProviderCore/Security). Used by install.sh to render an attestation
-        // blob before the main provider is running. The legacy binary
-        // name `eigeninference-enclave` is kept as a symlink in
-        // install.sh for backward compatibility with already-installed
-        // bundles.
+        // lives in ProviderCore/Security). install.sh runs its `info`
+        // command to check the Secure Enclave identity before the main
+        // provider is running. It ships inside Darkbloom.app and install.sh
+        // links it as bin/darkbloom-enclave.
         // ----------------------------------------------------------------
         .executableTarget(
             name: "DarkbloomEnclaveCLI",

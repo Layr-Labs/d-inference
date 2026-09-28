@@ -159,15 +159,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.9.9"
-
-// minProviderVersionForDesiredModels is the first provider version whose Swift
-// runtime understands the desired_models message. The coordinator must NOT send
-// desired_models to any provider below this version (or on a non-Swift backend):
-// a pre-feature provider's strict decoder throws on unknown message types and
-// would disconnect. KEEP THIS IN SYNC with the release that ships Swift
-// desired_models support (ProviderCore.version at that cut).
-const minProviderVersionForDesiredModels = "0.5.17"
+var LatestProviderVersion = "0.9.12"
 
 // latestReleasedVersion returns the highest active release version from
 // the store, falling back to the hardcoded LatestProviderVersion when
@@ -185,8 +177,6 @@ type approvedReleasePolicy struct {
 	Backend        string
 	BinaryHash     string
 	MetallibHash   string
-	PythonHash     string
-	RuntimeHash    string
 	TemplateHashes map[string]string
 }
 
@@ -370,8 +360,10 @@ type Server struct {
 	hedgeGov *hedgeGovernor
 
 	// minProviderVersion is the minimum provider version accepted for routing.
-	// Providers below this version are excluded and told to update.
-	// Set from EIGENINFERENCE_MIN_PROVIDER_VERSION env var or derived from latest release.
+	// Providers below this version (or reporting no version) stay connected
+	// but are excluded from routing; see belowMinProviderVersion. Set only
+	// from the EIGENINFERENCE_MIN_PROVIDER_VERSION env var — never derived
+	// from the latest release.
 	minProviderVersion string
 
 	// releaseKey is a scoped credential for the GitHub Action to register releases.
@@ -444,7 +436,7 @@ type Server struct {
 	dd          *datadog.Client
 	queueGauges queueGaugeState
 
-	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
+	// apiKeyCache memoizes AuthenticateKey results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after
 	// apiKeyCacheTTL. Bounded at apiKeyCacheMaxSize entries.
 	apiKeyCacheMu sync.RWMutex
@@ -505,8 +497,9 @@ type Server struct {
 
 	// profiler owns the per-request profile records and their dedicated sink
 	// (system profiler). Nil on a Server built without NewServer.
-	profiler        *profiler
-	requestOutcomes *requestOutcomeSink
+	profiler           *profiler
+	requestOutcomes    *requestOutcomeSink
+	modelDemandRefresh [3]cacheRefresher
 	// unknownRequestFrames counts provider frames for requests the coordinator
 	// no longer tracks (zombie streams); exported on the fleet coordinator row.
 	unknownRequestFrames atomic.Int64
@@ -918,9 +911,9 @@ func (s *Server) handleRuntimeCapabilitiesPromoted(providerID string) {
 		return
 	}
 	provider.Mu().Lock()
-	backend, version := provider.Backend, provider.Version
+	backend := provider.Backend
 	provider.Mu().Unlock()
-	if !s.providerSupportsDesiredModels(backend, version) {
+	if !s.providerSupportsDesiredModels(backend) {
 		return
 	}
 	entries := s.registry.DesiredModelsForProvider(providerID)
@@ -1006,6 +999,27 @@ func (s *Server) SetAdminKey(key string) {
 // SetMinProviderVersion sets the minimum provider version for routing.
 func (s *Server) SetMinProviderVersion(v string) {
 	s.minProviderVersion = strings.TrimSpace(v)
+}
+
+// belowMinProviderVersion reports whether a provider reporting version falls
+// below the configured routing floor. With no floor configured nothing is
+// below it. With a floor configured, an EMPTY version counts as below it: the
+// version is optional on the wire, and every provider build that clears any
+// real floor reports one, so a missing version must not bypass the floor.
+func (s *Server) belowMinProviderVersion(version string) bool {
+	if s.minProviderVersion == "" {
+		return false
+	}
+	return version == "" || semverLess(version, s.minProviderVersion)
+}
+
+// providerVersionMetricTag is the Datadog tag value for a provider version,
+// naming the empty (unreported) version explicitly.
+func providerVersionMetricTag(version string) string {
+	if version == "" {
+		return "version:unknown"
+	}
+	return "version:" + version
 }
 
 // SetBaseURL sets the coordinator's public URL (used to template install.sh).
@@ -1879,8 +1893,7 @@ func (s *Server) deriveApprovedReleaseTransition(
 	if !runtimeVerified || !manifestChecked || !metallibVerified {
 		return s.evidenceRejected(evidenceReasonRuntimeGate)
 	}
-	if s.minProviderVersion != "" &&
-		(version == "" || semverLess(version, s.minProviderVersion)) {
+	if s.belowMinProviderVersion(version) {
 		return s.evidenceRejected(evidenceReasonVersionFloor)
 	}
 	// Registration-time binary_hash is optional and the production fleet omits
@@ -2015,8 +2028,8 @@ func (s *Server) SyncRuntimeManifest() error {
 	// env var. It is NOT auto-derived from the latest release — pushing a new release
 	// should not instantly knock all existing providers offline.
 
-	// Every hash — python, runtime, AND each template name including
-	// mlx_metallib — is unioned into a SET across ALL active releases.
+	// Every template hash, including mlx_metallib, is unioned into a SET
+	// across ALL active releases.
 	// Releases overlap in production for the whole self-update window
 	// (providers poll for updates every 30 minutes), so the manifest must
 	// accept the runtime facts of every release a connected provider may
@@ -2030,14 +2043,6 @@ func (s *Server) SyncRuntimeManifest() error {
 	for _, r := range releases {
 		if !r.Active {
 			continue
-		}
-		if r.PythonHash != "" {
-			manifest.PythonHashes[r.PythonHash] = true
-			hasAny = true
-		}
-		if r.RuntimeHash != "" {
-			manifest.RuntimeHashes[r.RuntimeHash] = true
-			hasAny = true
 		}
 		if manifest.addTemplateHashPairs(r.TemplateHashes) {
 			hasAny = true
@@ -2059,8 +2064,6 @@ func (s *Server) SyncRuntimeManifest() error {
 	if hasAny {
 		s.knownRuntimeManifest = manifest
 		s.logger.Info("runtime manifest synced from releases",
-			"python_hashes", len(manifest.PythonHashes),
-			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),
 			"template_hash_sets", manifest.templateHashSetSizes(),
 		)
@@ -2095,14 +2098,6 @@ func (s *Server) SyncRuntimeManifest() error {
 func (s *Server) convergeRuntimeManifestWithCommittedRelease(release *store.Release, cause error) {
 	merged := s.knownRuntimeManifest.clone()
 	contributed := false
-	if release.PythonHash != "" {
-		merged.PythonHashes[release.PythonHash] = true
-		contributed = true
-	}
-	if release.RuntimeHash != "" {
-		merged.RuntimeHashes[release.RuntimeHash] = true
-		contributed = true
-	}
 	if merged.addTemplateHashPairs(release.TemplateHashes) {
 		contributed = true
 	}
@@ -2145,14 +2140,6 @@ func (s *Server) convergeRuntimeManifestWithCommittedDeactivation(version, platf
 	if snapshot := s.releaseTrustPolicy.Load(); snapshot != nil {
 		for _, policies := range snapshot.ByBinaryHash {
 			for _, policy := range policies {
-				if policy.PythonHash != "" {
-					merged.PythonHashes[policy.PythonHash] = true
-					hasAny = true
-				}
-				if policy.RuntimeHash != "" {
-					merged.RuntimeHashes[policy.RuntimeHash] = true
-					hasAny = true
-				}
 				for name, hash := range policy.TemplateHashes {
 					if merged.AddTemplateHash(name, hash) {
 						hasAny = true
@@ -2197,8 +2184,6 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		}
 
 		provider.Mu().Lock()
-		pythonHash := provider.PythonHash
-		runtimeHash := provider.RuntimeHash
 		templateHashes := registry.CloneStringMap(provider.TemplateHashes)
 		version := provider.Version
 		backend := provider.Backend
@@ -2216,17 +2201,10 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		if s.knownRuntimeManifest == nil {
 			// Manifest was withdrawn — keep the process proof, but deroute the
 			// provider until policy once again approves its reported runtime.
-		} else if s.minProviderVersion != "" &&
-			version != "" &&
-			semverLess(version, s.minProviderVersion) {
-			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", "version:" + version})
+		} else if s.belowMinProviderVersion(version) {
+			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", providerVersionMetricTag(version)})
 		} else {
-			runtimeOK, _ := s.verifyRuntimeHashesForBackend(
-				backend,
-				pythonHash,
-				runtimeHash,
-				templateHashes,
-			)
+			runtimeOK, _ := s.verifyRuntimeHashesForBackend(backend, templateHashes)
 			provider.RuntimeVerified = runtimeOK
 			provider.RuntimeManifestChecked = runtimeOK
 			provider.MetallibVerified = runtimeOK &&
@@ -2268,16 +2246,12 @@ func runtimeManifestApprovesMetallib(
 // previous release the moment the next one was registered (2026-09-03).
 // Deactivating a release is the mechanism that removes its values.
 type RuntimeManifest struct {
-	PythonHashes   map[string]bool            `json:"python_hashes"`   // set of accepted Python runtime hashes
-	RuntimeHashes  map[string]bool            `json:"runtime_hashes"`  // set of accepted inference runtime hashes
 	TemplateHashes map[string]map[string]bool `json:"template_hashes"` // template_name -> set of accepted hashes
 }
 
 // NewRuntimeManifest returns an empty manifest with every set allocated.
 func NewRuntimeManifest() *RuntimeManifest {
 	return &RuntimeManifest{
-		PythonHashes:   make(map[string]bool),
-		RuntimeHashes:  make(map[string]bool),
 		TemplateHashes: make(map[string]map[string]bool),
 	}
 }
@@ -2323,12 +2297,6 @@ func (m *RuntimeManifest) clone() *RuntimeManifest {
 	out := NewRuntimeManifest()
 	if m == nil {
 		return out
-	}
-	for hash := range m.PythonHashes {
-		out.PythonHashes[hash] = true
-	}
-	for hash := range m.RuntimeHashes {
-		out.RuntimeHashes[hash] = true
 	}
 	for name, accepted := range m.TemplateHashes {
 		for hash := range accepted {
@@ -2412,13 +2380,13 @@ func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 	s.knownRuntimeManifest = m
 }
 
-func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
+func (s *Server) verifyRuntimeHashesForBackend(backend string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
 	if s.knownRuntimeManifest == nil {
 		return true, nil
 	}
 
-	// Only mlx-swift backends are supported. Non-Swift backends (legacy
-	// Python/inprocess-mlx) are deprecated and immediately rejected.
+	// Only the Swift (mlx-swift) backend is supported; any other backend is
+	// rejected outright.
 	if !registry.BackendUsesSwiftRuntime(backend) {
 		return false, []protocol.RuntimeMismatch{{
 			Component: "backend",
@@ -2438,39 +2406,15 @@ func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash 
 		scopedReportedTemplates["mlx_metallib"] = got
 	}
 
-	return s.verifyRuntimeHashesAgainstManifest(scoped, pythonHash, runtimeHash, scopedReportedTemplates)
+	return s.verifyRuntimeHashesAgainstManifest(scoped, scopedReportedTemplates)
 }
 
-func (s *Server) verifyRuntimeHashesAgainstManifest(manifest *RuntimeManifest, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
+func (s *Server) verifyRuntimeHashesAgainstManifest(manifest *RuntimeManifest, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
 	if manifest == nil {
 		return true, nil
 	}
 
 	var mismatches []protocol.RuntimeMismatch
-
-	requireOneOf := func(component, got string, accepted map[string]bool) {
-		if len(accepted) == 0 {
-			return
-		}
-		if got == "" {
-			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: component,
-				Expected:  "reported hash matching one of known-good values",
-				Got:       "(missing)",
-			})
-			return
-		}
-		if !accepted[got] {
-			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: component,
-				Expected:  "one of known-good hashes",
-				Got:       got,
-			})
-		}
-	}
-
-	requireOneOf("python", pythonHash, manifest.PythonHashes)
-	requireOneOf("runtime", runtimeHash, manifest.RuntimeHashes)
 
 	if len(manifest.TemplateHashes) > 0 {
 		// Each template name maps to the SET of hashes accepted across every
@@ -2531,8 +2475,6 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 		}
 		resp = map[string]any{
 			"configured":      true,
-			"python_hashes":   s.knownRuntimeManifest.PythonHashes,
-			"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
 			"template_hashes": templates,
 		}
 	}
@@ -2717,9 +2659,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/payments/balance", s.requireAuth(s.handleBalance))
 	s.mux.HandleFunc("GET /v1/payments/usage", s.requireAuth(s.handleUsage))
 
-	// Provider earnings — no API key auth (providers identify by provider address).
-	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)
-
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 
 	// Account-scoped provider dashboard.
@@ -2754,6 +2693,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/leaderboard", s.handleLeaderboard)
 	s.mux.HandleFunc("GET /v1/network/totals", s.handleNetworkTotals)
 	s.mux.HandleFunc("GET /v1/network/series", s.handleNetworkSeries)
+	s.mux.HandleFunc("GET /v1/network/model-demand", s.handleModelDemand)
 
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
@@ -2880,11 +2820,6 @@ func (s *Server) routes() {
 	// Admin credit & reward
 	s.mux.HandleFunc("POST /v1/admin/credit", s.requireAuth(s.handleAdminCredit))
 	s.mux.HandleFunc("POST /v1/admin/reward", s.requireAuth(s.handleAdminReward))
-
-	// Retain the client-telemetry route for mixed-version compatibility. The
-	// handler returns 410 before reading a request body; coordinator-owned
-	// operational telemetry remains separate.
-	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
 
 	// Explicit provider log reports
 	s.mux.HandleFunc("POST /v1/provider/log-report", s.requireAuth(s.handleUploadLogReport))
@@ -3152,7 +3087,7 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// lookupAPIKeyCache returns a cached ValidateKeyFull result if present and
+// lookupAPIKeyCache returns a cached AuthenticateKey result if present and
 // not expired. Returns false on miss or expiry.
 func (s *Server) lookupAPIKeyCache(token string) (apiKeyCacheEntry, bool) {
 	s.apiKeyCacheMu.RLock()
@@ -3467,10 +3402,11 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 // the wildcard applies only to GET; non-GET methods fall through to the
 // credentialed, single-origin CORS below.
 var publicCORSPaths = map[string]bool{
-	"/v1/models/catalog": true,
-	"/v1/pricing":        true,
-	"/v1/stats":          true,
-	"/v1/network/series": true,
+	"/v1/models/catalog":       true,
+	"/v1/pricing":              true,
+	"/v1/stats":                true,
+	"/v1/network/series":       true,
+	"/v1/network/model-demand": true,
 }
 
 // corsMiddleware sets CORS headers. Authenticated/credentialed requests are

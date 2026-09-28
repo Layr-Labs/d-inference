@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-23 · commit `ac4a776de`
+> Last updated: 2026-09-26 · commit `cf5982227`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -13,6 +13,17 @@ remain visible and can link successive public sessions.
 An App Attest grant also depends on a fresh [durable build qualification](../reference/provider-authorization.md#durable-build-qualification). Withdrawing it fences old qualification generations; cached download metadata or a prior successful signature cannot grant new dispatch. Independently valid legacy verification remains a separate serving path.
 
 Local profile-inventory authentication during `darkbloom unenroll` only identifies the Darkbloom enrollment for user-guided removal. It does not verify or extend serving authorization; the [provider procedure](../provider/attestation.md#app-attest-without-darkbloom-mdm) explains the separate coordinator readiness requirement.
+
+Provider troubleshooting diagnostics do not establish consumer verification.
+Optional App Attest process/boot history, local signing and security observations,
+key/push history, and native error codes are untrusted context, outside the signed
+proof transcript. Missing, forged, malformed or apparently healthy values cannot
+grant, extend or revoke serving authorization. A local `doctor` pass or an APNs
+send/receipt metric is not a verified serving verdict; use the coordinator's
+current authorization and dispatch snapshot described below. In particular, a
+local diagnostic `sip_enabled` observation is distinct from the coordinator-verified
+posture exposed by the public endpoint. See the [diagnostic field contract](../reference/app-attest-shadow.md#provider-diagnostics)
+and [attestation boundary](../architecture/security/attestation.md).
 
 ## Read verification in chat and network stats
 

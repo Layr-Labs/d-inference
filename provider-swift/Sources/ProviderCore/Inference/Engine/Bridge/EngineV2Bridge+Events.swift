@@ -302,7 +302,7 @@ extension EngineV2Bridge {
 
     /// Media-through-v2 engagement (v0.7.5; media-kind tagged since
     /// v0.7.5): INFO per engine-accepted image/video request. PRIVACY:
-    /// allowlisted operational fields only — the request's media/prompt
+    /// fixed operational keys only — the request's media/prompt
     /// content never rides telemetry; `multimodal` is a bare boolean tag
     /// and `media_kind` is one of image/video/mixed.
     func emitVisionSubmitTelemetry(requestId: String, mediaKind: EngineV2MediaKind?) {
@@ -312,8 +312,6 @@ extension EngineV2Bridge {
             kind: .engineHealth,
             message: "engine_v2: media request served via ContinuousBatchingV2"
         )
-        // Filter-at-source, matching the other engine_health builders —
-        // every key is allowlisted already; the filter enforces it stays so.
         var fields: [String: AnyCodableValue] = [
             "component": .string("engine"),
             "operation": .string("engine_v2_vision"),
@@ -324,13 +322,13 @@ extension EngineV2Bridge {
         if let mediaKind {
             fields["media_kind"] = .string(mediaKind.rawValue)
         }
-        event.fields = TelemetryFieldFilter.filter(fields)
+        event.fields = fields
         event.requestId = requestId
         emit(event)
     }
 
-    /// PRIVACY: engine-error telemetry carries only allowlisted operational
-    /// fields — never the error message (defense in depth against any
+    /// PRIVACY: engine-error telemetry carries only fixed operational
+    /// keys — never the error message (defense in depth against any
     /// engine string that could embed request-adjacent detail).
     func emitInferenceErrorTelemetry(requestId: String) {
         var event = TelemetryEvent(

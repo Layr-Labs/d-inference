@@ -21,7 +21,6 @@ export {
   dotsToPathData,
   generateLandDots,
   getLandDots,
-  isPointOnLand,
   parsePolygons,
   pointInPolygon,
   type Point,

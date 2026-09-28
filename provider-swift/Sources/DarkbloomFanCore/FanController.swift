@@ -408,11 +408,6 @@ public actor TransactionalFanController {
         }
     }
 
-    @discardableResult
-    public func reassert() throws -> FanControlSession {
-        try maintain()
-    }
-
     /// Engage and maintenance use the same verified transition. Firmware
     /// rejection or failed mode readback permits Ftst fallback; permission does not.
     private func enterManualMode(

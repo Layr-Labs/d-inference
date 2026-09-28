@@ -3,7 +3,7 @@ import Foundation
 /// One admission state shared by updates, CLI lifecycle commands and signals.
 /// The loop actor owns it. Update staging is separate and still admits work.
 struct ProviderDrain: Sendable {
-    enum Owner: Sendable { case update, reconnect, lifecycle }
+    enum Owner: Sendable { case update, reconnect, modelSwitch, lifecycle }
     enum Phase: String, Codable, Sendable { case serving, draining, drained }
     private(set) var phase: Phase = .serving
     private(set) var owner: Owner?
@@ -13,6 +13,7 @@ struct ProviderDrain: Sendable {
     mutating func begin(_ owner: Owner) {
         // A cancelled update must never reopen or replace an explicit stop.
         if self.owner == .lifecycle { return }
+        if self.owner == .modelSwitch && owner != .lifecycle { return }
         self.owner = owner
         phase = .draining
     }
@@ -24,6 +25,11 @@ struct ProviderDrain: Sendable {
     mutating func drained() { phase = .drained }
     mutating func resumeUpdate() {
         guard owner == .update else { return }
+        owner = nil
+        phase = .serving
+    }
+    mutating func resumeModelSwitch() {
+        guard owner == .modelSwitch else { return }
         owner = nil
         phase = .serving
     }

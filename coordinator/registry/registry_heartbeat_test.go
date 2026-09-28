@@ -71,7 +71,7 @@ func TestHeartbeat(t *testing.T) {
 
 // TestHeartbeatAccumulatesUptime is the integration regression: the
 // heartbeat handler credits the wall-clock gap since the previous heartbeat as
-// uptime (bounded), so an always-online provider's reputation can exceed 0.85.
+// bounded uptime for the provider dashboard.
 // This test fails without the Heartbeat inventory update.
 func TestHeartbeatAccumulatesUptime(t *testing.T) {
 	reg := New(testLogger())
@@ -104,19 +104,6 @@ func TestHeartbeatAccumulatesUptime(t *testing.T) {
 	p.mu.Unlock()
 	if jump := after - before; jump > time.Minute {
 		t.Fatalf("oversized offline gap credited %v of uptime, want it skipped", jump)
-	}
-
-	// After enough accumulated uptime + a perfect record, the score must clear
-	// the old 0.85 cap.
-	p.mu.Lock()
-	p.Reputation.RecordUptime(24 * time.Hour)
-	p.Reputation.RecordJobSuccess()
-	p.Reputation.RecordLatency(300 * time.Millisecond)
-	p.Reputation.RecordChallengePass()
-	score := p.Reputation.Score()
-	p.mu.Unlock()
-	if score <= 0.85 {
-		t.Fatalf("score = %f, want > 0.85 after accumulated uptime", score)
 	}
 }
 
@@ -405,6 +392,65 @@ func TestHeartbeatDropsUnregisteredModelIdentifiersBeforeStateAndMetrics(t *test
 	}
 	if got := p.BackendCapacity.MLXCacheReclaimer.Reclaims; got != 4 {
 		t.Fatalf("retained mlx cache reclaims = %d after source/snapshot mutation, want 4", got)
+	}
+}
+
+func TestHeartbeatCapacityModelIDsExcludeOffCatalogOwnerModel(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	acceptedID := msg.Models[0].ID
+	msg.Models = append(msg.Models, protocol.ModelInfo{ID: "owner-only", EstimatedMemoryGB: 18.2})
+	reg.SetModelCatalog([]CatalogEntry{{ID: acceptedID}})
+	p := reg.Register("p1", nil, msg)
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle",
+		WarmModels: []string{"owner-only"},
+		BackendCapacity: &protocol.BackendCapacity{Slots: []protocol.BackendSlotCapacity{
+			{Model: "owner-only", State: "idle"},
+		}},
+	})
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.Models) != 2 || len(p.CapacityModelIDs) != 1 || p.CapacityModelIDs[0] != acceptedID {
+		t.Fatalf("models=%v capacity ids=%v, want both owner models but only accepted evidence",
+			p.Models, p.CapacityModelIDs)
+	}
+	if p.BackendCapacity == nil || len(p.BackendCapacity.Slots) != 0 {
+		t.Fatalf("off-catalog slot leaked into accepted capacity: %+v", p.BackendCapacity)
+	}
+}
+
+func TestHeartbeatCapacityAcceptedAtTracksAppliedFrames(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+	frame := func(seq uint64) *protocol.HeartbeatMessage {
+		return &protocol.HeartbeatMessage{
+			Type: protocol.TypeHeartbeat, Status: "idle",
+			BackendCapacity: &protocol.BackendCapacity{CapacitySeq: seq},
+		}
+	}
+	if !reg.Heartbeat(p.ID, frame(1)) || p.CapacityAcceptedAt.IsZero() {
+		t.Fatal("first applied capacity did not set accepted time")
+	}
+	old := time.Now().Add(-2 * time.Minute)
+	p.mu.Lock()
+	p.CapacityAcceptedAt, p.LastHeartbeat = old, old
+	p.mu.Unlock()
+	if reg.Heartbeat(p.ID, frame(1)) {
+		t.Fatal("repeated sequence should be discarded")
+	}
+	p.mu.Lock()
+	acceptedAt, liveAt := p.CapacityAcceptedAt, p.LastHeartbeat
+	p.mu.Unlock()
+	if !acceptedAt.Equal(old) || !liveAt.After(old) {
+		t.Fatal("discarded frame freshened capacity or failed to prove liveness")
+	}
+	if !reg.Heartbeat(p.ID, frame(2)) || !p.CapacityAcceptedAt.After(old) {
+		t.Fatal("next applied capacity did not refresh accepted time")
+	}
+	reg.Heartbeat(p.ID, &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat})
+	if !p.CapacityAcceptedAt.IsZero() {
+		t.Fatal("nil capacity did not clear accepted time")
 	}
 }
 

@@ -1987,8 +1987,13 @@ func (d *dispatchState) latchJinjaTerminalReject(reason, src string) (latched bo
 // a memory-pressured loser's "batch token budget" is NOT latched, so failover to a
 // healthier provider still happens. Harmless if the survivor ultimately succeeds —
 // d.unservable is only consulted on the exhausted/retry path, never on a commit.
+// Predictive refusals also count toward the request's fresh-evidence threshold,
+// without replacing the survivor's terminal error or becoming a health fault.
 func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
 	msg = normalizeInferenceErrorForInternalUse(msg)
+	if isDeadlineUnreachableErrorReason(msg.ErrorReason) {
+		d.notePredictiveRefusal(provider)
+	}
 	// Same budget preference as setLastInferenceError: the enriched LIVE
 	// gate budget (explicit zero included) supersedes the stale heartbeat
 	// snapshot for this loser's classification.
@@ -2023,8 +2028,8 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 	switch classifyRejection(msg.ErrorReason, msg.Error, budget, d.modelMaxContext, msg.RejectionReason) {
 	case rejectionDeadlineUnreachable:
 		// A race loser that could not meet the remaining absolute deadline is
-		// health-neutral and non-deterministic across providers. It must not
-		// become sticky: the surviving attempt owns the eventual terminal.
+		// counted above, but remains health-neutral and non-deterministic across
+		// providers: the surviving attempt owns the eventual terminal.
 	case rejectionDeterministicUnservable:
 		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
 		d.unservable = true

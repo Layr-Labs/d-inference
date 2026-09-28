@@ -792,6 +792,11 @@ func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMod
 	query.MinDecodeTPS = s.minDecodeTPS
 	if len(firstContentQuery) > 0 && firstContentQuery[0] != nil {
 		query = firstContentQuery[0](target.Previous)
+		if query == nil {
+			// Preflight may release its CPU scan permit for external prompt
+			// planning. Failed reacquisition aborts before any fallback walk.
+			return currentModel, 0, 0, 0, 0, false, false
+		}
 	}
 	candidates, rejections, tooLarge, bestTTFT, hasTTFT := s.registry.QuickFirstContentCapacityForRequest(target.Previous, query)
 	enforceTTFT := mode == aliasFallbackTTFT

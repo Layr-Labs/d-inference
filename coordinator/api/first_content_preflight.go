@@ -9,6 +9,7 @@ import (
 // firstContentRequest carries the same request clock, calibrated prompt work
 // and exact cache plan that dispatch will use. The read-only registry preflight
 // does not reserve capacity or tighten the request's physical memory budget.
+// Call without a routing-scan permit: cache planning may contact a sidecar.
 func (p inferenceAdmissionParams) firstContentRequest(model string, traits registry.RequestTraits) *registry.PendingRequest {
 	pr := &registry.PendingRequest{
 		Model: model, EstimatedPromptTokens: p.estimatedPromptTokens,

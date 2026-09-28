@@ -248,10 +248,10 @@ type inferenceAdmissionParams struct {
 // a dispatch attempt may park for its whole remaining budget. Requests
 // without a deadline (bare fixtures) get a 250ms slice.
 func preflightScanWait(deadline time.Duration) time.Duration {
-	wait := deadline / 4
-	if wait <= 0 {
-		wait = 250 * time.Millisecond
+	if deadline <= 0 {
+		return 250 * time.Millisecond
 	}
+	wait := max(time.Nanosecond, deadline/4)
 	if wait > time.Second {
 		wait = time.Second
 	}
@@ -329,42 +329,11 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	// acquisition). On timeout: the same capacity-shaped routing_saturated 429
 	// with the distress-scaled Retry-After, zero walks. On client-gone: refund
 	// and stop silently — never the 429 path or a rejection-ledger row.
-	switch s.acquireRoutingScanSlot(preflightScanWait(p.deadline), r.Context().Done()) {
-	case scanSlotClientGone:
-		refundReservation()
-		return model, true
-	case scanSlotTimeout:
-		refundReservation()
-		retryAfter := s.estimateRetryAfter(model)
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-		s.ddIncr("routing.scan_admission_timeout", []string{"model:" + model, "stage:preflight"})
-		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:routing_saturated"})
-		s.recordRejection(rejectionInfo{
-			r:                     r,
-			stage:                 "preflight_capacity",
-			reasonCode:            rejectionReasonRoutingSaturated,
-			httpStatus:            http.StatusTooManyRequests,
-			keyID:                 keyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:        publicModel,
-			resolvedModel:         model,
-			stream:                p.stream,
-			estimatedPromptTokens: p.estimatedPromptTokens,
-			requestedMaxTokens:    p.requestedMaxTokens,
-			requiresVision:        p.requiresVision,
-			hasTools:              p.hasTools,
-			retryAfterMs:          retryAfter * 1000,
-			params:                rejectionSamplingParams(parsed),
-			// Do not add another fleet scan while the scan semaphore is full.
-			// recordRejection persists could_have_served=null for this unknown.
-			skipServability: true,
-		})
-		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-			"the coordinator is at routing capacity — please retry",
-			withCode("rate_limit_exceeded")))
+	permit := admissionScanPermit{server: s, w: w, r: r, parsed: parsed, params: p}
+	if !permit.acquire(model) {
 		return model, true
 	}
-	defer s.releaseRoutingScanSlot()
+	defer permit.release()
 
 	// Self-route pre-flight: confirm the caller owns an online machine that can
 	// serve this model, with precise errors and no fallback to the paid fleet.
@@ -442,18 +411,35 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	// metrics. Self-route skips this fleet-wide gate — it queues on the
 	// owner's machine instead (handled below).
 	forecastRequest := func(candidateModel string) *registry.PendingRequest {
+		// Exact cache planning may call the prompt-contract sidecar. It must
+		// not occupy a CPU scan permit, including on a lazy alias fallback.
+		permit.release()
 		query := p.firstContentRequest(candidateModel, modelTraits(candidateModel))
 		query.MinDecodeTPS = s.minDecodeTPS
+		if !permit.acquire(candidateModel) {
+			return nil
+		}
 		return query
 	}
-	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickFirstContentCapacityForRequest(model, forecastRequest(model))
+	forecast := forecastRequest(model)
+	if forecast == nil {
+		return model, true
+	}
+	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickFirstContentCapacityForRequest(model, forecast)
 	if candidateCount == 0 && capacityRejections > 0 {
-		if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials, forecastRequest); switched {
+		fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials, forecastRequest)
+		if !permit.held {
+			return model, true
+		}
+		if switched {
 			model = fallbackModel
 			candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 			bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
-			if p.onModelFallback != nil && !p.onModelFallback(model) {
-				return model, true
+			if p.onModelFallback != nil {
+				permit.release()
+				if !p.onModelFallback(model) || !permit.acquire(model) {
+					return model, true
+				}
 			}
 		}
 	}
@@ -705,10 +691,16 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
 		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials, forecastRequest); switched {
 			model = fallbackModel
-			if p.onModelFallback != nil && !p.onModelFallback(model) {
-				return model, true
+			if p.onModelFallback != nil {
+				permit.release()
+				if !p.onModelFallback(model) {
+					return model, true
+				}
 			}
 		} else {
+			if !permit.held {
+				return model, true
+			}
 			// Hard TTFT gate, no faster alias: shed with a 429 + Retry-After,
 			// and feed the autoscaler a TTFT-miss so warm capacity grows.
 			s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)

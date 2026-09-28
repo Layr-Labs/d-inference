@@ -33,6 +33,35 @@ func TestPredictiveRefusalIsRequestLocalAndRequiresNewEvidence(t *testing.T) {
 	}
 }
 
+func TestPredictiveRaceRefusalsRequireFreshEvidence(t *testing.T) {
+	d, _, primary, primaryPR, backup, backupPR := speculativeFailureTestState(t, time.Second, 500*time.Millisecond)
+	d.provider, d.pr, d.requestID = primary, primaryPR, primaryPR.RequestID
+	primaryPR.ErrorCh <- deadlineUnreachableMessage()
+	backupPR.ErrorCh <- deadlineUnreachableMessage()
+	if got := d.runRace(backup, backupPR); got != outcomeRetry {
+		t.Fatalf("race outcome=%v, want retry", got)
+	}
+	next := &registry.PendingRequest{}
+	d.configureFirstContentReservation(next, false)
+	if d.predictiveRefusals != 2 || !next.RequireFreshFeasible || next.RequireFreshFeasibleAfter.IsZero() {
+		t.Fatalf("two refusing racers did not require fresh evidence: refusals=%d pending=%+v", d.predictiveRefusals, next)
+	}
+	for _, provider := range []*registry.Provider{primary, backup} {
+		if _, excluded := d.excludeProviders[provider.ID]; !excluded {
+			t.Fatalf("refusing racer %q was not excluded", provider.ID)
+		}
+		// Error observation through another race path cannot spend a second
+		// refusal on the same provider or move the evidence cutoff again.
+		d.latchDeterministicLoser(provider, deadlineUnreachableMessage())
+	}
+	if d.predictiveRefusals != 2 || !d.freshFeasibleAfter.Equal(next.RequireFreshFeasibleAfter) {
+		t.Fatal("duplicate loser observation counted another refusal")
+	}
+	if d.genuineFault != nil || d.unservable || d.terminalClientError || d.traits().AvoidVersion != "" {
+		t.Fatal("predictive race refusal became a sticky fault or version penalty")
+	}
+}
+
 func TestFirstContentQuoteShapeSurvivesPlannerInvalidation(t *testing.T) {
 	d := &dispatchState{model: "gpt-oss-20b", estimatedPromptTokens: 1000,
 		cachePlan: registry.CachePlan{PromptTokenCount: 800}}

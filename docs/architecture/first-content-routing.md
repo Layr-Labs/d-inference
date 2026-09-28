@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-28 · commit `8ebde6185`
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The policy applies by
@@ -81,6 +81,9 @@ Even a feasible forecast is advisory. Half-rate conservative pricing is not a
 mathematical guarantee. Busy schedules are not reconstructed from maximum output
 reservations. Overlapping reported queued-prefill work and local pending work
 are reconciled without summing the same request twice.
+An unrelated `idle_shutdown` slot with no activity does not compete for work or
+require active-engine telemetry. Positive activity and local reservations still
+count; loading, crashed and unknown slot states remain conservative.
 
 ### Selection and reservations
 
@@ -101,6 +104,10 @@ candidate while holding the provider lock and reserves capacity in the same
 critical section. Pending prompt work immediately becomes visible to subsequent
 routing. Changed state triggers a bounded rescan. The same request-absolute
 clock covers lock waits, cache work, quotes, queues and provider writer handoff.
+Preflight releases its CPU routing-scan permit during prompt-contract planning
+and fallback body preparation, then reacquires it against the remaining clock
+before another fleet walk (`admissionScanPermit`,
+`coordinator/api/inference_admission_scan.go`).
 Reservation cleanup follows the existing pending-request lifecycle on refusal,
 disconnect, timeout, cancellation and terminal completion.
 
@@ -109,7 +116,8 @@ disconnect, timeout, cancellation and terminal completion.
 Retained plans are reranked from current evidence before reservation; a quote
 does not reserve capacity. Predictive refusals exclude the refusing provider for
 the logical request without counting as permanent health faults. After two such
-refusals, another dispatch requires fresh feasible evidence. Quote fanout is
+refusals from distinct providers, including speculative race losers, another
+dispatch requires fresh feasible evidence. Quote fanout is
 bounded to two providers and spends the original deadline. Existing provider
 quote quantiles lack sample-age and workload provenance. A recent quote therefore
 needs independently fresh, matching local evidence and cannot lower the local

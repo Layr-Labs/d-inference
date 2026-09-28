@@ -24,13 +24,21 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 		slot := &capacity.Slots[i]
 		t := slot.Telemetry
 		known := t != nil && t.QueuedPrefillTokens != nil && t.PartialPrefillRows != nil
-		s.wholeMacWorkKnown = s.wholeMacWorkKnown && known
 		busy := slot.NumRunning > 0 || slot.NumWaiting > 0 || slot.EvalInFlightMs > 0 ||
-			slot.IdleClearInFlightMs > 0 || slot.WedgeSuspected || !slotStateModelLoaded(slot.State)
-		if known {
-			busy = busy || *t.QueuedPrefillTokens > 0 || *t.PartialPrefillRows > 0
+			slot.IdleClearInFlightMs > 0 || slot.WedgeSuspected
+		if t != nil {
+			busy = busy || (t.QueuedPrefillTokens != nil && *t.QueuedPrefillTokens > 0) ||
+				(t.PartialPrefillRows != nil && *t.PartialPrefillRows > 0)
 		}
-		s.wholeMacBusy = s.wholeMacBusy || busy
+		// An unrelated idle_shutdown slot has evicted its weights and does not
+		// compete for execution. Its missing telemetry is not missing evidence
+		// about active work. Positive activity signals override that state, and
+		// local reservations are still accounted below even for dormant slots.
+		dormant := slot.Model != s.model && slot.State == "idle_shutdown" && !busy
+		if !dormant {
+			s.wholeMacWorkKnown = s.wholeMacWorkKnown && known
+			s.wholeMacBusy = s.wholeMacBusy || busy || !slotStateModelLoaded(slot.State)
+		}
 		if slot.Model == s.model {
 			s.modelLoadMs = float64(slot.ModelLoadTimeMS)
 			if s.modelLoaded {

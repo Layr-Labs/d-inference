@@ -51,6 +51,14 @@ class ReviewTests(unittest.TestCase):
         body = render("example/repo", HEAD, BASE, "a/model", [finding], evidence, [])
         self.assertIn(f"/blob/{BASE}/old.go#L7", body)
 
+    def test_deleted_line_links_use_diff_merge_base_not_current_target(self):
+        _, evidence, _ = prepare(THREAT, FILES)
+        finding = dict(FINDING, side="base")
+        merge_base = "d" * 40
+        body = render("example/repo", HEAD, BASE, "a/model", [finding], evidence, [], diff_base=merge_base)
+        self.assertIn(f"/blob/{merge_base}/coordinator/auth.go#L4", body)
+        self.assertNotIn(f"/blob/{BASE}/", body)
+
     def test_truncation_limits_evidence_and_is_explicit(self):
         files = copy.deepcopy(FILES)
         files[0]["patch"] = "@@ -1,0 +1,9999 @@\n" + "+x\n" * 9999
@@ -122,6 +130,9 @@ class FakeGitHub:
         self.reads += 1
         return {"state": "open", "head": {"sha": "c" * 40 if self.stale and self.reads > 1 else HEAD},
                 "base": {"sha": BASE}, "changed_files": 1}
+
+    def comparison_base(self, base, head):
+        return BASE
 
     def files(self, count):
         return FILES
@@ -242,6 +253,11 @@ class TransportTests(unittest.TestCase):
         github = GitHub("example/repo", 12, "token", transport)
         self.assertEqual(github.existing_comment(MARKER)["id"], 7)
 
+    def test_comparison_base_must_be_an_immutable_sha(self):
+        github = GitHub("example/repo", 12, "token", lambda *args: {"merge_base_commit": {"sha": "main"}})
+        with self.assertRaises(ReviewUnavailable):
+            github.comparison_base(BASE, HEAD)
+
     def test_large_or_inconsistent_file_list_fails_closed(self):
         github = GitHub("example/repo", 12, "token", lambda *args: [])
         for count in (501, 1):
@@ -284,6 +300,8 @@ class LocalHTTPIntegrationTests(unittest.TestCase):
                 calls.append((self.command, self.path, payload, self.headers.get("Authorization")))
                 if self.path == "/repos/example/repo/pulls/12":
                     response = FakeGitHub().pull()
+                elif "/compare/" in self.path:
+                    response = {"merge_base_commit": {"sha": BASE}}
                 elif "/files?" in self.path:
                     response = FILES
                 elif "/comments?" in self.path:

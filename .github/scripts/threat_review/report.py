@@ -12,7 +12,7 @@ def plain(value):
     return re.sub(r"([\\`*_{}\[\]()#+.!|<>~-])", r"\\\1", value)
 
 
-def render(repository, head, base, model, findings, evidence, limits, error=None):
+def render(repository, head, base, model, findings, evidence, limits, error=None, diff_base=None):
     root = f"https://github.com/{repository}"
     lines = [MARKER, "## Threat model review — advisory", "",
              f"Reviewed head [`{head[:12]}`]({root}/commit/{head}) against base `{base[:12]}`.", ""]
@@ -22,7 +22,7 @@ def render(repository, head, base, model, findings, evidence, limits, error=None
     elif findings:
         for finding in findings:
             path = finding["file"]
-            sha = head if finding["side"] == "head" else base
+            sha = head if finding["side"] == "head" else (diff_base or base)
             linked_path = path if finding["side"] == "head" else evidence[path]["base_path"]
             url = f"{root}/blob/{sha}/{quote(linked_path, safe='/')}#L{finding['line']}"
             refs = ", ".join(finding["threat_ids"]) or "new attack surface"

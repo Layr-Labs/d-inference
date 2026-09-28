@@ -30,10 +30,12 @@ def run(event, root, env, github=None, reviewer=review):
         return "Skipped: PR revision changed or PR closed."
     existing = github.existing_comment(MARKER)
     findings, evidence, limits, error = [], {}, [], None
+    diff_base = base
     try:
         key = env.get("OPENROUTER_API_KEY")
         if not key:
             raise ReviewUnavailable("OPENROUTER_API_KEY is not configured")
+        diff_base = github.comparison_base(base, head)
         files = github.files(current["changed_files"])
         if files:
             # root is the trusted base checkout, not the PR branch.
@@ -48,7 +50,7 @@ def run(event, root, env, github=None, reviewer=review):
         return "Skipped: PR revision changed during review; no stale comment published."
     # Quiet when clean/unavailable unless an earlier finding needs superseding.
     if findings or existing:
-        github.publish(existing, render(repository, head, base, model, findings, evidence, limits, error))
+        github.publish(existing, render(repository, head, base, model, findings, evidence, limits, error, diff_base))
     if error:
         return f"Review unavailable (non-blocking): {error}."
     return f"Advisory review completed: {len(findings)} finding(s); {len(limits)} file(s) with limited coverage."

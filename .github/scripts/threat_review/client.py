@@ -1,5 +1,6 @@
 """Bounded JSON transport for fixed GitHub and OpenRouter API endpoints."""
 import json
+import re
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
@@ -41,6 +42,13 @@ class GitHub:
 
     def pull(self):
         return self.call(f"/pulls/{self.number}")
+
+    def comparison_base(self, base, head):
+        comparison = self.call(f"/compare/{base}...{head}?per_page=1")
+        sha = comparison.get("merge_base_commit", {}).get("sha", "")
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ReviewUnavailable("GitHub did not provide a valid diff merge base")
+        return sha
 
     def files(self, count):
         if count > 500:

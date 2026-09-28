@@ -3,7 +3,8 @@
 > Last updated: 2026-09-28 · commit `ae4925180`
 
 The OpenRouter review flags possible security regressions on pull requests with a
-single updatable comment. It is advisory: findings never request changes, approve
+single updatable comment. Deleted-line citations use the PR diff’s merge base;
+added-line citations use its exact head. It is advisory: findings never request changes, approve
 code, or fail a merge gate. The workflow must be present on the base branch before
 it can run on PR events.
 

@@ -219,7 +219,8 @@ struct Qwen35CheckpointRetentionLiveTests {
             let deepest = try #require(captured.max())
             #expect(kept.positions.last == deepest, "the deepest captured boundary is published: \(kept.positions)")
             #expect(kept.positions.count == 3, "first, the deepest boundary at or below 5,120, deepest: \(kept.positions)")
-            #expect(kept.positions.contains { $0 <= 5_120 && $0 > kept.positions.first! },
+            let first = try #require(kept.positions.first, "no checkpoint published for tenant-a: \(kept.positions)")
+            #expect(kept.positions.contains { $0 <= 5_120 && $0 > first },
                     "the fork target below the hint is kept: \(kept.positions)")
             let chunkSizes = try fixture.persistedManifests()
                 .filter { $0.cacheSalt == "tenant-a" }.sorted { $0.position < $1.position }.map(\.chunkSize)

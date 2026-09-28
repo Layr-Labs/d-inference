@@ -1,6 +1,6 @@
 # Qwen chunk-partition parity and chunk-agnostic recurrent capture (2026-09-27)
 
-> Last updated: 2026-09-28 · commit `b51e21d95`
+> Last updated: 2026-09-28 · commit `0bd16a9fa`
 
 **Question.** Does a hybrid recurrent Qwen (GatedDeltaNet + full attention)
 reach the same complete-checkpoint state at a prefill boundary whatever chunk

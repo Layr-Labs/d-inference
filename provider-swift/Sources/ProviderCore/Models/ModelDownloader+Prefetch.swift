@@ -48,6 +48,7 @@ extension ModelDownloader {
 
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
+        try Self.prepareModelCacheDirectory(at: snapshotsDir.deletingLastPathComponent())
         try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
 
         // STABLE staging dir keyed by the manifest prefix so an interrupted

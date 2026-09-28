@@ -730,6 +730,16 @@ Download a model from the coordinator catalog.
 darkbloom models download <id> [--coordinator <url>] [--r2-cdn <url>]
 ```
 
+If the model's `models--<id>` cache entry is a dangling symlink (for example,
+to an unavailable external drive), downloading preserves it as a hidden sibling
+`.models--<id>.unavailable-link-<UUID>` and creates a real model directory in the
+selected cache. This also applies to downloads from `darkbloom start` and
+background prefetch. Reconnect the drive before downloading if you want to keep
+using its existing model directory. Valid directory symlinks are followed;
+regular files and symlinks to files cause an error and are left intact.
+Code: `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Cache.swift`
+(`prepareModelCacheDirectory`).
+
 ### `darkbloom models remove <id>`
 
 Delete a downloaded model.

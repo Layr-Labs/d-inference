@@ -355,7 +355,7 @@ client receipt. See [incoming request accounting](../architecture/request-accoun
 | GET | `/v1/releases/latest` | `handleLatestRelease` (`coordinator/api/release_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `handleReadyz` (`coordinator/api/drain.go`) | `—` | 200 normally; 503 while draining |
 
-The 0.9.10 candidate sets `LatestProviderVersion = "0.9.10"` in
+The 0.9.12 candidate sets `LatestProviderVersion = "0.9.12"` in
 `coordinator/api/server.go`. A registered active release still takes precedence
 for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none

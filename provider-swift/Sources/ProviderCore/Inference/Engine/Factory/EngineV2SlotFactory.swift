@@ -96,6 +96,8 @@ enum EngineV2SlotFactory {
     ///   - kvBudget: process-wide shared KV reservation ledger (nil ⇒ no
     ///     shared gating — unit tests only; both production callers pass
     ///     their ledger).
+    ///   - modelArtifactSHA256: verified identity of the loaded artifact for
+    ///     serving-profile matching, independent of prefix-cache policy.
     ///   - weightHash: the slot's verified weight hash binding for SSD
     ///     artifacts. Nil or blank disables reusable SSD caching.
     ///   - environment: runtime policy environment (including prefix-cache,
@@ -123,6 +125,7 @@ enum EngineV2SlotFactory {
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
+        modelArtifactSHA256: String? = nil,
         weightHash: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
@@ -144,6 +147,7 @@ enum EngineV2SlotFactory {
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
             prefillDeadlineMode: prefillDeadlineMode,
+            modelArtifactSHA256: modelArtifactSHA256,
             weightHash: weightHash,
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
@@ -175,6 +179,7 @@ enum EngineV2SlotFactory {
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
+        modelArtifactSHA256: String? = nil,
         weightHash: String? = nil,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel? = nil,
@@ -289,12 +294,11 @@ enum EngineV2SlotFactory {
                 preparedBackend = try EngineV2Factory.prepareProductionBackend(
                     model: servingModel,
                     modelID: modelId,
-                    modelArtifactSHA256: weightHash,
+                    modelArtifactSHA256: modelArtifactSHA256,
                     constructionPurpose: constructionPurpose,
                     automaticallySelectConcurrency: automaticallySelectConcurrency,
                     performanceQualificationAllowed: ServingPerformanceProfiles.postureAllowsExpansion
-                        && assistantHandle?.drafter == nil
-                        && ServingPerformanceProfiles.runtimeOverridesAreAbsent(environment),
+                        && assistantHandle?.drafter == nil,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,

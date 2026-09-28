@@ -112,3 +112,25 @@ func TestPerformanceWorkloadBucketsAreBoundedAndDetached(t *testing.T) {
 		t.Fatal("measurement clone aliased heartbeat")
 	}
 }
+
+func TestPerformanceWorkloadBucketsAcceptOnlyClosedMetadata(t *testing.T) {
+	capacity := measurementCapacity()
+	pm := capacity.Slots[0].PerformanceMeasurements
+	valid := protocol.PerformanceWorkloadBucket{Phase: "prefill", PromptTokenBucket: 1024, ContextTokenBucket: 4096, CacheState: "cold", Contention: "isolated", Observation: *pm.IsolatedPrefill}
+	for _, mutate := range []func(*protocol.PerformanceWorkloadBucket){
+		func(b *protocol.PerformanceWorkloadBucket) { b.Phase = "CONTENT_SENTINEL" },
+		func(b *protocol.PerformanceWorkloadBucket) { b.CacheState = "CONTENT_SENTINEL" },
+		func(b *protocol.PerformanceWorkloadBucket) { b.Contention = "CONTENT_SENTINEL" },
+		func(b *protocol.PerformanceWorkloadBucket) { b.PromptTokenBucket = 1234 },
+		func(b *protocol.PerformanceWorkloadBucket) { b.ContextTokenBucket = 1234 },
+	} {
+		invalid := valid
+		mutate(&invalid)
+		pm.WorkloadBuckets = append(pm.WorkloadBuckets, invalid)
+	}
+	pm.WorkloadBuckets = append(pm.WorkloadBuckets, valid)
+	clampBackendCapacity(testLogger(), "provider", capacity)
+	if len(pm.WorkloadBuckets) != 1 || pm.WorkloadBuckets[0] != valid {
+		t.Fatalf("open-ended metadata accepted: %+v", pm.WorkloadBuckets)
+	}
+}

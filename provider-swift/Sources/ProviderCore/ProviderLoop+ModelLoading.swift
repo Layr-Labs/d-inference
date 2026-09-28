@@ -416,11 +416,13 @@ extension ProviderLoop {
             // hash of the bytes actually loaded — not the disk state at daemon
             // start. (See `captureWeightHash` for the full rationale.)
             let reusableSSDRequested = PrefixCachePolicy.isEnabled(modelId: modelId)
+            let artifactIdentityRequired = reusableSSDRequested
+                || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
             let preLoadHash = try await captureWeightHash(
                 modelId: modelId,
                 modelPath: modelPath,
-                requireFreshCryptographicHash: reusableSSDRequested)
-            if !reusableSSDRequested {
+                requireFreshCryptographicHash: artifactIdentityRequired)
+            if !artifactIdentityRequired {
                 await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
             }
 
@@ -451,24 +453,29 @@ extension ProviderLoop {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
-            // TOCTOU guard: reusable SSD cache participation requires two fresh
-            // cryptographic reads bracketing the container load. Unlike the old
+            // TOCTOU guard: reusable SSD cache participation or a candidate
+            // serving profile requires fresh cryptographic reads bracketing
+            // the container load. Unlike the old
             // refresh path, neither observation is published until equality is
             // established. A missing observation serves cold; an actual mismatch
             // proves artifact mutation and fails before engine construction or
             // slot installation.
+            let modelArtifactSHA256: String?
             let cacheEligibleWeightHash: String?
-            if reusableSSDRequested {
+            if artifactIdentityRequired {
                 let postLoadHash = try await captureWeightHash(
                     modelId: modelId,
                     modelPath: modelPath,
                     requireFreshCryptographicHash: true)
-                cacheEligibleWeightHash = try await finalizeReusableSSDLoad(
+                let verifiedArtifact = try await finalizeReusableSSDLoad(
                     modelId: modelId,
                     preLoad: preLoadHash,
                     postLoad: postLoadHash,
                     newcomer: newcomer)
+                modelArtifactSHA256 = verifiedArtifact
+                cacheEligibleWeightHash = reusableSSDRequested ? verifiedArtifact : nil
             } else {
+                var loadedArtifactHash = preLoadHash.hash
                 let postLoadFingerprint = await Task.detached(priority: .utility) {
                     WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
                 }.value
@@ -483,7 +490,9 @@ extension ProviderLoop {
                         modelPath: modelPath,
                         fingerprint: postLoadFingerprint)
                     await publishWeightHash(modelId: modelId, snapshot: postLoadHash)
+                    loadedArtifactHash = postLoadHash.hash
                 }
+                modelArtifactSHA256 = loadedArtifactHash
                 cacheEligibleWeightHash = nil
             }
             // Hard-fail without Metal (moved from the legacy scheduler's
@@ -588,6 +597,7 @@ extension ProviderLoop {
                     tokenizer: tokenizer,
                     targetSizing: targetSizing,
                     specDecPreparation: mtpPreparation,
+                    modelArtifactSHA256: modelArtifactSHA256,
                     cacheEligibleWeightHash: cacheEligibleWeightHash
                 )
             } catch let error as InferenceError {
@@ -667,6 +677,7 @@ extension ProviderLoop {
                         tokenizer: tokenizer,
                         targetSizing: targetSizing,
                         specDecPreparation: mtpPreparation.fallingBack(reason),
+                        modelArtifactSHA256: modelArtifactSHA256,
                         cacheEligibleWeightHash: cacheEligibleWeightHash)
                 } catch {
                     // The retry released the target on failure. Recompute from
@@ -737,6 +748,7 @@ extension ProviderLoop {
                 modelContainer: installContainer,
                 tokenizer: tokenizer,
                 sizing: sizing,
+                modelArtifactSHA256: modelArtifactSHA256,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: slotIsVLM,
                 modelType: modelInfo.modelType,

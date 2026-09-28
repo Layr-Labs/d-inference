@@ -186,7 +186,8 @@ extension EngineV2Factory {
             let profile = constructionPurpose == .serving && performanceQualificationAllowed ? ServingPerformanceProfiles.resolve(
                 modelID: modelID ?? "", artifactSHA256: modelArtifactSHA256,
                 kvBackend: kind.rawValue, contextTokens: maxContextLength,
-                hardware: ServingPerformanceProfiles.reviewed.isEmpty ? nil : Self.profileHardware) : nil
+                hardware: ServingPerformanceProfiles.reviewed.isEmpty ? nil : Self.profileHardware,
+                environment: environment) : nil
             let concurrency = constructionPurpose == .benchmark ? max(1, maxConcurrentRequests)
                 : ServingPerformanceProfiles.concurrency(
                 configured: UInt64(max(1, automaticallySelectConcurrency

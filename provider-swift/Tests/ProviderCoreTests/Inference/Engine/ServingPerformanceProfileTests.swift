@@ -53,6 +53,31 @@ private func measuredProfileFixture() -> ServingPerformanceProfile {
     #expect(try JSONDecoder().decode(ServingPerformanceProfile.self, from: encoded) == profile)
 }
 
+@Test func servingProfileArtifactVerificationDoesNotDependOnPrefixCachePolicy() {
+    let profile = measuredProfileFixture()
+    let hardware = HardwareInfo(machineModel: "test", chipName: profile.chipName,
+        chipFamily: .m5, chipTier: .ultra, memoryGb: 192, memoryAvailableGb: 160,
+        cpuCores: .init(total: 32, performance: 24, efficiency: 8), gpuCores: 80,
+        memoryBandwidthGbs: 0)
+    for environment in [[String: String](), ["DARKBLOOM_PREFIX_CACHE": "0"]] {
+        // The fixture is outside the default SSD cohort, and an explicit
+        // cache kill switch must likewise leave profile identity available.
+        #expect(!PrefixCachePolicy.isEnabled(modelId: profile.modelId, environment: environment))
+        #expect(ServingPerformanceProfiles.runtimeOverridesAreAbsent(environment))
+        #expect(ServingPerformanceProfiles.requiresArtifactHash(modelID: profile.modelId, profiles: [profile]))
+        let resolved = ServingPerformanceProfiles.resolve(modelID: profile.modelId,
+            artifactSHA256: profile.artifactSha256, kvBackend: "paged", contextTokens: 32768,
+            hardware: hardware, environment: environment, providerVersion: "test", profiles: [profile])
+        #expect(resolved?.maxConcurrency == 16)
+    }
+    #expect(ServingPerformanceProfiles.resolve(modelID: profile.modelId,
+        artifactSHA256: profile.artifactSha256, kvBackend: "paged", contextTokens: 32768,
+        hardware: hardware, environment: [MixedPrefillPolicy.globalKey: "128"],
+        providerVersion: "test", profiles: [profile]) == nil)
+    #expect(!ServingPerformanceProfiles.requiresArtifactHash(modelID: "unreviewed", profiles: [profile]))
+    #expect(!ServingPerformanceProfiles.requiresArtifactHash(modelID: profile.modelId, profiles: []))
+}
+
 @Test func servingPerformanceDefaultsPreserveOperatorIntentAcrossSerialization() throws {
     let missing = try JSONDecoder().decode(BackendSettings.self, from: Data("{}".utf8))
     #expect(!missing.engineV2MaxConcurrentIsExplicit)

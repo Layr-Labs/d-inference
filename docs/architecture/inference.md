@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `914dc4e53`
+> Last updated: 2026-09-28 · commit `df492a114`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -76,7 +76,10 @@ the [qualification procedure](../developer/serving-performance-qualification.md)
 is required before any higher default or model-specific chunk policy activates.
 Qualified engines share one whole-Mac service allowance and retain physical KV,
 architecture and explicit operator caps. A reservation is released only after
-engine retirement, not when a caller merely requests cancellation.
+engine retirement, not when a caller merely requests cancellation. Atomic
+deadline admission passes its retirement acknowledgement to the event pump;
+an early terminal returns to the caller while the service and KV reservations
+remain owned until that acknowledgement completes.
 
 The optional `CBv2SchedulerConfig.mixedStepPrefillTokenCap` is per engine and
 feeds the same scheduler plan used by execution and first-token projection.

@@ -65,6 +65,26 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
     #expect(CapacityHeartbeatMateriality.isMaterial(previous: loading, current: settled))
 }
 
+@Test func wholeMacServiceOwnershipIsMaterialWithoutSlotOrTokenChanges() {
+    let legacy = capacity([slot(state: "idle", numRunning: 0, used: 0)])
+    var idle = legacy
+    idle.wholeMacServiceUsed = 0
+    var preSubmit = idle
+    preSubmit.wholeMacServiceUsed = 1.0 / 24.0
+    var retiring = idle
+    retiring.wholeMacServiceUsed = 1
+    var retired = retiring
+    retired.wholeMacServiceUsed = 23.0 / 24.0
+
+    for (before, after) in [(legacy, idle), (idle, preSubmit), (preSubmit, idle),
+                            (retiring, retired), (retired, legacy)] {
+        #expect(CapacityHeartbeatMateriality.isMaterial(previous: before, current: after))
+        // Publishing that ownership state collapses the delta; the heartbeat
+        // throttle remains the owner of coalescing repeated rebuilds.
+        #expect(!CapacityHeartbeatMateriality.isMaterial(previous: after, current: after))
+    }
+}
+
 @Test func admissionCompletionAndHealthTransitionsAreMaterial() {
     let base = capacity([slot(numRunning: 1)])
     // Request admitted / completed: numRunning moved.

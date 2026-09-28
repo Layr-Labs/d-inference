@@ -624,6 +624,10 @@ extension EngineV2Bridge {
                         throw error
                     }
                     events = stream
+                    // Atomic admission transfers a generation-bound retirement
+                    // handle even for non-native engines. The pump must retain
+                    // shared service/KV ownership after an early terminal.
+                    nativeRetirement = retirement
                     engineAdmittedAt = admittedAt
                     if let profile {
                         // The engine's commit instant is on the deadline

@@ -152,6 +152,7 @@ extension StandaloneServer {
                 await kvBudget.recheckPendingLoad(lease)
             else { throw CancellationError() }
             let sizing = original.sizing.replacingAuxiliaryWeightBytes(prepared.assistantBytes)
+            v2TestHooks?.onModelArtifactSHA256?(original.modelArtifactSHA256)
             v2TestHooks?.onCacheEligibleWeightHash?(original.cacheEligibleWeightHash)
             replacement = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelID, modelType: original.modelType, isVLM: original.isVLM,
@@ -165,6 +166,7 @@ extension StandaloneServer {
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,
+                modelArtifactSHA256: original.modelArtifactSHA256,
                 weightHash: original.cacheEligibleWeightHash,
                 specDecPreparation: preparation, preparedModel: prepared,
                 startServingTelemetry: false,
@@ -228,6 +230,7 @@ extension StandaloneServer {
             tokenizer: original.tokenizer, modelType: original.modelType,
             isVLM: original.isVLM, sizing: staged.sizing,
             lastUsedAt: original.lastUsedAt,
+            modelArtifactSHA256: original.modelArtifactSHA256,
             cacheEligibleWeightHash: original.cacheEligibleWeightHash)
         // Publication is committed. Shutdown of the old idle engine releases
         // its pool before the minimal replacement grant is grown.

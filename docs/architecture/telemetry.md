@@ -75,6 +75,14 @@ streaming/end-to-end rates. See the exact [capacity protocol](../reference/proto
 and `coordinator/registry/performance_measurements.go`. These fields belong to
 in-memory routing observations and are excluded from persisted numeric-only
 provider telemetry; they add no client telemetry-ingestion endpoint.
+The first-content design includes coarse numeric workload buckets for
+routing: these reveal bounded workload-size metadata to the coordinator, which
+already processes the request, but contain no prompt text, completion text,
+token IDs, media or cache keys. The protocol accepts only six fixed numeric
+bucket ceilings and closed phase/cache/contention values, with at most 32
+engine-local aggregate buckets. Warm-pool planning retains numeric work means
+in memory; process logs and event emitters omit the measured prompt/output
+means and work rates.
 
 `recordMLXCacheTelemetry` emits allocator snapshots as histograms with a
 DogStatsD-only client, or as latest-value gauges through HTTPS when

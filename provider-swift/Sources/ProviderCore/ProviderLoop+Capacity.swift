@@ -19,6 +19,7 @@ extension ProviderLoop {
 
     internal func startCapacityRefreshMonitor() {
         capacityRefreshTask?.cancel()
+        startServiceAllowanceRefreshMonitor()
         let heartbeatInterval = max(1, loopConfig.config.coordinator.heartbeatIntervalSecs)
         let pollIntervalNs = UInt64(max(1, heartbeatInterval / 2)) * 1_000_000_000
         let me = self

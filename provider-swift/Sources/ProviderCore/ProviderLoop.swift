@@ -649,6 +649,9 @@ public actor ProviderLoop {
     /// reflect active/queued requests and adaptive batch-cap changes while
     /// long-running generations are still in flight.
     internal var capacityRefreshTask: Task<Void, Never>?
+    /// Rebuild capacity on shared service acquisition/retirement, independently
+    /// of slot counters and the periodic capacity monitor.
+    internal var serviceAllowanceRefreshTask: Task<Void, Never>?
 
     /// Background task that periodically checks for provider updates and
     /// applies them automatically. nil when auto-update is disabled or
@@ -811,8 +814,10 @@ public actor ProviderLoop {
         /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —
         /// feeds re-slicing, heartbeat fleet context, and the vision gate.
         let sizing: SlotSizingSnapshot
-        /// Hash verified for the exact bytes bracketed around this slot's load.
-        /// Reused only when rebuilding the engine over the retained container.
+        /// Load-bound profile identity, retained across engine rebuilds.
+        /// Reviewed candidates verify matching reads around the container load.
+        let modelArtifactSHA256: String?
+        /// Separate cache eligibility; nil never removes the artifact identity.
         let cacheEligibleWeightHash: String?
         /// Vision-language model (config has `vision_config`). The container
         /// supplies vision preprocessing before multimodal EngineV2 prefill.
@@ -845,13 +850,15 @@ public actor ProviderLoop {
             container: MLXLMCommon.ModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
             lastInferenceAt: ContinuousClock.Instant
         ) {
             self.init(engineBundle: engineBundle, modelContainer: .autoregressive(container),
-                tokenizer: tokenizer, sizing: sizing, cacheEligibleWeightHash: cacheEligibleWeightHash,
+                tokenizer: tokenizer, sizing: sizing, modelArtifactSHA256: modelArtifactSHA256,
+                cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: isVLM, modelType: modelType, lastInferenceAt: lastInferenceAt)
         }
 
@@ -860,6 +867,7 @@ public actor ProviderLoop {
             modelContainer: ProviderModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
@@ -869,6 +877,7 @@ public actor ProviderLoop {
             self.modelContainer = modelContainer
             self.tokenizer = tokenizer
             self.sizing = sizing
+            self.modelArtifactSHA256 = modelArtifactSHA256
             self.cacheEligibleWeightHash = cacheEligibleWeightHash
             self.isVLM = isVLM
             self.modelType = modelType
@@ -881,6 +890,7 @@ public actor ProviderLoop {
             container: MLXLMCommon.ModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
@@ -898,6 +908,7 @@ public actor ProviderLoop {
                 container: container,
                 tokenizer: tokenizer,
                 sizing: sizing,
+                modelArtifactSHA256: modelArtifactSHA256,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: isVLM,
                 modelType: modelType,

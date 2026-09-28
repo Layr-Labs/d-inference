@@ -50,6 +50,10 @@ public enum CapacityHeartbeatMateriality {
         // A pending load can reserve memory before any slot exists. Surface
         // both edges promptly so owner diagnostics do not call it a failure.
         if previous.loadTransitionActive != current.loadTransitionActive { return true }
+        // Service ownership starts before engine submission and ends after
+        // retirement. Either edge can leave slot counts and token budgets
+        // unchanged while changing whole-Mac admission headroom.
+        if previous.wholeMacServiceUsed != current.wholeMacServiceUsed { return true }
 
         // Slot roster: a model loaded, unloaded, or evicted.
         let previousSlots = Dictionary(

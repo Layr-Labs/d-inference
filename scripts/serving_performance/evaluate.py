@@ -97,6 +97,9 @@ def evaluate(raw):
             any(not isinstance(s, list) or any(not isinstance(m, str) or not m for m in s)
                 or len(set(s)) != len(s) for s in serving_sets)):
         errors.append("serving_sets must include isolated and explicit competing-model cases")
+    if (isinstance(serving_sets, list) and
+            any(isinstance(models, list) and identity.get("model_id") in models for models in serving_sets)):
+        errors.append("serving_sets cannot use the target model as a competing model")
     if report.get("schema_version") != 1:
         errors.append("unsupported receipt schema_version")
     result = {"qualified": False, "receipt_sha256": hashlib.sha256(raw).hexdigest(),
@@ -121,8 +124,11 @@ def evaluate(raw):
     measured = {}
     selected = []
     previous_width = None
+    blocked_by_width = None
     for width in widths(identity):
         failures = []
+        if blocked_by_width is not None:
+            failures.append(f"lower required width {blocked_by_width} did not qualify")
         for shape in required:
             key = (width, *shape)
             cell = cells.get(key)
@@ -160,6 +166,10 @@ def evaluate(raw):
                           metrics["aggregate_decode_tps"] < prior["aggregate_decode_tps"] * .95):
                         problems.append("mixed-prefill promotion thresholds failed")
             failures.extend(f"{key}: {problem}" for problem in problems)
+        # A larger scheduler cap can still execute every smaller required
+        # batch shape. Never skip a failed or unmeasured rung of the ladder.
+        if failures and blocked_by_width is None:
+            blocked_by_width = width
         result["widths"].append({"width": width, "qualified": not failures, "errors": failures})
         if not failures and (width == 1 or selected):
             values = [measured[(width, *shape)] for shape in required]

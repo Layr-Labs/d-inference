@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-28 · commit `914dc4e53`
+> Last updated: 2026-09-28 · commit `df492a114`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -293,6 +293,14 @@ the legacy batch curve and bound the per-model cap. Both languages require the
 same artifact/runtime/backend/hardware/context identity. The optional
 `whole_mac_service_used` heartbeat field is the provider's shared fractional
 allowance usage; admission also reconciles coordinator-owned reservations.
+`CapacityHeartbeatMateriality` in
+`provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift` treats changes
+to this fraction as material even when slot counts and token budgets remain
+unchanged, covering pre-submit acquisition and delayed retirement release.
+The shared budget coalesces ownership notifications into one bounded stream;
+`provider-swift/Sources/ProviderCore/ProviderLoop+ServiceAllowance.swift`
+(`startServiceAllowanceRefreshMonitor`) rebuilds capacity through the existing
+event-heartbeat path without waiting for periodic polling.
 Three loaded engines do not receive three independent qualified machine budgets.
 The [qualification procedure](../developer/serving-performance-qualification.md)
 describes promotion; the initial reviewed catalogs contain no entries.

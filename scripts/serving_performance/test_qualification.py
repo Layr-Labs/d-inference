@@ -7,12 +7,12 @@ from serving_performance.evaluate import evaluate
 from serving_performance.matrix import CHECKS, MIN_SAMPLES, RUNTIME_REVISION, shapes
 
 
-def receipt():
+def receipt(selected_widths=(1, 2)):
     identity = dict(id="test-profile", model_id="fixture", artifact_sha256="a" * 64,
                     provider_version="test", runtime_revision=RUNTIME_REVISION, kv_backend="contiguous",
                     chip_name="Apple M5 Max", gpu_cores=40, memory_gb=128, context_tokens_max=2048)
     report = dict(schema_version=1, identity=identity, serving_sets=[[], ["other"]], qualification_cells=[])
-    for width in (1, 2):
+    for width in selected_widths:
         for prompt, output, arrival, cache, models in shapes(identity, report["serving_sets"]):
             sample = dict(decode_p10_tps=40, aggregate_decode_tps=40 * width, prefill_tps=2000,
                           first_content_p95_ms=1000, token_gap_p95_ms=25, forward_widths=[width],
@@ -67,6 +67,25 @@ class QualificationTests(unittest.TestCase):
         report["qualification_cells"].pop(0)
         self.assertFalse(run(report)["qualified"])
 
+    def test_higher_width_cannot_skip_a_missing_or_failed_required_width(self):
+        for blocked_width, last_passing in ((2, 1), (6, 4)):
+            for failure in ("missing", "failed"):
+                with self.subTest(blocked_width=blocked_width, failure=failure):
+                    report = receipt((1, 2, 4, 6, 8))
+                    self.assertEqual(run(report)["profile"]["max_concurrency"], 8)
+                    if failure == "missing":
+                        report["qualification_cells"] = [
+                            cell for cell in report["qualification_cells"] if cell["width"] != blocked_width]
+                    else:
+                        next(cell for cell in report["qualification_cells"]
+                             if cell["width"] == blocked_width)["failures"] = 1
+                    result = run(report)
+                    self.assertEqual(result["profile"]["max_concurrency"], last_passing)
+                    for width in result["widths"]:
+                        if width["width"] > blocked_width:
+                            self.assertFalse(width["qualified"])
+                            self.assertIn(f"lower required width {blocked_width} did not qualify", width["errors"])
+
     def test_failed_wider_cell_keeps_lower_profile(self):
         for mutation in (
             lambda c: c.update(failures=1),
@@ -109,6 +128,20 @@ class QualificationTests(unittest.TestCase):
         report = receipt()
         report["serving_sets"] = [[]]
         self.assertFalse(run(report)["qualified"])
+
+    def test_target_model_cannot_supply_its_own_competing_model_evidence(self):
+        report = receipt()
+        target = report["identity"]["model_id"]
+        report["serving_sets"] = [[], [target]]
+        for cell in report["qualification_cells"]:
+            if cell["competing_models"]:
+                cell["competing_models"] = [target]
+                for sample in cell["samples"]:
+                    sample["competing_model_active_requests"] = {target: 1}
+        result = run(report)
+        self.assertFalse(result["qualified"])
+        self.assertIsNone(result["profile"])
+        self.assertIn("serving_sets cannot use the target model as a competing model", result["errors"])
 
     def test_large_context_requires_boundary_measurement(self):
         report = receipt()

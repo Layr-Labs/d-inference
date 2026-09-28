@@ -99,13 +99,24 @@ public enum ServingPerformanceProfiles {
     /// reviewed records alongside the coordinator mirror and measured report.
     static let reviewed: [ServingPerformanceProfile] = []
 
+    /// Standalone loads have no coordinator attestation hash. Compute their
+    /// artifact identity on demand when a reviewed model could qualify, even
+    /// when reusable prefix caching is disabled. Scanning remains hash-free.
+    static func requiresArtifactHash(
+        modelID: String, profiles: [ServingPerformanceProfile] = reviewed
+    ) -> Bool {
+        profiles.contains { $0.isValid && $0.modelId == modelID }
+    }
+
     static func resolve(
         modelID: String, artifactSHA256: String?, kvBackend: String,
         contextTokens: Int?, hardware: HardwareInfo?,
+        environment: [String: String] = [:],
         providerVersion: String = ProviderCore.version,
         profiles: [ServingPerformanceProfile] = reviewed
     ) -> ServingPerformanceProfile? {
-        guard let hash = artifactSHA256, let hardware, let contextTokens,
+        guard runtimeOverridesAreAbsent(environment),
+            let hash = artifactSHA256, let hardware, let contextTokens,
             contextTokens > 0
         else { return nil }
         return profiles.first { profile in

@@ -12,7 +12,7 @@ import Testing
 
 @testable import ProviderCore
 
-private final class PrefillRetirementGate: @unchecked Sendable {
+final class PrefillRetirementGate: @unchecked Sendable {
     private let lock = NSLock()
     private var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -51,7 +51,7 @@ private final class PrefillRetirementGate: @unchecked Sendable {
 
 // MARK: - Manual-script engine (controls delta timing)
 
-private final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
+final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
     enum DeadlineBehavior: Equatable {
         case admit
         case reject
@@ -210,7 +210,7 @@ private final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
     func shutdown() async {}
 }
 
-private struct PrefillStubTokenizer: MLXLMCommon.Tokenizer {
+struct PrefillStubTokenizer: MLXLMCommon.Tokenizer {
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "x" }
     func convertTokenToId(_ token: String) -> Int? { nil }

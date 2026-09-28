@@ -55,8 +55,10 @@ catalogs are empty: M5 Max B8 and M5 Ultra B16 remain qualification targets.
    make benchmark-wrapper-test
    ```
 
-   A failed width remains in the review report with its reasons. Only complete
-   passing widths enter the derived curve; B1 must pass before any expansion.
+   A failed width remains in the review report with its reasons. The derived
+   curve ends before the first missing or failed required width: a larger
+   scheduler can still execute that smaller batch shape, so passing B4 cannot
+   bypass a failed B2. Every required width through the proposed cap must pass.
 5. Review the raw receipts and derived report, then add the same reviewed record
    to Swift `ServingPerformanceProfiles.reviewed` and Go
    `reviewedServingPerformanceProfiles` in one signed change. Preserve the raw
@@ -72,7 +74,7 @@ are **not hardware evidence**.
 
 | Object | Required fields |
 |---|---|
-| Root | `schema_version: 1`, `identity`, `serving_sets` (includes `[]` and explicit competing model IDs), `qualification_cells`; optional `mixed_prefill_token_cap` |
+| Root | `schema_version: 1`, `identity`, `serving_sets` (includes `[]` and explicit competing model IDs distinct from `identity.model_id`), `qualification_cells`; optional `mixed_prefill_token_cap` |
 | Identity | `id`, `model_id`, `artifact_sha256`, `provider_version`, `runtime_revision`, `kv_backend`, `chip_name`, `gpu_cores`, `memory_gb`, `context_tokens_max` |
 | Cell | `width`, `prompt_tokens`, `output_tokens`, `arrival_pattern` (`fixed`/`staggered`), `cache_state` (`cold`/`reused`), `competing_models`, `failures`, `raw_measurements_sha256`, `absolute_first_content_budget_ms`, `resolved_activation_floor_bytes`, `checks`, `samples` |
 | Checks | Each of `correctness`, `constraints`, `isolation`, `cancellation`, `accounting`, `retirement` has `passed: true` and `receipt_sha256` |
@@ -82,7 +84,7 @@ are **not hardware evidence**.
 ## Verify
 
 The evaluator uses the lowest rate and highest latency across independent
-repetitions, checks each shape against its own B1 and previous selected width,
+repetitions, checks each shape against its own B1 and previous required width,
 requires decode p10 ≥30 tokens/s and ≥10% aggregate gain, and enforces both the
 absolute first-content budget and `max(3000 ms, 1.5 × B1)`.
 

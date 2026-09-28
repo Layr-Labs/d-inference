@@ -4,7 +4,7 @@ created: "2026-05-14"
 # AuthenticatedRootEnabled as informational; it is not a security requirement.
 # T-051 references the defined malicious-provider adversary (ADV-001), replacing
 # its undefined ADV-004 reference; the threat description is unchanged.
-# Hybrid provider authorization re-verified 2026-09-27 against 0bd16a9fa:
+# Hybrid provider authorization re-verified 2026-09-28 against 58424f171:
 # scope, provider identity assets, TB-002/TB-009/TB-011, T-023/T-033/T-036 and
 # T-052..T-058 describe the independent legacy and App Attest serving paths.
 # This is a scoped source/test review, not a revalidation of every older finding

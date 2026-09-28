@@ -1,6 +1,6 @@
 # Provider trust during MDM and App Attest coexistence
 
-> Last updated: 2026-09-27 · commit `0bd16a9fa`
+> Last updated: 2026-09-28 · commit `58424f171`
 
 Darkbloom supports two independent provider authorization paths: legacy MDM/APNs verification and qualified App Attest. A connection can satisfy either or both. This explanation separates those paths from their shared dispatch checks and from claims neither path proves. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 

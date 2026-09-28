@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-28 · commit `3dea7a63f`
+> Last updated: 2026-09-28 · commit `58424f171`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -21,8 +21,8 @@ proof transcript. Missing, forged, malformed or apparently healthy values cannot
 grant, extend or revoke serving authorization. A local `doctor` pass or an APNs
 send/receipt metric is not a verified serving verdict; use the coordinator's
 current authorization and dispatch snapshot described below. In particular, a
-local diagnostic `sip_enabled` observation is distinct from the coordinator-verified
-posture exposed by the public endpoint. See the [diagnostic field contract](../reference/app-attest-shadow.md#provider-diagnostics)
+local diagnostic `sip_enabled` observation is distinct from the legacy attestation
+fields and method verdict exposed by the public endpoint. See the [diagnostic field contract](../reference/app-attest-shadow.md#provider-diagnostics)
 and [attestation boundary](../architecture/security/attestation.md).
 
 ## Read verification in chat and network stats
@@ -73,6 +73,8 @@ Each entry carries:
 | Field | Meaning |
 |---|---|
 | `provider_id` | Opaque connection ID; also returned per response as `X-Provider-Id` |
+| `verification` | Coordinator verdict for both methods at `observed_at`; see the [verification contract](../reference/api-contracts.md#verification-presentation-contract) |
+| `app_attest_authorized`, `authorization_expires_at`? | App Attest authorization at this snapshot and its exclusive Unix-seconds deadline; not a reusable serving credential |
 | `chip_name`, `hardware_model`, `memory_gb`, `gpu_cores`, `models[]` | Hardware class and served models |
 | `trust_level` | `none`, `self_signed`, or `hardware` (below) |
 | `status` | `online`, `offline`, `untrusted`, … |
@@ -138,6 +140,8 @@ these headers (`writeCommittedProviderHeaders`,
 | Header | Value |
 |---|---|
 | `X-Provider-Id` | Connection ID; join with the endpoint above |
+| `X-Provider-Authorization-Method` | `app_attest`, `legacy`, `dual`, or `none`, derived from the dispatch verification snapshot |
+| `X-Provider-Verification` | Compact JSON containing `observed_at` and the `app_attest` / `legacy` method states, frozen at final dispatch; [exact fields](../reference/api-contracts.md#verification-presentation-contract) |
 | `X-Provider-Trust-Level` | `none` / `self_signed` / `hardware` |
 | `X-Provider-Attested` | `true` / `false` |
 | `X-Provider-Encrypted` | `true` when the provider has a registered X25519 key (the mandatory coordinator → provider hop) |
@@ -147,7 +151,14 @@ these headers (`writeCommittedProviderHeaders`,
 | `X-Attestation-Se-Public-Key` | The provider's SE P-256 public key (base64) |
 | `X-Eigen-Sealed`, `X-Eigen-Sealed-Kid` | Present when you sealed the request; the body is sealed to your ephemeral key ([`../architecture/security/encryption.md`](../architecture/security/encryption.md)) |
 
-The headers are the coordinator's assertion over TLS. Pin the provider identity
+Read `X-Provider-Authorization-Method` to identify the authorization path and
+`X-Provider-Verification` for its frozen verdict and timestamps. Missing fields
+mean the dispatch method is unavailable; do not infer it from the legacy trust
+or MDA fields. These are coordinator assertions over TLS, not Apple-signed
+response receipts. The [verification contract](../reference/api-contracts.md#verification-presentation-contract)
+explains snapshot timing and method states.
+
+Pin the provider identity
 by comparing `X-Attestation-Se-Public-Key` with `se_public_key` from the public
 endpoint across requests.
 
@@ -178,13 +189,16 @@ and therefore no `X-Provider-*` headers.
 OpenAI SDKs generally hide custom headers. Send `metadata_details: true` in the
 request body (or the header `X-Darkbloom-Metadata-Details: true`) on
 `POST /v1/chat/completions` and the same values arrive in the JSON `metadata`
-object: `provider_id`, `provider_attested`, `provider_trust_level`,
+object: `verification`, `provider_id`, `provider_attested`, `provider_trust_level`,
 `provider_encrypted`, `provider_chip`, `provider_machine_model`,
 `provider_secure_enclave`, `provider_mda_verified`,
 `attestation_se_public_key`, `timing`, and `location`
 (`coordinator/api/types/types.go`, `ChatCompletionMetadata`). `location` is
 region/country-level GeoIP only — no city, coordinates, lookup source, or IP.
-See [`../reference/api-contracts.md`](../reference/api-contracts.md).
+Read `metadata.verification.app_attest.state` and
+`metadata.verification.legacy.state` to identify the verified method(s) at
+`metadata.verification.observed_at`; missing metadata is unavailable. See the
+[verification contract](../reference/api-contracts.md#verification-presentation-contract).
 
 ## Code identity
 

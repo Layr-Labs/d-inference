@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-27 · commit `0bd16a9fa`
+> Last updated: 2026-09-28 · commit `58424f171`
 
 The evidence checks behind legacy MDM/APNs verification and qualified App
 Attest authorization. The [provider trust overview](provider-trust.md) owns the

@@ -73,8 +73,8 @@ func (s *engineStore) WithEpochSettlementLock(_ context.Context, _ string, fn fu
 }
 
 // Settlement bookkeeping delegates to the real memory store.
-func (s *engineStore) SettleProviderFloorDraw(ctx context.Context, draw *store.ProviderFloorDraw) (bool, error) {
-	return s.inner.SettleProviderFloorDraw(ctx, draw)
+func (s *engineStore) SettleProviderFloorDrawBatch(ctx context.Context, items []store.FloorDrawBatchItem, authorize func(int) bool) (store.FloorDrawBatchResult, error) {
+	return s.inner.SettleProviderFloorDrawBatch(ctx, items, authorize)
 }
 func (s *engineStore) SumFloorDrawsForEpoch(ctx context.Context, epochID string) (int64, error) {
 	return s.inner.SumFloorDrawsForEpoch(ctx, epochID)
@@ -107,6 +107,11 @@ func addProvider(reg *registry.Registry, id, providerKey, serial, hardwareModel 
 	p.PublicKey = providerKey
 	p.Attested = true
 	p.TrustLevel = registry.TrustHardware
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
+	p.LastChallengeVerified = time.Now()
+	p.PrivacyCapabilities = &protocol.PrivacyCapabilities{TextBackendInprocess: true, TextProxyDisabled: true, AntiDebugEnabled: true, CoreDumpsDisabled: true, EnvScrubbed: true}
 	p.CurrentModel = "test-model" // model loaded for routing (gate 4)
 	p.SystemMetrics = protocol.SystemMetrics{MemoryPressure: 0.1, ThermalState: "nominal"}
 	return p
@@ -502,5 +507,17 @@ func TestUptimeByProviderKey_OpenSessionGrace(t *testing.T) {
 	want := wantCovered / total
 	if diff := frac - want; diff > 1e-6 || diff < -1e-6 {
 		t.Fatalf("open-session grace: frac=%v, want %v", frac, want)
+	}
+}
+
+// settlePriorFloor records an earlier settlement through the store's batch
+// path under a session no machine inventory knows, so the row keeps the draw's
+// own provider key.
+func settlePriorFloor(t *testing.T, inner *store.MemoryStore, draw store.ProviderFloorDraw) {
+	t.Helper()
+	item := store.FloorDrawBatchItem{SessionID: "prior-floor-" + draw.ProviderKey, Draw: draw}
+	result, err := inner.SettleProviderFloorDrawBatch(context.Background(), []store.FloorDrawBatchItem{item}, func(int) bool { return true })
+	if err != nil || !result.Committed {
+		t.Fatalf("prior floor setup: %+v %v", result, err)
 	}
 }

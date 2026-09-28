@@ -1,0 +1,58 @@
+{
+  "os": "macOS 27.0 26A428",
+  "hardware": "M5 Max",
+  "launch": "Developer ID signed debug app through user LaunchAgent",
+  "protocol": 2,
+  "machines": 1,
+  "sessions": 2,
+  "key_counters": [
+    2
+  ],
+  "proofs": [
+    {
+      "action": "attestation",
+      "outcome": "verified",
+      "bytes": 5822
+    },
+    {
+      "action": "assertion",
+      "outcome": "verified",
+      "bytes": 140
+    },
+    {
+      "action": "assertion",
+      "outcome": "verified",
+      "bytes": 140
+    }
+  ],
+  "receipts": [
+    {
+      "outcome": "verified",
+      "bytes": 3972,
+      "type": "ATTEST"
+    }
+  ],
+  "identity_assurance": [
+    "key_bound"
+  ],
+  "latencies": [
+    {
+      "stage": "attestation",
+      "outcome": "verified",
+      "duration_ms": "850.290792"
+    },
+    {
+      "stage": "assertion",
+      "outcome": "verified",
+      "duration_ms": "38.890958"
+    },
+    {
+      "stage": "assertion",
+      "outcome": "verified",
+      "duration_ms": "57.060291"
+    }
+  ],
+  "receipt_api_round_trip_tested": false,
+  "final_notarized_release_tested": false,
+  "binary_sha256": "14b4f40d6f5ecbc20c0abbe3082c8c51b54a73f073dc6fb0b595ee462c5de1b1"
+}

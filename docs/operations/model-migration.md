@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-09-06 · commit `32b28b0a7`
+> Last updated: 2026-09-27 · commit `5d0dd2674`
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -36,9 +36,8 @@ Not for: registering a brand-new model (that is just steps 1–2 plus
   `/v1/admin/models/aliases`, and the per-model actions.
 - **Providers that understand `desired_models`.** `fanOutDesiredModels` in
   `coordinator/api/model_alias_handlers.go` only pushes to providers passing
-  `providerSupportsDesiredModels(backend, version)`, i.e. version ≥
-  `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`).
-  Older providers keep serving whatever they advertise and are never migrated.
+  `providerSupportsDesiredModels(backend)`, i.e. the Swift backend. Every Swift
+  build above the routing floor understands the message.
 - **Coordinator with the retired-resident-build challenge alibi.** After a
   hard-swap the old build is still resident on the provider and may be reported
   as `active_model_hash` at the next challenge; the coordinator accepts any

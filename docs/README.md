@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-07 · commit `5ce1d0cd0`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -12,9 +12,12 @@
 > freshness stamp. Rules for reading and writing them:
 > [`AGENTS.md`](AGENTS.md). One name for each thing: [`glossary.md`](glossary.md).
 
+[App Attest inventory validation](reports/2026-09-14-app-attest-inventory-validation.md) records the protocol 2 Mac test, durable machine identity, complete evidence archive, and remaining release gates.
+
 ## Start here, by task
 
 - [`consumer/quickstart.md`](consumer/quickstart.md): make your first chat completion with an API key, curl, or an OpenAI/Anthropic SDK by changing the base URL.
+- [`consumer/prefix-cache.md`](consumer/prefix-cache.md): structure repeated text requests for prefix reuse and verify reported cached tokens.
 - [`provider/installation.md`](provider/installation.md) then [`provider/quickstart.md`](provider/quickstart.md): turn a Mac into a paid provider node.
 - [`developer/build.md`](developer/build.md) then [`developer/test.md`](developer/test.md): build and test every component locally.
 - [`operations/README.md`](operations/README.md): deploy or change production (human approval required for every mutation).
@@ -56,7 +59,7 @@
 - [`consumer/privacy-expectations.md`](consumer/privacy-expectations.md): what a consumer can and cannot assume, in plain terms.
 - [`consumer/verification.md`](consumer/verification.md): how to check a provider's attestation from the API.
 - [`provider/attestation.md`](provider/attestation.md): reach and keep `hardware` trust — enrol, approve the MDM profile, confirm posture; what `darkbloom status` shows.
-- [`threat-model.yaml`](threat-model.yaml): machine-readable threat model reviewed by CI on security-relevant PRs.
+- [`threat-model.yaml`](threat-model.yaml): machine-readable threat model.
 
 ## Reference (look up, do not read)
 
@@ -64,10 +67,11 @@
 - [`reference/api-contracts.md`](reference/api-contracts.md): every HTTP route, header, status code, and JSON shape of the coordinator.
 - [`reference/protocol-messages.md`](reference/protocol-messages.md): every WebSocket message between coordinator and provider, field by field, Go ↔ Swift.
 - [`reference/configuration.md`](reference/configuration.md): every environment variable with type, default, reading file and effect — coordinator `EIGENINFERENCE_*` (routing, admission, TTFT, warm pool, cache routing, billing, MDM, telemetry), provider `DARKBLOOM_*`, console-ui and admin-ui — plus where each process gets its environment.
-- [`reference/telemetry-schema.md`](reference/telemetry-schema.md): telemetry event types, field allowlist, symmetry rules.
+- [`reference/telemetry-schema.md`](reference/telemetry-schema.md): telemetry event types and symmetry rules.
 - [`reference/telemetry-inventory.md`](reference/telemetry-inventory.md): every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file.
 - [`reference/pricing-model.md`](reference/pricing-model.md): micro-USD units, price resolution, formulas, every billing constant (the single home for money constants), routes, service accounts.
 - [`reference/model-registry-format.md`](reference/model-registry-format.md): manifest schema, registration payload, alias format.
+- [`reference/qwen4-next-support.md`](reference/qwen4-next-support.md): native Flash-Next private identity, serving/state policy and explicitly incomplete qualification.
 - [`reference/ssd-kv-cache.md`](reference/ssd-kv-cache.md): DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status vocabularies.
 - [`glossary.md`](glossary.md): canonical terms and the page that owns each.
 
@@ -96,6 +100,8 @@
 
 ## Developer how-tos
 
+- [`developer/historical-references.md`](developer/historical-references.md): open the original source behind a frozen report after files move.
+- [`developer/navigation.md`](developer/navigation.md): find implementation and tests, choose descriptive filenames, and check path dependencies when moving files.
 - [`developer/build.md`](developer/build.md): build the coordinator, sidecar, provider, and UIs; toolchain pins.
 - [`developer/test.md`](developer/test.md): every test suite, what CI runs, how to run the e2e suite.
 

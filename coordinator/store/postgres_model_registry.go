@@ -9,10 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type scanner interface {
-	Scan(dest ...any) error
-}
-
 func (s *PostgresStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -152,14 +148,6 @@ func (s *PostgresStore) SetModelStatus(modelID, status string) error {
 	return nil
 }
 
-func (s *PostgresStore) ListActiveModelRegistry() []ModelRegistryRecord {
-	records, err := s.ListActiveModelRegistryWithError()
-	if err != nil {
-		return nil
-	}
-	return records
-}
-
 func (s *PostgresStore) ListActiveModelRegistryWithError() ([]ModelRegistryRecord, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -233,29 +221,6 @@ func (s *PostgresStore) GetModelManifest(modelID string) (*ModelManifest, error)
 	return manifestFromRecord(rec), nil
 }
 
-func (s *PostgresStore) UpsertPublishingAPIKey(key *PublishingAPIKey) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO publishing_api_keys (id, name, key_hash, active, created_at, last_used_at)
-		VALUES ($1, $2, $3, $4, COALESCE(NULLIF($5::timestamptz, '0001-01-01 00:00:00+00'::timestamptz), NOW()), $6)
-		ON CONFLICT (id) DO UPDATE SET name = $2, key_hash = $3, active = $4, last_used_at = $6`,
-		key.ID, key.Name, key.KeyHash, key.Active, key.CreatedAt, key.LastUsedAt)
-	if err != nil {
-		return fmt.Errorf("store: upsert publishing API key: %w", err)
-	}
-	return nil
-}
-
-func (s *PostgresStore) FindPublishingAPIKeys() []PublishingAPIKey {
-	keys, err := s.FindPublishingAPIKeysWithError()
-	if err != nil {
-		return nil
-	}
-	return keys
-}
-
 func (s *PostgresStore) FindPublishingAPIKeysWithError() ([]PublishingAPIKey, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -303,7 +268,7 @@ const activeModelRegistryQuery = `
 	JOIN model_versions mv ON mv.id = mav.model_version_id
 	WHERE mr.status IN ('active', 'beta') AND mv.status = 'ready'`
 
-func scanModelRegistryRecord(row scanner) (*ModelRegistryRecord, error) {
+func scanModelRegistryRecord(row rowScanner) (*ModelRegistryRecord, error) {
 	var rec ModelRegistryRecord
 	var version ModelVersion
 	var entryRuntimeParameters, entryMetadata, versionMetadata []byte

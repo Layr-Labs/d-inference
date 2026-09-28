@@ -10,6 +10,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 type predictiveAdmissionObservation struct {
@@ -159,7 +160,7 @@ func TestSoftPredictiveAdmissionDeadlineRefusalKeepsOriginalClock(t *testing.T) 
 	want := map[string]int64{first.requestID: first.wireMS, second.requestID: second.wireMS}
 	until := time.Now().Add(3 * time.Second)
 	for len(want) > 0 && time.Now().Before(until) {
-		for _, rec := range memory.RequestProfilesSince(time.Time{}) {
+		for _, rec := range memory.RequestProfilesSinceFiltered(time.Time{}, store.RequestProfileFilter{}) {
 			budget, ok := want[rec.RequestID]
 			if !ok {
 				continue

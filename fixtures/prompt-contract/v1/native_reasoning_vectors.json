@@ -1,0 +1,842 @@
+[
+  {
+    "name": "qwen4_exp-required-true",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": "required",
+      "reasoning": {
+        "enabled": true,
+        "effort": "low"
+      },
+      "preserve_thinking": true
+    },
+    "additional_context": {
+      "reasoning_effort": "low",
+      "enable_thinking": true,
+      "preserve_thinking": true
+    }
+  },
+  {
+    "name": "qwen4_exp-required-false",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": "required",
+      "reasoning": {
+        "enabled": false,
+        "effort": "low"
+      },
+      "preserve_thinking": true
+    },
+    "additional_context": {
+      "reasoning_effort": "low",
+      "enable_thinking": false,
+      "preserve_thinking": true
+    }
+  },
+  {
+    "name": "qwen4_exp-named-true",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": {
+        "type": "function",
+        "function": {
+          "name": "weather"
+        }
+      },
+      "reasoning": {
+        "enabled": true,
+        "effort": "low"
+      },
+      "preserve_thinking": true
+    },
+    "additional_context": {
+      "reasoning_effort": "low",
+      "enable_thinking": true,
+      "preserve_thinking": true
+    }
+  },
+  {
+    "name": "qwen4_exp-named-false",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": {
+        "type": "function",
+        "function": {
+          "name": "weather"
+        }
+      },
+      "reasoning": {
+        "enabled": false,
+        "effort": "low"
+      },
+      "preserve_thinking": true
+    },
+    "additional_context": {
+      "reasoning_effort": "low",
+      "enable_thinking": false,
+      "preserve_thinking": true
+    }
+  },
+  {
+    "name": "qwen4_exp_text-required-true",
+    "model_type": "qwen4_exp_text",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": "required",
+      "reasoning": {
+        "enabled": true,
+        "effort": "low"
+      },
+      "preserve_thinking": true
+    },
+    "additional_context": {
+      "reasoning_effort": "low",
+      "enable_thinking": true,
+      "preserve_thinking": true
+    }
+  },
+  {
+    "name": "qwen4_exp_text-required-false",
+    "model_type": "qwen4_exp_text",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": "required",
+      "reasoning": {
+        "enabled": false,
+        "effort": "low"
+      },
+      "preserve_thinking": true
+    },
+    "additional_context": {
+      "reasoning_effort": "low",
+      "enable_thinking": false,
+      "preserve_thinking": true
+    }
+  },
+  {
+    "name": "qwen4_exp_text-named-true",
+    "model_type": "qwen4_exp_text",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": {
+        "type": "function",
+        "function": {
+          "name": "weather"
+        }
+      },
+      "reasoning": {
+        "enabled": true,
+        "effort": "low"
+      },
+      "preserve_thinking": true
+    },
+    "additional_context": {
+      "reasoning_effort": "low",
+      "enable_thinking": true,
+      "preserve_thinking": true
+    }
+  },
+  {
+    "name": "qwen4_exp_text-named-false",
+    "model_type": "qwen4_exp_text",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": {
+        "type": "function",
+        "function": {
+          "name": "weather"
+        }
+      },
+      "reasoning": {
+        "enabled": false,
+        "effort": "low"
+      },
+      "preserve_thinking": true
+    },
+    "additional_context": {
+      "reasoning_effort": "low",
+      "enable_thinking": false,
+      "preserve_thinking": true
+    }
+  },
+  {
+    "name": "nested-low-beats-raw-none",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": "low"
+      },
+      "reasoning_effort": "none"
+    },
+    "additional_context": {
+      "reasoning_effort": "low"
+    }
+  },
+  {
+    "name": "nested-none-beats-raw-low",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": "none"
+      },
+      "reasoning_effort": "low"
+    },
+    "additional_context": {
+      "reasoning_effort": "none",
+      "enable_thinking": false
+    }
+  },
+  {
+    "name": "nested-null-falls-back",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": null
+      },
+      "reasoning_effort": " low "
+    },
+    "additional_context": {
+      "reasoning_effort": "low"
+    }
+  },
+  {
+    "name": "native-high-rejected",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": "high"
+      }
+    },
+    "error": true
+  },
+  {
+    "name": "native-minimal-rejected",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": "minimal"
+      }
+    },
+    "error": true
+  },
+  {
+    "name": "native-enabled-false-precedence",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "enabled": false,
+        "effort": "high"
+      }
+    },
+    "additional_context": {
+      "reasoning_effort": "high",
+      "enable_thinking": false
+    }
+  },
+  {
+    "name": "native-raw-false-precedence",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": "high"
+      },
+      "enable_thinking": false
+    },
+    "additional_context": {
+      "reasoning_effort": "high",
+      "enable_thinking": false
+    }
+  },
+  {
+    "name": "typed-effort-invalid-number",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": 2
+      }
+    },
+    "error": true
+  },
+  {
+    "name": "typed-effort-invalid-bool",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": false
+      }
+    },
+    "error": true
+  },
+  {
+    "name": "typed-effort-invalid-object",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": {}
+      }
+    },
+    "error": true
+  },
+  {
+    "name": "native-effort-empty-rejected",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": ""
+      }
+    },
+    "error": true
+  },
+  {
+    "name": "native-effort-space-rejected",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": " low "
+      }
+    },
+    "error": true
+  },
+  {
+    "name": "null-tool-choice-is-auto",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": null,
+      "reasoning": {
+        "enabled": true
+      }
+    },
+    "additional_context": {
+      "enable_thinking": true
+    }
+  },
+  {
+    "name": "legacy-required-stays-off",
+    "model_type": "qwen3_5",
+    "request": {
+      "model": "qwen3.5-35b-a3b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": "required",
+      "reasoning": {
+        "enabled": true,
+        "effort": "low"
+      }
+    },
+    "additional_context": {
+      "reasoning_effort": "low",
+      "enable_thinking": false
+    }
+  },
+  {
+    "name": "native-alias-not-owned-effort-unrestricted",
+    "model_type": "qwen4_exp",
+    "request": {
+      "model": "qwen3.8-custom",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": "required",
+      "reasoning": {
+        "enabled": true,
+        "effort": "high"
+      }
+    },
+    "additional_context": {
+      "reasoning_effort": "high",
+      "enable_thinking": true
+    }
+  },
+  {
+    "name": "harmony-nested-high-remains-medium",
+    "model_type": "gpt_oss",
+    "request": {
+      "model": "gpt-oss-20b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "reasoning": {
+        "effort": "high"
+      },
+      "reasoning_effort": "low"
+    },
+    "additional_context": {
+      "reasoning_effort": "medium"
+    }
+  },
+  {
+    "name": "nemotron-required-preserves-on",
+    "model_type": "nemotron_h",
+    "request": {
+      "model": "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Please call weather."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "tool_choice": "required",
+      "reasoning": {
+        "enabled": true,
+        "effort": "low"
+      }
+    },
+    "additional_context": {
+      "reasoning_effort": "low",
+      "enable_thinking": true
+    }
+  }
+]

@@ -32,6 +32,7 @@ func TestToolNoncomplianceOutcomePreservesReason(t *testing.T) {
 		StatusCode:  422,
 		Error:       "model did not emit the required tool call",
 		ErrorReason: "tool_noncompliance",
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 	if out.ErrorReason != errorReasonToolNoncompliance {
 		t.Fatalf("reason = %q, want %q on the route row", out.ErrorReason, errorReasonToolNoncompliance)
@@ -80,6 +81,7 @@ func TestHandleInferenceError_ToolNoncomplianceSkipsRecordJobFailure(t *testing.
 			msg: protocol.InferenceErrorMessage{
 				StatusCode: 422, Error: "model did not emit the required tool call",
 				ErrorReason: "tool_noncompliance",
+				FailureCode: protocol.FailureCodeGenerationFailure,
 			},
 			wantFailure: false,
 		},
@@ -88,6 +90,7 @@ func TestHandleInferenceError_ToolNoncomplianceSkipsRecordJobFailure(t *testing.
 			msg: protocol.InferenceErrorMessage{
 				StatusCode: 422, Error: "model emitted a tool call outside tool_choice",
 				ErrorReason: " Tool-Noncompliance ",
+				FailureCode: protocol.FailureCodeGenerationFailure,
 			},
 			wantFailure: false,
 		},
@@ -95,6 +98,7 @@ func TestHandleInferenceError_ToolNoncomplianceSkipsRecordJobFailure(t *testing.
 			name: "plain 422 with no structured reason still records a failure",
 			msg: protocol.InferenceErrorMessage{
 				StatusCode: 422, Error: "model output was not valid JSON",
+				FailureCode: protocol.FailureCodeGenerationFailure,
 			},
 			wantFailure: true,
 		},

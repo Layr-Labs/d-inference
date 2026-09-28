@@ -23,6 +23,17 @@ enum LaunchctlControl {
     /// pipes sequentially can deadlock once the unread one fills.
     @discardableResult
     static func run(_ arguments: [String], captureStdout: Bool = false, captureStderr: Bool = false) -> Output {
+        do {
+            return try runThrowing(arguments, captureStdout: captureStdout, captureStderr: captureStderr)
+        } catch {
+            return Output(status: -1, stdout: "", stderr: "could not run launchctl: \(error.localizedDescription)")
+        }
+    }
+
+    /// Variant for lifecycle callers that preserve the original spawn error.
+    static func runThrowing(
+        _ arguments: [String], captureStdout: Bool = false, captureStderr: Bool = false
+    ) throws -> Output {
         precondition(!(captureStdout && captureStderr), "capture at most one stream")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -33,11 +44,7 @@ enum LaunchctlControl {
         process.standardError = errPipe ?? FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
 
-        do {
-            try process.run()
-        } catch {
-            return Output(status: -1, stdout: "", stderr: "could not run launchctl: \(error.localizedDescription)")
-        }
+        try process.run()
         let outData = outPipe?.fileHandleForReading.readDataToEndOfFile() ?? Data()
         let errData = errPipe?.fileHandleForReading.readDataToEndOfFile() ?? Data()
         process.waitUntilExit()

@@ -163,9 +163,10 @@ func defaultSamplingParameters() []string {
 // USD pricing block. input_cache_read is the rate cached prompt tokens
 // actually settle at (payments.Rates.CacheRead) — the same figure
 // handleCompleteAt bills — so OpenRouter's cost for a request with
-// prompt_tokens_details.cached_tokens equals the debit. Caching is
-// provider-initiated and unbilled as a write, so no input_cache_write SKU is
-// declared (OpenRouter: omit SKUs you don't bill).
+// prompt_tokens_details.cached_tokens equals the debit. This is OpenRouter's
+// legacy flat provider format, which has no cache-write key; caching is
+// provider-initiated and writes are unbilled, so none is needed (the current
+// v2 format would express this rate as an implicit cached_prompt SKU).
 func buildModelPricing(rates payments.Rates) *types.ModelPricing {
 	return &types.ModelPricing{
 		Prompt:         payments.FormatPerTokenUSD(rates.Input),

@@ -223,21 +223,57 @@ func TestCostFloorsEachTermTowardsZero(t *testing.T) {
 func TestCacheReadDiscount(t *testing.T) {
 	rates := Rates{Input: 300_000, Output: 1_200_000, CacheRead: 30_000}
 	// 8,000 cached tokens: 2,400 at the input rate vs 240 at the cache rate.
-	if got := rates.CacheReadDiscount(Usage{PromptTokens: 10_000, CachedTokens: 8_000}); got != 2_160 {
+	if got := CacheReadDiscount(rates.Cost, Usage{PromptTokens: 10_000, CachedTokens: 8_000}); got != 2_160 {
 		t.Fatalf("discount = %d, want 2160", got)
 	}
-	if got := rates.CacheReadDiscount(Usage{PromptTokens: 10_000}); got != 0 {
+	if got := CacheReadDiscount(rates.Cost, Usage{PromptTokens: 10_000}); got != 0 {
 		t.Fatalf("no cache hit discount = %d, want 0", got)
 	}
 	// Clamped like Cost: cached beyond the prompt counts only up to the prompt.
-	if got := rates.CacheReadDiscount(Usage{PromptTokens: 100, CachedTokens: 1_000}); got != 30-3 {
+	if got := CacheReadDiscount(rates.Cost, Usage{PromptTokens: 100, CachedTokens: 1_000}); got != 30-3 {
 		t.Fatalf("over-reported discount = %d, want 27", got)
 	}
 	// Cost + discount == the cold cost of the same request.
 	u := Usage{PromptTokens: 10_000, CachedTokens: 8_000, CompletionTokens: 500}
 	cold := rates.Cost(Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens})
-	if rates.Cost(u)+rates.CacheReadDiscount(u) != cold {
-		t.Fatalf("cost %d + discount %d != cold %d", rates.Cost(u), rates.CacheReadDiscount(u), cold)
+	if rates.Cost(u)+CacheReadDiscount(rates.Cost, u) != cold {
+		t.Fatalf("cost %d + discount %d != cold %d", rates.Cost(u), CacheReadDiscount(rates.Cost, u), cold)
+	}
+	// Below the per-request minimum the direct-consumer bill is the minimum
+	// either way, so the cache hit saved the consumer nothing.
+	small := Usage{PromptTokens: 200, CachedTokens: 150, CompletionTokens: 10}
+	if rates.Cost(small) >= MinimumCharge() || CacheReadDiscount(rates.Cost, small) == 0 {
+		t.Fatalf("fixture must sit below the minimum with a nonzero per-token discount")
+	}
+	if got := CacheReadDiscount(rates.CostWithMinimum, small); got != 0 {
+		t.Fatalf("discount under the minimum = %d, want 0", got)
+	}
+	// Straddling the minimum: only the part above the floor was saved.
+	mid := Usage{PromptTokens: 1_000, CachedTokens: 900, CompletionTokens: 0}
+	if got, want := CacheReadDiscount(rates.CostWithMinimum, mid), rates.CostWithMinimum(Usage{PromptTokens: 1_000})-MinimumCharge(); got != want {
+		t.Fatalf("straddling discount = %d, want %d", got, want)
+	}
+}
+
+func TestDefaultCacheReadPriceNeverWraps(t *testing.T) {
+	cases := []struct{ in, want int64 }{
+		{0, 0},
+		{-50_000, 0},
+		{1, 0},
+		{3, 1},
+		{50_000, 25_000},
+		{12_345, 6_172},
+		{math.MaxInt64 / 50, (math.MaxInt64 / 50) / 2},
+		{math.MaxInt64/50 + 1, (math.MaxInt64/50 + 1) / 2},
+		{math.MaxInt64, math.MaxInt64 / 2},
+	}
+	for _, c := range cases {
+		if got := DefaultCacheReadPrice(c.in); got != c.want {
+			t.Errorf("DefaultCacheReadPrice(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+	if r := RatesFor(store.ModelPrice{InputPrice: math.MaxInt64, OutputPrice: 1}, true); r.CacheRead < 0 || r.CacheRead > r.Input {
+		t.Fatalf("derived cache-read %d outside [0, input %d]", r.CacheRead, r.Input)
 	}
 }
 

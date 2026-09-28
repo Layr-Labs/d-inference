@@ -36,16 +36,14 @@ type ProviderSpec struct {
 	System protocol.SystemMetrics
 	// GPUMemoryActiveGB / GPUMemoryPeakGB / FreeForLoadGB are the
 	// BackendCapacity-level fields; FreeForLoadGB is nil when the snapshot
-	// carried 0 (legacy provider or unreported), mirroring the wire pointer.
+	// omitted the value (legacy provider or unreported), mirroring the wire pointer.
 	GPUMemoryActiveGB float64
 	GPUMemoryPeakGB   float64
 	FreeForLoadGB     *float64
 	// Version is the provider binary version the snapshot recorded
 	// (fleet_snapshots.provider_version, already folded by
-	// registry.ProviderVersionFold). Build applies it to Provider.Version, the
-	// field the capability version floors (tools) compare against. "" when
-	// the export predates the column: tool-bearing arrivals are then rejected,
-	// which is honest — the snapshot does not know the floor was met.
+	// registry.ProviderVersionFold). Build applies it to Provider.Version for
+	// the version-dependent gates. "" when the export predates the column.
 	Version string
 	// ModelFlags carries, per advertised model id, the capability flags the
 	// slot row recorded for it. A model with no entry (a hardware-override
@@ -71,8 +69,8 @@ type ModelFlags struct {
 // for the reader's benefit, but the loader only reconstructs the provider and
 // slot state the preflight classifier consumes; a replay that needs fault
 // state must apply it itself. Capability gating IS rebuilt: the provider
-// version (tools floor) and the per-model vision / template-render flags come
-// from the row when the export carries them.
+// version and the per-model vision / template-render flags come from the row
+// when the export carries them.
 type FleetSpec struct {
 	// SampledAt is the tick the fleet was reconstructed from.
 	SampledAt time.Time
@@ -101,6 +99,7 @@ func LoadFleetNDJSON(r io.Reader, at time.Time, hardware map[string]HardwareSpec
 		return FleetSpec{}, errors.New("routingsim: nil snapshots reader")
 	}
 	var rows []store.FleetSnapshotRow
+	var tick time.Time
 	err := forEachNDJSONLine(r, func(lineNo int, line []byte) error {
 		var row store.FleetSnapshotRow
 		if err := json.Unmarshal(line, &row); err != nil {
@@ -109,7 +108,14 @@ func LoadFleetNDJSON(r io.Reader, at time.Time, hardware map[string]HardwareSpec
 		if row.SampledAt.IsZero() {
 			return fmt.Errorf("routingsim: snapshots ndjson line %d: missing sampled_at", lineNo)
 		}
-		rows = append(rows, row)
+		// Retain one tick while still validating every exported row. Input
+		// order within the selected tick determines duplicate-slot precedence.
+		if tick.IsZero() || nearerTick(row.SampledAt, tick, at) {
+			tick, rows = row.SampledAt, nil
+		}
+		if row.SampledAt.Equal(tick) {
+			rows = append(rows, row)
+		}
 		return nil
 	})
 	if err != nil {
@@ -118,33 +124,17 @@ func LoadFleetNDJSON(r io.Reader, at time.Time, hardware map[string]HardwareSpec
 	if len(rows) == 0 {
 		return FleetSpec{}, errors.New("routingsim: snapshots ndjson has no rows")
 	}
-	tick := nearestTick(rows, at)
 	return fleetSpecFromRows(rows, tick, hardware), nil
 }
 
-// nearestTick returns the sampled_at nearest to at among rows (earlier wins a
-// tie); the latest tick when at is zero.
-func nearestTick(rows []store.FleetSnapshotRow, at time.Time) time.Time {
-	var best time.Time
-	var bestDist time.Duration
-	for _, row := range rows {
-		t := row.SampledAt
-		if best.IsZero() {
-			best, bestDist = t, absDuration(t.Sub(at))
-			continue
-		}
-		if at.IsZero() {
-			if t.After(best) {
-				best = t
-			}
-			continue
-		}
-		d := absDuration(t.Sub(at))
-		if d < bestDist || (d == bestDist && t.Before(best)) {
-			best, bestDist = t, d
-		}
+// nearerTick prefers the latest tick when at is zero, otherwise the nearest
+// tick with earlier timestamps winning ties.
+func nearerTick(candidate, current, at time.Time) bool {
+	if at.IsZero() {
+		return candidate.After(current)
 	}
-	return best
+	distance, bestDistance := absDuration(candidate.Sub(at)), absDuration(current.Sub(at))
+	return distance < bestDistance || (distance == bestDistance && candidate.Before(current))
 }
 
 func absDuration(d time.Duration) time.Duration {
@@ -346,8 +336,8 @@ func (f FleetSpec) Build(logger *slog.Logger) (*registry.Registry, error) {
 		armSimProvider(p)
 		// Register does not read the register message's version; the api layer
 		// stores it on the provider under its lock (api/provider.go, "Store
-		// provider version"). Same path here so the tools version floor
-		// (registry.providerMeetsTraitFloorsLocked) sees what the snapshot saw.
+		// provider version"). Same path here so version-dependent routing
+		// sees what the snapshot saw.
 		if ps.Version != "" {
 			p.Mu().Lock()
 			p.Version = ps.Version

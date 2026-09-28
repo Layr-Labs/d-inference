@@ -84,9 +84,15 @@ type Usage struct {
 }
 
 // DefaultCacheReadPrice derives the cache-read rate of a price row that sets
-// none: the input price less DefaultCacheReadDiscountPercent.
+// none: the input price less DefaultCacheReadDiscountPercent, floored. The
+// product is split around /100 so an input price near math.MaxInt64 cannot
+// wrap into a negative rate; a non-positive input price derives 0.
 func DefaultCacheReadPrice(inputPerMillion int64) int64 {
-	return inputPerMillion * (100 - DefaultCacheReadDiscountPercent) / 100
+	if inputPerMillion <= 0 {
+		return 0
+	}
+	const keep = 100 - DefaultCacheReadDiscountPercent
+	return inputPerMillion/100*keep + inputPerMillion%100*keep/100
 }
 
 // DefaultRates are the rates of a model with no configured price row.
@@ -148,11 +154,15 @@ func (r Rates) CostWithMinimum(u Usage) int64 {
 	return max(r.Cost(u), minimumChargeMicroUSD)
 }
 
-// CacheReadDiscount is how much less Cost charges than it would with every
-// prompt token at Input — the revenue effect of the cache hit, in micro-USD.
-func (r Rates) CacheReadDiscount(u Usage) int64 {
-	cached := min(max(u.CachedTokens, 0), max(u.PromptTokens, 0))
-	return max(termCost(cached, r.Input)-termCost(cached, r.CacheRead), 0)
+// CacheReadDiscount is how much less cost charges for u than for the same
+// request with every prompt token at the input rate — the revenue effect of
+// the cache hit, in micro-USD. cost is the settlement function actually used
+// (Rates.Cost or Rates.CostWithMinimum), so a request whose cold and warm
+// costs both sit at the per-request minimum reports no discount.
+func CacheReadDiscount(cost func(Usage) int64, u Usage) int64 {
+	cold := u
+	cold.CachedTokens = 0
+	return max(cost(cold)-cost(u), 0)
 }
 
 // termCost is tokens × ratePerMillion / 1_000_000 floored to whole micro-USD,

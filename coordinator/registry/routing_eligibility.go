@@ -29,10 +29,10 @@ import "time"
 //   - status is not offline/untrusted
 //   - verified identity's durable state restoration has completed
 //   - private-only admission (a private-only box is excluded unless allowPrivate)
-//   - hardware-trust floor (TrustLevel >= minTrust)
+//   - legacy hardware-trust floor, or current qualified App Attest lease
 //   - runtime verified
 //   - private-text (E2E) support
-//   - attestation-challenge freshness
+//   - current legacy challenge, or current App Attest lease
 //
 // minTrust is the trust floor to enforce; allowPrivate admits an otherwise
 // private-only machine. Callers relax BOTH (minTrust=TrustNone, allowPrivate=
@@ -54,7 +54,7 @@ func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustL
 	if p.Status == StatusOffline {
 		return false, GateOffline
 	}
-	if p.Status == StatusUntrusted {
+	if p.Status == StatusUntrusted || p.appAttestSecurityDenied {
 		return false, GateUntrusted
 	}
 	if providerStateRestoreRequiredLocked(p) {
@@ -63,7 +63,7 @@ func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustL
 	if p.PrivateOnly && !allowPrivate {
 		return false, GatePrivateOnly
 	}
-	if trustRank(p.TrustLevel) < trustRank(minTrust) {
+	if !r.providerTrustMeetsMinimumAtLocked(p, minTrust, now) {
 		return false, GateTrustFloor
 	}
 	if !p.RuntimeVerified {
@@ -72,7 +72,7 @@ func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustL
 	if !r.providerSupportsPrivateTextAtLocked(p, now) {
 		return false, GatePrivateText
 	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+	if !r.providerChallengeFreshAtLocked(p, now) {
 		return false, GateChallengeStale
 	}
 	return true, GateReasonCount

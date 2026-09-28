@@ -32,8 +32,8 @@ func TestMemoryGetMDAChainBySerial_NotShadowedByNewerEmptyRow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The plain serial index now points at the newer empty row...
-	if rec, _ := st.GetProviderBySerial(ctx, "SER-1"); rec == nil || len(rec.MDACertChain) != 0 {
+	// The newest record for the serial is now the empty newer row...
+	if rec, _ := st.GetProviderForRestore(ctx, "SER-1", "", nil); rec == nil || len(rec.MDACertChain) != 0 {
 		t.Fatalf("precondition: expected serial index to point at the empty newer row")
 	}
 	// ...but the chain-aware lookup recovers the prior chain.
@@ -127,9 +127,9 @@ func TestMemoryDeleteProvidersBySerial(t *testing.T) {
 	if rep, _ := st.GetReputation(ctx, "a"); rep != nil {
 		t.Fatal("reputation row for deleted provider still present")
 	}
-	// Serial index for SER must be gone; a fresh insert under SER must succeed.
-	if rec, _ := st.GetProviderBySerial(ctx, "SER"); rec != nil {
-		t.Fatal("serial index for SER not cleaned up")
+	// No record for SER may remain.
+	if rec, _ := st.GetProviderForRestore(ctx, "SER", "", nil); rec != nil {
+		t.Fatal("record for SER still present after delete")
 	}
 }
 
@@ -172,7 +172,7 @@ func TestMemoryDeleteProvidersBySerial_WrongOwnerNoOp(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("rows_removed = %d, want 0 for non-owner", n)
 	}
-	if rec, _ := st.GetProviderBySerial(ctx, "SER"); rec == nil {
+	if rec, _ := st.GetProviderForRestore(ctx, "SER", "", nil); rec == nil {
 		t.Fatal("record deleted by non-owner")
 	}
 }

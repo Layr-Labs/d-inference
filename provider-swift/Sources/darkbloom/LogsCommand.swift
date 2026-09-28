@@ -147,21 +147,7 @@ struct Logs: AsyncParsableCommand {
     /// infrastructure sets SIG_IGN on SIGINT, and SIG_IGN is preserved
     /// across execv — causing the child to ignore Ctrl-C.
     private func execLog(argv: [String]) throws {
-        let cArgs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) } + [nil]
-        defer { cArgs.forEach { free($0) } }
-
-        restoreDefaultSignalHandling()
-
-        let rc = "/usr/bin/log".withCString { execPath in
-            cArgs.withUnsafeBufferPointer { argvBuf -> Int32 in
-                execv(execPath, argvBuf.baseAddress!)
-            }
-        }
-        if rc == -1 {
-            let errnoMsg = String(cString: strerror(errno))
-            printError("failed to exec log: \(errnoMsg)")
-            throw ExitCode.failure
-        }
+        try execTool("log", argv: argv)
     }
 
     // MARK: - Legacy File Mode
@@ -197,19 +183,23 @@ struct Logs: AsyncParsableCommand {
             "-n", "\(lines)",
             path.path,
         ]
+        try execTool("tail", argv: argv)
+    }
+
+    private func execTool(_ name: String, argv: [String]) throws {
         let cArgs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) } + [nil]
         defer { cArgs.forEach { free($0) } }
 
         restoreDefaultSignalHandling()
 
-        let rc = "/usr/bin/tail".withCString { execPath in
+        let rc = "/usr/bin/\(name)".withCString { execPath in
             cArgs.withUnsafeBufferPointer { argvBuf -> Int32 in
                 execv(execPath, argvBuf.baseAddress!)
             }
         }
         if rc == -1 {
             let errnoMsg = String(cString: strerror(errno))
-            printError("failed to exec tail: \(errnoMsg)")
+            printError("failed to exec \(name): \(errnoMsg)")
             throw ExitCode.failure
         }
     }

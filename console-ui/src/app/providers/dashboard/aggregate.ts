@@ -147,15 +147,6 @@ export function fleetMaxDecodeTps(providers: MyProvider[]): number {
   return max;
 }
 
-/** Aggregate live decode throughput across connected machines. */
-export function fleetDecodeTps(providers: MyProvider[]): number {
-  let sum = 0;
-  for (const p of providers) {
-    if (typeof p.decode_tps === "number" && Number.isFinite(p.decode_tps)) sum += p.decode_tps;
-  }
-  return sum;
-}
-
 /** Count machines that are currently connected (online or serving). */
 export function onlineCount(providers: MyProvider[]): number {
   return providers.filter((p) => p.status === "online" || p.status === "serving").length;

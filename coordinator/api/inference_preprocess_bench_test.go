@@ -218,7 +218,6 @@ func benchPreprocess(b *testing.B, srv *Server, body []byte) {
 		fb.markDirty()
 	}
 	shape := introspectRequest(parsed)
-	requiresVision := shape.requiresVision()
 	hasTools := shape.hasTools
 	validatedPolicy, err := validateParsedToolConstraintPolicy(
 		constraintView(parsed, prelude.originalTools))
@@ -269,7 +268,7 @@ func benchPreprocess(b *testing.B, srv *Server, body []byte) {
 	bodies := newProviderBodyMemo(func(candidateModel string) ([]byte, error) {
 		return srv.candidateProviderBody(parsed, runtimeDefaults, candidateModel,
 			false, reasoningProvided, false)
-	}, hasTools, requiresVision)
+	}, hasTools)
 	bodies.seed(model, providerBody)
 	// handleChatCompletions: routingTraits := routingTraitsForModel(model).
 	bodies.traits(model)

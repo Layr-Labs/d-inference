@@ -21,9 +21,23 @@ func (r *Registry) cacheRoutingHints(
 	model string, plan CachePlan, tracker *cacheRoutingTracker,
 	routeKey []byte, mode string, now time.Time,
 ) map[string]cacheRoutingHint {
+	hints, _ := r.cacheRoutingHintsWithObservation(model, plan, tracker, routeKey, mode, now)
+	return hints
+}
+
+func (r *Registry) cacheRoutingHintsWithObservation(
+	model string, plan CachePlan, tracker *cacheRoutingTracker,
+	routeKey []byte, mode string, now time.Time,
+) (map[string]cacheRoutingHint, CacheOpportunity) {
+	observation := CacheOpportunity{}
+	if tracker == nil || plan.generation != tracker.generation || tracker.generation.revoked.Load() || mode != CacheRoutingOn || !plan.present() {
+		return nil, observation
+	}
+	observation.Evaluated = true
+	observation.RepeatedPrefixTokens = plan.RepeatedPrefixTokens
 	matches := tracker.matchingHolders(plan, routeKey, mode, now)
 	if len(matches) == 0 {
-		return nil
+		return nil, observation
 	}
 	capabilities := make(map[string]cacheRoutingCapability)
 	r.mu.RLock()
@@ -48,19 +62,22 @@ func (r *Registry) cacheRoutingHints(
 		}
 		capabilities[providerID] = candidate
 	}
+	observation.MatchingHolders = len(capabilities)
 	// A proof quarantine retains the advertised capability but rejects it for
 	// routing. Later changes are fenced again by the revision at selection and
 	// reservation; the rejected-capability check must not be skipped here.
 	for providerID, candidate := range capabilities {
-		if tracker.capabilityRejected(providerID, model, "ssd", candidate.Capability) {
+		if tracker.capabilityRejected(providerID, model, "ssd", candidate.Capability, now) {
 			candidate.Capability.Enabled = false
 		}
-		if tracker.capabilityRejected(providerID, model, "memory", candidate.MemoryCapability) {
+		if tracker.capabilityRejected(providerID, model, "memory", candidate.MemoryCapability, now) {
 			candidate.MemoryCapability.Enabled = false
 		}
 		capabilities[providerID] = candidate
 	}
-	return cacheHintsForMatches(plan, matches, capabilities)
+	hints := cacheHintsForMatches(plan, matches, capabilities)
+	observation.ValidHolders = len(hints)
+	return hints, observation
 }
 
 // matchingHolders computes one keyed digest per request boundary, regardless

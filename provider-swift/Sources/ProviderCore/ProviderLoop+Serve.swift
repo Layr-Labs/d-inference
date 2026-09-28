@@ -19,6 +19,9 @@ extension ProviderLoop {
     // MARK: - Main Run Loop
 
     public func run() async throws {
+        startLifecycleMonitor()
+        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(); cancelAppAttestStallMonitor() }
+        if servingDrain.refusing { return }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
         // reached only the coordinator-serving modes.
@@ -67,12 +70,21 @@ extension ProviderLoop {
 
         // 1. Apply security hardening
         try await applySecurityHardening()
+        if Task.isCancelled || servingDrain.refusing {
+            await shutdownBeforeRegistration()
+            return
+        }
 
         // MTP catalog metadata is process-local. Give it one short, owned
         // prewarm before either startup preloads or the unified local endpoint
         // can perform the first normal cold target load. This never downloads
         // assistant bytes and fails open on timeout.
         await prewarmSpecDecCatalog()
+        if Task.isCancelled || servingDrain.refusing {
+            await shutdownBeforeRegistration()
+            return
+        }
+        startMTPUpgradeMonitor()
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. It starts after the bounded metadata prewarm, but still before
@@ -106,6 +118,10 @@ extension ProviderLoop {
         let preloadLivenessRefresh = startPreloadLivenessRefresh()
         await runStartupPreloadGate()
         preloadLivenessRefresh.cancel()
+        if Task.isCancelled || servingDrain.refusing {
+            await shutdownBeforeRegistration()
+            return
+        }
 
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
@@ -130,7 +146,7 @@ extension ProviderLoop {
         #if os(macOS)
         apnsDeviceToken = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 10)
         if apnsDeviceToken == nil {
-            logger.warning("no APNs device token (no GUI session / not push-provisioned) — registering un-attested")
+            logger.warning("no APNs device token — legacy code verification unavailable; awaiting coordinator authorization")
         }
         #endif
 
@@ -146,7 +162,6 @@ extension ProviderLoop {
             backendName: "mlx-swift",
             heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
             publicKey: keyPair.publicKeyBase64,
-            walletAddress: nil,
             attestation: nil,
             registrationAttestation: registrationAttestation,
             authToken: loopConfig.authToken,
@@ -160,6 +175,12 @@ extension ProviderLoop {
             idleUnloadMins: loopConfig.config.backend.idleTimeoutMins
         )
 
+        // A termination received during the APNs/startup awaits can already
+        // have drained a process that has no coordinator connection yet.
+        if Task.isCancelled || servingDrain.refusing {
+            await shutdownBeforeRegistration()
+            return
+        }
         // 4. Create coordinator client and start connection
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
@@ -172,7 +193,16 @@ extension ProviderLoop {
         // already have refreshed a hash, and registration must carry it.
         await coordinator.updateModelWeightHashes(liveModelHashes)
 
+        if Task.isCancelled || servingDrain.refusing {
+            await coordinator.shutdown()
+            await shutdownBeforeRegistration()
+            return
+        }
         let (events, sendFn) = await coordinator.start()
+        if Task.isCancelled || servingDrain.refusing {
+            await shutdownBeforeRegistration()
+            return
+        }
         // Wire the direct inference-chunk fast path (Optimizations 1-3) alongside
         // the control path. `chunkSender` is a nonisolated handle on the actor;
         // its connection sink is (re)bound per session inside the client.
@@ -183,11 +213,18 @@ extension ProviderLoop {
         // replying over THIS WebSocket. The app delegate delivers pushes via the
         // bridge; we hop into the actor to use K + the signer + this send handle.
         #if os(macOS)
+        let pushHistory = apnsPushHistory
+        APNsBridge.shared.trackDeviceToken(in: pushHistory)
         APNsBridge.shared.setPushHandler { [weak self] userInfo in
+            // Receipt is recorded before any parsing or validation so doctor
+            // and `push_history` can tell "never delivered" from "not answered".
+            pushHistory.recordReceipt()
             // Extract the Sendable EncryptedPayload synchronously here so the
             // non-Sendable [String: Any] never crosses into the actor Task.
             guard let self, let challenge = ProviderLoop.extractCodeChallenge(userInfo) else { return }
-            Task { await self.handleCodeChallenge(challenge, send: send) }
+            // Only a push-delivered challenge counts as a push reply; resume
+            // challenges arrive over the WebSocket through the same handler.
+            Task { await self.handleCodeChallenge(challenge, send: send, onWritten: { pushHistory.recordReply() }) }
         }
 
         // If the device token wasn't ready at registration (APNs slow / GUI
@@ -199,7 +236,7 @@ extension ProviderLoop {
             Task {
                 if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
                     log.info("APNs device token arrived after registration — reconnecting to re-register with token")
-                    await coordinator.refreshAPNsToken(late)
+                    await self.refreshAPNsAfterDrain(late)
                 }
             }
         }
@@ -222,21 +259,28 @@ extension ProviderLoop {
 
         logger.info(.coordinatorClientStarted)
 
-        // 5. Process events. Cancellation is used by schedule enforcement
-        // and service shutdown; explicitly close the WebSocket so the stream
-        // unblocks instead of waiting for the next coordinator event.
-        await withTaskCancellationHandler {
+        // 5. The event reader outlives cancellation of the calling task.
+        // Lifecycle shutdown closes admission and drains accepted work plus
+        // terminal accounting before ending this stream.
+        coordinatorEventLoopStarted = true
+        let eventTask = Task {
             for await event in events {
                 switch event {
+                case .drainAck(let id):
+                    await coordinator.completeDrainAcknowledgement(id)
                 case .connected:
+                    clearConnectionAuthorization()
                     logger.info(.coordinatorConnected)
                     // The post-retirement reconnect's admission barrier
-                    // (see `fireRetirementReconnect`) lifts with the new
+                    // (see `requestPlannedReconnect`) lifts with the new
                     // session: the register it carried excluded every
                     // retired id, so routed work is safe to admit again.
-                    setRetirementReconnectBarrier(false)
+                    finishPlannedReconnect()
 
                 case .disconnected:
+                    clearConnectionAuthorization()
+                    modelSwitchTask?.cancel()
+                    cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
                     // will not route responses for a dead connection.
@@ -245,7 +289,7 @@ extension ProviderLoop {
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
-                    let cacheReceiptBoundaryMode,
+                    let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
                     let profile
@@ -258,6 +302,7 @@ extension ProviderLoop {
                         authenticatedCacheScope: cacheScope,
                         prefixCacheProtocol: prefixCacheProtocol,
                         cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
+                        cacheRepeatedPrefixTokens: cacheRepeatedPrefixTokens,
                         toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                         firstContentDeadline: firstContentDeadline,
                         receivedAt: receivedAt,
@@ -275,6 +320,9 @@ extension ProviderLoop {
                         send: send
                     )
 
+                case .appAttestShadow(let payload):
+                    handleAppAttestShadow(payload, send: send)
+
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)
 
@@ -288,7 +336,7 @@ extension ProviderLoop {
                     handleLoadModelRequest(modelId: modelId, send: send)
 
                 case .prefetchModel(let modelId, let priority):
-                    if isDrainingForUpdate {
+                    if isDraining {
                         sendDrainingPrefetchFailure(modelId: modelId, send: send)
                     } else {
                         staleDesiredPrefetches.remove(modelId)
@@ -296,27 +344,24 @@ extension ProviderLoop {
                     }
 
                 case .desiredModels(let entries):
-                    if isDrainingForUpdate {
-                        // Keep only the latest push (desired state is
-                        // declarative). A successful restart makes it moot —
-                        // registration receives fresh desired state — but an
-                        // aborted restart replays it via resumeServingAfterUpdate.
-                        deferredDesiredModels = entries
-                        logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
-                    } else {
-                        await reconcileDesiredModels(entries, send: send)
-                    }
+                    await handleDesiredModels(entries, send: send)
 
-                case .trustStatus(let trustLevel, let status, let reason):
-                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
+                case .trustStatus(let trustLevel, let status, let reason, let authorization):
+                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason,
+                                      authorization: authorization)
                 }
             }
+        }
+        await withTaskCancellationHandler {
+            await eventTask.value
         } onCancel: {
-            Task { await coordinator.shutdown() }
+            Task { _ = await self.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds) }
         }
 
+        clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        await cancelModelSwitchAndWait()
         // Quote path mirror (routing v2): a shutting-down provider quotes
         // `slot_state` rejections for the brief window the socket stays up.
         state.refusingNewWork = true
@@ -336,7 +381,11 @@ extension ProviderLoop {
         for task in desiredPrefetchRetryTasks.values { task.cancel() }
         desiredPrefetchRetryTasks.removeAll()
         desiredPrefetchRetryAttempts.removeAll()
+        let mtpUpgradeTask = mtpUpgradeMonitorTask
+        mtpUpgradeMonitorTask = nil
+        mtpUpgradeTask?.cancel()
         await specDecFunnel.shutdown()
+        await mtpUpgradeTask?.value
         // Cancel background prefetch downloads (no GPU slot, but they hold a
         // network connection and disk staging we want to release promptly).
         if let prefetchCoordinator {
@@ -400,32 +449,13 @@ extension ProviderLoop {
         // textBackendInprocess + textProxyDisabled: always true on the Swift
         //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
         //   proxy is involved.
-        // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
-        //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
-        //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
-        if let posture = securityPosture {
-            return PrivacyCapabilities(
-                textBackendInprocess: true,
-                textProxyDisabled: true,
-                pythonRuntimeLocked: false,
-                dangerousModulesBlocked: false,
-                sipEnabled: posture.sipEnabled,
-                antiDebugEnabled: posture.antiDebugEnabled,
-                coreDumpsDisabled: posture.coreDumpsDisabled,
-                envScrubbed: posture.envScrubbed
-            )
-        }
-
-        // Pre-hardening fallback (DEBUG builds, or hardening failed).
         return PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
-            pythonRuntimeLocked: false,
-            dangerousModulesBlocked: false,
-            sipEnabled: SecurityChecks.isSIPEnabled(),
-            antiDebugEnabled: false,
-            coreDumpsDisabled: false,
-            envScrubbed: false
+            sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
+            antiDebugEnabled: securityPosture?.antiDebugEnabled ?? false,
+            coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
+            envScrubbed: securityPosture?.envScrubbed ?? false
         )
     }
 
@@ -453,8 +483,6 @@ extension ProviderLoop {
         }
 
         return RuntimeHashes(
-            pythonHash: existing?.pythonHash,
-            runtimeHash: existing?.runtimeHash,
             templateHashes: templates
         )
     }

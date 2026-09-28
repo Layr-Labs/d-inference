@@ -89,25 +89,12 @@ public func sanitizeForJinja(_ value: Any?) -> Any? {
     // `[String: Any]` succeeds for both `[String: Any]` (self-check
     // fixtures) and `[String: any Sendable]` (runtime builders).
     if let dictionary = value as? [String: Any] {
-        var result: [String: Any] = [:]
-        for (key, element) in dictionary {
-            if let cleaned = sanitizeForJinja(element) {
-                result[key] = cleaned
-            }
-        }
-        return result
+        return dictionary.compactMapValues { sanitizeForJinja($0) }
     }
 
     // Recurse into arrays, dropping null elements and preserving order.
     if let array = value as? [Any] {
-        var result: [Any] = []
-        result.reserveCapacity(array.count)
-        for element in array {
-            if let cleaned = sanitizeForJinja(element) {
-                result.append(cleaned)
-            }
-        }
-        return result
+        return array.compactMap { sanitizeForJinja($0) }
     }
 
     // Non-null, non-container leaf (`String`, `NSNumber`, native `Bool` /

@@ -2,12 +2,14 @@ import Foundation
 
 /// Severity of a single diagnostic check, mirroring the operator-facing marker.
 public enum DiagnosticLevel: String, Sendable, Equatable, Codable {
+    case info
     case pass
     case warn
     case fail
 
     public var marker: String {
         switch self {
+        case .info: return "[INFO]"
         case .pass: return "[PASS]"
         case .warn: return "[WARN]"
         case .fail: return "[FAIL]"
@@ -22,6 +24,7 @@ public enum DiagnosticSection: Int, Sendable, Equatable, CaseIterable {
     case hardware
     case security
     case attestationKey
+    case appAttest
     case attestationReadiness
     case trust
     case traffic
@@ -35,6 +38,7 @@ public enum DiagnosticSection: Int, Sendable, Equatable, CaseIterable {
         case .hardware: return "HARDWARE & GPU"
         case .security: return "SECURITY POSTURE"
         case .attestationKey: return "ATTESTATION KEY (Secure Enclave)"
+        case .appAttest: return "APP ATTEST (local state on this Mac)"
         case .attestationReadiness: return "APNs CODE-IDENTITY READINESS   (can this box attest?)"
         case .trust: return "COORDINATOR TRUST   (why you are / aren't earning)"
         case .traffic: return "TRAFFIC READINESS   (can this box actually serve?)"

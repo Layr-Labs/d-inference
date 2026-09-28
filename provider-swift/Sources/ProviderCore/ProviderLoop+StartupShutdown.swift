@@ -1,0 +1,61 @@
+import Foundation
+import MLX
+
+extension ProviderLoop {
+    /// Before the coordinator exists, the ordinary event-loop teardown has no
+    /// chance to run. Coalesce signal and schedule cancellation into one owned
+    /// cleanup task so a cancelled serve caller cannot abandon loaded bridges.
+    internal func shutdownBeforeRegistration() async {
+        if let task = preRegistrationCleanupTask {
+            await task.value
+            return
+        }
+        let task = Task.detached(priority: .userInitiated) {
+            await self.performPreRegistrationShutdown()
+        }
+        preRegistrationCleanupTask = task
+        await task.value
+    }
+
+    private func performPreRegistrationShutdown() async {
+        isShuttingDown = true
+        if !servingDrain.refusing { beginServingDrain(owner: .lifecycle) }
+        stopLocalEndpoint()
+        startupPreloadTask?.cancel()
+        startupPreloadGateWaiter?.cancel()
+        cancelLoadWaiters()
+
+        // Give an owned load time to unwind, but do not let an unresponsive
+        // loader hold a termination signal indefinitely. The load-install
+        // guard rejects any slot that finishes after shutdown begins.
+        let startupTask = startupPreloadTask
+        if let startupTask {
+            let finished = await waitForPreloads([startupTask], timeout: Self.preloadShutdownTimeout)
+            if !finished { logger.warning("Timed out waiting for startup preload to cancel during shutdown") }
+        }
+        startupPreloadTask = nil
+        startupPreloadPendingModels = []
+
+        let upgradeTask = mtpUpgradeMonitorTask
+        mtpUpgradeMonitorTask = nil
+        upgradeTask?.cancel()
+        await specDecFunnel.shutdown()
+        await upgradeTask?.value
+
+        let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
+        if !drained { await cancelAllInflight() }
+        await coordinatorClient?.shutdown()
+        while !modelSlots.isEmpty {
+            if let unloading = modelsUnloading.first {
+                await waitForModelUnload(unloading)
+                continue
+            }
+            for modelID in Array(modelSlots.keys) {
+                await unloadModel(modelID)
+            }
+        }
+        powerAssertion.releaseAll()
+        MLX.Memory.clearCache()
+        writeDaemonState()
+    }
+}

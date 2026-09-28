@@ -1,0 +1,139 @@
+{
+  "os": "macOS 27.0 26A428",
+  "hardware_report": "Apple M5 Max, 128 GB",
+  "distribution": "Developer ID signed debug validation bundle; not notarized",
+  "source_base": "cc48471154c6fd9fd6154838b2117d432b741548",
+  "source_delta": "ProtocolCodec.encodeRegisterPreservingRawAttestation includes app_attest_protocol",
+  "binary_sha256": "f4a009e9078f1fb2322ccf956ede7ce001cca1ce1dd9a290e563f27b9a86fa23",
+  "observations": [
+    {
+      "time": "2026-09-14T13:12:07.812468-07:00",
+      "stage": "registration",
+      "outcome": "observed",
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:12:07.812493-07:00",
+      "stage": "prepare",
+      "outcome": "protocol_unsupported",
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:17:50.58676-07:00",
+      "stage": "registration",
+      "outcome": "observed",
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:18:16.587983-07:00",
+      "stage": "prepare",
+      "outcome": "attempted",
+      "duration_ms": 0.006291,
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:18:16.72283-07:00",
+      "stage": "ready",
+      "outcome": "reported_supported",
+      "duration_ms": 134.8525,
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:18:16.722876-07:00",
+      "stage": "attest",
+      "outcome": "attempted",
+      "duration_ms": 0.002875,
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:18:17.613657-07:00",
+      "stage": "attestation",
+      "outcome": "verified",
+      "duration_ms": 890.761375,
+      "metadata_comparison": "metadata_missing",
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:18:17.613775-07:00",
+      "stage": "assert",
+      "outcome": "attempted",
+      "duration_ms": 0.003667,
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:18:17.63903-07:00",
+      "stage": "assertion",
+      "outcome": "verified",
+      "duration_ms": 25.250709,
+      "metadata_comparison": "metadata_missing",
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:20:25.367005-07:00",
+      "stage": "registration",
+      "outcome": "observed",
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:20:31.367261-07:00",
+      "stage": "prepare",
+      "outcome": "attempted",
+      "duration_ms": 0.005208,
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:20:31.466062-07:00",
+      "stage": "ready",
+      "outcome": "reported_supported",
+      "duration_ms": 98.80325,
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:20:31.466186-07:00",
+      "stage": "assert",
+      "outcome": "attempted",
+      "duration_ms": 0.003125,
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    },
+    {
+      "time": "2026-09-14T13:20:31.500372-07:00",
+      "stage": "assertion",
+      "outcome": "verified",
+      "duration_ms": 34.184667,
+      "metadata_comparison": "metadata_missing",
+      "legacy_trust": "self_signed",
+      "legacy_code_attested": false,
+      "legacy_mda_verified": false
+    }
+  ],
+  "credential_count_after_coordinator_and_provider_restart": 1,
+  "counter_after_restart": 2,
+  "persistence_scope": "Test-only JSON-backed shadow credential store; production PostgreSQL was not used",
+  "production_state_modified": false
+}

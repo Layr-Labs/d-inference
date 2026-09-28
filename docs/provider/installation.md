@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-27 · commit `a2ccc2499`
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -81,12 +81,9 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    - `commit_staged_app` moves any existing `~/.darkbloom/Darkbloom.app` to
      `~/.darkbloom/.install-backup-<pid>-<random>`, moves the staged app in,
      writes the symlinks `~/.darkbloom/bin/darkbloom`, `darkbloom-enclave`,
-     `mlx.metallib` → `../Darkbloom.app/Contents/MacOS/*` and the legacy alias
-     `bin/eigeninference-enclave → darkbloom-enclave`, and `chmod +x`. Any
+     `mlx.metallib` → `../Darkbloom.app/Contents/MacOS/*`, and `chmod +x`. Any
      failure moves the backup back;
-   - a tarball without `Darkbloom.app` (legacy flat layout) gets
-     `codesign --verify --strict -R=…` on `bin/darkbloom` and
-     `commit_staged_flat_bundle` swaps `~/.darkbloom/bin` the same way;
+   - a tarball without `Darkbloom.app` (the retired flat layout) is refused;
    - the staging directory is removed; on any failure the script prints
      `Existing installation was left unchanged.` and exits 1.
 4. **PATH.** `ln -sf ~/.darkbloom/bin/darkbloom /usr/local/bin/darkbloom`
@@ -96,23 +93,28 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    `alias eigeninf`, `alias dginf`, `# EigenInference` and `# Darkbloom` are
    deleted and `# Darkbloom` + `export PATH="$HOME/.darkbloom/bin:$PATH"` is
    appended; the rc is then sourced.
-5. **Legacy install migration.** For each real directory `~/.dginf` and
-   `~/.eigeninference`: `cp -n` of `enclave_key.data`, `wallet_key` and
-   `auth_token` into `~/.darkbloom`, then the old directory is replaced by a
-   symlink to `~/.darkbloom`. `provider.toml` is not migrated by the script;
-   the CLI copies a config found at a legacy path to
-   `~/.config/darkbloom/provider.toml` on its next run
-   (`provider-swift/Sources/darkbloom/Darkbloom.swift`, `migrateConfigIfNeeded`).
+5. **Config location.** The script does not create, copy or migrate
+   `provider.toml` (retired `~/.dginf` / `~/.eigeninference` installs are no
+   longer migrated); the CLI reads only `~/.config/darkbloom/provider.toml` or
+   an explicit `--config` path
+   (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
+   `defaultConfigPath`).
 6. **Step 3/5 — Secure Enclave identity.** Runs `darkbloom-enclave info`
    (`provider-swift/Sources/darkbloom-enclave-cli/EnclaveCLI.swift`), which
    creates the P-256 key if missing. Failure prints a warning; the install
    continues with reduced trust (see [attestation](./attestation.md)).
-7. **Step 4/5 — enrollment.** If `profiles status -type enrollment` does not
-   report `MDM enrollment: Yes`, the script `POST`s `{}` to
-   `$COORD_URL/v1/enroll`, saves the `.mobileconfig` under
-   `${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX/`, opens it and the System Settings
-   Profiles pane, waits for Enter (interactive) or 3 s (piped), then re-checks.
-   An unreachable coordinator prints `enroll later with: darkbloom enroll`.
+7. **Step 4/5 — verification setup.** `configure_device_verification` uses the
+   local `sw_vers` major version. On macOS 27 or later it skips profile checks,
+   download and System Settings, and directs the user to login/start/status for
+   App Attest approval. Older macOS retains legacy enrollment and prints the
+   upgrade option and upcoming MDM deactivation notice. If `profiles status
+   -type enrollment` reports no management, the script posts `{}` to
+   `$COORD_URL/v1/enroll`, saves the profile under
+   `${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX/`, and opens System Settings for
+   approval. Existing management is preserved without claiming it is Darkbloom
+   verification. Unknown OS versions download no profile and direct users to
+   `darkbloom enroll`. Setup choice grants no serving authorization; see the
+   [authorization contract](../reference/provider-authorization.md).
 8. **Step 5/5 — catalog.** `GET $COORD_URL/v1/models/catalog?type=text`;
    interactive runs print up to 20 entries. Nothing is downloaded.
 

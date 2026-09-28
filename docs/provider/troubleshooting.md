@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-06 · commit `615d96328`
+> Last updated: 2026-09-27 · commit `4320091ca`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -38,10 +38,13 @@ has started, leaves the previous install untouched.
 | `Bundle hash mismatch — refusing to install possibly-tampered binary.` | Tarball SHA-256 ≠ `bundle_hash` | Re-run; a proxy or partial download is the usual cause |
 | `Release bundle is missing required flat verifier files.` | No `bin/darkbloom`, `bin/darkbloom-enclave` or `bin/mlx.metallib` in the tarball | Bad release artifact; report it |
 | `Binary hash mismatch …` / `Metallib hash mismatch …` / `App binary hash mismatch …` / `App releases require binary_hash and metallib_hash.` | Staged file ≠ published hash, or an app release without both hashes | Re-run; if it persists the release record and artifact disagree |
-| `Staged Darkbloom.app does not satisfy the pinned signature requirement.` / `Legacy flat artifact does not satisfy …` | `codesign --verify --deep --strict -R=…` failed against `identifier "io.darkbloom.provider"`, Team `SLDQ2GJ6TL` | Do not install; the artifact is not the signed release |
+| `Release bundle has no Darkbloom.app; flat-only bundles are no longer installable.` | The tarball carries only the flat `bin/` files, as releases before the app bundle did | Install a current release; if `/v1/releases/latest` serves this artifact, report it |
+| `Staged app predates the paged runtime; pre-paged releases are no longer installable.` | The staged `Darkbloom.app` has neither paged runtime code nor its capability marker: a pre-0.8 release artifact | Install the current release; if `/v1/releases/latest` serves this artifact, report it |
+| `Staged Darkbloom.app does not satisfy the pinned signature requirement.` | `codesign --verify --deep --strict -R=…` failed against `identifier "io.darkbloom.provider"`, Team `SLDQ2GJ6TL` | Do not install; the artifact is not the signed release |
 | `Fan-helper CLI capability, marker, and nested helper must be present together.` / `… marker is invalid.` / `Bundled fan helper must be a regular executable …` / `… must have mode 0755.` / `… does not satisfy the pinned helper signature requirement.` | Fan-helper capability triple inconsistent in the staged app | Bad artifact; report it |
 | `Paged-capable staged app is missing its signed capability marker.` / `Staged app advertises paged capability without paged runtime code.` / `Paged runtime capability marker is invalid.` / `… requires exactly one sealed MLXLMCommon pagedattention.metal.` | Paged-kernel marker ⇔ binary ⇔ resource mismatch | Bad artifact; report it |
-| `Packaged paged-kernel runtime smoke failed.` | `darkbloom runtime-smoke` could not load the packaged Metal runtime | Confirm a Metal GPU (`system_profiler SPDisplaysDataType`); retry; report with the macOS version |
+| `Packaged App Attest callback runtime smoke failed.` or missing callback marker | The staged callback runtime failed before Metal validation | Keep the existing installed app; retry with a fixed release and report the provider/macOS versions |
+| `Packaged runtime smoke failed (App Attest, configuration, or Metal).` | One of the staged runtime checks failed | Run the staged app’s `runtime-smoke` to identify the last success marker; report its output and macOS version |
 | `Atomic app swap failed; previous install was restored.` | `mv` into `~/.darkbloom` failed | Check free space and permissions on `~/.darkbloom` |
 | `Secure Enclave ⚠ (not available on this hardware …)` (warning, install continues) | `darkbloom-enclave info` failed | Trust stays below `hardware`; see [attestation](./attestation.md) |
 | `Enrollment ⚠ …` (warning) | Profile not installed, or `POST /v1/enroll` unreachable | `darkbloom enroll`, then install the profile in System Settings |
@@ -50,7 +53,7 @@ has started, leaves the previous install untouched.
 ## Doctor checks
 
 `darkbloom doctor` prints an operator diagnosis (sections attestation key,
-attestation readiness, trust, model fit, runtime, billing, version;
+App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`,
 `buildOperatorDiagnosis`) followed by `DETAILED CHECKS`
 (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `buildDoctorChecks`,
@@ -66,6 +69,14 @@ attestation readiness, trust, model fit, runtime, billing, version;
 | `mdm enrollment`, `mdm verification` | Profile installed; coordinator has cross-checked `SecurityInfo` | `darkbloom enroll`; the steps and what to expect: [Reaching and keeping `hardware` trust](./attestation.md#steps) |
 | `console session`, `automatic login`, `auto-logout on idle`, `sleep prevention` | Attestation readiness (`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`) | A real console user must be logged in; enable automatic login; disable auto-logout; the daemon self-caffeinates while serving |
 | `active se key` | Secure Enclave signing key self-test | `darkbloom-enclave info`; hardware without SE runs at reduced trust |
+| `launch session`, `app attest support`, `apple operation`, `app attest key` | macOS 27+ only: the daemon's last local App Attest observation (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`) — GUI session, `is_supported_false`, a stalled DeviceCheck call, stored/enrolled key and generation cooldown | Run the provider inside the logged-in GUI session (`darkbloom restart` after logging in) and keep SIP and Full Security; a stall clears when the provider restarts ([attestation](./attestation.md#app-attest-without-darkbloom-mdm)); never delete the Keychain item |
+| `gui session` | macOS 27+: the provider runs outside the GUI session. Either a user is logged in at the console but the provider was launched elsewhere (SSH, system daemon), or nobody is logged in (`AppAttestDeepDiagnosis.swift`) | Run `darkbloom restart` from the logged-in desktop (Terminal or Screen Sharing). If nobody is logged in, log in and enable automatic login |
+| `boot security` | SIP or authenticated root is not confirmed enabled. Apple requires Full Security for App Attest | In Recovery: `csrutil enable`, `csrutil authenticated-root enable`, Startup Security Utility → Full Security, restart |
+| `app signing` | A known missing opt-in, invalid environment entitlement, or missing/expired profile fails. Unavailable signing data or unknown expiry warns instead of passing; an explicitly absent environment entitlement can be legitimate | Reinstall a known-bad release (`curl -fsSL https://api.darkbloom.dev/install.sh \| bash`), then restart; for indeterminate evidence, collect a report |
+| `process start` | Why this provider process started (launchd, watchdog, update, stall restart, manual) and whether the previous one shut down cleanly (`provider-run.json`) | Unclean exits come from a crash, force-kill, power loss or a reboot without a drain. If App Attest broke right after one, run `darkbloom report` |
+| `key history`, `last apple failure` | Key generations in 24 h, key age and boot, last Apple success, consecutive assertion failures, and the last native error chain. CryptoTokenKit `-3` with an `aks` code means the Secure Enclave refused to sign. Doctor distinguishes a latest error eligible for coordinator dead-key checks from timeouts or `serverUnavailable`; the aggregate failure count alone cannot establish a dead key or promise rotation | The coordinator decides whether replacement is due. For repeated `invalidKey` on brand-new keys, run `darkbloom report` from an administrator account (or `sudo darkbloom report` if this account can use sudo) |
+| `apns pushes` | APNs code-identity pushes received and answered in 24 h, and whether APNs registration produced a device token (`apns-push-history.json`) | No token: APNs registration failed, so stay in the GUI session and restart. None received while the coordinator says it pushed: an APNs delivery problem, so keep the Mac awake and online. Received but unanswered: `darkbloom restart` |
+| `devicecheckd log` | Device-wide system App Attest patterns, potentially from other apps; they cannot be attributed to Darkbloom or establish this provider's key failure. Administrator log access is required | Use an explicit administrator-run report for supporting context; do not infer provider key loss or rotate a key from these observations alone |
 | `coordinator health`, `minimum version`, `coordinator trust` | Coordinator reachable, this version is accepted, trust verdict with reasons | `darkbloom update`; reasons are explained in [attestation](./attestation.md) |
 | `trust level` stuck at `self_signed` | The MDM `SecurityInfo` cross-check has not passed for this connection | `darkbloom enroll` if not enrolled; otherwise wait — see [Reaching and keeping `hardware` trust](./attestation.md#troubleshooting) |
 | `daemon`, `daemon connected`, `daemon state freshness` | Daemon process alive, WebSocket connected, snapshot refreshed | See [service lifecycle](#the-service-does-not-stay-running); a stale snapshot ⇒ `darkbloom restart` |
@@ -76,6 +87,16 @@ attestation readiness, trust, model fit, runtime, billing, version;
 | `up to date` | `SelfUpdater.checkForUpdate`; also reports a quarantined release | See [updates](#updates) |
 
 `darkbloom verify` runs the same set and exits 1 on any ⚠.
+
+The process-table, local-port and sleep probes have a five-second execution
+deadline, followed by bounded child termination. Large output is captured in
+a temporary file, which is removed after the probe. A failed contention probe
+adds no hints; a failed sleep probe reports unavailable. These bounds apply
+to `LocalContentionSnapshot.runCapture` and `DoctorRunner.systemSleepPrevented`
+in `provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`
+and `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`, using
+`provider-swift/Sources/ProviderCore/Process/BoundedProcess.swift`
+(`runCapturingStandardOutput`).
 
 ## `darkbloom start` fails
 
@@ -138,7 +159,7 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
+| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
 | Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
@@ -177,7 +198,7 @@ produce a contiguous slot. Read the reported reason. Set `"contiguous"` to pin
 that backend, or `"auto"` to allow model-aware selection and fallback; `"auto"`
 is not a contiguous pin for the cohort. Explicit `"paged"` bypasses the
 automatic crash-loop guard, not the kill switch or capability vetoes
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift`,
 `degradesPagedFailure`; `EngineV2Factory+BackendPreparation.swift`,
 `prepareProductionBackend`).
 
@@ -198,7 +219,13 @@ darkbloom report --last 24h             # upload; prints report_id
 `Report` (`provider-swift/Sources/darkbloom/ReportCommand.swift`) collects
 subsystem `dev.darkbloom.provider` at info level with macOS privacy redaction
 intact, uploads only when you run it, and prints the `report_id` to quote to
-support.
+support. It appends the provider's closed App Attest snapshot, APNs push history
+and device-wide `devicecheckd` pattern matches; see
+[`cli-reference.md`](./cli-reference.md#darkbloom-report) for scope and fields.
+macOS lets only administrator accounts read the system log. Run the report from
+an administrator account, or run `sudo darkbloom report` if this account is
+allowed to use sudo. Otherwise only the App Attest snapshot is sent, without
+provider logs or `devicecheckd` evidence.
 
 ## Related
 

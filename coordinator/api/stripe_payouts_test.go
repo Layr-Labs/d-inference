@@ -878,8 +878,7 @@ func TestConnectWebhookPayoutFailedKeepsFundsAndDoesNotRefund(t *testing.T) {
 	// Manually create a withdrawal row mimicking what the handler would have
 	// persisted, then debit the ledger to put us in the post-withdraw state.
 	withdrawalID := "wd-test-1"
-	_ = st.Debit(user.AccountID, 5_000_000, store.LedgerCharge, "stripe_withdraw:"+withdrawalID)
-	_ = st.CreateStripeWithdrawal(&store.StripeWithdrawal{
+	if err := st.CreateStripeWithdrawalWithDebit(&store.StripeWithdrawal{
 		ID:              withdrawalID,
 		AccountID:       user.AccountID,
 		StripeAccountID: user.StripeAccountID,
@@ -889,7 +888,9 @@ func TestConnectWebhookPayoutFailedKeepsFundsAndDoesNotRefund(t *testing.T) {
 		NetMicroUSD:     5_000_000,
 		Method:          "standard",
 		Status:          "transferred",
-	})
+	}, store.LedgerStripePayout, "stripe_withdraw:"+withdrawalID); err != nil {
+		t.Fatalf("create withdrawal: %v", err)
+	}
 
 	payload := []byte(`{
 		"type": "payout.failed",
@@ -934,12 +935,13 @@ func TestConnectWebhookPayoutFailedNeverRefundsOnRedelivery(t *testing.T) {
 	user := readyUser(t, st, "acct-wh-idem", "alice@example.com", false)
 	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 	withdrawalID := "wd-idem-1"
-	_ = st.Debit(user.AccountID, 5_000_000, store.LedgerCharge, "stripe_withdraw:"+withdrawalID)
-	_ = st.CreateStripeWithdrawal(&store.StripeWithdrawal{
+	if err := st.CreateStripeWithdrawalWithDebit(&store.StripeWithdrawal{
 		ID: withdrawalID, AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
 		PayoutID: "po_idem", AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 		Method: "standard", Status: "transferred",
-	})
+	}, store.LedgerStripePayout, "stripe_withdraw:"+withdrawalID); err != nil {
+		t.Fatalf("create withdrawal: %v", err)
+	}
 
 	payload := []byte(`{
 		"type":"payout.failed","account":"` + user.StripeAccountID + `",
@@ -971,7 +973,7 @@ func TestConnectWebhookLegacyRefundedRowStaysTerminal(t *testing.T) {
 
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
 	user := readyUser(t, st, "acct-wh-legacy", "alice@example.com", false)
-	_ = st.CreateStripeWithdrawal(&store.StripeWithdrawal{
+	seedWithdrawal(t, st, store.StripeWithdrawal{
 		ID: "wd-legacy-1", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
 		PayoutID: "po_legacy", AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 		Method: "standard", Status: "transferred", Refunded: true,
@@ -1011,13 +1013,11 @@ func TestConnectWebhookSweepPayoutPaidMarksTransferredRows(t *testing.T) {
 	sweepTime := time.Now()
 	mk := func(id string, createdAt time.Time, status string) {
 		t.Helper()
-		if err := st.CreateStripeWithdrawal(&store.StripeWithdrawal{
+		seedWithdrawal(t, st, store.StripeWithdrawal{
 			ID: id, AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
 			AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 			Method: "standard", Status: status, CreatedAt: createdAt,
-		}); err != nil {
-			t.Fatalf("create withdrawal %s: %v", id, err)
-		}
+		})
 	}
 	mk("wd-sw-old-1", sweepTime.Add(-48*time.Hour), "transferred")
 	mk("wd-sw-old-2", sweepTime.Add(-1*time.Hour), "transferred")
@@ -1056,7 +1056,7 @@ func TestConnectWebhookSweepPayoutFailedLeavesRowsAlone(t *testing.T) {
 
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
 	user := readyUser(t, st, "acct-wh-sweepfail", "alice@example.com", false)
-	_ = st.CreateStripeWithdrawal(&store.StripeWithdrawal{
+	seedWithdrawal(t, st, store.StripeWithdrawal{
 		ID: "wd-swf-1", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
 		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 		Method: "standard", Status: "transferred", CreatedAt: time.Now().Add(-2 * time.Hour),
@@ -1092,12 +1092,13 @@ func TestConnectWebhookPayoutPaidIsIdempotent(t *testing.T) {
 	user := readyUser(t, st, "acct-wh-paid", "alice@example.com", false)
 	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 	withdrawalID := "wd-paid-1"
-	_ = st.Debit(user.AccountID, 5_000_000, store.LedgerCharge, "stripe_withdraw:"+withdrawalID)
-	_ = st.CreateStripeWithdrawal(&store.StripeWithdrawal{
+	if err := st.CreateStripeWithdrawalWithDebit(&store.StripeWithdrawal{
 		ID: withdrawalID, AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
 		PayoutID: "po_paid", AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 		Method: "standard", Status: "transferred",
-	})
+	}, store.LedgerStripePayout, "stripe_withdraw:"+withdrawalID); err != nil {
+		t.Fatalf("create withdrawal: %v", err)
+	}
 
 	payload := []byte(`{
 		"type":"payout.paid","account":"` + user.StripeAccountID + `",
@@ -1172,7 +1173,7 @@ func signedConnectRequest(t *testing.T, payload []byte, secret string) *http.Req
 }
 
 // TestStripeWithdrawRejectsExceedingWithdrawableViaDebit verifies that the
-// DebitWithdrawable path rejects a withdrawal that exceeds the withdrawable
+// guarded withdrawal debit rejects a withdrawal that exceeds the withdrawable
 // balance even when total balance is sufficient.
 func TestStripeWithdrawRejectsExceedingWithdrawableViaDebit(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
@@ -1813,13 +1814,13 @@ func TestStripeReconcilerHealsManualScheduleForStuckWithdrawals(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
 	user := readyUser(t, st, "acct-stuck-user", "stuck@example.com", false)
 	// Stuck for 3 days — like the €10.57 sitting in a manual-schedule account.
-	_ = st.CreateStripeWithdrawal(&store.StripeWithdrawal{
+	seedWithdrawal(t, st, store.StripeWithdrawal{
 		ID: "wd-stuck-1", AccountID: user.AccountID, StripeAccountID: "acct_stuck_1",
 		TransferID: "tr_stuck_1", AmountMicroUSD: 10_570_000, NetMicroUSD: 10_570_000,
 		Method: "standard", Status: "transferred", CreatedAt: time.Now().Add(-72 * time.Hour),
 	})
 	// A fresh transferred row must NOT trigger reconciliation.
-	_ = st.CreateStripeWithdrawal(&store.StripeWithdrawal{
+	seedWithdrawal(t, st, store.StripeWithdrawal{
 		ID: "wd-fresh-1", AccountID: user.AccountID, StripeAccountID: "acct_fresh_ok",
 		TransferID: "tr_fresh_1", AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
 		Method: "standard", Status: "transferred", CreatedAt: time.Now().Add(-1 * time.Hour),

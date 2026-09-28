@@ -170,8 +170,8 @@ func TestHandleCompleteClientGoneAfterCommitSettlesAndPays(t *testing.T) {
 
 // TestHandleCompleteClientGoneAfterCommitNotAProviderFailure isolates the
 // reputation invariant: settling a parked completion records a SUCCESS and never
-// increments FailedJobs, so routing (which scores on Reputation.Score()) does not
-// deroute a provider for consumer-side disconnects.
+// increments FailedJobs, so consumer-side disconnects do not inflate the
+// provider dashboard's failure count.
 func TestHandleCompleteClientGoneAfterCommitNotAProviderFailure(t *testing.T) {
 	srv, _, ledger := billingTestServer(t)
 	srv.settleGrace = 5 * time.Second
@@ -461,10 +461,11 @@ func TestHandleInferenceErrorEmitsAfterCommitClientGone(t *testing.T) {
 	parkConsumerGone(srv, provider, pr)
 
 	srv.handleInferenceError(provider.ID, provider, &protocol.InferenceErrorMessage{
-		Type:       protocol.TypeInferenceError,
-		RequestID:  pr.RequestID,
-		Error:      "backend crashed mid-generation",
-		StatusCode: 500,
+		Type:        protocol.TypeInferenceError,
+		RequestID:   pr.RequestID,
+		Error:       "backend crashed mid-generation",
+		StatusCode:  500,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 
 	_ = dd.Statsd.Flush()

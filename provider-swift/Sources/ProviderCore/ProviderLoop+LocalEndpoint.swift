@@ -53,6 +53,7 @@ extension ProviderLoop {
             // best-effort HTTP probe that a foreign process on the same port
             // could answer). If the bind fails, runService throws below and this
             // never runs, so no stale/foreign discovery record is written.
+            responseTracker: localResponseTracker,
             onServerRunning: { [weak self] _ in
                 await self?.onLocalEndpointBound(cfg)
             }
@@ -104,7 +105,7 @@ extension ProviderLoop {
     func acquireModelForLocal(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
         // Fast-path drain/shutdown reject; an authoritative re-check follows the
         // `await` below, right before the reservation is taken (see comment there).
-        try throwIfRefusingNewLocalWork()
+        try throwIfRefusingNewLocalWork(modelId: modelId)
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch is ModelRuntimeIneligibleError {
@@ -118,6 +119,7 @@ extension ProviderLoop {
                 throw MultiModelBatchSchedulerEngineError.queueFull("local capacity unavailable for \(modelId)")
             }
         }
+        await waitForMTPUpgrade(modelId)
         guard let slot = modelSlots[modelId] else {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         }
@@ -126,7 +128,7 @@ extension ProviderLoop {
         // No `await` sits between this check and `reserve`, so on the actor it
         // is atomic — the reservation is either refused or counted in
         // `hasInflightWork` before any drain snapshot can miss it.
-        try throwIfRefusingNewLocalWork()
+        try throwIfRefusingNewLocalWork(modelId: modelId)
         localReservations.reserve(modelId)
         modelSlots[modelId]?.lastInferenceAt = .now
         let release: @Sendable (String) async -> Void = { [weak self] mid in
@@ -139,6 +141,7 @@ extension ProviderLoop {
             // hard-swap drop window (see ModelSlot.modelType).
             modelType: slot.modelType,
             container: slot.container,
+            diffusionContainer: slot.modelContainer.diffusion,
             isVLM: slot.isVLM,
             // ONE ENGINE (v0.7.5): local requests route through the same v2
             // bridge as coordinator requests; the vision gate covers the
@@ -189,9 +192,12 @@ extension ProviderLoop {
     func mtpSlotMetricsSamplesForLocal() async -> [MTPSlotMetricsSample] {
         var samples: [MTPSlotMetricsSample] = []
         samples.reserveCapacity(modelSlots.count)
-        for (modelId, slot) in modelSlots.sorted(by: { $0.key < $1.key }) {
-            samples.append(
-                .init(model: modelId, snapshot: await slot.engineV2.mtpStatusSnapshot()))
+        let bridges = modelSlots.map { (model: $0.key, bridge: $0.value.engineV2) }
+            .sorted { $0.model < $1.model }
+        for entry in bridges {
+            guard let sample = await entry.bridge.localMetricsSample(model: entry.model),
+                modelSlots[entry.model]?.engineV2 === entry.bridge else { continue }
+            samples.append(sample)
         }
         return samples
     }

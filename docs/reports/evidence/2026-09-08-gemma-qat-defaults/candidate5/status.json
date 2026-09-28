@@ -1,0 +1,39 @@
+{
+  "parent": "22a9ad7acf03d25bb95f402066d76502ff56605d",
+  "lm": "3e2e137ea2be8a0be36935ff2cfd91e53ba39705",
+  "source_files_verified": 7725,
+  "strict_pins": true,
+  "status": "model validation complete; ready for code review",
+  "remote_session": null,
+  "remaining": [
+    "final PR CI: threat-model API credential failure; optional E2E benchmark environment approval",
+    "merge native dependency then parent PR",
+    "publish catalog HF locator and release through operational workflow"
+  ],
+  "artifact_hashes": {
+    "radix-engine": "816b64f6b8614f35dde3cf062e36a2f5f40ee02c51d6afc58dc87243e5f8128a",
+    "darkbloom": "463729f9f48e0739c7708646e2548b1347558eae6741d8d2418e1233ee21bfb6",
+    "mlx.metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+  },
+  "product_builds_passed": true,
+  "tests": {
+    "provider_swift_testing": 270,
+    "benchmark_swift_testing": 31,
+    "benchmark_xctest": 2,
+    "native_swift_testing": 172,
+    "native_xctest": 25,
+    "all_pass": true,
+    "native_test_only_amendment": "b87e2ee1b2a4624aadc73210e066f2a6a8854736"
+  },
+  "completed_model_cells": [
+    "candidate5-b1-speed-on1",
+    "candidate5-b1-speed-off1",
+    "candidate5-b1-speed-off2",
+    "candidate5-b1-speed-on2",
+    "candidate5-b1-sampling-off1",
+    "candidate5-b1-sampling-on1",
+    "candidate5-b2-branches-on1",
+    "candidate5-b4-branches-on1",
+    "candidate5-http-capabilities1"
+  ]
+}

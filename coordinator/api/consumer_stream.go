@@ -54,7 +54,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 	}
 	relay.flush()
 	if initialError != nil {
-		s.writeChatStreamProviderError(w, flusher, pr, *initialError)
+		s.writeChatStreamProviderError(w, flusher, pr, *initialError, relay.identity)
 		return
 	}
 
@@ -71,7 +71,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 		select {
 		case errMsg, ok := <-pr.ErrorCh:
 			if ok && errMsg.Error != "" {
-				s.writeChatStreamProviderError(w, flusher, pr, errMsg)
+				s.writeChatStreamProviderError(w, flusher, pr, errMsg, relay.identity)
 				return
 			}
 		default:
@@ -80,7 +80,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
 			s.writeChatStreamTerminalError(
-				w, flusher, pr, "provider_error", "provider ended without completion")
+				w, flusher, pr, "provider_error", "provider ended without completion", relay.identity)
 			return
 		}
 		// Channel closed — inference complete.
@@ -111,6 +111,13 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 			}
 		}
 		if relay.pendingFinish != nil {
+			// Some native providers combine finish and usage in one event.
+			// Enrich that event only when no dedicated usage event follows,
+			// keeping authoritative details on exactly one terminal event.
+			if relay.pendingUsage == nil {
+				injectReasoningDetailIntoRawUsage(relay.pendingFinish, usage)
+				injectCacheDetailIntoRawUsage(relay.pendingFinish, usage)
+			}
 			if out := finalizeFinishChunk(relay.pendingFinish, usage, pr); out != "" {
 				relay.writeFrame(out)
 			}
@@ -133,7 +140,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 			// (id/object/created/model/choices) so strict decoders parse
 			// it; the extra fields are additive. It precedes the single
 			// [DONE] below.
-			event := newChatCompletionExtrasEvent(pr)
+			event := newChatCompletionExtrasEvent(pr, relay.identity)
 			if pr.SESignature != "" {
 				event["se_signature"] = pr.SESignature
 				event["response_hash"] = pr.ResponseHash
@@ -189,14 +196,14 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 			// truncates content the provider already produced.
 			drainQueuedChunks(pr.ChunkCh, cap(pr.ChunkCh), relayChunk)
 			relay.flush()
-			s.writeChatStreamProviderError(w, flusher, pr, errMsg)
+			s.writeChatStreamProviderError(w, flusher, pr, errMsg, relay.identity)
 			return
 
 		case <-timer.C:
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
-			s.writeChatStreamTerminalError(w, flusher, pr, "timeout", "request timed out")
+			s.writeChatStreamTerminalError(w, flusher, pr, "timeout", "request timed out", relay.identity)
 			return
 
 		case <-r.Context().Done():
@@ -211,13 +218,14 @@ func (s *Server) writeChatStreamProviderError(
 	flusher http.Flusher,
 	pr *registry.PendingRequest,
 	errMsg protocol.InferenceErrorMessage,
+	identities ...chatStreamIdentity,
 ) {
 	s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 	s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, errMsg.CoordinatorCause)
 	s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 	s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 	s.writeChatStreamTerminalError(
-		w, flusher, pr, "provider_error", clientSafeInferenceErrorMessage(errMsg))
+		w, flusher, pr, "provider_error", clientSafeInferenceErrorMessage(errMsg), identities...)
 }
 
 func (s *Server) handleResponsesStreamingResponseWithFirstChunk(

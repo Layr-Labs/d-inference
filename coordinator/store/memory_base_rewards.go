@@ -7,7 +7,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"time"
 )
@@ -43,25 +42,13 @@ func (s *MemoryStore) SumProviderEarningsByKey(_ context.Context, providerKey st
 	return total, nil
 }
 
-// SettleProviderFloorDraw inserts the idempotent draw row and, when the row is
-// newly inserted with a positive amount, credits the account's balance +
+// settleProviderFloorDrawLocked inserts the idempotent draw row and, when the
+// row is newly inserted with a positive amount, credits the account's balance +
 // withdrawable with a LedgerFloorDraw entry. Idempotent on (provider_key,
 // epoch_id): a re-settle returns credited=false and changes nothing. A
-// zero-amount draw records the audit row but credits nothing.
-func (s *MemoryStore) SettleProviderFloorDraw(_ context.Context, draw *ProviderFloorDraw) (bool, error) {
-	if draw == nil {
-		return false, errors.New("provider floor draw is required")
-	}
-	if draw.ProviderKey == "" {
-		return false, errors.New("provider floor draw provider_key is required")
-	}
-	if draw.EpochID == "" {
-		return false, errors.New("provider floor draw epoch_id is required")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// zero-amount draw records the audit row but credits nothing. The caller holds
+// s.mu.
+func (s *MemoryStore) settleProviderFloorDrawLocked(draw *ProviderFloorDraw) (bool, error) {
 	key := floorDrawKey(draw.ProviderKey, draw.EpochID)
 	if _, exists := s.floorDrawKeys[key]; exists {
 		return false, nil // already settled this epoch
@@ -81,7 +68,7 @@ func (s *MemoryStore) SettleProviderFloorDraw(_ context.Context, draw *ProviderF
 		s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
 		// Surface the draw in the provider's earnings history/summary. Model
 		// "base_reward" keeps it out of organic earning sums while
-		// GetAccountEarnings*/GetProviderEarningsSummary (which sum all rows) show
+		// GetAccountEarnings* (which sum all rows) show
 		// it, so the payout isn't an unexplained balance jump in the UI.
 		s.providerEarningsSeq++
 		s.providerEarnings = append(s.providerEarnings, ProviderEarning{
@@ -159,10 +146,4 @@ func sessionLess(a, b ProviderSession) bool {
 		return a.SerialNumber < b.SerialNumber
 	}
 	return a.ConnectedAt.Before(b.ConnectedAt)
-}
-
-// WithEpochSettlementLock runs fn directly: the memory store is single-process,
-// so there is no cross-instance contention to guard against.
-func (s *MemoryStore) WithEpochSettlementLock(_ context.Context, _ string, fn func() error) error {
-	return fn()
 }

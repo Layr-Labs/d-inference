@@ -4,7 +4,7 @@
 //  1. Consumer pays via Stripe Checkout — webhook credits internal balance
 //  2. Consumer makes inference requests — the coordinator debits per-request
 //     based on output token count
-//  3. Provider earns a payout (total cost minus 10% platform fee)
+//  3. Provider earns a payout after the configured platform fee
 //  4. Payouts are settled via Stripe Connect Express (bank/card withdrawals)
 //
 // All amounts are in micro-USD (1 USD = 1,000,000 micro-USD).
@@ -19,9 +19,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
-
-// Payout is the persisted provider wallet payout record.
-type Payout = store.ProviderPayout
 
 // UsageEntry records a single inference charge for usage history. CachedTokens
 // is the subset of PromptTokens billed at the cache-read rate; without it the
@@ -137,13 +134,4 @@ func (l *Ledger) Usage(consumerID string) []UsageEntry {
 	out := make([]UsageEntry, len(entries))
 	copy(out, entries)
 	return out
-}
-
-// AllPayouts returns a copy of all payouts (settled and unsettled).
-func (l *Ledger) AllPayouts() []Payout {
-	payouts, err := l.store.ListProviderPayouts()
-	if err != nil {
-		return []Payout{}
-	}
-	return payouts
 }

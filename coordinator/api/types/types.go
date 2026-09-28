@@ -9,8 +9,9 @@ package types
 import (
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/registry"
+
 	"github.com/eigeninference/d-inference/coordinator/payments"
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // ── Chat completions ────────────────────────────────────────────────
@@ -109,6 +110,7 @@ type RequestTimingDetails struct {
 // Location is region/country GeoIP only — city, coordinates, lookup source,
 // and raw IPs are omitted. Device serials are never included.
 type ChatCompletionMetadata struct {
+	Verification           *registry.Verification  `json:"verification,omitempty"`
 	ProviderID             string                  `json:"provider_id,omitempty"`
 	ProviderAttested       bool                    `json:"provider_attested"`
 	ProviderTrustLevel     string                  `json:"provider_trust_level,omitempty"`
@@ -147,6 +149,7 @@ type ResponsesUsage struct {
 	InputTokensDetail  ResponsesUsageDetail `json:"input_tokens_details"`
 	OutputTokens       int                  `json:"output_tokens"`
 	OutputTokensDetail ResponsesUsageDetail `json:"output_tokens_details"`
+	TotalTokens        int                  `json:"total_tokens"`
 }
 
 // ResponsesIncompleteDetail is the incomplete_details block.
@@ -418,15 +421,4 @@ type BalanceResponse struct {
 // UsageResponse is the GET /v1/payments/usage response.
 type UsageResponse struct {
 	Usage []payments.UsageEntry `json:"usage"`
-}
-
-// ProviderEarningsResponse is the GET /v1/provider/earnings response.
-type ProviderEarningsResponse struct {
-	BalanceMicroUSD     int64               `json:"balance_micro_usd"`
-	BalanceUSD          string              `json:"balance_usd"`
-	TotalEarnedMicroUSD int64               `json:"total_earned_micro_usd"`
-	TotalEarnedUSD      string              `json:"total_earned_usd"`
-	TotalJobs           int                 `json:"total_jobs"`
-	Payouts             []payments.Payout   `json:"payouts"`
-	Ledger              []store.LedgerEntry `json:"ledger"`
 }

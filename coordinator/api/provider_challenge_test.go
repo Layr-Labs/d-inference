@@ -99,9 +99,7 @@ func TestChallengeResponseSuccess(t *testing.T) {
 }
 
 // TestChallengeResponseAllowsRDMAEnabled verifies RDMA-enabled providers pass
-// the challenge under the registered-buffer RDMA policy. The response also
-// carries the retired hypervisor_active field the way a legacy (< v0.6.31)
-// provider still sends it — the coordinator must tolerate it on the wire.
+// the challenge under the registered-buffer RDMA policy.
 func TestChallengeResponseAllowsRDMAEnabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
@@ -157,7 +155,6 @@ func TestChallengeResponseAllowsRDMAEnabled(t *testing.T) {
 		var challenge protocol.AttestationChallengeMessage
 		json.Unmarshal(data, &challenge)
 		rdmaDisabled := false
-		hypervisorActive := false // legacy (< v0.6.31) providers still send this retired field
 		sipEnabled := true
 		secureBootEnabled := true
 		response := protocol.AttestationResponseMessage{
@@ -166,7 +163,6 @@ func TestChallengeResponseAllowsRDMAEnabled(t *testing.T) {
 			Signature:         testChallengeSignature(challenge.Nonce, challenge.Timestamp, pubKey),
 			PublicKey:         pubKey,
 			RDMADisabled:      &rdmaDisabled,
-			HypervisorActive:  &hypervisorActive,
 			SIPEnabled:        &sipEnabled,
 			SecureBootEnabled: &secureBootEnabled,
 		}
@@ -222,7 +218,7 @@ func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
 		nonce:     "nonce-1",
 		timestamp: challengeTimestamp,
-	}, &protocol.AttestationResponseMessage{
+	}, withTestStatusSignature("nonce-1", challengeTimestamp, pubKey, &protocol.AttestationResponseMessage{
 		Type:              protocol.TypeAttestationResponse,
 		Nonce:             "nonce-1",
 		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
@@ -230,7 +226,7 @@ func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 		SIPEnabled:        &sipEnabled,
 		SecureBootEnabled: &secureBootEnabled,
 		RDMADisabled:      &rdmaDisabled,
-	})
+	}))
 
 	p.Mu().Lock()
 	defer p.Mu().Unlock()
@@ -272,7 +268,7 @@ func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testi
 	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
 		nonce:     "nonce-1",
 		timestamp: challengeTimestamp,
-	}, &protocol.AttestationResponseMessage{
+	}, withTestStatusSignature("nonce-1", challengeTimestamp, pubKey, &protocol.AttestationResponseMessage{
 		Type:              protocol.TypeAttestationResponse,
 		Nonce:             "nonce-1",
 		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
@@ -281,7 +277,7 @@ func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testi
 		SecureBootEnabled: &secureBootEnabled,
 		RDMADisabled:      &rdmaDisabled,
 		BinaryHash:        otherKnownHash,
-	})
+	}))
 
 	p.Mu().Lock()
 	defer p.Mu().Unlock()
@@ -322,7 +318,7 @@ func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
 	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
 		nonce:     "nonce-1",
 		timestamp: challengeTimestamp,
-	}, &protocol.AttestationResponseMessage{
+	}, withTestStatusSignature("nonce-1", challengeTimestamp, pubKey, &protocol.AttestationResponseMessage{
 		Type:              protocol.TypeAttestationResponse,
 		Nonce:             "nonce-1",
 		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
@@ -331,7 +327,7 @@ func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
 		SecureBootEnabled: &secureBootEnabled,
 		RDMADisabled:      &rdmaDisabled,
 		BinaryHash:        knownGoodBinaryHashForTest,
-	})
+	}))
 
 	p.Mu().Lock()
 	defer p.Mu().Unlock()
@@ -810,7 +806,8 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 					conn.Write(ctx, websocket.MessageText, respData)
 					continue
 				}
-				if msgType == protocol.TypeRuntimeStatus || msgType == protocol.TypeTrustStatus {
+				if msgType == protocol.TypeRuntimeStatus || msgType == protocol.TypeTrustStatus ||
+					msgType == protocol.TypeDesiredModels {
 					continue
 				}
 			}

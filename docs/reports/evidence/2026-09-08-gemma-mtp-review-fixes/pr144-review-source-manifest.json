@@ -1,0 +1,30 @@
+{
+  "baseline_native": "b87e2ee1b2a4624aadc73210e066f2a6a8854736",
+  "files": [
+    {
+      "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPDepthController.swift",
+      "sha256": "1a2c2c128f761a8182c86a5a6fcad3abc123f697f92b402fdec259369bbf557a"
+    },
+    {
+      "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift",
+      "sha256": "91257bab22e5fc0a911df333bdd3a76d1a63d045a94238784633f9a45b8dd50f"
+    },
+    {
+      "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift",
+      "sha256": "e064744f8073d61c3cc8fc571709ce1ffd0a97b3db9d3c76759a2fd0808a1c4e"
+    },
+    {
+      "path": "Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPMeasurement.swift",
+      "sha256": "bae66e0c8133d67a4c59110c762b4786c9683b44d4bc0f5a2ed5e4d62eda9ab2"
+    },
+    {
+      "path": "Tests/MLXLMTests/CBv2MTPCommittedGoodputTests.swift",
+      "sha256": "427fc8abb63c15321e506c42dae38915052ed2bd1c54281eba4b61395ba27981"
+    },
+    {
+      "path": "Tests/MLXLMTests/CBv2MTPWorkloadLifecycleTests.swift",
+      "sha256": "d033576ecb7ade6f49cd4a21a6318d110f03e2b76fba4ace8477d9a0b9732c0b"
+    }
+  ],
+  "tested_native": "74f10136f504404ec85259facc1b2365d5d948e6"
+}

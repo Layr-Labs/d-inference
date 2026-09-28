@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -26,7 +26,7 @@ pieces fit together, and what they guarantee, is explained in
 | `usageHistoryLimit` | `100` | Newest in-process usage entries per consumer, oldest first; capacity grows lazily to the limit. Does not prune durable usage or change balances. | `coordinator/payments/payments.go` (`Ledger.RecordUsage`) |
 | `DefaultInputPricePerMillion` | `50_000` | fallback input price ($0.05 / 1M tokens) | `coordinator/payments/pricing.go` |
 | `DefaultOutputPricePerMillion` | `200_000` | fallback output price ($0.20 / 1M tokens) | `coordinator/payments/pricing.go` |
-| `DefaultCacheReadDiscountPercent` | `50` | discount off the input price for prompt tokens served from a provider's prefix cache when the price row sets no `cache_read_price`; `DefaultCacheReadPrice(in) = in × 50 / 100` (fallback rate $0.025 / 1M) | `coordinator/payments/pricing.go` (`DefaultCacheReadPrice`, `RatesFor`) |
+| `DefaultCacheReadDiscountPercent` | `50` | discount off the input price for prompt tokens served from a provider's prefix cache when the price row sets no `cache_read_price`; `DefaultCacheReadPrice(in) = ⌊in × 50 / 100⌋`, computed without 64-bit overflow and `0` for `in ≤ 0` (fallback rate $0.025 / 1M) | `coordinator/payments/pricing.go` (`DefaultCacheReadPrice`, `RatesFor`) |
 | `minimumChargeMicroUSD` | `100` | per-request floor ($0.0001) applied by `Rates.CostWithMinimum`; not applied to service accounts | `coordinator/payments/pricing.go` |
 | `platformFeePercent` | see [billing.md, invariant 4](../architecture/billing.md#invariants) | global platform fee when no per-user override is set | `coordinator/payments/pricing.go` |
 | `defaultMaxOutputTokens` | `8192` | output bound when the request sets no max-tokens field and the registry has no `max_output_length` | `coordinator/api/consumer.go` |
@@ -76,10 +76,11 @@ cache_read_price NULL, updated_at)`, primary key `(account_id, model)`
 | Quantity | Formula | Citation |
 |---|---|---|
 | Raw cost | `(promptTokens − cachedTokens) × inPrice / 1_000_000 + cachedTokens × cacheReadPrice / 1_000_000 + completionTokens × outPrice / 1_000_000`, each term floored to whole µUSD; `cachedTokens` clamped to `[0, promptTokens]`, negative counts and rates bill as `0`, and each product saturates at `math.MaxInt64` instead of wrapping (an absurd provider-reported count then meets the ≤ 2× reservation overage clamp) | `coordinator/payments/pricing.go` (`Rates.Cost`, `termCost`) |
-| Cache-read discount | `cachedTokens × inPrice / 1_000_000 − cachedTokens × cacheReadPrice / 1_000_000`, emitted as `billing.cache_read_discount_micro_usd` | `Rates.CacheReadDiscount` |
+| Cache-read discount | `settle(usage with cachedTokens = 0) − settle(usage)`, where `settle` is the settlement function (`Rates.CostWithMinimum` for direct consumers, `Rates.Cost` for service accounts); emitted as `billing.cache_read_discount_micro_usd` | `CacheReadDiscount` |
 | Cost, direct consumers | `max(rawCost, minimumChargeMicroUSD)` | `Rates.CostWithMinimum` |
 | Cost, service accounts | `rawCost`; `1` when the tokens are non-zero but the products round to `0` (no per-request minimum) | `Rates.Cost` |
 | Cached tokens | `cachedTokens` is the provider's terminal `usage.cached_tokens` after `validCacheUsage` (`0` for a malformed report), the same count the consumer receives as `prompt_tokens_details.cached_tokens`; see [billing.md, invariant 5](../architecture/billing.md#invariants) | `coordinator/api/cache_usage.go` (`billableUsage`, `validCacheUsage`) |
+| Model-token promotion | every prompt token at `inPrice` — a request settled against a grant gets no cache-read discount | `coordinator/api/model_token_pricing.go` (`priceModelTokens`) |
 | Output bound | explicit `max_tokens` \| `max_completion_tokens` \| `max_output_tokens`, else registry `max_output_length`, else `defaultMaxOutputTokens` | `coordinator/api/consumer.go` (`explicitMaxTokens`, `ensureMaxTokensBound`) |
 | Reservation | `RatesFor(platform price).CostWithMinimum(Usage{PromptTokens: max(billingPromptTokens, estimatedPromptTokens), CompletionTokens: outputBound})` — no cache hit assumed, so the reservation prices every prompt token at the input rate and settlement refunds the cache-read discount | `coordinator/api/inference_admission.go` (`reserveInferenceBalance`); `coordinator/api/consumer.go` (`reservationCost`, `reservationUsage`) |
 | Provider top-up | `providerReservationCost − reserved` when the dispatched provider's custom price makes it positive; skipped for service consumers | `coordinator/api/consumer.go` (`reserveAdditionalForProvider`) |
@@ -176,7 +177,8 @@ Connected-account status `users.stripe_account_status`
 | `DefaultReductionK` | `0.0` (additive) | `floor.go` |
 | `MinUptimeForAvail` / `FullUptimeForAvail` | `0.90` / `1.00` | `floor.go` |
 | `defaultGraceSeconds` | `90` (open sessions accrue to `last_seen + grace`) | `engine.go` |
-| Health gates | `MemoryPressure < 0.8`; `ThermalState != "critical"`; online; model loaded; attested and trust ≥ minimum; linked account; hardware model known to `mdm.ModelMaxMemoryGB` | `engine.go` (`buildCandidates`) |
+| `FloorDrawBatchLimit` | `4096` pending rows; a larger plan returns an error without truncation or credit | `coordinator/store/floor_draw_batch.go` |
+| Health gates | Current complete public serving authorization; memory/thermal health and loaded-model readiness; linked account; qualified hardware capped by `hardware.ModelMaxMemoryGB` | `machine_candidates.go` (`rewardSnapshotEligible`, `rewardMemoryGB`) |
 
 Tier table (`floor.go` `floorTiers`; a machine takes the largest tier whose
 `MinGB` it meets; below 24 GB → `0`):
@@ -200,6 +202,8 @@ Formulas: `Avail(u) = clamp((u − 0.90) / 0.10, 0, 1)`;
 `job_id = floor:<epoch_id>:<provider_key>` (`coordinator/store/postgres_base_rewards.go`
 `SettleProviderFloorDraw`).
 
+`settleCandidatePlan` commits all pending rows atomically through `FloorDrawBatchStore`, rechecking current session authorization before each planned credit and before commit. A late rejection rolls back the pending plan and triggers reallocation under the same pool/account caps. Canonical identities, endpoint continuity and prior finalized rows follow the [provider authorization contract](provider-authorization.md#machine-identity-and-base-rewards). Code: `coordinator/payments/baserewards/settlement_plan.go`, `coordinator/store/floor_draw_batch.go`.
+
 ## Routes
 
 Registered in `coordinator/api/server.go`. "Auth" is the middleware plus any
@@ -213,7 +217,6 @@ the financial rate limiter ([Constants](#constants)).
 |---|---|---|
 | `GET /v1/payments/balance` | requireAuth | `coordinator/api/consumer.go` (`handleBalance`) → `BalanceResponse` |
 | `GET /v1/payments/usage` | requireAuth | `coordinator/api/consumer.go` (`handleUsage`) → `UsageResponse` |
-| `GET /v1/provider/earnings` | none; identifies by `?wallet=` / `X-Provider-Wallet` (legacy) | `coordinator/api/consumer.go` (`handleProviderEarnings`) |
 | `GET /v1/provider/account-earnings` | requireAuth | `coordinator/api/billing_handlers.go` (`handleAccountEarnings`) |
 | `GET /v1/me/summary` | requirePrivyAuth | `coordinator/api/me_handlers.go` (`handleMySummary`) |
 | `POST /v1/keys`, `PATCH /v1/keys/{id}` | requirePrivyAuth + financial | `coordinator/api/apikey_handlers.go` (`handleCreateAPIKey`, `handleUpdateAPIKey`) |
@@ -244,7 +247,7 @@ the financial rate limiter ([Constants](#constants)).
 | `GET /v1/admin/invite-codes` | requireAuth; admin | `handleAdminListInviteCodes` |
 | `DELETE /v1/admin/invite-codes` | requireAuth; admin | `handleAdminDeactivateInviteCode` |
 | `POST /v1/invite/redeem` | requireAuth + financial | `handleRedeemInviteCode` |
-| `POST /v1/admin/credit` | requireAuth; admin | `coordinator/api/billing_handlers.go` (`handleAdminCredit`) |
+| `POST /v1/admin/credit` | requireAuth; admin | `coordinator/api/admin_balance_adjustment.go` (`handleAdminCredit`) |
 | `POST /v1/admin/reward` | requireAuth; admin | `handleAdminReward` |
 | `GET /v1/admin/base-rewards` | admin (in handler) | `coordinator/api/base_rewards_handlers.go` (`handleAdminBaseRewards`) |
 
@@ -271,6 +274,22 @@ tokens settle at — the stored value, or `DefaultCacheReadPrice(input_price)`
 when the row sets none (`modelPriceQuote`, `coordinator/api/model_pricing.go`;
 response shape `types.PricingResponse`).
 The OpenRouter feed advertises the same figure as `pricing.input_cache_read`.
+
+The feed (`GET /v1/models/openrouter`) is OpenRouter's legacy flat provider
+format — a `pricing` object of USD-per-unit decimal strings (`prompt`,
+`completion`, `image`, `request`, `input_cache_read`) — which OpenRouter keeps
+supported for existing integrations
+([legacy format](https://openrouter.ai/docs/guides/community/for-providers-legacy)).
+That schema has no cache-write key, and none is needed: caching is
+provider-initiated and writes are not billed. OpenRouter's current provider
+format ([provider integration](https://openrouter.ai/docs/guides/community/for-providers))
+nests `pricing` arrays on each input modality; there the same rate would be a
+`cached_prompt` entry with `implicit: true` (provider-initiated caching), and
+unbilled SKUs are omitted rather than sent as `"0"`. Consumers see the cached
+count as `usage.prompt_tokens_details.cached_tokens` (Chat Completions) or
+`usage.input_tokens_details.cached_tokens` (Responses), the fields OpenRouter
+documents for cache reads
+([prompt caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching)).
 
 ### `GET /v1/payments/balance` and `GET /v1/payments/usage` responses
 
@@ -313,3 +332,19 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/global_payouts_postgres.go` (`ListGlobalPayoutsToReconcile`) |
 
 Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/global_payouts_withdraw.go`, `handleGlobalPayoutQuote`).
+
+## Promotional model tokens
+
+| Rule | Contract | Code |
+|---|---|---|
+| Allocation | Explicit claim, one grant per account/model; campaign claim cap and persisted signup cutoff; start-inclusive/end-exclusive claim window; issued tokens never expire | `coordinator/store/model_token_promotions.go` (`ModelTokenPromotion`) |
+| Token unit | Prompt plus completion tokens, including cached input and generated reasoning as reported in usage | `coordinator/api/model_token_settlement.go` (`settleModelTokenPromotion`) |
+| Coverage | Input first, then output; fully covered usage costs the consumer zero | `coordinator/api/model_token_admission.go` (`modelTokenQuote`) |
+| Paid fallback | Uncovered tokens use paid balance; the normal request minimum applies when any tokens are paid | `coordinator/api/model_token_admission.go` (`modelTokenQuote`) |
+| Provider earnings | Sponsored portion uses exact platform token price and fee share, with no request or one-micro-dollar payout floor; fractional earnings carry across requests per provider account. Paid portion retains its funded minimum. Same-account sponsored serving produces no payout | `coordinator/api/provider.go` (`handleComplete`) |
+| Fractional payout storage | Remainders use 1/100000000 of a micro-dollar; whole units become withdrawable atomically with grant settlement; replay never adds the fraction twice | `coordinator/store/model_token_earnings.go` (`ModelTokenPayoutScale`, `carryModelTokenEarning`) |
+| Zero-token completion | Reject any nonzero charge or payout; release token/cash holds | `coordinator/store/model_token_promotions.go` (`promotionSettlement`) |
+| Settlement reconciliation | Resume usage, key spend and fee accounting once using the stored consumer cost; insufficient cash closes and refunds holds | `coordinator/api/completion_accounting.go` (`completionAccounting`); `coordinator/api/model_token_settlement.go` (`abandonModelTokenSettlement`) |
+| Reservation recovery | Renew every 30 seconds; reclaim after ten minutes without renewal | `coordinator/api/model_token_maintenance.go` (`runModelTokenMaintenance`, `modelTokenLeaseTimeout`) |
+
+Configure using the [model token promotion runbook](../operations/model-token-promotions.md).

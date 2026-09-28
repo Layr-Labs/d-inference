@@ -14,7 +14,7 @@ import (
 //
 //   - error / 503 rate — d_inference.inference.request_outcome already carried
 //     the OR-uptime class per request; it now also carries kv_backend, so the
-//     numerator AND the denominator segment together (see or_uptime.go).
+//     numerator AND the denominator segment together (see openrouter_uptime.go).
 //   - TTFT — the measured dispatch→first-content latency existed only as the
 //     PERSISTED inference_routes.actual_ttft_ms column and the X-Timing
 //     response header. Neither is groupable on a live dashboard, and the one

@@ -69,6 +69,14 @@ public struct StartupPreloader: Sendable {
         /// refreshed load gate admits. nil (tests/legacy) keeps the
         /// planned figure; a nil RESULT for one id falls back likewise.
         public var currentRequiredGb: (@Sendable (String) async -> Double?)?
+        /// Live resident-slot gate. A skipped or failed candidate must not
+        /// consume a slot, so plans retain overflow candidates and stop only
+        /// when the serving set is actually full.
+        public var canLoadMore: (@Sendable () async -> Bool)?
+        /// Called when the driver reaches a candidate, including one it later
+        /// skips. Lets daemon status distinguish pending startup work from
+        /// models that will need a request-time load.
+        public var onCandidateStarted: (@Sendable (String) async -> Void)?
 
         public init(
             freeMemoryGb: @escaping @Sendable () async -> Double,
@@ -78,7 +86,9 @@ public struct StartupPreloader: Sendable {
             retire: @escaping @Sendable (String) async -> Void = { _ in },
             onSelfTestFailed: @escaping @Sendable (String, String) -> Void = { _, _ in },
             log: @escaping @Sendable (String) -> Void = { _ in },
-            currentRequiredGb: (@Sendable (String) async -> Double?)? = nil
+            currentRequiredGb: (@Sendable (String) async -> Double?)? = nil,
+            canLoadMore: (@Sendable () async -> Bool)? = nil,
+            onCandidateStarted: (@Sendable (String) async -> Void)? = nil
         ) {
             self.freeMemoryGb = freeMemoryGb
             self.load = load
@@ -88,6 +98,8 @@ public struct StartupPreloader: Sendable {
             self.onSelfTestFailed = onSelfTestFailed
             self.log = log
             self.currentRequiredGb = currentRequiredGb
+            self.canLoadMore = canLoadMore
+            self.onCandidateStarted = onCandidateStarted
         }
     }
 
@@ -116,7 +128,11 @@ public struct StartupPreloader: Sendable {
         var summary = Summary()
         for candidate in candidates {
             if Task.isCancelled { break }
+            if let canLoadMore = deps.canLoadMore, !(await canLoadMore()) { break }
             let modelId = candidate.modelId
+            if let onCandidateStarted = deps.onCandidateStarted {
+                await onCandidateStarted(modelId)
+            }
 
             // Memory admission WITHOUT eviction (see the design rules above).
             // Requirement recomputed LIVE when the hook is wired: an earlier

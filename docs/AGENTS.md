@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -142,13 +142,21 @@ missing file; an inline-code citation of a repo path that does not exist
 doc links to. Run it before opening a PR that touches `docs/`. It checks only
 git-tracked files by default; `--all` includes untracked drafts.
 
+For a missing relative source link in a frozen report, release note, or design
+record, the checker can verify the source at that document's exact stamped
+commit. The commit and target must exist in local Git history; current docs
+and relative documentation links still require an existing working-tree
+target. Keep frozen records unchanged and use the
+[historical source procedure](developer/historical-references.md) to navigate
+their original source. Docs Lint checks out full history for this validation.
+
 ## 7. When you change code, change these docs
 
 | Code change | Doc(s) that must move in the same PR |
 |---|---|
 | HTTP route, header, status code, JSON shape (`coordinator/api/`) | `reference/api-contracts.md`; the relevant `consumer/` how-to |
 | WebSocket message or field (`coordinator/protocol/messages.go` ↔ `provider-swift/Sources/ProviderCore/Protocol/`) | `reference/protocol-messages.md` |
-| Telemetry wire type or allowlist (Go / Swift / TS mirrors) | `reference/telemetry-schema.md`, `architecture/telemetry.md` |
+| Telemetry wire type (Go / Swift / TS mirrors) or emitter field | `reference/telemetry-schema.md`, `architecture/telemetry.md` |
 | Coordinator env var or config default | `reference/configuration.md`; `operations/coordinator-deploy.md` if prod sets it |
 | Provider CLI command, flag, env var | `provider/cli-reference.md`; `reference/configuration.md` |
 | Routing / admission / scheduling constant or gate | `architecture/routing.md` or `architecture/scheduling.md` |
@@ -159,6 +167,12 @@ git-tracked files by default; `--all` includes untracked drafts.
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |
 | New model family or engine capability | `architecture/inference.md`, `consumer/models.md`, `provider/hardware-requirements.md` |
 | Anything user-visible | `CHANGELOG.md` |
+
+CI encodes the high-confidence part of this matrix in
+`scripts/docs-impact-rules.json`. `scripts/docs-impact-check.py` evaluates it
+against each pull-request diff before the ordinary documentation lint. Keep the
+matrix and machine-readable rules aligned when adding a documentation-sensitive
+surface.
 
 ## 8. Adding, moving, retiring pages
 

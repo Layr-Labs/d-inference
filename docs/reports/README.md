@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-07 · commit `0b46b1618`
+> Last updated: 2026-09-28 · commit `0bd16a9fa`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,21 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Qwen chunk-partition parity and chunk-agnostic recurrent capture](2026-09-27-qwen-chunk-partition-parity.md) — dense Qwen3.5-9B checkpoint state is bit-identical across chunk partitions and the MoE varies cold already, so recurrent capture now takes every 256-token-aligned range end; live results for the company-leaves case.
+- [Prefix cache hit rate: production analysis and levers](2026-09-26-prefix-cache-hit-rate-analysis.md) — 1.4–5.2% per-model hit rates with cache routing on at 100%; per-file epoch rotation, write churn, checkpoint geometry, credit-vs-load selection and the 40 QPS plan cap ranked as levers.
+- [App Attest post-swap authorization failures](2026-09-22-app-attest-postswap-grants.md) — signed assertion framing, archive-gap recovery, and the distinction between prospective policy and an active grant.
+- [App Attest recovery and snapshot investigation](2026-09-22-app-attest-recovery.md) — authenticated macOS framing, failed enrollment recovery, false-zero UI reproduction and distinct unresolved native assertion failures.
+
+- [Bonsai 2 lossless performance and API stability](2026-09-18-bonsai2-lossless-performance.md) — matched M3 Ultra/M5 Max prefill, decode and memory measurements, exactness/lifecycle evidence and preserved quality/release limits.
+- [Qwen 3.8 Next native API and cache qualification](2026-09-15-qwen38-native-api-qualification.md) — synchronized native tool prompts, response/accounting fixes, final local API/cache regressions and preserved multirow/quality limits.
+- [Qwen 3.8 Next performance and stability update](2026-09-15-qwen38-performance-stability.md) — qualified opt-in speed/cache work and native tool framing, with distinct checkpoint results and open quality/release gates.
+- [Security reports](security/README.md) — focused security reviews, including the macOS 27 App Attest enforcement gaps that remain after enforcement is enabled.
+- [App Attest 0.9.4 recovery qualification](2026-09-14-app-attest-recovery-validation.md) — recovery/identity tests, real Apple renewal format and current qualification limits.
+- [App Attest release-build disconnect investigation](2026-09-14-app-attest-release-disconnects.md) — reproduced 0.9.3 callback timer crash, retained evidence, containment and fixed-build validation.
+- [Physical macOS 27 App Attest validation](2026-09-14-app-attest-macos27-validation.md) — real Apple attestations/assertions, user-session launch behavior, full provider negotiation, and verifier/serializer corrections.
+- [App Attest specification and draft review](2026-09-14-app-attest-spec-review.md) — Apple example compatibility, parser correction, credential/receipt gaps, and the proposed path to APNs/MDM retirement.
+- [GPT-OSS 20B default SSD prefix-cache qualification](2026-09-11-gptoss-default-prefix-cache.md) — authenticated reconstruction, mixed suffixes and B1/B2/B4 task checks pass; 86–91% median warm-hit TTFT reductions, with standalone transport and ephemeral-key limits retained.
+- [0.9.2 provider-only rollout review](2026-09-10-provider-092-rollout-review.md) — verified 0.9.1 coordinator compatibility, shared inference interactions and remaining fleet-release gates.
 - [Final cache routing checks](2026-09-07-final-cache-routing.md) — twenty cache-off/SSD cases pass with two isolated providers, including holder selection, tenant isolation, cancellation and cold fallback.
 - [0.9.0 implementation and validation readiness](2026-09-07-release090-readiness.md) — consolidated model, cache and routing evidence; code review readiness with signed production-key restart remaining.
 - [QAT sustained generation and matched prompt control](2026-09-07-qat-sustained-followup.md) — combined long-generation evidence satisfies sustained exposure, while original refusals, exact-cap failures and literary limits remain preserved.
@@ -214,3 +229,9 @@ Machine-generated; kept as evidence for the reports above.
 - [Actual forward-width runtime build and native validation](2026-09-06-forward-width-runtime.md) — source-bound M5 build, engine/compiler tests and retained setup failures; real-model batching remains separate.
 
 - [Representative quality cohort preparation](2026-09-06-representative-quality-cohort.md) — six-artifact prose/code/reasoning inputs with CPU checks; model execution and quality conclusions remain pending.
+
+- [Gemma QAT default cache and MTP validation](2026-09-08-gemma-qat-defaults.md) — measured decode gains, live assistant download/swap, cache isolation, capability checks and limitations.
+
+- [Gemma MTP review fixes](2026-09-08-gemma-mtp-review-fixes.md) — reproduced request-ID reuse and verification-shape findings, generation isolation fixes and regression evidence.
+
+- [Gemma QAT September 10 merge and validation](2026-09-10-gemma-qat-review-sync.md) — review fixes, merged-source tests, new artifact identity and model/HTTP revalidation status.

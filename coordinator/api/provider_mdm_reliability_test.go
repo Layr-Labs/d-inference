@@ -318,46 +318,6 @@ func TestVerifyProviderViaMDM_PostureMismatchTerminal(t *testing.T) {
 	}
 }
 
-// TestVerifyProviderViaMDM_TimeoutTransient: device enrolled but no SecurityInfo
-// webhook ever arrives → the waiter times out. A timeout is APN latency / device
-// sleep, NOT evidence of compromise: outcome is transient, the provider is NOT
-// marked untrusted, trust stays self_signed, and the reason is
-// "securityinfo-timeout".
-//
-// VerifyProvider's WaitForSecurityInfo timeout is hardcoded at 90s and cannot be
-// shortened without editing source, so this end-to-end timeout test is OPT-IN
-// (set RUN_MDM_TIMEOUT_TEST=1) to keep the default suite fast and deterministic.
-// The fast, deterministic proof that a "timeout" error string drives the
-// securityinfo-timeout bucket lives in the mdm package
-// (TestVerifyProviderTimeoutErrorString, 50ms) plus the classification logic
-// exercised by the other outcomes here.
-func TestVerifyProviderViaMDM_TimeoutTransient(t *testing.T) {
-	if os.Getenv("RUN_MDM_TIMEOUT_TEST") != "1" {
-		t.Skip("opt-in: set RUN_MDM_TIMEOUT_TEST=1 (exercises the real 90s SecurityInfo wait)")
-	}
-	fake := &fakeMDMServer{
-		device:      &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
-		commandUUID: "cmd-timeout",
-	}
-	srv, p := mdmReliabilityServer(t, fake)
-
-	// Deliberately never deliver a webhook → WaitForSecurityInfo times out.
-	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
-
-	if outcome != mdmVerifyTransient {
-		t.Errorf("outcome = %v, want mdmVerifyTransient", outcome)
-	}
-	if got := p.GetMDMFailureReason(); got != "securityinfo-timeout" {
-		t.Errorf("MDMFailureReason = %q, want %q", got, "securityinfo-timeout")
-	}
-	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
-		t.Errorf("trust = %q, want %q (timeout must not change trust)", lvl, registry.TrustSelfSigned)
-	}
-	if status := srv.registry.GetProvider("prov-mdm").GetStatus(); status == registry.StatusUntrusted {
-		t.Error("timeout must NOT mark provider untrusted")
-	}
-}
-
 // TestVerifyProviderViaMDM_DeviceNotFoundTransient: MicroMDM has no record of
 // the serial → transient outcome (provider may simply not have enrolled yet)
 // and the reason buckets as "device-not-found". Trust is untouched.

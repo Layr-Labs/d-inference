@@ -1,3 +1,4 @@
+import { summarizeSnapshotVerification, verificationCountLabel } from "@/lib/verification";
 import { Cpu, Activity, ShieldCheck, Server } from "lucide-react";
 import { activeNetworkPowerWatts } from "@/lib/network-power";
 import { formatPower } from "@/lib/format-power";
@@ -6,12 +7,12 @@ import type { PlatformStats } from "./platform-types";
 import type { NetworkWindowTotals } from "./types";
 
 export function NetworkSummary({ stats, totals24h }: { stats: PlatformStats; totals24h: NetworkWindowTotals | null }) {
-  const hardware = stats.providers.filter((provider) => provider.trust_level === "hardware").length;
+  const v = summarizeSnapshotVerification(stats.providers);
   const requests = stats.last_24h_requests ?? totals24h?.jobs;
   const tokens = stats.last_24h_total_tokens ?? totals24h?.tokens;
   const metrics = [
-    { label: "Macs online", value: stats.active_providers.toLocaleString(), detail: "Connected Apple Silicon providers", icon: Cpu },
-    { label: "Hardware verified", value: hardware.toLocaleString(), detail: "Providers with hardware attestation", icon: ShieldCheck },
+    { label: "Connections", value: stats.active_providers.toLocaleString(), detail: stats.verification_counts ? `${stats.verification_counts.known_unique_machines} known unique machines · ${stats.verification_counts.connections_without_machine_identity} unidentified connections` : "Connected providers; unique machines unknown", icon: Cpu },
+    { label: "Verified at snapshot", value: verificationCountLabel(v), detail: `${v.known} of ${v.total} verdicts available · ${v.unknown} unknown. ${v.appAttest} App Attest · ${v.legacy} legacy · ${v.overlap} both (counted once)`, icon: ShieldCheck },
     { label: "Requests · 24 hours", value: requests === undefined ? "—" : formatCompactNumber(requests), detail: `${formatCompactNumber(stats.total_requests)} since launch`, icon: Activity },
     { label: "Tokens · 24 hours", value: tokens === undefined ? "—" : formatCompactNumber(tokens), detail: `${formatCompactNumber(stats.total_tokens)} since launch`, icon: Server },
   ];
@@ -26,6 +27,7 @@ export function NetworkResources({ stats }: { stats: PlatformStats }) {
   const watts = activeNetworkPowerWatts(stats);
   const utilization = stats.network_utilization?.utilization;
   const resources = [
+    ["Reported macOS 27+", stats.verification_counts ? `${stats.verification_counts.reported_macos_27_or_later} / ${stats.verification_counts.connections_with_reported_os} reporting OS (not an App Attest count)` : "Unavailable"],
     ["Unified memory", stats.total_memory_gb >= 1000 ? `${(stats.total_memory_gb / 1000).toFixed(1)} TB` : `${stats.total_memory_gb.toLocaleString()} GB`],
     ["Memory bandwidth", formatBandwidth(stats.total_bandwidth_gbs)],
     ["GPU cores", stats.total_gpu_cores.toLocaleString()],

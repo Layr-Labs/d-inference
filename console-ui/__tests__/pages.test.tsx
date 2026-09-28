@@ -28,7 +28,7 @@ vi.mock("@/lib/store", () => ({
   }),
 }));
 
-// Mock @/hooks/useAuth — provides walletAddress etc
+// Mock @/hooks/useAuth — authenticated session with no profile details
 vi.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({
     ready: true,
@@ -38,13 +38,12 @@ vi.mock("@/hooks/useAuth", () => ({
     logout: vi.fn(),
     getAccessToken: vi.fn().mockResolvedValue("mock-token"),
     email: null,
-    walletAddress: null,
     displayName: null,
   }),
 }));
 
-// Mock @/components/providers/PrivyClientProvider
-vi.mock("@/components/providers/PrivyClientProvider", () => ({
+// Mock @/components/app-providers/PrivyClientProvider
+vi.mock("@/components/app-providers/PrivyClientProvider", () => ({
   useAuthContext: () => ({
     ready: true,
     authenticated: true,
@@ -53,13 +52,6 @@ vi.mock("@/components/providers/PrivyClientProvider", () => ({
     logout: vi.fn(),
     getAccessToken: vi.fn().mockResolvedValue("mock-token"),
   }),
-}));
-
-// Mock Privy Solana hooks — BillingContent uses them directly, and they
-// panic without a PrivyProvider wrapper.
-vi.mock("@privy-io/react-auth/solana", () => ({
-  useWallets: () => ({ wallets: [] }),
-  useSignAndSendTransaction: () => ({ signAndSendTransaction: vi.fn() }),
 }));
 
 // Mock @/lib/api — prevent real fetches
@@ -72,8 +64,6 @@ vi.mock("@/lib/api", async (importOriginal) => {
       balance_usd: 10.0,
     }),
     fetchUsage: vi.fn().mockResolvedValue([]),
-    deposit: vi.fn().mockResolvedValue(undefined),
-    withdraw: vi.fn().mockResolvedValue(undefined),
     redeemInviteCode: vi.fn().mockResolvedValue({
       credited_usd: "5.00",
       balance_usd: "15.00",
@@ -264,7 +254,7 @@ describe("ProvidersPage", () => {
       decode_tps: 50,
       system_metrics: { memory_pressure: 0.3, cpu_usage: 0.2, thermal_state: "nominal" },
       reputation: {
-        score: 0.9, total_jobs: 100, successful_jobs: 99, failed_jobs: 1,
+        total_jobs: 100, successful_jobs: 99, failed_jobs: 1,
         total_uptime_seconds: 3600, avg_response_time_ms: 200, challenges_passed: 5, challenges_failed: 0,
       },
       lifetime_requests_served: 100,
@@ -349,7 +339,7 @@ describe("ProvidersPage", () => {
       pending_requests: 0,
       max_concurrency: 8,
       reputation: {
-        score: 0.8, total_jobs: 50, successful_jobs: 49, failed_jobs: 1,
+        total_jobs: 50, successful_jobs: 49, failed_jobs: 1,
         total_uptime_seconds: 3600, avg_response_time_ms: 250, challenges_passed: 5, challenges_failed: 0,
       },
       lifetime_requests_served: 50,

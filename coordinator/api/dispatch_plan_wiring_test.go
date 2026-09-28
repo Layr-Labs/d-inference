@@ -44,14 +44,12 @@ func planWiringProvider(t *testing.T, reg *registry.Registry, id, model string, 
 		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities: &protocol.PrivacyCapabilities{
-			TextBackendInprocess:    true,
-			TextProxyDisabled:       true,
-			PythonRuntimeLocked:     true,
-			DangerousModulesBlocked: true,
-			SIPEnabled:              true,
-			AntiDebugEnabled:        true,
-			CoreDumpsDisabled:       true,
-			EnvScrubbed:             true,
+			TextBackendInprocess: true,
+			TextProxyDisabled:    true,
+			SIPEnabled:           true,
+			AntiDebugEnabled:     true,
+			CoreDumpsDisabled:    true,
+			EnvScrubbed:          true,
 		},
 	})
 	p.Mu().Lock()
@@ -77,7 +75,7 @@ func planWiringProvider(t *testing.T, reg *registry.Registry, id, model string, 
 
 // planWiringPlan reserves through the production scan to obtain a real
 // DispatchPlan, then releases the primary reservation (the routability-probe
-// idiom, helpers_ws_test.go findRoutableProvider).
+// idiom, provider_websocket_helpers_test.go findRoutableProvider).
 func planWiringPlan(t *testing.T, reg *registry.Registry, model string) *registry.DispatchPlan {
 	t.Helper()
 	probe := &registry.PendingRequest{
@@ -524,5 +522,25 @@ func TestCollectCapacityQuotesRefinesOnlyOnHighConfidence(t *testing.T) {
 
 	if _, delivered := run(protocol.CapacityConfidenceLow); delivered {
 		t.Fatal("low-confidence quote must never move the launch off the 50% ceiling")
+	}
+	deadline = 0
+	if _, delivered := run(protocol.CapacityConfidenceHigh); delivered {
+		t.Fatal("an exempt request must not acquire an immediate SLA-based hedge")
+	}
+}
+
+func TestFirstContentSLAExemptionPreservesCapacityProbes(t *testing.T) {
+	s := newTestServerForDispatch(t)
+	const model = "exempt-capacity-probe-model"
+	for i := 0; i < 3; i++ {
+		planWiringProvider(t, s.registry, fmt.Sprintf("exempt-probe-%d", i), model, int64(i)*400)
+	}
+	d := &dispatchState{s: s, model: model, plan: planWiringPlan(t, s.registry, model), timing: &registry.RequestTiming{ReceivedAt: time.Now()}, deadline: 0, speculativeAt: time.Second}
+	d.maybeProbePlanCandidates()
+	if !d.probesLaunched {
+		t.Fatal("account exemption disabled capacity probes")
+	}
+	if d.firstTokenExpired() || d.deadline != 0 {
+		t.Fatal("capacity probe reinstated SLA")
 	}
 }

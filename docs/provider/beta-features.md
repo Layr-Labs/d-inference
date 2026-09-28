@@ -1,6 +1,6 @@
 # Beta features
 
-> Last updated: 2026-09-06 · commit `615d96328`
+> Last updated: 2026-09-27 · commit `c2fa18e02`
 
 Turn experimental engine behaviour on or off per machine with `darkbloom beta`,
 which writes keys into `provider.toml` so every serve path (LaunchAgent daemon,
@@ -51,8 +51,8 @@ so an environment-variable toggle would silently no-op for the normal daemon
    is always written on an explicit toggle, so a future default flip cannot
    silently move your provider; `… is already enabled.` is printed only when
    the file already pins the requested value. Without `--config`, the write
-   goes to the canonical `~/.config/darkbloom/provider.toml` even if the
-   snapshot was just migrated from a legacy location. Unknown ids exit with
+   goes to `~/.config/darkbloom/provider.toml`, the only config path read by
+   default. Unknown ids exit with
    `Unknown beta feature '<id>'. Available: …`.
 
 4. Restart when told to. Every current feature is a process-start latch:
@@ -69,7 +69,7 @@ so an environment-variable toggle would silently no-op for the normal daemon
 |---|---|---|---|---|
 | `gemma-prefill-layer18` | `[gemma_optimizations] prefill_layer18` | `true` | yes | Submit Gemma prefill work every 18 layers. Disable to restore the legacy one-final-submission prefill. Projected into the process as `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18` / `0` |
 | `gemma-weighted-r1` | `[gemma_optimizations] weighted_r1` | `true` | yes | Coupled weighted-unsort + safe exact-shape R1 expert paths for Gemma MoE; neither half can be selected alone. Projected as `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1/0` and `MLX_GATHER_QMM_EXPERT_SLICES=trust/0` |
-| `mtp` | `[backend] mtp_mode` | `auto` | yes | Multi-token prediction (speculative decoding) on CBv2 targets. `auto` turns MTP on for Qwen 3.5-family checkpoints (`qwen3_5`, `qwen3_5_moe`) whose `config.json` declares an embedded head after artifact validation, and leaves other models target-only. `enable` writes `on` (required for separately published catalog assistants and `mtp_drafter_path` overrides); `disable` writes `off`. Resolution and load fail open to target-only decode |
+| `mtp` | `[backend] mtp_mode` | `auto` | yes | Multi-token prediction (speculative decoding) on CBv2 targets. `auto` turns MTP on for Qwen 3.5-family checkpoints (`qwen3_5`, `qwen3_5_moe`) whose `config.json` declares an embedded head after artifact validation, and resolves the external assistant for exact `gemma-4-26b-qat-4bit`. Other models stay target-only. `enable` writes `on` for other supported targets; `disable` writes `off`. Resolution and load fail open to target-only decode |
 
 `darkbloom beta list` shows `auto (model-aware)` for MTP until you pin it;
 `darkbloom status` prints the resulting per-slot MTP and KV posture.
@@ -79,7 +79,7 @@ so an environment-variable toggle would silently no-op for the normal daemon
 | Variable | Relationship to the toggle | Source |
 |---|---|---|
 | `DARKBLOOM_CBV2_MTP` | Process-wide **kill switch**: `0`, `false`, `no` or `off` disables MTP regardless of `mtp_mode`; any other value, or unset, defers to config. On the LaunchAgent passthrough list | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` (`killSwitchEnabled`) |
-| `DARKBLOOM_CBV2_PAGED_KV` | Kill switch for the paged KV backend (`0` forces contiguous everywhere) — not a beta feature. Candidate `auto` selects paged only for the [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts), with automatic fallback; all other IDs stay contiguous. Explicit global/per-model backend settings remain available. There is no env var that turns paged on. Passthrough-listed | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` (`killSwitchEnvKey`, `preferredBackend`) |
+| `DARKBLOOM_CBV2_PAGED_KV` | Kill switch for the paged KV backend (`0` forces contiguous everywhere) — not a beta feature. Candidate `auto` selects paged only for the [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts), with automatic fallback; all other IDs stay contiguous. Explicit global/per-model backend settings remain available. There is no env var that turns paged on. Passthrough-listed | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`killSwitchEnvKey`, `preferredBackend`) |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`, `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT`, `MLX_GATHER_QMM_EXPERT_SLICES` | **Outputs**, not inputs: `GemmaOptimizationEnvironment.apply` overwrites them from config at every serve start. The single exception is a shell `MLX_GATHER_QMM_EXPERT_SLICES=1`, which restores the descriptor-retract drain instead of the `trust` default and is copied into the daemon plist for that reason | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` (`projection`, `daemonDrainPassthrough`) |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | Tighten-only cap on MTP verification width; passthrough-listed | [`reference/configuration.md`](../reference/configuration.md) |
 
@@ -99,7 +99,7 @@ every `darkbloom start` and changes nothing
 (`provider-swift/Sources/ProviderCore/Config/RetiredKnobWarnings.swift`).
 
 Environment variables (`EngineV2Config.retiredEnvironmentKeys`,
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift`):
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift`):
 
 | Variable | Was |
 |---|---|
@@ -121,8 +121,11 @@ tier re-adopted them. Their semantics are in
 `provider.toml` keys (`BackendSettings.RetiredCodingKeys`,
 `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`): `[backend]
 continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`,
-`kv_quant`. Delete them from the file to silence the warnings. The former beta
-ids `adaptive-prefill` and `kv-quant` no longer exist.
+`kv_quant`, `mtp`. Delete them from the file to silence the warnings. The
+boolean `mtp` key is superseded by `mtp_mode`: a bare `mtp = true` or
+`mtp = false` is ignored and MTP follows `mtp_mode` (default `auto`), so set
+`mtp_mode = "off"` to keep MTP off or `mtp_mode = "on"` to force it on. The
+former beta ids `adaptive-prefill` and `kv-quant` no longer exist.
 
 ## Verify
 

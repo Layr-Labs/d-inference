@@ -258,3 +258,30 @@ func TestGenericEndpointStreamEmittersUseNativeSchemas(t *testing.T) {
 		}
 	})
 }
+
+// A validated cache hit is reported the way each endpoint's own schema bills
+// it, so a caller can reconcile the charge: OpenAI completions nest
+// cached_tokens under prompt_tokens (a subset), Anthropic messages split the
+// cache read out of input_tokens.
+func TestGenericEndpointResponsesReportCachedTokens(t *testing.T) {
+	pr := &registry.PendingRequest{RequestID: "request-id", PublicModel: "public-model"}
+	hit := protocol.UsageInfo{PromptTokens: 10_000, CachedTokens: 8_000, CompletionTokens: 500}
+
+	completions := buildCompletionsResponse(pr, extractedMessage{Content: "ok"}, hit)["usage"].(map[string]any)
+	details, ok := completions["prompt_tokens_details"].(map[string]any)
+	if completions["prompt_tokens"] != 10_000 || completions["total_tokens"] != 10_500 || !ok || details["cached_tokens"] != 8_000 {
+		t.Fatalf("completions usage = %#v", completions)
+	}
+	messages := buildMessagesResponse(pr, extractedMessage{Content: "ok"}, hit)["usage"].(map[string]any)
+	if messages["input_tokens"] != 2_000 || messages["cache_read_input_tokens"] != 8_000 || messages["output_tokens"] != 500 {
+		t.Fatalf("messages usage = %#v", messages)
+	}
+
+	miss := protocol.UsageInfo{PromptTokens: 10_000, CompletionTokens: 500}
+	if u := buildCompletionsResponse(pr, extractedMessage{}, miss)["usage"].(map[string]any); u["prompt_tokens_details"] != nil {
+		t.Fatalf("miss completions usage carries details: %#v", u)
+	}
+	if u := buildMessagesResponse(pr, extractedMessage{}, miss)["usage"].(map[string]any); u["input_tokens"] != 10_000 || u["cache_read_input_tokens"] != nil {
+		t.Fatalf("miss messages usage = %#v", u)
+	}
+}

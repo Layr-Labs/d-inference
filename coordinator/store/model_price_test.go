@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"testing"
-	"time"
 )
 
 // The cache-read rate round-trips through both backends: unset stays unset
@@ -176,17 +175,6 @@ func TestUsageRecordCachedTokens(t *testing.T) {
 			}
 			if all == nil || all.CachedTokens != 8_000 {
 				t.Fatalf("UsageRecords row = %+v, want cached 8000", all)
-			}
-			since := s.UsageRecordsSince(time.Now().Add(-time.Hour))
-			var recent *UsageRecord
-			for _, r := range since {
-				if r.RequestID == byConsumer[0].RequestID {
-					r := r
-					recent = &r
-				}
-			}
-			if recent == nil || recent.CachedTokens != 8_000 {
-				t.Fatalf("UsageRecordsSince row = %+v, want cached 8000", recent)
 			}
 		})
 	}

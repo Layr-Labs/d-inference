@@ -259,8 +259,8 @@ type dispatchState struct {
 	hedgeGovernorVerdict string
 	// providerDispatches counts inference frames actually handed to a
 	// provider — primary, queued, plan-retry, and speculative-backup sends
-	// alike, incremented in the write handoff callback that stamps
-	// Timing.DispatchedAt. Client-visible exhaustion messages report this
+	// alike, incremented only after the writer confirms final authorization
+	// and socket handoff. Client-visible exhaustion messages report this
 	// machine count; route rows keep the loop index d.attempt untouched.
 	providerDispatches int
 	// visionImageCount is the number of media parts in the request (0 for
@@ -305,6 +305,7 @@ func (d *dispatchState) configurePending(pr *registry.PendingRequest) {
 	if pr == nil {
 		return
 	}
+	stampModelTokenReservation(pr, modelTokenReservation(d.r))
 	pr.ConsumerEndpoint = d.consumerEndpoint
 	pr.RequestedStopSequences = append(
 		pr.RequestedStopSequences[:0], d.requestedStopSequences...)
@@ -831,7 +832,7 @@ func (d *dispatchState) noteProviderBodyTooLarge(errText string, bodyBytes int) 
 }
 
 func (d *dispatchState) preflightLegacyCacheBust() {
-	_, err := minimumLegacyCacheBustOverflow(d.rawBody, d.requiresVision)
+	_, err := minimumLegacyCacheBustOverflow(d.rawBody)
 	if errors.Is(err, errProviderBodyTooLarge) {
 		d.minPrefixCacheProtocol = 1
 	}
@@ -848,8 +849,7 @@ func (d *dispatchState) noteProviderBodyTooLargeFor(
 		d.excludeProviders = make(map[string]struct{})
 	}
 	d.excludeProviders[provider.ID] = struct{}{}
-	bodyBytes, _ := providerBodySizeError(
-		d.rawBody, d.requiresVision, provider)
+	bodyBytes, _ := providerBodySizeError(d.rawBody, provider)
 	d.noteProviderBodyTooLarge(errText, bodyBytes)
 }
 
@@ -1417,7 +1417,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			Timing:       d.timing,
 		}
 		d.configurePending(queuePR)
-		if receivedAt := timingReceivedAt(d.timing); !receivedAt.IsZero() {
+		if receivedAt := timingReceivedAt(d.timing); !receivedAt.IsZero() && d.deadline > 0 {
 			queuePR.FirstContentDeadline = receivedAt.Add(d.deadline)
 		}
 		if !queuePR.RefreshFirstContentBudget(time.Now()) {
@@ -1664,9 +1664,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", http.StatusInternalServerError))
 			return outcomeRetry
 		}
-		// Version-gated penalty strip plus protocol-0 cache isolation. The queued
-		// path seals here, separately from dispatchOneProvider.
-		sealedBody, err := bodyForCacheAttempt(d.rawBody, d.requiresVision, d.provider, d.pr)
+		// Protocol-0 cache isolation. The queued path seals here, separately
+		// from dispatchOneProvider.
+		sealedBody, err := bodyForCacheAttempt(d.rawBody, d.pr)
 		if err != nil {
 			s.registry.ForgetCacheAttempt(d.pr)
 			d.provider.RemovePending(d.requestID)
@@ -1705,17 +1705,8 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// while the aggregator's cancel clock keeps running.
 		writeCtx, cancelWrite := firstTokenWriteContext(r.Context(), timingReceivedAt(d.timing), d.deadline)
 		d.pr.Profile.Mark(registry.StampWriteSubmitted)
-		_, writeErr := writeProviderInferenceRequestDeferred(
-			writeCtx,
-			d.provider,
-			providerInferenceFrameBuilder(
-				d.requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, d.pr),
-			func(metadata registry.TextFrameWriteMetadata) {
-				d.timing.DispatchedAt = metadata.DequeuedAt
-				d.noteProviderDispatched()
-				d.pr.Profile.MarkAt(registry.StampWriteDequeued, metadata.DequeuedAt)
-			},
-		)
+		_, writeErr := d.writeQueuedProviderInferenceRequest(writeCtx,
+			providerInferenceFrameBuilder(d.requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, d.pr))
 		cancelWrite()
 		if writeErr == nil {
 			d.pr.Profile.Mark(registry.StampWriteDone)
@@ -1734,6 +1725,11 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				d.updateRoutingOutcome(d.errorRoutingOutcome(
 					"timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
 				return outcomeFailFast
+			}
+			if errors.Is(writeErr, registry.ErrProviderDraining) {
+				d.setLastError(protocol.ProviderDrainingForUpdate, http.StatusServiceUnavailable)
+				d.updateRoutingOutcome(d.errorRoutingOutcome("error", "draining", http.StatusServiceUnavailable))
+				return outcomeRetry
 			}
 			d.setLastError("failed to send request to provider", 0)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", 0))
@@ -2082,7 +2078,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 
 	deadlineWait := d.firstTokenWait(d.deadline)
 	speculativeTimer := time.NewTimer(d.firstTokenSpeculativeWait())
-	deadlineTimer := time.NewTimer(deadlineWait)
+	deadlineTimer := d.newFirstContentTimer(deadlineWait)
 	// Routing v2 W2: the probe round may deliver ONE refined (strictly
 	// earlier) absolute speculative launch instant. Read through a local so
 	// the arm disarms itself after its single use; a nil channel (no probe
@@ -2436,7 +2432,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 	r := d.r
 	provider, pr := d.provider, d.pr
 
-	remainingDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	remainingDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
@@ -2591,7 +2587,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 	r := d.r
 	provider, pr := d.provider, d.pr
 
-	raceDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	raceDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	// One-shot extension: when the race deadline expires but a racer
 	// has shown liveness (preamble received), the race continues up to
 	// leftover first-token budget (capped by preambleContentTimeout).
@@ -2871,7 +2867,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				}
 				if ext > 0 {
 					raceExtended = true
-					raceDeadline = time.NewTimer(ext)
+					raceDeadline = d.newFirstContentTimer(ext)
 					continue
 				}
 			}
@@ -2937,7 +2933,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Provider, pr *registry.PendingRequest) dispatchOutcome {
 	s := d.s
 	r := d.r
-	remainingPrimary := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	remainingPrimary := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
@@ -3049,7 +3045,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 	// primary's 4xx/422/429, so the primary keeps the attribution even
 	// though the backup keeps racing (noteServingSlotFor's freeze rule).
 	d.noteServingSlotFor(backupPR)
-	backupDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	backupDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-backupPR.ChunkCh:
@@ -3171,7 +3167,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr *registry.PendingRequest) dispatchOutcome {
 	s := d.s
 	r := d.r
-	primaryDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	primaryDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
@@ -3295,14 +3291,14 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 		}
 	}()
 
-	firstContentBudget := inferenceTimeout
+	firstContentBudget := d.deadline
 	if d.preambleLiveness {
 		firstContentBudget = preambleContentTimeout
 	}
 	if remaining, ok := d.firstTokenRemaining(); ok && remaining < firstContentBudget {
 		firstContentBudget = remaining
 	}
-	chunkTimer := time.NewTimer(firstContentBudget)
+	chunkTimer := d.newFirstContentTimer(firstContentBudget)
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
@@ -3803,6 +3799,10 @@ func (d *dispatchState) writeCommittedResponse() {
 	// fields onto the pending request so chat-completions writers can attach
 	// them to the JSON body (OpenAI SDKs often hide custom headers).
 	info := collectCommittedProviderInfo(provider)
+	if pr.DispatchVerification.ObservedAt != 0 {
+		verification := pr.DispatchVerification
+		info.Verification = &verification
+	}
 	writeCommittedProviderHeaders(w, info)
 	d.writeTimingHeaderWithProfile(w, pr)
 	d.stampCommitted(pr)

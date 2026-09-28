@@ -53,25 +53,9 @@ extension Start {
         }
 
         do {
-            try await performDeviceCodeLogin(
+            try await performTerminalDeviceLogin(
                 coordinatorURL: coordinatorURL,
-                onDisplayCode: { userCode, verificationURI, expiresIn in
-                    print()
-                    print("  Open this URL in your browser:")
-                    print()
-                    print("    \(verificationURI)")
-                    print()
-                    print("  Then enter this code:")
-                    print()
-                    print("    \(userCode)")
-                    print()
-                    print("  Waiting for approval (expires in \(expiresIn / 60) minutes)...")
-                },
-                onPollTick: {
-                    print(".", terminator: "")
-                    fflush(stdout)
-                }
-            )
+                introduction: "  Open this URL in your browser:")
             print()
             print("  Account linked successfully!")
             print()

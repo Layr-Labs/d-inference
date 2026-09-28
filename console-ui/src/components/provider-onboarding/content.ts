@@ -6,7 +6,7 @@ export const SETUP_STEPS = [
     title: "Install on your Mac",
     description: "Open Terminal on the Mac you want to connect, then run this command.",
     command: INSTALL_COMMAND,
-    note: "If the installer opens System Settings, review and install the device enrollment profile. Then return to Terminal to finish setup.",
+    note: "On macOS 27 or later, setup uses App Attest without a Darkbloom MDM profile. On older macOS, the installer opens System Settings for device enrollment. Upgrade to macOS 27 to avoid MDM; Darkbloom MDM will be deactivated soon.",
   },
   {
     id: "link",
@@ -37,8 +37,8 @@ export const PROVIDER_FAQS = [
     answer: "The provider runs AI models on your Mac’s GPU using Apple Silicon’s unified memory. You choose which models to serve in the Terminal picker. The provider runs as a background service, and darkbloom stop stops it.",
   },
   {
-    question: "Why do I need to install a device profile?",
-    answer: "Device enrollment lets Darkbloom verify your Mac’s hardware identity and security settings. The installer opens the profile in System Settings for you to review and approve. If you missed that step, run darkbloom enroll to resume it.",
+    question: "Do I need to install a device profile?",
+    answer: "macOS 27 or later uses App Attest without new Darkbloom MDM enrollment. Link your account and start the current provider; serving begins after Darkbloom approves its verification. Older macOS uses the legacy device profile. Upgrade to macOS 27 to avoid MDM: Darkbloom MDM will be deactivated soon. Keep existing profiles installed until darkbloom unenroll confirms App Attest migration is ready, and keep any employer management profile.",
   },
   {
     question: "Can I keep using my Mac?",

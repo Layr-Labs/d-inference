@@ -1,0 +1,845 @@
+/* R9 — map walkthrough + optional chat (Figma section 286:63) --------------
+   Reference viewport: 1440 × 835. Six authored frames:
+     66  full map, "Not a data center." headline, stacked telemetry, live badge
+     67  camera on the routed Mac, provider card unfolded from the tile
+     68  card folded, "See it route, right now →", chat HUD docked at right
+     71  the same HUD carrying a conversation
+     70  the routed tile enlarged into a clean blue field (story hand-off)
+   Scroll drives the camera through 66 → 67 → 68 → 70 only. The chat panel is
+   an independent Q&A surface: it slides in with frame 68 but never reads or
+   moves scroll, and nothing on the map reacts to it. */
+
+/* `overflow: hidden` is still a programmatic scroll container. Focusing the
+   prompt near the HUD's lower edge could otherwise shift every absolute child
+   of the pinned scene while window.scrollY stayed fixed. */
+.network-sticky {
+  overflow: clip;
+}
+
+/* Live badge — 286:460 -------------------------------------------------- */
+.network-live-badge {
+  align-items: center;
+  backdrop-filter: blur(5px);
+  background: rgba(255, 255, 255, .07);
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 999px;
+  box-sizing: border-box;
+  color: #548cff;
+  display: flex;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 8px;
+  height: 26px;
+  left: 40px;
+  line-height: 1.2;
+  opacity: var(--chrome-fade, 1);
+  padding: 0 10px;
+  position: absolute;
+  top: 83px;
+  transform: translate3d(0, 0, 0);
+  transition:
+    opacity 420ms cubic-bezier(.16, .84, .28, 1) 130ms,
+    transform 540ms cubic-bezier(.16, .84, .28, 1) 130ms;
+  z-index: 8;
+}
+
+.network-live-badge .pulse-dot {
+  animation: live-blink 1.7s ease-in-out infinite;
+  background: transparent;
+  box-shadow: none;
+  height: 10px;
+  margin: 0;
+  position: relative;
+  width: 10px;
+}
+
+.network-live-badge .pulse-dot::before {
+  background: #3b67ff;
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(59, 103, 255, .9);
+  content: "";
+  inset: 2px;
+  position: absolute;
+}
+
+.network-live-badge .pulse-dot::after {
+  border: 1px solid rgba(59, 103, 255, .28);
+  border-radius: 50%;
+  content: "";
+  inset: -2px;
+  position: absolute;
+}
+
+@keyframes live-blink {
+  0%, 100% { opacity: .55; }
+  50% { opacity: 1; }
+}
+
+/* Headlines — 286:458 / 286:1345 / 286:1346 ---------------------------- */
+.network-narrative {
+  left: 11.111111vw;
+  opacity: 1;
+  position: absolute;
+  top: 39.281437svh;
+  transform: translate3d(0, 0, 0);
+  transition:
+    opacity 480ms cubic-bezier(.16, .84, .28, 1) 40ms,
+    transform 620ms cubic-bezier(.16, .84, .28, 1) 40ms;
+  width: 553px;
+  z-index: 7;
+}
+
+.network-overview-title,
+.network-route-copy > p {
+  font-size: 44px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.network-overview-title {
+  opacity: var(--overview-opacity, 1);
+  transform: translate3d(0, var(--overview-y, 0), 0);
+  width: 466px;
+}
+
+.network-route-copy {
+  inset: 0 auto auto 0;
+  opacity: var(--route-opacity, 0);
+  position: absolute;
+  transform: translate3d(0, var(--route-y, 0), 0);
+  width: 553px;
+}
+
+/* The CTA is a real control: it only focuses the chat input. Figma 67 keeps
+   it 60px lower than its resting place; it rises into position with the HUD. */
+.network-route-cta {
+  background: none;
+  border: 0;
+  color: #8fa9ff;
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  font-size: 20px;
+  line-height: 1.2;
+  margin: 23px 0 0;
+  opacity: var(--cta-reveal, 0);
+  padding: 0;
+  text-align: left;
+  transform: translate3d(0, calc((1 - var(--cta-reveal, 0)) * 60px), 0);
+  transition: opacity 160ms ease;
+  width: 285px;
+}
+
+.network-route-cta:hover,
+.network-route-cta:focus-visible {
+  color: #b9c9ff;
+  opacity: var(--cta-reveal, 0);
+  outline: none;
+}
+
+.route-arrow.is-mobile { display: none; }
+
+.network-sticky:not([data-chat-ready="true"]) .network-route-cta {
+  pointer-events: none;
+}
+
+/* Telemetry stack — 286:465 ---------------------------------------------- */
+.network-stats {
+  bottom: auto;
+  color: #8fa9ff;
+  display: flex;
+  flex-direction: column;
+  font-size: 14px;
+  gap: 21px;
+  height: auto;
+  justify-content: flex-start;
+  left: 42px;
+  line-height: 1.2;
+  opacity: var(--chrome-fade, 1);
+  right: auto;
+  top: 76.526946svh;
+  transform: translate3d(0, 0, 0);
+  transition:
+    opacity 420ms cubic-bezier(.16, .84, .28, 1) 190ms,
+    transform 540ms cubic-bezier(.16, .84, .28, 1) 190ms;
+  width: 150px;
+  z-index: 7;
+}
+
+.network-stats span,
+.network-stats .stat-online,
+.network-stats .stat-tokens,
+.network-stats .stat-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  justify-self: auto;
+  position: static;
+  white-space: normal;
+}
+
+.network-stats b {
+  color: #fff;
+  font-size: 14px;
+  font-weight: 400;
+  margin: 0;
+}
+
+/* Map — group 286:66 is 1283.270 × 638.023 at (92, 109.734) -------------- */
+.grid-world {
+  aspect-ratio: 1283.2701416015625 / 638.0233154296875;
+  bottom: auto;
+  left: calc(50% - min(44.558vw, 641.635px) + min(.946875vw, 13.635px));
+  max-width: 1283.2701416015625px;
+  right: auto;
+  top: 13.141841svh;
+  transform: translate3d(var(--grid-pan-x, 0), var(--grid-pan-y, 0), 0) scale(var(--grid-zoom, 1));
+  transform-origin: 0 0;
+  width: 89.116vw;
+}
+
+.grid-map-shell {
+  aspect-ratio: inherit;
+  inset: 0;
+  max-width: none;
+  transform: scale(calc(3.2 - var(--grid-intro, 1) * 2.2));
+  transform-origin: 54.6198% 33.8944%;
+  width: 100%;
+}
+
+/* Screen outlines stay hairline-thin through the 2.8× route zoom and the
+   76× dive. A CSS border can't do this: Chrome snaps any border thinner than
+   1px up to 1px before the transform multiplies it. An inset shadow is drawn
+   at raster scale, so the inverse-scaled width really is one device pixel. */
+.grid-map i,
+.grid-map i.is-active {
+  border: 0;
+  box-shadow: inset 0 0 0 calc(1px / var(--grid-zoom, 1)) rgba(53, 99, 255, .28);
+  transition: background 400ms ease, opacity 400ms ease;
+}
+
+/* The routed Mac goes white as the camera starts toward it, and every other
+   screen reads as a plain outline once the zoom is in (Figma 67). */
+.network-sticky[data-route-focused="true"] .grid-map i:not(.is-story-target) {
+  opacity: 1;
+}
+
+/* The routed frame quiets the ambient network to the low-contrast field in
+   Figma 299:5352. A few authored accents stay fully blue; the rest become a
+   faint depth layer behind the white destination tile and copy. */
+.network-sticky[data-route-focused="true"] .grid-map i.is-active::after {
+  animation: none;
+  opacity: .14;
+}
+
+.network-sticky[data-route-focused="true"] .grid-map i.is-route-accent::after {
+  background: #0b44ff;
+  box-shadow: none;
+  content: "";
+  inset: 0;
+  opacity: 1;
+  position: absolute;
+}
+
+.grid-map i.is-story-target {
+  background: rgb(var(--story-tile-color, 255 255 255) / var(--tile-white, 0));
+  box-shadow:
+    inset 0 0 0 calc(1px / var(--grid-zoom, 1)) rgb(var(--story-tile-color, 255 255 255) / var(--tile-white, 0)),
+    inset 0 0 0 calc(1px / var(--grid-zoom, 1)) rgba(53, 99, 255, .28);
+  transition: none;
+  z-index: 10;
+}
+
+.grid-map i.is-story-target::after {
+  opacity: calc(1 - var(--tile-white, 0));
+}
+
+.network-sticky[data-route-focused="true"] .grid-map i.is-story-target {
+  opacity: 1 !important;
+}
+
+.network-sticky[data-route-focused="true"] .grid-map i.is-story-target::after {
+  display: none;
+}
+
+/* Provider card — update.mov + mobile frame 74. It unfolds directly below
+   the routed tile and shares the tile's left edge. */
+.route-provider-card {
+  background: #000d35;
+  border: .8px solid #0b44ff;
+  border-radius: 0 10px 10px 10px;
+  box-shadow: none;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 13.385px;
+  height: 216px;
+  left: calc(var(--route-tile-left, 61.597222vw) + 3px);
+  opacity: var(--provider-reveal, 0);
+  padding: 18.992px 15.193px;
+  pointer-events: none;
+  position: absolute;
+  top: calc(var(--route-tile-bottom, 47.904192svh) + 26px);
+  transform: scale(calc(.026915 + var(--provider-reveal, 0) * .973085));
+  transform-origin: 0 0;
+  width: 263px;
+  z-index: 10;
+}
+
+.provider-card-topline {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  height: 19.064px;
+  width: 100%;
+}
+
+.route-provider-card .provider-status {
+  align-items: center;
+  background: rgba(0, 46, 222, .36);
+  border: .633px solid #3b67ff;
+  border-radius: 63.305px;
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 3.798px;
+  height: 19.064px;
+  margin: 0;
+  padding: 2.532px 6.331px;
+  width: 81.258px;
+}
+
+.route-provider-card .provider-status i {
+  background: #3b67ff;
+  border-radius: 50%;
+  box-shadow: 0 0 5px rgba(59, 103, 255, .9);
+  height: 3.798px;
+  width: 3.798px;
+}
+
+.route-provider-card .provider-status span {
+  border: 0;
+  color: #3b67ff;
+  font-size: 10px;
+  line-height: normal;
+  padding: 0;
+  text-transform: uppercase;
+}
+
+.provider-close-mark {
+  color: rgba(255, 255, 255, .5);
+  font-size: 10px;
+  line-height: normal;
+  text-align: right;
+  width: auto;
+}
+
+.provider-title-block {
+  display: flex;
+  flex-direction: column;
+  height: 43px;
+  width: 100%;
+}
+
+.route-provider-card h3 {
+  font-size: 20px;
+  font-weight: 400;
+  line-height: normal;
+  margin: 0;
+}
+
+.route-provider-card .provider-title-block > p {
+  color: rgba(255, 255, 255, .5);
+  font-size: 12px;
+  line-height: normal;
+  margin: 0;
+}
+
+.route-provider-card dl {
+  border-top: .5px solid rgba(255, 255, 255, .13);
+  display: flex;
+  flex-direction: column;
+  gap: 13.385px;
+  margin: 0;
+  padding-top: 13.56px;
+  width: 100%;
+}
+
+.route-provider-card dl div {
+  align-items: center;
+  column-gap: 5.064px;
+  display: grid;
+  font-size: 12px;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  height: 16px;
+  padding: 0;
+}
+
+.route-provider-card dl div img {
+  justify-self: center;
+}
+
+.route-provider-card dt { color: rgba(255, 255, 255, .5); }
+.route-provider-card dd { margin: 0; text-align: right; }
+
+/* Story dive — Figma 68 → 70 -------------------------------------------- */
+/* No glows or shadows may ride the 76× transform: a 12px glow becomes a
+   900px blur. Everything but the routed tile fades; the tile itself turns
+   from white to blue and is then covered by the flat portal rectangle. */
+.network-sticky[data-exiting="true"] .grid-map i {
+  transition: none;
+}
+
+.network-sticky[data-exiting="true"] .grid-map i::after {
+  animation: none;
+  box-shadow: none;
+  transition: none;
+}
+
+.network-sticky[data-exiting="true"] .grid-map i:not(.is-story-target) {
+  opacity: clamp(0, calc((.72 - var(--grid-exit, 0)) * 2.2), 1);
+}
+
+.network-sticky[data-exiting="true"] .grid-map i.is-story-target {
+  /* Hand the tile to the untransformed portal before browser resampling can
+     soften a tiny DOM cell into a glowing edge at high zoom. */
+  opacity: clamp(0, calc((.48 - var(--grid-exit, 0)) * 50), 1) !important;
+}
+
+.story-portal {
+  background: rgb(var(--story-tile-color, 11 68 255));
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  height: var(--story-portal-height, 0);
+  left: var(--story-portal-cx, 50%);
+  opacity: clamp(0, calc((var(--grid-exit, 0) - .44) * 50), 1);
+  top: var(--story-portal-cy, 50%);
+  transform: translate3d(-50%, -50%, 0);
+  width: var(--story-portal-width, 0);
+  z-index: 4;
+}
+
+.network-sticky[data-exiting="true"] .network-narrative,
+.network-sticky[data-exiting="true"] .network-live-badge,
+.network-sticky[data-exiting="true"] .network-stats {
+  transform: none;
+  transition: none;
+}
+
+.network-sticky[data-exiting="true"] .network-narrative {
+  opacity: var(--chrome-fade, 1);
+  pointer-events: none;
+}
+
+.network-sticky[data-exiting="true"] .route-provider-card {
+  opacity: 0;
+}
+
+/* Chat HUD — 286:1384 / 286:2729 ----------------------------------------- */
+/* Docked at (1089, 89), 325 wide, on the 1440 × 835 reference frame, where
+   it ends 73px above the viewport edge (673 tall). The top edge stays under
+   the nav; the bottom gap scales with the viewport so taller screens get a
+   taller panel. It rides in from x=1509 with frame 68 and folds back out to
+   x=1479 as the dive begins. */
+.network-sticky .chat-layer {
+  backdrop-filter: blur(20px);
+  background: rgba(11, 68, 255, 0);
+  border: 1px solid #000;
+  border-radius: 10px;
+  bottom: 8.742515svh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  left: auto;
+  max-width: none;
+  opacity: calc(1 - var(--chat-fold, 0));
+  overflow: hidden;
+  pointer-events: none;
+  right: var(--gutter);
+  top: 89px;
+  /* The resting edge shares the nav gutter; this offset carries the panel
+     fully beyond that edge during its entrance and exit. */
+  --chat-offscreen: max(420px, calc(25vw + 40px));
+  transform: translate3d(calc((1 - var(--chat-reveal, 0)) * var(--chat-offscreen) + var(--chat-fold, 0) * var(--chat-offscreen)), 0, 0);
+  transition: opacity 180ms ease;
+  width: 325px;
+  z-index: 12;
+}
+
+.network-sticky[data-chat-ready="true"] .chat-layer {
+  pointer-events: auto;
+}
+
+.network-sticky .chat-layer[data-user-open="false"] {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.network-sticky[data-veiled="true"] .chat-layer {
+  opacity: 1;
+  transform: translate3d(var(--chat-offscreen), 0, 0);
+}
+
+/* globals.css pushes the old chat upward with the story dive; the R9 panel
+   folds sideways instead (Figma 70 parks it at x=1479). */
+.network-sticky[data-exiting="true"] .chat-layer {
+  opacity: calc(1 - var(--chat-fold, 0));
+  pointer-events: none;
+  transform: translate3d(calc((1 - var(--chat-reveal, 0)) * var(--chat-offscreen) + var(--chat-fold, 0) * var(--chat-offscreen)), 0, 0);
+}
+
+.network-sticky[data-veiled="true"] .network-narrative {
+  opacity: 0;
+  transform: translate3d(0, 28px, 0);
+  transition-delay: 0s;
+}
+
+.network-sticky[data-veiled="true"] .network-live-badge {
+  opacity: 0;
+  transform: translate3d(0, 10px, 0);
+  transition-delay: 0s;
+}
+
+.network-sticky[data-veiled="true"] .network-stats {
+  opacity: 0;
+  transform: translate3d(0, 12px, 0);
+  transition-delay: 0s;
+}
+
+.chat-panel-header {
+  align-items: center;
+  background: rgba(255, 255, 255, .08);
+  border: .913px solid rgba(255, 255, 255, .07);
+  border-radius: 10px 10px 0 0;
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 48px;
+  height: 48px;
+  padding: 12px 18.25px;
+  justify-content: space-between;
+}
+
+.chat-panel-header p {
+  color: rgba(255, 255, 255, .9);
+  font-size: 14px;
+  line-height: 18.25px;
+  margin: 0;
+}
+
+.chat-close {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 28px;
+  height: 28px;
+  justify-content: center;
+  margin-right: -8px;
+  padding: 0;
+  width: 28px;
+}
+
+.chat-close:hover,
+.chat-close:focus-visible {
+  background: rgba(255, 255, 255, .08);
+  outline: none;
+}
+
+.chat-close img { height: 8px; width: 8px; }
+
+.chat-zone {
+  background: rgba(0, 0, 0, .04);
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  box-sizing: border-box;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  padding: 30px 18.25px 16px;
+}
+
+/* The dialogue builds from the top of the zone (Figma 71) and scrolls
+   inside the panel once it outgrows it. */
+.network-sticky .chat-history {
+  align-items: stretch;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  justify-content: flex-start;
+  margin: 0;
+  max-height: none;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0;
+  scrollbar-width: none;
+}
+
+.network-sticky .chat-exchange {
+  display: flex;
+  flex-direction: column;
+  font-size: 11.86px;
+  gap: 0;
+  grid-template-columns: none;
+}
+
+.network-sticky .chat-question {
+  align-self: flex-end;
+  backdrop-filter: blur(7.3px);
+  background: rgba(0, 58, 255, .35);
+  border: .913px solid rgba(11, 68, 255, .6);
+  border-radius: 10px;
+  box-sizing: border-box;
+  color: rgba(255, 255, 255, .9);
+  font-size: 11.86px;
+  line-height: 16px;
+  margin: 0;
+  max-width: 100%;
+  padding: 8px 20px;
+  text-align: left;
+  width: fit-content;
+}
+
+.network-sticky .chat-response-bubble {
+  align-self: flex-start;
+  backdrop-filter: blur(8px);
+  border-radius: 14px;
+  box-sizing: border-box;
+  filter: drop-shadow(0 8px 9px rgba(0, 0, 0, .5));
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  margin: 12px 0 0;
+  max-width: 100%;
+  padding: 14px 20px;
+  width: 260px;
+}
+
+.network-sticky .chat-provider-proof {
+  color: #8fa9ff;
+  font-size: 12.5px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.network-sticky .chat-answer {
+  color: #fff;
+  font-size: 12.5px;
+  line-height: 1.4;
+  margin: 0;
+  max-width: none;
+}
+
+.network-sticky .chat-provider-proof + .chat-answer {
+  margin-top: 17.5px;
+}
+
+.network-sticky .chat-answer.is-unavailable {
+  color: rgba(255, 255, 255, .6);
+}
+
+.network-sticky .typing-dots {
+  animation: typing 1s steps(3, end) infinite;
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: bottom;
+  width: 13px;
+}
+
+.chat-controls {
+  background: transparent;
+  border: 0;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0;
+}
+
+.network-sticky .prompt-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-start;
+  margin: 0;
+  opacity: 1;
+  transform: none;
+}
+
+.network-sticky .prompt-list button {
+  align-items: center;
+  backdrop-filter: blur(7.3px);
+  background: transparent;
+  border: .912px solid rgba(255, 255, 255, .15);
+  border-radius: 999px;
+  box-sizing: border-box;
+  color: rgba(255, 255, 255, .9);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 10.037px;
+  font-weight: 500;
+  gap: 10px;
+  height: 40px;
+  min-height: 40px;
+  padding: 10px 14px;
+  text-align: left;
+  transition: background 180ms ease, border-color 180ms ease;
+  white-space: nowrap;
+}
+
+.network-sticky .prompt-list button:nth-child(1) { width: 150px; }
+.network-sticky .prompt-list button:nth-child(2) { width: 142px; }
+.network-sticky .prompt-list button:nth-child(3) { width: 162px; }
+.network-sticky .prompt-list button img { flex: 0 0 16px; height: 16px; width: 16px; }
+
+.network-sticky .prompt-list button:hover,
+.network-sticky .prompt-list button:focus-visible {
+  background: rgba(255, 255, 255, .08);
+}
+
+.network-sticky .prompt-list button.is-selected,
+.network-sticky .prompt-list button.is-selected:hover,
+.network-sticky .prompt-list button.is-selected:focus-visible,
+.network-sticky .prompt-list button.is-selected:disabled,
+.network-sticky .prompt-list button.is-selected:disabled:hover {
+  background: rgba(11, 68, 255, .25);
+  border-color: rgba(11, 68, 255, .6);
+  color: rgba(255, 255, 255, .9);
+}
+
+.network-sticky .prompt-form {
+  align-items: center;
+  backdrop-filter: none;
+  background: rgba(255, 255, 255, .04);
+  border: .912px solid rgba(255, 255, 255, .07);
+  border-radius: 20px;
+  box-sizing: border-box;
+  display: flex;
+  height: 38px;
+  justify-content: space-between;
+  overflow: hidden;
+  padding: 0 5.475px 0 14.6px;
+  width: 100%;
+}
+
+.network-sticky .prompt-form:focus-within {
+  border-color: rgba(11, 68, 255, .6);
+}
+
+.network-sticky .prompt-form input {
+  color: #8fa9ff;
+  font-size: 11.862px;
+  height: 100%;
+  padding: 0;
+}
+
+.network-sticky .prompt-form input::placeholder { color: #8fa9ff; opacity: 1; }
+
+.network-sticky .prompt-form button {
+  align-items: center;
+  display: flex;
+  height: 36px;
+  justify-content: center;
+  padding: 0;
+  width: 30px;
+}
+
+.network-sticky .prompt-form button img { height: 24px; width: 24px; }
+
+.network-sticky .chat-status {
+  color: rgba(255, 255, 255, .5);
+  font-size: 10px;
+  line-height: 1.2;
+  margin: -2px 2px 0;
+  min-height: 0;
+}
+
+/* Mobile ------------------------------------------------------------------- */
+@media (max-width: 800px) {
+  .network-live-badge,
+  .network-stats { display: none; }
+
+  .network-narrative {
+    left: 28px;
+    top: clamp(120px, 19.6svh, 167px);
+    width: calc(100vw - 56px);
+  }
+
+  .network-overview-title { width: 293px; }
+  .network-route-copy,
+  .network-route-copy > p { width: min(348px, calc(100vw - 56px)); }
+
+  .network-overview-title,
+  .network-route-copy > p { font-size: 36px; }
+
+  .network-route-cta { font-size: 16px; margin-top: 14px; }
+
+  /* Older mobile rules in globals.css transition the shell's transform over
+     820ms, which lags the scroll-scrubbed intro scale and the dive math. */
+  .grid-world {
+    left: -18.656716vw;
+    max-width: none;
+    top: 45.892019svh;
+    width: 138.633458vw;
+  }
+
+  .grid-map-shell {
+    transition: none;
+  }
+
+  .route-provider-card {
+    left: calc(var(--route-tile-left, 87px) + 2px);
+    max-width: none;
+    top: calc(var(--route-tile-bottom, 439px) + 30px);
+    width: 251px;
+  }
+
+  .network-sticky .chat-layer,
+  .network-sticky[data-exiting="true"] .chat-layer {
+    bottom: max(20px, env(safe-area-inset-bottom));
+    height: auto;
+    left: 19px;
+    right: 16px;
+    top: max(42.370892svh, 300px);
+    transform: translate3d(0, calc((1 - var(--chat-reveal, 0)) * 110% + var(--chat-fold, 0) * 110%), 0);
+    width: auto;
+  }
+
+  .network-sticky[data-veiled="true"] .chat-layer { transform: translate3d(0, 110%, 0); }
+
+  .route-arrow.is-desktop { display: none; }
+  .route-arrow.is-mobile { display: inline; }
+
+  .chat-panel-header {
+    flex-basis: 62px;
+    height: 62px;
+  }
+
+  .chat-zone { background: rgba(0, 0, 0, .04); }
+
+  .network-sticky .prompt-list { gap: 8px; }
+  .network-sticky .prompt-list button:nth-child(1),
+  .network-sticky .prompt-list button:nth-child(2),
+  .network-sticky .prompt-list button:nth-child(3) { width: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .network-live-badge .pulse-dot { animation: none; }
+  .hero-film-blue,
+  .network-live-badge,
+  .network-narrative,
+  .network-stats,
+  .route-provider-card,
+  .network-sticky .chat-layer { transition: none; }
+}

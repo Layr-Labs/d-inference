@@ -97,6 +97,16 @@ actor SpecDecArtifactFunnel {
     }
     private var prefetches: [String: Prefetch] = [:]
     private var prefetchFailures: [String: MTPFallbackReason] = [:]
+    private var prefetchFailureCounts: [String: Int] = [:]
+    private var prefetchRetryAfter: [String: ContinuousClock.Instant] = [:]
+    /// Injectable only for deterministic retry tests; production uses bounded
+    /// jitter to avoid synchronized retries across independently upgrading Macs.
+    var retryClock: @Sendable () -> ContinuousClock.Instant = { .now }
+    var retryDelay: @Sendable (Int) -> Duration = { failureCount in
+        let ceiling = min(300, 15 * (1 << min(max(0, failureCount - 1), 5)))
+        return .seconds(Int.random(in: max(1, ceiling * 3 / 4)...ceiling))
+    }
+
     private let maximumPrefetches = 2
     private var isShutdown = false
     private var shutdownTasks: [Task<Void, Never>] = []
@@ -162,7 +172,7 @@ actor SpecDecArtifactFunnel {
         guard request.enabled else {
             return .init(artifact: nil, status: .disabled(.configDisabled, configured: false))
         }
-        if Self.isQwen35Target(modelType: request.modelType),
+        if Self.isInlineTarget(modelType: request.modelType),
             let directory = request.modelDirectory,
             request.inlineDeclaration.mayDeclareEmbeddedArtifact
         {
@@ -177,7 +187,7 @@ actor SpecDecArtifactFunnel {
             }
         }
         guard Self.isGemma4Target(modelType: request.modelType)
-            || Self.isQwen35Target(modelType: request.modelType)
+            || Self.isInlineTarget(modelType: request.modelType)
         else {
             return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))
         }
@@ -204,7 +214,7 @@ actor SpecDecArtifactFunnel {
 
         guard let model = await catalog.cachedModel(id: request.modelId) else {
             if request.allowDownload {
-                schedulePrefetch(modelId: request.modelId, catalog: catalog)
+                scheduleCatalogPrefetch(modelId: request.modelId, catalog: catalog, refresh: false)
             }
             return .init(
                 artifact: nil,
@@ -224,7 +234,7 @@ actor SpecDecArtifactFunnel {
             // The cached catalog entry exists but carries no usable spec_dec.
             // The coordinator may have added it after this cache filled, so
             // refresh (cooldown-gated) instead of staying stuck until restart.
-            scheduleCatalogRefresh(modelId: request.modelId, catalog: catalog)
+            scheduleCatalogPrefetch(modelId: request.modelId, catalog: catalog, refresh: true)
         }
         guard let artifact = resolution.artifact else {
             return .init(
@@ -253,63 +263,36 @@ actor SpecDecArtifactFunnel {
         shutdownTasks.removeAll()
     }
 
-    private func schedulePrefetch(
+    /// Both a cache miss and a suspected stale entry fetch catalog metadata,
+    /// then use the same owned artifact transfer. Forced refreshes additionally
+    /// consume the catalog cooldown before scheduling their task.
+    private func scheduleCatalogPrefetch(
         modelId: String,
-        catalog: any SpecDecCatalogLooking
+        catalog: any SpecDecCatalogLooking,
+        refresh: Bool
     ) {
         guard !isShutdown,
             prefetches[modelId] == nil,
+            prefetchRetryAfter[modelId].map({ retryClock() >= $0 }) ?? true,
             prefetches.count < maximumPrefetches
         else {
             return
         }
-        let id = UUID()
-        let resolver = self.resolver
-        let task = Task {
-            let reason: MTPFallbackReason?
-            do {
-                guard let model = try await catalog.model(id: modelId) else {
-                    self.finishPrefetch(
-                        modelId: modelId, id: id, reason: .catalogModelMissing)
-                    return
-                }
-                guard self.prefetchMayContinue(modelId: modelId, id: id) else {
-                    return
-                }
-                let result = await resolver.prefetch(model: model)
-                reason = result.artifact == nil ? result.reason : nil
-            } catch {
-                reason = .catalogUnavailable
+        if refresh {
+            let now = ContinuousClock.now
+            if let last = catalogRefreshedAt[modelId], now - last < catalogRefreshCooldown {
+                return
             }
-            self.finishPrefetch(modelId: modelId, id: id, reason: reason)
+            catalogRefreshedAt[modelId] = now
         }
-        prefetches[modelId] = Prefetch(id: id, task: task)
-    }
-
-    /// Refresh a suspected-stale cached catalog entry, then prefetch the
-    /// artifact if the refreshed metadata now resolves. Reuses the prefetch
-    /// ledger for dedupe/shutdown and is additionally cooldown-gated.
-    private func scheduleCatalogRefresh(
-        modelId: String,
-        catalog: any SpecDecCatalogLooking
-    ) {
-        guard !isShutdown,
-            prefetches[modelId] == nil,
-            prefetches.count < maximumPrefetches
-        else {
-            return
-        }
-        let now = ContinuousClock.now
-        if let last = catalogRefreshedAt[modelId], now - last < catalogRefreshCooldown {
-            return
-        }
-        catalogRefreshedAt[modelId] = now
         let id = UUID()
         let resolver = self.resolver
         let task = Task {
             let reason: MTPFallbackReason?
             do {
-                guard let model = try await catalog.freshModel(id: modelId) else {
+                let model = try await (refresh
+                    ? catalog.freshModel(id: modelId) : catalog.model(id: modelId))
+                guard let model else {
                     self.finishPrefetch(
                         modelId: modelId, id: id, reason: .catalogModelMissing)
                     return
@@ -330,6 +313,7 @@ actor SpecDecArtifactFunnel {
     private func scheduleArtifactPrefetch(modelId: String, model: CatalogModel) {
         guard !isShutdown,
             prefetches[modelId] == nil,
+            prefetchRetryAfter[modelId].map({ retryClock() >= $0 }) ?? true,
             prefetches.count < maximumPrefetches
         else {
             return
@@ -359,8 +343,13 @@ actor SpecDecArtifactFunnel {
         prefetches.removeValue(forKey: modelId)
         if let reason {
             prefetchFailures[modelId] = reason
+            let count = min(6, (prefetchFailureCounts[modelId] ?? 0) + 1)
+            prefetchFailureCounts[modelId] = count
+            prefetchRetryAfter[modelId] = retryClock().advanced(by: retryDelay(count))
         } else {
             prefetchFailures.removeValue(forKey: modelId)
+            prefetchFailureCounts.removeValue(forKey: modelId)
+            prefetchRetryAfter.removeValue(forKey: modelId)
         }
     }
 
@@ -375,6 +364,21 @@ actor SpecDecArtifactFunnel {
         return modelType == "qwen3_5" || modelType == "qwen3_5_moe"
     }
 
+    static func isInlineQwenTarget(modelType: String?) -> Bool {
+        isQwen35Target(modelType: modelType) || isQwen4ExpTarget(modelType: modelType)
+    }
+
+    static func isQwen4ExpTarget(modelType: String?) -> Bool {
+        guard let modelType = modelType?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return false }
+        return modelType == "qwen4_exp" || modelType == "qwen4_exp_text"
+    }
+
+    static func isInlineTarget(modelType: String?) -> Bool {
+        isInlineQwenTarget(modelType: modelType)
+            || modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
+    }
     static func killSwitchEnabled(environment: [String: String]) -> Bool {
         guard let raw = environment["DARKBLOOM_CBV2_MTP"]?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !raw.isEmpty

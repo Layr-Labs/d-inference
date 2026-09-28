@@ -43,6 +43,10 @@ type CacheReceiptResult struct {
 	Accepted       bool
 	Reason         CacheReceiptReason
 	mismatch       bool
+	// plan is the attempt's verified plan on an anchor mismatch. It scopes
+	// holder invalidation to the boundaries the provider contradicted and
+	// stays request-local: never log, tag, or export it.
+	plan CachePlan
 }
 
 func rejectCacheReceipt(reason CacheReceiptReason) CacheReceiptResult {
@@ -50,4 +54,7 @@ func rejectCacheReceipt(reason CacheReceiptReason) CacheReceiptResult {
 }
 func mismatchCacheReceipt(reason CacheReceiptReason) CacheReceiptResult {
 	return CacheReceiptResult{Reason: reason, mismatch: true}
+}
+func mismatchCacheReceiptForPlan(reason CacheReceiptReason, plan CachePlan) CacheReceiptResult {
+	return CacheReceiptResult{Reason: reason, mismatch: true, plan: plan}
 }

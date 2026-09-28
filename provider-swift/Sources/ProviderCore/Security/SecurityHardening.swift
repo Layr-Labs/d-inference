@@ -86,26 +86,19 @@ public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
 /// Returns true if RDMA is disabled (safe) or if rdma_ctl is not
 /// available (older macOS without RDMA support).
 public func checkRDMADisabled() -> Bool {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/rdma_ctl")
-    process.arguments = ["status"]
+    checkRDMADisabled(runner: .live)
+}
 
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
+func checkRDMADisabled(runner: SecurityCommandRunner) -> Bool {
+    let output: String
     do {
-        try process.run()
+        output = try runner.run("/usr/bin/rdma_ctl", ["status"]).stdout
     } catch {
         // rdma_ctl not found means RDMA is not supported on this Mac
         // (pre-macOS 26.2 or hardware without Thunderbolt 5 RDMA support).
         logger.debug("RDMA check: rdma_ctl not available, assuming safe")
         return true
     }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
     let disabled = output.trimmingCharacters(in: .whitespacesAndNewlines) == "disabled"
 
     if disabled {
@@ -131,6 +124,12 @@ public func checkSecureBootEnabled(runner: SecurityCommandRunner = .live) -> Boo
 /// sealed result returns true. "Broken" remains unconfirmed rather than being
 /// treated as healthy.
 public func checkAuthenticatedRootEnabled(runner: SecurityCommandRunner = .live) -> Bool {
+    authenticatedRootStatus(runner: runner) ?? false
+}
+
+/// Tri-state form of `checkAuthenticatedRootEnabled`: nil when neither
+/// `csrutil` nor `diskutil` produced a usable reading.
+public func authenticatedRootStatus(runner: SecurityCommandRunner = .live) -> Bool? {
     // csrutil primary: check "disabled" before "enabled" to prefer the explicit
     // downgrade reading and guard against any substring overlap.
     if let result = try? runner.run("/usr/bin/csrutil", ["authenticated-root", "status"]),
@@ -152,7 +151,7 @@ public func checkAuthenticatedRootEnabled(runner: SecurityCommandRunner = .live)
         }
     }
 
-    return false
+    return nil
 }
 
 // MARK: - Hardened Runtime Check
@@ -165,27 +164,20 @@ public func checkAuthenticatedRootEnabled(runner: SecurityCommandRunner = .live)
 ///
 /// Verifies using `codesign --display --verbose` on the current executable.
 public func checkHardenedRuntimeEnabled() -> Bool {
+    checkHardenedRuntimeEnabled(runner: .live)
+}
+
+func checkHardenedRuntimeEnabled(runner: SecurityCommandRunner) -> Bool {
     guard let exePath = executablePath() else { return false }
 
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-    process.arguments = ["--display", "--verbose", exePath]
-
-    // codesign writes to stderr, not stdout
-    let errPipe = Pipe()
-    process.standardOutput = Pipe()
-    process.standardError = errPipe
-
+    let output: String
     do {
-        try process.run()
+        // codesign writes its identity and flags to stderr.
+        output = try runner.run("/usr/bin/codesign", ["--display", "--verbose", exePath]).stderr
     } catch {
         logger.warning("Hardened Runtime check: failed to run codesign: \(error)")
         return false
     }
-    process.waitUntilExit()
-
-    let data = errPipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
 
     // Look for "flags=0x10000(runtime)" which indicates hardened runtime
     let hasRuntime = output.contains("runtime")
@@ -234,7 +226,7 @@ public func verifyBundleSignature() throws {
     process.arguments = ["--verify", "--verbose=0", bundlePath]
 
     let errPipe = Pipe()
-    process.standardOutput = Pipe()
+    process.standardOutput = FileHandle.nullDevice
     process.standardError = errPipe
 
     do {
@@ -243,12 +235,13 @@ public func verifyBundleSignature() throws {
         logger.warning("Could not verify bundle signature: \(error)")
         return // Don't fail if codesign isn't available
     }
+    // Drain the captured stream before waiting; stdout is deliberately discarded.
+    let data = errPipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
 
     if process.terminationStatus == 0 {
         logger.info("App bundle signature valid")
     } else {
-        let data = errPipe.fileHandleForReading.readDataToEndOfFile()
         let stderr = String(data: data, encoding: .utf8) ?? "unknown error"
         throw SecurityError.bundleSignatureInvalid(stderr)
     }
@@ -383,23 +376,13 @@ public func computeResponseAttestation(
 /// the system volume is Apple's original, unmodified volume. The hash
 /// is embedded in the APFS snapshot name.
 public func systemVolumeHash() -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-    process.arguments = ["info", "/"]
+    systemVolumeHash(runner: .live)
+}
 
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    do {
-        try process.run()
-    } catch {
+func systemVolumeHash(runner: SecurityCommandRunner) -> String? {
+    guard let output = try? runner.run("/usr/sbin/diskutil", ["info", "/"]).stdout else {
         return nil
     }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
 
     // Extract hash from snapshot name: com.apple.os.update-<HASH>
     for line in output.components(separatedBy: "\n") {

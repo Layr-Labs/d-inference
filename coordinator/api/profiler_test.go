@@ -208,12 +208,12 @@ func TestProfileSinkBatchesIntoStoreAndAdminEndpointsServeThem(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(srv.store.RequestProfilesSince(time.Time{})) == 100 {
+		if len(srv.store.RequestProfilesSinceFiltered(time.Time{}, store.RequestProfileFilter{})) == 100 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if n := len(srv.store.RequestProfilesSince(time.Time{})); n != 100 {
+	if n := len(srv.store.RequestProfilesSinceFiltered(time.Time{}, store.RequestProfileFilter{})); n != 100 {
 		t.Fatalf("expected 100 persisted profiles, got %d", n)
 	}
 
@@ -1067,11 +1067,12 @@ func TestDuplicateErrorFrameAfterOwnedCompletionIsDropped(t *testing.T) {
 	// on arbitration. It carries a distinguishable profile so the row can
 	// prove whose bytes it kept.
 	f.srv.handleInferenceError(f.provider.ID, f.provider, &protocol.InferenceErrorMessage{
-		Type:       protocol.TypeInferenceError,
-		RequestID:  id,
-		Error:      "provider aborted",
-		StatusCode: http.StatusInternalServerError,
-		Profile:    []byte(`{"schema":1,"total_us":999}`),
+		Type:        protocol.TypeInferenceError,
+		RequestID:   id,
+		Error:       "provider aborted",
+		StatusCode:  http.StatusInternalServerError,
+		Profile:     []byte(`{"schema":1,"total_us":999}`),
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 	if f.provider.GetPending(id) != f.pr {
 		t.Fatal("a duplicate error frame must leave the pending request to the terminal's owner")
@@ -1182,11 +1183,12 @@ func TestClaimedErrorFrameFinalizesAfterPendingRemoved(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			srv.handleInferenceError(f.provider.ID, f.provider, &protocol.InferenceErrorMessage{
-				Type:       protocol.TypeInferenceError,
-				RequestID:  id,
-				Error:      "provider aborted",
-				StatusCode: http.StatusInternalServerError,
-				Profile:    []byte(errorProfile),
+				Type:        protocol.TypeInferenceError,
+				RequestID:   id,
+				Error:       "provider aborted",
+				StatusCode:  http.StatusInternalServerError,
+				Profile:     []byte(errorProfile),
+				FailureCode: protocol.FailureCodeGenerationFailure,
 			})
 			close(done)
 		}()

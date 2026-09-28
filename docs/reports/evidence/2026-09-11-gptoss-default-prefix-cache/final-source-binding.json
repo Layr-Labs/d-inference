@@ -1,0 +1,19 @@
+{
+  "source_revision": "6938e8547963739f17f2b18fcbe2057aef20250f",
+  "export_manifest_sha256": "bccb36caf70cc49f792a09f5e50d76e2cae252144e8fa72791ecdb701a63cea5",
+  "inventoried_files": 5063,
+  "matching_files": 5061,
+  "documentation_only_differences": [
+    "docs/consumer/models.md",
+    "docs/developer/test.md"
+  ],
+  "compiled_inputs_match": true,
+  "artifacts": {
+    "darkbloom": "089d95b1f57de8dd78aa331c67aa6dc875c4af38759dcda6a04c6af2d6ec6ff4",
+    "radix-engine": "acc680482724b1016ab1734ab3b7378fbe96954861200d2251ba28e7a7e5b60b",
+    "mlx.metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+  },
+  "verified_model_aggregate_sha256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+  "production_source_unchanged_since": "0b0a3304ff009f2cd1a5902349fab50371bd8bea",
+  "qualification": "Final optimized build and selected unit suite passed; strict checkpoint-live-2 and mixed-live-2 passed. Runtime evidence retains each original command and run identity."
+}

@@ -459,7 +459,7 @@ func TestProviderReceivesDesiredModelsAfterRegister(t *testing.T) {
 		Hardware:                protocol.Hardware{MachineModel: "Mac15,8", ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: aliasFP8, ModelType: "chat", Quantization: "4bit"}},
 		Backend:                 registry.BackendMLXSwift,
-		Version:                 minProviderVersionForDesiredModels,
+		Version:                 "0.9.9",
 		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -552,7 +552,7 @@ func TestAliasUpsertFansOutDesiredModelsToConnectedProvider(t *testing.T) {
 		Hardware:                protocol.Hardware{MachineModel: "Mac15,8", ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: aliasFP8, ModelType: "chat", Quantization: "4bit"}},
 		Backend:                 registry.BackendMLXSwift,
-		Version:                 minProviderVersionForDesiredModels,
+		Version:                 "0.9.9",
 		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -854,7 +854,7 @@ func TestAliasUpsertRecordsRetiredLineage(t *testing.T) {
 		Hardware: protocol.Hardware{MemoryGB: 64},
 		Models:   []protocol.ModelInfo{{ID: aliasFP8, ModelType: "gemma"}},
 		Backend:  registry.BackendMLXSwift,
-		Version:  minProviderVersionForDesiredModels,
+		Version:  "0.9.9",
 	})
 	entries := reg.DesiredModelsForProvider("p-returning")
 	if len(entries) != 1 || entries[0].DesiredBuild != aliasQAT {
@@ -899,7 +899,7 @@ func TestAliasDeleteFansOutEmptyDesiredModels(t *testing.T) {
 		Hardware:                protocol.Hardware{MachineModel: "Mac15,8", ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: aliasFP8, ModelType: "chat", Quantization: "4bit"}},
 		Backend:                 registry.BackendMLXSwift,
-		Version:                 minProviderVersionForDesiredModels,
+		Version:                 "0.9.9",
 		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),

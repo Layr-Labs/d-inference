@@ -33,8 +33,7 @@ elif [ "$GITHUB_REF_TYPE" != tag ]; then
   release_version=$(awk -F'"' '/public static let version =/ { print $2 }' \
     provider-swift/Sources/ProviderCore/ProviderCore.swift)
 else
-  release_ref=${GITHUB_REF_NAME#v}
-  release_version=${release_ref%-swift*}
+  release_version=${GITHUB_REF_NAME#v}
 fi
 # Validate before writing workflow outputs, including manual version overrides.
 ./scripts/check-release-version.sh "$release_version"

@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -29,7 +29,7 @@ per-hop encryption so that each party sees only what its role needs
 | Prompt-contract sidecar | `coordinator/promptsidecar/` (Rust) | Beside the coordinator | Token-boundary planning for prefix-cache routing; failure-isolated |
 | Console | `console-ui/` (Next.js 16 / React 19) | Vercel, `console.darkbloom.dev` | Sign-in, API keys, balance, usage, chat, provider dashboard |
 | Admin UI | `admin-ui/` (Next.js) | Internal | Read-only operator dashboard over the Postgres read replica |
-| Landing | `landing/` (static) | `darkbloom.dev` | Marketing site |
+| Landing | `landing/` (Next.js) | `darkbloom.dev` | Marketing site |
 | E2E harness | `e2e/` | CI and developer machines | Full-stack integration and benchmark runs |
 | MLX forks | `libs/mlx`, `libs/mlx-swift`, `libs/mlx-swift-lm` (submodules) | Compiled into the provider | The inference engine, pinned by commit |
 
@@ -171,8 +171,8 @@ consumer routing to a provider it owns (self-route) pays nothing.
    `coordinator/api/server.go`) equals `ProviderCore.version`; the test
    `coordinator/api/provider_version_sync_test.go` enforces it.
 7. Telemetry wire types are mirrored in Go, Swift, and TypeScript and pinned by
-   symmetry tests; the ingestion allowlist never admits prompt or completion
-   text ([`telemetry.md`](telemetry.md)).
+   symmetry tests; the coordinator ingests no client telemetry, so no telemetry
+   path carries prompt or completion text ([`telemetry.md`](telemetry.md)).
 8. Production persistence is Postgres; the coordinator refuses to start
    without `EIGENINFERENCE_DATABASE_URL` unless
    `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` (`coordinator/cmd/coordinator/main.go`).

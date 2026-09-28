@@ -27,14 +27,13 @@ import (
 
 // myReputation is the wire shape for a provider's reputation snapshot.
 type myReputation struct {
-	Score              float64 `json:"score"`
-	TotalJobs          int     `json:"total_jobs"`
-	SuccessfulJobs     int     `json:"successful_jobs"`
-	FailedJobs         int     `json:"failed_jobs"`
-	TotalUptimeSeconds int64   `json:"total_uptime_seconds"`
-	AvgResponseTimeMs  int64   `json:"avg_response_time_ms"`
-	ChallengesPassed   int     `json:"challenges_passed"`
-	ChallengesFailed   int     `json:"challenges_failed"`
+	TotalJobs          int   `json:"total_jobs"`
+	SuccessfulJobs     int   `json:"successful_jobs"`
+	FailedJobs         int   `json:"failed_jobs"`
+	TotalUptimeSeconds int64 `json:"total_uptime_seconds"`
+	AvgResponseTimeMs  int64 `json:"avg_response_time_ms"`
+	ChallengesPassed   int   `json:"challenges_passed"`
+	ChallengesFailed   int   `json:"challenges_failed"`
 }
 
 // myProvider is the per-machine payload for /v1/me/providers.
@@ -55,12 +54,18 @@ type myProvider struct {
 	Models       []protocol.ModelInfo `json:"models"`
 	Backend      string               `json:"backend,omitempty"`
 	Version      string               `json:"version,omitempty"`
+	OSVersion    string               `json:"os_version,omitempty"` // Current or last app-reported macOS version.
 	serialNumber string
 
 	// Trust & attestation
 	TrustLevel  string `json:"trust_level"`
 	Attested    bool   `json:"attested"`
 	MDAVerified bool   `json:"mda_verified"`
+	// Live App Attest guidance is independent of legacy proof fields and is
+	// never restored from a stored record. The client honors the lease deadline.
+	Verification           registry.Verification `json:"verification"`
+	AppAttestAuthorized    bool                  `json:"app_attest_authorized"`
+	AuthorizationExpiresAt int64                 `json:"authorization_expires_at,omitempty"`
 	// Deprecated: the ACME device-attest-01 leg was removed. Key kept (always
 	// false) because shipped provider builds decode it as a required field.
 	ACMEVerified bool   `json:"acme_verified"`
@@ -80,9 +85,7 @@ type myProvider struct {
 	MDASEPVersion     string `json:"mda_sepos_version,omitempty"`
 
 	// Runtime integrity
-	RuntimeVerified bool   `json:"runtime_verified"`
-	PythonHash      string `json:"python_hash,omitempty"`
-	RuntimeHash     string `json:"runtime_hash,omitempty"`
+	RuntimeVerified bool `json:"runtime_verified"`
 
 	// Challenge state
 	LastChallengeVerified *time.Time `json:"last_challenge_verified,omitempty"`
@@ -239,10 +242,11 @@ func needsAttention(mp *myProvider, minVersion string) bool {
 	if !mp.RuntimeVerified {
 		return true
 	}
-	if mp.TrustLevel != string(registry.TrustHardware) {
+	appAttest := myProviderHasAppAttestAuthorization(mp, time.Now())
+	if !appAttest && mp.TrustLevel != string(registry.TrustHardware) {
 		return true
 	}
-	if mp.FailedChallenges > 0 {
+	if !appAttest && mp.FailedChallenges > 0 {
 		return true
 	}
 	if minVersion != "" && mp.Version != "" && semverLess(mp.Version, minVersion) {
@@ -293,6 +297,7 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 			live = liveByIdentity[recordIdentity(&deduped[i])]
 		}
 		mp := buildMyProvider(&deduped[i], live)
+		s.attachMyProviderAuthorization(&mp, live, accountID)
 		out = append(out, mp)
 		seenIDs[deduped[i].ID] = true
 		if live != nil {
@@ -306,7 +311,9 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 		if liveMatchesEmittedIdentity(p, out) {
 			continue
 		}
-		out = append(out, buildMyProvider(nil, p))
+		mp := buildMyProvider(nil, p)
+		s.attachMyProviderAuthorization(&mp, p, accountID)
+		out = append(out, mp)
 	}
 	return out, nil
 }
@@ -446,23 +453,14 @@ func needsStoredReputation(mp *myProvider) bool {
 }
 
 func applyStoredReputation(mp *myProvider, rep *store.ReputationRecord) {
-	r := registry.NewReputation()
-	r.TotalJobs = rep.TotalJobs
-	r.SuccessfulJobs = rep.SuccessfulJobs
-	r.FailedJobs = rep.FailedJobs
-	r.TotalUptime = time.Duration(rep.TotalUptimeSeconds) * time.Second
-	r.AvgResponseTime = time.Duration(rep.AvgResponseTimeMs) * time.Millisecond
-	r.ChallengesPassed = rep.ChallengesPassed
-	r.ChallengesFailed = rep.ChallengesFailed
 	mp.Reputation = myReputation{
-		Score:              r.Score(),
-		TotalJobs:          r.TotalJobs,
-		SuccessfulJobs:     r.SuccessfulJobs,
-		FailedJobs:         r.FailedJobs,
-		TotalUptimeSeconds: int64(r.TotalUptime / time.Second),
-		AvgResponseTimeMs:  int64(r.AvgResponseTime / time.Millisecond),
-		ChallengesPassed:   r.ChallengesPassed,
-		ChallengesFailed:   r.ChallengesFailed,
+		TotalJobs:          rep.TotalJobs,
+		SuccessfulJobs:     rep.SuccessfulJobs,
+		FailedJobs:         rep.FailedJobs,
+		TotalUptimeSeconds: rep.TotalUptimeSeconds,
+		AvgResponseTimeMs:  rep.AvgResponseTimeMs,
+		ChallengesPassed:   rep.ChallengesPassed,
+		ChallengesFailed:   rep.ChallengesFailed,
 	}
 }
 
@@ -488,8 +486,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		// it with live.PublicKey when the machine is currently connected.
 		mp.ProviderKey = rec.PublicKey
 		mp.RuntimeVerified = rec.RuntimeVerified
-		mp.PythonHash = rec.PythonHash
-		mp.RuntimeHash = rec.RuntimeHash
 		mp.LastChallengeVerified = rec.LastChallengeVerified
 		mp.FailedChallenges = rec.FailedChallenges
 		mp.LifetimeRequestsServed = rec.LifetimeRequestsServed
@@ -514,6 +510,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		if len(rec.AttestationResult) > 0 {
 			var ar attestation.VerificationResult
 			if err := json.Unmarshal(rec.AttestationResult, &ar); err == nil {
+				mp.OSVersion = ar.OSVersion
 				if ar.SerialNumber != "" {
 					mp.serialNumber = ar.SerialNumber
 				}
@@ -550,13 +547,12 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.Models = append([]protocol.ModelInfo{}, live.Models...)
 		mp.Backend = live.Backend
 		mp.Version = live.Version
+		mp.OSVersion = "" // A live connection must not inherit a previous OS report.
 		mp.TrustLevel = string(live.TrustLevel)
 		mp.Attested = live.Attested
 		mp.MDAVerified = live.MDAVerified
 		mp.SEKeyBound = live.SEKeyBound
 		mp.RuntimeVerified = live.RuntimeVerified
-		mp.PythonHash = live.PythonHash
-		mp.RuntimeHash = live.RuntimeHash
 		if !live.LastChallengeVerified.IsZero() {
 			t := live.LastChallengeVerified
 			mp.LastChallengeVerified = &t
@@ -575,6 +571,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 
 		if live.AttestationResult != nil {
 			ar := live.AttestationResult
+			mp.OSVersion = ar.OSVersion
 			if ar.SerialNumber != "" {
 				mp.serialNumber = ar.SerialNumber
 			}
@@ -606,7 +603,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.CurrentModel = live.CurrentModel
 		// Reputation snapshot.
 		mp.Reputation = myReputation{
-			Score:              live.Reputation.Score(),
 			TotalJobs:          live.Reputation.TotalJobs,
 			SuccessfulJobs:     live.Reputation.SuccessfulJobs,
 			FailedJobs:         live.Reputation.FailedJobs,

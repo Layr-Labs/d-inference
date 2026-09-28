@@ -225,7 +225,10 @@ func TestResolveRemoteMediaExpiredFirstContentClockDoesNotFetch(t *testing.T) {
 	w := httptest.NewRecorder()
 	timing := &registry.RequestTiming{ReceivedAt: time.Now().Add(-15 * time.Second)}
 
-	out, _, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, testMeta())
+	meta := testMeta()
+	meta.firstContentDeadline = 9 * time.Second
+	meta.firstContentDeadlineSet = true
+	out, _, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, meta)
 	if ok || out != nil {
 		t.Fatal("expired first-content clock must not fetch")
 	}
@@ -262,6 +265,28 @@ func TestResolveRemoteMediaUsesPinnedDeadlineWithoutRecomputing(t *testing.T) {
 	}
 	if w.Code != http.StatusRequestTimeout {
 		t.Fatalf("status=%d body=%s, want 408", w.Code, w.Body.String())
+	}
+}
+
+func TestResolveRemoteMediaPinnedSLAExemptionDoesNotRecompute(t *testing.T) {
+	cfg := mediafetch.DefaultConfig()
+	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
+	var hits int32
+	media := httptest.NewServer(pngHandler(t, &hits))
+	defer media.Close()
+	s := minimalMediaServer(cfg)
+	// Even a later selector match must not replace a pinned zero budget.
+	s.firstContentSLAAccounts = map[string]struct{}{"selected-account": {}}
+	s.firstContentDeadlineBase = 9 * time.Second
+	raw, parsed := chatBodyBytes(t, media.URL+"/cat.png")
+	meta := testMeta()
+	meta.firstContentDeadlineSet = true
+	w := httptest.NewRecorder()
+	out, inlined, ok := s.resolveRemoteMedia(w, slaAccountRequest("selected-account"), raw, parsed,
+		&registry.RequestTiming{ReceivedAt: time.Now().Add(-15 * time.Second)}, meta)
+	if !ok || !inlined || len(out) == 0 || atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("pinned exemption fetched=%d ok=%v inlined=%v body=%s", hits, ok, inlined, w.Body)
 	}
 }
 
@@ -824,10 +849,8 @@ func TestResolveRemoteMediaSelfRouteUsesFullTraits(t *testing.T) {
 		if p := srv.registry.GetProvider(id); p != nil {
 			p.Mu().Lock()
 			p.AccountID = owner
-			// Well above the tools version floor, so HasTools alone is satisfied
-			// and ToolConstraintProtocol (left unset, i.e. not v1) is the ONLY
-			// reason the request is ineligible. Without this the provider fails
-			// the floor either way and the test cannot see the trait delta.
+			// HasTools alone is satisfied, so ToolConstraintProtocol (left
+			// unset, i.e. not v1) is the ONLY reason the request is ineligible.
 			p.Version = "0.7.6"
 			p.Mu().Unlock()
 		}
@@ -835,7 +858,7 @@ func TestResolveRemoteMediaSelfRouteUsesFullTraits(t *testing.T) {
 	// Sanity: the partial trait set the gate used to reconstruct MUST consider
 	// this provider serviceable, or the assertion below proves nothing.
 	if !srv.registry.HasToolCapableProviderForModel("test") {
-		t.Fatal("setup: provider must satisfy the plain tools floor")
+		t.Fatal("setup: provider must satisfy the plain tools gate")
 	}
 
 	var hits int32

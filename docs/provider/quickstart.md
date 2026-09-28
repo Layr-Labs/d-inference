@@ -1,11 +1,12 @@
 # Provider quickstart
 
-> Last updated: 2026-09-06 · commit `615d96328`
+> Last updated: 2026-09-27 · commit `a2ccc2499`
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
-log in, pick models, start — then enrol for the `hardware` trust level that
-public traffic requires.
+log in, pick models, start, then confirm serving authorization. macOS 27 or later
+uses App Attest without new Darkbloom MDM enrollment. Darkbloom MDM will be
+deactivated soon; upgrade to macOS 27 to avoid the legacy enrollment step.
 
 ## Prerequisites
 
@@ -50,6 +51,9 @@ you are not logged in, shows an interactive model picker, asks whether models
 should stay loaded while idle (`Always ready`) or be unloaded after 60 minutes
 without requests and reloaded on demand (`Free when idle`, the default; or a
 custom window), then installs and starts a `launchd` user agent.
+Every idle-memory choice starts loading selected models before the daemon
+registers with the coordinator, subject to the startup timeout, model-slot
+limit and available memory ([startup preload details](./cli-reference.md#darkbloom-start)).
 
 `darkbloom models download` (`provider-swift/Sources/darkbloom/ModelsCommand.swift`)
 resolves the catalog entry and fetches from `https://models.darkbloom.ai`
@@ -89,18 +93,25 @@ watchdog `io.darkbloom.watchdog`
 (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). The service
 starts again at every login.
 
-### 6. Enrol for public traffic
+### 6. Confirm verification
+
+On **macOS 27 or later**, the installer and `darkbloom enroll` skip MDM profile
+download and System Settings. Run `darkbloom status` and `darkbloom doctor` to
+check App Attest approval. Serving requires a qualified signed provider and an
+enabled coordinator; pending or unavailable approval does not trigger MDM
+fallback. See [serving authorization](../reference/provider-authorization.md).
+
+On **older macOS**, upgrade to macOS 27 to avoid MDM, or finish the legacy setup:
 
 ```bash
 darkbloom enroll
 ```
 
-A freshly started provider is `self_signed`; the coordinator sends public
-requests only to `hardware`-level machines, which requires MDM enrolment of
-this Mac. What the command does, how long the upgrade takes and how to read the
-result are in [Reaching and keeping `hardware` trust](./attestation.md#steps).
-Until then only your own [self-route](./self-route.md) requests reach the
-machine.
+Approve the Darkbloom profile in System Settings and follow the
+[legacy verification steps](./attestation.md#steps). Darkbloom MDM will be
+deactivated soon. Keep any employer management profile. Existing Darkbloom
+profiles should remain installed until `darkbloom unenroll` approves App Attest
+migration; choosing full exit instead stops the provider.
 
 ## Verify
 
@@ -117,9 +128,10 @@ and the stale threshold are in
 snapshot is reported as such
 (`provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`, `isStale`).
 
-The provider is earning once `doctor` shows the trust level the coordinator
-requires for routing; see [attestation](./attestation.md) for the levels and how
-to reach `hardware` trust.
+The provider becomes eligible for public traffic after the coordinator grants
+current App Attest authorization or complete legacy verification. Check recorded
+earnings in the dashboard; connection or setup completion alone does not prove
+that the provider is serving or earning. See [attestation](./attestation.md).
 
 ## Configuration
 
@@ -170,25 +182,15 @@ private_only = false         # true = serve only your own self-route traffic
   interactively; change it later with `darkbloom idle keep-loaded` /
   `darkbloom idle unload-after <minutes>`.
 - `backend.max_model_slots` — maximum resident models at once (default 3).
-- `config_version` — schema version of this file, written automatically on
-  first start after upgrading. It only dates the file, so the provider can
-  tell a value the previous release GENERATED from one you chose. Leave it
-  alone; deleting it re-runs the one-time upgrade migrations below.
 - `backend.engine_v2_max_concurrent` — box-wide concurrent-request cap per
-  engine slot (default **4** as of v0.8.1, clamped to `[1, 8]`). v0.8.0 raised
-  it to 8 because PagedAttention made the batch curve keep climbing (paged
-  gains 1.27x from B=4 to B=8, contiguous only 1.069x); v0.8.1 reverts the
-  paged default, so the raise goes back with it. 4 is the knee of the measured
-  contiguous curve — aggregate throughput is flat from B=4 to B=8 and collapses
-  below it, while per-request decode is aggregate/B and so improves as the
-  batch shrinks, which is what a time-to-first-token deadline is scored on.
-  A `provider.toml` written by v0.8.0 carries an explicit `= 8` that release
-  generated; because that is **indistinguishable from a deliberate 8**, first
-  start after upgrading changes it to 4 once, logs a warning saying so, and
-  bumps `config_version` to 2. If you want 8, set it again afterwards — from
-  then on it is honoured. The `[1, 8]` upper bound is unchanged, so 8 stays
-  available both box-wide and per-model, which is what a box running
-  `engine_v2_kv_backend = "paged"` wants.
+  engine slot (default **4**, clamped to `[1, 8]`). 4 is the knee of the
+  measured contiguous curve — aggregate throughput is flat from B=4 to B=8 and
+  collapses below it, while per-request decode is aggregate/B and so improves
+  as the batch shrinks, which is what a time-to-first-token deadline is scored
+  on. An explicit value is always honoured; 8 stays available both box-wide
+  and per-model, which is what a box running `engine_v2_kv_backend = "paged"`
+  wants. A leftover top-level `config_version` line from an older release is
+  ignored.
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
   `"auto"` remains the default. The candidate selects paged only for the
   [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts); every
@@ -199,7 +201,7 @@ private_only = false         # true = serve only your own self-route traffic
   Use `"contiguous"` to pin that backend, or `"paged"` to require paged
   construction. Per-model `engine_v2_kv_backend_by_model` entries override
   the global setting (`EngineV2KVBackendPolicy.parseSelection`,
-  `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift`).
+  `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift`).
   Under `"auto"`, paged preflight/construction failures fall back to
   contiguous; the version-bound crash-loop guard also forces automatic
   selections contiguous. Explicit `"paged"` construction failures instead

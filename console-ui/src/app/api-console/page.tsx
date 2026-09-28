@@ -6,7 +6,7 @@ import { ArrowUpRight, BookOpen, KeyRound } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
 import { CodeExample } from "@/components/CodeExample";
 import { ApiKeysManager } from "@/components/api-keys";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 import { PUBLIC_COORDINATOR_URL } from "@/lib/coordinator-url";
 import { apiExampleUrl } from "@/lib/api-example-url";
 import { ENDPOINTS, sdkSetupExamples, chatExamples, modelsExamples } from "./content";

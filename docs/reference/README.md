@@ -1,11 +1,15 @@
 # Reference — exact shapes and values
 
-> Last updated: 2026-09-07 · commit `53646bc9b`
+> Last updated: 2026-09-27 · commit `c2fa18e02`
 
 Tables and schemas for Darkbloom's public interfaces, wire protocol,
 configuration, and formats. Consult these; do not read them front to back.
 Every row cites the code that defines it. For how and why things work, use
 [`../architecture/README.md`](../architecture/README.md).
+
+[App Attest shadow protocol](app-attest-shadow.md) defines the coexistence exchange, observations, storage, and packaging requirements.
+
+[Provider serving authorization](provider-authorization.md) defines independent legacy/App Attest authorization, expiry, revocation and MDM-removal readiness.
 
 ## Interfaces
 
@@ -20,10 +24,11 @@ Every row cites the code that defines it. For how and why things work, use
 |---|---|
 | [configuration.md](configuration.md) | Every environment variable of the coordinator, provider CLI, console UI, and admin UI: default, where read, effect |
 | [prediction-decision-telemetry.md](prediction-decision-telemetry.md) | Coordinator policy and encoded budget, provider prediction/verdict, observation boundaries and compatibility |
-| [telemetry-schema.md](telemetry-schema.md) | Telemetry event types, field allowlist, optional-field and casing rules pinned by the symmetry tests |
+| [telemetry-schema.md](telemetry-schema.md) | Telemetry event shape in its Go/Swift/TypeScript mirrors, closed enums, call-site-fixed fields and casing rules pinned by the symmetry tests |
 | [telemetry-inventory.md](telemetry-inventory.md) | Every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file |
 | [pricing-model.md](pricing-model.md) | Micro-USD units, price resolution order, formulas, every billing constant (single home for money constants), routes, service accounts |
 | [model-registry-format.md](model-registry-format.md) | Manifest schema, registration payload, alias format |
+| [qwen4-next-support.md](qwen4-next-support.md) | Native Flash-Next private serving/state contract and pending qualification; not a catalog or release claim |
 
 ## Prefix cache formats
 

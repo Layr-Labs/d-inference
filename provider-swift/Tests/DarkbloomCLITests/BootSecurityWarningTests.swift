@@ -33,7 +33,7 @@ struct BootSecurityWarningTests {
         #expect(try render(.init(macOSMajorVersion: 26, sip: .enabled), coordinatorEnforced: true).isEmpty)
     }
 
-    @Test("telemetry fields are categorical and allowlisted")
+    @Test("telemetry fields are categorical")
     func telemetry() throws {
         let start = try Start.parse([])
         let fields = start.bootSecurityTelemetryFields(
@@ -42,6 +42,5 @@ struct BootSecurityWarningTests {
         #expect(fields.count == 2)
         #expect(fields["boot_macos_major"]?.description == "25")
         #expect(fields["boot_sip_status"]?.description == "disabled")
-        #expect(TelemetryFieldFilter.filter(fields)?.count == fields.count)
     }
 }

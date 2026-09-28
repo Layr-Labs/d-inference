@@ -15,6 +15,7 @@ struct Start: AsyncParsableCommand {
     )
 
     @OptionGroup var configOptions: ConfigOptions
+    @OptionGroup var drain: DrainOptions
 
     @Option(help: "Override coordinator WebSocket URL.")
     var coordinatorURL: String?
@@ -45,6 +46,13 @@ struct Start: AsyncParsableCommand {
 
     @Flag(help: "Disable local API-key auth for --local / --local-endpoint (NOT recommended; trusted/airgapped use only).")
     var noAuth = false
+
+    /// Only the process actually owned by launchd ignores stale baked argv.
+    /// A manually launched foreground command retains explicit --model priority.
+    static func usesPinnedModelSelection(configPath: URL, launchManaged: Bool) -> Bool {
+        guard launchManaged, let content = try? String(contentsOf: configPath, encoding: .utf8) else { return false }
+        return tomlKeyPresent(content, section: "backend", key: "enabled_models")
+    }
 
     /// Public URL of the Darkbloom Terms of Service.
     static let termsURL = "https://darkbloom.dev/terms.html"
@@ -135,7 +143,6 @@ struct Start: AsyncParsableCommand {
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,
-                hardware: hardware,
                 runtimeCapabilities: runtimeCapabilities
             )
         } else if foreground {

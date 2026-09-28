@@ -10,6 +10,26 @@ import Darwin
 
 @Suite("Fan service boundary")
 struct FanServiceTests {
+    @Test("hardware status preserves RPMs and wire mode names", arguments: [UInt8(0), 1, 3, 255])
+    func hardwareStatus(rawMode: UInt8) throws {
+        let reading = FanReading(
+            capability: FanCapability(
+                index: 2, actualKey: "F2Ac", minimumKey: "F2Mn",
+                maximumKey: "F2Mx", targetKey: "F2Tg", modeKey: "F2Md"
+            ),
+            actualRPM: 3_500, minimumRPM: 1_200, maximumRPM: 5_000,
+            targetRPM: 4_000, mode: FanMode(rawValue: rawMode)
+        )
+        let status = FanServiceFanStatus(reading: reading)
+        let expectedModes: [UInt8: String] = [0: "auto", 1: "manual", 3: "system", 255: "unknown(255)"]
+        let encoded = try FanIPCCoding.encode(status)
+        let decoded = try FanIPCCoding.decode(FanServiceFanStatus.self, from: encoded)
+        #expect(decoded == FanServiceFanStatus(
+            index: 2, actualRPM: 3_500, targetRPM: 4_000,
+            minimumRPM: 1_200, maximumRPM: 5_000, mode: expectedModes[rawMode]
+        ))
+    }
+
     @Test("configured provider and root are the only allowed UIDs")
     func uidAuthorization() {
         let uuid = "11111111-1111-1111-1111-111111111111"

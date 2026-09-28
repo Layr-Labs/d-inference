@@ -61,9 +61,9 @@ const FIX_TABLE: Record<string, FixAction> = {
   },
   trust_self_signed: {
     kind: "link",
-    label: "Complete hardware attestation",
+    label: "Check serving verification",
     href: "/providers/setup",
-    note: "The network requires MDM enrollment + Apple Device Attestation.",
+    note: "macOS 27 uses App Attest without MDM. Check darkbloom status; older macOS uses legacy enrollment during the transition.",
   },
   trust_none: {
     kind: "command",
@@ -113,10 +113,15 @@ const FIX_TABLE: Record<string, FixAction> = {
     kind: "link",
     label: "Inspect failed jobs",
     href: "/providers/earnings",
-    note: "Then check the provider logs to recover routing priority.",
+    note: "Check the provider logs for failure details.",
   },
 
   // ── Info ───────────────────────────────────────────────────────────────
+  macos_upgrade: {
+    kind: "guidance",
+    label: "Upgrade macOS on this Mac",
+    note: "Open System Settings → General → Software Update. After upgrading, restart Darkbloom and check darkbloom status. Keep the MDM profile until App Attest migration is approved.",
+  },
   no_payout: {
     kind: "command",
     label: "Link to your account",

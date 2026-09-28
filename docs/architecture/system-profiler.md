@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-27 · commit `eafeab723`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -221,7 +221,7 @@ JSON-encoded on the sink worker.
 | `candidates` JSONB (≤ 4 rows) | `Top[0]` is the winner, then the lowest-cost other candidates ascending; each row is a `CandidateSummary` (cost + terms, `ttft_ms`, `effective_tps`, `effective_queue`, `total_pending`, `backend_running/waiting`, `active_token_budget_used/max`, `queued_prefill_tokens`, folded `slot_state`, `hb_age_ms`) | `CandidateSummary` (`gate_reason.go`) |
 | `runner_up_provider_id`, `runner_up_cost_ms` | lowest-cost candidate of the narrowed pool other than the winner; absent with one candidate | `selectRoutingCandidate` (`coordinator/registry/candidate_selection.go`) |
 | `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `scheduler.go` |
-| `near_tie_pool_size`, `selection_path` | retained cost candidates: exact minima in positive-cache pools, otherwise within `nearTieCostWindowMs`; current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random` (`selectionPathNames`). Historical rows may retain `cache_tiebreak` | `selectRoutingCandidate` |
+| `near_tie_pool_size`, `selection_path` | retained cost candidates: within `nearTieCostWindowMs` of the minimum in every pool; a restore-penalty candidate is retained only at the exact minimum. For cache-adjusted pools `near_tie_pool_size` therefore steps from 1 to the band size. Current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`, `cache_credit` (`selectionPathNames`). `prefix_affinity` is a stable repeat-demand preference among equivalent, non-quarantined cache-capable candidates; it does not prove a cache hit. `cache_credit` is the cheapest credited holder inside the band; holders identical on every term are spread uniformly. Historical rows may retain `cache_tiebreak` | `coordinator/registry/candidate_selection.go`, `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go`, `SelectionPath` |
 | `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat` when the routing snapshot was taken; observability only | `heartbeatAgeMs` |
 | `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `projectedPerRequestDecodeTPS` | `scheduler.go` |
 | `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `scheduler.go` |
@@ -263,7 +263,7 @@ nullable, everything else `NOT NULL DEFAULT` zero. `id BIGSERIAL PRIMARY KEY`,
 | host posture | `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `free_for_load_gb` (nullable: `NULL` = provider never reported it), `memory_pressure`, `cpu_usage`, `thermal_state` (folded), `low_power_mode`, `memory_pressure_level`, `steps_executed`, `step_wall_ns_total`, `decode_rows_total`, `prefill_tokens_total`, `mtp_*_total`, `heartbeat_age_ms`, `wedge_suspected`, `eval_in_flight_ms` |
 | `HeartbeatStats` (lifetime merge) | `requests_served` … `usage_gaps`, `cancel_stage_*_total`, `tokens_after_cancel_total`, `cancel_abort_ns_sum` |
 | coordinator row only | `queue_depth_total`, `queue_depth_by_model` JSONB, `inflight_requests`, `reserve_lock_wait_p95_us`, `profile_sink_depth`, `profile_sink_dropped_total`, `route_sink_dropped_total`, `unknown_request_frames_total`, `goroutines` |
-| capability gating (provider rows) | `provider_version`, `model_vision` (`ModelInfo.IsVision`), `template_render_ok` (`ModelInfo.TemplateRenderOK`; `NULL` = no opinion) — what the tools floor, vision gate and template-render gate compare |
+| capability gating (provider rows) | `provider_version`, `model_vision` (`ModelInfo.IsVision`), `template_render_ok` (`ModelInfo.TemplateRenderOK`; `NULL` = no opinion) — what the version floors, vision gate and template-render gate compare |
 
 Indexes `idx_fleet_snapshots_sampled (sampled_at DESC)`,
 `idx_fleet_snapshots_provider (provider_id, sampled_at DESC)`. INT columns are
@@ -451,7 +451,7 @@ ring or `DaemonState` mirror.
 | Wire types and fixture | `coordinator/protocol/profile.go`, `coordinator/protocol/testdata/profiler_wire_fixture.json` |
 | Store | `coordinator/store/profile_records.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/postgres.go`, `coordinator/store/migrations/request_waterfall.sql` |
 | Fleet replay | `coordinator/registry/routingsim/fleet_ndjson.go` |
-| Provider side | `provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift`, `provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`, `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Profile.swift` |
+| Provider side | `provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift`, `provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Profile.swift` |
 | Engine side | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2RequestTiming+Stamps.swift` |
 
 ## Related

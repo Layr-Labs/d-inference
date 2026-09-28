@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Model } from "@/lib/api";
-import { buildCatalogPrices, filterModels, formatPrice, modelContext, modelFeatures } from "./catalog";
+import { buildCatalogPrices, catalogPrice, filterModels, formatPrice, modelContext, modelFeatures } from "./catalog";
 
 const ALPHA = "example/alpha";
 const BETA = "example/beta";
@@ -61,5 +61,18 @@ describe("model catalog controls", () => {
     expect(withCache.get(BETA)?.cacheRead).toBe(0);
     expect(withCache.get(GAMMA)).toEqual({ input: 50_000, output: 200_000 });
     expect(withCache.get("legacy")).toEqual({ input: 50_000, output: 200_000 });
+  });
+
+  it("resolves an alias's price from its embedded /v1/models pricing when /v1/pricing is keyed by the build", () => {
+    const alias: Model = { id: "example/alias", object: "model", pricing: { prompt: "0.00000005", completion: "0.0000002", input_cache_read: "0.0000000084" } };
+    expect(catalogPrice(alias, prices)).toEqual({ input: 50_000, output: 200_000, cacheRead: 8_400 });
+    // A listed /v1/pricing row wins over the embedded block.
+    expect(catalogPrice({ ...alias, id: ALPHA }, prices)).toEqual({ input: 50_000, output: 200_000 });
+    // No usable embedded price: unlisted, and a cache "discount" above input is dropped.
+    expect(catalogPrice({ id: "bare", object: "model" }, prices)).toBeUndefined();
+    expect(catalogPrice({ id: "bad", object: "model", pricing: { prompt: "abc", completion: "0.0000002" } }, prices)).toBeUndefined();
+    expect(catalogPrice({ id: "odd", object: "model", pricing: { prompt: "0.00000005", completion: "0.0000002", input_cache_read: "0.0000001" } }, prices)).toEqual({ input: 50_000, output: 200_000 });
+    // Aliases sort by their resolved price rather than falling to the end.
+    expect(filterModels([alias, models[2]], "", "all", "input", prices).map((model) => model.id)).toEqual(["example/alias", GAMMA]);
   });
 });

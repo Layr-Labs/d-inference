@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-27 · commit `eafeab723`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -9,6 +9,38 @@ derived from them, demand-driven model loads, and the warm-pool controller
 that keeps enough providers resident for each model. Choosing *which*
 eligible provider gets a request is the subject of
 [`routing.md`](routing.md); this page stops where that choice begins.
+
+## Draining providers
+
+A lifecycle-draining connection is excluded from `modelLoadCandidatePendingLocked`
+and `providerHasWarmModelLocked` in `coordinator/registry/model_loading.go`, from
+`warmPoolCandidateReasonLocked` in `coordinator/registry/warm_pool_controller.go`,
+and from load/prefetch command submission in `coordinator/registry/model_commands.go`.
+A slot being warm does not make a stopped provider available. Provider admission
+and the final inference writer still fence races after planning; existing accepted
+work retains its model pin until terminal completion. See
+[the routing boundary](routing.md#provider-lifecycle-drain-boundary).
+
+A live inventory replacement remains fenced until its committed receipt reaches
+the wire, the provider sends matching `models_replace_ready` after reopening
+local admission, and an accepted serving heartbeat refreshes `BackendCapacity`
+at the ready frame's `capacity_seq` or later
+(`ResumeProviderModels`, `coordinator/registry/provider_models_replace.go`).
+Readiness and the heartbeat may arrive in either order; earlier sequence numbers,
+draining status, and missing capacity do not release the fence. Only then does
+the API reconcile queues and force a current `desired_models`
+snapshot through `RefreshDesiredModels` in `coordinator/registry/model_commands.go`.
+The API then sends `models_replace_resumed`, and the provider waits for the
+matching receipt before reporting success.
+That refresh bypasses per-connection delivery deduplication, retains the existing
+capability/version guards and retired-alias lineage, and emits an empty snapshot
+when deselected aliases no longer apply. The provider preserves a snapshot that
+arrives while its commit is awaiting acknowledgement and resumes convergence
+after reopening admission. A failed receipt write or missing readiness neither
+resumes routing nor dispatches queued work. Removed-model queue cleanup persists
+through a reconciliation drain until routing resumes or disconnect (`handleModelsReplace`,
+`handleModelsReplaceReady`, `coordinator/api/provider_models_replace.go`).
+
 
 ## Context
 
@@ -26,6 +58,11 @@ plus whatever it has dispatched since. Scheduling therefore has three jobs:
    changes.
 3. **Shape the fleet.** Load models where demand is, ahead of demand where
    the signals justify it, without flapping.
+
+Warm-pool eligibility uses the same complete legacy or qualified App Attest
+serving policy as dispatch (`coordinator/registry/warm_pool_controller.go`,
+`warmPoolCandidateReasonLocked`). App Attest never changes capacity or grants
+legacy trust flags. See [provider authorization](../reference/provider-authorization.md).
 
 ## Mechanism
 
@@ -48,7 +85,7 @@ absolute first-content clock. The queue's error vocabulary:
 | `ErrQueueTimeout` | Waited `maxWait` without a reservation. |
 | `ErrQueueTTFTTooSlow` | Hard-reject mode: every otherwise-eligible provider fails only the TTFT ceiling, so waiting cannot help. |
 | `ErrQueueFirstContentDeadline` | The request-absolute first-content clock expired while queued. |
-| `ErrQueueToolConstraintUnavailable` | No provider left that can honour a required tool constraint. |
+| `ErrQueueToolConstraintUnavailable` | No provider left that can honour a required tool constraint or the request's native media-tool capability. |
 
 **Draining.** A queue is drained — waiters popped in order and offered to the
 routing path — whenever fleet state changes. The event is recorded on the
@@ -166,8 +203,13 @@ the slot that the provider has not yet reflected (`pendingMaxTokens −
 committedTokenBudget`, floored at 0). A budget-clamped pair
 ([`routing.md`](routing.md#gray-box-capacity-signals)) and a slot that reports
 `KVBytesPerToken` with a zero budget (`knownZeroTokenBudget`) are refused
-outright. `pooledBudgetAdmits` then checks the provider-wide pool that all
-slots share, in bytes when the provider reports byte-mode budgets.
+outright. `pooledBudgetAdmits` then checks the provider-wide pool: the sum of
+every slot's private grant (`providerPooledTokenBudget`,
+`coordinator/registry/pooled_admission.go`) charged with every model's
+coordinator-pending tokens, in bytes when every budget slot reports
+`KVBytesPerToken`. It rejects what a per-slot check cannot see: pending work
+for a cold model that has no slot yet, and a grant that a re-slice shrank
+below its live use. A cold request is charged against the same pool.
 
 **Memory fallback** for slots without a token budget: a resident model needs
 no weight memory; a non-resident one needs `modelSizeGB` plus the request's
@@ -181,6 +223,30 @@ its reported `FreeForLoadGB` when present, otherwise against
 The **absolute hardware-fit gate** (`modelFitsHardware`,
 `modelMemoryHeadroomFactor`) precedes both paths for non-resident models
 and is described with the other gates in [`routing.md`](routing.md#eligibility-gates-and-the-gatereason-vocabulary).
+
+For an explicitly advertised native Qwen4 SSD weight-offload declaration,
+`advertisedOffloadedMemoryGBLocked` validates the model family, matching ID,
+positive total/offloaded bytes and finite estimated memory before cold-load
+accounting uses it. The estimate cannot undercut the remaining resident weight
+bytes plus its valid explicit `native_load_transient_bytes` allowance; missing
+or invalid allowances retain the existing 1.2 load-transient padding. Missing,
+invalid or unrelated-
+family declarations retain catalog-based accounting; a model name alone grants
+no reduction (`coordinator/registry/offloaded_weights.go`).
+`reportedFreeForLoadAdmitsWithOffload` is shared by routing, the model-load
+planner and the warm pool, so none independently discounts the same weights.
+This is weight-residency accounting, not prefix-cache credit, a lower activation
+reserve or proof that a physical RAM tier passes cold load and reload. The
+[native support reference](../reference/qwen4-next-support.md) records those
+separate model/resource qualification boundaries.
+
+Optional MTP preparation retains its target across asynchronous work, so the
+provider excludes that target from eviction feasibility and refreshes its
+capacity quote when staging ownership changes. A quote calculated before a
+staging change cannot overwrite the newer snapshot
+(`provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift`,
+`updateAggregateCapacity`). The retained-weight and survivor-grant lifecycle is
+specified in [Inference: multi-token prediction](inference.md#multi-token-prediction).
 
 ### Concurrency caps
 
@@ -352,9 +418,9 @@ reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `not_serving_catalog`, `dedicated_excluded`, `model_too_large`,
 `no_free_for_load`, `state_restoring`).
 
-**`WarmPoolSnapshot`.** Every tick produces one per model, logged as
-`warm_pool_tick` and retained as the controller's latest state
-(`storeSnapshots` / `latestSnapshots`):
+**`WarmPoolSnapshot`.** Every tick produces one per model, writes
+`warm_pool_tick` to the process logger, and retains the controller's latest
+state (`storeSnapshots` / `latestSnapshots`):
 `Model`, `TargetWarm`, `WarmProviders`, `EligibleCold`, `QueueDepth`,
 `OldestQueueAge`, `CapacityRejects`, `TTFTMisses`, `SpeculativeStarted`,
 `SpeculativeWon`, `ColdDispatches`, `LoadDurationEWMA`, `ObserveOnly`,
@@ -363,6 +429,16 @@ reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `ColdDisqualifiers`. With `ObserveOnly` the snapshot is produced but no
 `load_model` is sent; `MaxLoadsPerTick = 0` or `MaxGlobalPendingLoads = 0`
 has the same effect (`plan`).
+
+When Datadog is configured, `StartWarmPoolTelemetryLoop`
+(`coordinator/api/warm_pool_telemetry.go`) polls the retained snapshot every
+`warmPoolTelemetryPollInterval = 15 * time.Second`. It emits each newly
+observed snapshot timestamp once through the coordinator telemetry emitter as
+info/custom `warm_pool_tick`. Cold disqualifier counts become scalar
+`cold_disq_<reason>` attributes. The registry retains only the newest tick, so
+this is a sampled latest-state feed: multiple hot-trigger ticks between polls
+can collapse into one emitted snapshot. The event contains per-model
+aggregates only and is not written to Postgres.
 
 ### Heartbeat cadence and eviction
 
@@ -521,7 +597,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Token-budget and memory admission | `coordinator/registry/scheduler.go` — `freeMemoryAdmits`, `pooledBudgetAdmits`, `knownZeroTokenBudget`, `committedTokenBudget` |
 | Concurrency caps | `coordinator/registry/provider.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`; `coordinator/registry/config.go` — `DefaultMaxConcurrent`; `coordinator/registry/concurrency_cap.go` — `SetQualityConcurrencyCap`, `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked` |
 | Pending loads and swaps | `coordinator/registry/model_loading.go` — `pendingModelLoadTTL`, `TriggerModelSwaps`, `bestModelLoadProviderLocked`; `coordinator/registry/model_commands.go` — `SendLoadModel`; `coordinator/registry/model_swap_coalesce.go` — `modelSwapPlanInterval`, `modelSwapPlanGate`, `triggerModelSwapsFromHeartbeat` |
-| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha` |
+| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha`; `coordinator/api/warm_pool_telemetry.go` — `StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields` |
 | Warm-pool and quality-cap configuration | `coordinator/registry/config.go` — `WarmPoolConfig`, `QualityCapConfig`, `ReadConfig` |
 | Eviction | `coordinator/registry/provider_lifecycle.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
 | Provider writer | `coordinator/registry/provider_writer.go` — `providerWriter`, `providerWriteTimeout`, `watchWrites` |

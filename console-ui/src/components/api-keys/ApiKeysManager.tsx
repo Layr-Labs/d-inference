@@ -46,10 +46,10 @@ export function ApiKeysManager({ onConsoleKeyChange }: { onConsoleKeyChange?: (k
   const confirmBusy = confirm ? busyId === confirm.key.id : false;
 
   const onCreateSubmit = async (body: Parameters<typeof createKey>[0]) => {
-    const created = await createKey(body);
-    if (created) {
+    const result = await createKey(body);
+    if (result) {
       setCreateOpen(false);
-      setSecret({ created, alreadyConsole: false });
+      setSecret({ created: result.created, alreadyConsole: result.adoptedConsole });
     }
   };
 

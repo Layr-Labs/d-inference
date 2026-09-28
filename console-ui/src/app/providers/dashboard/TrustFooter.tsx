@@ -1,36 +1,15 @@
-// A calm closing note on why this fleet is trustworthy — the private
-// attestation flow in one sentence, plus how many machines are
-// hardware-attested. Counts come from the provider list so it always agrees
-// with the cards above.
-
 import { ShieldCheck } from "lucide-react";
+import { summarizeOwnerVerification } from "../authorization";
+import type { MyProvider } from "../types";
 
-export function TrustFooter({
-  hardwareCount,
-  total,
-}: {
-  hardwareCount: number;
-  total: number;
-}) {
-  return (
-    <div className="rounded-xl bg-bg-secondary/60 border border-border-dim/60 p-4 flex items-start gap-3">
-      <ShieldCheck size={16} className="text-accent-green shrink-0 mt-0.5" />
-      <div className="text-xs text-text-secondary leading-relaxed">
-        <span className="font-medium text-text-primary">
-          {hardwareCount} of {total} machine{total === 1 ? "" : "s"} hardware-attested.
-        </span>{" "}
-        Each machine proves its identity through a Secure Enclave key, OS security posture, MDM
-        enrollment, and Apple Device Attestation — the coordinator only routes paid traffic to
-        hardware-verified devices and publishes only privacy-redacted trust status.{" "}
-        <a
-          href="https://www.apple.com/certificateauthority/private/"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-accent-brand hover:underline"
-        >
-          Apple Root CA
-        </a>
-      </div>
-    </div>
-  );
+export function TrustFooter({ providers }: { providers: MyProvider[] }) {
+  const c = summarizeOwnerVerification(providers);
+  const connected = providers.filter((p) => p.status !== "offline" && p.status !== "never_seen").length;
+  return <div className="flex gap-3 rounded-xl border border-border-dim/60 bg-bg-secondary/60 p-4 text-xs text-text-secondary">
+    <ShieldCheck size={16} className="shrink-0" />
+    <p>{c.unknown === c.total && c.total > 0 ? "Authorization unavailable" : `${c.authorized} currently authorized`} of {connected} connected machines ({providers.length} owned machine records).
+      {" "}{c.appAttest} App Attest · {c.legacy} legacy MDM/MDA/APNs · {c.overlap} both (counted once).
+      {c.unknown > 0 && ` ${c.unknown} machine verdict(s) unavailable.`}
+      {" "}Apple evidence is verified by the coordinator. Authorization expires; device reports and historical hardware proof remain separate.</p>
+  </div>;
 }

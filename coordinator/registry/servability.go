@@ -48,10 +48,10 @@ const (
 	servabilityCapFraction = 0.90
 	// servabilityActivationFloorGB mirrors the provider's DEFAULT activation
 	// reserve (UnifiedMemoryCap.defaultActivationReserveBytes, 5.5 GiB): the
-	// working set held back on top of weights before any KV cache. On
-	// pre-per-model binaries it is FLAT — every model, every attention
-	// posture, every batch; on per-model binaries it is the fallback for
-	// models without a measured floor (servabilityModelActivationFloorsGB).
+	// working set held back on top of weights before any KV cache. It is the
+	// fallback for models without a measured floor
+	// (servabilityModelActivationFloorsGB) — every such model, every attention
+	// posture, every batch.
 	//
 	// 5.5 as of v0.8.0, moved in the SAME commit as the provider constant:
 	// the release ships decode batch 8 and the measured gemma-4 B=8
@@ -72,32 +72,6 @@ const (
 	// flat constant mirrors its default. A term the provider does not hold
 	// remains unsanctioned.
 	servabilityActivationFloorGB = 5.5
-	// servabilityLegacyActivationFloorGB is the reserve a pre-0.8.0 provider
-	// actually holds (the old defaultActivationReserveBytes). During the
-	// staged rollout the fleet is mixed, and this mirror must charge each
-	// provider the reserve ITS binary holds — a flat 5.5 against a cold
-	// legacy box falsely 429s (prompt_too_long, terminal) a request sized
-	// between the two reserves that the legacy fleet could serve. See
-	// servabilityActivationFloor.
-	servabilityLegacyActivationFloorGB = 3.0
-	// servabilityActivationFloorMinVersion is the first provider release
-	// whose UnifiedMemoryCap holds the 5.5 GiB reserve.
-	servabilityActivationFloorMinVersion = "0.8.0"
-	// servabilityPerModelFloorMinVersion is the first provider release whose
-	// UnifiedMemoryCap resolves the activation reserve from its serving set
-	// via the measured per-model floor table.
-	//
-	// RELEASE COUPLING: the release that ships the provider half of this
-	// change MUST be numbered exactly this (or this constant updated in the
-	// release commit — see the Releases section of CLAUDE.md, which bumps
-	// ProviderCore.version in the same commit). Plain numeric only:
-	// CompareVersions parses non-numeric segments as 0, so a "-swift.N"
-	// suffix would make every per-model binary read as BELOW this gate and
-	// be charged the flat floor (the unsanctioned tighter direction).
-	// This branch bumps ProviderCore.version to 0.8.16 in the same tree,
-	// honoring the coupling; 0.8.11 through 0.8.15 binaries hold the flat
-	// 5.5 and are gated below by this value.
-	servabilityPerModelFloorMinVersion = "0.8.16"
 )
 
 // servabilityModelActivationFloorsGB mirrors the provider's measured
@@ -152,55 +126,25 @@ var servabilityMeasuredResidentGiB = map[string]float64{
 }
 
 // servabilityColdWeightsGiB is the weights term of the POST-LOAD
-// token-budget arithmetic (coldTokenBudgetEstimate) for the given provider
-// binary and model: measured steady residency for ≥perModel binaries on
-// measured models, the catalog-padded conversion otherwise. Version-gated
-// like servabilityActivationFloor so pre-perModel binaries — whose warm
-// reports the estimate converges to under the OLD arithmetic — keep the
-// padded prediction. ADMIT-time gates never call this (see
+// token-budget arithmetic (coldTokenBudgetEstimate) for the given model:
+// measured steady residency for measured models, the catalog-padded
+// conversion otherwise. ADMIT-time gates never call this (see
 // reportedFreeForLoadAdmits: the load transient needs the padding).
-func servabilityColdWeightsGiB(version, modelID string, catalogSizeGB float64) float64 {
-	padded := catalogSizeGB * coldLoadCatalogGBToMemGiB
-	if version == "" ||
-		CompareVersions(version, servabilityPerModelFloorMinVersion) < 0 {
-		return padded
-	}
+func servabilityColdWeightsGiB(modelID string, catalogSizeGB float64) float64 {
 	if measured, ok := servabilityMeasuredResidentGiB[modelID]; ok {
 		return measured
 	}
-	return padded
+	return catalogSizeGB * coldLoadCatalogGBToMemGiB
 }
 
-// servabilityActivationFloor selects the activation reserve the given
-// provider binary actually holds for the given model. This is the same
-// version-gated selection shape as slotBudgetLayoutForVersion: the registry
-// snapshot carries the provider's reported binary version (p.Version →
-// snap.binaryVersion) and the model being routed (snap.model), so the cold
-// estimate can mirror the right constant per provider — which is what makes
-// it converge to that provider's own warm report as the slot loads (a legacy
-// provider's active_token_budget_max reflects its 3 GiB reserve; a per-model
-// provider's reflects its serving-set floor).
-//
-// Three regimes: pre-0.8.0 binaries hold the legacy flat 3 GiB; 0.8.0 up to
-// (excluding) the per-model release hold the flat 5.5 GiB; per-model binaries
-// hold the measured floor for models in the mirrored table and the flat 5.5
-// otherwise.
-//
-// An EMPTY/unreported version fails toward the LEGACY (larger) budget, the
-// fail-open direction this file mandates: over-predicting a budget risks one
-// provider-side refusal that the dispatch retry machinery absorbs;
-// under-predicting produces a terminal client-visible 429. The asymmetry is
-// also self-correcting — the fleet trends to ≥0.8.0 as it upgrades, and every
-// RESIDENT slot reports its real budget, which snapshotStructuralBudget
-// prefers over this estimate.
-func servabilityActivationFloor(version, modelID string) float64 {
-	if version == "" ||
-		CompareVersions(version, servabilityActivationFloorMinVersion) < 0 {
-		return servabilityLegacyActivationFloorGB
-	}
-	if CompareVersions(version, servabilityPerModelFloorMinVersion) < 0 {
-		return servabilityActivationFloorGB
-	}
+// servabilityActivationFloor selects the activation reserve the provider holds
+// for the given model: the measured floor for models in the mirrored table
+// (servabilityModelActivationFloorsGB), the flat servabilityActivationFloorGB
+// otherwise. The snapshot carries the model being routed (snap.model), so the
+// cold estimate converges to that provider's own warm report as the slot
+// loads (a resident slot's active_token_budget_max reflects its serving-set
+// floor).
+func servabilityActivationFloor(modelID string) float64 {
 	if floor, ok := servabilityModelActivationFloorsGB[modelID]; ok {
 		return floor
 	}
@@ -243,11 +187,11 @@ type ServabilityVerdict struct {
 // paddedWeightsGB uses the same catalog→padded-GiB conversion the cold-load gate
 // uses (coldLoadCatalogGBToMemGiB). kvBytesPerToken prefers the provider-reported
 // per-model value, falling back to the kvCacheBytesPerToken default.
-// providerVersion and modelID select the activation reserve THAT binary holds
-// for THAT model — 3 GiB before 0.8.0, flat 5.5 GiB up to the per-model
-// release, then the measured per-model floor (servabilityActivationFloor) —
-// so a mixed-version fleet is charged per-provider, not at the newest
-// constant. The estimate is deliberately OPTIMISTIC (uses only the activation
+// modelID selects the activation reserve the provider holds for THAT model —
+// the measured per-model floor, else the flat 5.5 GiB
+// (servabilityActivationFloor) — and the measured post-load residency when
+// one exists (servabilityColdWeightsGiB). The estimate is deliberately
+// OPTIMISTIC (uses only the activation
 // reserve, not the extra min-KV load floor) so the predictor errs toward
 // serving. Returns 0 when the inputs are unusable or no headroom remains.
 //
@@ -256,7 +200,7 @@ type ServabilityVerdict struct {
 // This function's only job is to reproduce the PROVIDER's own reserve arithmetic
 // for a slot that has no heartbeat yet. It is not an independent opinion about
 // how much memory prefill needs. UnifiedMemoryCap.kvBudgetBytes computes
-// cap − Σweights − reserve with reserve flat at 5.5 GiB, and a resident slot
+// cap − Σweights − reserve with reserve the serving set's floor, and a resident slot
 // reports exactly that back as active_token_budget_max (EngineV2Bridge+Capacity:
 // kvBytesCapacity / kvBytesPerToken) — which snapshotStructuralBudget prefers
 // whenever it exists. So the cold estimate has to converge to the warm report as
@@ -273,10 +217,10 @@ type ServabilityVerdict struct {
 // provider's question, answered in one place; a second opinion here can only
 // desync. Retune this ONLY when the provider's floors move — as they did for
 // v0.8.0 (3 → 5.5, the measured B=8 activation peak) and again when the
-// measured per-model table shipped — and keep the LEGACY constants beside it
-// while any pre-move provider remains in the fleet: convergence is
-// per-provider, so the mirror must charge each binary the reserve it actually
-// holds (servabilityActivationFloor).
+// measured per-model table shipped (v0.8.16). Convergence is per-provider:
+// while any provider below a floor move is still routable (above
+// EIGENINFERENCE_MIN_PROVIDER_VERSION), the mirror must charge each binary
+// the reserve it actually holds, version-gated.
 //
 // Being optimistic is the safe direction because the coordinator is not the
 // backstop. The provider is, and its checks are measurement-based, not
@@ -287,11 +231,18 @@ type ServabilityVerdict struct {
 // (liveKVHeadroomBytes). An over-generous estimate therefore costs a declined
 // load, which the dispatch path retries elsewhere — strictly better than a
 // terminal 429 on a request that was servable all along.
-func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken int64, providerVersion, modelID string) int64 {
+func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken int64, modelID string) int64 {
+	return coldTokenBudgetEstimateWithOffload(totalMemoryGB, modelSizeGB, 0, kvBytesPerToken, modelID)
+}
+
+func coldTokenBudgetEstimateWithOffload(totalMemoryGB, modelSizeGB, offloadedMemoryGB float64, kvBytesPerToken int64, modelID string) int64 {
 	if totalMemoryGB <= 0 || modelSizeGB <= 0 {
 		return 0
 	}
-	weightsGB := servabilityColdWeightsGiB(providerVersion, modelID, modelSizeGB)
+	weightsGB := servabilityColdWeightsGiB(modelID, modelSizeGB)
+	if finitePositiveMemory(offloadedMemoryGB) {
+		weightsGB = offloadedMemoryGB
+	}
 	postLoadGB := servabilityCapFraction*totalMemoryGB - weightsGB
 	if postLoadGB <= 0 {
 		return 0
@@ -301,7 +252,7 @@ func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken
 		kvpt = kvCacheBytesPerToken
 	}
 	postLoadBytes := postLoadGB * float64(bytesPerGB)
-	floorBytes := servabilityActivationFloor(providerVersion, modelID) * float64(bytesPerGB)
+	floorBytes := servabilityActivationFloor(modelID) * float64(bytesPerGB)
 	tokens := (postLoadBytes - floorBytes) / float64(kvpt)
 	if tokens <= 0 {
 		return 0
@@ -329,9 +280,9 @@ func snapshotStructuralBudget(snap *routingSnapshot) (budget int64, known bool) 
 	if snap.totalMemoryGB <= 0 || snap.modelSizeGB <= 0 {
 		return 0, false
 	}
-	return coldTokenBudgetEstimate(
-		snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken,
-		snap.binaryVersion, snap.model), true
+	return coldTokenBudgetEstimateWithOffload(
+		snap.totalMemoryGB, snap.modelSizeGB, snap.estimatedOffloadedMemoryGB, snap.kvBytesPerToken,
+		snap.model), true
 }
 
 // liveRemainingBudget is snapshotStructuralBudget minus the provider's CURRENTLY

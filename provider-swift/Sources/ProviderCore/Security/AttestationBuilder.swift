@@ -86,8 +86,6 @@ public struct StatusCanonicalInput: Sendable, Equatable {
     public var secureBootEnabled: Bool?
     public var binaryHash: String?
     public var activeModelHash: String?
-    public var pythonHash: String?
-    public var runtimeHash: String?
     public var templateHashes: [String: String]
     public var modelHashes: [String: String]
 
@@ -99,8 +97,6 @@ public struct StatusCanonicalInput: Sendable, Equatable {
         secureBootEnabled: Bool? = nil,
         binaryHash: String? = nil,
         activeModelHash: String? = nil,
-        pythonHash: String? = nil,
-        runtimeHash: String? = nil,
         templateHashes: [String: String] = [:],
         modelHashes: [String: String] = [:]
     ) {
@@ -111,33 +107,61 @@ public struct StatusCanonicalInput: Sendable, Equatable {
         self.secureBootEnabled = secureBootEnabled
         self.binaryHash = binaryHash
         self.activeModelHash = activeModelHash
-        self.pythonHash = pythonHash
-        self.runtimeHash = runtimeHash
         self.templateHashes = templateHashes
         self.modelHashes = modelHashes
     }
 }
 
+private struct StatusCanonicalPayload: Encodable {
+    let nonce: String
+    let timestamp: String
+    let rdmaDisabled: Bool?
+    let sipEnabled: Bool?
+    let secureBootEnabled: Bool?
+    let binaryHash: String?
+    let activeModelHash: String?
+    let templateHashes: [String: String]?
+    let modelHashes: [String: String]?
+
+    enum CodingKeys: String, CodingKey {
+        case nonce
+        case timestamp
+        case rdmaDisabled = "rdma_disabled"
+        case sipEnabled = "sip_enabled"
+        case secureBootEnabled = "secure_boot_enabled"
+        case binaryHash = "binary_hash"
+        case activeModelHash = "active_model_hash"
+        case templateHashes = "template_hashes"
+        case modelHashes = "model_hashes"
+    }
+}
+
 public enum StatusCanonical {
     public static func build(_ input: StatusCanonicalInput) throws -> Data {
-        var object: [String: Any] = [
-            "nonce": input.nonce,
-            "timestamp": input.timestamp,
-        ]
-        if let value = input.rdmaDisabled { object["rdma_disabled"] = value }
-        if let value = input.sipEnabled { object["sip_enabled"] = value }
-        if let value = input.secureBootEnabled { object["secure_boot_enabled"] = value }
-        if let value = nonEmpty(input.binaryHash) { object["binary_hash"] = value }
-        if let value = nonEmpty(input.activeModelHash) { object["active_model_hash"] = value }
-        if let value = nonEmpty(input.pythonHash) { object["python_hash"] = value }
-        if let value = nonEmpty(input.runtimeHash) { object["runtime_hash"] = value }
-        if !input.templateHashes.isEmpty { object["template_hashes"] = input.templateHashes }
-        if !input.modelHashes.isEmpty { object["model_hashes"] = input.modelHashes }
-
-        return try JSONSerialization.data(
-            withJSONObject: object,
-            options: [.sortedKeys, .withoutEscapingSlashes]
+        let payload = StatusCanonicalPayload(
+            nonce: input.nonce,
+            timestamp: input.timestamp,
+            rdmaDisabled: input.rdmaDisabled,
+            sipEnabled: input.sipEnabled,
+            secureBootEnabled: input.secureBootEnabled,
+            binaryHash: nonEmpty(input.binaryHash),
+            activeModelHash: nonEmpty(input.activeModelHash),
+            templateHashes: input.templateHashes.isEmpty ? nil : input.templateHashes,
+            modelHashes: input.modelHashes.isEmpty ? nil : input.modelHashes
         )
+
+        // JSONEncoder's sortedKeys ordering matches Go's encoding/json bytewise
+        // string-key ordering, including for mixed-case keys in nested maps.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let encoded = try encoder.encode(payload)
+        // Go escapes these two scalars even with HTML escaping disabled.
+        // Replace actual scalars after encoding, preserving literal backslash-u
+        // text and JSONEncoder's existing string escaping.
+        let canonical = String(decoding: encoded, as: UTF8.self)
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+        return Data(canonical.utf8)
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
@@ -317,8 +341,6 @@ extension AttestationBuilder {
             secureBootEnabled: secureBootEnabled,
             binaryHash: binaryHash,
             activeModelHash: activeModelHash,
-            pythonHash: runtimeHashes?.pythonHash,
-            runtimeHash: runtimeHashes?.runtimeHash,
             templateHashes: runtimeHashes?.templateHashes ?? [:],
             modelHashes: modelHashes
         ))
@@ -334,8 +356,6 @@ extension AttestationBuilder {
             secureBootEnabled: secureBootEnabled,
             binaryHash: binaryHash,
             activeModelHash: activeModelHash,
-            pythonHash: runtimeHashes?.pythonHash,
-            runtimeHash: runtimeHashes?.runtimeHash,
             templateHashes: runtimeHashes?.templateHashes ?? [:],
             modelHashes: modelHashes
         )
@@ -359,19 +379,9 @@ private func detectHardwareModel() -> String {
 /// Parses the "Chip:" line from SPHardwareDataType output. Returns "Unknown"
 /// if the chip name cannot be determined.
 private func detectChipName() -> String {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-    process.arguments = ["SPHardwareDataType"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return "Unknown" }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
+    guard let output = try? SecurityCommandRunner.live.run(
+        "/usr/sbin/system_profiler", ["SPHardwareDataType"]).stdout
+    else { return "Unknown" }
 
     for line in output.components(separatedBy: "\n") {
         if line.contains("Chip:") {
@@ -400,36 +410,16 @@ private func detectSerialNumber() -> String? {
 }
 
 private func detectSerialNumberFromIOReg() -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
-    process.arguments = ["-c", "IOPlatformExpertDevice", "-d", "2"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return nil }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
+    guard let output = try? SecurityCommandRunner.live.run(
+        "/usr/sbin/ioreg", ["-c", "IOPlatformExpertDevice", "-d", "2"]).stdout
+    else { return nil }
     return parseSerialNumberFromIOReg(output)
 }
 
 private func detectSerialNumberFromSystemProfiler() -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-    process.arguments = ["SPHardwareDataType"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return nil }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
+    guard let output = try? SecurityCommandRunner.live.run(
+        "/usr/sbin/system_profiler", ["SPHardwareDataType"]).stdout
+    else { return nil }
 
     return parseSerialNumberFromSystemProfiler(output)
 }

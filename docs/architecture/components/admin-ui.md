@@ -1,8 +1,8 @@
 # Admin UI (`admin-ui/`)
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-26 · commit `b1aac01b5`
 
-`admin-ui/` is the internal, read-only operations dashboard: a separate Next.js 16 / React 19 application (`admin-ui/package.json`) whose pages are React Server Components that run parameterised `SELECT` statements against the coordinator database's read-only replica at request time. It has one authentication surface (HTTP Basic, enforced by `admin-ui/src/proxy.ts`), no API routes, and no browser-side data fetching. It is not the consumer console — that is [`console-ui.md`](console-ui.md) — and it never talks to the coordinator's HTTP API.
+`admin-ui/` is the internal, read-only operations dashboard: a separate Next.js 16 / React 19 application (`admin-ui/package.json`) whose pages are React Server Components that run parameterised `SELECT` statements against the coordinator database's read-only replica at request time. It has one authentication surface (HTTP Basic, enforced by `admin-ui/src/proxy.ts`), one raw App Attest evidence download route and no other API routes, and no browser-side data fetching. It is not the consumer console — that is [`console-ui.md`](console-ui.md) — and it never talks to the coordinator's HTTP API.
 
 ## Context
 
@@ -43,7 +43,7 @@ There is no session, cookie, or token: the browser re-sends the Basic header on 
 
 `admin-ui/src/lib/db.ts` (`import "server-only"`) builds one `pg.Pool` (`makePool`) from `ADMIN_DB_URL`. It strips any `sslmode`/`ssl` query parameters from the URL and sets TLS explicitly: `ssl: { rejectUnauthorized: false }` when `ADMIN_DB_SSL_NO_VERIFY === "true"`, otherwise `ssl: true` (full verification). Pool settings: `max: 4`, `idleTimeoutMillis: 30_000`, `connectionTimeoutMillis: 10_000`, `statement_timeout: 15_000`, `query_timeout: 20_000`, `application_name: "admin-ui"`. Outside `NODE_ENV=production` the pool is cached on `globalThis.__adminPool` so hot reloads do not leak connections. `query<T>(text, params)` runs a parameterised statement, retries once after 250 ms on SQLSTATE `40001` (hot-standby WAL-replay conflict), logs and rethrows other errors; `scalar()` wraps single-value counts; `isUndefinedTable(err)` detects SQLSTATE `42P01` so pages can render an "awaiting deploy" notice for tables the coordinator has not created yet. `admin-ui/next.config.ts` lists `serverExternalPackages: ["pg"]` so the driver stays in the Node runtime.
 
-### Pages (14)
+### Pages (17)
 
 Every page under `admin-ui/src/app/` exports `runtime = "nodejs"` and is a server component; the three `*View.tsx` files and `components/InteractiveTable.tsx`/`components/CopyButton.tsx` are client components for sorting, filtering, and copy buttons over data the server already rendered. Navigation is the `NAV` array in `admin-ui/src/components/AppShell.tsx`. Query files live in `admin-ui/src/lib/queries/`; each exported function is a `SELECT` (or `WITH … SELECT`) with user input bound as `$n` parameters.
 
@@ -63,8 +63,13 @@ Every page under `admin-ui/src/app/` exports `runtime = "nodejs"` and is a serve
 | `/openrouter` | `admin-ui/src/app/openrouter/page.tsx` | `openrouter.ts` (`listOpenRouterAccounts`; `email ILIKE '%@openrouter.ai%'`) | `users`, `balances`, `api_keys`, `ledger_entries`, `usage` |
 | `/releases` | `admin-ui/src/app/releases/page.tsx` | `releases.ts` (`listReleases`, `countReleases`) | `releases` |
 | `/referrals` | `admin-ui/src/app/referrals/page.tsx` | `referrals.ts` (`listReferrers`, `listInviteCodes`) | `referrers`, `referrals`, `users`, `invite_codes` |
+| `/app-attest` | `admin-ui/src/app/app-attest/page.tsx` (+ `components/app-attest/Readiness.tsx`) | `app-attest.ts` (`appAttestCensus`, `appAttestMachines`, `appAttestStages`, `appAttestArchiveHealth`), `app-attest-readiness.ts` (`appAttestReadinessCohorts`, `appAttestReadinessReasons`) | `darkbloom_machines`, `darkbloom_machine_sessions`, `darkbloom_machine_observations`, `app_attest_shadow_events`, `app_attest_evidence`, `app_attest_receipts`, `app_attest_receipt_jobs`, `app_attest_key_revocations` |
+| `/app-attest/[id]` | `admin-ui/src/app/app-attest/[id]/page.tsx` | `app-attest.ts` (`appAttestMachineHistory`) | `app_attest_evidence`, `darkbloom_machine_sessions` |
+| `/app-attest/diagnostics` | `admin-ui/src/app/app-attest/diagnostics/page.tsx` (presentation model `admin-ui/src/lib/app-attest-diagnostics.ts`) | `app-attest-diagnostics.ts` (`appAttestDiagnosticCohorts`, `appAttestDiagnosticCoverage`, `appAttestDiagnosticBreakdown`, `appAttestKeyDeathsByDay`, `appAttestRecentKeyDeaths`, `appAttestRotationOutcomes`, `appAttestRotationEvents`, `appAttestPushReceipt`) | `darkbloom_machine_sessions`, `app_attest_shadow_events`, `app_attest_evidence`, `app_attest_key_rotations` |
 
-`admin-ui/src/app/error.tsx` (`RouteError`) is the route-level boundary: a failed query renders `admin-ui/src/components/DbError.tsx` plus a Retry button while `AppShell` stays mounted. There are no `route.ts` files anywhere under `admin-ui/src/app/`.
+`/app-attest/diagnostics` breaks unexplained App Attest failure cohorts on macOS 27+ down by the optional runtime-diagnostic fields, classifies dead keys as OS change, reboot or process restart, reports rotation outcomes, and summarises provider-reported APNs push receipt (`push_history`) for all OS versions. The fields and their meaning are defined in [`../../reference/app-attest-shadow.md`](../../reference/app-attest-shadow.md); rows written before those fields existed render as "no data yet".
+
+`admin-ui/src/app/error.tsx` (`RouteError`) is the route-level boundary: a failed query renders `admin-ui/src/components/DbError.tsx` plus a Retry button while `AppShell` stays mounted. The only route handler is `admin-ui/src/app/app-attest/evidence/[id]/route.ts`, a raw evidence download that re-checks Basic Auth itself and sends `Cache-Control: private, no-store`.
 
 ### Security headers
 
@@ -87,7 +92,7 @@ Names and effect only; requiredness and defaults are in [`../../reference/config
 2. **Credential comparison is constant-time and non-short-circuiting.** `digestEqual` compares SHA-256 digests with an XOR fold; `checkBasicAuth` awaits both comparisons with `Promise.all` (`admin-ui/src/lib/auth.ts`).
 3. **The application only reads.** Every exported function in `admin-ui/src/lib/queries/*.ts` issues `SELECT`/`WITH … SELECT`; all user-supplied values are `$n` parameters passed to `query()` (`admin-ui/src/lib/db.ts`). Write protection is additionally enforced below the app by the replica (`transaction_read_only=on`) and the `readonly` role's grants (`admin-ui/src/lib/db.ts` header comment, `admin-ui/README.md`).
 4. **Credential hashes are never selected.** `api_keys.key_hash` and `usage.consumer_key_hash` are used only in `JOIN` conditions (`listUsage` in `admin-ui/src/lib/queries/usage.ts`, `listApiKeys` in `admin-ui/src/lib/queries/apikeys.ts`, `getRecentUsageForProvider` in `admin-ui/src/lib/queries/machine.ts`); coordinator-private `serial_number` values are resolved inside SQL and not returned (`getMachineByProviderID`, `getMachineSessions` in `admin-ui/src/lib/queries/sessions.ts`).
-5. **Database access is server-only.** `admin-ui/src/lib/db.ts` and every query module start with `import "server-only"`; `serverExternalPackages: ["pg"]` (`admin-ui/next.config.ts`) keeps the driver out of the client bundle; no file under `admin-ui/src/` calls `fetch`, and there are no route handlers, so the browser receives HTML only.
+5. **Database access is server-only.** `admin-ui/src/lib/db.ts` starts with `import "server-only"`, and every query module imports it (the older modules also import `server-only` directly); `serverExternalPackages: ["pg"]` (`admin-ui/next.config.ts`) keeps the driver out of the client bundle; no file under `admin-ui/src/` calls `fetch`, and the only route handler (`admin-ui/src/app/app-attest/evidence/[id]/route.ts`) returns a JSON download to an authenticated operator, so the browser otherwise receives HTML only.
 6. **Every query is time-bounded.** `statement_timeout: 15_000` and `query_timeout: 20_000` on the pool; one retry on SQLSTATE `40001` (`query`, `admin-ui/src/lib/db.ts`).
 7. **The page cannot be embedded or indexed.** `frame-ancestors 'none'` and `X-Frame-Options: DENY` (`admin-ui/next.config.ts`); `robots: { index: false, follow: false }` (`admin-ui/src/app/layout.tsx`).
 
@@ -110,10 +115,10 @@ Names and effect only; requiredness and defaults are in [`../../reference/config
 | Request gate | `admin-ui/src/proxy.ts` (`proxy`, `config.matcher`) |
 | Basic-auth check | `admin-ui/src/lib/auth.ts` (`checkBasicAuth`, `digestEqual`) |
 | Connection pool and query helpers | `admin-ui/src/lib/db.ts` (`makePool`, `pool`, `query`, `scalar`, `isUndefinedTable`) |
-| SQL, per page | `admin-ui/src/lib/queries/` (`overview.ts`, `users.ts`, `providers.ts`, `machine.ts`, `operators.ts`, `sessions.ts`, `usage.ts`, `billing.ts`, `earnings.ts`, `apikeys.ts`, `models.ts`, `openrouter.ts`, `releases.ts`, `referrals.ts`) |
+| SQL, per page | `admin-ui/src/lib/queries/` (`overview.ts`, `users.ts`, `providers.ts`, `machine.ts`, `operators.ts`, `sessions.ts`, `usage.ts`, `billing.ts`, `earnings.ts`, `apikeys.ts`, `models.ts`, `openrouter.ts`, `releases.ts`, `referrals.ts`, `app-attest.ts`, `app-attest-readiness.ts`, `app-attest-diagnostics.ts`) |
 | Layout, navigation, error boundary | `admin-ui/src/app/layout.tsx` (`RootLayout`), `admin-ui/src/components/AppShell.tsx` (`NAV`), `admin-ui/src/app/error.tsx` (`RouteError`), `admin-ui/src/components/DbError.tsx` |
 | Security headers | `admin-ui/next.config.ts` (`cspDirectives`, `securityHeaders`, `serverExternalPackages`) |
-| Formatting helpers and the only test | `admin-ui/src/lib/format.ts`, `admin-ui/src/lib/format.test.ts` (`npm test`, vitest, `environment: node`) |
+| Tests | `admin-ui/src/lib/format.test.ts`, `admin-ui/src/lib/table-rows.test.ts`, `admin-ui/src/components/DataTable.test.ts`, `admin-ui/src/lib/app-attest-diagnostics.test.ts` (`npm test`, vitest, `environment: node`); PostgreSQL query tests `admin-ui/src/lib/queries/app-attest.test.ts` and `admin-ui/src/lib/queries/app-attest-diagnostics.test.ts` skip unless `APP_ATTEST_TEST_DATABASE_URL` names the designated disposable database |
 | Build, lint, run | `admin-ui/package.json` (`dev`, `build`, `start`, `lint`, `test`) — not wired into the root `Makefile` or CI |
 
 ## Related

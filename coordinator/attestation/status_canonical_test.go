@@ -13,17 +13,17 @@ import (
 	"testing"
 )
 
-// TestBuildStatusCanonicalGoldenBytes is the cross-language wire-format
-// guard for the CURRENT (v0.6.31+) provider shape, which no longer
-// reports the retired hypervisor_active field. The bytes asserted here
-// MUST be identical to the bytes produced by the Swift provider's
-// StatusCanonical.build for the same input. The matching Swift test
-// lives in provider-swift/Tests/ProviderCoreTests/SecurityTests.swift
+// swiftStatusCanonicalGolden is the exact canonical status the Swift
+// provider's StatusCanonical.build produces for goldenStatusInput. The
+// matching Swift test lives in
+// provider-swift/Tests/ProviderCoreTests/Security/SecurityTests.swift
 // (statusCanonicalMatchesCoordinatorGoldenBytes). If either side drifts,
 // both tests fail and you catch the protocol drift before it ships.
-func TestBuildStatusCanonicalGoldenBytes(t *testing.T) {
+const swiftStatusCanonicalGolden = `{"active_model_hash":"activemodel","binary_hash":"binhash","model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","rdma_disabled":true,"secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}`
+
+func goldenStatusInput() StatusCanonicalInput {
 	True := true
-	in := StatusCanonicalInput{
+	return StatusCanonicalInput{
 		Nonce:             "test-nonce",
 		Timestamp:         "2026-04-16T12:00:00Z",
 		RDMADisabled:      &True,
@@ -31,8 +31,6 @@ func TestBuildStatusCanonicalGoldenBytes(t *testing.T) {
 		SecureBootEnabled: &True,
 		BinaryHash:        "binhash",
 		ActiveModelHash:   "activemodel",
-		PythonHash:        "pyhash",
-		RuntimeHash:       "rthash",
 		TemplateHashes: map[string]string{
 			"chatml": "tmplhash1",
 			"gemma":  "tmplhash2",
@@ -42,75 +40,44 @@ func TestBuildStatusCanonicalGoldenBytes(t *testing.T) {
 			"qwen":    "modelhash1",
 			"trinity": "modelhash2",
 		},
-	}
-
-	got, err := BuildStatusCanonical(in)
-	if err != nil {
-		t.Fatalf("BuildStatusCanonical: %v", err)
-	}
-
-	expected := []byte(`{"active_model_hash":"activemodel","binary_hash":"binhash","model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}`)
-
-	if !bytes.Equal(got, expected) {
-		t.Fatalf("canonical bytes drifted from Swift golden — protocol break\nwant: %s\ngot:  %s", expected, got)
-	}
-	if bytes.Contains(got, []byte("hypervisor_active")) {
-		t.Fatalf("hypervisor_active must be absent when not reported (new provider): %s", got)
 	}
 }
 
-// TestBuildStatusCanonicalGoldenBytesLegacyHypervisor pins the OLD-fleet
-// canonical bytes. Legacy fleet compat only: providers < v0.6.31 sign
-// hypervisor_active into the canonical status, so when a challenge
-// response carries the field the coordinator MUST reconstruct it
-// byte-for-byte as before — including the retired "hypervisor_active"
-// key — or every old provider's StatusSignature verification breaks.
-// Remove this test together with StatusCanonicalInput.HypervisorActive
-// once the fleet floor passes v0.6.31.
-func TestBuildStatusCanonicalGoldenBytesLegacyHypervisor(t *testing.T) {
-	True := true
-	in := StatusCanonicalInput{
-		Nonce:             "test-nonce",
-		Timestamp:         "2026-04-16T12:00:00Z",
-		HypervisorActive:  &True,
-		RDMADisabled:      &True,
-		SIPEnabled:        &True,
-		SecureBootEnabled: &True,
-		BinaryHash:        "binhash",
-		ActiveModelHash:   "activemodel",
-		PythonHash:        "pyhash",
-		RuntimeHash:       "rthash",
-		TemplateHashes: map[string]string{
-			"chatml": "tmplhash1",
-			"gemma":  "tmplhash2",
-		},
-		GrpcBinaryHash: "",
-		ModelHashes: map[string]string{
-			"qwen":    "modelhash1",
-			"trinity": "modelhash2",
-		},
-	}
-
-	got, err := BuildStatusCanonical(in)
+// TestBuildStatusCanonicalGoldenBytes is the cross-language wire-format
+// guard for the current provider shape. The bytes asserted here MUST be
+// identical to the bytes the Swift provider signs for the same input.
+func TestBuildStatusCanonicalGoldenBytes(t *testing.T) {
+	got, err := BuildStatusCanonical(goldenStatusInput())
 	if err != nil {
 		t.Fatalf("BuildStatusCanonical: %v", err)
 	}
-
-	expected := []byte(`{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}`)
-
-	if !bytes.Equal(got, expected) {
-		t.Fatalf("legacy canonical bytes drifted — old-fleet StatusSignature verification would break\nwant: %s\ngot:  %s", expected, got)
+	if !bytes.Equal(got, []byte(swiftStatusCanonicalGolden)) {
+		t.Fatalf("canonical bytes drifted from Swift golden — protocol break\nwant: %s\ngot:  %s", swiftStatusCanonicalGolden, got)
 	}
+}
 
-	// Old providers hardcode hypervisor_active=false; pin that shape too.
-	False := false
-	in.HypervisorActive = &False
-	got, err = BuildStatusCanonical(in)
+// TestVerifyStatusSignatureOverSwiftGoldenBytes: a provider that signs the
+// exact bytes the Swift encoder produces for the current status shape
+// verifies against the coordinator's reconstruction of the same fields.
+func TestVerifyStatusSignatureOverSwiftGoldenBytes(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("BuildStatusCanonical: %v", err)
+		t.Fatal(err)
 	}
-	if !bytes.Contains(got, []byte(`"hypervisor_active":false`)) {
-		t.Fatalf(`expected "hypervisor_active":false in legacy canonical, got: %s`, got)
+	pubB64 := base64.StdEncoding.EncodeToString(
+		elliptic.Marshal(elliptic.P256(), priv.X, priv.Y))
+	hash := sha256.Sum256([]byte(swiftStatusCanonicalGolden))
+	r, s, err := ecdsa.Sign(rand.Reader, priv, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigDER, err := encodeECDSASig(r, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigB64 := base64.StdEncoding.EncodeToString(sigDER)
+	if err := VerifyStatusSignature(pubB64, sigB64, goldenStatusInput()); err != nil {
+		t.Fatalf("current-shape signed status failed verification: %v", err)
 	}
 }
 

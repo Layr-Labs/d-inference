@@ -61,11 +61,6 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 		if err := os.WriteFile(configPath, []byte(generated), 0600); err != nil {
 			return fmt.Errorf("write provider config: %w", err)
 		}
-		p.generatedConfig = generated
-		if canonical := canonicalProviderConfigPath(); canonical != "" {
-			_, statErr := os.Stat(canonical)
-			p.canonicalConfigExisted = statErr == nil
-		}
 		p.Logger.Info("provider config written", "path", configPath)
 	}
 
@@ -152,6 +147,5 @@ func (p *Provider) stopLocal() {
 	if p.StateDir != "" {
 		_ = os.RemoveAll(p.StateDir)
 	}
-	removeMigratedTestbedConfig(p.generatedConfig, p.canonicalConfigExisted)
 	p.Logger.Info("provider stopped")
 }

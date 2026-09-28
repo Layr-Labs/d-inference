@@ -212,7 +212,7 @@ func TestToolConstraintCapabilityErrorSeparatesPermanentFromTransient(t *testing
 		response := httptest.NewRecorder()
 		handled := srv.visionToolsFailFast(
 			response, model, model, false, hasTools, requiresConstraint,
-			"required", false, selfRoutePolicy{}, nil)
+			"required", selfRoutePolicy{}, nil)
 		if requiresConstraint && !handled {
 			t.Fatal("incapable constrained request was allowed into the queue")
 		}
@@ -223,7 +223,7 @@ func TestToolConstraintCapabilityErrorSeparatesPermanentFromTransient(t *testing
 		return response
 	}
 
-	// Above the tools floor but advertising no tool-constraint protocol: the
+	// Tool-capable but advertising no tool-constraint protocol: the
 	// fleet serves the model, nobody ever enforces on it — permanent.
 	served := failFast(t, true, true, func(p *registry.Provider) {
 		p.Mu().Lock()

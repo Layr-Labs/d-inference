@@ -60,8 +60,8 @@ extension ProviderLoop {
         switch engineError {
         case .modelNotLoaded, .noModelLoadedForTokenization:
             return .modelLoad
-        case .invalidRole, .invalidToolPayload, .mediaUnsupportedByModel,
-            .multimodalRejected:
+        case .invalidRole, .invalidToolPayload, .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .mediaUnsupportedByModel,
+            .multimodalRejected, .advertisedContextExceeded:
             return .clientError
         case .toolChoiceViolation:
             return .toolNoncompliance
@@ -71,7 +71,7 @@ extension ProviderLoop {
             return boundedCapacityReason(from: message, fallback: .tokenBudgetExhausted)
         case .requestRejected(let message):
             let lower = message.lowercased()
-            if lower.contains("invalid token count") || lower.contains("duplicate request id") {
+            if lower.contains("duplicate request id") {
                 return .clientError
             }
             return boundedCapacityReason(from: message, fallback: .capacityBusy)
@@ -85,9 +85,6 @@ extension ProviderLoop {
         fallback: InferenceErrorReason
     ) -> InferenceErrorReason {
         let message = engineMessage.lowercased()
-        if message.contains("exceeds batch token budget") {
-            return .requestExceedsBatchTokenBudget
-        }
         if message.contains("context length") || message.contains("context window") {
             return .requestExceedsContext
         }
@@ -96,9 +93,6 @@ extension ProviderLoop {
             || (message.contains("request requires") && message.contains("available"))
         {
             return .requestExceedsNodeBudget
-        }
-        if message.contains("timed out waiting for capacity") {
-            return .capacityTimeout
         }
         if message.contains("queue full") {
             return .queueFull
@@ -159,7 +153,7 @@ extension ProviderLoop {
             switch engineError {
             case .modelNotLoaded, .noModelLoadedForTokenization:
                 return .modelUnavailable
-            case .invalidRole, .invalidToolPayload:
+            case .invalidRole, .invalidToolPayload, .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .advertisedContextExceeded:
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
                 return .generationFailure
@@ -256,6 +250,10 @@ extension ProviderLoop {
             case .invalidRole:
                 return 400
             case .invalidToolPayload:
+                return 400
+            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort:
+                return 400
+            case .advertisedContextExceeded:
                 return 400
             case .toolChoiceViolation:
                 // The MODEL failed the forced tool_choice contract — output-

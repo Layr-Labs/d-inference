@@ -15,16 +15,27 @@ func TestCheckpointSSDStageCostCompetesWithColdCapacityAndLoad(t *testing.T) {
 		full, onlyHolder                    bool
 		maxTTFT                             float64
 		afterScanPrefill                    float64
+		// nearTie and path describe the committed decision. A credited holder
+		// with a cold peer inside the near-tie band wins through the credit;
+		// a restore penalty or a peer beyond the band leaves a unique minimum.
+		nearTie int
+		path    SelectionPath
 	}{
-		{name: "expensive_stage_loses", want: "cold", stage: 900, prefill: 5000, coldPrefill: 4800, decode: 100},
-		{name: "useful_hit_wins", want: "ssd", stage: 100, prefill: 5000, coldPrefill: 4800, decode: 100},
-		{name: "queue_outweighs_hit", want: "cold", stage: 100, prefill: 5000, coldPrefill: 4800, decode: 100, queue: 2},
-		{name: "decode_outweighs_hit", want: "cold", stage: 100, prefill: 5000, coldPrefill: 4800, decode: 20},
-		{name: "backlog_outweighs_hit", want: "cold", stage: 100, prefill: 5000, coldPrefill: 4800, decode: 100, backlog: 1000},
-		{name: "full_N_still_required", want: "cold", stage: 100, prefill: 5000, coldPrefill: 4800, decode: 100, full: true},
-		{name: "normal_TTFT_gate_preserved", want: "cold", stage: 100, prefill: 1000, coldPrefill: 5000, decode: 100, maxTTFT: 1000},
-		{name: "only_expensive_holder_still_serves", want: "ssd", stage: 900, prefill: 5000, decode: 100, onlyHolder: true},
-		{name: "reservation_reprices_changed_rate", want: "cold", stage: 900, prefill: 5000, coldPrefill: 4000, decode: 100, afterScanPrefill: 1000},
+		{name: "expensive_stage_loses", want: "cold", stage: 900, prefill: 5000, coldPrefill: 4800, decode: 100, nearTie: 1, path: SelectionUniqueMin},
+		{name: "useful_hit_wins", want: "ssd", stage: 100, prefill: 5000, coldPrefill: 4800, decode: 100, nearTie: 2, path: SelectionCacheCredit},
+		{name: "queue_outweighs_hit", want: "cold", stage: 100, prefill: 5000, coldPrefill: 4800, decode: 100, queue: 2, nearTie: 1, path: SelectionUniqueMin},
+		{name: "decode_outweighs_hit", want: "cold", stage: 100, prefill: 5000, coldPrefill: 4800, decode: 20, nearTie: 1, path: SelectionUniqueMin},
+		{name: "backlog_outweighs_hit", want: "cold", stage: 100, prefill: 5000, coldPrefill: 4800, decode: 100, backlog: 1000, nearTie: 1, path: SelectionUniqueMin},
+		{name: "full_N_still_required", want: "cold", stage: 100, prefill: 5000, coldPrefill: 4800, decode: 100, full: true, nearTie: 1, path: SelectionUniqueMin},
+		{name: "normal_TTFT_gate_preserved", want: "cold", stage: 100, prefill: 1000, coldPrefill: 5000, decode: 100, maxTTFT: 1000, nearTie: 1, path: SelectionUniqueMin},
+		{name: "only_expensive_holder_still_serves", want: "ssd", stage: 900, prefill: 5000, decode: 100, onlyHolder: true, nearTie: 1, path: SelectionUniqueMin},
+		// The scan prices a restore penalty at 5,000 tok/s and, as the exact
+		// minimum, the holder is the less loaded near-tie of the cold peer;
+		// the commit reprices it at 1,000 tok/s, where the same file is a
+		// 3.2 s credit (age-weighted, so the lower bound below allows up to
+		// ~3 s of wall-clock decay), and rescans. The repriced holder is then
+		// a credited near-tie of the cold peer and wins.
+		{name: "reservation_reprices_changed_rate", want: "ssd", stage: 900, prefill: 5000, coldPrefill: 4000, decode: 100, afterScanPrefill: 1000, nearTie: 2, path: SelectionCacheCredit},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _, _ := exactTestRegistry(t)
@@ -45,6 +56,12 @@ func TestCheckpointSSDStageCostCompetesWithColdCapacityAndLoad(t *testing.T) {
 				cold.PrefillTPS = tc.coldPrefill
 				cold.BackendCapacity.Slots[0].ObservedPrefillTPS = tc.coldPrefill
 				cold.mu.Unlock()
+				if tc.afterScanPrefill > 0 {
+					// A pending request on another model (750 ms) keeps the cold
+					// peer inside the band while making the first scan's
+					// least-busy choice of the penalized holder deterministic.
+					cold.AddPending(&PendingRequest{RequestID: "other-model-turn", Model: "other-model", RequestedMaxTokens: 1})
+				}
 			}
 			checkpoint, floor := exactTestAnchor(16, "c"), exactTestAnchor(17, "d")
 			plan := boundTestCachePlan(r, exactTestPlan(checkpoint, floor))
@@ -74,10 +91,26 @@ func TestCheckpointSSDStageCostCompetesWithColdCapacityAndLoad(t *testing.T) {
 				}
 			}
 			selected, decision := r.ReserveProviderEx("model", request)
-			if selected == nil || selected.ID != tc.want || decision.NearTiePoolSize != 1 || decision.SelectionPath != SelectionUniqueMin {
-				t.Fatalf("restore/load/capacity ranking selected %v, want %s: %+v", selected, tc.want, decision)
+			if selected == nil || selected.ID != tc.want || decision.NearTiePoolSize != tc.nearTie || decision.SelectionPath != tc.path {
+				t.Fatalf("restore/load/capacity ranking selected %v, want %s near=%d path=%s: %+v", selected, tc.want, tc.nearTie, tc.path, decision)
 			}
 			t.Cleanup(func() { selected.RemovePending(request.RequestID); r.SetProviderIdle(selected.ID) })
+			if !request.CacheOpportunity.Evaluated || request.CacheOpportunity.MatchingHolders != 1 || request.CacheOpportunity.ValidHolders != 1 {
+				t.Fatalf("reservation lost opportunity evidence: %+v", request.CacheOpportunity)
+			}
+			wantReason := "selected"
+			switch {
+			case tc.full || tc.maxTTFT > 0:
+				wantReason = "holder_unavailable"
+			case tc.onlyHolder || tc.name == "expensive_stage_loses":
+				wantReason = "holder_no_positive_credit"
+			case tc.want == "cold":
+				wantReason = "holder_not_selected"
+			}
+			if got := request.CacheOpportunityReason(); got != wantReason {
+				t.Fatalf("opportunity reason=%s want=%s: %+v", got, wantReason, request.CacheOpportunity)
+			}
+
 			sum := decision.StateMs + decision.QueueMs + decision.PendingMs + decision.BacklogMs + decision.ThisReqMs + decision.HealthMs + decision.CapacityRateMs - decision.CacheDiscountMs
 			if math.Abs(sum-decision.CostMs) > 1e-8 {
 				t.Fatalf("decision cost breakdown lost net stage cost: %+v", decision)
@@ -88,8 +121,8 @@ func TestCheckpointSSDStageCostCompetesWithColdCapacityAndLoad(t *testing.T) {
 			if tc.maxTTFT > 0 && decision.TTFTRejections != 1 {
 				t.Fatal("cache benefit bypassed normal TTFT eligibility")
 			}
-			if tc.afterScanPrefill > 0 && scans < 2 {
-				t.Fatal("reservation did not reprice the current provider rate")
+			if tc.afterScanPrefill > 0 && (scans < 2 || decision.ScanCount < 2 || decision.CacheEstimatedTTFTSavedMs < 3000 || decision.CacheEstimatedTTFTSavedMs > 3196) {
+				t.Fatalf("reservation did not reprice the current provider rate: scans=%d %+v", scans, decision)
 			}
 			if tc.want == "cold" {
 				if decision.CacheTier != "" || decision.CacheDiscountMs != 0 || decision.CacheEstimatedTTFTSavedMs != 0 || request.CacheSelectionSelected {

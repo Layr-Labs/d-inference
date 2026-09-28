@@ -1,6 +1,6 @@
 # MLX stack: the three pinned submodules and the metallib
 
-> Last updated: 2026-09-05 · commit `2dcec3574`
+> Last updated: 2026-09-27 · commit `f6f1bf4fd`
 
 What the provider links from `libs/`, at which commits, what each submodule
 contributes, how the Metal kernel library (`mlx.metallib`) is built from the
@@ -32,7 +32,7 @@ gitlink in the superproject tree; read it with `git ls-tree HEAD libs/`:
 |---|---|---|---|
 | `libs/mlx-swift` | `Layr-Labs/mlx-swift` | `67153a874b6d8dd0e1ad04c256298eaae8249cd7` | `MLX` (arrays, lazy evaluation, Metal device) and `MLXNN`; its `Cmlx` target compiles the C++ core from the **nested** submodules `libs/mlx-swift/Source/Cmlx/mlx` (`30ae6560`) and `libs/mlx-swift/Source/Cmlx/mlx-c` (`3ccef14`) — the tree the metallib is built from |
 | `libs/mlx-swift-lm` | `Layr-Labs/mlx-swift-lm` | `a486a55d032deae001190bf9795ece1cb3d9a609` | `MLXLMCommon` (model loading, tokenizer integration, ContinuousBatchingV2 engine, tool-call formats), `MLXLLM` and `MLXVLM` (model implementations), `MLXLMServer` (OpenAI request types, tool and reasoning parsers, local HTTP router) |
-| `libs/mlx` | `Layr-Labs/mlx` (`branch = main`) | `0a725e3000edabc4911cde345270ca950bfa152f` | A separate checkout of the C++ core. Neither `provider-swift/Package.swift`, `Makefile`, `scripts/`, nor `.github/` reads it; bumping it alone changes no provider bytes (`CLAUDE.md`) |
+| `libs/mlx` | `Layr-Labs/mlx` (`branch = main`) | `0a725e3000edabc4911cde345270ca950bfa152f` | A separate checkout of the C++ core. Neither `provider-swift/Package.swift`, `Makefile`, `scripts/`, nor `.github/` reads it; bumping it alone changes no provider bytes (`AGENTS.md`) |
 
 A bump is a superproject commit that moves a gitlink (check out the new commit
 inside the submodule, `git add libs/<name>`); the checkout procedure is step 1
@@ -109,7 +109,7 @@ The provider does not run the upstream inference server. Generation goes
 
 | Provider code | `MLXLMServer` symbols used |
 |---|---|
-| `provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngine.swift` | Conforms to `MLXServerEngine`; consumes the OpenAI `ChatCompletionRequest` types; resolves tool parsers with `ServerToolParser.resolve` |
+| `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` | Conforms to `MLXServerEngine`; consumes the OpenAI `ChatCompletionRequest` types; resolves tool parsers with `ServerToolParser.resolve` |
 | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` | `ReasoningParser`, `ReasoningParserFormat` (`inferReasoningParser`) |
 | `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`, `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift`, `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` | `MLXServerApplication` router, `MLXOpenAIService`, `InMemoryResponseStore`, `ServerMetrics`, `OpenAIErrorEnvelope` — the local / standalone OpenAI-compatible HTTP surface, served by the same `MultiModelBatchSchedulerEngine` |
 
@@ -179,7 +179,7 @@ flowchart LR
 |---|---|---|
 | `swift build` succeeds, Metal work fails at start | No `mlx.metallib` beside the executable (or under `Resources/`) | `BinaryHasher.swift` (`locateRuntimeMetallib`); fix: [`../../developer/build.md`](../../developer/build.md) |
 | `fetch-metallib.sh` fails on a missing `_nax` symbol | Built with a deployment target below the `MLX_METALLIB_DEPLOYMENT_TARGET` default or an SDK without Metal 4 | `scripts/fetch-metallib.sh` (`COMPLETENESS_CONTRACT`) |
-| Bumping `libs/mlx` changes nothing | The compiled core is `libs/mlx-swift/Source/Cmlx/mlx`, a different gitlink | `CLAUDE.md`, `scripts/fetch-metallib.sh` |
+| Bumping `libs/mlx` changes nothing | The compiled core is `libs/mlx-swift/Source/Cmlx/mlx`, a different gitlink | `AGENTS.md`, `scripts/fetch-metallib.sh` |
 | Qwen 3.5 load fails with `.unsupportedTokenizer("TokenizersBackend")` | `swift-transformers` below `1.3.0` | `provider-swift/Package.swift` |
 | Metallib rebind refused | Second bind with a different source or digest | `BinaryHasher.swift` (`RuntimeMetallibBindingError`) |
 
@@ -193,7 +193,7 @@ flowchart LR
 | Metallib locate / snapshot / bind / hash | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift`, `provider-swift/Sources/ProviderMetallibControl/ProviderMetallibControl.cpp` |
 | Bind before first GPU op | `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift`, `provider-swift/Sources/darkbloom/StartCommand.swift` |
 | Digest on the wire | `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`augmentRuntimeHashesWithMetallib`) |
-| `MLXLMServer` contracts used | `provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngine.swift`, `libs/mlx-swift-lm/Libraries/MLXLMServer/` |
+| `MLXLMServer` contracts used | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift`, `libs/mlx-swift-lm/Libraries/MLXLMServer/` |
 | CBv2 engine | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/` — [`../inference.md`](../inference.md) |
 
 ## Related

@@ -130,7 +130,7 @@ extension ProviderLoop {
         modelType: String?,
         templateControls: ChatTemplateControls
     ) -> Int {
-        guard let prepared = try? ToolChoicePromptPolicy.prepare(request) else { return 0 }
+        guard let prepared = try? ToolChoicePromptPolicy.prepare(request, modelType: modelType) else { return 0 }
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
@@ -170,6 +170,9 @@ extension ProviderLoop {
             modelType: modelType,
             templateControls: templateControls)
         guard promptFloor > 0 else { return nil }
-        return Int64(promptFloor + max(0, request.maxTokens ?? schedulerDefaultMaxTokens))
+        let (envelope, overflow) = promptFloor.addingReportingOverflow(
+            max(0, request.maxTokens ?? schedulerDefaultMaxTokens))
+        guard !overflow else { return nil }
+        return Int64(exactly: envelope)
     }
 }

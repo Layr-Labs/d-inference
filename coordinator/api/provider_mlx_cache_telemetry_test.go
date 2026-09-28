@@ -238,6 +238,7 @@ func TestSanitizeChipFamilyTag(t *testing.T) {
 		"Unknown":                               "unknown",
 		"M3":                                    "M3",
 		" M4 Pro ":                              "M4_Pro",
+		"M6":                                    "M6",
 		"m5":                                    "other",
 		"M3;drop":                               "other",
 		"M3,env:prod":                           "other",

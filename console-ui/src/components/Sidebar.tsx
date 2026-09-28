@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { BookOpen, LogIn, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Plus, Sun } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { useAuth } from "@/hooks/useAuth";
-import { useTheme } from "@/components/providers/ThemeProvider";
+import { useTheme } from "@/components/app-providers/ThemeProvider";
 import { CommunityLinks } from "@/components/community/CommunityLinks";
 import { BloomMark } from "./brand/BloomMark";
 import { accountItems, navigationGroups, isNavigationActive } from "./navigation/items";

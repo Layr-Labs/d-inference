@@ -1,0 +1,264 @@
+{
+  "source_revision": "6938e8547963739f17f2b18fcbe2057aef20250f",
+  "model": "gpt-oss-20b",
+  "runtime_qualification": "passed",
+  "focused_unit_suite": {
+    "swift_testing_reported": 347,
+    "suites": 50,
+    "explicit_live_skips": 8,
+    "xctest_passed": 13
+  },
+  "strict_fp32_controls": {
+    "passed": 13,
+    "MLX_ENABLE_TF32": "0",
+    "scope": "unchanged unit controls only; production model runs leave flag unset"
+  },
+  "checkpoint_restart": {
+    "pass": true,
+    "restored_tokens": 6144,
+    "prompt_tokens": 6413,
+    "read_bytes": 308110124,
+    "warm_ttft_s": 0.2288105,
+    "cache_off_ttft_s": 1.696873333,
+    "exact_text_equal": true
+  },
+  "mixed_suffix": {
+    "pass": true,
+    "answers": 23,
+    "hits": 10,
+    "hit_tokens": 6144,
+    "observed_decode_peaks": {
+      "off-b2": 2,
+      "off-four-submitted": 3,
+      "off-mixed4": 3,
+      "on-b2": 2,
+      "on-b2-reversed": 2,
+      "on-b4": 4,
+      "on-mixed4": 4
+    }
+  },
+  "matrix": [
+    {
+      "width": 1,
+      "pass": true,
+      "main_rows_per_arm": 6,
+      "main_and_control_answers": 22,
+      "authenticated_warm_pairs": 5,
+      "exact_full_token_pairs": 6,
+      "final_json_pairs_equal": 6,
+      "ttft_reduction_pct_hit_rows": {
+        "max": 86.63428106734779,
+        "median": 86.25156401526355,
+        "min": 84.64807066254899,
+        "n": 5,
+        "p95_nearest_rank": 86.63428106734779
+      }
+    },
+    {
+      "width": 2,
+      "pass": true,
+      "main_rows_per_arm": 12,
+      "main_and_control_answers": 34,
+      "authenticated_warm_pairs": 10,
+      "exact_full_token_pairs": 10,
+      "final_json_pairs_equal": 12,
+      "ttft_reduction_pct_hit_rows": {
+        "max": 93.90371058421209,
+        "median": 88.79363516063896,
+        "min": 78.1729899804436,
+        "n": 10,
+        "p95_nearest_rank": 93.90371058421209
+      }
+    },
+    {
+      "width": 4,
+      "pass": true,
+      "main_rows_per_arm": 24,
+      "main_and_control_answers": 58,
+      "authenticated_warm_pairs": 20,
+      "exact_full_token_pairs": 18,
+      "final_json_pairs_equal": 24,
+      "ttft_reduction_pct_hit_rows": {
+        "max": 97.23127743745555,
+        "median": 91.27911742793842,
+        "min": 62.621376309711366,
+        "n": 20,
+        "p95_nearest_rank": 96.11251507440528
+      }
+    }
+  ],
+  "http": {
+    "started_unix": 1789114069.179219,
+    "status": "passed",
+    "arguments": {
+      "build_root": "/Users/gaj/autoresearch/gptoss-prefix-20260911",
+      "model_directory": "/Users/gaj/autoresearch/gptoss-prefix-20260911/model/gpt-oss-20b",
+      "name": "http-default-cache-3",
+      "port": 18142,
+      "maximum_seconds": 300
+    },
+    "links": [
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/chat_template.jinja",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/config.json",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/generation_config.json",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/model-00001-of-00003.safetensors",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/model-00002-of-00003.safetensors",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/model-00003-of-00003.safetensors",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/model.safetensors.index.json",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/special_tokens_map.json",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/tokenizer_config.json",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/tokenizer.json"
+    ],
+    "removed_links": [
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/chat_template.jinja",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/config.json",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/generation_config.json",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/model-00001-of-00003.safetensors",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/model-00002-of-00003.safetensors",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/model-00003-of-00003.safetensors",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/model.safetensors.index.json",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/special_tokens_map.json",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/tokenizer_config.json",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/prefix-validation/tokenizer.json"
+    ],
+    "preserved_links": [],
+    "rows": [
+      {
+        "name": "cold",
+        "cached_tokens": null,
+        "ttft_s": 19.028031958,
+        "cache_usage_reported": false,
+        "elapsed_s": 19.322021458000002,
+        "final_answer": "ALDER-427",
+        "raw_harmony_in_content": true
+      },
+      {
+        "name": "repeat",
+        "cached_tokens": null,
+        "ttft_s": 0.4462974580000001,
+        "cache_usage_reported": false,
+        "elapsed_s": 0.6538077909999984,
+        "final_answer": "ALDER-427",
+        "raw_harmony_in_content": true
+      },
+      {
+        "name": "branch",
+        "cached_tokens": null,
+        "ttft_s": 0.4321289580000034,
+        "cache_usage_reported": false,
+        "elapsed_s": 0.6481759170000032,
+        "final_answer": "BRONZE-913",
+        "raw_harmony_in_content": true
+      },
+      {
+        "name": "branch-repeat",
+        "cached_tokens": null,
+        "ttft_s": 0.4299930829999994,
+        "cache_usage_reported": false,
+        "elapsed_s": 0.6450386669999979,
+        "final_answer": "BRONZE-913",
+        "raw_harmony_in_content": true
+      },
+      {
+        "name": "changed-prefix",
+        "cached_tokens": null,
+        "ttft_s": 1.4070960419999992,
+        "cache_usage_reported": false,
+        "elapsed_s": 1.6981547080000041,
+        "final_answer": "CEDAR-682",
+        "raw_harmony_in_content": true
+      }
+    ],
+    "transport_limitation": {
+      "raw_harmony_content_observed": true,
+      "description": "Standalone may emit raw Harmony analysis/final framing in content. This oracle extracts canonical final only; raw SSE and response text remain unchanged. No HTTP transport fix or clean-presentation claim."
+    },
+    "ttl": {
+      "default_seconds": 900,
+      "override_absent": true,
+      "expiration_tested": false,
+      "scope": "Short run records encrypted-file mtime and age; does not wait for expiration."
+    },
+    "artifact_sha256": {
+      "darkbloom": "089d95b1f57de8dd78aa331c67aa6dc875c4af38759dcda6a04c6af2d6ec6ff4",
+      "radix-engine": "acc680482724b1016ab1734ab3b7378fbe96954861200d2251ba28e7a7e5b60b",
+      "mlx.metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+    },
+    "source_proof": {
+      "base_head": "ef7b5a9aa69e62374c83d8f2baddb2957e38c9a8",
+      "pins": {
+        ".": "ef7b5a9aa69e62374c83d8f2baddb2957e38c9a8",
+        "libs/mlx": "3fa8f25e6451174d7b06be372c3a24272b77d88e",
+        "libs/mlx-swift": "6d6796d7a81b656d2749d39067e0a6bea2bc2986",
+        "libs/mlx-swift/Source/Cmlx/mlx": "3fa8f25e6451174d7b06be372c3a24272b77d88e",
+        "libs/mlx-swift/Source/Cmlx/mlx-c": "02cf6f4d099023e4e0c0357248b8b3f83110e29d",
+        "libs/mlx-swift-lm": "ce446cc5f76e013855fe0bde9002b6db1ac091b7"
+      },
+      "manifest_sha256": "bccb36caf70cc49f792a09f5e50d76e2cae252144e8fa72791ecdb701a63cea5",
+      "verified_files": 5063,
+      "metallib_sha256": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+    },
+    "verified_model_aggregate_sha256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "legacy_artifacts_checked_absent": true,
+    "environment": {
+      "TMPDIR": "/Users/gaj/autoresearch/gptoss-prefix-20260911/results/http-default-cache-3/tmp/",
+      "DARKBLOOM_NO_UPDATE_CHECK": "1",
+      "DARKBLOOM_PID_FILE": "/Users/gaj/autoresearch/gptoss-prefix-20260911/results/http-default-cache-3/provider.pid",
+      "DARKBLOOM_STATE_FILE": "/Users/gaj/autoresearch/gptoss-prefix-20260911/results/http-default-cache-3/state.json",
+      "DARKBLOOM_WATCHDOG_STATE": "/Users/gaj/autoresearch/gptoss-prefix-20260911/results/http-default-cache-3/watchdog.json",
+      "DARKBLOOM_KV_BACKEND_GUARD": "/Users/gaj/autoresearch/gptoss-prefix-20260911/results/http-default-cache-3/guard.json",
+      "DARKBLOOM_LOADED_MODELS_FILE": "/Users/gaj/autoresearch/gptoss-prefix-20260911/results/http-default-cache-3/loaded-models.json",
+      "DARKBLOOM_LOCAL_DIR": "/Users/gaj/autoresearch/gptoss-prefix-20260911/results/http-default-cache-3/local",
+      "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
+      "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": "/Users/gaj/autoresearch/gptoss-prefix-20260911/results/http-default-cache-3/prefix-cache",
+      "DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS": "1"
+    },
+    "removed_inherited_environment_names": [],
+    "prefix_cache_override_absent": true,
+    "backend_default": "auto",
+    "mtp_mode_omitted": true,
+    "owned_pgid": 86026,
+    "initial_health": "{\"server\":\"mlx-server\",\"status\":\"ok\"}",
+    "cache_activation_log": null,
+    "backend_observation": {
+      "resolved": null,
+      "evidence_kind": "not_exposed",
+      "limitation": "Local /metrics has no KV-backend metric. OS-log activation may not appear in redirected stdout/stderr. Native live tests assert the resolved backend directly."
+    },
+    "cache_hit_proof": {
+      "provided_by_this_run": false,
+      "reason": "Standalone currently omits cache details from SSE; native and radix tests prove restoration directly."
+    },
+    "scope": "Default HTTP serving, task semantics, actual MTP posture and encrypted persistence; not a hit or timing-speedup gate.",
+    "ended_unix": 1789114106.9611762,
+    "guard_faults": [],
+    "cleanup_errors": [],
+    "owned_process_identities": [
+      {
+        "pid": 86026,
+        "ppid": 86016,
+        "pgid": 86026,
+        "started": "Fri Sep 11 01:07:53 2026",
+        "command": "/Users/gaj/autoresearch/gptoss-prefix-20260911/artifact/darkbloom start --local --config /Users/gaj/autoresearch/gptoss-prefix-20260911/results/http-default-cache-3/provider.toml --model gpt-oss-20b --port 18142 --no-auth",
+        "ownership": "launched_by_helper"
+      },
+      {
+        "pid": 86032,
+        "ppid": 86026,
+        "pgid": 86032,
+        "started": "Fri Sep 11 01:07:53 2026",
+        "command": "/usr/bin/caffeinate -s -i -w 86026",
+        "ownership": "observed_descendant",
+        "owner_parent_started": "Fri Sep 11 01:07:53 2026"
+      }
+    ]
+  },
+  "limitations": [
+    "bounded synthetic tasks, not broad model-quality proof",
+    "historical strict B2 token failure retained; no causal fix claimed",
+    "test keys ephemeral; reconstruction is not production-Keychain process restart",
+    "standalone lacks cached-token usage and emits raw Harmony; final-channel answers validated",
+    "coordinator routing activation and connected live E2E not part of this run",
+    "CI and Codex status tracked live in PR894"
+  ]
+}

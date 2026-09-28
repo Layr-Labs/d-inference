@@ -15,16 +15,31 @@ jobs:
         run: |
           ./scripts/check-release-version.sh
           python3 scripts/test-provider-release-resolution.py
+          python3 scripts/test-provider-release-toolchain.py
+          python3 scripts/test-provider-release-cache.py
+          python3 scripts/test-prepare-metal-toolchain.py
+          python3 scripts/test-provider-release-pipeline.py
+          python3 scripts/test-provider-release-publication.py
+          python3 scripts/test-provider-signing-validation.py
+          python3 scripts/test-provider-test-watchdog.py
+          python3 scripts/test-stage-test-metallib.py
+          python3 scripts/test-app-attest-entitlements.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
       - name: Test startup observer against local stubs
         run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
+      - name: Test native GPU CI routing without a GPU
+        run: python3 scripts/test-native-gpu-ci.py
 
   docs:
     name: Docs Lint
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # Frozen source links are checked at their stamped commits.
+      - name: Test historical source-link validation
+        run: python3 scripts/test-docs-check-historical-links.py
       - name: Check freshness stamps, links, cited paths, orphans
         run: ./scripts/docs-check.sh
 
@@ -55,9 +70,12 @@ jobs:
           DATABASE_URL: postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable
         run: |
           # Word splitting is the point here: one argument per package path,
-          # and Go package paths contain no spaces.
+          # and Go package paths contain no spaces. Only the top-level e2e
+          # integration package is excluded (it needs a real Swift provider,
+          # see integration.yml); coordinator/internal/e2e and e2e/testbed/...
+          # are ordinary unit tests and run here.
           # shellcheck disable=SC2046
-          go test -race $(go list ./... | grep -v /e2e)
+          go test -race -coverprofile="$RUNNER_TEMP/coverage.out" -covermode=atomic $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
       - name: Check formatting
         run: |
           set -o pipefail
@@ -69,6 +87,29 @@ jobs:
             echo "$UNFORMATTED"
             exit 1
           fi
+      - name: Report coverage
+        run: |
+          set -o pipefail
+          # A profile with only its "mode:" line measured nothing.
+          if [ "$(wc -l < "$RUNNER_TEMP/coverage.out")" -le 1 ]; then
+            echo "coverage.out has no coverage data"
+            exit 1
+          fi
+          total=$(go tool cover -func="$RUNNER_TEMP/coverage.out" | awk '$1 == "total:" {print $NF}')
+          test -n "$total"
+          echo "Coordinator (Go) statement coverage: $total"
+          {
+            echo "| Component | Statement coverage |"
+            echo "|---|---|"
+            echo "| Coordinator (Go) | $total |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coordinator-coverage
+          path: ${{ runner.temp }}/coverage.out
+          if-no-files-found: error
+          retention-days: 14
 
   lint-coordinator:
     name: Coordinator Lint
@@ -115,6 +156,26 @@ jobs:
           chmod +x "$RUNNER_TEMP/promptsidecar-linux"
           file "$RUNNER_TEMP/promptsidecar-linux" | grep -Eq "statically linked|static-pie linked"
           ./scripts/verify-prompt-sidecar-linux.sh "$RUNNER_TEMP/promptsidecar-linux"
+      - name: Install coverage tools
+        run: |
+          rustup component add llvm-tools-preview --toolchain 1.88.0
+          cargo install cargo-llvm-cov --version 0.9.1 --locked
+      - name: Report coverage
+        working-directory: coordinator/promptsidecar
+        run: |
+          set -o pipefail
+          cargo llvm-cov --locked --all-targets --summary-only | tee "$RUNNER_TEMP/sidecar-coverage.txt"
+          # Column 10 of the TOTAL row is the line coverage percent.
+          lines=$(awk '$1 == "TOTAL" {v = $10} END {print v}' "$RUNNER_TEMP/sidecar-coverage.txt")
+          if ! [[ "$lines" =~ ^[0-9]+\.[0-9]+%$ ]]; then
+            echo "Unexpected line coverage value: '$lines'"
+            exit 1
+          fi
+          {
+            echo "| Component | Line coverage |"
+            echo "|---|---|"
+            echo "| Prompt sidecar (Rust) | $lines |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   test-provider:
     name: Provider Tests
@@ -123,6 +184,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
+      - name: Test Qwen resources in a relocated app
+        run: python3 scripts/test-qwen4-packaged-resources.py
+      - name: Test profile inventory authentication in a terminal
+        run: python3 scripts/test-profile-inventory-auth.py
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
@@ -164,25 +229,9 @@ jobs:
         run: |
           set -euo pipefail
           command -v cmake >/dev/null 2>&1 || brew install cmake
-          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
-            ./scripts/fetch-metallib.sh "$RUNNER_TEMP"
-          metallib="$RUNNER_TEMP/mlx.metallib"
-          test -s "$metallib" || { echo "::error::source-matched mlx.metallib was not produced"; exit 1; }
-
-          # MLX loads the metallib from beside the running executable. Stage the
-          # helper-authorized artifact into every provider binary and XCTest
-          # location that the preceding build created.
           provider_bin=$(cd provider-swift && swift build -c debug --show-bin-path)
-          for destination in provider-swift/.build/debug "$provider_bin"; do
-            mkdir -p "$destination"
-            cp "$metallib" "$destination/mlx.metallib"
-          done
-          while IFS= read -r macos; do
-            cp "$metallib" "$macos/mlx.metallib"
-            echo "placed source-matched metallib in $macos"
-          done < <(
-            find provider-swift/.build -type d -path '*.xctest/Contents/MacOS' -print
-          )
+          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
+            ./scripts/stage-test-metallib.sh "$provider_bin"
       - name: Run Swift tests
         working-directory: provider-swift
         # Reuse the built bundle and matched metallib. The exact allocator
@@ -223,13 +272,13 @@ jobs:
         working-directory: libs/mlx-swift-lm
         run: |
           set -euo pipefail
-          cp "$RUNNER_TEMP/mlx.metallib" .build/debug/mlx.metallib
-          for bundle in .build/debug/*PackageTests.xctest; do
-            macos="$bundle/Contents/MacOS"
-            if [ -d "$macos" ]; then
-              cp "$RUNNER_TEMP/mlx.metallib" "$macos/mlx.metallib"
-            fi
-          done
+          nested_bin=$(swift build -c debug --show-bin-path)
+          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
+            ../../scripts/stage-test-metallib.sh "$nested_bin"
+      - name: Verify DiffusionGemma artifact and expert reduction
+        if: ${{ !cancelled() && steps.build-nested-tests.outcome == 'success' && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        run: ../../scripts/run-nested-suite.sh 'DiffusionGemma(ArtifactFixture|ExpertReduction)Tests' --no-parallel
       # NOTE (v0.8.0): the guards below exist because these gates once
       # reported GREEN while executing NOTHING. `Tests/BenchCBv2Tests`
       # depended on the BenchCBv2 EXECUTABLE target, so SwiftPM routed the
@@ -292,7 +341,9 @@ jobs:
         # Dispatches the JIT-compiled Metal kernels, exactly as
         # CBv2PagedSafetyTests' runtimeSmoke already does in this job.
         timeout-minutes: 20
-        run: ../../scripts/run-nested-suite.sh CBv2PagedKernelTests
+        # The composition assertion opts in only in its own test process;
+        # both invocations retain the nonempty/no-skips tripwires.
+        run: ../../scripts/run-paged-kernel-tests.sh
       - name: Run nested KV-sharing contiguous/paged parity tests
         if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
@@ -303,6 +354,27 @@ jobs:
         # green under.
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2KVSharingParityTests
+      - name: Run Nemotron production SDK gates
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 20
+        run: |
+          # Each filter has its own nonzero/no-skip tripwire. Continue after a
+          # failure so one broken suite cannot hide another unexecuted gate.
+          onboarding_failed=0
+          for suite in SSMDecodeBoundsTests NemotronHTests \
+                       NemotronH35BackendParityTests NemotronH35StorageParityTests \
+                       NemotronH35MTPTests NemotronH35MTPPrimingTests \
+                       MutableInputKernelTests MutableInputExportTests \
+                       CBv2QwenMTPIntegrationTests CBv2MTPDepthControllerTests \
+                       PagedMTPBatchedColumnsTests CBv2CompleteCheckpointEngineTests \
+                       NemotronH35ProductionDefaultsTests \
+                       OpenAIServiceTests ToolCallParserIntegrationTests; do
+            if ! ../../scripts/run-nested-suite.sh "$suite"; then
+              onboarding_failed=1
+            fi
+          done
+          exit "$onboarding_failed"
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh
@@ -372,5 +444,7 @@ jobs:
         run: cd console-ui && npm ci
       - name: Lint
         run: cd console-ui && npx eslint src/
+      - name: Test
+        run: cd console-ui && npm test
       - name: Build
         run: cd console-ui && npm run build

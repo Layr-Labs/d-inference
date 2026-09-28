@@ -140,23 +140,10 @@ public enum ManifestBuilder {
         // 4) Hash every file in parallel via a TaskGroup so we get cores on
         // the publish VM. Each task reads the file, computes its SHA-256
         // digest, and emits a (relativePath, digest, size) tuple.
-        struct Hashed: Sendable {
-            let relativePath: String
-            let digest: SHA256Digest
-            let sizeBytes: Int64
-            let role: String
-        }
-
         let hashed: [Hashed] = try await withThrowingTaskGroup(of: Hashed.self) { group in
             for file in absolutePaths {
                 group.addTask {
-                    let result = try Self.hashOne(file: file, basePrefix: basePrefix)
-                    return Hashed(
-                        relativePath: result.relativePath,
-                        digest: result.digest,
-                        sizeBytes: result.sizeBytes,
-                        role: result.role
-                    )
+                    try Self.hashOne(file: file, basePrefix: basePrefix)
                 }
             }
             var collected: [Hashed] = []
@@ -226,18 +213,19 @@ public enum ManifestBuilder {
 
     // MARK: - Internals
 
+    private struct Hashed: Sendable {
+        let relativePath: String
+        let digest: SHA256Digest
+        let sizeBytes: Int64
+        let role: String
+    }
+
+
     public static func safeModelID(_ modelID: String) -> String {
         var slug = ""
         slug.reserveCapacity(modelID.count)
         for ch in modelID {
-            if let ascii = ch.asciiValue,
-               (ascii >= 0x30 && ascii <= 0x39 || ascii >= 0x41 && ascii <= 0x5A || ascii >= 0x61 && ascii <= 0x7A || ascii == 0x2E || ascii == 0x5F || ascii == 0x2D) {
-                slug.append(ch)
-            } else if ch == "/" {
-                slug.append("-")
-            } else {
-                slug.append("-")
-            }
+            slug.append(isAllowedIDByte(ch, allowSlash: false) ? ch : "-")
         }
         slug = slug.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         if slug.isEmpty {
@@ -249,7 +237,7 @@ public enum ManifestBuilder {
         return "\(slug)--\(digest.prefix(12))"
     }
 
-    private static func hashOne(file: URL, basePrefix: String) throws -> (relativePath: String, digest: SHA256Digest, sizeBytes: Int64, role: String) {
+    private static func hashOne(file: URL, basePrefix: String) throws -> Hashed {
         let fm = FileManager.default
 
         // (a) Compute the manifest-relative path against the symlink-preserving
@@ -324,6 +312,6 @@ public enum ManifestBuilder {
         let digest = hasher.finalize()
 
         let role = ModelScanner.roleFor(filename: file.lastPathComponent)
-        return (relativePosix, digest, sizeBytes, role)
+        return Hashed(relativePath: relativePosix, digest: digest, sizeBytes: sizeBytes, role: role)
     }
 }

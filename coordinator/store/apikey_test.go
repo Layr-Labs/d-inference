@@ -255,7 +255,7 @@ func TestRevokeKeySoftDisables(t *testing.T) {
 	if !s.RevokeKey(raw) {
 		t.Fatal("first revoke should return true")
 	}
-	if s.ValidateKey(raw) {
+	if keyAuthenticates(s, raw) {
 		t.Error("revoked key should not validate")
 	}
 	if _, err := s.AuthenticateKey(raw); err == nil {
@@ -274,16 +274,16 @@ func TestRevokeKeySoftDisables(t *testing.T) {
 	_ = rec
 }
 
-func TestValidateKeyEnforcesExpiry(t *testing.T) {
+func TestAuthenticateKeyEnforcesExpiry(t *testing.T) {
 	s := NewMemory(Config{})
 	past := time.Now().Add(-time.Hour)
 	raw, _, _ := s.CreateAPIKey("acct-1", APIKeyCreate{Name: "k", ExpiresAt: &past})
-	if s.ValidateKey(raw) {
+	if keyAuthenticates(s, raw) {
 		t.Error("expired key must not validate")
 	}
 	future := time.Now().Add(time.Hour)
 	raw2, _, _ := s.CreateAPIKey("acct-1", APIKeyCreate{Name: "k2", ExpiresAt: &future})
-	if !s.ValidateKey(raw2) {
+	if !keyAuthenticates(s, raw2) {
 		t.Error("non-expired key should validate")
 	}
 }
@@ -364,4 +364,27 @@ func TestKeyLabelMasking(t *testing.T) {
 	if strings.Contains(label, raw[16:40]) {
 		t.Errorf("label %q leaks key body", label)
 	}
+}
+
+// keyAuthenticates reports whether raw resolves to an active, unexpired key
+// through the production auth path.
+func keyAuthenticates(s Store, raw string) bool {
+	_, err := s.AuthenticateKey(raw)
+	return err == nil
+}
+
+// activeKeyCount counts the account's keys that are not disabled.
+func activeKeyCount(t *testing.T, s Store, accountID string) int {
+	t.Helper()
+	keys, err := s.ListAPIKeys(accountID)
+	if err != nil {
+		t.Fatalf("ListAPIKeys(%q): %v", accountID, err)
+	}
+	n := 0
+	for _, k := range keys {
+		if !k.Disabled {
+			n++
+		}
+	}
+	return n
 }

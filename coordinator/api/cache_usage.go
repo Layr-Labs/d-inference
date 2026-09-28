@@ -51,6 +51,13 @@ func billableUsage(usage protocol.UsageInfo) payments.Usage {
 	}
 }
 
+// billableCachedTokens is billableUsage's cached count clamped to
+// [0, PromptTokens], for the consumer-facing usage objects of endpoints that
+// render usage themselves.
+func billableCachedTokens(usage protocol.UsageInfo) int {
+	return min(max(usage.CachedTokens, 0), max(usage.PromptTokens, 0))
+}
+
 func clearCacheUsage(usage *protocol.UsageInfo) {
 	if usage == nil {
 		return

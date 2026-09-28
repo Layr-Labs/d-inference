@@ -112,7 +112,7 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
     }
 
     func plan(_ manifest: CBv2CompleteCheckpointManifest) throws -> CBv2CompleteCheckpointImportPlan {
-        try codec.plan(manifest: manifest, request: request(), minimumChunkSize: 256, maximumChunkSize: 256)
+        try codec.plan(manifest: manifest, request: request())
     }
 
     func donate(_ store: SSDHybridCheckpointStore, receipt: UInt64 = 10, position: Int = 256,

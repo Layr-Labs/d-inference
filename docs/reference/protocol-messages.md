@@ -335,6 +335,7 @@ These heartbeat-only additions do not change canonical registration signatures.
 | `stages_total`, `files_written_total`, `written_bytes_total` | Store-lifetime successful stages, writes and bytes; attention writes include sidecars |
 | `donation_drops_total`, `corrupt_drops_total`, `evictions_total` | Existing store drop counters and active-store disk-budget removals. For complete checkpoints, `donation_drops_total` is queued-write `writesDropped`; prequeue refusals appear only in the separate donation outcome snapshot, which classifies every exported endpoint attempt |
 | `ttl_expired_total` | Optional attention-store TTL removal counter; whole-root TTL maintenance uses the process counters above |
+| `recurrent_capture_disarmed_packed_total` | Optional complete-store counter: recurrent (GDN/SSM) donors whose checkpoint capture a packed prefill cohort disarmed, once per request (requests, including prompts below the 1,024-token floor that could never have written a file); absent from attention stores and from providers before the chunk-agnostic capture rule |
 | `io` | Optional complete-store `PrefixCacheIOTelemetry`; absent for attention stores whose read/duration counters are not instrumented |
 | `io.staging_peak_bytes` | Peak charged staging reservation over this store's lifetime |
 | `io.files_read_total`, `read_bytes_total`, `stage_read_bytes_total`, `donation_read_bytes_total` | Store-lifetime read attempts/bytes, with stage and donor-authentication byte components |

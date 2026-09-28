@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-27 · commit `c2fa18e02`
+> Last updated: 2026-09-28 · commit `0bd16a9fa`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1808,6 +1808,7 @@ binary that already has `mlx.metallib` beside it.
 | `DARKBLOOM_CBV2_PAGED_KV` | `e2e/testbed/config.go` | Provider fleet kill switch; CI refuses to run the paged gate when it is set |
 | `DARKBLOOM_PROMPT_SIDECAR_BINARY` | `e2e/exact_cache_routing_test.go` | Path to a built `promptsidecar` for exact-cache routing |
 | `DARKBLOOM_EXACT_CACHE_TEST_MODEL` | `e2e/exact_cache_routing_test.go` | Override the exact-cache fixture (`mlx-community/gemma-4-e2b-it-4bit`) |
+| `DARKBLOOM_EXACT_CACHE_RECURRENT_MODEL` | `e2e/exact_cache_recurrent_test.go` | Opt-in: a cached `qwen3_5` or `qwen3_5_moe` checkpoint (for example `EigenLabs/Qwen3.5-9B-MLX-4bit-mtp`) for the recurrent company-leaves lane; skipped when unset. The suite sets `PrefixCacheMode: "ssd"` because the provider enables the SSD cache by default only for production catalog IDs |
 | `DARKBLOOM_QWEN38_E2E`, `DARKBLOOM_QWEN38_MTP_PATH`, `DARKBLOOM_QWEN38_MTP_MANIFEST_PATH`, `DARKBLOOM_QWEN38_MTP_REVISION` | `e2e/integration_test.go` | Opt-in Qwen3.8 real-process tools/video lane with a local MTP build |
 | `DARKBLOOM_FULL_NETWORK_SMOKE` | `e2e/integration_test.go` | Opt-in full-network multi-model routing smoke |
 | `BENCHMARK_MD_PATH` | `e2e/benchmark_test.go` | Where `TestBenchmark*` writes the Markdown results table |
@@ -1819,6 +1820,7 @@ binary that already has `mlx.metallib` beside it.
 | `e2e/integration_test.go` | `TestIntegration_NonStreamingInference`, `_StreamingInference`, `_GreedyDeterminism`, `_MultipleRequestsAccounting`, `_E2EEncryptionCorrectness`, `_BillingBalanceDeduction`, `_ProviderPayoutSplit`, `_InsufficientBalance`, `_InvalidModel`, `_StreamingContentValidation`, `_ConcurrentRequests`, `_AttestationHeaders`, `_SwiftProviderRealRoutingGates`, `_FullNetworkSingleSwiftProviderMultiModelRouting`, `_ReferralRewardDistribution`, `_Qwen38RealProcessToolsAndVideo`; plus `TestQwen38GatePolicy`, `TestQwen38ExpectedBuiltKVBackend` |
 | `e2e/profile_test.go` | `TestProfile_SingleProviderNonStreaming`, `TestProfile_RequestProfilesRecorded` |
 | `e2e/exact_cache_routing_test.go` | `TestIntegrationExactCacheRouting` (expected red on paged with the e2b fixture; informational step in CI) |
+| `e2e/exact_cache_recurrent_test.go` | `TestIntegrationExactCacheRecurrentCompanyLeaves` (opt-in via `DARKBLOOM_EXACT_CACHE_RECURRENT_MODEL`): primes an ~18k-token Qwen prompt (fleet-novel, `skipped_novel`), streams a second tenant and after its first token streams the donor beside it (plain chunks), cancels the second tenant after four of its tokens arrive at the slowed beside-a-prefill cadence and while the donor is still prefilling (its remaining ranges run solo on the stripe), and asserts the repeat restores within one 4,096 stripe of the prompt end and more than 8,192 tokens through the real coordinator |
 | `e2e/benchmark_test.go` | `TestBenchmark_SingleProviderStreaming`, `_SingleProviderNonStreaming`, `_MultiModelMultiProvider`, `_HighConcurrency`, `_QueueSaturation`, `_ManyUsers`, `_SingleModelScaling`, `_HeavyLoad_100Concurrent_10KB`; config tests `TestBenchmarkSuiteConfig*`, `TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture`, `TestBenchmarkCapacitySaturationPolicy` |
 
 ### 9. Prompt-contract parity fixtures and vectors
@@ -1962,7 +1964,7 @@ token IDs are accepted.
 | `DATABASE_URL not set — skipping PostgreSQL integration test` | store tests skipped | export `DATABASE_URL` to a Postgres 16 with a `testbed` database |
 | `neither docker nor postgres found in PATH` | e2e cannot start Postgres | start Docker, or put `postgresql@16/bin` on `PATH` |
 | `configured provider metallib not found beside binary` | `DARKBLOOM_PROVIDER_BINARY` set without `mlx.metallib` next to it | `./scripts/fetch-metallib.sh "$(dirname "$DARKBLOOM_PROVIDER_BINARY")"` |
-| provider never registers a model in e2e | checkpoint not in the HF cache, or not CBv2-servable (`gpt_oss`/`gemma4` families only) | download the pinned snapshot; check `DARKBLOOM_TESTBED_MODEL` |
+| provider never registers a model in e2e | checkpoint not in the HF cache, not CBv2-servable, or gated to other hardware (the Qwen3.8-27B builds need Apple M5 with NAX and the provider prints `No models selected.`) | download the pinned snapshot; check `DARKBLOOM_TESTBED_MODEL` |
 | nested suite step fails with "executed 0 tests" | swift-testing pass routed at an executable target / wrong filter | rebuild with `swift build --build-tests` in `libs/mlx-swift-lm`; keep suite names exact |
 | paged gate fails immediately with `DARKBLOOM_CBV2_PAGED_KV=… is set` | kill switch in your shell | `unset DARKBLOOM_CBV2_PAGED_KV` |
 
@@ -2040,6 +2042,40 @@ The focused construction and load-policy suites are `GPTOSSDefaultPrefixCacheWir
 and unsupported backends, fresh load hashes and identity rejection. A passing
 construction suite does not replace the real-checkpoint fixture above. Live test
 skips must be reported as unrun qualification.
+
+## Qwen recurrent checkpoint retention (live)
+
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/Qwen/Qwen35CheckpointRetentionLiveTests.swift`
+drives real Qwen weights through the production paged assembly (bridge, SSD
+complete-checkpoint store, inline MTP head when the artifact embeds one) and
+checks chunk-agnostic capture, fork-target retention, restore text against a
+cold control, and the company-leaves shape (six 512-token chunks, then the
+2,048-token stripe). Gates and overrides:
+
+```bash
+cd provider-swift
+DARKBLOOM_LIVE_MLX_TESTS=1 \
+DARKBLOOM_LIVE_MLX_QWEN35_CHECKPOINT_RETENTION=1 \
+swift test --filter Qwen35CheckpointRetentionLiveTests
+# MoE sanity run (needs both gates):
+DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_LIVE_MLX_QWEN35_CHECKPOINT_RETENTION=1 \
+DARKBLOOM_LIVE_MLX_QWEN36_MOE_CHECKPOINT=1 \
+swift test --filter Qwen35CheckpointRetentionLiveTests/moePartitionSanity
+```
+
+| Variable | Meaning |
+|---|---|
+| `DARKBLOOM_LIVE_MLX_QWEN_RETENTION_MODEL` | Another cached `qwen3_5` checkpoint for the dense runs (default `EigenLabs/Qwen3.5-9B-MLX-4bit-mtp`). A `language_model_only` artifact loads without VLM extraction |
+| `DARKBLOOM_LIVE_MLX_QWEN_MOE_MODEL` | Another cached `qwen3_5_moe` checkpoint for the MoE run (default Qwen3.6-35B-A3B; Qwen3.5-35B-A3B is the same architecture) |
+| `DARKBLOOM_LIVE_MLX_QWEN_RETENTION_BUDGET_GIB` | Dense-run slot budget in GiB (default 32) |
+
+The suite pins the solo stripe at 2,048 tokens; production dense Qwen stripes
+at 4,096. `EigenLabs/Qwen3.8-27B-MTP-4bit` is the standalone MTP-head
+artifact, not a model; and the Qwen3.8-27B builds are gated to Apple M5 with
+NAX in the provider (`ModelRuntimeRequirements`), so on other chips the
+fixture bypasses a product gate and trips the 30-second engine step watchdog
+in prefill. Results and the parity evidence behind the capture rule:
+[2026-09-27 report](../reports/2026-09-27-qwen-chunk-partition-parity.md).
 
 ## Connected coordinator/provider HTTP cache gate
 

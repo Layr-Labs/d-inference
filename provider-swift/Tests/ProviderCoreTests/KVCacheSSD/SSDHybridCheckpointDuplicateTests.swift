@@ -33,8 +33,7 @@ struct SSDHybridCheckpointDuplicateTests {
         let request = fixture.request()
         let staged = await store.stage(requestID: .init(12), request: request,
                                        reserveReadScratch: fixture.reserveReadScratch) { manifest in
-            try fixture.codec.plan(manifest: manifest, request: request,
-                                   minimumChunkSize: 256, maximumChunkSize: 2048)
+            try fixture.codec.plan(manifest: manifest, request: request)
         }
         #expect(staged.staged)
         let checkpoint = try #require(store.takeStaged(

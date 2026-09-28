@@ -207,6 +207,9 @@ export interface MySummaryResponse {
 export interface PrefixCacheTelemetry {
   kind: "attention_blocks" | "complete_checkpoint";
   ttl_expired_total?: number;
+  // complete_checkpoint only: recurrent donors whose capture stopped because
+  // a prompt range ran in a packed prefill cohort, once per request.
+  recurrent_capture_disarmed_packed_total?: number;
   io?: PrefixCacheIOTelemetry;
   generation: number;
   sample_seq: number;

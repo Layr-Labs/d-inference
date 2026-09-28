@@ -198,7 +198,7 @@ struct ProviderRuntimeCapabilityTests {
                 coordinatorURL: "ws://127.0.0.1:0", hardware: runtimeHardware(.m5),
                 models: [runtimeModel()], config: providerConfig,
                 runtimeCapabilities: [.appleM5]),
-            purgeLegacyFiles: false, attestationSigner: nil)
+            attestationSigner: nil)
         #expect(await deniedLoop.isModelAdvertised(qwen38ID) == false)
 
         let allowedLoop = try ProviderLoop(
@@ -206,7 +206,7 @@ struct ProviderRuntimeCapabilityTests {
                 coordinatorURL: "ws://127.0.0.1:0", hardware: runtimeHardware(.m5),
                 models: [runtimeModel()], config: providerConfig,
                 runtimeCapabilities: qwen38Caps),
-            purgeLegacyFiles: false, attestationSigner: nil)
+            attestationSigner: nil)
         #expect(await allowedLoop.isModelAdvertised(qwen38ID))
 
         let deniedStandalone = StandaloneServer(
@@ -231,7 +231,6 @@ struct ProviderRuntimeCapabilityTests {
                 coordinatorURL: "ws://127.0.0.1:0", hardware: runtimeHardware(.m5),
                 models: [runtimeModel()], config: config,
                 runtimeCapabilities: [.appleM5]),
-            purgeLegacyFiles: false,
             attestationSigner: nil,
             beforeModelLoad: { _ in loadWork.record() })
         do {

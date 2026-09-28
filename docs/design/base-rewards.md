@@ -1,8 +1,8 @@
 # Base Rewards — additive base income on top of what you earn
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-27 · commit `1c9fe2509`
 
-Status: **Implemented (v0.6.21, PR #282)** — 2026-06-06 — built as `coordinator/payments/baserewards/` with settlement in `coordinator/store/postgres_base_rewards.go`, but the engine runs only when [`EIGENINFERENCE_BASE_REWARDS`](../reference/configuration.md#billing-stripe-and-base-rewards) is enabled and the UI surfacing described below is not built (`console-ui/src/components/earn/BaseRewardsPanel.tsx` is mounted by no page); as built: [`../architecture/billing.md`](../architecture/billing.md#base-rewards-implemented-disabled-by-default), constants: [`../reference/pricing-model.md`](../reference/pricing-model.md#base-rewards).
+Status: **Implemented (v0.6.21, PR #282)** — 2026-06-06 — built as `coordinator/payments/baserewards/` with settlement in `coordinator/store/postgres_base_rewards.go`, but the engine runs only when [`EIGENINFERENCE_BASE_REWARDS`](../reference/configuration.md#billing-stripe-and-base-rewards) is enabled and the UI surfacing described below is not built (no console page renders base rewards); as built: [`../architecture/billing.md`](../architecture/billing.md#base-rewards-implemented-disabled-by-default), constants: [`../reference/pricing-model.md`](../reference/pricing-model.md#base-rewards).
 
 > **"Run a 64GB+ Mac on Darkbloom and even when the network is quiet, you earn
 > at least a Netflix subscription — best case, more."**

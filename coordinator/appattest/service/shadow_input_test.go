@@ -22,7 +22,7 @@ func TestAppAttestShadowUsesBoundedValidatedEndpointKey(t *testing.T) {
 	valid := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32))
 	for _, input := range []string{"", strings.Repeat("!", 1<<20), valid + strings.Repeat("\n", 1<<20), valid} {
 		reg := registry.New(logger)
-		r := &protocol.RegisterMessage{PublicKey: input, AppAttestProtocol: 2}
+		r := &protocol.RegisterMessage{PublicKey: input, AppAttestProtocol: 3}
 		p := reg.Register("session", nil, r)
 		st := store.NewMemory(store.Config{})
 		s := &Service{store: st, logger: logger, config: Config{Enabled: true, AppID: "TEST.app", Environment: "production"}}

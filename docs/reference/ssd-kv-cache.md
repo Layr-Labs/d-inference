@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-09-26 · commit `26b2e53fa`
+> Last updated: 2026-09-27 · commit `a2ccc2499`
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -22,12 +22,13 @@ The tier owns one root per user, one directory per model.
 | Block file | `<tag>.dbk3`, one file per attention block or complete recurrent checkpoint ([block size](../architecture/prefix-cache.md#block-hashing)); `fileExtension = "dbk3"` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift` |
 | Epoch record | `<modelKey>/cache-epoch.json`, schema `darkbloom.cache-epoch.v1` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCacheEpochStore.swift` |
 | Test root | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT`, honoured only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` affirmative | `SSDPrefixCacheFactory.swift` (`isolatedTestRoot`) |
-| Legacy roots | `darkbloom/kv/` is swept at startup by `LegacyKVCacheSweeper`; `kv3/` is never touched by that sweep | `provider-swift/Sources/ProviderCore/KVCache/LegacyKVCacheSweeper.swift` |
+| Retired root | `darkbloom/kv/` (the pre-v0.7.5 tier) is never read or written; `kv3/` is a sibling, not a subtree | `SSDPrefixCacheFactory.swift` (`ssdRootDirectoryName`) |
 
 ## DBK3 file format
 
-Every `.dbk3` file is the reviewed `EncryptedKVStore` scheme with
-`formatVersion = 3` (`SSDBlockStore.swift`, header comment and `enum SSDBlockStore`).
+Every `.dbk3` file is the reviewed v1 `DBKV` chunked AES-GCM scheme (the
+retired `EncryptedKVStore`) with `formatVersion = 3` (`SSDBlockStore.swift`,
+header comment and `enum SSDBlockStore`).
 
 | Offset | Size | Field |
 |---|---|---|

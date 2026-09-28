@@ -26,7 +26,7 @@ struct Restart: AsyncParsableCommand {
     @OptionGroup var configOptions: ConfigOptions
 
     mutating func run() async throws {
-        let wasLoaded = LaunchAgent.isAnySupportedLabelLoaded()
+        let wasLoaded = LaunchAgent.isLoaded()
         guard LaunchAgent.isInstalled() || wasLoaded else {
             throw ValidationError("No launchd configuration is installed. Use darkbloom start to select the replacement configuration; the foreground provider was left running.")
         }

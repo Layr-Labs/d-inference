@@ -9,7 +9,6 @@ import Testing
     // operator-actionable message (and a fix for the actionable ones).
     let reasons = [
         "SE attestation verified, awaiting MDM verification",
-        "SE attestation verified, awaiting MDM/ACME upgrade", // pre-removal coordinator
         "MDM verification passed",
         "recovered after transient deroute",
         "timeout", "no response", "nonce mismatch", "public key mismatch",
@@ -47,24 +46,6 @@ import Testing
     #expect(TrustReasonCatalog.level(trustLevel: "hardware", status: "online") == .pass)
     #expect(TrustReasonCatalog.level(trustLevel: "self_signed", status: "online") == .warn)
     #expect(TrustReasonCatalog.level(trustLevel: "hardware", status: "untrusted") == .fail)
-}
-
-// MARK: - OSStatusCatalog
-
-@Test func osStatusCatalogMapsLockedKey() {
-    let a = OSStatusCatalog.advice(osStatus: -25308)
-    #expect(a.message.contains("-25308"))
-    #expect(a.fix?.contains("console") == true)
-}
-
-@Test func osStatusCatalogMapsMissingEntitlement() {
-    let a = OSStatusCatalog.advice(osStatus: -34018)
-    #expect(a.message.lowercased().contains("entitlement"))
-}
-
-@Test func osStatusCatalogUnknownEchoesCode() {
-    let a = OSStatusCatalog.advice(osStatus: -99999)
-    #expect(a.message.contains("-99999"))
 }
 
 // MARK: - ModelFitDiagnostic
@@ -276,7 +257,6 @@ func daemonStatePersistsInjectedEphemeralSignerIdentity() async throws {
                 provider: ProviderSettings(name: "daemon-identity-test"),
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings())),
-        purgeLegacyFiles: false,
         attestationSigner: signer)
     await loop.setDaemonStateFileForTesting(url)
     await loop.writeDaemonState()
@@ -535,7 +515,7 @@ struct DesiredModelsForPostureTests {
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
         )
-        return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        return try ProviderLoop(config: config, attestationSigner: nil)
     }
 
     @Test("a `--model X` selection outside enabled_models stays desired — its failure shows")

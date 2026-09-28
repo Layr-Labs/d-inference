@@ -82,24 +82,6 @@ func TestShouldStopFailover_DeadlineReasonOverridesAdmissionTimeoutCause(t *test
 	}
 }
 
-// TestShouldStopFailover_Legacy503UsesBoundedCapacityCompatibility pins the
-// mixed-fleet contract: legacy prose is ignored, while bounded 503 status may
-// select the capacity class during rolling upgrade.
-func TestShouldStopFailover_Legacy503UsesBoundedCapacityCompatibility(t *testing.T) {
-	msg := typedAdmissionTimeoutMsg()
-	msg.TerminalCause = ""
-	msg.FailureCode = ""
-	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
-	d.setLastInferenceError(nil, msg)
-
-	if d.shouldStopFailover() {
-		t.Fatal("legacy 503 capacity must keep bounded failover below the cap")
-	}
-	if d.capacityRetries != 1 {
-		t.Fatalf("capacityRetries = %d, want 1 for legacy 503 capacity", d.capacityRetries)
-	}
-}
-
 // TestProviderFailedRoutingOutcomeCarriesTypedAttemptUsage: the ordinary
 // dispatch path's route-outcome builder must apply the usage retained by
 // setLastInferenceError — on both the provider-fault branch and the
@@ -113,6 +95,7 @@ func TestProviderFailedRoutingOutcomeCarriesTypedAttemptUsage(t *testing.T) {
 	msg := protocol.InferenceErrorMessage{
 		RequestID: "req-usage", Error: "safety_deadline: safety ceiling expired",
 		StatusCode: 504, TerminalCause: terminalCauseSafetyDeadline, AttemptUsage: usage,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	}
 	d.setLastInferenceError(nil, msg)
 
@@ -142,6 +125,7 @@ func TestProviderFailedRoutingOutcomeCarriesTypedAttemptUsage(t *testing.T) {
 	// pre-existing design; carryover is checked by the VALUES.)
 	d.setLastInferenceError(nil, protocol.InferenceErrorMessage{
 		RequestID: "req-usage", Error: "boom", StatusCode: 500,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 	if out := d.providerFailedRoutingOutcomeFor(pr); out.PromptTokens != 0 ||
 		out.CompletionTokens != 0 || out.ReasoningTokens != 0 {
@@ -195,6 +179,7 @@ func TestTypedProvider504KeepsProviderErrorRouteClass(t *testing.T) {
 		RequestID: "req-504", Error: "safety_deadline: safety ceiling expired",
 		StatusCode: 504, TerminalCause: terminalCauseSafetyDeadline,
 		AttemptUsage: &protocol.UsageInfo{PromptTokens: 11, CompletionTokens: 2},
+		FailureCode:  protocol.FailureCodeGenerationFailure,
 	})
 	// The exact discriminator the wait-loop defers use:
 	if d.lastErrCode == 504 && !isTypedTimeout504Cause(d.lastErrTerminalCause) {
@@ -220,6 +205,7 @@ func TestTypedProvider504KeepsProviderErrorRouteClass(t *testing.T) {
 	d.setLastInferenceError(nil, protocol.InferenceErrorMessage{
 		RequestID: "req-504", Error: "graceful_exit: node shutting down",
 		StatusCode: 504, TerminalCause: "graceful_exit",
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 	if d.lastErrCode != 500 || d.lastErrTerminalCause != "" {
 		t.Fatalf("unknown-cause 504 must fail closed as generation/500, got code=%d cause=%q",

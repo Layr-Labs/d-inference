@@ -1,5 +1,5 @@
 // Package stateexport produces a consistent, optionally-encrypted archive of the
-// coordinator's TEE-sealed on-disk state (step-ca + MicroMDM) under /data so it
+// coordinator's TEE-sealed on-disk state (MicroMDM and its neighbours) under /data so it
 // can be migrated off EigenCloud onto a GCP Confidential VM (DAR-70).
 //
 // The crux is BoltDB consistency: MicroMDM runs as a sibling process that holds

@@ -25,7 +25,7 @@ struct RetirementGateTests {
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
         )
-        return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        return try ProviderLoop(config: config, attestationSigner: nil)
     }
 
     @Test func retiringModelIsRejectedByBothFastPaths() async throws {

@@ -120,14 +120,14 @@ func (n NetworkUtilization) Public() PublicNetworkUtilization {
 // of the routable public fleet. It is computed by counting each provider once,
 // which avoids the multi-model double-counting that arises from summing
 // per-model ModelCapacity rows (a provider advertising N models appears in N
-// rows, and slots on one machine share a single memory pool).
+// rows, and slots on one machine draw on a single memory pool).
 type FleetCapacity struct {
 	DecodeTPS  float64 // Σ per-provider rated decode tok/s (counted once)
 	BudgetUsed int64   // Σ per-provider committed (used+queued) token budget across slots
-	// BudgetTotal is Σ per-provider pooled token budget. Legacy slot reports
-	// share one free-headroom view; v0.7.5+ slot reports are private re-sliced
-	// grants and add. See providerTokenBudgetForVersion. A live request may
-	// transiently leave BudgetUsed > BudgetTotal after a grant shrink.
+	// BudgetTotal is Σ per-provider pooled token budget: each slot reports a
+	// private re-sliced grant, and grants add. See providerTokenBudget. A live
+	// request may transiently leave BudgetUsed > BudgetTotal after a grant
+	// shrink.
 	BudgetTotal int64
 }
 
@@ -146,10 +146,9 @@ func (r *Registry) FleetCapacitySnapshot() FleetCapacity {
 			continue
 		}
 		fc.DecodeTPS += resolvedDecodeTPS(p)
-		// Reconstruct the provider's true pooled KV/token budget using the slot
-		// reporting layout shipped by its provider version.
+		// Reconstruct the provider's pooled KV/token budget (Σ private grants).
 		if p.BackendCapacity != nil {
-			used, total := providerTokenBudgetForVersion(p.BackendCapacity.Slots, p.Version)
+			used, total := providerTokenBudget(p.BackendCapacity.Slots)
 			fc.BudgetUsed += used
 			fc.BudgetTotal += total
 		}
@@ -158,53 +157,29 @@ func (r *Registry) FleetCapacitySnapshot() FleetCapacity {
 	return fc
 }
 
-// providerTokenBudget reconstructs a provider's true pooled token (KV-cache)
+// providerTokenBudget reconstructs a provider's pooled token (KV-cache)
 // budget from its per-model backend slots, returning used and total token
-// budget for that single provider.
+// budget for that single provider. Each slot's ActiveTokenBudgetMax is the
+// private grant assigned by the one-engine runtime's KV re-slicing, so grants
+// add across slots; on a single-model provider this reduces to the slot max.
 //
-// Through v0.7.4, ActiveTokenBudgetMax is the slot's own commitment plus the
-// same shared live headroom every co-resident slot observes, so free headroom is
-// counted once. The v0.7.5 one-engine release instead reports the private grant
-// assigned by runtime KV re-slicing, so free grants add across slots. Both forms
-// reduce to the slot max on a single-model provider.
-//
-// In the legacy layout, slots without a positive maximum are ignored. In the
-// v0.7.5 private layout, a positive-rate known-zero slot contributes its live
-// use but no capacity, preserving an in-flight commitment after a grant shrink.
-// Negative values are floored. A nil/empty legacy slice yields used=0, total=0.
+// A slot with neither a positive maximum nor a positive KV rate is ignored. A
+// positive-rate known-zero slot contributes its live use but no capacity,
+// preserving an in-flight commitment after a grant shrink — so used can
+// transiently exceed total. Negative values are floored. A nil/empty slice
+// yields used=0, total=0.
 func providerTokenBudget(slots []protocol.BackendSlotCapacity) (used, total int64) {
-	return providerTokenBudgetWithLayout(slots, sharedSlotHeadroom)
-}
-
-func providerTokenBudgetForVersion(slots []protocol.BackendSlotCapacity, version string) (used, total int64) {
-	return providerTokenBudgetWithLayout(slots, slotBudgetLayoutForVersion(version))
-}
-
-func providerTokenBudgetWithLayout(slots []protocol.BackendSlotCapacity, layout slotBudgetLayout) (used, total int64) {
-	var committed, pooledFree int64
-	var privateCapacity int64
 	for _, slot := range slots {
 		rate := clampKVBytesPerToken(slot.KVBytesPerToken)
-		if slot.ActiveTokenBudgetMax <= 0 && (layout != privateSlotGrants || rate <= 0) {
+		if slot.ActiveTokenBudgetMax <= 0 && rate <= 0 {
 			continue
 		}
 		slotCommitted := addNonnegativeSaturating(0, slot.ActiveTokenBudgetUsed)
 		slotCommitted = addNonnegativeSaturating(slotCommitted, slot.QueuedTokenBudget)
-		committed = addNonnegativeSaturating(committed, slotCommitted)
-		if layout == privateSlotGrants {
-			privateCapacity = addNonnegativeSaturating(
-				privateCapacity, slot.ActiveTokenBudgetMax)
-			continue
-		}
-		free := slot.ActiveTokenBudgetMax - slotCommitted
-		if free > pooledFree {
-			pooledFree = free
-		}
+		used = addNonnegativeSaturating(used, slotCommitted)
+		total = addNonnegativeSaturating(total, slot.ActiveTokenBudgetMax)
 	}
-	if layout == privateSlotGrants {
-		return committed, privateCapacity
-	}
-	return committed, addNonnegativeSaturating(committed, pooledFree)
+	return used, total
 }
 
 // NetworkUtilizationSnapshot computes the fleet-wide utilization summary by

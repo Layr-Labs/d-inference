@@ -1,6 +1,6 @@
 # Provider trust during MDM and App Attest coexistence
 
-> Last updated: 2026-09-27 · commit `93d556533`
+> Last updated: 2026-09-27 · commit `0bd16a9fa`
 
 Darkbloom supports two independent provider authorization paths: legacy MDM/APNs verification and qualified App Attest. A connection can satisfy either or both. This explanation separates those paths from their shared dispatch checks and from claims neither path proves. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
@@ -8,7 +8,9 @@ Darkbloom supports two independent provider authorization paths: legacy MDM/APNs
 
 A legacy `trust_level` is one piece of evidence, not the whole serving decision. An App Attest-only connection can retain `self_signed` while being authorized; `hardware` alone does not satisfy every legacy runtime, freshness and configured code-identity check. The coordinator evaluates these separately in `coordinator/registry/app_attest_authorization.go` (`providerLegacyServingAuthorizedLocked`, `providerAppAttestServingAuthorizedLocked`) and `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextAuthorizationAtLocked`).
 
-App Attest protocol names still contain `shadow` because observation and enforcement share the exchange. Observation alone grants no serving permission. `coordinator/appattest/service/config.go` (`ConfigFromEnvironment`) defaults shadow, serving and MDM removal off, with rollout at zero. `deploy/environments/prod.env` is a sanitized reference, explicitly not the live configuration; it retains MDM and the hardware trust floor. `deploy/gcp/prod/refresh-env.sh` preserves runtime settings. These files establish supported behavior and defaults, not current fleet activation.
+App Attest protocol names still contain `shadow` because observation and enforcement share the exchange. Observation alone grants no serving permission. `coordinator/appattest/service/config.go` (`ConfigFromEnvironment`) defaults shadow, serving and MDM removal off, with rollout at zero. `deploy/environments/prod.env` is a sanitized reference, explicitly not the live configuration; it retains MDM and the hardware trust floor. `deploy/gcp/prod/refresh-env.sh` preserves runtime settings. These files establish supported behavior and defaults, not current fleet activation. The sanitized fleet version floor is `0.9.5`; `coordinator/api/server.go` (`belowMinProviderVersion`) rejects a missing version whenever a floor is configured. This routing check is separate from App Attest protocol negotiation.
+
+The coordinator now serves only App Attest protocol 3. Protocol 1/2 registrations receive no Apple-operation frames, and pre-v3 stored enrollments cannot resume. The former claimed-version gate is gone; the protocol capability selects the exchange, while verified code, qualification and shared routing policy still determine serving. Legacy MDM/APNs authorization remains implemented — removing old wire compatibility does not remove that independent path. Code: `coordinator/appattest/service/session.go` (`startAppAttestShadow`), `coordinator/appattest/service/context.go` (`prepareClientHash`) and `coordinator/appattest/authorization.go` (`EvaluateAuthorization`).
 
 ## Mechanism
 
@@ -54,7 +56,8 @@ The diagram describes public serving. Authenticated owner routing may relax the 
 4. **Build publication is not qualification.** Serving requires current approved artifact/code identity, receipt and revocation evidence, with independent policy and qualification generation invalidation. Apple's truncated measurement must uniquely bind the durable full hash — `coordinator/appattest/service/build_qualifications.go` (`applyBuildQualification`); `coordinator/registry/app_attest_authorization.go` (`providerHasAppAttestAuthorizationLocked`).
 For existing deployments only, `applyBuildQualification` can use configured exact build/code mappings for a full Apple measurement when no durable row exists and the qualification snapshot is fresh. Durable rows and revocation tombstones override this compatibility path; truncated measurements and new release publication require durable qualification.
 
-5. **Onboarding is not permission.** New macOS 27+ setup skips new MDM enrollment and waits for App Attest. Existing profiles remain; removal needs a separate current decision and local user action — `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift` (`EnrollmentService.enroll`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`.
+5. **Legacy evidence cannot use the retired downgrade exceptions.** Every registration blob must meet `RegistrationAttestationMaxAge`, regardless of its claimed provider version. A challenge for an attested SE key requires a valid `status_signature`; missing SIP or Secure Boot status fails the challenge. These checks constrain signed claims and freshness, not independent physical measurement — `coordinator/api/provider.go` (`verifyProviderAttestation`, `verifyChallengeResponse`).
+6. **Onboarding is not permission.** New macOS 27+ setup skips new MDM enrollment and waits for App Attest. Existing profiles remain; removal needs a separate current decision and local user action — `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift` (`EnrollmentService.enroll`); `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`.
 
 ## Failure modes and limits
 

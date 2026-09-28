@@ -664,14 +664,12 @@ public actor ProviderLoop {
     public init(config: ProviderLoopConfig) throws {
         try self.init(
             config: config,
-            purgeLegacyFiles: true,
             attestationSigner: Self.createAttestationSigner()
         )
     }
 
     init(
         config: ProviderLoopConfig,
-        purgeLegacyFiles: Bool,
         attestationSigner: (any AttestationSigner)?,
         preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
@@ -709,9 +707,6 @@ public actor ProviderLoop {
         }
         self.advertisedModels = advertised
         self.modelHashes = config.modelHashes
-        if purgeLegacyFiles {
-            NodeKeyPair.purgeLegacyFiles()
-        }
         self.keyPair = NodeKeyPair.generate()
         self.signer = attestationSigner
         self.attestationBuilder = signer.map { AttestationBuilder(identity: $0) }
@@ -739,10 +734,6 @@ public actor ProviderLoop {
             activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
                 modelIDs: Array(advertised.keys)),
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
-        // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
-        // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
-        // so this cleanup cannot delete current cache data.
-        if purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad

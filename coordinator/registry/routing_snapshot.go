@@ -12,7 +12,6 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	snap.provider = p
 	snap.model = model
 	snap.chipFamily = p.Hardware.ChipFamily
-	snap.binaryVersion = p.Version
 	snap.slotState = "unknown"
 	snap.totalPending = p.pendingCount()
 	snap.systemMetrics = p.SystemMetrics

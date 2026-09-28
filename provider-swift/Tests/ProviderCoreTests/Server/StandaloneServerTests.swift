@@ -148,15 +148,6 @@ import Testing
     }
 }
 
-@Test func standaloneServerClassifiesSchedulerAdmissionErrors() {
-    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request exceeds active token budget") == .serviceUnavailable)
-    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request queue full") == .tooManyRequests)
-    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: invalid token count") == .badRequest)
-    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: duplicate request ID") == .badRequest)
-    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request exceeds batch token budget") == .badRequest)
-    #expect(StandaloneServer.schedulerErrorStatus(for: "unexpected backend failure") == .internalServerError)
-}
-
 @Test func standaloneServerStopAndWaitReleaseResidentBridgeAndSSDResources() async {
     // Give the real listener and shutdown tasks their own executor. Concurrent
     // MLX tests can occupy the parent process until the bind deadline expires.

@@ -747,8 +747,8 @@ struct FanControllerTests {
         }))
     }
 
-    @Test("reassert recovers a firmware-reclaimed mode and target")
-    func reassertsReclaimedSession() async throws {
+    @Test("maintain recovers a firmware-reclaimed mode and target")
+    func maintainRecoversReclaimedSession() async throws {
         let backend = makeFanBackend(fanCount: 1, includeFtst: false)
         let controller = try makeController(backend: backend)
         _ = try await controller.engage(speedPercent: 80)
@@ -756,7 +756,7 @@ struct FanControllerTests {
         backend.setFloat("F0Tg", 0)
         backend.resetOperations()
 
-        let session = try await controller.reassert()
+        let session = try await controller.maintain()
         #expect(session.targetRPMByFan[0] == 4_000)
         #expect(try backend.uint8("F0Md") == 1)
         #expect(abs(try backend.float("F0Tg") - 4_000) < 0.001)

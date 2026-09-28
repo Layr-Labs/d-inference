@@ -13,7 +13,6 @@ extension Start {
     internal func runLocalStandalone(
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
-        hardware: HardwareInfo,
         runtimeCapabilities: Set<ProviderRuntimeCapability>,
         bootSecuritySnapshot: BootSecuritySnapshot = .live()
     ) async throws {
@@ -93,7 +92,6 @@ extension Start {
                 host: bind,
                 maxCachedModels: Int(clamping: config.backend.maxModelSlots),
                 authToken: token,
-                hardware: hardware,
                 runtimeCapabilities: runtimeCapabilities,
                 engineV2MaxConcurrent: config.backend.engineV2MaxConcurrent,
                 engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,
@@ -206,8 +204,8 @@ extension Start {
         }
 
         // Housekeeping has removed the legacy telemetry queue. Install the
-        // panic hook now; its compatibility queue calls are no-ops and its only
-        // provider-owned output is a bounded local stderr marker.
+        // panic hook now; its only provider-owned output is a bounded local
+        // stderr marker.
         PanicHook.install()
 
         // Arm crash recovery for the running daemon however it was launched

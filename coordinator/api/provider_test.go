@@ -340,10 +340,11 @@ func TestProviderInferenceError(t *testing.T) {
 				// that reclassifies to 429, so use an unambiguous fault string to
 				// exercise the fault-passthrough path.
 				errMsg := protocol.InferenceErrorMessage{
-					Type:       protocol.TypeInferenceError,
-					RequestID:  reqID,
-					Error:      "internal error",
-					StatusCode: 500,
+					Type:        protocol.TypeInferenceError,
+					RequestID:   reqID,
+					Error:       "internal error",
+					StatusCode:  500,
+					FailureCode: protocol.FailureCodeGenerationFailure,
 				}
 				errData, _ := json.Marshal(errMsg)
 				conn.Write(ctx, websocket.MessageText, errData)

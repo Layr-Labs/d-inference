@@ -150,18 +150,7 @@ func TestKeyRotationIsRateLimitedPerMachine(t *testing.T) {
 	}
 }
 
-func TestKeyRotationRequiresProtocolCohortAndDeadKeySignals(t *testing.T) {
-	t.Run("protocol 1", func(t *testing.T) {
-		h := newRotationHarness(t, 100)
-		key := rotationKeyID(1)
-		h.enroll(t, key, "machine")
-		x := h.session(1)
-		h.assertionFailure(t, x, key, "apple_error", deadKeyError)
-		h.assertionFailure(t, x, key, "apple_error", deadKeyError)
-		if next := h.ready(t, x, key); next != "assert" || len(h.rotationOutcomes()) != 0 {
-			t.Fatalf("protocol 1 rotated: %s", next)
-		}
-	})
+func TestKeyRotationRequiresCohortAndDeadKeySignals(t *testing.T) {
 	for _, tc := range []struct {
 		percent int
 		want    string

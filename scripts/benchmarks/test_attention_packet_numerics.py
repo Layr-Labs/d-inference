@@ -11,6 +11,26 @@ from attention_packet.reference import analyze, attention, statistics
 from attention_packet_fixtures import Fixture, oracle
 
 
+# Explicit mantissa bits of each output dtype.
+MANTISSA_BITS = {"float16": 10, "bfloat16": 7, "float32": 23}
+
+
+def rounded_reference_bound(dtype, output):
+    """Largest expected gap between a stored output and the rounded reference.
+
+    The fixture stores a float64 oracle rounded to the output dtype; the analyzer
+    rounds its own float32 reference to the same dtype. Two nearly equal values
+    rounded independently can land on adjacent representable values, so they may
+    differ by one step of the output dtype, at most one step at the largest
+    output magnitude (for bfloat16 at |x| near 8 that is 2**-4). The float32
+    reference also carries its own accumulation error, which the previous fixed
+    2e-5 bound covered; keep that as the floor.
+    """
+    largest = float(np.max(np.abs(np.asarray(output, dtype=np.float64))))
+    one_step = 2.0 ** (np.floor(np.log2(largest)) - MANTISSA_BITS[dtype])
+    return max(2e-5, one_step)
+
+
 class AttentionNumericsTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -29,7 +49,8 @@ class AttentionNumericsTests(unittest.TestCase):
                 primary = report["originalQueryReference"]["comparison"]
                 self.assertEqual(len(primary["perHead"]), 16)
                 self.assertLess(primary["global"]["relativeL2"], 0.003)
-                self.assertLess(report["referenceRoundedToOutputDType"]["comparison"]["global"]["linf"], 2e-5)
+                rounded_linf = report["referenceRoundedToOutputDType"]["comparison"]["global"]["linf"]
+                self.assertLessEqual(rounded_linf, rounded_reference_bound(q_dtype, f.values["output"]))
                 counterfactual = report["narrowedQueryCounterfactual"]
                 if q_dtype == "float32" and kv_dtype != "float32":
                     self.assertGreater(counterfactual["differenceFromOriginalReference"]["global"]["linf"], 0)

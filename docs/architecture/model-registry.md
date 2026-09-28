@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-26 · commit `0ce33cee2`
+> Last updated: 2026-09-27 · commit `5d0dd2674`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -194,9 +194,8 @@ alias, `{model_name, desired_build, previous_build}` — but only to providers
 that already advertise the desired, previous, or a retired member of that alias
 and that could acquire the desired build (`providerCanAcquireCatalogModelLocked`).
 `fanOutDesiredModels` (`coordinator/api/model_alias_handlers.go`) sends it only
-to Swift providers at or above `minProviderVersionForDesiredModels = "0.5.17"`
-(`coordinator/api/server.go`), because older decoders reject unknown message
-types. Empty sets are sent on purpose: they mark a provider's in-flight prefetch
+to Swift providers (`providerSupportsDesiredModels`), the only runtime that
+decodes the message. Empty sets are sent on purpose: they mark a provider's in-flight prefetch
 for a deleted or repointed alias as stale.
 
 The provider side (`ProviderLoop+Prefetch.swift`, `reconcileDesiredModels`)
@@ -239,7 +238,7 @@ the budget.
    the raw message, so a bad-hash desired build leaves the previous build
    advertised.
 8. **Providers only receive `desired_models` they can act on.**
-   `providerSupportsDesiredModels` (backend + version floor) and
+   `providerSupportsDesiredModels` (Swift backend) and
    `DesiredModelsForProvider` (already a member of the alias, capable of the
    build) gate every send.
 
@@ -252,7 +251,7 @@ the budget.
 | Registered model never appears in `/v1/models/catalog` | not promoted (`model_active_versions` has no row) or `status` not `active`/`beta`; also the 60 s response cache | `PromoteModelVersion`, `handleModelCatalog` (`coordinator/api/billing_handlers.go`) |
 | Provider log `models_update weight-hash missing or mismatched; rejecting build` | bytes on disk differ from the registered version, or the provider reported no hash | `mergeProviderModels`; re-download the build |
 | Provider marked untrusted with `provider model weight hash mismatch — possible model swap` | challenge-time hash differs from `CatalogWeightHash` | `coordinator/api/provider.go`; treat as tamper until proven otherwise |
-| Alias flipped but old providers keep serving the previous build | providers below `0.5.17` or not yet members of the alias never receive `desired_models`; prefetch failing with bounded retries | `providerSupportsDesiredModels`, `DesiredModelsForProvider`; provider logs `desired_models: … → converging to …` |
+| Alias flipped but old providers keep serving the previous build | non-Swift providers or providers not yet members of the alias never receive `desired_models`; prefetch failing with bounded retries | `providerSupportsDesiredModels`, `DesiredModelsForProvider`; provider logs `desired_models: … → converging to …` |
 | Fresh coordinator routes nothing | empty (non-nil) catalog is deny-all until a model is registered and promoted | `SetModelCatalog` |
 | Provider prefetch loops on `aggregate hash mismatch` | poisoned manifest; staging is cleared each time | `finalizeStagedManifest`; re-publish the version |
 

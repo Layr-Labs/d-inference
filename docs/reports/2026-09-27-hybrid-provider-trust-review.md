@@ -1,6 +1,6 @@
 # Hybrid provider trust model review
 
-> Last updated: 2026-09-27 · commit `93d556533`
+> Last updated: 2026-09-27 · commit `0bd16a9fa`
 
 This follow-up to the [September 10 security review](2026-09-10-security-model-review.md) verifies the current coexistence of legacy MDM/APNs and App Attest in source and focused tests. It updates the [canonical threat model](../threat-model.yaml) and [provider trust explanation](../architecture/security/provider-trust.md). It does not reclassify all 13 historical findings or claim that the live fleet has adopted particular settings.
 
@@ -29,20 +29,29 @@ Legacy trust-reuse windows enforce a timing policy; the premise that a posture-c
 
 Build qualification retains a compatibility path for existing deployments: full Apple code measurements may match exact configured build/code mappings if no durable row exists and the snapshot is fresh. Durable rows and tombstones override this fallback; truncated measurements and new publication require durable qualification (`coordinator/appattest/service/build_qualifications.go`, `applyBuildQualification`).
 
+## September 27 master refresh
+
+The latest master preserves the independent legacy and App Attest serving paths while removing obsolete client compatibility. The model now distinguishes these changes:
+
+- Only App Attest protocol 3 receives exchange frames; stored protocol 0/1/2 enrollment transcripts cannot resume. This replaces the fixed claimed-version gate without treating a protocol advertisement as code evidence (`service/session.go`, `startAppAttestShadow`; `service/context.go`, `prepareClientHash`; `authorization.go`, `EvaluateAuthorization`, all under `coordinator/appattest/`).
+- Registration freshness is mandatory for every claimed provider version. An attested SE-key challenge now fails on missing/empty status signatures, and an omitted Secure Boot report fails like an omitted SIP report (`coordinator/api/provider.go`, `verifyProviderAttestation`, `verifyChallengeResponse`). The replay entry `T-033` describes the bounded timestamp and fresh possession checks without claiming a signed blob cannot be copied.
+- The configured fleet version floor also excludes missing versions. The sanitized production reference sets `0.9.5`; the live deployment value was not inspected (`coordinator/api/server.go`, `belowMinProviderVersion`; `deploy/environments/prod.env`).
+- Retired Python/runtime and hypervisor canonical fields, SE v1-key migration and the old on-disk X25519-key sweep stay removed. The hybrid model does not restore those compatibility paths. The independent full-measurement qualification fallback described above still exists and remains bounded by durable policy.
+
 ## Evidence and validation
 
-Reviewed source at `93d5565330244da6406cc247d231806f2801b0bd`:
+Reviewed source at `0bd16a9fa5d6db3ba8c8c42a2017ad4a9294eb57` after merging the compatibility removal in #1208:
 
 - Coordinator proof/policy: `coordinator/appattest/verify.go`, `authorization.go`, `service/authorization_identity.go`, `service/authorizer.go` and `service/build_qualifications.go`.
 - Shared and owner routing: `coordinator/registry/attestation_policy.go`, `routing_eligibility.go`, `owner_authorization.go` and `inference_authorization.go`.
 - Provider bindings/onboarding: `provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift`, `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift`, `provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift` and `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift`.
 
-Focused existing Go tests passed: 32 top-level tests across registry, App Attest policy/service and API packages, including 103 passing test/subtest events. Coverage includes independent authorization paths, shadow-only behavior, expiry, qualification withdrawal, revocation, final-writer races, identity binding and owner routing. The final runs used Go 1.25.0 with `CGO_ENABLED=0`; an initial local SDK linker failure and sandboxed HTTP-listener failure were resolved by that build setting and authorized local test sockets. No runtime source changed and the historical unsafe-behavior probe files were excluded by positive test-name filters.
+Focused existing Go tests passed against this refresh: 36 top-level tests across registry, App Attest policy/service and API packages, including 106 passing test/subtest events. Coverage includes independent authorization paths, common and owner gates, shadow-only behavior, expiry, qualification withdrawal/store outage/restart, revocation, final-writer races, protocol-3-only negotiation, rejection of pre-v3 enrollment recovery, mandatory status/Secure Boot fields, version-independent registration freshness and the missing-version routing floor. The runs used Go 1.25.0 with `CGO_ENABLED=0` and authorized local test sockets. The PR adds no runtime changes relative to refreshed master; pre-existing untracked historical unsafe-behavior probes remain untouched and were excluded by positive test-name filters. Exact commands and latest CI status are recorded in the PR.
 
 Swift source/tests were inspected for transcript parity, wrong-session/endpoint rejection, v3 hardware binding, diagnostic exclusion, onboarding, readiness and enrollment recovery. Swift tests were not rerun for this documentation-only change. Documentation lint, impact and YAML/reference checks are recorded in the PR validation results.
 
 ## Deployment and residual limits
 
-`deploy/environments/prod.env` explicitly describes itself as a sanitized reference rather than the consumed live environment. It retains MDM and a hardware trust floor. `coordinator/appattest/service/config.go` defaults shadow/serving/removal off and rollout to zero; `deploy/gcp/prod/refresh-env.sh` preserves live environment settings. Source review therefore does not establish live rollout percentages, current qualified builds, profile-removal readiness or fleet composition.
+`deploy/environments/prod.env` explicitly describes itself as a sanitized reference rather than the consumed live environment. It retains MDM and a hardware trust floor, with minimum provider version `0.9.5`. `coordinator/appattest/service/config.go` defaults shadow/serving/removal off and rollout to zero; `deploy/gcp/prod/refresh-env.sh` preserves live environment settings. Source review therefore does not establish live rollout percentages, current qualified builds, profile-removal readiness or fleet composition.
 
 No deployment, provider release, build approval, credential revocation or profile removal was performed. Signed-artifact/physical-Mac security-transition qualification, hostile-host resistance and per-request inference correctness remain separate evidence requirements. The September 10 report and its pinned probes remain a historical record; this follow-up supersedes its provider-trust assumptions only where explicitly discussed above.

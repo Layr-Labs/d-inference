@@ -1,9 +1,9 @@
 /// Telemetry wire types -- mirror of
 /// `coordinator/protocol/telemetry.go`.
 ///
-/// JSON shapes MUST match the Go definitions. Source, Severity, and Kind raw
-/// values are the exact strings the coordinator expects. Any mismatch silently
-/// coerces to "custom" server-side, which breaks filtering.
+/// JSON shapes MUST match the Go definitions: Source, Severity, and Kind raw
+/// values are the exact strings the Go side uses, pinned by the symmetry tests
+/// in both languages.
 
 import Foundation
 
@@ -145,17 +145,6 @@ public struct TelemetryEvent: Codable, Sendable {
     }
 }
 
-// MARK: - Batch
-
-/// Wire shape for batch ingestion: `POST /v1/telemetry/events`.
-public struct TelemetryBatch: Codable, Sendable {
-    public var events: [TelemetryEvent]
-
-    public init(events: [TelemetryEvent]) {
-        self.events = events
-    }
-}
-
 // MARK: - Session ID
 
 /// Per-process UUID. Events from the same boot share this ID so the admin UI
@@ -226,92 +215,5 @@ public struct AnyCodableValue: Codable, Sendable, CustomStringConvertible {
         default:
             try container.encodeNil()
         }
-    }
-}
-
-// MARK: - Field allowlist
-
-/// Client-side allowlist. The coordinator enforces its own, but we preempt
-/// bandwidth waste. Keys must match the server list in
-/// `coordinator/api/telemetry_handlers.go`.
-public enum TelemetryFieldFilter {
-    private static let allowed: Set<String> = [
-        "component", "operation", "duration_ms", "attempt", "endpoint",
-        "status_code", "error_class", "error", "model", "backend",
-        "exit_code", "signal", "hardware_chip", "memory_gb", "macos_version",
-        "boot_macos_major", "boot_sip_status",
-        "handler", "provider_id", "trust_level", "queue_depth", "reason",
-        "runtime_component", "reconnect_count", "last_error", "ws_state",
-        "billing_method", "payment_failed", "target",
-        // OOM / memory-pressure fields (non-sensitive). Mirror in Go allowlist.
-        "detect_source", "peak_memory_bytes", "report", "pressure",
-        "available_bytes", "mlx_active_bytes", "memory_pressure", "in_flight",
-        // Engine-health / first-token-wedge diagnostics (non-sensitive
-        // operational counters). Mirror in Go + TS allowlists.
-        "steps_executed", "admits", "first_tokens_emitted",
-        "consecutive_admits_without_first_token", "seconds_since_last_step",
-        "seconds_since_last_first_token", "num_running", "wedge_suspected",
-        // Eval-in-flight + idle-clear + prefill-sampling-health diagnostics.
-        "eval_in_flight_ms", "longest_eval_ms", "evals_completed",
-        "idle_clear_in_flight_ms", "idle_clears_completed",
-        "prefill_samples_accepted", "prefill_samples_dropped_floor",
-        "prefill_samples_dropped_ceiling", "last_prefill_sample_tps",
-        "observed_prefill_tps_ewma",
-        // KV-budget sustained-rejection audit (v0.7.3 black-hole hardening):
-        // reservation ids/byte counts/ages + memory snapshot terms — pure
-        // operational bookkeeping, no prompt/response data. Mirror in Go + TS.
-        "streak_seconds", "reservation_count", "reserved_bytes",
-        "mlx_cache_bytes", "system_available_bytes", "reservations",
-        "request_id", "age_seconds",
-        // Media-through-engine_v2 tags (v0.7.5: bool + image/video/mixed kind) — a bare
-        // boolean and a coarse image/video/mixed label; media/prompt content
-        // NEVER rides telemetry. Mirror in Go + TS allowlists.
-        "multimodal", "media_kind",
-        // Exact-prefix replay telemetry. Counts and bounded enums only; never
-        // token ids, prompt text, hashes, cache keys, or account scope.
-        "prefix_reuse_strategy", "prefix_matched_tokens", "prefix_replay_tokens",
-        "prefix_saved_tokens", "prefix_boundary_splits",
-        "prefix_construction_failure", "prefix_capacity_refusal",
-        "prefix_cold_fallback",
-        // KV-backend discriminator (v0.8.0 paged rollout). `backend` stays the
-        // ENGINE/runtime name ("engine_v2", "mlx-swift"); `kv_backend` is the
-        // KV storage kind ("paged" | "contiguous"), the same key and vocabulary
-        // as BackendSlotCapacity.kv_backend on the heartbeat wire.
-        // `prefix_reuse_backend` carries the finer CBv2PrefixReuseBackend row
-        // identity that "contiguous" alone cannot express.
-        "kv_backend", "prefix_reuse_backend",
-        // Paged KV pool metrics. Aggregate pool counters only — never page
-        // contents or block hashes. Mirror in Go + TS allowlists.
-        // pages_pinned / cow_events deliberately absent: no mechanism exists,
-        // and a producerless key reads as a legitimate zero. See the Go mirror.
-        "pool_utilization",
-        // Paged pool re-slice residue. RAW BYTES, not a second ratio:
-        // pool_utilization above is OCCUPANCY, and a grant-vs-pool ratio under
-        // a near-identical name collides with it wherever a dashboard groups
-        // by kv_backend. A clamped ratio also discards the overflow magnitude
-        // at exactly the point co-residency diagnosis needs it. pool_bytes is
-        // the denominator, shipped alongside the deltas so share-of-pool stays
-        // derivable from raw terms. Mirror in Go + TS allowlists.
-        "pool_bytes", "pool_deferred_growth_bytes", "pool_stranded_bytes",
-        // MTP (speculative decode) posture. MTP inflates observed_decode_tps
-        // with no discriminator, so a partially-MTP fleet biases coordinator
-        // routing on a metric it believes is homogeneous. mtp_inactive_reason
-        // carries MTPFallbackReason.rawValue plus "inert_kv_unsupported" —
-        // enabled, drafter resident, zero rounds, rows skipped kv_unsupported.
-        // Bounded enums and counters only; never draft tokens or prompt text.
-        // mtp_proposed_tokens / mtp_accepted_tokens are the cumulative
-        // counters behind mtp_acceptance_rate — the weights a roll-up needs.
-        // Token COUNTS, never token contents.
-        "mtp_enabled", "mtp_active", "mtp_inactive_reason",
-        "mtp_acceptance_rate", "mtp_proposed_tokens", "mtp_accepted_tokens",
-    ]
-
-    /// Filter a dictionary to only the keys the coordinator accepts.
-    public static func filter(_ input: [String: AnyCodableValue]) -> [String: AnyCodableValue]? {
-        var out: [String: AnyCodableValue] = [:]
-        for (k, v) in input where allowed.contains(k) {
-            out[k] = v
-        }
-        return out.isEmpty ? nil : out
     }
 }

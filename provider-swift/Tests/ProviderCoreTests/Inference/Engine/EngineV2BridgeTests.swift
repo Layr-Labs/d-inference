@@ -1023,8 +1023,8 @@ struct EngineV2EventFramingTests {
         let bridge = makeBridge(engine: engine, telemetry: telemetry)
         let (events, _) = await record(await bridge.submit(request: makeRequest()))
         #expect(events == [.chunk("x"), .error("metal command buffer failed")])
-        // engine_v2-tagged inference_error telemetry (allowlisted fields
-        // only — never the raw engine message).
+        // engine_v2-tagged inference_error telemetry (fixed operational
+        // keys only — never the raw engine message).
         let errorEvents = telemetry.events.filter { $0.kind == .inferenceError }
         #expect(errorEvents.count == 1)
         #expect(errorEvents.first?.fields?["backend"]?.description == "engine_v2")

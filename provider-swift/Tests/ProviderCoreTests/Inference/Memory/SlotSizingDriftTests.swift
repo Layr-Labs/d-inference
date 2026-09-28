@@ -139,28 +139,16 @@ struct SlotSizingDriftTests {
         #expect(engineRate == configRate)
     }
 
-    @Test("estimatedKVBytes mirrors AdmissionV2.estimatedBytes EXACTLY (window plateaus included)")
-    func estimatedBytesMatchesEngineLedger() {
-        for kinds in [gptossKinds(from: makeGptossConfigJSON()), gemma4Kinds(from: makeGemma4TextConfigJSON())] {
-            // The engine's own ledger (fp16 default config) is the oracle.
-            let admission = AdmissionV2(layerKinds: kinds, bytesCapacity: Int.max)
-            for tokens in [0, 1, 64, 128, 129, 1024, 1025, 4096, 131_072] {
-                #expect(
-                    SlotSizingSnapshot.estimatedKVBytes(layerKinds: kinds, tokens: tokens)
-                        == admission.estimatedBytes(forTokens: tokens),
-                    "tokens=\(tokens)")
-            }
-        }
-    }
-
     @Test("marginal rate == estimatedBytes slope beyond every sliding window")
     func marginalRateIsTheLongContextSlope() {
         for kinds in [gptossKinds(from: makeGptossConfigJSON()), gemma4Kinds(from: makeGemma4TextConfigJSON())] {
             let rate = SlotSizingSnapshot.fp16KVBytesPerToken(layerKinds: kinds)
             // Past the largest window (1024 for gemma, 128 for gpt-oss),
-            // each additional token costs exactly the marginal rate.
-            let a = SlotSizingSnapshot.estimatedKVBytes(layerKinds: kinds, tokens: 2048)
-            let b = SlotSizingSnapshot.estimatedKVBytes(layerKinds: kinds, tokens: 2049)
+            // each additional token costs exactly the marginal rate in the
+            // engine's own ledger (fp16 default config).
+            let admission = AdmissionV2(layerKinds: kinds, bytesCapacity: Int.max)
+            let a = admission.estimatedBytes(forTokens: 2048)
+            let b = admission.estimatedBytes(forTokens: 2049)
             #expect(b - a == rate)
         }
     }

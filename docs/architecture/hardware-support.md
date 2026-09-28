@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-09-22 · commit `ce809b792`
+> Last updated: 2026-09-27 · commit `a2ccc2499`
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -88,9 +88,6 @@ liveKVHeadroomBytes(physical, mlxUsed, systemAvailable, activations, configReser
     effectiveCap = min(hardCapBytes, physical − configReserve)
     realFree     = min(effectiveCap − mlxUsed (clamped ≥ 0), systemAvailable)
     = realFree > activations ? realFree − activations : 0
-
-canAdmit(currentResident, candidate, minimumKV, activations, ramPrefix)
-    = currentResident + candidate + activations + ramPrefix + minimumKV ≤ hardCapBytes
 
 loadReserveBytes(configReserve) = max(configReserve, physical − hardCapBytes)
 
@@ -315,9 +312,8 @@ Implementation: `provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMem
 
 The coordinator predicts servability with its own copy of the cap fraction,
 activation floors and per-model table (`coordinator/registry/servability.go`:
-`servabilityActivationFloorGB`, `servabilityLegacyActivationFloorGB`,
-`servabilityActivationFloorMinVersion`, `servabilityPerModelFloorMinVersion`,
-`servabilityModelActivationFloorsGB`, `servabilityMeasuredResidentGiB`;
+`servabilityActivationFloorGB`, `servabilityModelActivationFloorsGB`,
+`servabilityMeasuredResidentGiB`;
 `coordinator/registry/scheduler.go`, `coldLoadCatalogGBToMemGiB`). The doc
 comment on `defaultActivationReserveBytes` requires the provider and
 coordinator tables to move in the same commit. The coordinator's arithmetic and

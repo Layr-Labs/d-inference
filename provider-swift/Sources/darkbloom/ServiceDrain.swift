@@ -79,8 +79,8 @@ enum ServiceDrain {
         let launchIdentity = LaunchAgent.launchSnapshot()?.process
         let identity = WatchdogProbe.providerIdentity(daemonState: DaemonStateFile.read(),
                                                       launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
-        // Restart must retain the loaded label until restartAfterDrain captures
-        // its original plist (including installations under a legacy label).
+        // Restart must keep the service loaded until restartAfterDrain reloads
+        // its plist.
         if !unloadService && identity == launchIdentity { return }
         if unloadService && launchIdentity?.pid != ProcessInfo.processInfo.processIdentifier {
             try LaunchAgent.stop()

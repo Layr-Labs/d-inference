@@ -21,7 +21,7 @@ struct ProviderCancelledPrefixCacheTests {
                 provider: ProviderSettings(name: "cancel-prefix-test", memoryReserveGB: 1),
                 backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)))
-        return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        return try ProviderLoop(config: config, attestationSigner: nil)
     }
 
     @Test("partial cancellation waits for native paged usage before lookup and provider terminal",

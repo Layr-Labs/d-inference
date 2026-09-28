@@ -9,7 +9,7 @@ public struct ServiceRecoverySnapshot {
     public static func capture() throws -> Self {
         let output = try LaunchctlControl.runThrowing(["print-disabled", LaunchctlControl.guiDomain()], captureStdout: true)
         guard output.succeeded else { throw LaunchAgentError.disableFailed("cannot read previous launchd overrides") }
-        let labels = LaunchAgent.supportedLabels + [WatchdogAgent.label]
+        let labels = [LaunchAgent.label, WatchdogAgent.label]
         return Self(enabled: enabledStates(labels: labels, output: output.stdout), watchdogLoaded: WatchdogAgent.isLoaded())
     }
 

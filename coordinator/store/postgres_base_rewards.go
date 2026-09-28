@@ -34,20 +34,16 @@ func (s *PostgresStore) SumProviderEarningsByKey(ctx context.Context, providerKe
 	return total, nil
 }
 
-// SettleProviderFloorDraw atomically inserts the idempotent draw row and credits
-// the account in the same round-trip. The draw INSERT is the gate: ON CONFLICT
-// (provider_key, epoch_id) DO NOTHING means a re-settle of the same epoch inserts
-// nothing and credits nothing. A zero-amount draw still records the audit row (so
-// it is "settled, $0") but the credit/ledger CTEs (guarded by amount > 0) are
-// no-ops. Returns credited=true when this call inserted the row.
 type floorDrawDB interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-func (s *PostgresStore) SettleProviderFloorDraw(ctx context.Context, draw *ProviderFloorDraw) (bool, error) {
-	return settleProviderFloorDraw(ctx, s.pool, draw)
-}
-
+// settleProviderFloorDraw atomically inserts the idempotent draw row and
+// credits the account in the same round-trip. The draw INSERT is the gate: ON
+// CONFLICT (provider_key, epoch_id) DO NOTHING means a re-settle of the same
+// epoch inserts nothing and credits nothing. A zero-amount draw still records
+// the audit row (so it is "settled, $0") but the credit/ledger CTEs (guarded by
+// amount > 0) are no-ops. Returns credited=true when this call inserted the row.
 func settleProviderFloorDraw(ctx context.Context, db floorDrawDB, draw *ProviderFloorDraw) (bool, error) {
 	if draw == nil {
 		return false, errors.New("provider floor draw is required")
@@ -91,16 +87,10 @@ func settleProviderFloorDraw(ctx context.Context, db floorDrawDB, draw *Provider
 			SELECT d.account_id, '', $1, $10, 'base_reward', d.amount_micro_usd, 0, 0, NOW()
 			FROM draw d WHERE d.amount_micro_usd > 0
 			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
-			RETURNING account_id, provider_key, amount_micro_usd
+			RETURNING account_id, amount_micro_usd
 		), summary_account AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
 			SELECT account_id, 'account', 0, amount_micro_usd, 0, 0, NOW() FROM earning
-			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
-			  updated_at = NOW()
-		), summary_provider AS (
-			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT provider_key, 'provider', 0, amount_micro_usd, 0, 0, NOW() FROM earning WHERE provider_key <> ''
 			ON CONFLICT (key, key_type) DO UPDATE SET
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  updated_at = NOW()

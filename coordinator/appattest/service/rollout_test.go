@@ -12,31 +12,29 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func TestAppAttestRolloutProtectsReleasedClientsAndRequiresOptIn(t *testing.T) {
-	for _, version := range []string{"", "bogus", "0.9.3", "0.9.4-dev.1", "0.8.99"} {
-		if got := appAttestRolloutDecision(version, "account", "machine", 100); got != "provider_upgrade_required" {
-			t.Fatalf("%s: %s", version, got)
-		}
-	}
+func TestAppAttestRolloutRequiresOptInAndIdentity(t *testing.T) {
 	for _, percent := range []int{-1, 0, 101} {
-		if appAttestRolloutDecision("0.9.4", "account", "machine", percent) == "enabled" {
+		if appAttestRolloutDecision("account", "machine", percent) == "enabled" {
 			t.Fatal("invalid or disabled rollout enabled")
 		}
 	}
-	if appAttestRolloutDecision("0.9.4", "", "machine", 100) == "enabled" {
+	if appAttestRolloutDecision("", "machine", 100) == "enabled" {
 		t.Fatal("anonymous enrollment enabled")
+	}
+	if got := appAttestRolloutDecision("account", "", 100); got != "identity_required" {
+		t.Fatalf("missing machine identity: %s", got)
 	}
 	for i := 0; i < 100; i++ {
 		machine := strings.Repeat("m", i+1)
-		if appAttestRolloutDecision("0.9.4", "a", machine, 100) != "enabled" {
-			t.Fatal("full rollout excluded safe client")
+		if appAttestRolloutDecision("a", machine, 100) != "enabled" {
+			t.Fatal("full rollout excluded a client")
 		}
-		if appAttestRolloutDecision("0.9.4", "a", machine, 10) == "enabled" && appAttestRolloutDecision("0.9.4", "a", machine, 20) != "enabled" {
+		if appAttestRolloutDecision("a", machine, 10) == "enabled" && appAttestRolloutDecision("a", machine, 20) != "enabled" {
 			t.Fatal("cohort shrank when percentage increased")
 		}
 	}
 	for percent := 1; percent <= 99; percent++ {
-		if appAttestRolloutDecision("0.9.4", "same-account", "first-provisional", percent) != appAttestRolloutDecision("0.9.4", "same-account", "replacement-provisional", percent) {
+		if appAttestRolloutDecision("same-account", "first-provisional", percent) != appAttestRolloutDecision("same-account", "replacement-provisional", percent) {
 			t.Fatal("reconnect rerolled account cohort")
 		}
 	}

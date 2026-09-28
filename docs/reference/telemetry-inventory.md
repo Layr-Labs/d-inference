@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-27 · commit `681ecd8c4`
+> Last updated: 2026-09-27 · commit `4320091ca`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -16,7 +16,7 @@ design and failure modes are in [`../architecture/telemetry.md`](../architecture
 | Coordinator-emitted telemetry events → slog + in-process counter + Datadog Logs API | live |
 | Per-request rows (`inference_routes`, `request_rejections`, `usage`, `request_profiles`) and 60 s `fleet_snapshots` | live |
 | DogStatsD / HTTPS series metrics from request handling, routing, billing, cache | live |
-| Provider or console client telemetry events (`POST /v1/telemetry/events`) | retired — `telemetry_ingest_disabled`, body never read ([retired paths](#retired-paths-that-emit-nothing)); provider and console facades are no-ops |
+| Provider or console client telemetry events (`POST /v1/telemetry/events`) | retired — the coordinator route is gone (404) ([retired paths](#retired-paths-that-emit-nothing)); provider and console facades are no-ops |
 | `telemetry_events` table | removed |
 | Datadog APM spans | tracer is started (`ddtracer.Start`) but no code creates spans; `dd.trace_id`/`dd.span_id` therefore never appear in logs |
 
@@ -93,7 +93,7 @@ lists every name).
 | `routing.cache_telemetry_rejected`, `routing.cache_capability_rejected` | count | `source:heartbeat` | heartbeat prefix-cache payload failed validation |
 | `inference.unknown_request_frames` | count | `kind:chunk`, `complete`, `duplicate_complete`, `error`, `duplicate_error` | frame for an unknown or already-closed request |
 | `routing.throughput_anomaly` | count | `model`, `chip_family` | observed vs advertised throughput divergence (`coordinator/api/throughput_anomaly.go`); mirrored to the in-process registry |
-| `provider_version_below_minimum` (no `provider.` prefix) | count | `gate:registration`, `challenge_revalidation`, `manifest_sync`; `version` | provider below `EIGENINFERENCE_MIN_PROVIDER_VERSION` at one of the three gates |
+| `provider_version_below_minimum` (no `provider.` prefix) | count | `gate:registration`, `challenge_revalidation`, `manifest_sync`; `version` (`version:unknown` when the provider reported none) | provider below `EIGENINFERENCE_MIN_PROVIDER_VERSION` (or version-less while a floor is set) at one of the three gates |
 | `provider.load_model_status_rejected` | count | `reason:invalid_status`, `no_pending_command` | `load_model_status` frame that did not match an outstanding `load_model` |
 | `attestation.challenges_sent`, `attestation.challenges` (`outcome:passed`, `failed`, `status_sig_missing`, `status_sig_failed`), `attestation.failures{reason}`, `attestation.force_reconnect{reason}` | count | as listed | SE challenge lifecycle per provider session |
 
@@ -265,15 +265,16 @@ two profiler tables: [`../architecture/system-profiler.md`](../architecture/syst
 | Component | State |
 |---|---|
 | `TelemetryClient.emit` (`provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift`) | discards the event; `configure` logs that client telemetry is disabled |
-| `TelemetryOverflowQueue` (`provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift`) | `push` discards, `drain` returns `[]`, `purge` deletes the legacy `telemetry-queue.jsonl` |
+| `TelemetryOverflowQueue` (`provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift`) | `purge` deletes the legacy `telemetry-queue.jsonl` |
 | Console `emit`, `installGlobalHandlers` (`console-ui/src/lib/telemetry.ts`) | no-ops |
-| `POST /v1/telemetry/events` (`handleTelemetryIngest`) and console `POST /api/telemetry` (`console-ui/src/app/api/telemetry/route.ts`) | `telemetry_ingest_disabled` ([`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1)); body never read |
+| Coordinator `POST /v1/telemetry/events` | not registered; 404 |
+| Console `POST /api/telemetry` (`console-ui/src/app/api/telemetry/route.ts`) | `telemetry_ingest_disabled` (410); body never read |
 | `telemetry_events` table | dropped; the migration slice in `coordinator/store/postgres.go` keeps only a "Telemetry events table + indices removed" comment, and `TelemetryStore` (`coordinator/store/interface_domains.go`) has no method that writes an event |
 
 ## Related
 
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — mechanism, invariants, failure modes
-- [`telemetry-schema.md`](telemetry-schema.md) — event contract and allowlist
+- [`telemetry-schema.md`](telemetry-schema.md) — event contract and its Go/Swift/TypeScript mirrors
 - [`protocol-messages.md`](protocol-messages.md) — heartbeat and terminal field tables
 - [`../architecture/system-profiler.md`](../architecture/system-profiler.md) — `profile`, `request_profiles`, `fleet_snapshots`
 - [`../architecture/request-outcome-observability.md`](../architecture/request-outcome-observability.md) — outcome vocabularies behind the request metrics

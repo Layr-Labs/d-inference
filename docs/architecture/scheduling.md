@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-26 · commit `8a1b36f70`
+> Last updated: 2026-09-27 · commit `eafeab723`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -203,8 +203,13 @@ the slot that the provider has not yet reflected (`pendingMaxTokens −
 committedTokenBudget`, floored at 0). A budget-clamped pair
 ([`routing.md`](routing.md#gray-box-capacity-signals)) and a slot that reports
 `KVBytesPerToken` with a zero budget (`knownZeroTokenBudget`) are refused
-outright. `pooledBudgetAdmits` then checks the provider-wide pool that all
-slots share, in bytes when the provider reports byte-mode budgets.
+outright. `pooledBudgetAdmits` then checks the provider-wide pool: the sum of
+every slot's private grant (`providerPooledTokenBudget`,
+`coordinator/registry/pooled_admission.go`) charged with every model's
+coordinator-pending tokens, in bytes when every budget slot reports
+`KVBytesPerToken`. It rejects what a per-slot check cannot see: pending work
+for a cold model that has no slot yet, and a grant that a re-slice shrank
+below its live use. A cold request is charged against the same pool.
 
 **Memory fallback** for slots without a token budget: a resident model needs
 no weight memory; a non-resident one needs `modelSizeGB` plus the request's

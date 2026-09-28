@@ -1,6 +1,6 @@
 # Configure advisory threat-model review
 
-> Last updated: 2026-09-28 · commit `15dd32a06`
+> Last updated: 2026-09-28 · commit `8eb997b7f`
 
 The OpenRouter reviewer scans every PR change against the entire canonical threat
 model and posts actionable findings in one updatable public PR comment. It includes
@@ -83,7 +83,11 @@ trusted-base `docs/threat-model.yaml` in every request. Each response must ackno
 all submitted units. A separate integration pass examines the batch analyses and
 findings for interactions across files; large analysis sets are reduced through
 additional integration passes without dropping batches. Candidate findings pass through integration review for validation and consolidation;
-unsupported candidates and duplicates are removed.
+unsupported candidates and duplicates are removed. Finding references may cite any
+ID defined by a canonical block-list `id` field, including assets (`A-*`), adversaries
+(`ADV-*`), boundaries (`TB-*`), threats (`T-*`) and security findings (`SEC-*`).
+Unknown IDs and IDs only mentioned in prose are rejected; defined non-threat IDs
+do not invalidate an otherwise supported finding.
 
 `ensemble.review_models` runs this entire process independently for each model,
 in configured order. Models do not see the other reviewer's analysis. The combined

@@ -105,6 +105,35 @@ class ReviewTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ReviewUnavailable):
                 validate_findings({"findings": [dict(FINDING, **mutation)]}, evidence, THREAT)
 
+    def test_all_canonical_id_families_survive_full_scan(self):
+        threat_model = """adversaries:
+  - id: ADV-001
+assets:
+  - id: 'A-001'
+trust_boundaries:
+  - id: "TB-001" # boundary reference
+threats:
+  - id: T-001
+    security_findings:
+      - id: SEC-006
+"""
+        finding = dict(FINDING, threat_ids=["ADV-001", "A-001", "TB-001", "T-001", "SEC-006"])
+        calls = []
+        def transport(url, key, body):
+            calls.append(body)
+            return completion([finding], body=body)
+        findings, _, limits = review(threat_model, FILES, "key", transport=transport)
+        self.assertEqual(findings, [finding])
+        self.assertEqual(limits, [])
+        self.assertEqual(len(calls), 2)  # Source pass plus cross-file integration.
+
+    def test_prose_mentions_do_not_define_canonical_ids(self):
+        threat_model = THREAT + "    description: Compare T-999 and ADV-999, neither is defined.\n"
+        _, evidence, _ = prepare(threat_model, FILES)
+        for identifier in ("T-999", "ADV-999", "A-999", "TB-999", "SEC-999"):
+            with self.subTest(identifier=identifier), self.assertRaises(ReviewUnavailable):
+                validate_findings({"findings": [dict(FINDING, threat_ids=[identifier])]}, evidence, threat_model)
+
     def test_request_is_bounded_structured_and_key_is_not_prompt_data(self):
         calls = []
         def transport(url, key, body):

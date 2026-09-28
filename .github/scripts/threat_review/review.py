@@ -6,6 +6,9 @@ from .client import ReviewUnavailable, request_json
 DEFAULT_MODEL = "anthropic/claude-opus-5.5"
 MAX_DIFF = 80_000
 MAX_THREAT_MODEL = 220_000
+# Canonical YAML uses block-list id fields. Accept every defined ID family,
+# including quoted scalars/comments, never an ID merely mentioned in prose.
+ID_DEFINITION = re.compile(r"""(?m)^[ \t]*-[ \t]+id:[ \t]*(["']?)([A-Za-z][A-Za-z0-9_-]*)\1[ \t]*(?:#.*)?$""")
 SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["findings"],
     "properties": {"findings": {"type": "array", "maxItems": 32, "items": {
@@ -30,7 +33,8 @@ Flag concrete security regressions, new attack surface, invalidated threat assum
 and material gaps where the threat model needs updating because of this PR.
 Do not restate pre-existing issues, invent deployment settings, or claim a full security audit.
 Describe a plausible trigger, impact, and fix. Cite a changed file and an actual visible
-line on the indicated base/head side. Refer to existing threat IDs where applicable;
+line on the indicated base/head side. In threat_ids, cite IDs defined by canonical
+id fields (assets, adversaries, boundaries, threats or security findings) where applicable;
 use an empty threat_ids array for new attack surface. Return findings=[] if none qualify.
 Missing source is a coverage limit, never evidence that a change is safe.
 The coordinator is trusted and decrypts/re-encrypts hop by hop; providers and consumers
@@ -86,7 +90,7 @@ def validate_findings(result, evidence, threat_model):
     findings = result["findings"]
     if not isinstance(findings, list) or len(findings) > 32:
         raise ReviewUnavailable("Model returned an invalid findings list")
-    known_ids = set(re.findall(r"\bT-\d+\b", threat_model))
+    known_ids = {match.group(2) for match in ID_DEFINITION.finditer(threat_model)}
     for finding in findings:
         if not isinstance(finding, dict) or set(finding) != set(SCHEMA["properties"]["findings"]["items"]["required"]):
             raise ReviewUnavailable("Model returned an invalid finding")

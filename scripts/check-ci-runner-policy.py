@@ -77,6 +77,11 @@ def check(workflows, root=ROOT):
                 continue
             if runner in BLACKSMITH and name not in BLACKSMITH_JOBS.get(filename, {}):
                 errors.append(f'{label}: Blacksmith placement requires a policy entry')
+            if runner in {BLACKSMITH_MAC_27, BLACKSMITH_MAC_26}:
+                # /usr/bin/git uses xcrun on macOS. An image-specific app path
+                # set at job scope can break checkout before any guard runs.
+                if 'DEVELOPER_DIR' in workflow.get('env', {}) or 'DEVELOPER_DIR' in job.get('env', {}):
+                    errors.append(f'{label}: select the image Xcode after checkout, not at job scope')
             # Benchmark compute remains read-only even though it needs a 48 GB
             # Blacksmith Mac. Every Tenki job has the same credential boundary.
             if runner not in TENKI and (filename, name) != ('benchmarks.yml', 'benchmark'):

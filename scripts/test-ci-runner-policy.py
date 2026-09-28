@@ -114,6 +114,13 @@ class RunnerPolicyTests(unittest.TestCase):
                     self.assertTrue(policy.check({filename: workflow}))
                     job['runs-on'] = expected
 
+    def test_blacksmith_xcode_path_cannot_break_checkout(self):
+        workflow = policy.load(policy.ROOT / '.github/workflows/release-swift.yml')
+        job = workflow['jobs']['build-provider']
+        self.assertEqual(policy.check({'release-swift.yml': workflow}), [])
+        job['env']['DEVELOPER_DIR'] = '/Applications/Xcode_27.0.app/Contents/Developer'
+        self.assertTrue(policy.check({'release-swift.yml': workflow}))
+
     def test_secrets_in_local_composite_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

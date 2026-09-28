@@ -107,7 +107,6 @@ jobs:
       build_sdk_version: ${{ steps.build.outputs.build-sdk-version }}
       mlx_sha_short: ${{ steps.build.outputs.mlx-sha-short }}
     env:
-      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       VERSION: ${{ needs.resolve-env.outputs.version }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -143,8 +142,6 @@ jobs:
           retention-days: 3
 
   qualify-sdk:
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     name: Qualify provider with SDK 27
     needs: resolve-env
     runs-on: blacksmith-12vcpu-macos-27
@@ -171,7 +168,6 @@ jobs:
       publication_artifact: ${{ steps.publication_identity.outputs.artifact_name }}
 
     env:
-      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       VERSION: ${{ needs.resolve-env.outputs.version }}
       ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
 

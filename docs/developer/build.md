@@ -67,6 +67,11 @@ credentialed review automation, and benchmark approval/reporting also run on
 Blacksmith. The three-provider benchmark retains its 48 GB Blacksmith Mac; its
 model weights alone exceed Tenki's 32 GB Mac.
 
+Blacksmith's macOS 27 image selects Xcode 27 by default. The release selector
+reads that choice with `xcode-select` and `xcrun` after checkout, then requires
+SDK 27.0 and Swift 6.4. Do not set `DEVELOPER_DIR` at job scope: a guessed app
+path can break `/usr/bin/git` before checkout and before the selector runs.
+
 Release artifacts pass through GitHub Actions, but Tenki does not compile or
 cache their release inputs. Blacksmith is trusted to execute the release and
 receive its credentials; source and artifact-identity checks do not prove a

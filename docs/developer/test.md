@@ -1946,6 +1946,8 @@ Tenki job. It also pins every provider-release and signing-validation phase to
 Blacksmith, including the macOS 26 compatibility smoke. Run
 `python3 scripts/test-ci-runner-policy.py` and
 `python3 scripts/check-ci-runner-policy.py` before changing runner labels.
+The policy rejects a job-scoped `DEVELOPER_DIR` on Blacksmith macOS release
+jobs; SDK selection happens after checkout so `/usr/bin/git` can start.
 
 Blacksmith runs the credentialed signing, R2 publication, model registration,
 review automation and benchmark reporting jobs. The benchmark itself stays on a

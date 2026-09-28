@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
-# Select preinstalled SDK 27 tools from explicit Xcode or GitHub's CLT. Keep Xcode
-# selected for Metal/signing; the wrapper scopes this to Swift builds/tests.
+# Select the image's Xcode 27 tools or an explicitly selected SDK 27 CLT.
+# Keep Xcode selected for Metal/signing; scope this wrapper to Swift builds/tests.
 set -euo pipefail
 : "${GITHUB_ENV:?}"
 : "${GITHUB_PATH:?}"
 : "${RUNNER_TEMP:?}"
 : "${GITHUB_WORKSPACE:?}"
-if [[ -n "${DEVELOPER_DIR:-}" && -z "${DARKBLOOM_RELEASE_TOOLCHAIN_ROOT:-}" ]]; then
-  # Tenki installs Xcode 27 as an app; never fall back to an older CLT.
-  xcodebuild -version
-  compiler=$(xcrun --sdk macosx --find swift)
-  toolchain="${compiler%/usr/bin/swift}"
-  sdk="${DARKBLOOM_RELEASE_SDK_ROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
-else
-  toolchain="${DARKBLOOM_RELEASE_TOOLCHAIN_ROOT:-/Library/Developer/CommandLineTools}"
+if [[ -n "${DARKBLOOM_RELEASE_TOOLCHAIN_ROOT:-}" ]]; then
+  toolchain="$DARKBLOOM_RELEASE_TOOLCHAIN_ROOT"
   sdk="${DARKBLOOM_RELEASE_SDK_ROOT:-$toolchain/SDKs/MacOSX27.0.sdk}"
+else
+  # Do not set DEVELOPER_DIR before checkout: a runner image may select Xcode
+  # through a different app path, and /usr/bin/git itself uses xcrun.
+  selected_developer="${DEVELOPER_DIR:-$(xcode-select -p)}"
+  if [[ "$selected_developer" == /Library/Developer/CommandLineTools ]]; then
+    toolchain="$selected_developer"
+    sdk="${DARKBLOOM_RELEASE_SDK_ROOT:-$toolchain/SDKs/MacOSX27.0.sdk}"
+  else
+    xcodebuild -version
+    compiler=$(xcrun --sdk macosx --find swift)
+    toolchain="${compiler%/usr/bin/swift}"
+    sdk="${DARKBLOOM_RELEASE_SDK_ROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
+  fi
 fi
 
 ready() {
@@ -30,7 +37,7 @@ PY
 }
 
 if ! ready; then
-  echo 'Provider release requires preinstalled SDK 27 / Swift 6.4; select Xcode 27 or use the xcode-27 runner' >&2
+  echo 'Provider release requires preinstalled SDK 27 / Swift 6.4; select an Xcode 27 image or SDK 27 CLT' >&2
   exit 1
 fi
 

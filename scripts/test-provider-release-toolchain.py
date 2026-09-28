@@ -80,6 +80,32 @@ class ReleaseToolchainTests(unittest.TestCase):
         self.assertIn(f"PROVIDER_SWIFT={self.compiler}\n", env)
         self.assertIn(f"PROVIDER_SDKROOT={self.sdk}\n", env)
 
+    def test_image_default_xcode_selects_sdk_without_hardcoded_app_path(self):
+        self.use_xcode()
+        del self.env["DEVELOPER_DIR"]
+        selector = self.root / "xcode-select"
+        selector.write_text("#!/usr/bin/env bash\n"
+                            'printf "%s\\n" "$TEST_DEVELOPER"\n')
+        selector.chmod(0o755)
+        self.env["TEST_DEVELOPER"] = str(self.root / "Xcode 27.app/Contents/Developer")
+        selected = self.select()
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        env = (self.root / "env").read_text()
+        self.assertIn(f"PROVIDER_SWIFT={self.compiler}\n", env)
+        self.assertIn(f"PROVIDER_SDKROOT={self.sdk}\n", env)
+
+    def test_image_default_xcode_refuses_old_sdk(self):
+        self.use_xcode()
+        del self.env["DEVELOPER_DIR"]
+        selector = self.root / "xcode-select"
+        selector.write_text("#!/usr/bin/env bash\n"
+                            'printf "%s\\n" "$TEST_DEVELOPER"\n')
+        selector.chmod(0o755)
+        self.env["TEST_DEVELOPER"] = str(self.root / "Xcode 27.app/Contents/Developer")
+        (self.sdk / "SDKSettings.json").write_text('{"Version":"26.5"}')
+        self.assertNotEqual(self.select().returncode, 0)
+        self.assertFalse((self.root / "env").exists())
+
     def test_explicit_xcode_with_old_sdk_fails_closed(self):
         self.use_xcode()
         (self.sdk / "SDKSettings.json").write_text('{"Version":"26.5"}')

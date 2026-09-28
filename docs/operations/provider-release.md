@@ -381,10 +381,12 @@ The Actions artifact contains the final signed tarball and
 `darkbloom-validation-identity.json`, with source/submodule revisions and final
 bundle, executable and metallib hashes plus the full SHA-256 CodeDirectory digest and build SDK version.
 The unsigned build, SDK qualification, signing and notarization use
-Blacksmith's `blacksmith-12vcpu-macos-27` image with
-`DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer`. The selected
-Xcode must provide SDK 27.0 and Swift 6.4; the selector refuses an older
-compiler or SDK instead of falling back. Linux staging and publication use
+Blacksmith's `blacksmith-12vcpu-macos-27` image. The runner selects Xcode 27
+by default. After checkout, `scripts/prepare-provider-release-toolchain.sh`
+resolves that selection through `xcode-select` and `xcrun`; it requires SDK 27.0
+and Swift 6.4 and refuses an older compiler or SDK. Do not set a guessed
+`DEVELOPER_DIR` at job scope: `/usr/bin/git` can fail before checkout if that
+app path does not exist. Linux staging and publication use
 `blacksmith-4vcpu-ubuntu-2404`. All release preparation and signed-artifact
 handling run on Blacksmith; routine PR tests use the separate
 [Tenki CI boundary](../developer/build.md#ci-runner-trust-boundary).

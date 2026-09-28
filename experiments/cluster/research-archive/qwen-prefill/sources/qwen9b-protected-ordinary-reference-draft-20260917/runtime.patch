@@ -1,0 +1,125 @@
+--- predecessor/package/reference_resources.py
++++ successor/package/reference_resources.py
+@@ -41,7 +41,7 @@
+ def validate_local(value):
+     require(value['actualFreeBytes'] >= 6*GIB and type(value['actualFreeBytes']) is int,
+             'Parent requires 6 GiB actual free')
+-    integer(value['pressureLevel'],0,2)
++    integer(value['pressureLevel'],1,1)
+     require(Decimal(value['reportedSwapBytes']) == 0 and value['acPower'] is True,
+             'Parent requires zero swap and AC')
+     require(0 <= value['startedMonotonicNS'] <= value['completedMonotonicNS']
+@@ -65,4 +65,3 @@
+         self.publish(dict(phase=phase, **value))  # Retain a refused observation too.
+         validate_local(value)
+         self.last = self.clock()
+-
+--- predecessor/package/run_reference.py
++++ successor/package/run_reference.py
+@@ -15,6 +15,8 @@
+                               verify_launcher, write_json, write_new)
+ from reference_resources import ResourceGate
+ from worker_processes import PipeWorkers, cleanup_error_text
++from gated_reference import prepare as prepare_gated, postflight as gated_postflight
++from reference_settings import require_short
+ 
+ 
+ def serve(job, spec, tokens, run, gate, pins, timeout=315):
+@@ -98,7 +100,8 @@
+                 result['streams'] = pipes.retained_streams()
+             except BaseException as error:
+                 secondary('retained_stream_hashes', error)
+-        for name, callback in [('source_input_recheck', pins.recheck), ('resource_postflight', lambda: gate('postflight'))]:
++        for name, callback in [('source_input_recheck', pins.recheck), ('resource_postflight', lambda: gate('postflight')),
++                               ('physical_postflight', lambda: gated_postflight(run))]:
+             try:
+                 callback()
+                 if name == 'source_input_recheck':
+@@ -131,6 +134,7 @@
+     verify_launcher(Path(__file__).resolve().parent, args.launcher_sha256, pins)
+     raw = pins.read(path(args.job), 16384, args.job_sha256)['raw']
+     job = validate_job(parse(raw))
++    require_short(job)
+     require(raw == canonical(job)+b'\n', 'Job must be canonical JSON with final LF')
+     run = path(job['run_dir'])
+     require(run.parent.resolve() == run.parent, 'Run parent contains a symlink')
+@@ -146,7 +150,7 @@
+         pins.read(run/'prompt.json', 65536, job['prompt_sha256'])
+         pins.recheck()
+         gate('prelaunch')
+-        spec = native_spec(job)
++        spec = prepare_gated(job, run)
+         entered = True
+         return serve(job, spec, tokens, run, gate, pins)
+     except BaseException as error:
+--- predecessor/package/remote_evidence.py
++++ successor/package/remote_evidence.py
+@@ -7,8 +7,8 @@
+ import sys
+ import tarfile
+ import time
+-REMOTE=Path('/Users/developer/DarkbloomDev/gemma4-short-correctness-20260916')
+-sys.path.insert(0,str(REMOTE))
++REMOTE=Path('/Users/developer/DarkbloomDev/qwen9b-protected-reference-20260917')
++sys.path.insert(0,str(REMOTE/'package'))
+ from binding_common import canonical, require
+ from binding_inputs import snapshot
+ from mtp_journal import device_directory, observe as journal, require_empty
+@@ -26,10 +26,10 @@
+ 
+ def main():
+     p=argparse.ArgumentParser(allow_abbrev=False);p.add_argument('action',choices=['observe','collect'])
+-    p.add_argument('--mode',choices=['full','stage0','stage1']);p.add_argument('--attempt',type=int,default=1);a=p.parse_args()
++    p.add_argument('--mode',choices=['reference']);p.add_argument('--attempt',type=int,default=1);a=p.parse_args()
+     value=observation()
+     if a.action=='observe':print(canonical(value).decode(),flush=True);return
+-    require(a.mode is not None and 1<=a.attempt<=9,'Collection role/attempt')
++    require(a.mode is not None and a.attempt==1,'Collection role/attempt')
+     require(not value['active'] and value['journalLockObserved'],'Live or uncertain native owner')
+     require_empty(value['journal']);root=REMOTE/'runs'/f'{a.mode}-{a.attempt}'
+     require(root.resolve()==root and root.is_dir(),'Canonical run required')
+@@ -45,7 +45,7 @@
+             require(total<=64*1024**2 and len(rows)<160,'Total evidence bound')
+             rows.append(dict(path=relative,bytes=item['size_bytes'],sha256=item['sha256'],identity=item['identity']))
+     require(any(r['path']=='terminal.json' for r in rows),'No retained terminal')
+-    header=dict(schema='gemma_short_collection_v1',mode=a.mode,attempt=a.attempt,remoteRoot=str(root),observation=value,
++    header=dict(schema='qwen9b_protected_ordinary_reference_collection_v1',mode=a.mode,attempt=a.attempt,remoteRoot=str(root),observation=value,
+         files=[{k:r[k] for k in ('path','bytes','sha256')} for r in sorted(rows,key=lambda r:r['path'])])
+     raw=canonical(header)+b'\n';require(len(raw)<=131072,'Archive header bound');sys.stdout.buffer.write(raw)
+     with tarfile.open(fileobj=sys.stdout.buffer,mode='w|') as archive:
+--- predecessor/local_process.py
++++ successor/local_process.py
+@@ -4,7 +4,7 @@
+ import signal
+ import subprocess
+ import time
+-from gemma_inputs import write_json
++from reference_inputs import write_json
+ from binding_common import require
+ 
+ 
+--- predecessor/receive_collection.py
++++ successor/receive_collection.py
+@@ -7,7 +7,12 @@
+ import tarfile
+ BASE=Path(__file__).resolve().parent;sys.path.insert(0,str(BASE/'package'))
+ from binding_common import parse, require, same
+-from gemma_inputs import member_path, write_json
++from reference_inputs import write_json
++
++def member_path(name):
++    path=Path(name)
++    require(type(name) is str and not path.is_absolute() and str(path)==name and ".." not in path.parts and name not in ("", "."), "Relative evidence path required")
++
+ 
+ 
+ def receive(archive_path,output):
+@@ -15,7 +20,7 @@
+     output.mkdir(mode=0o700);seen=set();total=0
+     with archive_path.open('rb') as stream:
+         raw=stream.readline(131073);require(len(raw)<=131072 and raw.endswith(b'\n'),'Collection header bound')
+-        header=parse(raw);same(header['schema'],'gemma_short_collection_v1','collection schema')
++        header=parse(raw);same(header['schema'],'qwen9b_protected_ordinary_reference_collection_v1','collection schema')
+         require(type(header['files']) is list and 1<=len(header['files'])<=160,'Collection member count')
+         rows={}
+         for row in header['files']:

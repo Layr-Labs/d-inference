@@ -1,0 +1,31 @@
+--- a/Owner/main.swift
++++ b/Owner/main.swift
+@@ -44,7 +44,9 @@
+              "maximumLifetimeSeconds", "workerEnvironment", "readyTemplateBase64"]) else { throw ClusterOwnerStateError.invalid("Owner settings fields differ") }
+     let value = try JSONDecoder().decode(OwnerSettings.self, from: data)
+     guard value.schema == "darkbloom_configured_worker_owner_v1", (1...300).contains(value.maximumLifetimeSeconds),
+-          value.stageCut == Qwen27BQualificationScope.stageCut, value.workerExecutable.hasPrefix("/"), value.modelDirectory.hasPrefix("/"),
++          // Syntax only: actual native admission derives legal cuts from the exact
++          // registered geometry and verifies the selected Plan against Ready.
++          Qwen27BQualificationScope.boundedCutSyntax(value.stageCut), value.workerExecutable.hasPrefix("/"), value.modelDirectory.hasPrefix("/"),
+           value.leaseDirectory.hasPrefix("/") else { throw ClusterOwnerStateError.invalid("Owner configuration outside current worker scope") }
+     return value
+ }
+--- a/Owner/Qwen27BQualificationScope.swift
++++ b/Owner/Qwen27BQualificationScope.swift
+@@ -2,11 +2,14 @@
+ 
+ /// Private qualification entry, never an installed-product model allowlist.
+ enum Qwen27BQualificationScope {
+-    static let stageCut = 16
+     static let modelID = "registered_qwen38_27b"
+     static let profileID = "registered_qwen38_27b_greedy_generation_v1"
+     static let artifactSHA256 = "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463"
+     static let configurationSHA256 = "4691da94a1b4ef415aad112ec46abebd33f8a41ad07380e486c0526eb945c1ff"
++
++    /// Only an argument-size/domain check. The exact registered native profile
++    /// and actual Plan/Ready handshake remain the geometry authority.
++    static func boundedCutSyntax(_ cut: Int) -> Bool { (1...127).contains(cut) }
+ 
+     static func validate(_ ready: ClusterWorkerReady) throws {
+         guard ready.identity.modelID == modelID,

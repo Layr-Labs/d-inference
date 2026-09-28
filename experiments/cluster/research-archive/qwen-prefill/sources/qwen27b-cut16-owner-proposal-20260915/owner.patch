@@ -1,0 +1,11 @@
+--- a/Sources/Qwen27BQualificationScope.swift
++++ b/Sources/Qwen27BQualificationScope.swift
+@@ -2,7 +2,7 @@
+ 
+ /// Private qualification entry, never an installed-product model allowlist.
+ enum Qwen27BQualificationScope {
+-    static let stageCut = 32
++    static let stageCut = 16
+     static let modelID = "registered_qwen38_27b"
+     static let profileID = "registered_qwen38_27b_greedy_generation_v1"
+     static let artifactSHA256 = "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463"

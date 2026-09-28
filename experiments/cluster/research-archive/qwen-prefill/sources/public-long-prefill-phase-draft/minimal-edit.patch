@@ -1,0 +1,270 @@
+--- a/experiments/cluster/runtime/stage_checks/LONG_PREFILL.md
++++ b/experiments/cluster/runtime/stage_checks/LONG_PREFILL.md
+@@ -34,6 +34,23 @@
+ startup; a bind race fails without fallback. Solo creates one full-model owner,
+ uses no transport or stage flags, and admits its native request UUID separately
+ from the launcher's archive UUID. Neither command changes older command caps.
++
++Either long command accepts the explicit optional `--prefill-phase-trace`
++switch. It requests `rank-0/phase-trace.json` under the new owned output, plus
++`rank-1/phase-trace.json` for the rank pair; arbitrary sidecar paths are not
++accepted. The fixed native `--prefill-phase-trace-file @rank/phase-trace.json`
++argument uses the unchanged supervisor's per-owner path substitution. This
++adds local recorder observations and overhead while preserving native stdout,
++stderr and request admission. The default does not request tracing.
++
++When enabled, the pinned context contains `prefill_phase_trace: true`, and the
++launcher receipt adds `phase_trace_request` with expected owned paths. Its
++`included_in_rank_files`, `sidecars_verified`, and `phase_semantics_audited`
++fields remain false. The existing four solo or ten pair configuration/input/
++stdout/stderr file receipts are unchanged. The launcher neither reads sidecar
++bytes nor confirms their existence; a successful run does not establish phase
++timing, GPU overlap or clock alignment. Retain and audit the sidecars separately.
++No phase switch is added to the older `p2p`, `ranks`, or `prefill-ranks` commands.
+ 
+ The prompt must be a regular file of at most 64 KiB containing exactly 8192
+ integer IDs in the registered vocabulary. Floats, booleans and negative-zero
+--- a/experiments/cluster/runtime/stage_checks/long_cli.py
++++ b/experiments/cluster/runtime/stage_checks/long_cli.py
+@@ -2,7 +2,7 @@
+ from pathlib import Path
+ import signal
+ import uuid
+-from . import archive, long_artifacts, long_configuration, long_inputs, long_supervision
++from . import archive, long_artifacts, long_configuration, long_inputs, long_supervision, long_phase
+ from .common import integer, require, sha
+ from .long_profile import ARTIFACT, COMMANDS, MAX_PARENT_TIMEOUT, NATIVE_TIMEOUT, POLICIES
+ from .long_resources import MemoryGate
+@@ -20,6 +20,8 @@
+             command.add_argument('--' + key, required=True)
+         command.add_argument('--parent-timeout-seconds', type=int, default=MAX_PARENT_TIMEOUT)
+         command.add_argument('--minimum-reclaimable-gib', type=int, default=8)
++        command.add_argument('--prefill-phase-trace', action='store_true',
++                             help='Request owned local phase sidecars; verification remains separate')
+         if name == 'long-prefill-ranks':
+             command.add_argument('--stage-prefill-policy', choices=POLICIES, required=True)
+             command.add_argument('--stage-logits-dtype', choices=['bfloat16'], required=True)
+@@ -29,6 +31,7 @@
+ def run(args):
+     integer(args.parent_timeout_seconds, 1, MAX_PARENT_TIMEOUT)
+     integer(args.minimum_reclaimable_gib, 8, 1024)
++    phase_requested = long_phase.requested(args)
+     for pin in (args.expected_binary_sha256, args.tokens_sha256, args.prompt_origin_sha256): sha(pin)
+     require(args.command in COMMANDS and args.artifact_aggregate_sha256 == ARTIFACT, 'Registered9B long profile required')
+     runtime = args.runtime.resolve(strict=True); output = args.output.expanduser().resolve()
+@@ -45,6 +48,7 @@
+         parent_timeout_seconds=args.parent_timeout_seconds, local_owner_count=2 if paired else 1,
+         baseline_audit=dict(performed=False), independent_numerical_action_timing_audit=dict(performed=False),
+         primary_failure=None, cleanup_errors=[], post_run_errors=[])
++    if phase_requested: receipt['phase_trace_request'] = long_phase.receipt(args.command)
+     try:
+         initial = initial_free_screen(); receipt['initial_free_screen'] = initial
+         require(initial['passed'], 'Initial actual-free screen refused before snapshots/artifact hashing')
+--- a/experiments/cluster/runtime/stage_checks/long_configuration.py
++++ b/experiments/cluster/runtime/stage_checks/long_configuration.py
+@@ -1,7 +1,7 @@
+ """Exact native configuration; raw prompt files are never worker-reencoded."""
+ import json
+ import re
+-from . import archive
++from . import archive, long_phase
+ from .common import integer, require, sha
+ from .long_profile import ARTIFACT, COMMANDS, NATIVE_TIMEOUT, POLICIES, REQUIRED_ENVIRONMENT
+ from .long_inputs import bounded_bytes
+@@ -42,6 +42,7 @@
+     else:
+         require(hosts is None and context['stage_prefill_policy'] is None and context['stage_logits_dtype'] is None,
+                 'Solo must not acquire stage or transport configuration')
++    arguments += long_phase.arguments(context)
+     return dict(rank=rank, bundle=str(bundle), bundle_sha256=bundle_hash, persistent=False,
+         model_directory=context['model'], artifact_aggregate_sha256=ARTIFACT,
+         timeout_seconds=NATIVE_TIMEOUT, environment=environment, environment_files=environment_files,
+--- a/experiments/cluster/runtime/stage_checks/long_inputs.py
++++ b/experiments/cluster/runtime/stage_checks/long_inputs.py
+@@ -4,6 +4,7 @@
+ import stat
+ from .common import digest, integer, parse, require, sha
+ from .inputs import retain
++from . import long_phase
+ from .long_profile import ARTIFACT, CONFIGURATION, COMMANDS, VOCABULARY
+ 
+ 
+@@ -50,13 +51,15 @@
+     for name, value in captured:
+         require(bounded_bytes(folder / name, len(value)) == value, 'Retained bytes changed during admission')
+         files.append(dict(path='inputs/' + name, size_bytes=len(value), sha256=digest(value)))
+-    return dict(mode=args.command, epoch=epoch, model=str(model), artifact=ARTIFACT,
++    context = dict(mode=args.command, epoch=epoch, model=str(model), artifact=ARTIFACT,
+         configuration_sha256=digest(config), manifest_sha256=digest(manifest_raw),
+         prompt=prompt, prompt_file_sha256=digest(raw), prompt_token_ids_sha256=digest(','.join(map(str, prompt)).encode()),
+         prompt_origin_sha256=digest(origin), raw_prompt_reencoded=False,
+         prompt_origin_schema_audited=False, files=files,
+         stage_prefill_policy=getattr(args, 'stage_prefill_policy', None),
+         stage_logits_dtype=getattr(args, 'stage_logits_dtype', None))
++    if long_phase.requested(args): context['prefill_phase_trace'] = True
++    return context
+ 
+ 
+ def verify(context, output, artifacts):
+--- /dev/null
++++ b/experiments/cluster/runtime/stage_checks/long_phase.py
+@@ -0,0 +1,23 @@
++"""Explicit local phase request only; sidecar collection/auditing stays separate."""
++from .common import require
++from .long_profile import COMMANDS
++
++
++def requested(args):
++    value = getattr(args, 'prefill_phase_trace', False)
++    require(type(value) is bool, 'Phase trace request must be boolean')
++    return value
++
++
++def arguments(context):
++    value = context.get('prefill_phase_trace', False)
++    require(type(value) is bool and context['mode'] in COMMANDS, 'Invalid long phase context')
++    return ['--prefill-phase-trace-file', '@rank/phase-trace.json'] if value else []
++
++
++def receipt(mode):
++    require(mode in COMMANDS, 'Phase traces are only available for the registered long commands')
++    count = 2 if mode == 'long-prefill-ranks' else 1
++    return dict(requested=True,
++        expected_owned_relative_paths=['rank-' + str(rank) + '/phase-trace.json' for rank in range(count)],
++        included_in_rank_files=False, sidecars_verified=False, phase_semantics_audited=False)
+--- /dev/null
++++ b/experiments/cluster/test_stage_checks_long_phase.py
+@@ -0,0 +1,133 @@
++"""Opt-in phase forwarding through the fake local entry; never executes a model."""
++import copy
++from contextlib import redirect_stderr
++import io
++from pathlib import Path
++from types import SimpleNamespace
++import unittest
++
++from runtime.stage_checks import cli, long_artifacts, long_configuration, long_phase
++from runtime.stage_checks.common import parse
++from stage_long_test_support import context
++import test_stage_checks_long_launch as existing_launch
++
++
++class LongPhaseTests(unittest.TestCase):
++    def setUp(self):
++        existing_launch.LongLaunchTests.setUp(self)
++        self.phase_enabled = True
++
++    def arguments(self, mode, output):
++        values = existing_launch.LongLaunchTests.arguments(self, mode, output)
++        return values + (['--prefill-phase-trace'] if self.phase_enabled else [])
++
++    def execute(self, **options):
++        return existing_launch.LongLaunchTests.execute(self, **options)
++
++    def test_parser_opt_in_and_default_for_both_long_commands(self):
++        for mode in ('long-prefill-solo', 'long-prefill-ranks'):
++            self.phase_enabled = False
++            values = self.arguments(mode, self.base / 'output')
++            self.assertIs(cli.parser().parse_args(values).prefill_phase_trace, False)
++            self.assertIs(cli.parser().parse_args(values + ['--prefill-phase-trace']).prefill_phase_trace, True)
++
++    def test_configuration_adds_only_fixed_owned_native_argument(self):
++        for mode in ('long-prefill-solo', 'long-prefill-ranks'):
++            ctx = context(mode)
++            hosts = [['127.0.0.1:31001'], ['127.0.0.1:31002']] if mode.endswith('ranks') else None
++            for rank in range(2 if hosts else 1):
++                base = long_configuration.build(rank, ctx, Path('/bundle'), 'b' * 64, hosts)
++                off = long_configuration.build(rank, dict(ctx, prefill_phase_trace=False), Path('/bundle'), 'b' * 64, hosts)
++                traced = long_configuration.build(rank, dict(ctx, prefill_phase_trace=True), Path('/bundle'), 'b' * 64, hosts)
++                expected = copy.deepcopy(base)
++                expected['arguments'] += ['--prefill-phase-trace-file', '@rank/phase-trace.json']
++                self.assertEqual(off, base)
++                self.assertEqual(traced, expected)
++                self.assertEqual(traced['arguments'].count('--prefill-phase-trace-file'), 1)
++
++    def test_nonboolean_context_or_programmatic_option_rejected(self):
++        for value in (None, 0, 1, 'true', '/unowned/trace.json'):
++            with self.assertRaises(ValueError): long_phase.requested(SimpleNamespace(prefill_phase_trace=value))
++            with self.assertRaises(ValueError): long_phase.arguments(dict(context(), prefill_phase_trace=value))
++        self.assertFalse(long_phase.requested(SimpleNamespace()))
++
++    def test_legacy_commands_and_arbitrary_trace_path_option_rejected(self):
++        common = ['--release', str(self.release), '--runtime', str(self.runtime), '--output', str(self.base / 'output'),
++                  '--expected-binary-sha256', 'b' * 64]
++        model = ['--model-dir', str(self.model), '--artifact-aggregate-sha256', 'a' * 64,
++                 '--tokens-file', str(self.prompt)]
++        for mode in ('p2p', 'ranks', 'prefill-ranks'):
++            values = [mode] + common + ([] if mode == 'p2p' else model)
++            if mode == 'prefill-ranks':
++                values += ['--stage-prefill-policy', 'serial_v1', '--stage-logits-dtype', 'bfloat16',
++                           '--baseline-evidence-sha256', 'c' * 64, '--baseline-jsonl', '/unused/baseline',
++                           '--baseline-sha256', 'd' * 64]
++            captured = io.StringIO()
++            with redirect_stderr(captured), self.assertRaises(SystemExit):
++                cli.parser().parse_args(values + ['--prefill-phase-trace'])
++            self.assertIn('unrecognized arguments: --prefill-phase-trace', captured.getvalue())
++        for mode in ('long-prefill-solo', 'long-prefill-ranks'):
++            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
++                cli.parser().parse_args(self.arguments(mode, self.base / 'output') +
++                                        ['--prefill-phase-trace-file', '/arbitrary/path'])
++
++    def check_enabled_result(self, record, output, count):
++        self.assertTrue(record['passed'])
++        self.assertTrue(parse((output / 'context.json').read_bytes())['prefill_phase_trace'])
++        request = record['phase_trace_request']
++        self.assertEqual(request['expected_owned_relative_paths'],
++                         ['rank-' + str(rank) + '/phase-trace.json' for rank in range(count)])
++        self.assertIs(request['requested'], True)
++        for field in ('included_in_rank_files', 'sidecars_verified', 'phase_semantics_audited'):
++            self.assertIs(request[field], False)
++        self.assertEqual(record['cohort']['validation']['records_per_owner'], [2] * count)
++        for rank in range(count):
++            directory = output / ('rank-' + str(rank))
++            config = parse((directory / 'rank.json').read_bytes())
++            self.assertEqual(config['arguments'][-2:], ['--prefill-phase-trace-file', '@rank/phase-trace.json'])
++            self.assertFalse((directory / 'phase-trace.json').exists())
++            (directory / 'phase-trace.json').write_bytes(b'fabricated unvalidated bytes')
++        self.assertEqual(long_artifacts.rank_files(output, count == 2), record['rank_files'])
++        self.assertEqual(len(record['rank_files']), 10 if count == 2 else 4)
++
++    def test_pair_fake_entry_keeps_two_records_and_excludes_sidecars(self):
++        code, record, output = self.execute()
++        self.assertEqual(code, 0)
++        self.check_enabled_result(record, output, 2)
++        self.assertEqual(self.events.count('start'), 2)
++        self.assertTrue(record['cohort']['supervisors_reaped'])
++
++    def test_solo_fake_entry_keeps_one_owner_and_excludes_sidecars(self):
++        code, record, output = self.execute(mode='long-prefill-solo')
++        self.assertEqual(code, 0)
++        self.check_enabled_result(record, output, 1)
++        self.assertNotIn('ports', self.events)
++
++    def test_default_entry_retains_old_context_and_receipt_shape(self):
++        self.phase_enabled = False
++        code, record, output = self.execute()
++        self.assertEqual(code, 0)
++        self.assertNotIn('phase_trace_request', record)
++        self.assertNotIn('prefill_phase_trace', parse((output / 'context.json').read_bytes()))
++        for rank in (0, 1):
++            self.assertNotIn('--prefill-phase-trace-file', parse((output / ('rank-' + str(rank)) / 'rank.json').read_bytes())['arguments'])
++
++    def test_opt_in_initial_refusal_never_starts_owners(self):
++        code, record, output = self.execute(refuse=True)
++        self.assertEqual(code, 1)
++        self.assertEqual(self.events, ['initial'])
++        self.assertFalse(record['native_execution_attempted'])
++        self.assertTrue(record['phase_trace_request']['requested'])
++        self.assertFalse(record['phase_trace_request']['sidecars_verified'])
++        self.assertFalse((output / 'rank-0').exists())
++
++    def test_opt_in_postrun_failure_still_fences_and_does_not_qualify_trace(self):
++        code, record, _ = self.execute(post_failure=True)
++        self.assertEqual(code, 1)
++        self.assertFalse(record['passed'])
++        self.assertTrue(record['cohort']['passed'])
++        self.assertEqual(self.stops, [[0, 1]])
++        self.assertFalse(record['phase_trace_request']['sidecars_verified'])
++
++
++if __name__ == '__main__': unittest.main()

@@ -1,0 +1,30 @@
+--- previous/run_physical.py
++++ run_physical.py
+@@ -21,9 +21,9 @@
+ from pathlib import Path
+ import fcntl,hashlib,json,os,stat,subprocess,sys
+ root=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915')
+-launcher=root/'supervisor-cut16-owned'
++launcher=root/'supervisor-27b-8k-owned'
+ assert launcher.resolve()==launcher
+-assert hashlib.sha256((launcher/'manifest.json').read_bytes()).hexdigest()=='0c38118cae0d07a1923a9f1d73e4862c5733d9216b8d6069b649fcbced4bb60f'
++assert hashlib.sha256((launcher/'manifest.json').read_bytes()).hexdigest()=='cb3ae16e52f3469a255a5ff0a5a679365b9ac6b3c1370b4d197b8c66cf2035ef'
+ sys.path.insert(0,str(launcher));sys.dont_write_bytecode=True
+ from reference_resources import sample_local,validate_local
+ ps=subprocess.check_output(['/bin/ps','-axo','pid=,comm='],text=True,timeout=3)
+@@ -40,13 +40,13 @@
+ resource=sample_local();validate_local(resource)
+ print(json.dumps(dict(kind='root_cut16_reference_preflight',active=active,journalBytes=0,resource=resource)),flush=True)
+ os.chdir(launcher)
+-os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(launcher/'run_reference.py'),'--job',str(launcher/'example-job.json'),'--job-sha256','fdac3a3f798d7a4b3abd00cd5303a417b08516e12e887830d43a251b79d4a226','--launcher-sha256','0c38118cae0d07a1923a9f1d73e4862c5733d9216b8d6069b649fcbced4bb60f'])
++os.execv('/usr/bin/python3',['/usr/bin/python3','-B',str(launcher/'run_reference.py'),'--job',str(launcher/'example-job.json'),'--job-sha256','69dc4e329e88fa26e5d28751568b74ffb3215f14d19311732e0a68ed6b804dbf','--launcher-sha256','cb3ae16e52f3469a255a5ff0a5a679365b9ac6b3c1370b4d197b8c66cf2035ef'])
+ '''
+ 
+ REMOTE_COLLECT = r'''
+ from pathlib import Path
+ import base64,hashlib,json,os,stat,subprocess
+-p=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/short-27b-cut16-1')
++p=Path('/Users/developer/DarkbloomDev/qwen-registered-generation-reference-20260915/runs/long-27b-cut16-1')
+ assert p.resolve()==p and p.is_dir()
+ allowed={'job.json','prompt.json','owner.json','resources.jsonl','terminal.json','native/worker-0.stdin','native/worker-0.stdout','native/worker-0.stderr'}
+ def identity(s):return (s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)

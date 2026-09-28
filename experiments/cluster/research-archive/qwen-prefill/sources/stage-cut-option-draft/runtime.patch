@@ -1,0 +1,210 @@
+--- a/experiments/cluster/inference/Sources/ClusterInference/Options.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/Options.swift
+@@ -41,6 +41,7 @@
+     var executionPath = ExecutionPath.ordinary
+     var stagePrefillPolicy: QwenLayerStagePrefillMeasurementFlow.SchedulingPolicy?
+     var stageLogitsDType: String?
++    var stageCut: Int?
+     var soloReferenceFile: URL?
+     var soloReferenceSHA256: String?
+     var soloBaselineEvidenceSHA256: String?
+@@ -77,6 +78,7 @@
+       [--local-correctness --artifact-aggregate-sha256 HEX64]
+       [--partition ffn|full]
+       [--execution-path ordinary|cbv2-contiguous]
++      [--stage-cut LAYER] (optional first-stage end for qwen-layer-stage-compare only)
+       [--stage-prefill-policy serial_v1|prompt_lookahead_one_v1 --stage-logits-dtype float16|bfloat16|float32]
+       [--solo-reference-file PATH --solo-reference-sha256 HEX64 --solo-baseline-evidence-sha256 HEX64]
+       [--long-prompt-sha256 HEX64] (explicit qwen-long-prefill reference, pair, rank or solo check)
+@@ -144,6 +146,8 @@
+     It requires a model directory, artifact pin, prompt token file and teacher
+     file for multiple outputs, with the same native CBv2/count/timeout bounds.
+     It emits baseline evidence before loading stages and never measures throughput.
++    Optional --stage-cut selects a legal interval-aligned split; omission keeps
++    the historical equal split. Other modes do not accept the option.
+     stage-p2p-check requires --synthetic, --transport loopback-test, a fresh
+     --epoch HEX32 and timeout<=60. Its fixed 65/32/4 native-byte transfer matrix
+     loads no model, uses no benchmark count flags and never measures throughput.
+@@ -249,6 +253,9 @@
+                     throw ProbeError("Execution path must be ordinary or cbv2-contiguous")
+                 }
+                 executionPath = parsed
++            case "--stage-cut":
++                guard stageCut == nil else { throw ProbeError("Duplicate --stage-cut") }
++                stageCut = try integer()
+             case "--stage-prefill-policy":
+                 guard let parsed = QwenLayerStagePrefillMeasurementFlow.SchedulingPolicy(rawValue: value) else {
+                     throw ProbeError("Unknown stage prefill scheduling policy")
+@@ -291,6 +298,12 @@
+             default: throw ProbeError("Unknown option \(flag)")
+             }
+             i += 2
++        }
++        // Check the original CLI mode before any admission adapter rewrites it.
++        if let cut = stageCut {
++            guard mode == .qwenLayerStageCompare, (1...127).contains(cut) else {
++                throw ProbeError("--stage-cut requires qwen-layer-stage-compare and a cut between 1 and 127")
++            }
+         }
+         guard mode == .capability || mode == .workerProtocolCheck || mode == .adapterCheck || synthetic != (modelDirectory != nil) else {
+             throw ProbeError("Choose exactly one of --synthetic and --model-dir")
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageComparison.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageComparison.swift
+@@ -40,6 +40,7 @@
+     check: () throws -> Void
+ ) throws -> QwenLayerStageComparisonReport {
+     try QwenLayerStageComparisonAdmission.validateOptions(options)
++    try QwenLayerStageComparisonAdmission.validatePlanBinding(options, inputs: inputs)
+     let request = try QwenLayerStageRecordedRequest(request: .init(requestID: UUID(),
+         promptCount: inputs.prompt.count, chunkSize: options.chunkSize, outputCount: options.decodeCount),
+         vocabularySize: inputs.vocabularySize, prompt: inputs.prompt, teacher: inputs.teacher)
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageComparisonAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageComparisonAdmission.swift
+@@ -12,6 +12,9 @@
+     }
+ 
+     static func validateOptions(_ options: Options) throws {
++        if let cut = options.stageCut, !(1...127).contains(cut) {
++            throw ProbeError("Stage comparison cut must be between 1 and 127")
++        }
+         guard options.mode == .qwenLayerStageCompare, !options.synthetic,
+             options.modelDirectory != nil, options.tokensFile != nil,
+             let pin = options.expectedArtifactAggregateSHA256, pin.utf8.count == 64,
+@@ -29,6 +32,14 @@
+         }
+     }
+ 
++    /// Reject a programmatic option change between preflight and execution.
++    /// Existing callers retain ownership of their already-admitted input values.
++    static func validatePlanBinding(_ options: Options, inputs: Inputs) throws {
++        if let cut = options.stageCut, inputs.plan.stages.first?.sourceRange.upperBound != cut {
++            throw ProbeError("Explicit stage cut differs from the preflight plan")
++        }
++    }
++
+     static func preflight(_ options: Options) throws -> Inputs {
+         try validateOptions(options)
+         let data = try BoundedProbeInput.data(options.modelDirectory!.appendingPathComponent("config.json"),
+@@ -38,8 +49,14 @@
+         }
+         let text = root["text_config"] as? [String: Any] ?? root
+         let layers = try QwenStageMetadata.integer(text, "num_hidden_layers", limit: 128)
+-        guard layers % 2 == 0 else { throw ProbeError("Stage comparison requires an even phase-aligned layer split") }
+-        let plan = try QwenLayerStagePlan(configuration: data, ranges: [0..<(layers / 2), (layers / 2)..<layers])
++        if options.stageCut == nil {
++            guard layers % 2 == 0 else { throw ProbeError("Stage comparison requires an even phase-aligned layer split") }
++        }
++        let cut = options.stageCut ?? (layers / 2)
++        guard cut > 0, cut < layers else {
++            throw ProbeError("Stage comparison cut must leave two nonempty source ranges")
++        }
++        let plan = try QwenLayerStagePlan(configuration: data, ranges: [0..<cut, cut..<layers])
+         let vocabulary = try QwenStageMetadata.integer(text, "vocab_size", limit: 262144)
+         let context = try QwenStageMetadata.integer(text, "max_position_embeddings", limit: 1048576)
+         guard vocabulary > 3, options.promptCount + options.decodeCount <= context else {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageFixture.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageFixture.swift
+@@ -72,13 +72,15 @@
+ }
+ 
+ /// Produces ordinary LoadedModel metadata for the existing writeLoaderFixture.
+-/// This is the existing tiny geometry with only 8 layers and interval 4. It does
++/// The default retains the existing tiny8/interval4 bytes. The explicit tiny12
++/// case supports the separate unequal-cut check; both keep interval4. This does
+ /// not call loadModel(synthetic:) because that entry preserves its 4-layer
+ /// historical configuration. No transformer forward or prompt decoding occurs here.
+ func makeQwenLayerStageSyntheticModel(options: Options, wrapped: Bool,
+-    prefillProfile: QwenLayerStagePrefillProfile? = nil, check: () throws -> Void = {}
++    prefillProfile: QwenLayerStagePrefillProfile? = nil, layerCount: Int = 8, check: () throws -> Void = {}
+ ) throws -> LoadedModel {
+-    guard options.seed == 7, options.syntheticProfile == "tiny",
++    guard options.seed == 7, options.syntheticProfile == "tiny", [8, 12].contains(layerCount),
++          layerCount == 8 || prefillProfile == nil,
+           ["float32", "bfloat16"].contains(options.syntheticDType),
+           var text = try JSONSerialization.jsonObject(with: syntheticConfiguration(options: options)) as? [String: Any]
+     else { throw ProbeError("Unsupported layer-stage synthetic fixture options") }
+@@ -88,9 +90,10 @@
+         text["max_position_embeddings"] = prefillProfile.maximumPromptCount + 1
+         text["cluster_fixture_profile"] = "tiny-" + prefillProfile.rawValue
+     }
+-    text["num_hidden_layers"] = 8
++    if layerCount == 12 { text["cluster_fixture_profile"] = "tiny-layer-stage-12x4" }
++    text["num_hidden_layers"] = layerCount
+     text["full_attention_interval"] = 4
+-    text["layer_types"] = (0..<8).map { ($0 + 1) % 4 == 0 ? "full_attention" : "linear_attention" }
++    text["layer_types"] = (0..<layerCount).map { ($0 + 1) % 4 == 0 ? "full_attention" : "linear_attention" }
+     let root: [String: Any]
+     if wrapped {
+         guard let quantization = text.removeValue(forKey: "quantization") else {
+@@ -99,7 +102,7 @@
+         root = ["model_type": "qwen3_5", "text_config": text, "quantization": quantization]
+     } else { root = text }
+     let configuration = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+-    _ = try QwenLayerStagePlan(configuration: configuration, ranges: [0..<4, 4..<8])
++    let plan = try QwenLayerStagePlan(configuration: configuration, ranges: [0..<4, 4..<layerCount])
+     _qwen35MTPEnabled = false
+     MLXRandom.seed(7)
+     let model = try constructQwenModel(configuration)
+@@ -114,7 +117,8 @@
+     eval(model)
+     try check()
+     let parameters = model.parameters().flattened()
+-    guard parameters.count == 237, parameters.allSatisfy({
++    _ = try plan.parameters(canonicalSourceNames: parameters.map { $0.0 })
++    guard (layerCount != 8 || parameters.count == 237), parameters.allSatisfy({
+         $0.1.dtype == .uint32 || String(describing: $0.1.dtype) == options.syntheticDType
+     }), let embedding = model.namedModules().first(where: { $0.0.hasSuffix(".embed_tokens") })?.1 as? Embedding else {
+         throw ProbeError("Generated stage fixture changed its full canonical tensor dtype/inventory")
+@@ -125,10 +129,10 @@
+     guard String(describing: activation.dtype) == options.syntheticDType else {
+         throw ProbeError("Generated stage fixture embedding dtype differs")
+     }
+-    let scales = try validatedQwenFeedForwardScaleTypes(model, layers: 8, isMoE: false, requireTwoWaySplit: true)
++    let scales = try validatedQwenFeedForwardScaleTypes(model, layers: layerCount, isMoE: false, requireTwoWaySplit: true)
+     return LoadedModel(family: .qwen35, model: model,
+-        label: "synthetic-qwen35-layer-stage-8x4-seed-7-" + options.syntheticDType + (wrapped ? "-wrapped" : "-direct"),
+-        configHash: sha256(configuration), vocabularySize: 512, layerCount: 8, feedForwardKind: "dense",
++        label: "synthetic-qwen35-layer-stage-\(layerCount)x4-seed-7-" + options.syntheticDType + (wrapped ? "-wrapped" : "-direct"),
++        configHash: sha256(configuration), vocabularySize: 512, layerCount: layerCount, feedForwardKind: "dense",
+         embeddingActivationDType: String(describing: activation.dtype), ffnScaleDTypes: scales,
+         parameterLayoutSHA256: modelParameterLayout(model), bf16ConversionEnabled: false,
+         directShardLoad: nil, configurationData: configuration, partitionPlan: nil, partitionStorage: nil)
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStagePrefillAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStagePrefillAdmission.swift
+@@ -4,6 +4,10 @@
+ /// real-model/storage/native arithmetic admission unchanged.
+ enum QwenLayerStagePrefillAdmission {
+     static func validateOptions(_ options: Options) throws {
++        // Reject before the shared comparison adapter changes the mode.
++        guard options.stageCut == nil else {
++            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare")
++        }
+         guard options.mode == .qwenLayerStagePrefillCheck, options.decodeCount == 1,
+               options.teacherTokensFile == nil else {
+             throw ProbeError("Stage prefill control requires one output and no teacher history")
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageRankAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageRankAdmission.swift
+@@ -4,6 +4,10 @@
+ /// persistent-worker semantics; the existing comparison preflight owns inputs.
+ enum QwenLayerStageRankAdmission {
+     static func validateOptions(_ options: Options) throws {
++        // Reject before the shared comparison adapter changes the mode.
++        guard options.stageCut == nil else {
++            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare")
++        }
+         guard options.mode == .qwenLayerStageRankCheck, options.transport == .loopbackTest,
+             let epoch = options.epoch, epoch.count == 32,
+             epoch.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+--- a/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageSoloPrefillCLIAdmission.swift
++++ b/experiments/cluster/inference/Sources/ClusterInference/QwenLayerStageSoloPrefillCLIAdmission.swift
+@@ -10,6 +10,10 @@
+     }
+ 
+     static func validateOptions(_ options: Options) throws {
++        // Reject before the shared comparison adapter changes the mode.
++        guard options.stageCut == nil else {
++            throw ProbeError("--stage-cut is only admitted by qwen-layer-stage-compare")
++        }
+         guard options.mode == .qwenLayerStageSoloPrefillCheck,
+               options.decodeCount == 1, options.teacherTokensFile == nil,
+               options.soloReferenceFile != nil,

@@ -1,0 +1,56 @@
+{
+  "sourceOnly": true,
+  "requiredDefine": "QWEN_TARGET_TINY_FIXTURE",
+  "files": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenLayerStageSession.swift",
+      "sha256": "0d90f1448b3695c798c324ca2e0e1fd6f6855f67cef04def7ec12007c0336518",
+      "originalSHA256": "d1d7b252e80c276fcdbfab9511a0d21f3539d984b840f04f951edeb14d8afac1"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationExecution.swift",
+      "sha256": "2f706591cc72fb6d66429f0914e6df1d7ef52ffe3224db59a3b5d7823a37fde4",
+      "originalSHA256": "cbd6b4844cc1b9f301f66e028d6762f8d921575f6d5bb723f8cd7da6dc3a1c0a"
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTargetVerificationResourceAuthority.swift",
+      "sha256": "1449b400b5c1abda599c3a6e6b64f309324e9a0281095a9eeb2f68c70331731c",
+      "originalSHA256": null
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTinyTargetCase.swift",
+      "sha256": "a23d8925c9a1301bbec495c4e6884c34fe9249050593d03b441955cbe6eb8a31",
+      "originalSHA256": null
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTinyTargetFixtureResources.swift",
+      "sha256": "e2884288fc72701fd0ce350bb66a4e4cf3e59b2e1f1579e6aacde7e9ac4e56d8",
+      "originalSHA256": null
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTinyTargetModel.swift",
+      "sha256": "52badf5c0cc7b6ac3b510fb34721c2fb9543170b327e393bfc8b5bd3bde2318c",
+      "originalSHA256": null
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/QwenTinyTargetPair.swift",
+      "sha256": "fe496541a61eb8f379bedbfc4bd617bd6157d770f08c9a779afd015f7179c95f",
+      "originalSHA256": null
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/TargetVerificationSessionCheck.swift",
+      "sha256": "852c6d1ba6683cd6188de83c70e81d7b6179673fef0f965fcc232fc2292620b9",
+      "originalSHA256": null
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Package.swift",
+      "sha256": "84216f41bcda9da1eccdece265f39c778c61bb346a818b3ffdc07d1c0b60706f",
+      "originalSHA256": "4648a89f4686cdbc808a13f5a712a9a1bd2c7402de9724eaede3174ae3b5129b"
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Tests/TargetVerificationSessionCheck/Main.swift",
+      "sha256": "f701d069c8529fcf14e7064af4523c0b27e88e87beeaf3a5dee4a2fd0c420ba5",
+      "originalSHA256": null
+    }
+  ]
+}

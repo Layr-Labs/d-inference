@@ -1,0 +1,9 @@
+# Matched short distributed cohorts
+
+Use the exact frozen4bc3 serial/lookahead remote14-file trees and preflight/copy commands. Nativec35c, owner6f6c, controllerc448, both ranks' fixed300-second lifetime,120-second request bound,315-second parent and cleanup/alias/resource helpers are unchanged. The controller already accepts1 warmup+1 measured and publishes each request after retirement/release.
+
+Six new configurations change only measuredCount3→1, a fresh membership epoch and cohort label. Run `python3 -B run.py --case serial-1` (then serial-2/serial-3), or corresponding lookahead cases, only when root owns the physical slot and has run the inherited resource/preflight gates. Each invocation uses the unchanged prior physical parent's code with only local BASE/OUTPUT redirected to its new pinned config/create-only evidence directory. Remote owner clusterID/configuration remains stable; each new native owner has the same finite lifetime and a fresh Pair epoch.
+
+After all three complete physical runs for a policy, `python3 -B aggregate.py --policy serial` or lookahead replays raw clocks, every resource sample, final native/owner ACKs and parent process/journal/alias proofs. It refuses a missing/failed cohort, reused epoch/history or mismatched policy/input; each of three warmups is excluded. Rates use8192 prefill tokens and127 continuation selections. Controller elapsed time is not throughput. Diagnostic EOF completeness and full row/state comparison are not claimed; the exact c35c policies already have separate8K correctness evidence.
+
+The unchanged bounded sidecar collector can be adapted to two named files later if independent per-cohort state inspection is requested; this timing aggregate is explicit that it does not compare row/state bytes. Native per-request128-token equality remains mandatory. Eight pure fabricated timing tests are staged, not yet executed during root's physical window.

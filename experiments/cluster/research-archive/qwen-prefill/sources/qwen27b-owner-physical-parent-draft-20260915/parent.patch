@@ -1,0 +1,15 @@
+--- a/run_physical.py
++++ b/run_physical.py
+@@ -16,10 +16,10 @@
+ 
+ BASE = Path(__file__).resolve().parent
+ ROOT = BASE.parent
+-REMOTE = '/Users/developer/DarkbloomDev/owner-native-mtp-probe-20260915'
++REMOTE = '/Users/developer/DarkbloomDev/qwen27b-owner-validation-20260915'
+ OUTPUT = BASE / 'physical-1'
+ 
+-CONTROLLER = ROOT / 'qwen-resident-mtp-registered-probe-qualification-20260915/controller/owner-controller'
++CONTROLLER = ROOT / 'owner-retirement-controls-build-20260915/bundle-qwen27b/owner-controller'
+ 
+ 
+ class Monitor:

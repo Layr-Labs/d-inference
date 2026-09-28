@@ -4,6 +4,7 @@ import html
 from urllib.parse import quote
 
 MARKER = "<!-- threat-model-review:openrouter:v1 -->"
+LEGACY_MARKER = "<!-- threat-model-review -->"
 
 
 def plain(value):

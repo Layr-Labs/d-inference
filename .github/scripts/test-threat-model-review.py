@@ -15,7 +15,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from threat_review.client import GitHub, NoRedirects, ReviewUnavailable, request_json
-from threat_review.report import MARKER, render
+from threat_review.report import MARKER, LEGACY_MARKER, render
 from threat_review.review import prepare, review, validate_findings
 from threat_review.runner import run
 
@@ -180,6 +180,33 @@ class RunnerTests(unittest.TestCase):
         run(EVENT, self.root, self.env, github, self.reviewer([]))
         self.assertEqual(github.posts[0][0], existing)
         self.assertIn("No actionable findings", github.posts[0][1])
+
+    def test_legacy_bot_comment_is_migrated_in_place(self):
+        for findings in ([], [FINDING]):
+            with self.subTest(findings=bool(findings)):
+                writes = []
+                def transport(url, token, payload, method):
+                    if method:
+                        writes.append((url, method, payload))
+                        return {}
+                    if "/comments?" in url:
+                        return [
+                            {"id": 5, "user": {"login": "attacker"}, "body": LEGACY_MARKER},
+                            {"id": 7, "user": {"login": "github-actions[bot]"},
+                             "body": LEGACY_MARKER + "\nOld findings"}]
+                    if "/compare/" in url:
+                        return {"merge_base_commit": {"sha": BASE}}
+                    if "/files?" in url:
+                        return FILES
+                    return FakeGitHub().pull()
+                github = GitHub("example/repo", 12, "token", transport)
+                run(EVENT, self.root, self.env, github, self.reviewer(findings))
+                self.assertEqual(len(writes), 1)
+                url, method, payload = writes[0]
+                self.assertTrue(url.endswith("/issues/comments/7"))
+                self.assertEqual(method, "PATCH")
+                self.assertTrue(payload["body"].startswith(MARKER))
+                self.assertIn("Missing authorization" if findings else "No actionable findings", payload["body"])
 
     def test_missing_key_skips_model_and_does_not_post_new_comment(self):
         github = FakeGitHub()

@@ -1,7 +1,7 @@
 """Trusted-base orchestration. Fetch PR patches as data; never check out PR code."""
 import re
 from .client import GitHub, ReviewUnavailable
-from .report import MARKER, render
+from .report import MARKER, LEGACY_MARKER, render
 from .review import DEFAULT_MODEL, review
 
 
@@ -26,7 +26,7 @@ def run(event, root, env, github=None, reviewer=review):
     current = github.pull()
     if not same_revision(current, head, base):
         return "Skipped: PR revision changed or PR closed."
-    existing = github.existing_comment(MARKER)
+    existing = github.existing_comment((MARKER, LEGACY_MARKER))
     findings, evidence, limits, error = [], {}, [], None
     diff_base = base
     try:

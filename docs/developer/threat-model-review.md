@@ -49,6 +49,7 @@ After activation, inspect **Actions → Threat Model Review (advisory)**. A find
 result creates or updates one bot comment with pinned file/line citations. A clean
 first review writes only the Actions summary. If a later review finds nothing,
 the existing comment is updated so old findings are not presented as current.
+Comments left by the previous reviewer are recognized and updated in place.
 An unavailable review updates an existing comment to say that the new head was not
 reviewed; it does not claim the previous issues are resolved.
 

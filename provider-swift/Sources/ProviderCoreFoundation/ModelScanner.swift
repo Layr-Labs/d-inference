@@ -107,7 +107,8 @@ public struct ModelScanner: Sendable {
 
     // MARK: - Snapshot Discovery
 
-    /// Find the latest snapshot directory by modification time.
+    /// Resolve an explicit refs/main selection, or the latest legacy snapshot
+    /// by modification time only when that selection is genuinely absent.
     ///
     /// The returned URL is symlink-resolved. `contentsOfDirectory(at:)`
     /// canonicalises the paths it hands back (on macOS a `/var/...` input
@@ -117,6 +118,23 @@ public struct ModelScanner: Sendable {
     /// treat one directory as two.
     public static func findLatestSnapshot(in snapshotsDir: URL) -> URL? {
         let fm = FileManager.default
+        // A managed revision is selected explicitly. Modification times must
+        // never activate a staged download or undo a rollback.
+        let mainRef = snapshotsDir.deletingLastPathComponent().appendingPathComponent("refs/main")
+        switch readSnapshotReference(at: mainRef) {
+        case .invalid:
+            return nil
+        case .selected(let raw):
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"),
+                  !name.utf8.contains(0) else { return nil }
+            let selected = snapshotsDir.appendingPathComponent(name, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: selected.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+            return selected.resolvingSymlinksInPath()
+        case .absent:
+            break
+        }
         let entries: [URL]
         do {
             entries = try fm.contentsOfDirectory(
@@ -150,6 +168,45 @@ public struct ModelScanner: Sendable {
 
         guard let latest else { return nil }
         return resolved(latest.url)
+    }
+
+    private enum SnapshotReference {
+        case absent
+        case selected(String)
+        case invalid
+    }
+
+    /// A failed read is not absence. Keep valid reference symlinks, but do not
+    /// follow a broken refs directory into the legacy discovery fallback.
+    private static func readSnapshotReference(at url: URL) -> SnapshotReference {
+        var named = stat()
+        if lstat(url.path, &named) != 0 {
+            guard errno == ENOENT else { return .invalid }
+            let parent = url.deletingLastPathComponent()
+            var parentState = stat()
+            if lstat(parent.path, &parentState) == 0 {
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
+                      isDirectory.boolValue else { return .invalid }
+            } else {
+                guard errno == ENOENT else { return .invalid }
+            }
+            return .absent
+        }
+        // Reuse the bounded, nonblocking metadata reader policy below. Resolve
+        // existing HF links, then refuse special objects and a raced leaf link.
+        let reference = url.resolvingSymlinksInPath()
+        let fd = open(reference.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return .invalid }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var state = stat()
+        guard fstat(fd, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
+              state.st_size >= 0, state.st_size <= 1_048_576,
+              let data = try? handle.read(upToCount: 1_048_577),
+              data.count == Int(state.st_size),
+              let text = String(data: data, encoding: .utf8) else { return .invalid }
+        return .selected(text)
     }
 
     // MARK: - MLX Detection

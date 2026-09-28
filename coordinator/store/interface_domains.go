@@ -376,7 +376,9 @@ type ModelRegistryStore interface {
 
 	UpsertModelRegistryEntry(entry *ModelRegistryEntry) error
 	SetModelVersion(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile) error
+	SetExistingModelVersion(version *ModelVersion, files []ModelVersionFile) error
 	PromoteModelVersion(modelID, version string) error
+	RetireModelVersion(modelID, version string) error
 	SetModelStatus(modelID, status string) error
 	ListActiveModelRegistryWithError() ([]ModelRegistryRecord, error)
 	GetModelRegistryRecord(modelID string) (*ModelRegistryRecord, error)

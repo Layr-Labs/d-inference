@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `684108dfa`
+> Last updated: 2026-09-28 · commit `2afcb8a6f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -31,6 +31,12 @@ costs exactly while normalizing only wall-clock profiling ages, including
 first-content capacity/performance sample ages. Two independently constructed
 fleets need not have identical elapsed milliseconds; forecast and freshness
 behavior remain covered by the separate first-content tests.
+
+`ModelScannerSnapshotSymlinkTests` covers ordinary/linked snapshot resolution
+and explicit revision selection. Missing refs retain the legacy path; existing
+bad refs cannot switch a hidden managed selection to a different visible
+snapshot. The fixtures exercise real denied reads, symlinks and a nonblocking
+FIFO refusal without reading model weights.
 
 For HF artifact downloads, `HuggingFaceDownloadTests` covers source preference,
 checksum rejection, fallback, and cancellation. Native Nemotron CI also runs
@@ -349,6 +355,23 @@ call. The SDK's `ChatStreamingFailureHTTPTests` covers Chat/Completions framing,
 observed-only usage, cancellation and the unchanged direct-service throwing
 contract. Successful tool-generation gates remain separate: a correctly framed
 error does not satisfy a required tool call or repair its generated arguments.
+
+## Model revision validation
+
+Model revision changes are covered by `ModelPrefetchDownloaderTests`,
+`ModelRevisionActivationTests`, `ModelRevisionPublicationTests`, and the existing MTP drain suites in
+`provider-swift/Tests/ProviderCoreTests`. Run them with a source-matched metallib.
+Coordinator lifecycle tests cover memory/cached stores and, when `DATABASE_URL`
+points to a disposable database, `TestPostgresModelRevisionLifecycle`.
+`python3 scripts/test_publish_model_revision.py` tests publication ordering,
+immutable reservations and per-revision HF arguments/request bodies. API and
+store regressions cover retired re-registration, publisher attribution, failed
+live refresh retries and alias-lineage eligibility; HF download fixtures change
+the pinned repo/commit/subdirectory between two revisions. Renamed-file fixtures
+exercise equal aggregates through both download paths, and controlled reserve/client
+suspensions verify cancellation, rollback, pending alias cleanup and retry. These
+fixture tests do not qualify a full-weight fleet swap.
+
 
 ## SDK 27 release qualification
 

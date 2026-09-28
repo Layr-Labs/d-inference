@@ -54,9 +54,13 @@ extension ModelDownloader {
         manifest: ModelManifest,
         onProgress: (@Sendable (ProgressEvent) -> Void)?
     ) async throws {
-        try Self.validate(manifest: manifest, for: model)
-
-        let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
+        try Self.validateArtifactManifest(manifest, model: model)
+        let cacheDir = try Self.revisionSnapshotDirectory(manifest: manifest)
+        if try Self.verifyRevisionAndRepairReceipt(at: cacheDir, manifest: manifest) {
+            try Self.activateRevision(modelID: model.id, directory: cacheDir)
+            onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
+            return
+        }
         let snapshotsDir = cacheDir.deletingLastPathComponent()
         try Self.prepareModelCacheDirectory(at: snapshotsDir.deletingLastPathComponent())
         try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
@@ -72,6 +76,8 @@ extension ModelDownloader {
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
         let jobs = try manifestJobs(manifest, stagingDir: stagingDir)
+
+        try Self.reuseVerifiedFiles(modelID: model.id, manifest: manifest, stagingDir: stagingDir)
 
         // Resume: skip files already staged + valid; only the not-yet-valid files
         // are enqueued below.

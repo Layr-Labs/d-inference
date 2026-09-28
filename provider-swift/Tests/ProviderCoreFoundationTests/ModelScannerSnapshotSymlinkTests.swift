@@ -57,6 +57,24 @@ final class ModelScannerSnapshotSymlinkTests: XCTestCase {
             ModelScanner.resolveLocalPath(
                 modelID: modelID, environment: [:], homeDirectory: home, configuredDirectory: nil)
         }
+
+        var refs: URL { snapshots.deletingLastPathComponent().appendingPathComponent("refs", isDirectory: true) }
+
+        func selectedAndLegacy() throws -> (selected: URL, legacy: URL) {
+            let selected = try directory(snapshots, ".revision-selected")
+            let legacy = try directory(snapshots, "visible-legacy")
+            try setEntryTime(selected, seconds: 1_700_001_000)
+            try setEntryTime(legacy, seconds: 1_700_002_000)
+            return (selected, legacy)
+        }
+
+        @discardableResult
+        func writeRef(_ bytes: Data) throws -> URL {
+            try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)
+            let ref = refs.appendingPathComponent("main")
+            try bytes.write(to: ref)
+            return ref
+        }
     }
 
     func testLinkedSnapshotResolvesThroughNormalResolver() throws {
@@ -145,5 +163,122 @@ final class ModelScannerSnapshotSymlinkTests: XCTestCase {
         XCTAssertNil(f.resolve())
         let good = try f.directory(f.snapshots, "good")
         XCTAssertEqual(f.resolve()?.path, good.path)
+    }
+
+    func testExplicitRefSelectsHiddenRevisionInsteadOfNewerVisibleLegacy() throws {
+        let f = try Fixture()
+        let revisions = try f.selectedAndLegacy()
+        XCTAssertEqual(f.resolve()?.path, revisions.legacy.path)
+        try f.writeRef(Data((revisions.selected.lastPathComponent + "\n").utf8))
+        XCTAssertEqual(f.resolve()?.path, revisions.selected.path)
+        try f.writeRef(Data(revisions.legacy.lastPathComponent.utf8))
+        XCTAssertEqual(f.resolve()?.path, revisions.legacy.path)
+    }
+
+    func testAbsentMainRefPreservesLegacyFallbackWithMissingOrEmptyRefsDirectory() throws {
+        let f = try Fixture()
+        let revisions = try f.selectedAndLegacy()
+        XCTAssertEqual(f.resolve()?.path, revisions.legacy.path)
+        try FileManager.default.createDirectory(at: f.refs, withIntermediateDirectories: false)
+        XCTAssertEqual(f.resolve()?.path, revisions.legacy.path)
+    }
+
+    func testMalformedAndNonUTF8RefsDoNotFallBackToVisibleLegacy() throws {
+        let f = try Fixture()
+        let revisions = try f.selectedAndLegacy()
+        try f.writeRef(Data(revisions.selected.lastPathComponent.utf8))
+        XCTAssertEqual(f.resolve()?.path, revisions.selected.path)
+        let malformed = [Data([0xff]), Data(), Data(" \n".utf8), Data(".".utf8),
+            Data("..".utf8), Data("../visible-legacy".utf8), Data("\\visible-legacy".utf8),
+            Data("missing-revision".utf8), Data("visible-legacy\0ignored".utf8)]
+        for bytes in malformed {
+            try f.writeRef(bytes)
+            XCTAssertNil(ModelScanner.findLatestSnapshot(in: f.snapshots))
+            XCTAssertNil(f.resolve())
+        }
+    }
+
+    func testValidRefsDirectoryReferenceAndSnapshotSymlinksRemainSupported() throws {
+        let f = try Fixture()
+        let target = try f.directory(f.targets, "canonical-revision")
+        let selected = try f.link(".revision-selected", to: target)
+        let legacy = try f.directory(f.snapshots, "visible-legacy")
+        try f.setEntryTime(selected, seconds: 1_700_001_000)
+        try f.setEntryTime(legacy, seconds: 1_700_002_000)
+        let references = try f.directory(f.targets, "reference-directory")
+        try FileManager.default.createSymbolicLink(at: f.refs, withDestinationURL: references)
+        let pointer = f.targets.appendingPathComponent("selection")
+        try Data((selected.lastPathComponent + "\n").utf8).write(to: pointer)
+        try FileManager.default.createSymbolicLink(
+            at: references.appendingPathComponent("main"), withDestinationURL: pointer)
+        XCTAssertEqual(ModelScanner.findLatestSnapshot(in: f.snapshots)?.path, target.path)
+        XCTAssertEqual(f.resolve()?.path, target.path)
+    }
+
+    func testBrokenCyclicAndDirectoryMainRefsDoNotFallBack() throws {
+        let f = try Fixture()
+        _ = try f.selectedAndLegacy()
+        try FileManager.default.createDirectory(at: f.refs, withIntermediateDirectories: false)
+        let main = f.refs.appendingPathComponent("main")
+        try FileManager.default.createSymbolicLink(at: main, withDestinationURL: f.targets.appendingPathComponent("missing"))
+        XCTAssertNil(f.resolve())
+        try FileManager.default.removeItem(at: main)
+        let other = f.refs.appendingPathComponent("cycle")
+        try FileManager.default.createSymbolicLink(at: main, withDestinationURL: other)
+        try FileManager.default.createSymbolicLink(at: other, withDestinationURL: main)
+        XCTAssertNil(f.resolve())
+        try FileManager.default.removeItem(at: main)
+        try FileManager.default.removeItem(at: other)
+        try FileManager.default.createDirectory(at: main, withIntermediateDirectories: false)
+        XCTAssertNil(f.resolve())
+    }
+
+    func testBrokenOrNonDirectoryRefsParentDoesNotRestoreLegacyFallback() throws {
+        let f = try Fixture()
+        _ = try f.selectedAndLegacy()
+        try FileManager.default.createSymbolicLink(at: f.refs, withDestinationURL: f.targets.appendingPathComponent("missing"))
+        XCTAssertNil(f.resolve())
+        try FileManager.default.removeItem(at: f.refs)
+        try Data("not a directory".utf8).write(to: f.refs)
+        XCTAssertNil(f.resolve())
+    }
+
+    func testGenuinelyUnreadableMainRefDoesNotFallBack() throws {
+        let f = try Fixture()
+        let revisions = try f.selectedAndLegacy()
+        let main = try f.writeRef(Data(revisions.selected.lastPathComponent.utf8))
+        XCTAssertEqual(chmod(main.path, mode_t(0o000)), 0)
+        defer { _ = chmod(main.path, mode_t(0o600)) }
+        // Establish a real denied read; running as a privileged bypassing user
+        // is a fixture failure, never a fabricated successful unreadability test.
+        let descriptor = open(main.path, O_RDONLY | O_NONBLOCK)
+        let observedError = errno
+        guard descriptor < 0, observedError == EACCES || observedError == EPERM else {
+            if descriptor >= 0 { close(descriptor) }
+            XCTFail("unreadable-reference fixture requires an actual permission-denied read")
+            return
+        }
+        XCTAssertNil(f.resolve())
+    }
+
+    func testOversizedAndFIFORefsAreRefusedWithoutPayloadParsing() throws {
+        let f = try Fixture()
+        let revisions = try f.selectedAndLegacy()
+        let selectedName = Data(revisions.selected.lastPathComponent.utf8)
+        var padded = Data(repeating: 32, count: 1_048_576 - selectedName.count)
+        padded.append(selectedName)
+        let main = try f.writeRef(padded)
+        XCTAssertEqual(f.resolve()?.path, revisions.selected.path)
+        padded.append(32)
+        try f.writeRef(padded)
+        guard f.resolve() == nil else {
+            XCTFail("oversized ref metadata must not select a snapshot")
+            return
+        }
+        try FileManager.default.removeItem(at: main)
+        guard mkfifo(main.path, mode_t(0o600)) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        XCTAssertNil(f.resolve())
     }
 }

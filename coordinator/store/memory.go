@@ -1581,7 +1581,27 @@ func (s *MemoryStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) error 
 func (s *MemoryStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.setModelVersionLocked(entry, version, files, false)
+}
 
+func (s *MemoryStore) SetExistingModelVersion(version *ModelVersion, files []ModelVersionFile) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := s.modelRegistry[version.ModelID]
+	if entry == nil || s.modelRegistryRecordLocked(version.ModelID) == nil {
+		return ErrNotFound
+	}
+	return s.setModelVersionLocked(entry, version, files, true)
+}
+
+func (s *MemoryStore) setModelVersionLocked(entry *ModelRegistryEntry, version *ModelVersion, files []ModelVersionFile, preserveExistingSource bool) error {
+
+	if old := s.modelVersions[modelVersionKey(version.ModelID, version.Version)]; old != nil &&
+		(old.AggregateSHA256 != version.AggregateSHA256 || old.R2Prefix != version.R2Prefix ||
+			old.TotalSizeBytes != version.TotalSizeBytes || old.FileCount != version.FileCount ||
+			!sameModelVersionFiles(s.modelVersionFiles[old.ID], files)) {
+		return ErrModelVersionImmutable
+	}
 	now := time.Now()
 	entryCopy := cloneModelRegistryEntry(entry)
 	if existing, ok := s.modelRegistry[entry.ID]; ok && !existing.CreatedAt.IsZero() {
@@ -1599,8 +1619,19 @@ func (s *MemoryStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelV
 	versionCopy := cloneModelVersion(version)
 	if existing, ok := s.modelVersions[key]; ok {
 		versionCopy.ID = existing.ID
-		if versionCopy.UploadedAt.IsZero() {
-			versionCopy.UploadedAt = existing.UploadedAt
+		// Re-registration must not undo an explicit retirement, including when
+		// a later promotion fails or the coordinator restarts before syncing.
+		if existing.Status == "retired" {
+			versionCopy.Status = "retired"
+		}
+		// Identical publication retries retain the first publisher's audit
+		// identity, even when a different credential replays the manifest.
+		versionCopy.UploadedBy = existing.UploadedBy
+		versionCopy.UploadedAt = existing.UploadedAt
+		if preserveExistingSource {
+			// A revision replay must not undo a later explicit mirror edit via
+			// full registration, which still supports add/change/clear.
+			versionCopy.HuggingFaceArtifact = cloneHuggingFaceArtifact(existing.HuggingFaceArtifact)
 		}
 		versionCopy.PromotedAt = cloneTimePtr(existing.PromotedAt)
 	} else {
@@ -1613,7 +1644,10 @@ func (s *MemoryStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelV
 	s.modelVersions[key] = &versionCopy
 	s.modelVersionByID[versionCopy.ID] = &versionCopy
 	version.ID = versionCopy.ID
+	version.UploadedBy = versionCopy.UploadedBy
 	version.UploadedAt = versionCopy.UploadedAt
+	version.Status = versionCopy.Status
+	version.HuggingFaceArtifact = cloneHuggingFaceArtifact(versionCopy.HuggingFaceArtifact)
 
 	fileCopies := make([]ModelVersionFile, len(files))
 	for i := range files {
@@ -1630,7 +1664,10 @@ func (s *MemoryStore) PromoteModelVersion(modelID, version string) error {
 	defer s.mu.Unlock()
 
 	v, ok := s.modelVersions[modelVersionKey(modelID, version)]
-	if !ok {
+	if ok && v.Status == "retired" {
+		return ErrModelVersionRetired
+	}
+	if !ok || v.Status != "ready" {
 		return fmt.Errorf("model version %q %q not found", modelID, version)
 	}
 	now := time.Now()
@@ -1794,7 +1831,14 @@ func (s *MemoryStore) modelRegistryRecordLocked(modelID string) *ModelRegistryRe
 	entryCopy := cloneModelRegistryEntry(entry)
 	versionCopy := cloneModelVersion(version)
 	files := append([]ModelVersionFile(nil), s.modelVersionFiles[versionID]...)
-	return &ModelRegistryRecord{ModelRegistryEntry: entryCopy, ActiveVersion: &versionCopy, Files: files}
+	rec := &ModelRegistryRecord{ModelRegistryEntry: entryCopy, ActiveVersion: &versionCopy, Files: files}
+	for _, candidate := range s.modelVersions {
+		if candidate.ModelID == modelID && candidate.PromotedAt != nil && candidate.Status == "ready" {
+			rec.ServingVersions = append(rec.ServingVersions, cloneModelVersion(candidate))
+		}
+	}
+	sort.Slice(rec.ServingVersions, func(i, j int) bool { return rec.ServingVersions[i].Version < rec.ServingVersions[j].Version })
+	return rec
 }
 
 func modelVersionKey(modelID, version string) string {

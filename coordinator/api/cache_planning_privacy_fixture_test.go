@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/conformance"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -108,7 +109,7 @@ func newPrivacyPlanningFixture(t *testing.T, providers int) *privacyPlanningFixt
 			t.Fatal(err)
 		}
 		f.keys[account] = key
-		if err := memory.Credit(account, orInitial, store.LedgerDeposit, "joint-fixture"); err != nil {
+		if err := memory.Credit(account, conformance.InitialBalanceMicroUSD, store.LedgerDeposit, "joint-fixture"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -170,7 +171,7 @@ func newPrivacyPlanningFixture(t *testing.T, providers int) *privacyPlanningFixt
 	}
 	f.proxy = newPrivacyPlanProxy(t, f.planning.control)
 	server.SetPromptContractClient(f.proxy.client)
-	f.client = orLoopbackClient(t, transport.URL)
+	f.client = conformance.LoopbackClient(t, transport.URL)
 	// On fatal paths, cancel providers and real/proxy requests before owner joins.
 	t.Cleanup(cancel)
 	return f

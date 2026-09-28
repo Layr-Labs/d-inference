@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/conformance"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -129,11 +130,11 @@ func (f *privacyPlanningFixture) assertSuccess(t *testing.T, before privacyPlann
 	if dispatches-before.dispatches != attempts {
 		t.Fatal("provider dispatch count differs from the observed request")
 	}
-	orEventually(t, func() bool {
+	conformance.Eventually(t, func() bool {
 		f.server.serviceReservations.mu.Lock()
 		holds := f.server.serviceReservations.outstanding[account]
 		f.server.serviceReservations.mu.Unlock()
-		return holds == 0 && f.store.GetBalance(account) == before.balance-orCost &&
+		return holds == 0 && f.store.GetBalance(account) == before.balance-conformance.RequestCostMicroUSD &&
 			len(f.store.UsageByConsumer(account)) == before.usage+1
 	}, "joint request billing and holds did not settle once")
 	return observed

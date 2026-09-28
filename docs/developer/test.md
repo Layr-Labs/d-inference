@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `491e6e458`
+> Last updated: 2026-09-28 · commit `acf3f7e2c`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -835,6 +835,10 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 the slow WebSocket integration tests; run the full set before merging.
 
 #### Offline OpenRouter caller conformance
+
+Composed cache fixtures import the test-only `coordinator/api/conformance/`
+helpers directly for loopback isolation, settlement waits and fixed fixture
+balances. They do not rely on undeclared helpers in another test file.
 
 Scenarios, fixtures and observers live in `coordinator/api/conformance/`.
 The thin `coordinator/api/conformance_test.go` adapter retains the existing

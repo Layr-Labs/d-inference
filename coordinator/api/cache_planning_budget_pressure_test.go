@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/conformance"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -256,7 +257,7 @@ func TestCachePlanningComposedBudgetPressureQueueAndCancellation(t *testing.T) {
 				if f.providers[0].dispatchCount() != before.dispatches || len(f.records) != 0 {
 					t.Fatal("canceled queued request dispatched or charged usage")
 				}
-				orEventually(t, func() bool {
+				conformance.Eventually(t, func() bool {
 					f.server.serviceReservations.mu.Lock()
 					holds := f.server.serviceReservations.outstanding[privacyPlanningAccountA]
 					f.server.serviceReservations.mu.Unlock()

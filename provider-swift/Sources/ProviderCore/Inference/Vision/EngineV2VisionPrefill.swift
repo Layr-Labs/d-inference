@@ -846,7 +846,7 @@ public enum EngineV2VisionPrefill {
                 switch part {
                 case .imageURL: hasImage = true
                 case .videoURL: hasVideo = true
-                case .text, .unsupported: continue
+                case .text, .unsupported, .inputAudio: continue // audio never uses this generic vision producer
                 }
             }
         }

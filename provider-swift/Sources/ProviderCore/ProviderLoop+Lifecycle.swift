@@ -17,6 +17,10 @@ extension ProviderLoop {
     /// Unstructured ownership is intentional: interrupting the CLI, a schedule
     /// task, or the AppKit callback must not cancel accepted inference.
     public func drainForLifecycle(request: ProviderDrainRequest) async -> ProviderDrainStatus {
+        // Graceful admission drain must not revoke accepted/bound requests
+        // that have not submitted yet. Force is destructive: close its native
+        // generation before even awaiting a previous drain controller.
+        if request.force { closeNativeMiMoLifecycle() }
         while let task = lifecycleDrainTask {
             if lifecycleDrainRequestID == request.id { return await task.value }
             let previousID = lifecycleDrainRequestID
@@ -66,6 +70,10 @@ extension ProviderLoop {
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
 
+        // A non-forced timeout must not truncate accepted native requests.
+        let nativeOwnersDrained = request.force || lifecycleRemaining == 0
+            ? await drainNativeMiMoOwners() : false
+
         // Do not claim success just because the engine finished: the FIFO
         // coordinator acknowledgement follows all terminal/usage messages.
         var acknowledged = false
@@ -77,7 +85,7 @@ extension ProviderLoop {
         if request.force {
             lifecycleStatus.outcome = .forced
             servingDrain.drained()
-        } else if lifecycleRemaining == 0 && (acknowledged || coordinatorClient == nil) {
+        } else if nativeOwnersDrained, lifecycleRemaining == 0 && (acknowledged || coordinatorClient == nil) {
             lifecycleStatus.outcome = .drained
             servingDrain.drained()
         } else {
@@ -126,15 +134,35 @@ extension ProviderLoop {
     /// OS termination and schedule cancellation use the same admission/drain
     /// path. Neither cancels the event reader or closes the socket first.
     public func drainAndShutdown(timeoutSeconds: Int = 600) async -> Bool {
+        await drainAndShutdown(timeoutSeconds: timeoutSeconds,
+            beforeAwaitingExistingControllerForTesting: nil)
+    }
+
+    /// Internal observer only; the public caller always supplies nil. The
+    /// callback cannot suspend, throw, substitute a result or own the controller.
+    internal func drainAndShutdown(
+        timeoutSeconds: Int,
+        beforeAwaitingExistingControllerForTesting: (@Sendable (String?) -> Void)?
+    ) async -> Bool {
         if servingDrain.phase == .drained {
+            guard await drainNativeMiMoOwners() else { return false }
             await coordinatorClient?.shutdown()
             return true
         }
         guard let identity = ProcessIdentity.current() else { return false }
         let result: ProviderDrainStatus
-        if let task = lifecycleDrainTask { result = await task.value }
+        if let task = lifecycleDrainTask {
+            if !nativeMiMoLoads.isEmpty {
+                beforeAwaitingExistingControllerForTesting?(lifecycleDrainRequestID)
+            }
+            result = await task.value
+        }
         else { result = await drainForLifecycle(request: ProviderDrainRequest(target: identity, timeoutSeconds: timeoutSeconds)) }
         guard result.outcome == .drained || result.outcome == .forced else { return false }
+        // Forced means truncation was requested, not native completion. Match
+        // the already-drained path: retain pending/faulted owners and refuse
+        // shutdown success until their actual transaction retirement finishes.
+        guard await drainNativeMiMoOwners() else { return false }
         await coordinatorClient?.shutdown()
         return true
     }

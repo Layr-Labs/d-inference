@@ -28,6 +28,29 @@ public actor EngineV2Bridge {
     /// Shutdown drains and releases the engine before the slot owner purges
     /// MLX cache or grows the surviving models' memory grants.
     var ownedEngine: (any CBv2Engine)?
+    struct NativeShutdownIdentity: Equatable {
+        let engineID: UUID
+        let contractID: UUID
+    }
+    // Native-only closing state. Unknown completion retains the real engine
+    // and consumers; a missing engine is never used as a fake drain receipt.
+    var nativeShutdownClosed = false
+    var nativeShutdownInProgress = false
+    var nativeShutdownIdentity: NativeShutdownIdentity?
+    var nativeShutdownResult: CBv2NativeShutdownOutcome?
+    // The validated SDK proof can arrive before host consumers finish. Keep
+    // it separate from the stronger final bridge result; never upgrade a fault.
+    var nativeSDKQuiescentReceipt: CBv2NativeShutdownReceipt?
+    var nativeShutdownTasks: [Task<Void, Never>] = []
+    var nativeTransferredRetirementTasks: [UUID: Task<Void, Never>] = [:]
+    // The registry/transaction owns the bridge, never the reverse. Keep an
+    // immutable identity marker even if the weak owner disappears, so missing
+    // managed ownership cannot silently select legacy admission.
+    weak var nativeTransaction: MiMoV26NativeLoadTransaction?
+    var nativeTransactionID: UUID?
+    var tracksNativeShutdown: Bool {
+        (ownedEngine as? EngineV2)?.nativeShutdownExecutionContractID != nil
+    }
     var engine: any CBv2Engine {
         guard let ownedEngine else {
             preconditionFailure("EngineV2Bridge engine accessed after shutdown")

@@ -37,6 +37,7 @@ public actor EngineV2BenchmarkSession {
         case ssdUnavailable(status: PrefixCacheModelStatus, hasEvidenceSource: Bool)
         case unservablePostLoad(headroomBytes: UInt64, requiredBytes: UInt64)
         case closed, requestAlreadyActive, receiptIDsExhausted
+        case nativeRetirementPending(String), nativeRetainedFault(String)
     }
 
     /// Metric/cancellation access, plus explicit teacher forcing on an idle,
@@ -57,13 +58,17 @@ public actor EngineV2BenchmarkSession {
     private var nextReceipt: UInt64 = 1
     private var active: [CBv2RequestID: CBv2RequestID] = [:]
     private var closed = false
+    private let nativeMiMoOwnership: MiMoV26BenchmarkOwnership?
+    private var nativeLifecycleClosed = false
+    private var nativeRetirements: [CBv2RequestID: CBv2RequestRetirement] = [:]
 
     init(
         bundle: ProviderEngineBundle, engine: EngineV2,
         backend: String, fallback: String?, memoryEnabled: Bool,
         activationReserveBytes: UInt64, postLoadMaximumKVBytes: UInt64,
         budget: GlobalKVCacheBudget, assistantIdentity: [String: String],
-        productionGrant: EngineV2BenchmarkProductionGrant?, postBuildHeadroomBytes: UInt64?
+        productionGrant: EngineV2BenchmarkProductionGrant?, postBuildHeadroomBytes: UInt64?,
+        nativeMiMoOwnership: MiMoV26BenchmarkOwnership? = nil
     ) {
         self.bundle = bundle
         self.budget = budget
@@ -76,6 +81,7 @@ public actor EngineV2BenchmarkSession {
         self.memoryEnabled = memoryEnabled
         self.activationReserveBytes = activationReserveBytes
         self.postLoadMaximumKVBytes = postLoadMaximumKVBytes
+        self.nativeMiMoOwnership = nativeMiMoOwnership
     }
 
     public func cacheSnapshot() -> CacheSnapshot {
@@ -113,6 +119,7 @@ public actor EngineV2BenchmarkSession {
     /// relay task. Call complete(receiptID:) after fully draining that stream.
     public func submit(_ input: CBv2Request) async throws -> Submission {
         guard !closed else { throw Failure.closed }
+        try nativeMiMoOwnership?.transaction.requireServingWorkAllowed()
         guard !active.values.contains(input.id) else { throw Failure.requestAlreadyActive }
         guard nextReceipt < UInt64.max else { throw Failure.receiptIDsExhausted }
         // Separate identity domain from deterministic sampling IDs. The maps
@@ -146,7 +153,15 @@ public actor EngineV2BenchmarkSession {
             }
             try Task.checkCancellation()
             guard !closed else { throw Failure.closed }
-            let events = try rawEngine.submit(request)
+            try nativeMiMoOwnership?.transaction.requireServingWorkAllowed()
+            let events: AsyncStream<CBv2Event>
+            if nativeMiMoOwnership != nil {
+                let submitted = try rawEngine.submitWithNativeRetirement(request)
+                events = submitted.events
+                nativeRetirements[receiptID] = submitted.retirement
+            } else {
+                events = try rawEngine.submit(request)
+            }
             return Submission(
                 receiptID: receiptID, events: events,
                 stageMilliseconds: stage?.stageMs ?? 0,
@@ -161,6 +176,15 @@ public actor EngineV2BenchmarkSession {
     /// Caller drains the raw terminal first; this is the idempotent store
     /// backstop used by the production bridge's terminal pump as well.
     public func complete(receiptID: CBv2RequestID) async {
+        // A normal native terminal precedes row/backend cleanup. Hold the
+        // generation until its real SDK acknowledgement, not merely EOF.
+        // On an error terminal the driver instead calls the reporting shutdown
+        // path, which can return an explicit retained fault without hanging on
+        // a retirement that failed native work must never acknowledge.
+        if let retirement = nativeRetirements[receiptID] {
+            await retirement.wait()
+            nativeRetirements.removeValue(forKey: receiptID)
+        }
         guard active.removeValue(forKey: receiptID) != nil else { return }
         await retireStage(receiptID)
         // After a serial row, include the final actor-based refund in idle
@@ -178,11 +202,50 @@ public actor EngineV2BenchmarkSession {
     }
 
     public func shutdown() async {
+        if nativeMiMoOwnership != nil {
+            // Compatibility entrypoint is not success evidence. MiMo benchmark
+            // drivers MUST use shutdownReportingCompletion and retain failures.
+            try? await shutdownReportingCompletion()
+            return
+        }
         guard !closed else { return }
         closed = true
         await bundle.bridge.shutdown()
         active.removeAll()
         bundle.releaseAssistant()
+    }
+
+    /// Native benchmark teardown fails explicitly unless the real transaction
+    /// supplies a retirement receipt. No assistant/external-resource release or
+    /// numeric refund is inferred from a timeout or a void engine shutdown.
+    public func shutdownReportingCompletion() async throws {
+        guard let ownership = nativeMiMoOwnership else {
+            await shutdown()
+            return
+        }
+        closed = true
+        if !nativeLifecycleClosed {
+            _ = try ownership.registry.closeLifecycle(ownership.lifecycle)
+            nativeLifecycleClosed = true
+        }
+        for id in active.values { rawEngine.cancel(id) }
+        let outcome = await ownership.transaction.retire()
+        try Self.requireNativeRetirement(outcome)
+        // Successful native shutdown joined every registered stream/consumer.
+        // These handles now acknowledge their own generations, including any
+        // row whose caller did not reach complete().
+        for retirement in nativeRetirements.values { await retirement.wait() }
+        nativeRetirements.removeAll()
+        active.removeAll()
+    }
+
+    nonisolated static func requireNativeRetirement(_ result: MiMoV26NativeRetirement) throws {
+        switch result {
+        case .retired: return
+        case .notClaimed: throw Failure.unexpectedEngine
+        case .pending(let reason): throw Failure.nativeRetirementPending(reason.rawValue)
+        case .retainedFault(let code): throw Failure.nativeRetainedFault(code)
+        }
     }
 
     private static func describe(_ disposition: SSDPrefixCacheStageDisposition) -> String {

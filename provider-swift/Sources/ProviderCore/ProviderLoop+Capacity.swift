@@ -52,6 +52,7 @@ extension ProviderLoop {
 
     /// One capacity-monitor tick, isolated on the loop actor.
     internal func capacityRefreshTick() async {
+        await retryPendingNativeMiMoRetirements()
         // Proactive trim of the MLX reclaimable buffer pool (DAR-338). Freed
         // KV/activation buffers otherwise sit in MLX's cache up to the cache
         // limit and are never returned to the OS — under sustained serving the
@@ -61,7 +62,7 @@ extension ProviderLoop {
         // removed it with its host; this tick is that watchdog's documented
         // successor. Non-blocking: only signals the off-actor reclaimer
         // (rate-limited, threshold-gated); the GPU sync never runs here.
-        kvBudget.proactiveReclaimSweep()
+        if nativeMiMoAllowsReclamation() { kvBudget.proactiveReclaimSweep() }
         await updateAggregateCapacity()
         await recoverWedgedEngineV2Slots()
         writeDaemonState()
@@ -105,6 +106,10 @@ extension ProviderLoop {
                     .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
                 totalResidentWeightBytes = overflow ? .max : sum
             }
+            for (modelID, sizing) in nativeMiMoRetiringSizing where modelSlots[modelID] == nil {
+                let (sum, overflow) = totalResidentWeightBytes.addingReportingOverflow(UInt64(max(0, sizing.weightsBytes)))
+                totalResidentWeightBytes = overflow ? .max : sum
+            }
             // Physical memory MUST come from the same source the re-slice
             // grant arithmetic uses (`fleetKVBudgetBytes`): the test hooks'
             // override when installed, the machine's real memory otherwise.
@@ -146,12 +151,13 @@ extension ProviderLoop {
         let mlxCacheBytes = processMemory.cacheBytes
         let (sumUsed, usedOverflow) = mlxActiveBytes.addingReportingOverflow(mlxCacheBytes)
         let mlxUsed = usedOverflow ? UInt64.max : sumUsed
-        let reclaimableMlx: UInt64 = hasInflightWork || mtpStagingReservations.hasRetainedTargets ? 0 : mlxUsed
+        let reclaimableMlx: UInt64 = hasInflightWork || mtpStagingReservations.hasRetainedTargets
+            || !nativeMiMoAllowsReclamation() ? 0 : mlxUsed
         let loadReserve = kvBudget.loadReserveBytes
         // The same sample contains usage and only unmaterialized commitments;
         // loaded native backing is already included in active/cache above.
         let unmaterializedCommitments = processMemory.unmaterializedCommittedBytes
-        let freeForLoadGb = ModelLoadAdmission.maxLoadableWeightGb(
+        let freeForLoadGb = nativeMiMoAllowsReclamation() ? ModelLoadAdmission.maxLoadableWeightGb(
             totalBytes: totalMem,
             systemAvailableBytes: processMemory.systemAvailableBytes,
             mlxUsedBytes: reclaimableMlx,
@@ -161,7 +167,7 @@ extension ProviderLoop {
             // gate this box actually applies (ensureModelLoaded), or the
             // coordinator's cold-load routing desyncs from it.
             headroomGb: loadHeadroomGb,
-            outstandingReservationBytes: unmaterializedCommitments)
+            outstandingReservationBytes: unmaterializedCommitments) : 0
         let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
         let reclaimerTelemetry = MLXCacheReclaimerTelemetry(
             cacheLimitBytes: UInt64(max(
@@ -209,6 +215,14 @@ extension ProviderLoop {
         // state would remain routable. Keep other slots and provider status live.
         for index in allSlots.indices where mtpAdmissionDrains.contains(allSlots[index].model) {
             allSlots[index].state = "reloading"
+        }
+        for index in allSlots.indices {
+            if nativeMiMoRegistry.hasRetainedFault || MiMoV26NativeLoadRegistry.shared.hasRetainedFault {
+                allSlots[index].state = "crashed"
+            } else if nativeMiMoPendingRetirements[allSlots[index].model] != nil
+                || nativeMiMoRetiring.contains(allSlots[index].model) {
+                allSlots[index].state = "reloading"
+            }
         }
         state.backendCapacity = BackendCapacity(
             slots: allSlots,

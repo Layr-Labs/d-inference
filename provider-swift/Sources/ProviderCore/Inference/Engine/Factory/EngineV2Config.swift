@@ -173,6 +173,14 @@ public enum EngineV2Factory {
     ) throws -> EngineV2Bridge {
         do {
             let build = try makeEngine()
+            let charges = try EngineV2MTPAdmissionCharges.resolve(
+                resolution: build.mtpAdmissionResolution,
+                legacyMTPBytesPerToken: build.legacyMTPBytesPerToken,
+                kvBytesPerToken: kvBytesPerToken,
+                auxiliaryBytesPerToken: auxiliaryBytesPerToken,
+                auxiliaryTokenGranularity: auxiliaryTokenGranularity,
+                auxiliaryTokenAllocationPadding: auxiliaryTokenAllocationPadding,
+                fixedRequestBytes: build.fixedRequestBytes)
             emitKVBackendTelemetry(
                 modelId: modelId,
                 kind: build.kvBackendKind,
@@ -196,11 +204,11 @@ public enum EngineV2Factory {
                 // slot factory logs; nil ⇒ unlimited (omitted on the wire).
                 partialPrefillCap: EngineV2Factory.maxConcurrentPartialPrefills(
                     environment: runtimePolicyEnvironment),
-                kvBytesPerToken: kvBytesPerToken,
-                fixedRequestBytes: build.fixedRequestBytes,
-                auxiliaryBytesPerToken: auxiliaryBytesPerToken,
-                auxiliaryTokenGranularity: auxiliaryTokenGranularity,
-                auxiliaryTokenAllocationPadding: auxiliaryTokenAllocationPadding,
+                kvBytesPerToken: charges.kvBytesPerToken,
+                fixedRequestBytes: charges.fixedRequestBytes,
+                auxiliaryBytesPerToken: charges.auxiliaryBytesPerToken,
+                auxiliaryTokenGranularity: charges.auxiliaryTokenGranularity,
+                auxiliaryTokenAllocationPadding: charges.auxiliaryTokenAllocationPadding,
                 kvBudget: kvBudget,
                 // SSD offload tier handle (v0.7.5): the bridge drives the
                 // pre-submit staging hook + release backstops + shutdown

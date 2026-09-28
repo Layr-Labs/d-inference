@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — native MiMo V2.6 candidate (not qualified or deployed)
+
+- Add native `mimo_v2` target and embedded three-head MTP integration with strict source-bound loading, actual native/bridge/consumer ownership and typed retirement. Retain required-fence failures; logical memory settlement is not physical release.
+- Add exact native MiMo ordinary dispatch with owned visual/audio policies and bounded encoded ingress. Required sidecars retain separate authenticated ownership. API/media qualification, unsupported formats, speech output and coordinator capability parity remain explicit gates.
+- Prepare opt-in text-only COMPLETE-prefix store/loaded-owner integration and bounded performance/residency candidates, preserving native precision, checkpoint topology, fallback paths and memory safeguards. Paging, media-prefix reuse and composed cache/lifecycle qualification remain separate gates.
+- Admit exact native MiMo through its dedicated ordinary loader; keep MiMo MTP out of automatic selection. Preliminary rectangular MTP measurements include a real greedy-output divergence and are not a lossless performance qualification. No catalog publication, deployment, model-limit change or optimization default is enabled.
+
 ## Release candidate v0.9.9 — App Attest recovery and snapshot accuracy (not shipped; 2026-09-22)
 
 - Distinguish signed-app availability failures and synthetic Apple callback/proof errors with closed, privacy-bounded diagnostics. Keep the result and trust policy unchanged; native `NSError` codes remain separate.

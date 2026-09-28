@@ -33,9 +33,33 @@ extension EngineV2Bridge {
         deadline: FirstContentDeadline?,
         isMultimodal: Bool
     ) -> CBv2FirstTokenDeadlineAdmission? {
+        guard !isMultimodal else { return nil }
+        return targetFirstTokenDeadlineAdmission(deadline: deadline)
+    }
+
+    /// Only the opaque SDK seal plus this bridge's real published native
+    /// profile can make already-prepared causal media target-projectable.
+    /// Raw/other media retain the legacy refusal/bypass policy. The SDK still
+    /// revalidates the seal's exact engine, generation, owner and one-shot use.
+    func firstTokenDeadlineAdmission(
+        deadline: FirstContentDeadline?,
+        multimodal: CBv2MultimodalInput?
+    ) throws -> CBv2FirstTokenDeadlineAdmission? {
+        guard let admission = targetFirstTokenDeadlineAdmission(deadline: deadline) else { return nil }
+        guard let multimodal else { return admission }
+        guard multimodal.nativeMediaToken != nil, multimodal.attention == .causal,
+              multimodal.positionState == nil, multimodal.deepstackEmbeddings == nil else { return nil }
+        // A stale/foreign/missing capability is an actual veto, never a nil
+        // fallback to ordinary submission after identifying a native seal.
+        _ = try nativeMiMoDecodedMediaBinding()
+        return admission
+    }
+
+    private func targetFirstTokenDeadlineAdmission(
+        deadline: FirstContentDeadline?
+    ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
             prefillDeadlineProjectionEnabled,
-            !isMultimodal,
             let deadline,
             isolatedPrefillEwmaInitialized
         else {
@@ -104,7 +128,8 @@ extension EngineV2Bridge {
     ) {
         guard transfer.claim() else { return }
         let bridge = self
-        Task {
+        let nativeTaskID = tracksNativeShutdown ? UUID() : nil
+        let task = Task {
             await retirement.wait()
             withExtendedLifetime(stream) {}
             await bridge.completeTransferredPreSubmitRetirement(
@@ -116,7 +141,16 @@ extension EngineV2Bridge {
                 readyReceiptRegistered: readyReceiptRegistered,
                 usageSignal: usageSignal,
                 failure: failure)
+            if let nativeTaskID { await bridge.clearNativeTransferredRetirement(nativeTaskID) }
         }
+        if let nativeTaskID {
+            nativeTransferredRetirementTasks[nativeTaskID] = task
+            if nativeShutdownClosed { nativeShutdownTasks.append(task) }
+        }
+    }
+
+    private func clearNativeTransferredRetirement(_ id: UUID) {
+        nativeTransferredRetirementTasks.removeValue(forKey: id)
     }
 
     private func completeTransferredPreSubmitRetirement(

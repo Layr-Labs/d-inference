@@ -26,8 +26,26 @@ struct CompleteCheckpointStorageIdentity: Sendable {
         switch kind {
         case .contiguous:
             guard pagedConfig == nil else { return nil }
-            guard case .recurrentFull = target else { return nil }
-            backendLayout = CBv2CompleteCheckpointManifest.layout
+            switch target {
+            case .recurrentFull:
+                backendLayout = CBv2CompleteCheckpointManifest.layout
+            case .historicalAttention(let kinds):
+                guard let layers = try? CBv2CheckpointAttentionLayer.resolveContiguousAsymmetric(
+                    layerKinds: kinds, dtypes: layerDTypes) else { return nil }
+                backendLayout = CBv2CompleteCheckpointManifest.contiguousAsymmetricLayout
+                for (index, layer) in layers.enumerated() {
+                    let prefix = "storage.attention.\(index)."
+                    fields[prefix + "modelLayer"] = String(layer.modelLayer)
+                    fields[prefix + "owner"] = String(layer.owner)
+                    fields[prefix + "window"] = layer.window.map(String.init) ?? "full"
+                    fields[prefix + "kvHeads"] = String(layer.kvHeads)
+                    fields[prefix + "headDim"] = String(layer.headDim)
+                    fields[prefix + "valueHeadDim"] = String(layer.valueHeadDim)
+                    fields[prefix + "queryHeads"] = String(layer.queryHeads)
+                    fields[prefix + "sinks"] = String(layer.hasSinks)
+                    fields[prefix + "dtype"] = layer.dtype.rawValue
+                }
+            }
         case .paged:
             guard let pagedConfig, let segmentBytes = pagedConfig.segmentSizeBytes,
                 segmentBytes > 0, pagedConfig.pageSize > 0, pagedConfig.maxBufferLength > 0,

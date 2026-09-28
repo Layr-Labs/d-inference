@@ -102,7 +102,8 @@ public enum MediaIngest {
 
     // MARK: - Routing
 
-    /// True when any message carries an image or video content part.
+    /// True when any message carries image, video or audio. Audio uses only
+    /// the separately issued native path, never this generic visual producer.
     /// Used by the engine to decide between the batched (text) path and
     /// this non-batched vision path.
     public static func hasMedia(_ request: OpenAIChatCompletionRequest) -> Bool {
@@ -110,7 +111,7 @@ public enum MediaIngest {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {
                 switch part {
-                case .imageURL, .videoURL:
+                case .imageURL, .videoURL, .inputAudio:
                     return true
                 case .text, .unsupported:
                     continue
@@ -118,6 +119,15 @@ public enum MediaIngest {
             }
         }
         return false
+    }
+
+    /// Classification only; the actual loaded native audio profile is still
+    /// required. Generic text/vision/diffusion paths must not drop this part.
+    public static func hasAudio(_ request: OpenAIChatCompletionRequest) -> Bool {
+        request.messages.contains { message in
+            guard case .parts(let parts) = message.content else { return false }
+            return parts.contains { if case .inputAudio = $0 { return true }; return false }
+        }
     }
 
     /// True when any message carries a video content part. Since v0.7.5
@@ -210,7 +220,7 @@ public enum MediaIngest {
                     case .text(let s): add(s.utf8.count / textCharsPerToken)
                     case .imageURL: add(visionTokensPerImage)
                     case .videoURL: add(visionTokensPerVideo)
-                    case .unsupported: continue
+                    case .unsupported, .inputAudio: continue // native audio uses its actual sealed token count
                     }
                 }
             case .null:
@@ -241,6 +251,9 @@ public enum MediaIngest {
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
+        guard !hasAudio(request) else {
+            throw MultiModelBatchSchedulerEngineError.multimodalRejected("encoded audio requires a native audio profile")
+        }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType, hasMedia: true)
         if preserveTemplateFields {
@@ -292,7 +305,7 @@ public enum MediaIngest {
                         case .text(let text): return ["type": "text", "text": text]
                         case .imageURL: return ["type": "image"]
                         case .videoURL: return ["type": "video"]
-                        case .unsupported: return nil
+                        case .unsupported, .inputAudio: return nil // rejected before this generic producer
                         }
                     }
                 }
@@ -415,6 +428,8 @@ public enum MediaIngest {
                                 + "\(maxRequestVideoFramePixels) px")
                     }
                     videos.append(decoded.video)
+                case .inputAudio:
+                    throw MultiModelBatchSchedulerEngineError.multimodalRejected("encoded audio requires a native audio profile")
                 case .unsupported:
                     continue
                 }
@@ -592,7 +607,7 @@ public enum MediaIngest {
                     }
                 case .videoURL:
                     hasVideo = true
-                case .text, .unsupported:
+                case .text, .unsupported, .inputAudio:
                     continue
                 }
             }

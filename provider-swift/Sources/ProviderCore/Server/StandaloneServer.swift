@@ -139,7 +139,7 @@ public actor StandaloneServer {
     /// One resident model: its v2 bridge, loaded container (the VLM owns both
     /// vision and the exact text tower served by the bridge), and KV sizing
     /// facts. Mirrors `ProviderLoop.ModelSlot`.
-    struct CachedSlot {
+    struct CachedSlot: Sendable {
         let bundle: ProviderEngineBundle
         var bridge: EngineV2Bridge { bundle.bridge }
         let modelContainer: ProviderModelContainer
@@ -252,8 +252,14 @@ public actor StandaloneServer {
     /// when constructing the Hummingbird application.
     let config: StandaloneServerConfig
     var slots: [String: CachedSlot] = [:]
+    let nativeMiMoRegistry: MiMoV26NativeLoadRegistry
+    var nativeMiMoLifecycle: StandaloneNativeMiMoLifecycle = .unopened
+    var nativeMiMoLoads: [String: StandaloneNativeMiMoLoad] = [:]
+    var nativeMiMoLoadGateID: UUID?
+    var nativeMiMoTestHooks: StandaloneNativeMiMoTestHooks?
+    var nativeMiMoStopWaiters: [CheckedContinuation<Void, Never>] = []
     private var qwen4MemoryRetirement: NativeMemoryRetirementWindow?
-    private var modelsLoading: Set<String> = []
+    var modelsLoading: Set<String> = []
     private var pendingLoadLeases: [String: PendingModelLoadLease] = [:]
     /// A `setModels` update that arrived while a load was in flight: the
     /// serving set is part of the activation-reserve basis, and that load
@@ -264,14 +270,22 @@ public actor StandaloneServer {
     /// `ProviderLoop.activationReserveEpoch`): cross-actor delivery is not
     /// FIFO, and a stale lower-floor push must never land after a newer one.
     private var activationReserveEpoch: UInt64 = 0
-    private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
+    var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     var isLoadingAny: Bool = false
     var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     var slotReservations: [String: Int] = [:]
     var evictingModels: Set<String> = []
     var models: [ModelInfo]
     private var serverTask: Task<Void, Never>?
-    private var shutdownTask: Task<Void, Never>?
+    /// Same actual service task across every pending native-stop retry. A
+    /// cancelled task remains owned until its real result has been joined.
+    private var stoppingServiceTask: Task<Void, Never>?
+    // INTERNAL default-nil observations only: neither hook supplies/replaces a
+    // Task or completion result. The exit tail runs inside the actual service.
+    private var nativeServiceExitTailForTesting: (@Sendable () async -> Void)?
+    private var nativeServiceJoinEnteredForTesting: (@Sendable () -> Void)?
+    private var nativeServiceJoinedForTesting: (@Sendable () -> Void)?
+    var shutdownTask: Task<Void, Never>?
     /// Periodic driver for the proactive MLX buffer-pool sweep. ProviderLoop
     /// drives the same sweep from its capacity-refresh tick; the standalone
     /// path has no such tick, so it runs its own. Without one, freed
@@ -317,9 +331,11 @@ public actor StandaloneServer {
 
     init(
         config: StandaloneServerConfig = StandaloneServerConfig(),
-        models: [ModelInfo] = [], kvBudgetForTesting: GlobalKVCacheBudget?
+        models: [ModelInfo] = [], kvBudgetForTesting: GlobalKVCacheBudget?,
+        nativeMiMoRegistryForTesting: MiMoV26NativeLoadRegistry? = nil
     ) {
         self.config = config
+        self.nativeMiMoRegistry = nativeMiMoRegistryForTesting ?? .shared
         // Architecture-derived supported set (v0.7.5 fail-loud): the v2
         // engine is the ONLY engine, so a model whose family has no CBv2
         // adapter can never serve — advertising it would invite requests
@@ -423,6 +439,10 @@ public actor StandaloneServer {
     public func setModels(_ newModels: [ModelInfo]) async -> Bool {
         let filtered = Self.filterSupported(
             newModels, runtimeCapabilities: config.runtimeCapabilities)
+        guard nativeMiMoReclaimAllowed else {
+            pendingModelsUpdate = filtered
+            return true
+        }
         // `isLoadingAny` is the load gate itself (set before the load's
         // marker, held through install) AND the barrier `applyModels`
         // holds — so a concurrent setModels parks here too (last list wins).
@@ -459,6 +479,10 @@ public actor StandaloneServer {
                 "setModels refused: the new serving set's activation floor would re-slice a resident model's KV grant below the serviceability floor; keeping the current list")
             return false
         }
+        guard nativeMiMoReclaimAllowed else {
+            pendingModelsUpdate = filtered
+            return true
+        }
         self.models = filtered
         await pushActivationReserve()
         await resliceGrowSurvivors()
@@ -466,7 +490,7 @@ public actor StandaloneServer {
     }
 
     /// Stamp and push the live serving-set reserve into the KV budget actor.
-    private func pushActivationReserve() async {
+    func pushActivationReserve() async {
         activationReserveEpoch += 1
         await kvBudget.setActivationReserveBytes(
             resolvedActivationReserveBytes, epoch: activationReserveEpoch)
@@ -491,12 +515,14 @@ public actor StandaloneServer {
     /// Start listening for HTTP connections. The server runs in a child task.
     public func start() throws {
         guard lifecycleState == .stopped else { return }
+        try reopenNativeMiMoLifecycleForStart()
 
         responseTracker.setAccepting(true)
         lifecycleDraining = false
         didBind = false
         bindFailed = false
         let app = makeApplication()
+        let serviceExitTail = nativeServiceExitTailForTesting
         serverTask = Task {
             do {
                 try await app.runService(gracefulShutdownSignals: [])
@@ -506,6 +532,7 @@ public actor StandaloneServer {
                 standaloneLogger.error("Standalone server failed to bind \(self.config.host):\(self.config.port): \(error.localizedDescription)")
                 self.markBindFailed()
             }
+            await serviceExitTail?()
         }
         kvSweepTask?.cancel()
         let sweepInterval = kvSweepInterval
@@ -548,16 +575,21 @@ public actor StandaloneServer {
     /// its serving lifetime so optional fan control ends only after the HTTP
     /// listener and every resident engine/cache resource have shut down.
     public func waitUntilStopped() async {
-        switch lifecycleState {
-        case .stopped:
-            return
-        case .stopping:
-            _ = await shutdownTask?.value
-        case .running:
-            // A bind failure or other natural service exit must use the same
-            // teardown path as an explicit stop.
-            _ = await serverTask?.value
-            await stop()
+        while lifecycleState != .stopped || !nativeMiMoLoads.isEmpty {
+            switch lifecycleState {
+            case .running:
+                _ = await serverTask?.value
+                await stop()
+            case .stopped:
+                await stop()
+            case .stopping:
+                _ = await shutdownTask?.value
+                if lifecycleState != .stopped {
+                    // Pending/fault is not stopped. A real completion transition
+                    // resumes these waiters; no timeout invents native release.
+                    await withCheckedContinuation { nativeMiMoStopWaiters.append($0) }
+                }
+            }
         }
     }
 
@@ -566,12 +598,21 @@ public actor StandaloneServer {
     public func stop() async {
         lifecycleControlTask?.cancel()
         lifecycleControlTask = nil
+        responseTracker.setAccepting(false)
+        do { try closeNativeMiMoLifecycle() }
+        catch {
+            lifecycleState = .stopping
+            lifecycleDraining = true
+            standaloneLogger.error("Standalone native lifecycle close refused; ownership retained")
+            return
+        }
         switch lifecycleState {
         case .stopped:
-            return
+            guard !nativeMiMoLoads.isEmpty else { return }
         case .stopping:
-            _ = await shutdownTask?.value
-            return
+            if let task = shutdownTask { _ = await task.value; return }
+            // A previous attempt remained pending. The native helper retries
+            // only after actual owner/task/consumer progress, not mere elapsed time.
         case .running:
             break
         }
@@ -590,51 +631,105 @@ public actor StandaloneServer {
         await stop()
     }
 
-    private func finishShutdown(serviceTask: Task<Void, Never>?) async {
+    func finishShutdown(serviceTask: Task<Void, Never>?) async {
+        let originalServiceTask = stoppingServiceTask ?? serverTask ?? serviceTask
+        stoppingServiceTask = originalServiceTask
         lifecycleControlTask?.cancel()
         lifecycleControlTask = nil
-        kvSweepTask?.cancel()
-        kvSweepTask = nil
-        serviceTask?.cancel()
-        _ = await serviceTask?.value
+        let sweepTask = kvSweepTask
+        sweepTask?.cancel()
+        originalServiceTask?.cancel()
         let upgradeTask = mtpUpgradeMonitorTask
-        mtpUpgradeMonitorTask = nil
         upgradeTask?.cancel()
+
+        // Drive native shutdown before joining request-dependent host tasks.
+        // Unknown/incomplete native completion retains every actual handle.
+        await retireAllNativeMiMoForStop()
+        guard nativeMiMoLoads.isEmpty, !slots.keys.contains(where: isNativeMiMoSlot) else {
+            lifecycleDraining = true
+            lifecycleStatus.outcome = .draining
+            lifecycleStatus.remaining = max(lifecycleStatus.remaining, max(1, nativeMiMoLoads.count))
+            shutdownTask = nil
+            return
+        }
+        nativeServiceJoinEnteredForTesting?()
+        _ = await originalServiceTask?.value
+        // Synchronous post-join observation, before any later actor/task await.
+        // Nil outside explicit internal native tests; never supplies completion.
+        nativeServiceJoinedForTesting?()
         await specDecFunnel.shutdown()
         await upgradeTask?.value
+        mtpUpgradeMonitorTask = nil
+        await sweepTask?.value
+        kvSweepTask = nil
 
         // Retain only the bridges needed for their asynchronous drain. Keeping a
         // CachedSlot snapshot here would keep every model container alive until
         // after clearCache and leave its subsequently-freed buffers pooled.
-        var residentBridges = slots.values.map(\.bridge)
+        var residentBridges = slots.filter { !isNativeMiMoSlot($0.key) }.map { $0.value.bridge }
         for bridge in residentBridges {
             await bridge.shutdown()
         }
         residentBridges.removeAll()
 
-        for key in Array(slots.keys) {
+        for key in Array(slots.keys) where !isNativeMiMoSlot(key) {
             await ModelContainerLoading.releaseExternalResources(in: slots[key]?.container)
+            slots.removeValue(forKey: key)
+            slotReservations.removeValue(forKey: key)
         }
 
         // Match ProviderLoop.unloadModel: drain first, then release every slot
         // and its model container, and only then clear MLX's allocator cache.
-        slots.removeAll()
-        slotReservations.removeAll()
+        guard nativeMiMoLoads.isEmpty, !slots.keys.contains(where: isNativeMiMoSlot),
+              nativeMiMoReclaimAllowed else {
+            lifecycleDraining = true
+            lifecycleStatus.outcome = .draining
+            lifecycleStatus.remaining = max(lifecycleStatus.remaining, max(1, nativeMiMoLoads.count))
+            shutdownTask = nil
+            return
+        }
         if let clearMemoryCache = v2TestHooks?.clearMemoryCache {
             clearMemoryCache()
         } else {
-            MLX.Memory.clearCache()
+            if nativeMiMoReclaimAllowed {
+                MLX.Memory.clearCache()
+                nativeMiMoTestHooks?.didClearCache?()
+            }
         }
         serverTask = nil
+        stoppingServiceTask = nil
         responseTracker.setAccepting(true)
         lifecycleDraining = false
         didBind = false
         bindFailed = false
         lifecycleState = .stopped
         shutdownTask = nil
+        let stoppedWaiters = nativeMiMoStopWaiters
+        nativeMiMoStopWaiters = []
+        for waiter in stoppedWaiters { waiter.resume() }
     }
 
     // MARK: - Test/debug surface
+
+    /// Synthetic native caller tests only. Holds/observes the REAL service
+    /// Task; never replaces Hummingbird, its Task handle or a completion result.
+    func setNativeServiceLifecycleHooksForTesting(
+        exitTail: @escaping @Sendable () async -> Void,
+        beforeJoin: @escaping @Sendable () -> Void,
+        afterJoin: (@Sendable () -> Void)? = nil
+    ) throws {
+        guard nativeMiMoTestHooks != nil, lifecycleState == .stopped,
+              serverTask == nil, stoppingServiceTask == nil else {
+            throw MiMoV26NativeTransactionError.invalidLifecycle
+        }
+        nativeServiceExitTailForTesting = exitTail
+        nativeServiceJoinEnteredForTesting = beforeJoin
+        nativeServiceJoinedForTesting = afterJoin
+    }
+
+    func nativeServiceOwnershipForTesting() -> (stored: Bool, stopping: Bool) {
+        (serverTask != nil, stoppingServiceTask != nil)
+    }
 
     /// Bridge-level active request count for a resident model (admitted +
     /// engine-waiting), or nil when not resident. Live tests use this to
@@ -826,7 +921,12 @@ public actor StandaloneServer {
 
     /// Drive one LRU idle-eviction pass (unit tests).
     func evictLRUIdleSlotForTesting() async -> Bool {
-        await evictLRUIdleSlot()
+        let acquired = !isLoadingAny
+        if acquired { isLoadingAny = true }
+        defer {
+            if acquired { isLoadingAny = false; releaseLoadGateWaiters() }
+        }
+        return await evictLRUIdleSlot()
     }
 
     /// Returns the port the server is configured on.
@@ -851,7 +951,7 @@ public actor StandaloneServer {
     /// is what holds memory back, exactly as in `availableMemoryGb`).
     /// `activationReserveBytes` overrides the live serving-set reserve for a
     /// PROSPECTIVE set (a `setModels` preflight); nil reads live.
-    private func fleetKVBudgetBytes(
+    func fleetKVBudgetBytes(
         extraWeightBytes: Int, activationReserveBytes: UInt64? = nil
     ) -> UInt64 {
         var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
@@ -898,7 +998,7 @@ public actor StandaloneServer {
     /// One existing slot's re-slice bookkeeping (mirrors the ProviderLoop's
     /// `ExistingSlotGrant`): sizing inputs, the grant BEFORE this re-slice
     /// (the restore point), and the bridge whose ceiling gets updated.
-    private struct ExistingSlotGrant {
+    struct ExistingSlotGrant {
         let slot: EngineV2KVSizing.ResliceSlot
         let previousGrant: Int
         let bridge: EngineV2Bridge
@@ -909,7 +1009,7 @@ public actor StandaloneServer {
         let sizing: SlotSizingSnapshot
     }
 
-    private func existingSlotGrants(excludingModelId: String) async -> [ExistingSlotGrant] {
+    func existingSlotGrants(excludingModelId: String) async -> [ExistingSlotGrant] {
         var existing: [ExistingSlotGrant] = []
         for (modelId, slot) in slots
         where modelId != excludingModelId && !evictingModels.contains(modelId) {
@@ -981,6 +1081,12 @@ public actor StandaloneServer {
         specDecPreparation: SpecDecPreparation,
         cacheEligibleWeightHash: String? = nil
     ) async throws -> SlotBuild {
+        if case .nativeMiMo? = newcomerBox.modelContainer {
+            // Native setup has its own retained transaction path. Never enter
+            // this legacy release/clear/restore-on-throw implementation.
+            throw MiMoV26NativeTransactionError.warmRebuildUnsupported
+        }
+        try requireNativeMiMoNewWorkAllowed()
         var prepared: EngineV2ServingPreparation
         do {
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
@@ -996,9 +1102,10 @@ public actor StandaloneServer {
                 logWarning: { standaloneLogger.warning("\($0)") })
         } catch {
             await newcomerBox.releaseAfterExternalResources()
-            MLX.Memory.clearCache()
+            if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
             throw error
         }
+        try requireNativeMiMoNewWorkAllowed()
         // Prepare-stage fail-open: the drafter never became resident, so drop
         // its share of the pending-load reservation now instead of holding
         // phantom bytes through the re-slice and engine build (mirrors
@@ -1034,7 +1141,7 @@ public actor StandaloneServer {
             if let pendingLoad = pendingLoadLeases[modelId] {
                 await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
             }
-            MLX.Memory.clearCache()
+            if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
             fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
             targets = EngineV2KVSizing.resliceGrants(
                 existing: existing.map(\.slot),
@@ -1058,7 +1165,7 @@ public actor StandaloneServer {
             // handling runs.
             prepared.assistant?.release()
             await newcomerBox.releaseAfterExternalResources()
-            MLX.Memory.clearCache()
+            if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
             throw StandaloneServerError.capacityUnavailable(
                 "loading '\(modelId)' would re-slice some model's KV grant below "
                     + "the \(floorGb) GB serviceability floor "
@@ -1068,6 +1175,7 @@ public actor StandaloneServer {
         // Phase 1 — SHRINKS first, so Σ(ceilings) never exceeds the fleet
         // budget at any instant.
         for entry in existing {
+            try requireNativeMiMoNewWorkAllowed()
             if let target = targets[entry.slot.modelId], target < entry.previousGrant {
                 await entry.bridge.updateKVBytesCapacity(target)
             }
@@ -1081,6 +1189,7 @@ public actor StandaloneServer {
         // last strong reference and `release()` frees the weights.
         let bundle: ProviderEngineBundle
         do {
+            try requireNativeMiMoNewWorkAllowed()
             v2TestHooks?.onCacheEligibleWeightHash?(cacheEligibleWeightHash)
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelId,
@@ -1115,8 +1224,9 @@ public actor StandaloneServer {
             // still resident.
             prepared.assistant?.release()
             await newcomerBox.releaseAfterExternalResources()
-            MLX.Memory.clearCache()
+            if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
             for entry in existing {
+                guard nativeMiMoReclaimAllowed else { break }
                 await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
             }
             throw error
@@ -1125,6 +1235,7 @@ public actor StandaloneServer {
         // Phase 3 — grow-side targets (self-healing when a previous state
         // left a slot under-granted).
         for entry in existing {
+            guard nativeMiMoReclaimAllowed else { break }
             if let target = targets[entry.slot.modelId], target > entry.previousGrant {
                 await entry.bridge.updateKVBytesCapacity(target)
             }
@@ -1144,7 +1255,7 @@ public actor StandaloneServer {
         await bundle.bridge.shutdown()
         bundle.releaseAssistant()
         await newcomer.releaseAfterExternalResources()
-        MLX.Memory.clearCache()
+        if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
         await resliceGrowSurvivors()
     }
 
@@ -1159,19 +1270,23 @@ public actor StandaloneServer {
     /// eviction (a lone survivor gets the FULL fleet budget back). Called
     /// from the eviction path, i.e. inside `isLoadingAny`.
     func resliceGrowSurvivors() async {
+        guard nativeMiMoReclaimAllowed else { return }
         let survivors = await existingSlotGrants(excludingModelId: "")
         guard !survivors.isEmpty else { return }
+        guard nativeMiMoReclaimAllowed else { return }
         let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: 0)
         let targets = EngineV2KVSizing.resliceGrants(
             existing: survivors.map(\.slot),
             newcomer: nil,
             fleetKVBudgetBytes: fleetBudget)
         for entry in survivors {
+            guard nativeMiMoReclaimAllowed else { return }
             if let target = targets[entry.slot.modelId], target < entry.previousGrant {
                 await entry.bridge.updateKVBytesCapacity(target)
             }
         }
         for entry in survivors {
+            guard nativeMiMoReclaimAllowed else { return }
             if let target = targets[entry.slot.modelId], target > entry.previousGrant {
                 await entry.bridge.updateKVBytesCapacity(target)
             }
@@ -1179,6 +1294,7 @@ public actor StandaloneServer {
     }
 
     private func evictLRUIdleSlot() async -> Bool {
+        guard nativeMiMoReclaimAllowed else { return false }
         // The base implementation retained complete CachedSlot copies in
         // both this snapshot and the selected local. Those copies could keep
         // the container alive across allocator purge and survivor regrowth.
@@ -1216,8 +1332,7 @@ public actor StandaloneServer {
         }
 
         guard let selected,
-              let bundle = slots[selected.key]?.bundle,
-              bundle.bridge === selected.bridge,
+              slots[selected.key]?.bridge === selected.bridge,
               !evictingModels.contains(selected.key),
               !isMTPUpgradeTargetRetained(selected.key),
               (slotReservations[selected.key] ?? 0) == 0 else {
@@ -1236,6 +1351,27 @@ public actor StandaloneServer {
             return false
         }
 
+        if isNativeMiMoSlot(evictKey) {
+            guard let state = nativeMiMoLoads[evictKey] else { return false }
+            let token = UUID()
+            state.evictionReclaimToken = token
+            await retireNativeMiMoIfReady(modelID: evictKey, expectedLoad: state.load, afterActualProgress: true)
+            if state.evictionReclaimToken == token { state.evictionReclaimToken = nil }
+            guard nativeMiMoLoads[evictKey] == nil, slots[evictKey] == nil else { return false }
+            guard lifecycleState != .stopping, !lifecycleDraining, nativeMiMoReclaimAllowed else { return true }
+            // The typed retirement and helper-frame alias drop already happened.
+            // This caller owns the existing common load gate; do not self-wait it.
+            MLX.Memory.clearCache()
+            nativeMiMoTestHooks?.didClearCache?()
+            await pushActivationReserve()
+            if nativeMiMoReclaimAllowed,
+                KVHeadroomProbe.hasServeableKVHeadroom(activationReserveBytes: resolvedActivationReserveBytes) {
+                await resliceGrowSurvivors()
+            }
+            return true
+        }
+        guard nativeMiMoReclaimAllowed,
+              let bundle = slots[evictKey]?.bundle, bundle.bridge === bridge else { return false }
         evictingModels.insert(evictKey)
         defer { evictingModels.remove(evictKey) }
         // Drain the v2 bridge (running requests finish, new submissions are
@@ -1253,7 +1389,7 @@ public actor StandaloneServer {
         if let clearMemoryCache = v2TestHooks?.clearMemoryCache {
             clearMemoryCache()
         } else {
-            MLX.Memory.clearCache()
+            if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
         }
         if isQwen4 { qwen4MemoryRetirement = NativeMemoryRetirementWindow() }
         // The evicted slot may have been the last carrier of a higher floor
@@ -1270,7 +1406,7 @@ public actor StandaloneServer {
         return true
     }
 
-    private func evictIfNeededForLoad() async throws {
+    func evictIfNeededForLoad() async throws {
         guard slots.count >= config.maxCachedModels else { return }
 
         guard await evictLRUIdleSlot() else {
@@ -1280,7 +1416,7 @@ public actor StandaloneServer {
         }
     }
 
-    private func ensureMemoryHeadroomForLoad(
+    func ensureMemoryHeadroomForLoad(
         requiredGb: Double, waitForQwen4Retirement: Bool = false
     ) async throws {
         guard requiredGb.isFinite, requiredGb > 0 else { return }
@@ -1301,12 +1437,12 @@ public actor StandaloneServer {
     /// clamped to real OS-available memory (`SystemMemory`) and minus any KV
     /// already promised to in-flight requests (`kvBudget`). See
     /// `ModelLoadAdmission` for the rationale.
-    private func availableMemoryGb() async -> Double {
+    func availableMemoryGb() async -> Double {
         kvBudget.availableForLoadGb()
     }
 
     /// Touch the cached slot's last-used timestamp on access.
-    private func touchSlot(_ modelId: String) {
+    func touchSlot(_ modelId: String) {
         slots[modelId]?.lastUsedAt = .now
     }
 
@@ -1343,6 +1479,7 @@ public actor StandaloneServer {
     /// reservation if the lookup somehow fails so a partial-acquire
     /// doesn't pin a missing model forever.
     func acquireModel(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        try requireNativeMiMoNewWorkAllowed()
         if lifecycleDraining { throw MultiModelBatchSchedulerEngineError.queueFull("provider draining") }
         try throwIfMTPUpgradeDraining(modelId)
         do {
@@ -1365,6 +1502,7 @@ public actor StandaloneServer {
         }
         await waitForMTPUpgrade(modelId)
         try Task.checkCancellation()
+        try requireNativeMiMoNewWorkAllowed()
         if lifecycleDraining { throw MultiModelBatchSchedulerEngineError.queueFull("provider draining") }
         try throwIfMTPUpgradeDraining(modelId)
         reserveSlot(modelId)
@@ -1377,10 +1515,16 @@ public actor StandaloneServer {
         let releaseClosure: @Sendable (String) async -> Void = { [weak self] mid in
             await self?.releaseSlot(mid)
         }
-        let token = OneShotRelease(
-            release: releaseClosure,
-            modelId: modelId
-        )
+        let token: OneShotRelease
+        do {
+            token = try makeNativeMiMoReleaseToken(modelID: modelId)
+                ?? OneShotRelease(release: releaseClosure, modelId: modelId)
+        } catch {
+            // Native validation happens before lease publication; this is the
+            // sole existing reservation unwind for that refused acquisition.
+            releaseSlot(modelId)
+            throw error
+        }
         // ONE ENGINE (v0.7.5): the entry carries the slot's v2 bridge — the
         // same serving path as ProviderLoop slots. No legacy scheduler is
         // constructed anywhere on this server.
@@ -1478,7 +1622,9 @@ public actor StandaloneServer {
     /// applies LRU + memory-headroom eviction, then builds the v2 slot
     /// through the shared sizing → re-slice → bridge path.
     func ensureModelLoaded(_ modelId: String) async throws {
+        try requireNativeMiMoNewWorkAllowed()
         await waitForMTPUpgrade(modelId)
+        try requireNativeMiMoNewWorkAllowed()
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: config.runtimeCapabilities)
         try Task.checkCancellation()
@@ -1507,17 +1653,31 @@ public actor StandaloneServer {
         // Loud insurance behind the init/setModels filter: a model without
         // a CBv2 adapter must never reach engine construction (v0.7.5
         // fail-loud — there is no legacy engine to degrade onto).
-        guard EngineV2SupportedModels.isSupported(model: modelInfo) else {
+        guard EngineV2SupportedModels.isSupported(model: modelInfo)
+            || isSyntheticNativeMiMoUnderTest(modelInfo) else {
             standaloneLogger.error(
                 "Model '\(modelId)' (model_type \(modelInfo.modelType ?? "unknown")) has no CBv2 adapter — refusing to load")
             throw StandaloneServerError.modelNotFound(modelId)
         }
 
-        guard let modelPath = ModelScanner.resolveLocalPath(modelID: modelId) else {
+        guard let modelPath = nativeMiMoTestDirectory(for: modelInfo)
+            ?? ModelScanner.resolveLocalPath(modelID: modelId) else {
             throw StandaloneServerError.modelNotFound(modelId)
         }
-        var mtpPreparation = await specDecPreparation(
-            modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath)
+        let nativeLoad: MiMoV26ServingLoad?
+        if modelInfo.modelType == "mimo_v2" {
+            guard let inspected = try MiMoV26OrdinaryServingPolicy.inspect(directory: modelPath, budget: kvBudget) else {
+                throw MiMoV26ServingLoadError.nativeOwnerMismatch
+            }
+            nativeLoad = inspected
+        } else { nativeLoad = nil }
+        var mtpPreparation: SpecDecPreparation
+        if nativeLoad != nil {
+            mtpPreparation = try MiMoV26ServingLoad.preparation(mode: config.mtpMode,
+                externalPath: config.mtpDrafterPath)
+        } else {
+            mtpPreparation = await specDecPreparation(modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath)
+        }
 
         // Re-check residency and in-flight loads after the preparation await:
         // a concurrent request for the same cold model can pass the checks
@@ -1558,6 +1718,11 @@ public actor StandaloneServer {
             throw StandaloneServerError.modelNotFound(modelId)
         }
 
+        if let nativeLoad {
+            try await loadNativeMiMoSlot(modelID: modelId, modelInfo: modelInfo,
+                directory: modelPath, load: nativeLoad, preparation: mtpPreparation)
+            return
+        }
         let pendingLoadID = "pending-load:\(modelId)"
         var pendingLoad: PendingModelLoadLease?
         modelsLoading.insert(modelId)
@@ -1633,7 +1798,7 @@ public actor StandaloneServer {
             // line (mirrors ProviderLoop.ensureModelLoaded).
             _ = try GPUEnforcement.requireMetal()
             let slotIsVLM = ProviderLoop.modelIsVLM(at: modelPath, modelID: modelId)
-            guard await kvBudget.recheckPendingLoad(acceptedLoad) else {
+            if let acceptedLoad = pendingLoad, !(await kvBudget.recheckPendingLoad(acceptedLoad)) {
                 throw StandaloneServerError.capacityUnavailable(
                     "Insufficient memory for '\(modelId)' at allocation: load headroom changed")
             }
@@ -1667,7 +1832,7 @@ public actor StandaloneServer {
                     cacheEligibleWeightHash = nil
                 case .changed:
                     await newcomer.releaseAfterExternalResources()
-                    MLX.Memory.clearCache()
+                    if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                     throw StandaloneServerError.capacityUnavailable(
                         "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded")
                 }
@@ -1682,9 +1847,8 @@ public actor StandaloneServer {
                 modelPath: modelPath, defaultMaxTokens: Self.slotDefaultMaxTokens)
             // The loaded weights are now reflected in MLX memory, so transfer
             // accounting from the pending estimate to the live memory snapshot.
-            guard await kvBudget.reducePendingLoad(
-                acceptedLoad, remainingWeightBytes: extraWeightBytes)
-            else {
+            if let acceptedLoad = pendingLoad, !(await kvBudget.reducePendingLoad(
+                acceptedLoad, remainingWeightBytes: extraWeightBytes)) {
                 await newcomer.releaseAfterExternalResources()
                 throw StandaloneServerError.capacityUnavailable("Model load ownership changed during setup")
             }
@@ -1692,14 +1856,14 @@ public actor StandaloneServer {
                 modelType: modelInfo.modelType, directory: modelPath)
             if Task.isCancelled {
                 await newcomer.releaseAfterExternalResources()
-                MLX.Memory.clearCache()
+                if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                 throw CancellationError()
             }
             // Trim the cold-load buffer pool BEFORE measuring: a fresh load leaves
             // transient buffers in MLX cacheMemory (no forward pass has trimmed
             // them yet), which would otherwise inflate "used" and false-reject a
             // serveable model. Mirrors ProviderLoop's clearCache-then-measure.
-            MLX.Memory.clearCache()
+            if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
             // Post-load measured-headroom guard (mirrors ProviderLoop): the load
             // gate admitted on an estimate; now that weights are resident, reject
             // a model with no serveable KV headroom under the cap rather than
@@ -1719,7 +1883,7 @@ public actor StandaloneServer {
                 // Pre-shrink failure: no grants were mutated, so ordering is
                 // moot — but drop the weights promptly all the same.
                 await newcomer.releaseAfterExternalResources()
-                MLX.Memory.clearCache()
+                if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                 throw StandaloneServerError.capacityUnavailable(
                     "Model '\(modelId)' loaded but has insufficient KV headroom under the memory cap "
                     + "(\(headroomGb) GB free, need \(minGb) GB to serve) — unloaded")
@@ -1750,16 +1914,18 @@ public actor StandaloneServer {
             do {
                 slotBuild = try await buildSlot(preparation: mtpPreparation)
             } catch let error as StandaloneServerError {
-                MLX.Memory.clearCache()
+                if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                 throw error
             } catch {
-                MLX.Memory.clearCache()
+                if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                 throw StandaloneServerError.capacityUnavailable(
                     "Model '\(modelId)' loaded but its v2 engine construction failed: \(error) — unloaded")
             }
             // Weight loading has ended, but keep the minimum-KV allowance
             // through post-build checks and any target-only rebuild.
-            await kvBudget.reducePendingLoad(acceptedLoad, remainingWeightBytes: 0)
+            if let acceptedLoad = pendingLoad {
+                await kvBudget.reducePendingLoad(acceptedLoad, remainingWeightBytes: 0)
+            }
             var bundle = slotBuild.bundle
             var sizing = slotBuild.sizing
             var bridge = bundle.bridge
@@ -1771,7 +1937,7 @@ public actor StandaloneServer {
             // BACKEND-AWARE: a PAGED slot commits only its conservative
             // physical plan. Require both a useful pool and residual
             // whole-machine headroom after the build.
-            MLX.Memory.clearCache()
+            if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: bridge.kvBackendKind,
                 pagedPoolBytes: await bridge.kvBackendPoolBytes(),
@@ -1786,19 +1952,19 @@ public actor StandaloneServer {
                     "mtp: model=\(modelId) fallback reason=\(reason.rawValue); rebuilding target-only")
                 await bridge.shutdown()
                 bundle.releaseAssistant()
-                MLX.Memory.clearCache()
+                if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                 do {
                     slotBuild = try await buildSlot(preparation: mtpPreparation.fallingBack(reason))
                 } catch {
                     await resliceGrowSurvivors()
-                    MLX.Memory.clearCache()
+                    if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                     throw StandaloneServerError.capacityUnavailable(
                         "Model '\(modelId)' MTP fallback engine construction failed: \(error) — unloaded")
                 }
                 bundle = slotBuild.bundle
-                sizing = slotBuild.sizing
+                    sizing = slotBuild.sizing
                 bridge = bundle.bridge
-                MLX.Memory.clearCache()
+                if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: bridge.kvBackendKind,
                     pagedPoolBytes: await bridge.kvBackendPoolBytes(),
@@ -1872,7 +2038,7 @@ public actor StandaloneServer {
                 }
             }
             // Release pool buffers a failed load left behind.
-            MLX.Memory.clearCache()
+            if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume(throwing: error)
             }

@@ -81,6 +81,11 @@ extension EngineV2Factory {
         public let pagedPoolDType: String?
         /// The engine's native Admission owns its complete process charge.
         public let usesProcessMemoryOwner: Bool
+        /// Exact engine resolution; nil preserves legacy assistant accounting.
+        public let mtpAdmissionResolution: CBv2MTPAdmissionResolution?
+        /// The old assistant-only variable term supplied by the slot factory.
+        /// A bounded result replaces this term; target charges remain intact.
+        public let legacyMTPBytesPerToken: Int
 
         /// Stable spelling consumed by benchmark artifact readers.
         public var resolvedKVBackendDescriptor: String {
@@ -94,7 +99,9 @@ extension EngineV2Factory {
             kvBackendKind: EngineV2KVBackendKind,
             kvBackendFallbackReason: String?,
             pagedPoolDType: String? = nil,
-            usesProcessMemoryOwner: Bool = false
+            usesProcessMemoryOwner: Bool = false,
+            mtpAdmissionResolution: CBv2MTPAdmissionResolution? = nil,
+            legacyMTPBytesPerToken: Int = 0
         ) {
             self.engine = engine
             self.fixedRequestBytes = fixedRequestBytes
@@ -102,6 +109,8 @@ extension EngineV2Factory {
             self.kvBackendFallbackReason = kvBackendFallbackReason
             self.pagedPoolDType = pagedPoolDType
             self.usesProcessMemoryOwner = usesProcessMemoryOwner
+            self.mtpAdmissionResolution = mtpAdmissionResolution
+            self.legacyMTPBytesPerToken = legacyMTPBytesPerToken
         }
     }
 
@@ -210,12 +219,20 @@ extension EngineV2Factory {
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             processMemoryOwner: processOwner)
+        // Direct makeProductionEngine callers discard the build metadata.
+        // Refuse here as well as in makeBridge, before an unusable engine can
+        // escape. No request has been submitted; construction owners unwind.
+        if case .unavailable(let reason)? = engine.resolvedMTPAdmission {
+            throw reason
+        }
         return ProductionBuild(
             engine: engine,
             fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
             kvBackendKind: preparedBackend.kind,
             kvBackendFallbackReason: preparedBackend.fallbackReason,
             pagedPoolDType: preparedBackend.pagedPoolDType,
-            usesProcessMemoryOwner: processOwner != nil)
+            usesProcessMemoryOwner: processOwner != nil,
+            mtpAdmissionResolution: engine.resolvedMTPAdmission,
+            legacyMTPBytesPerToken: mtpDrafter?.requestStateBytesPerToken ?? 0)
     }
 }

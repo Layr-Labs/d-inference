@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-22 · commit `73f8c13f`
+> Last updated: 2026-09-28 · commit `b6f9574ed`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -396,6 +396,53 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `off`, `enforce` | `off` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` | Prefill-deadline admission on the provider. |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL` | integer layers | projected from `provider.toml` (`18`) | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` | Gemma-4 prefill chunk-eval layers; the provider sets it for the engine, `scripts/install.sh` sets `18` for the smoke test. |
 | `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` | `0` skips | on | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VLMTextExtraction.swift` | VLM text-extraction parity check. |
+
+### Native MiMo V2.6 candidate
+
+These controls affect the dedicated [native MiMo path](../architecture/inference.md#native-mimo-v26-candidate).
+They do not add a catalog entry, bypass the advertised-model allowlist, grant
+media/audio capabilities or qualify a performance route. None of the
+`DARKBLOOM_MIMO_*` names below is a LaunchAgent passthrough entry; install
+process-scoped settings before first use and restart for latched kernel flags.
+
+| Control | Accepted enabling value | Default | Read in / effect |
+|---|---|---|---|
+| `backend.mtp_mode` for `mimo_v2` | `on`, subject to existing MTP kill switch | `auto` leaves MiMo MTP off | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.preparation` accepts embedded heads, not an external assistant path |
+| `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` | exact `1` | off; serial target when MTP is enabled | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`); does not itself enable MTP and remains subject to exact greedy/state qualification |
+| `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | exact `1` | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMoV26WiredResidency.swift` (`isEnabled`, `Bounds`, `Policy`); shared-manager, owned-lifetime acceleration only, never load admission or physical-page coverage proof |
+| `DARKBLOOM_MIMO_COMPLETE_PREFIX` | exact `1` AND existing model-scoped prefix-cache policy enabled | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+MiMoPrefix.swift` (`nativeMiMoPrefixRefusal`); text-only contiguous COMPLETE checkpoints, exact store/process/loaded-owner binding; decoded-media profiles keep an honest prefix miss |
+
+All kernel controls below default off. A requested flag is not effective
+dispatch: module ownership, actual device/stream, native dtype, shape,
+quantization, mask and admission checks still apply. Unsupported cases retain
+the existing implementation; required execution failures are not silently
+converted into successful fallback.
+
+| Variable | Values / type | Reader / scoped candidate |
+|---|---|---|
+| `DARKBLOOM_MIMO_FUSED_DECODE_NORMS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMoV26Text.swift` (`useFusedDecodeNorms`); native residual/norm tail |
+| `DARKBLOOM_MIMO_DECODE_ROUTER_GEMV` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMoV26DecodeRouter.swift` (`enabledByEnvironment`); eligible short-forward router |
+| `DARKBLOOM_MIMO_DECODE_EXPERTS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26DecodeExperts.swift` (`requested`); distinct-expert short-forward reuse |
+| `DARKBLOOM_MIMO_FP32_WEIGHTED_REDUCE` | trimmed, case-insensitive `1`, `true`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26FP32WeightedReduction.swift` (`isEnabled`); native FP32 weighted combine |
+| `DARKBLOOM_MIMO_V26_DECODE_ROWS` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26DecodeRows.swift` (`requested`); eligible singleton full-attention verification rows |
+
+| NAX variable | Values / type | Reader / scoped candidate |
+|---|---|---|
+| `DARKBLOOM_MIMO_V26_NAX_GATHER` | trimmed, case-insensitive `1`, `true`, `yes`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26NAXGatherQMM.swift` (`requested`); sorted native MXFP4 projection |
+| `DARKBLOOM_MIMO_V26_NAX_GATE_UP` | same affirmative values | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26NAXGateUp.swift` (`requested`); dual-input projection without resident weight concatenation |
+| `DARKBLOOM_MIMO_V26_NAX_SWIGLU` | exact `1` | `MiMoV26NAXGateUp.activationRequested`; epilogue preserves the original native rounding stages |
+| `DARKBLOOM_MIMO_V26_NAX_ROW_MAP` | exact `1` | `MiMoV26NAXGateUp.rowMapRequested`; requires the eligible SwiGLU path, reuses sorted route/inverse without repeated input-row materialization |
+| `DARKBLOOM_MIMO_V26_NAX_ATTENTION` | trimmed, case-insensitive `1`, `true`, `yes`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26NAXAttention.swift` (`requested`); three score passes preserve native Q/score/probability rounding and existing q128 visibility |
+| `DARKBLOOM_MIMO_BLOCK_BATCH_PREFILL` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26BlockBatchAttention.swift` (`requested`); separately admitted grouping of existing exact query blocks; also requires the NAX attention path |
+| `DARKBLOOM_MIMO_V26_SPLITKEY_QK` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26SplitKeyAttention.swift` (`requested`); isolated helper, not wired to managed attention |
+
+The ordered key-range helper
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26NAXAttentionKeyRanges.swift`
+also remains separate from ordinary dispatch until its state allocations are
+admitted and retained by a real native owner. Neither helper flag nor grouped
+prefill changes scheduler chunk defaults, precision, cache semantics or memory
+reserves. Port-specific eligibility and licenses are in the
+[SDK port map](../../libs/mlx-swift-lm/docs/mimo-v26/implementation-references.md).
 
 ### Native Flash-Next candidate
 

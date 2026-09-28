@@ -2388,7 +2388,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	profileDBCall(rp, registryReadStart2)
 	cachePlan := s.planCacheRoute(
-		r.Context(), consumerKey, model, providerBody, requiresVision)
+		r.Context(), consumerKey, model, providerBody, cachePlanHasMedia(requiresVision, parsed))
 	rp.Mark(registry.StampReqPlanDone)
 	if rp != nil {
 		rp.Model, rp.PublicModel, rp.Stream = model, publicModel, stream
@@ -2990,7 +2990,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	consumerEndpoint, requestedStopSequences := genericResponseMetadata(endpoint, parsed)
 	if loweringErr == nil {
 		cachePlan = s.planCacheRoute(
-			r.Context(), consumerKey, model, inferenceBody, requiresVision)
+			r.Context(), consumerKey, model, inferenceBody, cachePlanHasMedia(requiresVision, parsed))
 	} else {
 		// Endpoint lowering is a cache-routing eligibility boundary, not a new
 		// inference rejection. Preserve the existing generic endpoint behavior

@@ -135,6 +135,7 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXLMServer", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
+                .product(name: "Jinja", package: "swift-jinja"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Sodium", package: "swift-sodium"),
                 .product(name: "TOMLKit", package: "TOMLKit"),

@@ -89,6 +89,20 @@ extension ProviderLoop {
     internal func recoverEngineV2SlotIfWedged(
         modelId: String, now: ContinuousClock.Instant
     ) async {
+        // Native construction is one-shot. Refuse before binding a whole slot,
+        // moving/releasing its assistant or attempting a warm replacement.
+        if nativeMiMoLoads[modelId] != nil
+            || modelSlots[modelId].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) != nil {
+            guard !modelsLoading.contains(modelId), !modelsUnloading.contains(modelId),
+                let bridge = modelSlots[modelId]?.engineV2,
+                await bridge.confirmedWedgeForRecovery(now: now),
+                modelSlots[modelId]?.engineV2 === bridge else { return }
+            recordModelLoadError(model: modelId,
+                                 message: "Native MiMo slot failed; confirmed retirement or process restart required")
+            _ = await retireNativeMiMoOwner(modelID: modelId)
+            return
+        }
+        guard nativeMiMoAllowsReclamation() else { return }
         guard let slot = modelSlots[modelId],
             !modelsUnloading.contains(modelId),
             !modelsLoading.contains(modelId)
@@ -178,7 +192,7 @@ extension ProviderLoop {
         // engine — BOUNDED by the engine's shutdown timeout (a wedged
         // queue force-finishes streams instead of hanging forever).
         await bridge.shutdown()
-        MLX.Memory.clearCache()
+        clearCacheAfterConfirmedNativeOwnership()
 
         let rebuildStartedAt = ContinuousClock.now
         do {
@@ -221,7 +235,7 @@ extension ProviderLoop {
             // makeEngineV2BundleForSlot re-registered `newBridge` in
             // engineV2Runtime (replacing the old bridge's entry).
 
-            MLX.Memory.clearCache()
+            clearCacheAfterConfirmedNativeOwnership()
             var postBuildServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: newBridge.kvBackendKind,
                 pagedPoolBytes: await newBridge.kvBackendPoolBytes(),
@@ -246,7 +260,7 @@ extension ProviderLoop {
                 await engineV2Runtime.unregister(modelId: modelId)
                 await newBridge.shutdown()
                 newBundle.releaseAssistant()
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 rebuildPreparation = rebuildPreparation.fallingBack(reason)
                 prepared = prepared.fallingBack(reason)
                 rebuiltSizing = slot.sizing.replacingAuxiliaryWeightBytes(0)
@@ -263,7 +277,7 @@ extension ProviderLoop {
                     preparedModel: prepared,
                     cacheEligibleWeightHash: slot.cacheEligibleWeightHash)
                 newBridge = newBundle.bridge
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 postBuildServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: newBridge.kvBackendKind,
                     pagedPoolBytes: await newBridge.kvBackendPoolBytes(),
@@ -274,7 +288,7 @@ extension ProviderLoop {
                 await engineV2Runtime.unregister(modelId: modelId)
                 await newBridge.shutdown()
                 newBundle.releaseAssistant()
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 throw InferenceError.modelLoadFailed(
                     "engine_v2 self-restart of '\(modelId)' left insufficient KV headroom")
             }
@@ -296,7 +310,7 @@ extension ProviderLoop {
                 await engineV2Runtime.unregister(modelId: modelId)
                 await newBridge.shutdown()
                 newBundle.releaseAssistant()
-                MLX.Memory.clearCache()
+                clearCacheAfterConfirmedNativeOwnership()
                 releaseResliceGate()
                 logger.warning(
                     "engine_v2 liveness: \(modelId) was unloaded mid-recovery — rebuilt engine discarded")

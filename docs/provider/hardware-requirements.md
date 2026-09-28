@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-22 · commit `6253ca765`
+> Last updated: 2026-09-28 · commit `b6f9574ed`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -27,6 +27,36 @@ or throughput guarantee follows from the capability flag.
 | Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`ssdDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 | Network | Outbound `wss://api.darkbloom.dev/ws/provider` and HTTPS on 443; a heartbeat every `heartbeat_interval_secs` ([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli)); no inbound port | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
 | Security posture | SIP enabled and Full Security boot; a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |
+
+## MiMo candidate qualification scope
+
+The [native MiMo V2.6 candidate](../architecture/inference.md#native-mimo-v26-candidate)
+has no qualified minimum RAM tier or sustained-throughput guarantee. Its
+managed loader prices the complete validated load plan, including retained
+trained components; a separately loaded audio codec has its own admitted owner.
+File size, header estimates and logical permit settlement are not measured
+whole-process peak residency. The configured native context is not replaced by
+a smaller benchmark input bound.
+
+The existing load cap, operator reserve, activation reserve, KV allowance and
+live OS-headroom checks remain decisive. The optional standing-residency policy
+uses the shared MLX manager and computes its group ceiling after allowing the
+larger of 16 GiB or 10% of physical RAM for unwired system use. It does not lower
+a pre-existing manager baseline or cap other policy groups, so this is not a
+process-wide unwired-reserve guarantee. A manager return is neither proof that
+particular pages are wired nor a grant to load a model.
+
+NAX kernels additionally require the pinned core's actual device/OS/build
+capability and compatible GPU streams. An M5 label alone is not eligibility;
+non-NAX devices retain the native fallback. Neither component skips on another
+device nor benchmark completion qualifies all RAM configurations.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMoV26ServingLoad.swift`
+(`estimatedWeightsGb`),
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMoV26AudioSidecarReservation.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMoV26WiredResidency.swift` (`Bounds.safeCeiling`, `Policy`), and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/MiMoV26NAXGatherQMM.swift`
+(`gpuStream`, `naxAvailable`).
 
 ## Bonsai 2 qualification scope
 

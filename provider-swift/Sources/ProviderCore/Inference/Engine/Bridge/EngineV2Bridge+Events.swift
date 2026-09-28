@@ -36,6 +36,7 @@ extension EngineV2Bridge {
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
         }
         pumpTasks[id] = task
+        if nativeShutdownClosed { nativeShutdownTasks.append(task) }
     }
 
     /// Remove a completed pump's task handle (called from the pump task after

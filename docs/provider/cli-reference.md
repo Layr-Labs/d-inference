@@ -1,12 +1,12 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-28 · commit `b6f9574ed`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.7` in
+version `ProviderCore.version` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
@@ -919,6 +919,15 @@ override `provider.toml` for one process, are in
 | `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`) |
 
 ## LaunchAgent environment passthrough
+
+The [MiMo candidate controls](../reference/configuration.md#native-mimo-v26-candidate)
+are process-scoped opt-ins, not new CLI subcommands or release switches. They
+are not included in `LaunchAgent.inferencePassthroughEnvKeys`; do not assume a
+shell flag reaches an installed daemon. The native benchmark uses the managed
+load/retirement route. Exact native MiMo ordinary dispatch is implemented;
+benchmark success alone does not qualify API or catalog availability. `mtp_mode = "auto"` does not select MiMo's heads, and the rectangular
+flag does not itself enable MTP. No documented flag enables missing paging,
+media-prefix or coordinator audio capabilities.
 
 The [Bonsai performance profile](../reference/configuration.md#bonsai-performance-qualification)
 uses source-default-on eligible paths in foreground and daemon processes. It

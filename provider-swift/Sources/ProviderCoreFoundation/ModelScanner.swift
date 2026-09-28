@@ -1,5 +1,10 @@
 import Foundation
 import Logging
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 // MARK: - Model Scanner
 
@@ -168,6 +173,27 @@ public struct ModelScanner: Sendable {
 
     // MARK: - Weight File Collection
 
+    /// MiMo's strict native loader consumes one of these source-bound receipts.
+    /// Include it in both local attestation and the publisher/downloader file
+    /// list. Do not expand the global filename policy: unrelated existing model
+    /// aggregates must not change merely because they contain a conversion log.
+    private static func modelSpecificIntegrityFileNames(in root: URL) -> Set<String> {
+        // HF snapshot symlinks are supported, but never block opening a FIFO
+        // or read a special/oversized file during ordinary model discovery.
+        let url = root.appendingPathComponent("config.json").resolvingSymlinksInPath()
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return [] }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var state = stat()
+        guard fstat(fd, &state) == 0, (state.st_mode & S_IFMT) == S_IFREG,
+              state.st_size > 0, state.st_size <= 1_048_576,
+              let data = try? handle.read(upToCount: 1_048_577), data.count == Int(state.st_size),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["model_type"] as? String == "mimo_v2" else { return [] }
+        return ["conversion_manifest.json", "artifact-provenance.json"]
+    }
+
     /// Whether a filename is an integrity-relevant file (weight or config/tokenizer/template).
     public static func isIntegrityFile(_ name: String) -> Bool {
         if weightExtensions.contains(where: { name.hasSuffix($0) }) {
@@ -238,6 +264,7 @@ public struct ModelScanner: Sendable {
     /// calculation.
     public static func collectWeightFiles(in snapshotDir: URL) -> (sizeBytes: UInt64, paths: [URL]) {
         let fm = FileManager.default
+        let modelMetadata = modelSpecificIntegrityFileNames(in: snapshotDir)
         guard let enumerator = fm.enumerator(
             at: snapshotDir,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
@@ -251,7 +278,9 @@ public struct ModelScanner: Sendable {
 
         for case let entry as URL in enumerator {
             let name = entry.lastPathComponent
-            guard isIntegrityFile(name) else { continue }
+            let isRootModelMetadata = entry.deletingLastPathComponent().standardizedFileURL == snapshotDir.standardizedFileURL
+                && modelMetadata.contains(name)
+            guard isIntegrityFile(name) || isRootModelMetadata else { continue }
 
             let isWeight = isWeightFile(name)
 

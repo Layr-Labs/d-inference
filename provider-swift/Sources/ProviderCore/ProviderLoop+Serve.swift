@@ -339,6 +339,7 @@ extension ProviderLoop {
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        closeNativeMiMoLifecycle() // close native generation before teardown awaits
         // Quote path mirror (routing v2): a shutting-down provider quotes
         // `slot_state` rejections for the brief window the socket stays up.
         state.refusingNewWork = true
@@ -392,6 +393,11 @@ extension ProviderLoop {
             await cancelAllInflight()
         }
         await coordinator.shutdown()
+        guard await drainNativeMiMoOwners() else {
+            // Real registry/slot/consumer owners stay reachable. A pending or
+            // faulted native engine is not an empty successful shutdown.
+            throw InferenceError.modelLoadFailed("Native MiMo slot shutdown remains pending or requires process restart")
+        }
         while !modelSlots.isEmpty {
             if let unloading = modelsUnloading.first {
                 await waitForModelUnload(unloading)

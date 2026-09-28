@@ -2,8 +2,9 @@ import Foundation
 import MLXLMCommon
 
 extension EngineV2Bridge {
-    func setMeasurementActivity(_ activity: EngineMeasurementActivity) {
+    func setMeasurementActivity(_ activity: EngineMeasurementActivity, updates: EnginePerformanceUpdates? = nil) {
         measurementActivity = activity
+        performanceUpdates = updates
     }
 
     /// Engine callback receipts are authoritative even if the actor has not yet
@@ -20,6 +21,9 @@ extension EngineV2Bridge {
         let work = usage.promptTokens - saved
         prefillTokensTotal = Self.saturatingCounter(prefillTokensTotal, adding: work)
         prefillRequestsTotal = Self.saturatingCounter(prefillRequestsTotal, adding: 1)
+        // Valid computed work is useful even when vision/reuse or the timing
+        // window excludes the rate. Publish after all counters and EWMAs agree.
+        defer { performanceUpdates?.notify() }
         guard usage.timing.visionChunks == 0,
             saved > 0 ? usage.prefixCacheOutcome == .hit : Self.isColdPrefillSample(usage: usage),
             let seconds = EngineV2NativeBlockTiming.prefillSeconds(usage.timing),
@@ -104,6 +108,7 @@ extension EngineV2Bridge {
     func recordGenerationWork(completion: Int) {
         generatedTokensTotal = Self.saturatingCounter(generatedTokensTotal, adding: completion)
         generationRequestsTotal = Self.saturatingCounter(generationRequestsTotal, adding: 1)
+        performanceUpdates?.notify()
     }
 
     /// A committed admission torn down before active state has no event pump.

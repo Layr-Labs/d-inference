@@ -255,6 +255,7 @@ public actor EngineV2Bridge {
     /// Heartbeat health is sampled from the engine's monotonic step counter.
     var wedgeMonitor = WedgeMonitor()
     var measurementActivity = EngineMeasurementActivity()
+    var performanceUpdates: EnginePerformanceUpdates?
     var performanceMeasurements = EnginePerformanceMeasurements()
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0

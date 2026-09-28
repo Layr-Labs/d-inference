@@ -156,9 +156,19 @@ public enum ServingPerformanceProfiles {
         return Int(min(max(1, configured), UInt64(ceiling)))
     }
 
-    public static func summary(configured: UInt64, automatic: Bool = false) -> String {
-        let prefix = automatic ? "Automatic profile selection; unknown profiles keep default 4" :
-            "Operator cap \(configured); unknown profiles keep cap \(concurrency(configured: configured))"
-        return prefix + "; higher widths require an exact reviewed model/runtime/hardware profile"
+    /// Configured defaults and exact operator overrides, shared by status and
+    /// doctor. Loaded-slot telemetry owns the final runtime/architecture cap.
+    public static func summary(backend: BackendSettings) -> String {
+        let configured = backend.engineV2MaxConcurrent
+        let prefix = !backend.engineV2MaxConcurrentIsExplicit
+            ? "Automatic default; unknown profiles keep default \(BackendSettings.defaultEngineV2MaxConcurrent)" :
+            "Default operator cap \(configured); unknown profiles keep cap \(concurrency(configured: configured))"
+        let overrides = backend.engineV2MaxConcurrentByModel.sorted { $0.key < $1.key }.map { entry in
+            let fallback = concurrency(configured: entry.value)
+            let bound = UInt64(fallback) == entry.value ? "" : " (unknown profile: \(fallback))"
+            return "\(entry.key)=\(entry.value)\(bound)"
+        }
+        let models = overrides.isEmpty ? "" : "; model overrides: " + overrides.joined(separator: ", ")
+        return prefix + models + "; higher widths require an exact reviewed model/runtime/hardware profile"
     }
 }

@@ -652,6 +652,9 @@ public actor ProviderLoop {
     /// Rebuild capacity on shared service acquisition/retirement, independently
     /// of slot counters and the periodic capacity monitor.
     internal var serviceAllowanceRefreshTask: Task<Void, Never>?
+    /// Rebuild after once-only prompt/terminal measurements, independent of
+    /// output tokens and the periodic monitor. The heartbeat throttle bounds sends.
+    internal var performanceRefreshTask: Task<Void, Never>?
 
     /// Background task that periodically checks for provider updates and
     /// applies them automatically. nil when auto-update is disabled or

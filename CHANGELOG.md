@@ -18,8 +18,8 @@
 
 ## Unreleased — provider measurements and placement
 
-- Publish prompt-completion observations before generation finishes, with sample age/count, workload buckets and cross-model contention. Keep engine decode capacity, delivered streaming and end-to-end throughput separate.
-- Add exact reviewed serving profiles, per-engine mixed-prefill policy and a shared whole-Mac service allowance. Unknown profiles retain existing limits; no M5 B8/B16 expansion is certified by this change.
+- Publish prompt-completion observations through coalesced event heartbeats, with sample age/count, workload buckets and cross-model contention. Keep engine decode capacity, delivered streaming and end-to-end throughput separate.
+- Add exact reviewed serving profiles, per-engine mixed-prefill policy and a shared whole-Mac service allowance. Show explicit per-model concurrency overrides in status and doctor diagnostics. Unknown profiles retain existing limits; no M5 B8/B16 expansion is certified by this change.
 - Size warm pools using actual prompt/generation work and qualified batch curves, keep one model-load planner, retain load hysteresis and use fresh WebSocket RTT in first-content forecasts.
 - Extend arrival benchmarks through width 16 and add a qualification receipt evaluator that rejects missing performance, correctness, memory and lifecycle evidence.
 

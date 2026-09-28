@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-09-28 · commit `cbf98076b`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -67,6 +67,14 @@ prefill rates. Cross-model activity is tracked across the shared runtime, not
 inferred from one engine's occupancy. Engine decode rate ends at the last
 confirmed token, excluding terminal delivery delays; delivered and end-to-end
 rates remain separate.
+
+Consuming a valid prompt receipt requests an aggregate capacity rebuild
+independently of generation completion. New measurement epochs, sample counts and cumulative work
+counters are event-heartbeat material; advancing sample age alone is not.
+`CapacityHeartbeatMateriality` and `CapacityHeartbeatThrottle` in
+`provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift` retain the
+existing two-per-second cap and trailing-edge coalescing, so a busy provider
+publishes the newest evidence without sending one heartbeat per token.
 
 `provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`
 matches reviewed data to verified model weights, provider/runtime revision,

@@ -148,16 +148,27 @@ func TestReserveProviderWithPlanPrimarySelectionUnchanged(t *testing.T) {
 	if pA == nil || pB == nil || pA.ID != pB.ID {
 		t.Fatalf("winners differ: ReserveProviderEx=%v ReserveProviderWithPlan=%v", pA, pB)
 	}
-	// The profiler's wall-clock stamps (lock wait, scan, admit, heartbeat age
-	// — on the decision AND inside the candidate summaries) legitimately differ
+	// The profiler's wall-clock stamps (lock wait, scan, admit, heartbeat and
+	// first-content evidence ages, on the decision and candidate summaries) differ
 	// between two reservations built a few hundred microseconds apart;
-	// everything else must match.
+	// unknown-age sentinels and every forecast/selection value must still match.
+	normalizeEvidenceAges := func(estimate *FirstContentEstimate) {
+		for _, age := range []*int32{&estimate.CapacityAgeMs, &estimate.PerformanceAgeMs, &estimate.TransportAgeMs} {
+			if *age >= 0 {
+				*age = 0
+			}
+		}
+	}
 	for _, d := range []*RoutingDecision{&decA, &decB} {
 		d.LockWaitUS, d.ScanUS, d.AdmitUS, d.SnapshotAgeMs = 0, 0, 0, 0
+		normalizeEvidenceAges(&d.FirstContent)
 		for i := range d.Top {
 			d.Top[i].HBAgeMs = 0
+			normalizeEvidenceAges(&d.Top[i].FirstContent)
 		}
 		d.RunnerUp.HBAgeMs, d.BestIdle.HBAgeMs = 0, 0
+		normalizeEvidenceAges(&d.RunnerUp.FirstContent)
+		normalizeEvidenceAges(&d.BestIdle.FirstContent)
 	}
 	if decA != decB {
 		t.Fatalf("decisions differ:\n ex:   %+v\n plan: %+v", decA, decB)

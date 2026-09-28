@@ -20,9 +20,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// Payout is the persisted provider wallet payout record.
-type Payout = store.ProviderPayout
-
 // UsageEntry records a single inference charge for usage history.
 type UsageEntry struct {
 	JobID            string    `json:"job_id"`
@@ -134,13 +131,4 @@ func (l *Ledger) Usage(consumerID string) []UsageEntry {
 	out := make([]UsageEntry, len(entries))
 	copy(out, entries)
 	return out
-}
-
-// AllPayouts returns a copy of all payouts (settled and unsettled).
-func (l *Ledger) AllPayouts() []Payout {
-	payouts, err := l.store.ListProviderPayouts()
-	if err != nil {
-		return []Payout{}
-	}
-	return payouts
 }

@@ -127,7 +127,7 @@ struct InferenceLiveTests {
                 ) { response in
                     let responseBody = String(buffer: response.body)
                     #expect(response.status == .ok, "standalone response for \(model): \(response.status) \(responseBody)")
-                    let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: Data(responseBody.utf8))
+                    let decoded = try JSONDecoder().decode(LiveChatCompletion.self, from: Data(responseBody.utf8))
                     #expect(decoded.model == model)
                     let choice = try #require(decoded.choices.first, "standalone response has no choices")
                     #expect(!choice.message.content.isEmpty)
@@ -352,6 +352,19 @@ struct InferenceLiveTests {
             "decode -> encode round-trip drifted by \(drift) tokens (orig: \(tokenIds.count), reencoded: \(reencoded.count))"
         )
     }
+}
+
+/// The fields of a non-streaming `/v1/chat/completions` response this suite
+/// asserts on (the server encodes the upstream MLXLMServer response type).
+private struct LiveChatCompletion: Decodable {
+    struct Choice: Decodable {
+        struct Message: Decodable { let content: String }
+        let message: Message
+    }
+    struct Usage: Decodable { let completion_tokens: Int }
+    let model: String
+    let choices: [Choice]
+    let usage: Usage
 }
 
 private func liveModelInfo(

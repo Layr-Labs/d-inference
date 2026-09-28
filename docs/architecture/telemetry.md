@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-26 · commit `c60610bb1`
+> Last updated: 2026-09-27 · commit `ca4eb0b16`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -20,9 +20,9 @@ Providers run on machines the project does not own, next to prompts the
 project must never see. The first telemetry design gave every client (Swift
 provider, console, app) a free-form event API posted to
 `POST /v1/telemetry/events`, sanitized and stored by the coordinator.
-That path is retired: the route answers `telemetry_ingest_disabled` without reading the body ([api-contracts](../reference/api-contracts.md#telemetry-1)), the Swift
-`TelemetryClient` and console `telemetry.ts` are no-op facades, and the
-`telemetry_events` table is gone. What replaced it is narrower and structural:
+That path is retired: the coordinator no longer registers the route (a stale
+client gets a plain 404), the Swift `TelemetryClient` and console
+`telemetry.ts` are no-op facades, and the `telemetry_events` table is gone. What replaced it is narrower and structural:
 
 - the **heartbeat** already carries every operational fact the coordinator
   needs (status, slot capacity, engine health, GPU memory, allocator counters),
@@ -34,9 +34,11 @@ That path is retired: the route answers `telemetry_ingest_disabled` without read
   `request_profiles`) and the profiler's `profile` object hold request-level
   timing without any request content.
 
-The event shape and allowlist survive because they still bound the coordinator
-emitter and both client-side filters, and because reviving ingestion would have
-to start from them.
+The event shape survives because it still bounds the coordinator emitter, and
+because reviving ingestion would have to start from it. There is no server-side
+field allowlist any more: with nothing ingesting client events, it filtered
+nothing. The privacy guarantee rests on there being no client ingestion path at
+all and on the emitter's call sites passing fixed operational keys.
 
 ## Mechanism
 
@@ -269,23 +271,17 @@ and the `inference.timing.*` histograms are built from the same
 
 ## Invariants
 
-1. **No prompt or completion text on any telemetry path.** The field allowlist
-   (`telemetryFieldAllowlist`, `coordinator/api/telemetry_handlers.go`) admits
-   only bounded enums, counters, byte counts and durations; media, prompt,
-   token and cache-key content are excluded by construction and the comments
-   at each group say so. `sanitizeProviderInferenceError`
+1. **No prompt or completion text on any telemetry path.** The coordinator
+   accepts no client telemetry, and each emitter call site passes only bounded
+   enums, counters, byte counts and durations; media, prompt, token and
+   cache-key content are excluded by construction. `sanitizeProviderInferenceError`
    (`coordinator/api/inference_error_sanitize.go`) never reads the provider's
    `error` string. The `profile` object is length-checked opaque bytes on the
    read loop and decoded only on the sink worker. Swift free-form log strings
    are `privacy: .private`.
-2. **Three mirrors, one set.** The Go allowlist, Swift
-   `TelemetryFieldFilter.allowed` and TS `TELEMETRY_ALLOWED_FIELDS` are parsed
-   from source and compared by `TestTelemetryAllowlistThreeWayParity`
-   (`coordinator/api/telemetry_allowlist_parity_test.go`); the enums and JSON
-   encoding by `coordinator/protocol/telemetry_symmetry_test.go` and
-   `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift`. The
-   five shipped gaps are enumerated in `telemetryKnownMirrorGaps` and a stale
-   entry fails the build.
+2. **Three mirrors, one shape.** The event enums and JSON encoding are pinned by
+   `coordinator/protocol/telemetry_symmetry_test.go` and
+   `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift`.
 3. **Telemetry never changes control flow.** Nil emitter, nil Datadog client,
    full sink and unreachable intake are all silent no-ops or counted drops.
    Engine-health, `kv_backend` and `telemetry` heartbeat fields are
@@ -295,9 +291,9 @@ and the `inference.timing.*` histograms are built from the same
    and `KVBackendFallbackTag` (`coordinator/registry/kv_backend.go`) bound
    every provider-supplied string before it becomes a tag; `provider_id`
    appears only on the per-provider memory gauges.
-5. **Client ingestion is off, and stays off without reading a byte.**
-   `handleTelemetryIngest` answers `telemetry_ingest_disabled` before touching the body
-   (`TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody`).
+5. **There is no client ingestion route.** `POST /v1/telemetry/events` is not
+   registered; the mux answers 404 without reading the body
+   (`TestTelemetryE2E_NoClientIngestionRoute`, `coordinator/api/telemetry_e2e_test.go`).
 
 ## Failure modes
 
@@ -311,7 +307,7 @@ and the `inference.timing.*` histograms are built from the same
 | Heartbeat prefix-cache telemetry fails validation | dropped for that frame | `routing.cache_telemetry_rejected{source:heartbeat}` |
 | Provider older than the profiler slice | `slots[].telemetry` absent; wedge metrics silent for all-zero slots; `fleet_snapshots` telemetry columns zero | `provider_version` column |
 | Abrupt disconnect at high memory pressure | classified OOM (`≥ 0.90`, or `≥ 0.80` with in-flight work) | `provider.oom_suspected`, `ws.disconnects`, `provider_sessions.disconnect_reason` |
-| Allowlist edited in one mirror only | CI fails | `TestTelemetryAllowlistThreeWayParity` |
+| Event enum or encoding edited in one mirror only | CI fails | `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` (`coordinator/protocol/telemetry_symmetry_test.go`) |
 | Expecting trace correlation | `dd.trace_id` never present (no spans) | use `request_id` |
 
 Cache receipt diagnostics use `exact_cache.receipt` (Datadog) and
@@ -342,16 +338,16 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Wiring and env | `coordinator/cmd/coordinator/main.go` |
 | Coordinator event emitter | `coordinator/telemetry/emitter.go`; helpers and gauge loop in `coordinator/api/server.go` |
 | In-process metrics registry | `coordinator/api/metrics.go`; `handleAdminMetrics` in `coordinator/api/server.go` |
-| Event shape, allowlist, retired ingest | `coordinator/protocol/telemetry.go`, `coordinator/api/telemetry_handlers.go` |
+| Event shape | `coordinator/protocol/telemetry.go` |
 | Sinks | `coordinator/api/telemetry_sink.go`, `coordinator/api/profiler_sink.go`, `coordinator/api/profiler_fleet.go` |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
-| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
+| Tests | `coordinator/api/telemetry_e2e_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
 
 ## Related
 
 - [`../reference/telemetry-inventory.md`](../reference/telemetry-inventory.md) — every datum, metric name, tag, cadence and retention
-- [`../reference/telemetry-schema.md`](../reference/telemetry-schema.md) — event fields, enums, allowlist, symmetry tests
+- [`../reference/telemetry-schema.md`](../reference/telemetry-schema.md) — event fields, enums, symmetry tests
 - [`../reference/protocol-messages.md`](../reference/protocol-messages.md) — heartbeat wire shape
 - [`system-profiler.md`](system-profiler.md) — per-attempt `profile`, `request_profiles`, `fleet_snapshots`
 - [`request-outcome-observability.md`](request-outcome-observability.md) — outcome taxonomy behind the request metrics

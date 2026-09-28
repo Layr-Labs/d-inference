@@ -97,7 +97,7 @@ private func makeSweepWiringLoop() throws -> ProviderLoop {
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    return try ProviderLoop(config: config, attestationSigner: nil)
 }
 
 /// Poll `condition` until true or the timeout elapses. Returns the final

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,5 +102,36 @@ func TestAccountEarningsUsesLifetimeTotalsAndCurrentBalance(t *testing.T) {
 	}
 	if resp.Earnings[0].JobID != "job-2" {
 		t.Fatalf("latest earning job_id = %q, want job-2", resp.Earnings[0].JobID)
+	}
+}
+
+// TestWalletEarningsLookupRemoved pins the removal of the unauthenticated
+// GET /v1/provider/earnings?wallet=<id> lookup (threat model T-031). It took
+// an account ID and returned that account's balance and ledger to anyone, so
+// an account-holding caller must get a 404 with none of the account's data.
+func TestWalletEarningsLookupRemoved(t *testing.T) {
+	srv, st := testServer(t)
+
+	accountID := "acct-wallet-lookup"
+	if err := st.Credit(accountID, 450_000, store.LedgerPayout, "job-1"); err != nil {
+		t.Fatalf("Credit: %v", err)
+	}
+
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/v1/provider/earnings?wallet="+accountID, nil),
+		func() *http.Request {
+			r := httptest.NewRequest(http.MethodGet, "/v1/provider/earnings", nil)
+			r.Header.Set("X-Provider-Wallet", accountID)
+			return r
+		}(),
+	} {
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s: status = %d, want 404; body = %s", req.URL, w.Code, w.Body.String())
+		}
+		if body := w.Body.String(); strings.Contains(body, "450000") || strings.Contains(body, "balance") {
+			t.Fatalf("%s: response leaks account data: %s", req.URL, body)
+		}
 	}
 }

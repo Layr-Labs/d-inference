@@ -27,7 +27,7 @@ struct AutoUpdate: AsyncParsableCommand {
         Darkbloom.ensureLogging()
         switch action.lowercased() {
         case "status":
-            let snapshot = try loadRuntimeSnapshot(configPath: configOptions.config, migrateOnDisk: false)
+            let snapshot = try loadRuntimeSnapshot(configPath: configOptions.config)
             print("Auto-update is \(snapshot.config.provider.autoUpdate ? "ENABLED" : "DISABLED")")
             print("Config: \(describeConfigPath(snapshot))")
 
@@ -52,9 +52,9 @@ struct AutoUpdate: AsyncParsableCommand {
 /// config commands. A snapshot read before a switch cannot write old models
 /// over the switch's durable selection.
 func setAutoUpdate(_ value: Bool, configPath: String?) throws {
-    // Avoid a migration write before the sidecar lock. The selected path is
-    // reloaded by withMutableConfig after acquiring the switch's lock.
-    try withMutableConfig(configPath: configPath, migrateOnDisk: false) { path, config in
+    // Read the config only under the sidecar lock: withMutableConfig reloads
+    // the selected path after acquiring the switch's lock.
+    try withMutableConfig(configPath: configPath) { path, config in
         if config.provider.autoUpdate == value,
            FileManager.default.fileExists(atPath: path.path) {
             return

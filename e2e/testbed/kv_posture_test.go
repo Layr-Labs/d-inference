@@ -125,6 +125,11 @@ func TestDefaultPostureIsLoggedAndDisablesPersistentServices(t *testing.T) {
 	if err := p.Start(ctx, "http://127.0.0.1:1/ws/provider", DefaultProviderConfig()); err != nil {
 		t.Fatal(err)
 	}
+	// Stop removes StateDir, so read the written config first.
+	written, err := os.ReadFile(filepath.Join(p.StateDir, "provider.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	p.Stop()
 
 	if got := log.String(); !strings.Contains(got, "provider KV posture") ||
@@ -132,8 +137,8 @@ func TestDefaultPostureIsLoggedAndDisablesPersistentServices(t *testing.T) {
 		t.Fatalf("default launch logged no KV posture:\n%s", got)
 	}
 	for _, want := range []string{"auto_update = false", "auto_restart = false"} {
-		if !strings.Contains(p.generatedConfig, want) {
-			t.Fatalf("default testbed config missing %q:\n%s", want, p.generatedConfig)
+		if !strings.Contains(string(written), want) {
+			t.Fatalf("default testbed config missing %q:\n%s", want, written)
 		}
 	}
 }

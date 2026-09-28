@@ -733,7 +733,7 @@ extension EngineV2Bridge {
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
 
-        // Emit one allowlisted engagement event for an accepted media request.
+        // Emit one engagement event for an accepted media request.
         if multimodal != nil {
             emitVisionSubmitTelemetry(requestId: id, mediaKind: mediaKind)
         }

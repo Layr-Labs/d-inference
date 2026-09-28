@@ -204,13 +204,10 @@ public enum ProviderMessage: Sendable, Equatable {
         public var version: String?
         public var publicKey: String?
         public var encryptedResponseChunks: Bool
-        public var walletAddress: String?
         public var attestation: RawJSON?
         public var prefillTps: Double?
         public var decodeTps: Double?
         public var authToken: String?
-        public var pythonHash: String?
-        public var runtimeHash: String?
         public var templateHashes: [String: String]
         public var privacyCapabilities: PrivacyCapabilities?
         public var runtimeCapabilities: [ProviderRuntimeCapability]
@@ -242,13 +239,10 @@ public enum ProviderMessage: Sendable, Equatable {
             version: String? = nil,
             publicKey: String? = nil,
             encryptedResponseChunks: Bool = false,
-            walletAddress: String? = nil,
             attestation: RawJSON? = nil,
             prefillTps: Double? = nil,
             decodeTps: Double? = nil,
             authToken: String? = nil,
-            pythonHash: String? = nil,
-            runtimeHash: String? = nil,
             templateHashes: [String: String] = [:],
             privacyCapabilities: PrivacyCapabilities? = nil,
             runtimeCapabilities: [ProviderRuntimeCapability] = [],
@@ -270,13 +264,10 @@ public enum ProviderMessage: Sendable, Equatable {
             self.version = version
             self.publicKey = publicKey
             self.encryptedResponseChunks = encryptedResponseChunks
-            self.walletAddress = walletAddress
             self.attestation = attestation
             self.prefillTps = prefillTps
             self.decodeTps = decodeTps
             self.authToken = authToken
-            self.pythonHash = pythonHash
-            self.runtimeHash = runtimeHash
             self.templateHashes = templateHashes
             self.privacyCapabilities = privacyCapabilities
             self.runtimeCapabilities = runtimeCapabilities.sorted()
@@ -752,8 +743,6 @@ public enum ProviderMessage: Sendable, Equatable {
         public var secureBootEnabled: Bool?
         public var binaryHash: String?
         public var activeModelHash: String?
-        public var pythonHash: String?
-        public var runtimeHash: String?
         public var templateHashes: [String: String]
         public var modelHashes: [String: String]
 
@@ -767,8 +756,6 @@ public enum ProviderMessage: Sendable, Equatable {
             secureBootEnabled: Bool? = nil,
             binaryHash: String? = nil,
             activeModelHash: String? = nil,
-            pythonHash: String? = nil,
-            runtimeHash: String? = nil,
             templateHashes: [String: String] = [:],
             modelHashes: [String: String] = [:]
         ) {
@@ -781,8 +768,6 @@ public enum ProviderMessage: Sendable, Equatable {
             self.secureBootEnabled = secureBootEnabled
             self.binaryHash = binaryHash
             self.activeModelHash = activeModelHash
-            self.pythonHash = pythonHash
-            self.runtimeHash = runtimeHash
             self.templateHashes = templateHashes
             self.modelHashes = modelHashes
         }
@@ -889,13 +874,10 @@ extension ProviderMessage: Codable {
         case hardware, models, backend, version
         case publicKey = "public_key"
         case encryptedResponseChunks = "encrypted_response_chunks"
-        case walletAddress = "wallet_address"
         case attestation
         case prefillTps = "prefill_tps"
         case decodeTps = "decode_tps"
         case authToken = "auth_token"
-        case pythonHash = "python_hash"
-        case runtimeHash = "runtime_hash"
         case templateHashes = "template_hashes"
         case privacyCapabilities = "privacy_capabilities"
         case runtimeCapabilities = "runtime_capabilities"
@@ -999,13 +981,10 @@ extension ProviderMessage: Codable {
             if r.encryptedResponseChunks {
                 try container.encode(true, forKey: .encryptedResponseChunks)
             }
-            try container.encodeIfPresent(r.walletAddress, forKey: .walletAddress)
             try container.encodeIfPresent(r.attestation, forKey: .attestation)
             try container.encodeIfPresent(r.prefillTps, forKey: .prefillTps)
             try container.encodeIfPresent(r.decodeTps, forKey: .decodeTps)
             try container.encodeIfPresent(r.authToken, forKey: .authToken)
-            try container.encodeIfPresent(r.pythonHash, forKey: .pythonHash)
-            try container.encodeIfPresent(r.runtimeHash, forKey: .runtimeHash)
             if !r.templateHashes.isEmpty {
                 try container.encode(r.templateHashes, forKey: .templateHashes)
             }
@@ -1123,8 +1102,6 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(a.secureBootEnabled, forKey: .secureBootEnabled)
             try container.encodeIfPresent(a.binaryHash, forKey: .binaryHash)
             try container.encodeIfPresent(a.activeModelHash, forKey: .activeModelHash)
-            try container.encodeIfPresent(a.pythonHash, forKey: .pythonHash)
-            try container.encodeIfPresent(a.runtimeHash, forKey: .runtimeHash)
             if !a.templateHashes.isEmpty {
                 try container.encode(a.templateHashes, forKey: .templateHashes)
             }
@@ -1266,13 +1243,10 @@ extension ProviderMessage: Codable {
                 version: try container.decodeIfPresent(String.self, forKey: .version),
                 publicKey: try container.decodeIfPresent(String.self, forKey: .publicKey),
                 encryptedResponseChunks: try container.decodeIfPresent(Bool.self, forKey: .encryptedResponseChunks) ?? false,
-                walletAddress: try container.decodeIfPresent(String.self, forKey: .walletAddress),
                 attestation: try container.decodeIfPresent(RawJSON.self, forKey: .attestation),
                 prefillTps: try container.decodeIfPresent(Double.self, forKey: .prefillTps),
                 decodeTps: try container.decodeIfPresent(Double.self, forKey: .decodeTps),
                 authToken: try container.decodeIfPresent(String.self, forKey: .authToken),
-                pythonHash: try container.decodeIfPresent(String.self, forKey: .pythonHash),
-                runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
                 privacyCapabilities: try container.decodeIfPresent(PrivacyCapabilities.self, forKey: .privacyCapabilities),
                 runtimeCapabilities: try container.decodeIfPresent(
@@ -1387,8 +1361,6 @@ extension ProviderMessage: Codable {
                 secureBootEnabled: try container.decodeIfPresent(Bool.self, forKey: .secureBootEnabled),
                 binaryHash: try container.decodeIfPresent(String.self, forKey: .binaryHash),
                 activeModelHash: try container.decodeIfPresent(String.self, forKey: .activeModelHash),
-                pythonHash: try container.decodeIfPresent(String.self, forKey: .pythonHash),
-                runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
                 modelHashes: try container.decodeIfPresent([String: String].self, forKey: .modelHashes) ?? [:]
             ))
@@ -1552,7 +1524,6 @@ public enum CoordinatorMessage: Sendable, Equatable {
 
     public struct InferenceRequest: Sendable, Equatable {
         public var requestId: String
-        public var body: JSONValue
         public var encryptedBody: EncryptedPayload?
         /// Positive time remaining for this dispatch attempt to produce its
         /// first content-bearing chunk. Nil preserves the legacy wire shape.
@@ -1571,7 +1542,6 @@ public enum CoordinatorMessage: Sendable, Equatable {
 
         public init(
             requestId: String,
-            body: JSONValue = .null,
             encryptedBody: EncryptedPayload? = nil,
             firstContentBudgetMs: Int64? = nil,
             cacheReceiptNonce: String? = nil,
@@ -1582,7 +1552,6 @@ public enum CoordinatorMessage: Sendable, Equatable {
             toolSchemaMetadataProtocol: Int? = nil
         ) {
             self.requestId = requestId
-            self.body = body
             self.encryptedBody = encryptedBody
             self.firstContentBudgetMs = firstContentBudgetMs.flatMap { $0 > 0 ? $0 : nil }
             self.cacheReceiptNonce = cacheReceiptNonce
@@ -1759,7 +1728,6 @@ extension CoordinatorMessage: Codable {
     enum CodingKeys: String, CodingKey {
         case type
         case requestId = "request_id"
-        case body
         case encryptedBody = "encrypted_body"
         case firstContentBudgetMs = "first_content_budget_ms"
         case cacheReceiptNonce = "cache_receipt_nonce"
@@ -1803,7 +1771,6 @@ extension CoordinatorMessage: Codable {
         case .inferenceRequest(let r):
             try container.encode(TypeValue.inferenceRequest, forKey: .type)
             try container.encode(r.requestId, forKey: .requestId)
-            try container.encode(r.body, forKey: .body)
             try container.encodeIfPresent(r.encryptedBody, forKey: .encryptedBody)
             if let firstContentBudgetMs = r.firstContentBudgetMs, firstContentBudgetMs > 0 {
                 try container.encode(firstContentBudgetMs, forKey: .firstContentBudgetMs)
@@ -1898,7 +1865,6 @@ extension CoordinatorMessage: Codable {
         case .inferenceRequest:
             self = .inferenceRequest(InferenceRequest(
                 requestId: try container.decode(String.self, forKey: .requestId),
-                body: try container.decodeIfPresent(JSONValue.self, forKey: .body) ?? .null,
                 encryptedBody: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedBody),
                 firstContentBudgetMs: try container.decodeIfPresent(
                     Int64.self, forKey: .firstContentBudgetMs),

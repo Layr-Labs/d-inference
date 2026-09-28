@@ -133,16 +133,11 @@ func orNow(t, now time.Time) time.Time {
 	return t
 }
 
-// RequestProfilesSince returns profiles created at or after since, newest
-// first, capped at maxTelemetryReadRows. The id tiebreak keeps same-instant
-// rows in reverse insertion order (an incremental sort on the created_at
-// index, not a full sort).
-func (s *PostgresStore) RequestProfilesSince(since time.Time) []RequestProfileRecord {
-	return s.RequestProfilesSinceFiltered(since, RequestProfileFilter{})
-}
-
-// RequestProfilesSinceFiltered applies the admin predicates in the WHERE
-// clause, before ORDER/LIMIT, so the read cap never hides a matching row.
+// RequestProfilesSinceFiltered returns profiles created at or after since,
+// newest first, capped at maxTelemetryReadRows. The id tiebreak keeps
+// same-instant rows in reverse insertion order (an incremental sort on the
+// created_at index, not a full sort). It applies the admin predicates in the
+// WHERE clause, before ORDER/LIMIT, so the read cap never hides a matching row.
 func (s *PostgresStore) RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

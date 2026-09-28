@@ -43,8 +43,8 @@ type providerCapSnap struct {
 	// left after charging ALL models' coordinator-pending tokens — the same
 	// pool the admission gate (pooledBudgetAdmits) enforces, so this public
 	// capacity feed cannot advertise per-slot headroom dispatch would reject.
-	// Reconstruction counts legacy shared headroom once and v0.7.5+ private
-	// grants additively. -1 means no pooled budget report.
+	// Reconstruction sums the slots' private grants. -1 means no pooled
+	// budget report.
 	pooledBudgetRemaining int64
 }
 

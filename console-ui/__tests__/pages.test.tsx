@@ -28,7 +28,7 @@ vi.mock("@/lib/store", () => ({
   }),
 }));
 
-// Mock @/hooks/useAuth — provides walletAddress etc
+// Mock @/hooks/useAuth — authenticated session with no profile details
 vi.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({
     ready: true,
@@ -38,7 +38,6 @@ vi.mock("@/hooks/useAuth", () => ({
     logout: vi.fn(),
     getAccessToken: vi.fn().mockResolvedValue("mock-token"),
     email: null,
-    walletAddress: null,
     displayName: null,
   }),
 }));
@@ -55,13 +54,6 @@ vi.mock("@/components/app-providers/PrivyClientProvider", () => ({
   }),
 }));
 
-// Mock Privy Solana hooks — BillingContent uses them directly, and they
-// panic without a PrivyProvider wrapper.
-vi.mock("@privy-io/react-auth/solana", () => ({
-  useWallets: () => ({ wallets: [] }),
-  useSignAndSendTransaction: () => ({ signAndSendTransaction: vi.fn() }),
-}));
-
 // Mock @/lib/api — prevent real fetches
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
@@ -72,8 +64,6 @@ vi.mock("@/lib/api", async (importOriginal) => {
       balance_usd: 10.0,
     }),
     fetchUsage: vi.fn().mockResolvedValue([]),
-    deposit: vi.fn().mockResolvedValue(undefined),
-    withdraw: vi.fn().mockResolvedValue(undefined),
     redeemInviteCode: vi.fn().mockResolvedValue({
       credited_usd: "5.00",
       balance_usd: "15.00",

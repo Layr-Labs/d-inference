@@ -321,7 +321,6 @@ struct DiffusionGemmaConcurrencyLiveTests {
     try #require(
       directory.appendingPathComponent("config.json").resolvingSymlinksInPath()
         == selected.appendingPathComponent("config.json").resolvingSymlinksInPath())
-    try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
     _ = Bundle(for: DiffusionConcurrencyBundleAnchor.self).bundleURL
     if cached {
       let environment = ProcessInfo.processInfo.environment

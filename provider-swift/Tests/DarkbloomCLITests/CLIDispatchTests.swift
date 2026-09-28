@@ -22,7 +22,7 @@ private final class BundleAnchor {}
     }
 
     /// Runs the built binary hermetically: HOME points at a throwaway directory so
-    /// the subprocess can never read — or migrate/rewrite — a real provider config
+    /// the subprocess can never read or write a real provider config
     /// on the host, and the update banner is disabled to keep the run offline.
     private func run(_ args: [String], home: URL) throws -> String {
         let proc = Process()

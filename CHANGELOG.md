@@ -1,9 +1,30 @@
 # Changelog
 
-## Unreleased
+## Unreleased — R2 chunk downloads
 
 - Add opt-in publishing of large model files as cacheable R2 chunks; reconstruct and verify original files on download, preserve existing source preferences, and require chunk-capable providers for active chunked artifacts.
 - Derive the R2 chunk capability from the active model version so staging another version cannot change its download eligibility. Preserve verified chunk prefixes after failed transfers and include resumable bytes and temporary chunk space in download capacity checks.
+## Unreleased — coordinator legacy-compat cleanup
+
+- `EIGENINFERENCE_MIN_PROVIDER_VERSION` now also excludes providers that report no version from routing. The reference `deploy/environments/prod.env` now says 0.9.5 instead of 0.7.5, but that file changes nothing on the host: the live value in `/etc/d-inference/env` must be raised to at least 0.9.5 by a human, after a fleet-version census, before this coordinator is deployed (`docs/operations/coordinator-deploy.md`). Every registration attestation must carry a fresh timestamp, including from a provider that reports no version.
+- The one-shot `backfill_withdrawable_balance_v1`, `backfill_usage_totals_v1` and `backfill_earnings_summary_v1` migrations are retired. Production already ran them. The coordinator now refuses to start on a database whose `balances`, `usage` or `provider_earnings` rows never went through them (or whose `balances` lacks `withdrawable_micro_usd`), naming the missing marker; boot a coordinator built from v0.9.10, which still runs them, once to apply them. An empty database records the markers at first boot.
+- Remove the Python-era wire fields: `python_hash`/`runtime_hash` (registration, attestation response, signed status), `hypervisor_active`, and the `python_runtime_locked`/`dangerous_modules_blocked` privacy flags. Providers that still send them keep working. `POST /v1/releases` now rejects `python_hash`/`runtime_hash`; `/v1/runtime/manifest` and `/v1/me` no longer return them.
+- Drop compatibility paths for providers below the new floor: the pre-0.6.7 vision penalty strip and the `desired_models` version gate. The tool-call 503 no longer cites a provider version.
+- Security: remove the unauthenticated `GET /v1/provider/earnings?wallet=…` lookup, which returned any account's balance and ledger to anyone holding its ID (threat model T-031). It now returns 404; earnings stay available through the authenticated account endpoints.
+- Remove the retired `POST /v1/telemetry/events` route (it only ever answered 410); it now returns 404. The coordinator has no client telemetry ingestion and no server-side field allowlist.
+- Attestation challenges fail closed: for a provider with an attested key, a missing `status_signature` or an omitted `secure_boot_enabled` fails the challenge instead of being accepted as advisory.
+- An `inference_error` without `failure_code` is counted as drift and fails closed as `generation_failure`; status, reason and cause no longer reclassify it, and a bare 429 no longer means queue full.
+- App Attest serves protocol 3 only. Registrations announcing protocol 1 or 2 get no shadow frames and are counted as `rollout`/`provider_upgrade_required`; stored enrollments from before protocol 3 never resume.
+- `inference_request` no longer carries an empty plaintext `body` object.
+- Provider releases trigger only on `vX.Y.Z` tags; the `vX.Y.Z-swift[.N]` alias is gone.
+
+### Provider
+
+- `provider.toml`: the retired boolean `[backend] mtp` key is ignored with a startup warning. A bare `mtp = true` or `mtp = false` without `mtp_mode` is treated as the `mtp_mode` default, `auto`; to keep MTP off, set `mtp_mode = "off"`. `config_version` is ignored and no longer written, and loading a config never rewrites it (no stamp migration, no coordinator-URL rewrite, no copy from legacy locations). Only `~/.config/darkbloom/provider.toml` or `--config` is read.
+- Self-update and `install.sh` install only signed `Darkbloom.app` bundles: flat-only and pre-paged artifacts are refused, and the `eigeninference-enclave` alias is no longer created. `install.sh` no longer migrates `~/.dginf`/`~/.eigeninference`.
+- Model downloads fail closed for a catalog entry without a verified manifest (`r2_prefix` + `aggregate_sha256`).
+- Removed: `darkbloom-enclave wallet-address`; Rust-era credential, launchd-label and Secure Enclave v1 key fallbacks; the provider's App Attest shadow protocols 1 and 2 (protocol 3 only).
+- The bare `runtime-smoke` self-bootstrap for pre-0.8.10 updaters is gone: an updater from 0.7.8–0.8.9 may fail the packaged smoke check (it fails only on hosts where MLX touches Metal early) and then needs an `install.sh` reinstall. Those versions are below the 0.9.5 routing floor anyway.
 
 ## Release candidate v0.9.11 — prefix cache hit rate (not shipped; 2026-09-27)
 

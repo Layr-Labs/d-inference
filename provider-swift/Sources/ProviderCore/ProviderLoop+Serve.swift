@@ -162,7 +162,6 @@ extension ProviderLoop {
             backendName: "mlx-swift",
             heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
             publicKey: keyPair.publicKeyBase64,
-            walletAddress: nil,
             attestation: nil,
             registrationAttestation: registrationAttestation,
             authToken: loopConfig.authToken,
@@ -450,14 +449,9 @@ extension ProviderLoop {
         // textBackendInprocess + textProxyDisabled: always true on the Swift
         //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
         //   proxy is involved.
-        // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
-        //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
-        //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
         return PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
-            pythonRuntimeLocked: false,
-            dangerousModulesBlocked: false,
             sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
             antiDebugEnabled: securityPosture?.antiDebugEnabled ?? false,
             coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
@@ -489,8 +483,6 @@ extension ProviderLoop {
         }
 
         return RuntimeHashes(
-            pythonHash: existing?.pythonHash,
-            runtimeHash: existing?.runtimeHash,
             templateHashes: templates
         )
     }

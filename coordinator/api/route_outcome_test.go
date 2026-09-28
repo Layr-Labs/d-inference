@@ -76,6 +76,7 @@ func TestInferenceErrorReasonPrecedenceAndDerivation(t *testing.T) {
 		Error:       "token_budget_exhausted: request queue full",
 		StatusCode:  http.StatusInternalServerError,
 		ErrorReason: "jinja_channel_tags",
+		FailureCode: protocol.FailureCodeTemplateRender,
 	})
 	if providerReason.ErrorReason != "jinja_channel_tags" {
 		t.Fatalf("provider-supplied reason should win, got %+v", providerReason)
@@ -110,6 +111,7 @@ func TestInferenceErrorReasonPrecedenceAndDerivation(t *testing.T) {
 		Error:       "raw provider stack trace should not persist",
 		StatusCode:  http.StatusInternalServerError,
 		ErrorReason: "raw provider stack trace should not persist",
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 	if invalidProviderReason.ErrorReason != errorReasonProviderError {
 		t.Fatalf("invalid provider reason = %q, want bounded provider_error", invalidProviderReason.ErrorReason)

@@ -12,8 +12,8 @@ package api
 //     content-bearing chunk results in a transparent retry on another
 //     provider — invisible to the consumer (200, clean stream, one [DONE]).
 //     In-band SSE errors are surfaced ONLY after content has flowed.
-//   - [WS-R] Inference-error cooldown, tools version floors, and the
-//     template_render_ok routing gate (see failover_routing_integration_test.go).
+//   - [WS-R] Inference-error cooldown and the template_render_ok routing
+//     gate (see failover_routing_integration_test.go).
 //   - [WS-T] Tool-schema normalization reaching the provider (see
 //     failover_routing_integration_test.go).
 //
@@ -403,11 +403,12 @@ func testFailureClassification(errMsg string, statusCode int) (protocol.Inferenc
 		return protocol.FailureCodeCapacity, errorReasonQueueFull
 	case statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable:
 		return protocol.FailureCodeCapacity, errorReasonCapacityBusy
+	case statusCode == http.StatusBadRequest:
+		// A deterministic request-shape rejection. The raw text is still
+		// discarded by the production sanitizer.
+		return protocol.FailureCodeInvalidRequest, ""
 	default:
-		// Keep generic historical fixtures legacy-shaped. Their raw text is still
-		// discarded by the production sanitizer; bounded status supplies only the
-		// rolling-upgrade behavior under test.
-		return "", ""
+		return protocol.FailureCodeGenerationFailure, ""
 	}
 }
 

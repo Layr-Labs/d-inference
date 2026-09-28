@@ -78,12 +78,10 @@ struct Report: AsyncParsableCommand {
 
         let snapshot: RuntimeSnapshot
         if invokingHome != nil {
-            // Under sudo: the invoking user's config, and no on-disk
-            // migration that would write it (or root's home) as root.
+            // Under sudo: read the invoking user's config, not root's.
             Darkbloom.ensureLogging()
             snapshot = try loadRuntimeSnapshot(
-                configPath: ReportAppAttestEvidence.configPath(explicit: configOptions.config, invokingHome: invokingHome),
-                migrateOnDisk: false)
+                configPath: ReportAppAttestEvidence.configPath(explicit: configOptions.config, invokingHome: invokingHome))
         } else {
             snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         }

@@ -12,7 +12,7 @@
 //   * the CONFIRMED-wedge verdict the recovery driver acts on — stricter
 //     than the 10s heartbeat *suspicion*: the oldest hanging admit must
 //     have produced no first token for the legacy restart threshold
-//     (`BackendLivenessPolicy.defaultWedgeStallSeconds`, 120s) AND the
+//     (`recoveryStallSeconds`, 120s) AND the
 //     engine step counter must have been frozen just as long. The
 //     flatline term (which the legacy `.wedged` verdict did not require)
 //     keeps a starved-but-alive engine from triggering a full rebuild —
@@ -33,12 +33,10 @@ import Foundation
 
 extension EngineV2Bridge {
 
-    /// Stall threshold (seconds) for a CONFIRMED wedge — the legacy
-    /// self-restart trigger (`BackendLivenessPolicy.defaultWedgeStallSeconds`,
-    /// 120s), one definition for both engines.
-    static var recoveryStallSeconds: Double {
-        BackendLivenessPolicy.defaultWedgeStallSeconds
-    }
+    /// Stall threshold (seconds) for a CONFIRMED wedge — the legacy engine's
+    /// self-restart trigger: no legitimate cold prefill takes this long to
+    /// emit its first token.
+    static let recoveryStallSeconds: Double = 120
 
     /// Confirmed-wedge verdict for the recovery driver. True when the
     /// oldest STILL-HANGING admit (admitted, zero first tokens, not
@@ -56,20 +54,15 @@ extension EngineV2Bridge {
 
     /// Enter the recovery window: heartbeats report "reloading" from the
     /// next capacity snapshot (legacy `isReloadingForRecovery` semantic).
+    /// One-way: a successful recovery discards this bridge entirely, and
+    /// every abort path after this point also retires it.
     func beginRecoveryReload() {
         recoveryReloading = true
     }
 
-    /// Leave the recovery window (abort paths where THIS bridge stays the
-    /// slot's live engine; a successful recovery discards the bridge
-    /// entirely, so it never needs to clear the flag).
-    func endRecoveryReload() {
-        recoveryReloading = false
-    }
-
     /// Emit one self-restart lifecycle event, shaped like the legacy wedge
     /// telemetry (`engine_health`, operational counters only — the same
-    /// allowlisted field set as the step-wedge transitions), with the
+    /// field set as the step-wedge transitions), with the
     /// recovery-specific `operation` and optional `duration_ms`.
     func emitSelfRestartTelemetry(
         operation: String,

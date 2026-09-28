@@ -7,18 +7,19 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-func TestLegacyProviderFallsBackToOldRouting(t *testing.T) {
+// Providers whose slots report no token budget rank by decode throughput.
+func TestBudgetlessProvidersRankByDecodeTPS(t *testing.T) {
 	reg := New(testLogger())
-	model := "legacy-routing-model"
+	model := "budgetless-routing-model"
 
-	// Two legacy providers (no token budget fields) — should use old cost function.
+	// Two providers with no token budget fields.
 	p1 := makeSchedulerProvider(t, reg, "fast", model, 120)
 	p2 := makeSchedulerProvider(t, reg, "slow", model, 40)
 	_ = p1
 	_ = p2
 
 	req := &PendingRequest{
-		RequestID:             "req-legacy",
+		RequestID:             "req-budgetless",
 		Model:                 model,
 		EstimatedPromptTokens: 100,
 		RequestedMaxTokens:    256,
@@ -29,7 +30,7 @@ func TestLegacyProviderFallsBackToOldRouting(t *testing.T) {
 	}
 	// Faster decode TPS should win when both idle with no budget reporting.
 	if selected.ID != "fast" {
-		t.Fatalf("selected %q, want 'fast' (higher decode TPS in legacy mode)", selected.ID)
+		t.Fatalf("selected %q, want 'fast' (higher decode TPS without budgets)", selected.ID)
 	}
 }
 

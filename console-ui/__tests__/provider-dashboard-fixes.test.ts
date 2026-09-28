@@ -49,7 +49,7 @@ const scenarios: { p: MyProvider; ctxOverride?: typeof ctx }[] = [
     }),
   },
   { p: baseProvider({ models: [] }) },
-  { p: baseProvider({ account_id: "", wallet_address: undefined }) },
+  { p: baseProvider({ account_id: "" }) },
   { p: baseProvider({ version: "0.5.10" }), ctxOverride: { ...ctx, latest_provider_version: "0.5.16", min_provider_version: "0.5.0" } },
   { p: baseProvider({ last_challenge_verified: undefined }) },
 ];

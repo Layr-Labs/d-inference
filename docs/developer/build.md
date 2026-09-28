@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-27 · commit `a0b81c7e6`
+> Last updated: 2026-09-27 · commit `d624f1753`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -247,8 +247,6 @@ lease used after launch. See the [test procedure](test.md#connected-coordinatorp
 
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
-The [provider config cleanup tests](test.md#provider-config-cleanup) run with
-temporary home directories and need no provider build or model.
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator
@@ -685,7 +683,9 @@ The private admin queries have PostgreSQL coverage in
 `admin-ui/src/lib/queries/app-attest-diagnostics.test.ts`.
 
 After the optimized provider is packaged with its resources, run
-`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all four markers:
+`DARKBLOOM_NO_UPDATE_CHECK=1 DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=1 Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`
+(the child validates retained latches that MLX reads at its first Metal touch,
+so the caller seeds them, exactly as `SelfUpdater` and `install.sh` do). Require all four markers:
 `app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
 `paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. Callback completion and expiry are exercised
 without Apple service calls or a Keychain item. This linked-binary check catches

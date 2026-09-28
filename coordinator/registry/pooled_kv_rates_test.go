@@ -46,7 +46,7 @@ func TestPooledBudgetReconstructionAllocatesNothing(t *testing.T) {
 	}
 	var sink int64
 	allocs := testing.AllocsPerRun(200, func() {
-		pool := providerPooledTokenBudgetWithLayout(slots, privateSlotGrants)
+		pool := providerPooledTokenBudget(slots)
 		sink += pool.kvRateFor("b") + pool.totalBytes
 	})
 	if allocs != 0 {

@@ -1,8 +1,8 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-27 · commit `a0b81c7e6`
+> Last updated: 2026-09-27 · commit `d624f1753`
 
-The complete public HTTP surface of the coordinator, derived from the 117 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 115 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -180,7 +180,7 @@ as inference budgets.
 | GET | `/v1/models/catalog` | `handleModelCatalog` (`coordinator/api/billing_handlers.go`) | `—` | — | Registry catalog; `?type=` selects the catalog kind, unknown → 400 |
 | GET | `/v1/models/catalog/manifest/` | `handleModelCatalogManifest` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Per-model manifest by path suffix |
 | GET | `/v1/models/catalog/` | `handleModelCatalogItem` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Single catalog item by path suffix |
-| GET | `/v1/runtime/manifest` | `handleRuntimeManifest` | `—` | — | Hashes the coordinator accepts from provider runtimes: `{"configured":false}` or `{"configured":true,"python_hashes":{…},"runtime_hashes":{…},"template_hashes":{"<name>":[<sorted hashes accepted across active releases>]}}`; cached 1 min ([runtime manifest](../architecture/security/attestation.md#runtime-manifest)) |
+| GET | `/v1/runtime/manifest` | `handleRuntimeManifest` | `—` | — | Hashes the coordinator accepts from provider runtimes: `{"configured":false}` or `{"configured":true,"template_hashes":{"<name>":[<sorted hashes accepted across active releases>]}}`; cached 1 min ([runtime manifest](../architecture/security/attestation.md#runtime-manifest)) |
 | GET | `/v1/cache/status` | `handleExactCacheStatus` (`coordinator/api/exact_cache_status.go`) | `—` | — | Exact-cache status, cached for [`exactCacheStatusCacheTTL`](#timeouts-and-constants) |
 
 ### Authentication and API keys (10)
@@ -218,7 +218,6 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/payments/usage` | `handleUsage` (`coordinator/api/consumer.go`) | `key` | — | `UsageResponse` `{usage: [...]}`; recent history only ([retention](pricing-model.md#constants)) |
 | GET | `/v1/billing/wallet/balance` | `handleWalletBalance` (`coordinator/api/billing_handlers.go`) | `key` | — | Wallet view of the ledger balance |
 | GET | `/v1/billing/methods` | `handleBillingMethods` (`coordinator/api/billing_handlers.go`) | `—` | — | Which top-up methods are enabled |
-| GET | `/v1/provider/earnings` | `handleProviderEarnings` (`coordinator/api/consumer.go`) | `—` | — | Legacy lookup by `?wallet=` query or `X-Provider-Wallet` header; `ProviderEarningsResponse` |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
 | GET | `/v1/me/token-promotions` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | — | Account-scoped grants and eligible offers |
 | POST | `/v1/me/token-promotions/claim` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | `fin` | Claim a capped grant; [campaign procedure](../operations/model-token-promotions.md) |
@@ -376,12 +375,6 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | GET | `/ws/provider` | `handleProviderWS` (`coordinator/api/provider.go`) | `ws` | Provider WebSocket; message catalogue in [`protocol-messages.md`](protocol-messages.md) |
 | POST | `/v1/provider/log-report` | `handleUploadLogReport` (`coordinator/api/log_report_handlers.go`) | `key` | Body capped at [`maxLogReportBodySize`](#timeouts-and-constants); 426 `upgrade_required` when `?serial=` names a provider below the minimum version |
 
-### Telemetry (1)
-
-| Method | Path | Handler | Auth | Notes |
-|---|---|---|---|---|
-| POST | `/v1/telemetry/events` | `handleTelemetryIngest` (`coordinator/api/telemetry_handlers.go`) | `—` | Always **410 Gone** `telemetry_ingest_disabled`. Live telemetry is described in [`../architecture/telemetry.md`](../architecture/telemetry.md) |
-
 ### Admin (41)
 
 | Method | Path | Handler | Auth | Notes |
@@ -530,7 +523,6 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | `X-Darkbloom-Metadata-Details` | `applyMetadataDetailsRequest` (`coordinator/api/response_metadata.go`) | Requests the extended `metadata` object (`timing`, `location`) on chat completions; `?metadata=details` does the same |
 | `X-Darkbloom-Route: self` / `prefer` | `resolveSelfRoutePolicy` (`coordinator/api/self_route.go`) | `self` restricts dispatch to the account's own machines; `prefer` tries them first and falls back to the fleet; see [`../provider/self-route.md`](../provider/self-route.md) |
 | `X-Darkbloom-Publishing-Key` | `requirePublishingAPIKey` | Publishing credential for `/v1/admin/models/*` |
-| `X-Provider-Wallet` | `handleProviderEarnings` | Wallet address for the legacy earnings lookup (fallback when `?wallet=` is absent) |
 | `Stripe-Signature` | `handleStripeWebhook`, `handleStripeConnectWebhook` | Stripe webhook signature |
 | `X-Webhook-Token` | `HandleMDMWebhook` | MDM webhook secret (or `?token=`) |
 | `Origin` | `corsMiddleware` | Allowed origins default to `https://console.darkbloom.dev` plus localhost dev ports unless `EIGENINFERENCE_CONSOLE_URL` overrides |
@@ -577,7 +569,7 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 | 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) |
 | 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; device codes; `/v1/` catch-all; state export when disabled |
 | 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state |
-| 410 | `telemetry_ingest_disabled`, `expired_token`, `expired_code` | [Telemetry endpoint](#telemetry-1); expired [device codes](#device-code-flow-3) |
+| 410 | `expired_token`, `expired_code` | expired [device codes](#device-code-flow-3) |
 | 412 | `precondition_failed` | State export without an encryption recipient |
 | 413 | `invalid_request_error` (plain, or with `code: payload_too_large`) | Inference body over `maxInferenceBodyBytes` ([Limits and validation](#limits-and-validation); `parseInferencePrelude`); admission rejects a prompt no provider can accept (`runInferenceAdmission`) |
 | 422 | `invalid_request_error` | Tool-constraint schema the parser cannot compile (`validateResolvedToolConstraintParser`, `coordinator/api/tool_constraints.go`) |
@@ -766,17 +758,16 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 
 ## Version gating
 
-Three distinct version values govern providers:
+Two distinct version values govern providers:
 
 - `LatestProviderVersion = "0.9.10"` (`coordinator/api/server.go`) is the source's provider-version display fallback. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered. With production App Attest serving enabled, `/api/version` returns 503 instead of a download fallback when release authorization is unavailable. Preparing a source bump does not create a release row or alter `/v1/releases/latest`.
-- `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) is a **feature floor for the WebSocket `desired_models` message**: only Swift-runtime providers at or above it receive the message (`providerSupportsDesiredModels`, `fanOutDesiredModels` in `coordinator/api/model_alias_handlers.go`), because older decoders disconnect on unknown message types. It does not affect HTTP routes.
-- `EIGENINFERENCE_MIN_PROVIDER_VERSION` (`MinProviderVersion`, `coordinator/api/server_config.go`; `SetMinProviderVersion`) is the **routing floor**: a provider that registers or re-attests below it stays connected but is marked not runtime-verified and excluded from routing (`coordinator/api/provider.go`, registration and `applyChallengeMinVersionPolicy`), and its log uploads get 426 `upgrade_required`.
-- **Feature floors** exclude too-old providers from serving specific request traits rather than the whole model: tools require providers ≥ `0.6.3` (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`); vision requests strip repetition-penalty fields for providers below `penaltySafeProviderVersion` = `0.6.7` (`coordinator/api/consumer.go`); reconnect attestation needs `minProviderVersionForReconnectAttestation` = `0.8.15` (`coordinator/api/provider.go`); servability gating uses `servabilityActivationFloorMinVersion` = `0.8.0` and `servabilityPerModelFloorMinVersion` = `0.8.16` (`coordinator/registry/servability.go`); private slot grants need `privateSlotGrantsMinVersion` = `0.7.5` (`coordinator/registry/pooled_admission.go`). When no provider clears the floor for a request, the client sees 503 `model_unavailable` (or 400 `param: tool_choice` when the fleet serves the model but no provider advertises the tool-constraint protocol).
+- `EIGENINFERENCE_MIN_PROVIDER_VERSION` (`MinProviderVersion`, `coordinator/api/server_config.go`; `SetMinProviderVersion`) is the **routing floor**: a provider that registers or re-attests below it stays connected but is marked not runtime-verified and excluded from routing (`belowMinProviderVersion` in `coordinator/api/server.go`, applied at registration, in `applyChallengeMinVersionPolicy` and in manifest sync). While a floor is set, a provider that reports no version counts as below it.
+- **Request-shape gates** exclude providers from specific request traits rather than the whole model, and they key on advertised capabilities, not versions: inference-enforced `tool_choice` (required/named) needs the model's tool-constraint advertisement (`providerSupportsToolConstraintLocked`, `coordinator/registry/tool_constraints.go`), and a build reporting `template_render_ok=false` serves no request for that model (`providerEligibleForTraitsLocked`, `coordinator/registry/request_traits.go`). Servability and pooled admission assume the routed fleet is past the routing floor and carry no version branches. When no provider clears a gate for a request, the client sees 503 `model_unavailable` (or 400 `param: tool_choice` when the fleet serves the model but no provider advertises the tool-constraint protocol).
 
 A consumer never sees a version error directly; an under-served model surfaces as 503 `model_unavailable`.
 
-The exact Flash-Next registry ID also has an all-request compatibility floor,
-separate from tool-only capability floors. See the
+The exact Flash-Next registry ID also has an all-request version floor
+(`qwen4RegistryMinimumProviderVersion`, `coordinator/registry/qwen4_model_policy.go`). See the
 [native identity routing gate](../architecture/routing.md#native-model-capacity-and-registry-identity);
 a catalog listing alone does not grant an older provider the matching policy.
 
@@ -848,7 +839,7 @@ requirements. Code: `coordinator/api/model_manifest_chunks.go`
 | Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
-| Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
+| Drain, admin telemetry, profiler, state export | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |
 

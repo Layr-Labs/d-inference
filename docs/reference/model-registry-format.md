@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-16 · commit `0f7b1e611`
+> Last updated: 2026-09-27 · commit `d624f1753`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -405,7 +405,7 @@ Defined in `coordinator/protocol/messages.go`; full field tables in
 
 | `type` | Direction | Shape |
 |---|---|---|
-| `desired_models` | coordinator → provider | `{"type","models":[{"model_name","desired_build","previous_build"}]}` (`DesiredModelsMessage`); only to Swift providers ≥ `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) |
+| `desired_models` | coordinator → provider | `{"type","models":[{"model_name","desired_build","previous_build"}]}` (`DesiredModelsMessage`); only to Swift providers (`providerSupportsDesiredModels`, `coordinator/api/model_alias_handlers.go`) |
 | `prefetch_model_status` | provider → coordinator | `status` ∈ `started`, `downloading`, `verified`, `failed`; `bytes_done`, `bytes_total`, `error` |
 | `models_update` | provider → coordinator | full `ModelInfo` (with `weight_hash`) for newly verified builds; merged only when the hash matches the catalog (`mergeProviderModels`, `coordinator/registry/provider_models.go`) |
 
@@ -482,10 +482,11 @@ the reconstructed model. HF uses the original logical paths. R2 uses the chunk
 objects when present; no original large R2 object is required. Registration
 checks chunk object lengths and requires `r2_chunked_downloads` in
 `required_provider_capabilities`. The existing provider capability gate excludes
-older binaries. Catalog and scheduling requirements also derive the capability
-from active-version files, so registering an unchunked replacement cannot remove
-the gate before promotion (`modelTransportCapabilities`). Explicitly configured
-requirements are retained. Schema version remains 1 because the field is additive and the
+older binaries. Catalog and scheduling requirements derive this transport capability
+exclusively from active-version files, so staging either transport leaves the active
+version's gate unchanged and promotion or rollback recomputes it
+(`modelTransportCapabilities`). Other explicitly configured requirements are retained.
+Schema version remains 1 because the field is additive and the
 capability requirement controls compatibility.
 
 `coordinator/api/model_manifest_chunks.go` (`validateManifestChunks`,

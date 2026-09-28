@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `15dd32a06`
+> Last updated: 2026-09-28 · commit `01b6953a8`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2382,6 +2382,18 @@ go test -race ./api ./modelpolicy \
 ## Account-scoped first-content SLA
 
 `coordinator/api/first_content_accounts_test.go` covers exact account/email selection, unrelated service accounts, header spoofing, public-model override precedence, disabled clocks and identity-store failures. `coordinator/api/first_content_accounts_integration_test.go` runs streaming and non-streaming requests through chat, Responses, completions and messages past the old deadline with hard TTFT rejection enabled; exempt requests omit their wire budget and scheduler ceiling, while the configured OpenRouter email still times out. The existing deadline/queue/retry/provider-wire suites explicitly opt their fixture account into the SLA. `coordinator/api/media_resolve_test.go` verifies a pinned exemption cannot be recomputed during media fetch.
+
+### Routing plan equivalence
+
+`coordinator/registry/dispatch_plan_test.go`
+(`TestReserveProviderWithPlanPrimarySelectionUnchanged`) compares provider
+selection and routing decisions with and without retained alternatives. It
+uses a controlled clock and different fresh evidence ages, then normalizes
+wall-clock telemetry, including capacity/performance evidence ages on
+the decision and candidate summaries; selection, forecast values and reservations
+remain subject to exact comparison. Repeat the focused test with
+`go test ./coordinator/registry -run '^TestReserveProviderWithPlanPrimarySelectionUnchanged$' -count=500`
+from the repository root to check for timing-dependent comparison failures.
 
 ### Replacement and reconnect coverage
 

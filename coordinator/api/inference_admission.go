@@ -228,6 +228,8 @@ type inferenceAdmissionParams struct {
 	modelMaxContext           int
 	allowedProviderSerials    []string
 	deadline                  time.Duration
+	receivedAt                time.Time
+	cachePlanForModel         func(string) registry.CachePlan
 	policy                    selfRoutePolicy
 	// refundReservation releases any pre-flight balance reservation before a
 	// terminal rejection. Must be non-nil (a no-op closure on the free paths).
@@ -433,16 +435,21 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		return model, false
 	}
 
-	ttftThreshold := p.deadline
+	ttftThreshold := p.remainingFirstContentBudget()
 	// Pre-flight capacity check: can ANY provider serve this model right
 	// now? If not, return 429 immediately rather than queueing for up to
 	// 120s. OpenRouter treats 429 as "rate limited" (no uptime penalty) vs
 	// 503 which counts as downtime. Fast 429s also preserve our TTFT
 	// metrics. Self-route skips this fleet-wide gate — it queues on the
 	// owner's machine instead (handled below).
-	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, p.estimatedPromptTokens, p.requestedMaxTokens, modelTraits(model), p.requiresVision, p.allowedProviderSerials...)
+	forecastRequest := func(candidateModel string) *registry.PendingRequest {
+		query := p.firstContentRequest(candidateModel, modelTraits(candidateModel))
+		query.MinDecodeTPS = s.minDecodeTPS
+		return query
+	}
+	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickFirstContentCapacityForRequest(model, forecastRequest(model))
 	if candidateCount == 0 && capacityRejections > 0 {
-		if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
+		if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials, forecastRequest); switched {
 			model = fallbackModel
 			candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 			bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
@@ -681,6 +688,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			return model, true
 		}
 	}
+	ttftThreshold = p.remainingFirstContentBudget()
 	if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
 		if !s.hardTTFTGateApplies(p.requiresVision) {
 			// Soft TTFT path: either global hard rejection is disabled (the
@@ -696,7 +704,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 				s.triggerWarmPool()
 			}
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
-		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
+		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials, forecastRequest); switched {
 			model = fallbackModel
 			if p.onModelFallback != nil && !p.onModelFallback(model) {
 				return model, true

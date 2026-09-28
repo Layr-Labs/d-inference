@@ -17,7 +17,7 @@ func TestTTFTPendingPromptComparison(t *testing.T) {
 		ceiling, legacy, want float64
 		admit                 bool
 	}{
-		{"short_behind_long", 4000, 100, 3000, 210, 4110, false},
+		{"short_behind_long", 4000, 100, 3000, 210, 4110, true},
 		{"long_behind_short", 100, 4000, 5000, 8010, 4110, true},
 		{"equal_prompts", 500, 500, 2000, 1010, 1010, true},
 	} {
@@ -36,7 +36,7 @@ func TestTTFTPendingPromptComparison(t *testing.T) {
 			}
 			pr := &PendingRequest{RequestID: "arriving", Model: model, EstimatedPromptTokens: tc.incoming, RequestedMaxTokens: 1, MaxTTFTMs: tc.ceiling}
 			selected, d := reg.ReserveProviderEx(model, pr)
-			if (selected != nil) != tc.admit || math.Abs(d.BestTTFTMs-tc.want) > 0.001 {
+			if (selected != nil) != tc.admit || math.Abs(d.FirstContent.ExpectedMs-(tc.want+firstContentHandoffMs)) > 0.001 {
 				t.Fatalf("selected=%v decision=%+v, want admit=%v estimate=%v", selected != nil, d, tc.admit, tc.want)
 			}
 			p.RemovePending(pr.RequestID)
@@ -150,8 +150,8 @@ func TestTTFTPendingPromptSelectsFeasibleAlternative(t *testing.T) {
 	// the busy provider won on cost with a fictional 210ms first-content estimate.
 	pr := &PendingRequest{RequestID: "arriving", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, MaxTTFTMs: 3000}
 	selected, d := reg.ReserveProviderEx(model, pr)
-	if selected != idle || d.TTFTRejections != 1 || math.Abs(d.RawTTFTMs-1100) > 0.001 {
-		t.Fatalf("selected provider=%q decision=%+v, want idle with 1100ms estimate and one TTFT rejection", d.ProviderID, d)
+	if selected != idle || d.TTFTRejections != 0 || math.Abs(d.RawTTFTMs-1100) > 0.001 {
+		t.Fatalf("selected provider=%q decision=%+v, want idle with 1100ms legacy estimate; unknown evidence must not hard-reject peers", d.ProviderID, d)
 	}
 	if pr.MaxTTFTMs != 3000 || busy.GetPending(pr.RequestID) != nil {
 		t.Fatal("routing changed the deadline or reserved the rejected provider")
@@ -164,7 +164,7 @@ func TestTTFTPendingPromptRevalidatesRetainedPlan(t *testing.T) {
 	const model = "pending-plan"
 	planTestProvider(t, reg, "primary", model, 0)
 	alternate := planTestProvider(t, reg, "alternate", model, 400)
-	pr := &PendingRequest{RequestID: "primary-request", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, MaxTTFTMs: 3000}
+	pr := &PendingRequest{RequestID: "primary-request", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128}
 	selected, _, plan := reg.ReserveProviderWithPlan(model, pr)
 	if selected == nil || selected.ID != "primary" || plan == nil || plan.Len() != 1 {
 		t.Fatal("expected primary reservation and one retained alternate")
@@ -172,8 +172,8 @@ func TestTTFTPendingPromptRevalidatesRetainedPlan(t *testing.T) {
 	alternate.AddPending(&PendingRequest{RequestID: "long-ahead", Model: model, EstimatedPromptTokens: 4000, RequestedMaxTokens: 1})
 	retry := &PendingRequest{RequestID: "retry-request", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128, MaxTTFTMs: 2900}
 	got, _, skips := reg.ReserveNextFromPlan(retry, plan)
-	if got != nil || len(skips) != 2 || skips[0].Reason != PlanSkipGateRejected || skips[1].Reason != PlanSkipExhausted {
-		t.Fatalf("selected=%v skips=%+v, want updated prompt work rejected against decreasing budget", got != nil, skips)
+	if got != alternate || len(skips) != 0 {
+		t.Fatalf("selected=%v skips=%+v, want bounded unknown fallback after current work revalidation", got != nil, skips)
 	}
 }
 

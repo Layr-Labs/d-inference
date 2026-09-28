@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-27 · commit `eafeab723`
+> Last updated: 2026-09-28 · commit `1f664f507`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -208,6 +208,16 @@ of a provider stamp from a coordinator stamp.
 
 ### Routing decision context
 
+Each candidate also carries optional `first_content` JSON with `status`, `reason`,
+`expected_ms`, `conservative_ms`, `budget_ms`, `capacity_age_ms`,
+`performance_age_ms`, `prompt_tokens`, `cached_tokens`, `restore_ms` and
+`service_ms`. Unknown ages are `-1`, not a fresh zero; `status` separates
+`feasible`, `unknown` and `predicted_late`. The winner's record uses commit-time
+evidence. This is coordinator-owned profiler JSON, not new provider telemetry or
+a schema migration (`FirstContentEstimate`,
+`coordinator/registry/first_content_forecast.go`; `decisionJSON`,
+`coordinator/api/profiler_record.go`). See [first-content routing](first-content-routing.md).
+
 Filled by value under `r.mu` from fixed-size `candidateScan` fields
 (`coordinator/registry/scheduler.go`), returned on `RoutingDecision`, copied
 into the attempt after the lock is released (`CopyPreDispatchFrom`), and
@@ -221,7 +231,7 @@ JSON-encoded on the sink worker.
 | `candidates` JSONB (≤ 4 rows) | `Top[0]` is the winner, then the lowest-cost other candidates ascending; each row is a `CandidateSummary` (cost + terms, `ttft_ms`, `effective_tps`, `effective_queue`, `total_pending`, `backend_running/waiting`, `active_token_budget_used/max`, `queued_prefill_tokens`, folded `slot_state`, `hb_age_ms`) | `CandidateSummary` (`gate_reason.go`) |
 | `runner_up_provider_id`, `runner_up_cost_ms` | lowest-cost candidate of the narrowed pool other than the winner; absent with one candidate | `selectRoutingCandidate` (`coordinator/registry/candidate_selection.go`) |
 | `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `scheduler.go` |
-| `near_tie_pool_size`, `selection_path` | retained cost candidates: within `nearTieCostWindowMs` of the minimum in every pool; a restore-penalty candidate is retained only at the exact minimum. For cache-adjusted pools `near_tie_pool_size` therefore steps from 1 to the band size. Current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`, `cache_credit` (`selectionPathNames`). `prefix_affinity` is a stable repeat-demand preference among equivalent, non-quarantined cache-capable candidates; it does not prove a cache hit. `cache_credit` is the cheapest credited holder inside the band; holders identical on every term are spread uniformly. Historical rows may retain `cache_tiebreak` | `coordinator/registry/candidate_selection.go`, `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go`, `SelectionPath` |
+| `near_tie_pool_size`, `selection_path` | retained cost candidates: within `nearTieCostWindowMs` of the minimum in every pool; a restore-penalty candidate is retained only at the exact minimum. For cache-adjusted pools `near_tie_pool_size` therefore steps from 1 to the band size. Current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`, `cache_credit` (`selectionPathNames`). `prefix_affinity` is a stable repeat-demand preference among equivalent, non-quarantined cache-capable candidates; it does not prove a cache hit. `cache_credit` prefers useful validated reuse only after first-content band and whole-Mac service-work ordering; equivalents spread uniformly. Historical rows may retain `cache_tiebreak` | `coordinator/registry/candidate_selection.go`, `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go`, `SelectionPath` |
 | `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat` when the routing snapshot was taken; observability only | `heartbeatAgeMs` |
 | `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `projectedPerRequestDecodeTPS` | `scheduler.go` |
 | `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `scheduler.go` |

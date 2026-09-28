@@ -210,7 +210,8 @@ type Provider struct {
 	// capacitySamplesAt is the coordinator time of the last accepted slot
 	// sample reconciliation. Separate from LastHeartbeat: rejected capacity
 	// frames prove liveness but must not erase elapsed sample age. Guarded by p.mu.
-	capacitySamplesAt time.Time
+	capacitySamplesAt        time.Time
+	firstContentMeasurements map[string]firstContentMeasurement
 
 	// capacitySeq is the highest BackendCapacity.CapacitySeq applied on THIS
 	// connection; capacityQuoteCapable latches true the first time a heartbeat
@@ -345,6 +346,7 @@ func (p *Provider) AddPending(pr *PendingRequest) {
 // addPendingLocked registers a pending request. Caller must hold p.mu.
 func (p *Provider) addPendingLocked(pr *PendingRequest) {
 	pr.providerAuthorizationBinding = providerRequestAuthorizationBindingLocked(p)
+	pr.reservedAt = time.Now()
 	p.pendingReqs[pr.RequestID] = pr
 	if p.drainCommitted && p.drainPendingDone == nil {
 		p.drainPendingDone = make(chan struct{})

@@ -275,12 +275,6 @@ func (g *hedgeGovernor) tryAcquireHedge(model string, in hedgeGovernorInputs) (v
 	return hedgeAllow, true
 }
 
-// acquireHedgeUngoverned claims a budget slot for a hedge admitted OUTSIDE
-// the verdict rules — the capacity-SILENT legacy escape in
-// tryAcquireBackupHedge, where every governor input is meaningless and the
-// verdict is definitionally allow. This is load ACCOUNTING, not a budget-
-// check bypass: the legacy hedge is really in flight, so capacity-aware
-// requests must see it against their budget. Released exactly once via
 // noteHedgeResolved, like any acquired hedge.
 func (g *hedgeGovernor) acquireHedgeUngoverned() {
 	g.mu.Lock()

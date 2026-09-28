@@ -23,6 +23,9 @@ func cacheEvidenceWeight(holder cacheHolder, now time.Time) float64 {
 // once in full. Load, decode, queue, pending, backlog and health remain intact.
 // Physical admission never uses this adjustment.
 func cacheServiceCost(hint cacheRoutingHint, candidate *routingCandidate) (delta, ttftSaved float64) {
+	if !finitePositive(candidate.snapshot.observedPrefillTPS) && !finitePositive(candidate.snapshot.prefillTPS) {
+		return 0, 0
+	}
 	rate := resolvePrefillTPS(&candidate.snapshot)
 	if !validCacheReceiptTier(hint.Tier) || !finitePositive(rate) || candidate.pricedPromptTokens <= 0 ||
 		!finitePositive(candidate.prefillCostMs) || !finitePositive(candidate.costMs) ||
@@ -54,10 +57,21 @@ func finitePositive(value float64) bool {
 // applyCacheHintLocked prices the provider-aligned endpoint with the same
 // candidate snapshot as the base score. Caller holds provider.mu and r.mu.
 func (r *Registry) applyCacheHintLocked(hint cacheRoutingHint, model string, candidate *routingCandidate) {
-	if !hint.currentForProviderLocked(candidate.provider, model) {
+	if !hint.currentForProviderLocked(candidate.provider, model) || (!hint.ExpiresAt.IsZero() && !time.Now().Before(hint.ExpiresAt)) {
 		return
 	}
 	delta, saved := cacheServiceCost(hint, candidate)
+	// Forecast work keeps the actual validated restore charge separate from
+	// the legacy service-score discount caps. The estimator bounds reuse by
+	// the exact planned prompt (when present), never by a maximum output limit.
+	if validCacheReceiptTier(hint.Tier) && finitePositive(hint.EvidenceWeight) && hint.EvidenceWeight <= 1 &&
+		hint.PrefillTokensSaved > 0 && hint.StageMs >= 0 && !math.IsNaN(hint.StageMs) && !math.IsInf(hint.StageMs, 0) &&
+		(hint.Tier == "memory" || hint.StageMs > 0) && !hint.ExpiresAt.IsZero() {
+		candidate.firstContentCachedTokens = float64(hint.PrefillTokensSaved)
+		candidate.firstContentCacheWeight = hint.EvidenceWeight
+		candidate.firstContentRestoreMs = hint.StageMs
+		candidate.firstContentCacheExpiresAt = hint.ExpiresAt
+	}
 	if delta < 0 {
 		// Safety caps limit benefits, never actual restore overhead.
 		credit := -delta

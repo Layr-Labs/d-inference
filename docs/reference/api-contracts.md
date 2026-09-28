@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-28 · commit `9dd9c58ba`
+> Last updated: 2026-09-28 · commit `4d6793601`
 
 The complete public HTTP surface of the coordinator, derived from the 115 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -488,6 +488,20 @@ Deploy the updated console before the coordinator field removal: older console
 bundles dereference `reputation.score` and cannot consume the new response.
 Existing tabs running an older bundle must reload. The updated console also
 accepts older responses containing the extra field.
+
+## First-content routing and retry behavior
+
+Public inference uses [first-content routing](../architecture/first-content-routing.md)
+by default across chat completions, Responses, completions and Anthropic messages.
+Internal retries, cache planning, quotes, queue waits and hedges consume the same
+original request deadline. Predictive provider refusals do not count as node
+health failures; after two, another attempt needs fresh feasible evidence.
+A request can launch at most one speculative backup. Current error JSON and
+`Retry-After` contracts remain; unavailable deadline-bound capacity can produce
+an earlier overload response instead of waiting the queue maximum. Explicit
+owner routing, deadline exemptions and valid empty completions keep their
+existing contracts (`coordinator/api/first_content_retry.go`,
+`coordinator/api/first_content_preflight.go`).
 
 ## Provider capacity observations
 

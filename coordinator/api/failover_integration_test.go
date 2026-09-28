@@ -105,6 +105,7 @@ type failoverProvider struct {
 	privKey         [32]byte
 	registryID      string
 	script          inferenceScript
+	quoteScript     func(context.Context, *failoverProvider, protocol.CapacityProbeMessage)
 	dispatches      atomic.Int32
 	bodies          chan []byte
 	done            chan struct{}
@@ -119,6 +120,7 @@ type failoverProviderConfig struct {
 	DecodeTPS       float64
 	Models          []failoverModelSpec
 	Script          inferenceScript
+	QuoteScript     func(context.Context, *failoverProvider, protocol.CapacityProbeMessage)
 	AppAttestFrames chan protocol.AppAttestShadowPayload
 }
 
@@ -217,6 +219,7 @@ func startFailoverProvider(t *testing.T, ctx context.Context, ts *httptest.Serve
 		privKey:         keypair.private,
 		registryID:      registryID,
 		script:          cfg.Script,
+		quoteScript:     cfg.QuoteScript,
 		bodies:          make(chan []byte, 8),
 		done:            make(chan struct{}),
 		appAttestFrames: cfg.AppAttestFrames,
@@ -257,6 +260,11 @@ func (fp *failoverProvider) run(ctx context.Context) {
 			resp := makeValidChallengeResponse(data, fp.pubKey)
 			if err := fp.conn.Write(ctx, websocket.MessageText, resp); err != nil {
 				return
+			}
+		case protocol.TypeCapacityProbe:
+			var probe protocol.CapacityProbeMessage
+			if fp.quoteScript != nil && json.Unmarshal(data, &probe) == nil {
+				fp.quoteScript(ctx, fp, probe)
 			}
 		case protocol.TypeInferenceRequest:
 			var req protocol.InferenceRequestMessage

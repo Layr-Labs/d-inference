@@ -42,7 +42,7 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		// owner routing, while public routing still requires catalog membership.
 		entry := r.modelCatalog[model.ID]
 		if !r.providerMeetsModelRequirementsLocked(p, model.ID) ||
-			(entry.WeightHash != "" && !strings.EqualFold(model.WeightHash, entry.WeightHash)) {
+			(entry.WeightHash != "" && !entry.acceptsWeightHash(model.WeightHash)) {
 			return nil, nil, 0, errors.New("invalid_models")
 		}
 		selected[model.ID] = model

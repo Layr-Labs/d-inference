@@ -52,6 +52,10 @@ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its 
 
 Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
 
+The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
+artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
+The [revision runbook](../operations/model-revisions.md) describes its invocation.
+
 ## SDK 27 release builds and caches
 
 The release pipeline runs optimized products and SDK qualification on separate

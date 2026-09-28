@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-28 · commit `ac63cefa7`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -572,7 +572,11 @@ merge semantics.
 `request_id` is nonempty and at most 64 bytes. `drain_request_id` must name the
 latest committed **and settled** `provider_drain` on this exact live connection.
 Every model ID must be unique and nonempty and meet the attested runtime
-capability floor. Catalog-tracked models must carry their catalog-pinned hash.
+capability floor. When the catalog pins a hash, the model must carry the active
+or an explicitly retained revision hash for that same model. Both validation
+and commit check the current approvals, so retirement between those phases
+rejects the replacement (`coordinator/registry/provider_models_replace.go`,
+`ReplaceProviderModels`).
 As with registration, off-catalog local models may be advertised regardless of
 `private_only` or whether the provider has a linked owner; advertising them does
 not grant trust or ownership. With a configured catalog, they are eligible only
@@ -795,16 +799,23 @@ replies with `prefetch_model_status` and then `models_update`.
 ### `desired_models`
 
 Go `DesiredModelsMessage` · Swift `DesiredModels`. `models` (`[]DesiredModelEntry`):
-`model_name` (public alias), `desired_build` (concrete build id),
-`previous_build` (opt; still acceptable mid-rollout). Sent right after `register`,
-when desired builds or eligible capabilities change, and freshly recomputed after
-matching provider readiness for a committed replacement even when the alias snapshot
-equals the one sent before switching. The same backend/version and attested
-capability guards apply. Entries describe aliases whose desired, previous, or
-retired build is in the provider's advertised inventory; an empty set revokes old
-targets. The provider reconciles by background-prefetching a missing desired
-build, hard-swapping, and emitting `models_update`. Source:
+`model_name` (public alias or concrete model ID), `desired_build` (concrete build ID),
+`previous_build` (optional; still acceptable mid-rollout), `revision` (optional version),
+`aggregate_sha256` (optional artifact hash). `DesiredModelsForProvider` in
+`coordinator/registry/model_commands.go` adds the revision fields and unaliased
+concrete-model entries only for providers reporting `model_revisions_v1` in
+`runtime_capabilities`. This is protocol feature detection, not a new trust grant.
+
+Sent right after `register`, when desired identities or eligible capabilities
+change, and freshly recomputed after matching provider readiness for a committed
+replacement even when the snapshot equals the one sent before switching. The same
+backend and attested capability guards apply. Alias entries describe aliases
+whose desired, previous, or retired build is in the provider's advertised inventory;
+an empty set revokes old targets. Revision-aware providers stage the exact artifact
+and drain before activation; ID-only providers retain the legacy prefetch path.
+Both announce completed updates through `models_update`. Source:
 `coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `RefreshDesiredModels`).
+See [revision lifecycle](../architecture/model-revisions.md).
 
 ### `trust_status`
 

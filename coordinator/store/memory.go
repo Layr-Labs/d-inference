@@ -63,6 +63,8 @@ type MemoryStore struct {
 	appAttestEvidence    map[string]memoryAppAttestEvidence
 	appAttestEnrollments map[string]AppAttestEnrollment
 	appAttestBuilds      map[string]AppAttestBuildQualification
+	cacheHolders         map[CacheHolderKey]CacheHolderRecord
+	cacheDemand          map[string]time.Time
 	appAttestRotations   map[string]AppAttestKeyRotation
 
 	// Referral system

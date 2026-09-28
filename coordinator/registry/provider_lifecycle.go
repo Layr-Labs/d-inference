@@ -288,6 +288,7 @@ func (r *Registry) disconnectWithCause(id string, cause protocol.CoordinatorInfe
 // cause is stamped on every flushed pending-request terminal.
 func (r *Registry) disconnectProvider(id string, expected *Provider, timeout time.Duration, cause protocol.CoordinatorInferenceErrorCause) bool {
 	var disconnectedModels []string
+	releasedModelLoad := false
 	r.mu.Lock()
 	cacheTracker := r.cacheRouting
 	p, ok := r.providers[id]
@@ -306,6 +307,7 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 		p.transport = transportMeasurement{}
 		p.warmWorkCounters = nil
 		p.lastWarmPlacementAt = time.Time{}
+		p.modelLoadSendRetryAt = time.Time{}
 		p.drainCommitted = false
 		p.drainReady = false
 		p.drainReplacementPending = false
@@ -322,6 +324,7 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 			if key.ProviderID == id {
 				delete(r.pendingModelLoads, key)
 				delete(r.pendingModelLoadStarted, key)
+				releasedModelLoad = true
 			}
 		}
 		p.detachModelIndexLocked(r)
@@ -351,6 +354,9 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 	}
 	r.mu.Unlock()
 
+	if releasedModelLoad {
+		r.RequestWarmPoolTrigger()
+	}
 	if !ok {
 		return false
 	}

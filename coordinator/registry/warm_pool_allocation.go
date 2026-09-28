@@ -16,8 +16,12 @@ func allocateWarmPoolLoads(model string, candidates []warmPoolCandidate, need in
 			continue
 		}
 		action := modelLoadAction{providerID: candidate.providerID, modelID: model}
-		if reserve != nil && len(reserve([]modelLoadAction{action}, now)) == 0 {
-			continue
+		if reserve != nil {
+			reserved := reserve([]modelLoadAction{action}, now)
+			if len(reserved) == 0 {
+				continue
+			}
+			action = reserved[0]
 		}
 		assigned[candidate.providerID] = true
 		actions = append(actions, action)
@@ -54,6 +58,9 @@ func (c *warmPoolController) reserveActions(actions []modelLoadAction, now time.
 			}
 			r.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
 			r.pendingModelLoadStarted[key] = now
+			action.reservation = pendingModelLoadSendAttempt{
+				provider: p, startedAt: now, expiresAt: r.pendingModelLoads[key],
+			}
 			reserved = append(reserved, action)
 		}
 		p.mu.Unlock()

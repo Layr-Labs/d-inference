@@ -195,7 +195,7 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if providerStateRestoreRequiredLocked(p) {
 		return warmPoolCandidate{}, warmColdStateRestoring
 	}
-	if r.providerHasPendingLoad(p.ID) || r.gateOf(p).dispatchLoadCooled(model, now) {
+	if r.providerHasPendingLoad(p.ID) || now.Before(p.modelLoadSendRetryAt) || r.gateOf(p).dispatchLoadCooled(model, now) {
 		return warmPoolCandidate{}, warmColdPendingLoad
 	}
 	if r.warmPool != nil && r.warmPool.config.MinDwell > 0 && !p.lastWarmPlacementAt.IsZero() && now.Sub(p.lastWarmPlacementAt) < r.warmPool.config.MinDwell {

@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `602bfe613`
+> Last updated: 2026-09-28 · commit `7039781eb`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -548,8 +548,11 @@ attempt. Definitively unsent writer attempts are retired locally; ambiguous
 socket writes retain ownership until proof or disconnect. Transient untrust and
 missing capacity do not clear ownership; disconnect clears all session state.
 Legacy providers that do not opt in keep their existing terminal cleanup.
-Coordinator tracking applies only to attempts committed after this connection
-opts in; attempts already pending retain their original cleanup behavior.
+Coordinator tracking is decided at the final authorized handoff after this
+connection opts in, including reservations created before capability arrived.
+Attempts handed off before opt-in retain their original cleanup behavior; later
+heartbeats do not upgrade them because their release proof may already have
+arrived and been ignored under the legacy protocol.
 
 ### `inference_accepted`
 

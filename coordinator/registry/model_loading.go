@@ -37,8 +37,9 @@ const pendingModelLoadMemoryBackoff = 30 * time.Second
 const dispatchLoadCooldownTTL = 2 * time.Minute
 
 type modelLoadAction struct {
-	providerID string
-	modelID    string
+	providerID  string
+	modelID     string
+	reservation pendingModelLoadSendAttempt
 }
 
 // RecordDispatchLoadFailure puts a provider-model pair on a routing cool-down
@@ -266,6 +267,9 @@ func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, sele
 func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, now time.Time) (int, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if now.Before(p.modelLoadSendRetryAt) {
+		return 0, false
+	}
 
 	// Liveness/trust/privacy core + catalog membership + dedicated-box
 	// isolation, with NO owner relaxation: this is a public load_model target
@@ -318,7 +322,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 	for _, action := range actions {
 		if p, ok := r.providers[action.providerID]; ok {
 			p.mu.Lock()
-			eligible := r.providerCanAcquireCatalogModelLocked(p, action.modelID)
+			eligible := !now.Before(p.modelLoadSendRetryAt) && r.providerCanAcquireCatalogModelLocked(p, action.modelID)
 			p.mu.Unlock()
 			if !eligible {
 				continue
@@ -333,6 +337,9 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 		key := modelLoadKey{ProviderID: action.providerID, ModelID: action.modelID}
 		r.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
 		r.pendingModelLoadStarted[key] = now
+		action.reservation = pendingModelLoadSendAttempt{
+			provider: r.providers[action.providerID], startedAt: now, expiresAt: r.pendingModelLoads[key],
+		}
 		reserved = append(reserved, action)
 	}
 	return reserved
@@ -340,13 +347,16 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 
 func (r *Registry) sendModelLoadActions(actions []modelLoadAction) {
 	for _, action := range actions {
+		if !r.modelLoadSendStillPending(action) {
+			continue
+		}
 		if err := r.SendLoadModel(action.providerID, action.modelID); err != nil {
 			r.logger.Warn("failed to trigger model swap",
 				"provider_id", action.providerID,
 				"model_id", action.modelID,
 				"error", err,
 			)
-			r.ClearPendingModelLoad(action.providerID, action.modelID)
+			r.failPendingModelLoadSend(action)
 		}
 	}
 }
@@ -368,13 +378,12 @@ func (r *Registry) providerHasPendingLoad(providerID string) bool {
 // stale protected loads cannot consume the global pending-load budget.
 func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	p, ok := r.providers[providerID]
 	if !ok {
+		r.mu.Unlock()
 		return 0
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	cleared := 0
 	for key := range r.pendingModelLoads {
@@ -387,6 +396,11 @@ func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 		delete(r.pendingModelLoads, key)
 		delete(r.pendingModelLoadStarted, key)
 		cleared++
+	}
+	p.mu.Unlock()
+	r.mu.Unlock()
+	if cleared > 0 {
+		r.RequestWarmPoolTrigger()
 	}
 	return cleared
 }
@@ -451,14 +465,19 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 }
 
 // ClearPendingModelLoad removes a pending model load entry after a terminal
-// load_model_status response.
+// load_model_status response. The active planner must observe
+// the freed global budget even if its earlier heartbeat trigger saw it full.
 func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Duration {
 	r.mu.Lock()
 	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
+	_, released := r.pendingModelLoads[key]
 	started := r.pendingModelLoadStarted[key]
 	delete(r.pendingModelLoads, key)
 	delete(r.pendingModelLoadStarted, key)
 	r.mu.Unlock()
+	if released {
+		r.RequestWarmPoolTrigger()
+	}
 	if started.IsZero() {
 		return 0
 	}

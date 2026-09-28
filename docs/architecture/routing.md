@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-28 · commit `4713e9158`
+> Last updated: 2026-09-28 · commit `7039781eb`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -330,13 +330,18 @@ The remaining terms are request-shaped:
 - **`thisReqMs`** — `promptTokens / prefillTPS + maxTokens / effectiveTPS`,
   plus `longPromptPenalty`.
 
-**Effective TPS.** `resolveEffectiveTPS` prefers the slot's
+**Effective TPS.** `resolveEffectiveTPS` and `resolvePrefillTPS` first use the
+exact matching reviewed profile's conservative point at or above the batch
+width after admission (`coordinator/registry/performance_profile.go`, `batchAt`).
+A workload-specific live EWMA does not replace that point. Without a fitting
+profile point, `resolveEffectiveTPS` prefers the slot's
 `ObservedDecodeTPS` EWMA, then the fleet median for the model, then the
 static registration rate derated by load:
 `effectiveDecodeTPS = staticTPS / (1 + effectiveTPSLoadFactor × backendRunning)`,
-floored at 1 tok/s. `resolvePrefillTPS` prefers `ObservedPrefillTPS`, else
+floored at 1 tok/s. The prefill fallback prefers `ObservedPrefillTPS`, else
 the static prefill rate (`resolvedPrefillTPS`: the registered `PrefillTPS`,
-or decode × `prefillToDecodeRatio`), capped at `maxPrefillTPS`.
+or decode × `prefillToDecodeRatio`), capped at `maxPrefillTPS`. Reviewed prefill
+points satisfy the same ceiling during profile validation.
 `SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
 binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
 (`coordinator/cmd/coordinator/main.go`).

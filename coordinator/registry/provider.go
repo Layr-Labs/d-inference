@@ -214,6 +214,7 @@ type Provider struct {
 	firstContentMeasurements map[string]firstContentMeasurement
 	warmWorkCounters         map[string]warmWorkCounters
 	lastWarmPlacementAt      time.Time
+	modelLoadSendRetryAt     time.Time // Session-local proactive-load write backoff; guarded by p.mu.
 	transport                transportMeasurement
 
 	// capacitySeq is the highest BackendCapacity.CapacitySeq applied on THIS

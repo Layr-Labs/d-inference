@@ -2066,12 +2066,9 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	} else {
 		backlogMs = backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
 	}
-	// Prefill resolves through resolvePrefillTPS for BOTH the base cost term and
-	// the long-prompt bias below, so provider ranking follows the live measured
-	// prefill EWMA when a slot reports one and only falls back to the static
-	// registration/x12 chain when it does not. Reading snap.prefillTPS directly
-	// here pinned the dominant prefill term to the static rate, which left a box
-	// whose measured prefill had degraded looking as cheap as its benchmark.
+	// Both the base cost and long-prompt bias use the qualified width's prefill
+	// rate when available, then the live EWMA and static registration/x12 chain.
+	// Reading snap.prefillTPS directly would bypass that shared rate policy.
 	prefillTPS := resolvePrefillTPS(snap)
 	thisReqMs := float64(reqPrompt)/prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
 	// Long-prompt fastest-tier preference: amplify the first-token-blocking time
@@ -2079,9 +2076,8 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	// strongly preferred, reducing pre-first-token client_gone. The amplified
 	// quantity is the FULL time-to-first-token (TTFT): prefill PLUS, for a COLD
 	// provider, the model-load latency (statePenalty, ~30s). Prefill uses
-	// resolvePrefillTPS (the live, observed-preferred prefill signal) — not the
-	// static rate — so the bias follows real measured prefill and does not favor a
-	// box whose static rate looks good but whose measured prefill is degraded.
+	// resolvePrefillTPS so the bias follows the same qualified/observed fallback
+	// policy as the base prefill cost.
 	// Amplifying the full cold-load+prefill TTFT — not just prefill — prevents the
 	// long-prompt bias from pulling a long prompt onto a cold box whose fast
 	// prefill is dwarfed by the load and which is therefore slower end-to-end than
@@ -2222,20 +2218,17 @@ func resolveEffectiveTPS(snap *routingSnapshot) float64 {
 	return effectiveDecodeTPS(snap.decodeTPS, snap.backendRunning)
 }
 
-// resolvePrefillTPS returns the best available prefill TPS estimate for TTFT.
-// Fallback chain: measured per-slot observed prefill EWMA → snap.prefillTPS (the
-// resolvedPrefillTPS chain: registration benchmark → decode×prefillToDecodeRatio
-// ×12 fallback). This mirrors how resolveEffectiveTPS prefers the measured
-// decode rate over the static estimate. The result is clamped to maxPrefillTPS
-// so a single outlier heartbeat cannot collapse the TTFT estimate.
-//
-// observedPrefillTPS stays 0 until providers ship the W1 measurement, so on
-// today's fleet this is a no-op that returns the existing ×12-chain value.
+// resolvePrefillTPS uses the qualified conservative width point for TTFT,
+// matching resolveEffectiveTPS. A workload-specific live EWMA cannot replace
+// that reviewed rate. Without a fitting point, prefer observed prefill EWMA,
+// then snap.prefillTPS (registration benchmark or decode×prefillToDecodeRatio).
+// The fallback is clamped to maxPrefillTPS; profile validation enforces the same
+// bound for reviewed points.
 func resolvePrefillTPS(snap *routingSnapshot) float64 {
-	tps := snap.prefillTPS
 	if point, ok := snap.performanceProfile.batchAt(max(1, snapshotOccupancy(snap)+1)); ok {
-		tps = point.PrefillTPS
+		return point.PrefillTPS
 	}
+	tps := snap.prefillTPS
 	if finitePositive(snap.observedPrefillTPS) {
 		tps = snap.observedPrefillTPS
 	}

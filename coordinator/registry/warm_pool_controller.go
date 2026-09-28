@@ -201,6 +201,9 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 	c.state.foldWorkRates(now, c.config.Interval/2)
 	pressure := c.state.snapshot(now, stateWindow)
 	queue := c.queueSnapshot(now, stateWindow)
+	// Reap before collecting candidates: an expired reservation must free both
+	// its provider and the global budget for this same planning pass.
+	pendingLoads := c.registry.pendingModelLoadCount(now)
 	fleet := c.registry.warmPoolFleetSnapshot(now)
 
 	// Fold this tick's occupancy into each model's demand-growth EWMA, which the
@@ -247,7 +250,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 
 	perTickCeiling := c.config.perTickCeiling()
 	loadsRemaining := perTickCeiling
-	globalPendingRemaining := c.config.MaxGlobalPendingLoads - c.registry.pendingModelLoadCount(now)
+	globalPendingRemaining := c.config.MaxGlobalPendingLoads - pendingLoads
 	if globalPendingRemaining < loadsRemaining {
 		loadsRemaining = globalPendingRemaining
 	}

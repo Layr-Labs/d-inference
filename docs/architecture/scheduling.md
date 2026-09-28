@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-28 · commit `602bfe613`
+> Last updated: 2026-09-28 · commit `7039781eb`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -309,8 +309,9 @@ Correlation is bounded to 64 unique UUIDs with finite positive fractions whose
 sum does not exceed the total; malformed reports fail closed at full usage.
 Providers opt into explicit retirement with
 `whole_mac_service_retirement_protocol = 1`, sticky for their connection.
-Tracking applies to attempts committed after that opt-in; earlier attempts
-retain their original cleanup behavior.
+Tracking applies at the final authorized handoff after opt-in, including
+reservations created before capability arrived. Attempts already handed off
+before opt-in retain their original cleanup behavior.
 After a dispatched request's terminal, the coordinator retains its frozen
 service charge until `service_reservation_released` proves that the request
 pipeline can no longer acquire work and all its engine leases have retired.
@@ -528,6 +529,17 @@ controllers and configurations with a non-positive resolved per-tick or global
 load limit keep the legacy fallback. A positive ramp ceiling does not override
 a disabled per-tick baseline. Exhausting a positive global budget temporarily
 keeps controller ownership, so the fallback cannot bypass its load limit.
+Releasing a pending load after success, send failure, disconnect, capability
+revocation, or inventory replacement wakes that same controller after registry
+and provider locks are released. A completion can therefore free the global
+budget for another queued model even when an earlier heartbeat or queue trigger
+saw the budget full. Expired reservations are reaped before collecting candidates,
+so their capacity is usable in the same pass. A failed command send releases its
+reservation but keeps that provider session out of both proactive planners for
+`pendingModelLoadMemoryBackoff`; inference routing is unchanged. Failed-send
+cleanup matches the session and reservation captured at planning time, preserving
+a newer reservation if the old write fails late
+(`coordinator/registry/model_load_send_failure.go`).
 Allocation tries the remaining ranked
 candidates when another model already reserved the first candidate, and
 rechecks eligibility atomically before sending a command

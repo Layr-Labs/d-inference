@@ -227,3 +227,59 @@ func TestWholeMacRetirementLegacyProviderDoesNotRetainShadows(t *testing.T) {
 		t.Fatal("provider without release protocol acquired permanent shadows")
 	}
 }
+
+func TestWholeMacRetirementCapabilityAtAuthorizedHandoff(t *testing.T) {
+	for _, beforeHandoff := range []bool{true, false} {
+		t.Run(fmt.Sprintf("capability_before_handoff_%t", beforeHandoff), func(t *testing.T) {
+			r := New(testLogger())
+			p := makeSchedulerProvider(t, r, "p", "m", 100)
+			used := 0.0
+			p.BackendCapacity.WholeMacServiceUsed = &used
+			_, frames := appAttestTestWriter(t, p)
+			pr := &PendingRequest{RequestID: "reserved-before-capability", Model: "m", ProviderID: p.ID}
+			p.AddPending(pr)
+			if pr.serviceRetirementTracked {
+				t.Fatal("reservation predates capability")
+			}
+			optIn := func() {
+				capacity := *p.BackendCapacity
+				capacity.WholeMacServiceRetirementProtocol = 1
+				if !r.Heartbeat(p.ID, &protocol.HeartbeatMessage{Status: "idle", BackendCapacity: &capacity}) {
+					t.Fatal("capability heartbeat rejected")
+				}
+			}
+			metadata, err := p.WriteInferenceTextDeferred(context.Background(), pr,
+				func(time.Time) ([]byte, error) { return []byte("sealed"), nil },
+				func(TextFrameWriteMetadata) {
+					// The reservation and frame already exist; capability lands
+					// immediately before the final writer authorization.
+					if beforeHandoff {
+						optIn()
+					}
+				})
+			if err != nil || !metadata.Committed || frames.Load() != 1 {
+				t.Fatalf("handoff failed: metadata=%+v frames=%d err=%v", metadata, frames.Load(), err)
+			}
+			if !beforeHandoff {
+				// An actual legacy handoff may fully retire before the first
+				// capability report. That ignored proof cannot be replayed, so
+				// upgrading the attempt later would leak a permanent shadow.
+				if r.ReleaseServiceReservation(p, pr.ServiceReservationID()) {
+					t.Fatal("legacy release unexpectedly accepted")
+				}
+				optIn()
+			}
+			p.RemovePending(pr.RequestID)
+			_, shadowed := p.serviceRetirementShadows[pr.ServiceReservationID()]
+			if shadowed != beforeHandoff {
+				t.Fatalf("shadowed=%t, want %t for capability at authorized handoff", shadowed, beforeHandoff)
+			}
+			if beforeHandoff && !r.ReleaseServiceReservation(p, pr.ServiceReservationID()) {
+				t.Fatal("tracked handoff did not retire through explicit proof")
+			}
+			if len(p.serviceRetirementShadows) != 0 {
+				t.Fatal("retirement shadow leaked")
+			}
+		})
+	}
+}

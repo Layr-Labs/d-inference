@@ -92,6 +92,11 @@ func (r *Registry) authorizeInferenceAttemptHandoff(p *Provider, pending *Pendin
 		return ErrProviderServingUnauthorized
 	}
 	pending.DispatchVerification = r.providerVerificationLocked(p, now)
+	// Capability may arrive while this reservation waits in the writer queue.
+	// Freeze retirement tracking at the authorized handoff, under the same lock
+	// as heartbeat opt-in. Already handed-off attempts are never upgraded by a
+	// later heartbeat: their release proof could have arrived before opt-in.
+	pending.serviceRetirementTracked = p.serviceRetirementProtocol
 	pending.serviceHandoffAuthorized = true
 	return nil
 }

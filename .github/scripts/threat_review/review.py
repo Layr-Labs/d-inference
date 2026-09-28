@@ -18,7 +18,7 @@ SCHEMA = {
             "severity": {"type": "string", "enum": ["high", "medium", "low"]},
             "title": {"type": "string", "maxLength": 160},
             "detail": {"type": "string", "maxLength": 1600},
-            "file": {"type": "string"}, "line": {"type": "integer", "minimum": 1},
+            "file": {"type": "string"}, "line": {"type": "integer", "minimum": 0},
             "side": {"type": "string", "enum": ["base", "head"]},
             "threat_ids": {"type": "array", "items": {"type": "string"}},
         }}}},
@@ -33,7 +33,9 @@ Flag concrete security regressions, new attack surface, invalidated threat assum
 and material gaps where the threat model needs updating because of this PR.
 Do not restate pre-existing issues, invent deployment settings, or claim a full security audit.
 Describe a plausible trigger, impact, and fix. Cite a changed file and an actual visible
-line on the indicated base/head side. In threat_ids, cite IDs defined by canonical
+line on the indicated base/head side. For an existing empty file, line=0 cites its
+metadata only on a side listed in metadata_citation_sides; never invent a source line.
+In threat_ids, cite IDs defined by canonical
 id fields (assets, adversaries, boundaries, threats or security findings) where applicable;
 use an empty threat_ids array for new attack surface. Return findings=[] if none qualify.
 Missing source is a coverage limit, never evidence that a change is safe.
@@ -74,12 +76,17 @@ def prepare(threat_model, files):
         if complete is False or (complete is None and (not patch or changes != file.get("additions", 0) + file.get("deletions", 0))):
             limits.append(name)
         lines = patch_lines(patch)
+        metadata_sides = []
         for side in ("base", "head"):
-            if not patch and side + "_text" in file:
+            if (complete is True or not patch) and side + "_text" in file:
                 lines[side] = set(range(1, len(file[side + "_text"].splitlines()) + 1))
+            if complete is True and file.get(side + "_mode") and file.get(side + "_text") == "":
+                lines[side].add(0)
+                metadata_sides.append(side)
         evidence[name] = {"lines": lines, "base_path": file.get("previous_filename", name)}
         records.append({"file": name, "status": file["status"],
                         "previous_filename": file.get("previous_filename"), "patch": patch,
+                        "metadata_citation_sides": metadata_sides,
                         **{k: file[k] for k in ("base_text", "head_text", "base_mode", "head_mode") if k in file}})
     return json.dumps({"base_threat_model": threat_model, "files": records}), evidence, limits
 

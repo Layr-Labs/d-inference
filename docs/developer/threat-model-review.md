@@ -75,7 +75,12 @@ must validate them before changing code.
 `source.complete_files` reads complete before/after Git blobs pinned to the PR's
 merge base and head. It rebuilds the diff instead of relying on truncated API
 patches, includes new files outside existing threat patterns, and retains mode,
-rename, empty-file, and deletion metadata. Symlink blobs are read as data; their
+rename, empty-file, and deletion metadata. Findings about a verified empty file
+use `line: 0` only on an existing base/head side listed in `metadata_citation_sides`;
+the comment links to that file and labels the citation as file metadata. Absent,
+nonempty and unread sides cannot use that citation. Ordinary citations may point
+to any actual line in the completely retrieved source, including context outside
+the diff hunk; patch-only input remains restricted to visible patch lines. Symlink blobs are read as data; their
 targets are never followed. PR source is never checked out or executed.
 
 `scan.scan` submits every changed-file text segment in batches, with the entire

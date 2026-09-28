@@ -28,10 +28,15 @@ def render(repository, head, base, model, findings, evidence, limits, error=None
             path = finding["file"]
             sha = head if finding["side"] == "head" else (diff_base or base)
             linked_path = path if finding["side"] == "head" else evidence[path]["base_path"]
-            url = f"{root}/blob/{sha}/{quote(linked_path, safe='/')}#L{finding['line']}"
+            url = f"{root}/blob/{sha}/{quote(linked_path, safe='/')}"
+            if finding["line"]:
+                url += f"#L{finding['line']}"
+                location = f":{finding['line']}"
+            else:
+                location = " (file metadata)"
             refs = ", ".join(finding["threat_ids"]) or "new attack surface"
             lines += [f"### {finding['severity'].upper()}: {plain(finding['title'])}",
-                      f"[{plain(path)}:{finding['line']}]({url}) · {refs}", "",
+                      f"[{plain(path)}{location}]({url}) · {refs}", "",
                       plain(finding["detail"]), ""]
             if finding.get("models"):
                 lines += ["Raised by: " + ", ".join(plain(name) for name in finding["models"]), ""]

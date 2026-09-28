@@ -10,7 +10,8 @@ spec = importlib.util.spec_from_file_location("fixtures", Path(__file__).with_na
 fixtures = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixtures)
 from threat_review.client import GitHub, ReviewUnavailable, ScanTimeout
-from threat_review.review import prepare, review
+from threat_review.review import prepare, review, validate_findings
+from threat_review.report import render
 from threat_review.source import Sources, complete_files
 from threat_review.scan import units
 
@@ -165,16 +166,61 @@ class ScanTests(unittest.TestCase):
             with self.subTest(mode=mode), self.assertRaises(ReviewUnavailable):
                 review(fixtures.THREAT, self.large_files(), "key", transport=transport)
 
-    def test_empty_mode_only_file_is_scanned_as_metadata(self):
+    def test_complete_source_context_is_valid_evidence_outside_patch_hunks(self):
+        files = complete_files(fixtures.FakeGitHub(), fixtures.FILES, fixtures.BASE, fixtures.HEAD)
+        findings = [dict(fixtures.FINDING, side=side, line=1) for side in ("base", "head")]
+        def transport(url, key, body):
+            return fixtures.completion(findings, body=body)
+        actual, _, limits = review(fixtures.THREAT, files, "key", transport=transport)
+        self.assertEqual(actual, findings)
+        self.assertFalse(limits)
+
+    def test_empty_mode_only_finding_survives_scan_and_render(self):
         file = {"filename": "empty", "status": "modified", "source_complete": True,
                 "base_text": "", "head_text": "", "base_mode": "100644", "head_mode": "100755", "patch": ""}
         requests = []
+        finding = dict(fixtures.FINDING, file="empty", line=0)
         def transport(url, key, body):
             requests.append(json.loads(body["messages"][1]["content"]))
-            return fixtures.completion([], body=body)
-        findings, _, limits = review(fixtures.THREAT, [file], "key", transport=transport)
-        self.assertFalse(findings or limits)
-        self.assertEqual(requests[0]["units"][0]["metadata"]["head_mode"], "100755")
+            return fixtures.completion([finding], body=body)
+        findings, evidence, limits = review(fixtures.THREAT, [file], "key", transport=transport)
+        self.assertEqual(findings, [finding])
+        self.assertFalse(limits)
+        metadata = requests[0]["units"][0]["metadata"]
+        self.assertEqual(metadata["head_mode"], "100755")
+        self.assertEqual(metadata["metadata_citation_sides"], ["base", "head"])
+        body = render("example/repo", fixtures.HEAD, fixtures.BASE, "a/model", findings, evidence, limits)
+        self.assertIn(f"[empty (file metadata)](https://github.com/example/repo/blob/{fixtures.HEAD}/empty)", body)
+        self.assertNotIn("#L0", body)
+
+    def test_empty_added_removed_and_renamed_files_have_extant_side_citations(self):
+        for status, sides in (("added", ["head"]), ("removed", ["base"]), ("renamed", ["base", "head"])):
+            with self.subTest(status=status):
+                file = {"filename": "empty", "previous_filename": "old-empty", "status": status,
+                        "source_complete": True, "patch": "", "base_text": "", "head_text": "",
+                        "base_mode": "100644" if "base" in sides else None,
+                        "head_mode": "100644" if "head" in sides else None}
+                message, evidence, limits = prepare(fixtures.THREAT, [file])
+                self.assertEqual(json.loads(message)["files"][0]["metadata_citation_sides"], sides)
+                for side in sides:
+                    finding = dict(fixtures.FINDING, file="empty", line=0, side=side)
+                    self.assertEqual(validate_findings({"findings": [finding]}, evidence, fixtures.THREAT), [finding])
+                    body = render("example/repo", fixtures.HEAD, fixtures.BASE, "a/model", [finding], evidence, limits)
+                    sha, path = (fixtures.BASE, "old-empty") if side == "base" else (fixtures.HEAD, "empty")
+                    self.assertIn(f"/blob/{sha}/{path})", body)
+                    self.assertNotIn("#L0", body)
+
+    def test_metadata_citations_reject_absent_nonempty_and_unread_sides(self):
+        base = {"filename": "empty", "status": "added", "source_complete": True, "patch": "",
+                "base_text": "", "head_text": "", "base_mode": None, "head_mode": "100644"}
+        cases = [(base, "base"), (dict(base, head_text="not empty\n"), "head"),
+                 (dict(base, source_complete=False), "head")]
+        for file, side in cases:
+            with self.subTest(file=file, side=side):
+                _, evidence, _ = prepare(fixtures.THREAT, [file])
+                finding = dict(fixtures.FINDING, file="empty", line=0, side=side)
+                with self.assertRaises(ReviewUnavailable):
+                    validate_findings({"findings": [finding]}, evidence, fixtures.THREAT)
 
     def test_unbatchable_line_fails_instead_of_truncating(self):
         with self.assertRaises(ReviewUnavailable):

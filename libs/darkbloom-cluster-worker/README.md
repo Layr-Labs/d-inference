@@ -15,8 +15,16 @@ bash libs/darkbloom-cluster-worker/build-native-worker.sh \
   EXPECTED_METALLIB_SHA256
 ```
 
-Use the [native dependency build procedure](../../experiments/cluster/inference/README.md)
-to obtain a metallib matching the checked-out MLX sources. The script builds
+Build the matching Metal kernels directly from the checked-out MLX sources:
+
+```sh
+bash scripts/fetch-metallib.sh /absolute/path/to/cluster-metal
+shasum -a 256 /absolute/path/to/cluster-metal/mlx.metallib
+```
+
+Pass that file and its hash to the worker build command above. See the
+[provider build procedure](../../docs/developer/build.md) for toolchain and
+submodule setup. The worker build script builds
 with two jobs and explicit Swift/C++ deployment targets, then requires actual
 JACCL symbols and a Mach-O deployment minimum of exactly macOS 26.2. A successful
 build copies the verified metallib beside the worker and prints its path.

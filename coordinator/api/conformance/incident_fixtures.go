@@ -1,4 +1,4 @@
-package api
+package conformance
 
 import (
 	"crypto/sha256"
@@ -37,7 +37,7 @@ func orJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-func TestOpenRouterConformanceIncidentProvenance(t *testing.T) {
+func (s Suite) TestOpenRouterConformanceIncidentProvenance(t *testing.T) {
 	for _, tc := range []struct{ name, body, hash string }{
 		{"off_omitted", orIncidentOmitted, "f0f8f60c48d944fb9270c6facfd5cc0c5543fc37b48cce6ef847abe3be8f2150"},
 		{"off_auto", orIncidentAuto, "d63598aad05a4e1dda12a82c119616c490de714f1a51328b39eb598b6229844b"},
@@ -65,7 +65,7 @@ func TestOpenRouterConformanceIncidentProvenance(t *testing.T) {
 // Response builders are separate from orWeatherScenario's fixed expectation.
 // These are authored replay controls, never generated-model success evidence.
 func orIncidentFrame(delta any, finish any) string {
-	b, _ := json.Marshal(map[string]any{"id": "incident-fixture-response", "object": "chat.completion.chunk", "created": 1700000000, "model": orIncidentAlias, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}})
+	b, _ := json.Marshal(map[string]any{"id": "incident-fixture-response", "object": "chat.completion.chunk", "created": 1700000000, "model": orIncidentBuild, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}})
 	return "data: " + string(b) + "\n\n"
 }
 func orIncidentTool(index int, id, name, arguments string) map[string]any {

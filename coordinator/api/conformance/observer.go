@@ -1,4 +1,4 @@
-package api
+package conformance
 
 // This deliberately small observer is a caller-side chat SSE oracle. It does
 // not use dispatch commit, HTTP 200, or the load test's TTFT as success evidence.

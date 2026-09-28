@@ -63,19 +63,23 @@ class GitHub:
             raise ReviewUnavailable("PR changed during file collection or file list is incomplete")
         return files
 
-    def existing_comment(self, marker):
-        # Paginate instead of only inspecting the first 100 PR comments.
-        for page in range(1, 31):
-            comments = self.call(f"/issues/{self.number}/comments?per_page=100&page={page}")
-            for comment in comments:
-                if (comment.get("user", {}).get("login") == "github-actions[bot]"
-                        and comment.get("body", "").startswith(marker)):
-                    return comment
-            if len(comments) < 100:
-                return None
-        raise ReviewUnavailable("Comment history exceeds the pagination limit")
 
-    def publish(self, existing, body):
-        if existing:
-            return self.call(f"/issues/comments/{existing['id']}", {"body": body}, "PATCH")
-        return self.call(f"/issues/{self.number}/comments", {"body": body}, "POST")
+class PrivateAdvisories:
+    """Create private drafts only; never update or publish an existing advisory."""
+
+    def __init__(self, repository, token, transport=request_json):
+        self.repository, self.token, self.transport = repository, token, transport
+
+    def create(self, number, head, body):
+        # Creation defaults to draft. Do not PATCH: a maintainer might have
+        # published an earlier draft, making an update leak new private findings.
+        response = self.transport(
+            f"https://api.github.com/repos/{self.repository}/security-advisories",
+            self.token, {
+                "summary": f"Unconfirmed automated threat review: PR #{number} at {head[:12]}",
+                "description": body,
+                "vulnerabilities": [{"package": {"ecosystem": "other", "name": self.repository},
+                                     "vulnerable_version_range": None}],
+            }, "POST")
+        if not isinstance(response, dict) or response.get("state") != "draft":
+            raise ReviewUnavailable("Private reporting did not confirm a draft")

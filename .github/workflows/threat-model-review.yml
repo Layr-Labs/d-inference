@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: read
 
 concurrency:
   group: threat-model-advisory-${{ github.event.pull_request.number }}
@@ -31,6 +31,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          THREAT_REVIEW_ADVISORY_TOKEN: ${{ secrets.THREAT_REVIEW_ADVISORY_TOKEN }}
           THREAT_REVIEW_MODEL: ${{ vars.THREAT_REVIEW_MODEL }}
         run: python3 .github/scripts/threat-model-review.py
       - name: Report infrastructure failure without blocking

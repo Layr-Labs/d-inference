@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Cloud-free regressions for advisory outcomes and trusted-data boundaries."""
 import copy
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -14,10 +16,10 @@ from urllib.parse import urlsplit
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from threat_review.client import GitHub, NoRedirects, ReviewUnavailable, request_json
-from threat_review.report import MARKER, LEGACY_MARKER, render
+from threat_review.client import GitHub, PrivateAdvisories, NoRedirects, ReviewUnavailable, request_json
+from threat_review.report import render
 from threat_review.review import prepare, review, validate_findings
-from threat_review.runner import run
+from threat_review.runner import COMPLETED, UNAVAILABLE, SKIPPED, run, summarize
 
 HEAD, BASE = "a" * 40, "b" * 40
 THREAT = "threats:\n  - id: T-001\n    affected_files: [coordinator/auth.go]\n"
@@ -123,8 +125,8 @@ class ReviewTests(unittest.TestCase):
 
 
 class FakeGitHub:
-    def __init__(self, existing=None, stale=False):
-        self.existing, self.stale, self.reads, self.posts = existing, stale, 0, []
+    def __init__(self, stale=False):
+        self.stale, self.reads = stale, 0
 
     def pull(self):
         self.reads += 1
@@ -137,11 +139,13 @@ class FakeGitHub:
     def files(self, count):
         return FILES
 
-    def existing_comment(self, marker):
-        return self.existing
 
-    def publish(self, existing, body):
-        self.posts.append((existing, body))
+class FakeAdvisories:
+    def __init__(self):
+        self.drafts = []
+
+    def create(self, number, head, body):
+        self.drafts.append((number, head, body))
 
 
 class RunnerTests(unittest.TestCase):
@@ -151,7 +155,9 @@ class RunnerTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root / "docs").mkdir()
         (self.root / "docs/threat-model.yaml").write_text(THREAT)
-        self.env = {"GH_TOKEN": "github-test-token", "OPENROUTER_API_KEY": "private-test-key"}
+        self.env = {"GH_TOKEN": "github-test-token", "OPENROUTER_API_KEY": "private-test-key",
+                    "THREAT_REVIEW_ADVISORY_TOKEN": "advisory-test-token"}
+        self.advisories = FakeAdvisories()
 
     def reviewer(self, findings):
         def call(threat, files, key, model):
@@ -160,95 +166,77 @@ class RunnerTests(unittest.TestCase):
             return findings, evidence, limits
         return call
 
-    def test_findings_post_one_advisory_comment(self):
-        github = FakeGitHub()
-        result = run(EVENT, self.root, self.env, github, self.reviewer([FINDING]))
-        self.assertIn("1 finding", result)
-        self.assertEqual(len(github.posts), 1)
-        self.assertTrue(github.posts[0][1].startswith(MARKER))
-        self.assertIn("never requests changes", github.posts[0][1])
+    def execute(self, findings, github=None, env=None, reviewer=None):
+        return run(EVENT, self.root, self.env if env is None else env,
+                   github or FakeGitHub(), reviewer or self.reviewer(findings), self.advisories)
 
-    def test_clean_run_is_quiet(self):
-        github = FakeGitHub()
-        result = run(EVENT, self.root, self.env, github, self.reviewer([]))
-        self.assertIn("0 finding", result)
-        self.assertEqual(github.posts, [])
+    def test_findings_create_private_revision_snapshot(self):
+        self.assertEqual(self.execute([FINDING]), COMPLETED)
+        self.assertEqual(len(self.advisories.drafts), 1)
+        number, head, body = self.advisories.drafts[0]
+        self.assertEqual((number, head), (12, HEAD))
+        self.assertIn("Missing authorization", body)
+        self.assertIn("historical snapshot", body)
+        self.assertIn("never requests changes", body)
 
-    def test_old_findings_updated_on_clean_run(self):
-        existing = {"id": 17}
-        github = FakeGitHub(existing)
-        run(EVENT, self.root, self.env, github, self.reviewer([]))
-        self.assertEqual(github.posts[0][0], existing)
-        self.assertIn("No actionable findings", github.posts[0][1])
+    def test_clean_and_findings_have_identical_public_output(self):
+        clean = self.execute([])
+        self.assertEqual(self.advisories.drafts, [])
+        self.assertEqual(clean, self.execute([FINDING]))
 
-    def test_legacy_bot_comment_is_migrated_in_place(self):
-        for findings in ([], [FINDING]):
-            with self.subTest(findings=bool(findings)):
-                writes = []
-                def transport(url, token, payload, method):
-                    if method:
-                        writes.append((url, method, payload))
-                        return {}
-                    if "/comments?" in url:
-                        return [
-                            {"id": 5, "user": {"login": "attacker"}, "body": LEGACY_MARKER},
-                            {"id": 7, "user": {"login": "github-actions[bot]"},
-                             "body": LEGACY_MARKER + "\nOld findings"}]
-                    if "/compare/" in url:
-                        return {"merge_base_commit": {"sha": BASE}}
-                    if "/files?" in url:
-                        return FILES
-                    return FakeGitHub().pull()
-                github = GitHub("example/repo", 12, "token", transport)
-                run(EVENT, self.root, self.env, github, self.reviewer(findings))
-                self.assertEqual(len(writes), 1)
-                url, method, payload = writes[0]
-                self.assertTrue(url.endswith("/issues/comments/7"))
-                self.assertEqual(method, "PATCH")
-                self.assertTrue(payload["body"].startswith(MARKER))
-                self.assertIn("Missing authorization" if findings else "No actionable findings", payload["body"])
+    def test_missing_credentials_skip_model_and_private_delivery(self):
+        for missing in ("OPENROUTER_API_KEY", "THREAT_REVIEW_ADVISORY_TOKEN"):
+            env = dict(self.env)
+            del env[missing]
+            result = self.execute([], env=env, reviewer=lambda *args: self.fail("no model call"))
+            self.assertEqual(result, UNAVAILABLE)
+            self.assertEqual(self.advisories.drafts, [])
 
-    def test_missing_key_skips_model_and_does_not_post_new_comment(self):
-        github = FakeGitHub()
-        result = run(EVENT, self.root, {"GH_TOKEN": "token"}, github,
-                     lambda *args: self.fail("model must not be called"))
-        self.assertIn("not configured", result)
-        self.assertEqual(github.posts, [])
+    def test_model_errors_cannot_leak_through_public_status(self):
+        for error in (ReviewUnavailable, RuntimeError):
+            def fail(*args):
+                raise error("PRIVATE FINDING private-test-key GHSA-abcd-abcd-abcd")
+            self.assertEqual(self.execute([], reviewer=fail), UNAVAILABLE)
+        self.assertEqual(self.advisories.drafts, [])
 
-    def test_outage_marks_old_comment_unreviewed_not_clean(self):
-        github = FakeGitHub({"id": 17})
-        def unavailable(*args):
-            raise ReviewUnavailable("API returned HTTP 429")
-        result = run(EVENT, self.root, self.env, github, unavailable)
-        self.assertIn("non-blocking", result)
-        self.assertIn("not confirmed resolved", github.posts[0][1])
-
-    def test_unexpected_exception_does_not_leak_credentials(self):
-        github = FakeGitHub({"id": 17})
+    def test_delivery_error_never_falls_back_to_public_output(self):
         def fail(*args):
-            raise RuntimeError("private-test-key")
-        result = run(EVENT, self.root, self.env, github, fail)
-        self.assertNotIn("private-test-key", result + github.posts[0][1])
+            raise ReviewUnavailable("PRIVATE FINDING advisory-test-token")
+        self.advisories.create = fail
+        self.assertEqual(self.execute([FINDING]), UNAVAILABLE)
 
-    def test_stale_head_does_not_publish(self):
-        github = FakeGitHub(stale=True)
-        result = run(EVENT, self.root, self.env, github, self.reviewer([FINDING]))
-        self.assertIn("no stale comment", result)
-        self.assertEqual(github.posts, [])
+    def test_stale_head_does_not_create_advisory(self):
+        self.assertEqual(self.execute([FINDING], github=FakeGitHub(stale=True)), SKIPPED)
+        self.assertEqual(self.advisories.drafts, [])
 
-    def test_fork_head_is_data_and_never_a_checkout(self):
+    def test_empty_diff_skips_model_and_creates_nothing(self):
+        github = FakeGitHub()
+        github.files = lambda count: []
+        self.assertEqual(self.execute([], github=github,
+                         reviewer=lambda *args: self.fail("no model call")), COMPLETED)
+        self.assertEqual(self.advisories.drafts, [])
+
+    def test_fork_head_remains_data(self):
         event = copy.deepcopy(EVENT)
         event["pull_request"]["head"]["repo"] = {"full_name": "attacker/fork"}
-        github = FakeGitHub()
-        run(event, self.root, self.env, github, self.reviewer([FINDING]))
-        self.assertEqual(len(github.posts), 1)
+        self.assertEqual(run(event, self.root, self.env, FakeGitHub(),
+                             self.reviewer([FINDING]), self.advisories), COMPLETED)
 
-    def test_empty_diff_supersedes_old_findings_without_model_call(self):
-        github = FakeGitHub({"id": 17})
-        github.files = lambda count: []
-        run(EVENT, self.root, self.env, github,
-            lambda *args: self.fail("empty diff must not call the model"))
-        self.assertIn("No actionable findings", github.posts[0][1])
+    def test_invalid_event_never_reaches_private_destination(self):
+        event = copy.deepcopy(EVENT)
+        event["repository"]["full_name"] = "example/repo/issues/1"
+        self.assertEqual(run(event, self.root, self.env, FakeGitHub(),
+                             self.reviewer([FINDING]), self.advisories), UNAVAILABLE)
+        self.assertEqual(self.advisories.drafts, [])
+
+    def test_public_summary_accepts_only_fixed_status_messages(self):
+        summary = self.root / "summary.md"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            summarize("PRIVATE FINDING GHSA-abcd-abcd-abcd", {"GITHUB_STEP_SUMMARY": str(summary)})
+        self.assertNotIn("PRIVATE", output.getvalue() + summary.read_text())
+        self.assertNotIn("GHSA", output.getvalue() + summary.read_text())
+        self.assertIn(UNAVAILABLE, summary.read_text())
 
     def test_entrypoint_failure_exits_zero_and_summarizes(self):
         event = self.root / "event.json"
@@ -272,13 +260,28 @@ class TransportTests(unittest.TestCase):
     def test_credentials_never_follow_redirects(self):
         self.assertIsNone(NoRedirects().redirect_request(None, None, 302, "", {}, "https://elsewhere.invalid"))
 
-    def test_comment_lookup_paginates_and_ignores_spoofed_markers(self):
-        def transport(url, *args):
-            if url.endswith("&page=1"):
-                return [{"user": {"login": "attacker"}, "body": MARKER}] * 100
-            return [{"id": 7, "user": {"login": "github-actions[bot]"}, "body": MARKER + "\nold"}]
-        github = GitHub("example/repo", 12, "token", transport)
-        self.assertEqual(github.existing_comment(MARKER)["id"], 7)
+    def test_private_sink_only_creates_drafts_and_never_publishes_or_updates(self):
+        calls = []
+        def transport(*args):
+            calls.append(args)
+            return {"state": "draft", "ghsa_id": "GHSA-private"}
+        sink = PrivateAdvisories("example/repo", "advisory-key", transport)
+        sink.create(12, HEAD, "PRIVATE FINDING")
+        url, token, payload, method = calls[0]
+        self.assertEqual(url, "https://api.github.com/repos/example/repo/security-advisories")
+        self.assertEqual(token, "advisory-key")
+        self.assertEqual(method, "POST")
+        self.assertNotIn("state", payload)
+        self.assertNotIn("cve_id", payload)
+        self.assertNotIn("credits", payload)
+        self.assertEqual(payload["description"], "PRIVATE FINDING")
+        self.assertEqual(payload["vulnerabilities"][0]["package"]["ecosystem"], "other")
+
+    def test_private_sink_requires_draft_confirmation(self):
+        for response in ({}, {"state": "published"}, None):
+            sink = PrivateAdvisories("example/repo", "token", lambda *args: response)
+            with self.assertRaises(ReviewUnavailable):
+                sink.create(12, HEAD, "PRIVATE FINDING")
 
     def test_comparison_base_must_be_an_immutable_sha(self):
         github = GitHub("example/repo", 12, "token", lambda *args: {"merge_base_commit": {"sha": "main"}})
@@ -303,6 +306,11 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", source)
         self.assertIn("continue-on-error: true", source)
         self.assertIn("timeout-minutes: 10", source)
+        self.assertIn("pull-requests: read", source)
+        self.assertNotIn("pull-requests: write", source)
+        self.assertIn("secrets.THREAT_REVIEW_ADVISORY_TOKEN", source)
+        self.assertNotIn("upload-artifact", source)
+        self.assertNotIn("upload-sarif", source)
         self.assertNotIn("checks: write", source)
         self.assertNotIn("contents: write", source)
         self.assertIn("run: python3 .github/scripts/threat-model-review.py", source)
@@ -311,7 +319,7 @@ class WorkflowBoundaryTests(unittest.TestCase):
 
 
 class LocalHTTPIntegrationTests(unittest.TestCase):
-    def test_review_and_comment_round_trip_with_real_http(self):
+    def test_review_and_private_draft_round_trip_with_real_http(self):
         calls = []
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -331,12 +339,10 @@ class LocalHTTPIntegrationTests(unittest.TestCase):
                     response = {"merge_base_commit": {"sha": BASE}}
                 elif "/files?" in self.path:
                     response = FILES
-                elif "/comments?" in self.path:
-                    response = []
                 elif self.path == "/api/v1/chat/completions":
                     response = completion([FINDING])
-                elif self.path == "/repos/example/repo/issues/12/comments":
-                    response = {"id": 1}
+                elif self.path == "/repos/example/repo/security-advisories":
+                    response = {"state": "draft", "ghsa_id": "GHSA-private"}
                 else:
                     self.send_error(404)
                     return
@@ -361,16 +367,28 @@ class LocalHTTPIntegrationTests(unittest.TestCase):
                 root = Path(temporary)
                 (root / "docs").mkdir()
                 (root / "docs/threat-model.yaml").write_text(THREAT)
-                outcome = run(EVENT, root, {"OPENROUTER_API_KEY": "openrouter-test-key"}, github,
-                              lambda *args: review(*args, transport=transport))
-            self.assertIn("1 finding", outcome)
+                env = {"OPENROUTER_API_KEY": "openrouter-test-key",
+                       "THREAT_REVIEW_ADVISORY_TOKEN": "advisory-test-token"}
+                sink = PrivateAdvisories("example/repo", "advisory-test-token", transport)
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                    outcome = run(EVENT, root, env, github,
+                                  lambda *args: review(*args, transport=transport), sink)
+                    summarize(outcome, {"GITHUB_STEP_SUMMARY": str(root / "summary.md")})
+                public_output = output.getvalue() + (root / "summary.md").read_text()
+            self.assertEqual(outcome, COMPLETED)
             model_call = next(c for c in calls if c[1] == "/api/v1/chat/completions")
             self.assertEqual(model_call[3], "Bearer openrouter-test-key")
             self.assertNotIn("github-test-token", json.dumps(model_call[2]))
-            comments = [c for c in calls if c[0] == "POST" and c[1].endswith("/comments")]
-            self.assertEqual(len(comments), 1)
-            self.assertEqual(comments[0][3], "Bearer github-test-token")
-            self.assertIn("Missing authorization", comments[0][2]["body"])
+            self.assertNotIn("advisory-test-token", json.dumps(model_call[2]))
+            reports = [c for c in calls if c[0] == "POST" and c[1].endswith("/security-advisories")]
+            self.assertEqual(len(reports), 1)
+            self.assertEqual(reports[0][3], "Bearer advisory-test-token")
+            self.assertIn("Missing authorization", reports[0][2]["description"])
+            self.assertFalse(any("/comments" in c[1] or c[0] == "PATCH" for c in calls))
+            for secret in ("Missing authorization", "GHSA-private", "coordinator/auth.go",
+                           "github-test-token", "openrouter-test-key", "advisory-test-token"):
+                self.assertNotIn(secret, public_output)
         finally:
             server.shutdown()
             worker.join()

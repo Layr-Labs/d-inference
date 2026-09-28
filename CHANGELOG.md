@@ -2,7 +2,7 @@
 
 ## Unreleased — advisory threat-model review
 
-- Restore PR threat-model review through OpenRouter. Findings update one advisory comment; clean reviews stay quiet, and model/service failures do not block merging. The workflow executes only the trusted base revision.
+- Restore PR threat-model review through OpenRouter. Findings create private draft security advisories for administrators, security managers, and invited collaborators. Public output contains no finding details or counts; model/service failures do not block merging. The workflow executes only the trusted base revision.
 
 ## Unreleased — coordinator legacy-compat cleanup
 

@@ -5,6 +5,29 @@ from urllib.parse import quote
 
 MARKER = "<!-- threat-model-review:openrouter:v1 -->"
 LEGACY_MARKER = "<!-- threat-model-review -->"
+COMMENT_LIMIT = 60000
+
+
+def retain_same_head_findings(existing, repository, head, body):
+    """Append an incomplete retry without erasing earlier same-head evidence.
+
+    Only the canonical report header identifies the revision: a finding may
+    itself cite another commit. The caller has verified the comment's bot author.
+    Return None if the combined history needs an Actions-summary fallback.
+    """
+    previous = (existing or {}).get("body", "")
+    header = (f"{MARKER}\n## Threat model review — advisory\n\n"
+              f"Reviewed head [`{head[:12]}`](https://github.com/{repository}/commit/{head}) against base `")
+    if not previous.startswith(header) or not re.search(r"^### (HIGH|MEDIUM|LOW): ", previous, re.M):
+        return body
+    retry = body.split("\n", 2)[2].replace(
+        "**Review not completed for this head.** Previous findings are superseded, not confirmed resolved.",
+        "**Retry incomplete.** Earlier findings for this head remain unconfirmed and are retained above.")
+    addition = "\n\n---\n\n## Incomplete retry — earlier findings retained\n" + retry
+    if addition in previous:
+        return previous
+    combined = previous + addition
+    return combined if len(combined) <= COMMENT_LIMIT else None
 
 
 def plain(value):

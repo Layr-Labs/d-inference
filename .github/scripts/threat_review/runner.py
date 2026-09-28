@@ -1,7 +1,7 @@
 """Trusted-base orchestration. Fetch PR patches as data; never check out PR code."""
 import re
 from .client import GitHub, ReviewUnavailable, ScanTimeout
-from .report import MARKER, LEGACY_MARKER, render
+from .report import MARKER, LEGACY_MARKER, COMMENT_LIMIT, render, retain_same_head_findings
 from .review import review
 from .ensemble import configured_models, review_models
 from .source import complete_files
@@ -56,7 +56,13 @@ def run(event, root, env, github=None, reviewer=review):
     # Clean first scans stay quiet; incomplete scans always notify the author.
     if findings or existing or error or limits:
         body = render(repository, head, base, model, findings, evidence, limits, error, diff_base, outcomes)
-        if len(body) > 60000:
+        if error or limits or len(body) > COMMENT_LIMIT:
+            retained = retain_same_head_findings(existing, repository, head, body)
+            if retained is None:
+                return ("Scan incomplete (non-blocking): earlier same-head findings remain in the PR comment. "
+                        "The retry exceeds the combined comment capacity; its report follows here.\n\n" + body)
+            body = retained
+        if len(body) > COMMENT_LIMIT:
             error = "Scan incomplete: findings exceed the PR comment capacity; split the PR for complete feedback"
             body = render(repository, head, base, model, [], {}, [], error, diff_base, outcomes)
         github.publish(existing, body)

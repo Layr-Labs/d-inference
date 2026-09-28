@@ -229,6 +229,76 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(github.posts[0][0], existing)
         self.assertIn("No actionable findings", github.posts[0][1])
 
+    def prior_report(self, head=HEAD):
+        _, evidence, _ = prepare(THREAT, FILES)
+        return {"id": 17, "body": render("example/repo", head, BASE, "prior/model", [FINDING], evidence, [])}
+
+    def test_failed_same_head_retry_retains_findings_and_is_idempotent(self):
+        existing = self.prior_report()
+        env = {"GH_TOKEN": "github-test-token"}
+        github = FakeGitHub(existing)
+        run(EVENT, self.root, env, github)
+        body = github.posts[0][1]
+        self.assertTrue(body.startswith(existing["body"]))
+        self.assertIn("Retry incomplete", body)
+        self.assertNotIn("superseded", body)
+        github = FakeGitHub({"id": 17, "body": body})
+        run(EVENT, self.root, env, github)
+        self.assertEqual(github.posts[0][1], body)
+
+    def test_source_failure_retains_same_head_findings(self):
+        github = FakeGitHub(self.prior_report())
+        github.files = lambda count: (_ for _ in ()).throw(ReviewUnavailable("source unavailable"))
+        run(EVENT, self.root, self.env, github)
+        self.assertIn(FINDING["title"], github.posts[0][1])
+        self.assertIn("Retry incomplete", github.posts[0][1])
+
+    def test_partial_retry_preserves_old_and_new_findings(self):
+        github = FakeGitHub(self.prior_report())
+        env = dict(self.env, THREAT_REVIEW_MODELS="good/model,bad/model")
+        def reviewer(threat, files, key, model):
+            if model == "bad/model":
+                raise ReviewUnavailable("model unavailable")
+            return self.reviewer([dict(FINDING, title="Another authorization issue")])(threat, files, key, model)
+        run(EVENT, self.root, env, github, reviewer)
+        body = github.posts[0][1]
+        self.assertIn(FINDING["title"], body)
+        self.assertIn("Another authorization issue", body)
+        self.assertIn("Retry incomplete", body)
+
+    def test_incomplete_source_retry_preserves_findings(self):
+        github = FakeGitHub(self.prior_report())
+        github.call = lambda path: ({"encoding": "base64", "content": "AA==", "size": 1}
+                                    if "/blobs/" in path else source_response(path))
+        run(EVENT, self.root, self.env, github, self.reviewer([]))
+        self.assertIn(FINDING["title"], github.posts[0][1])
+        self.assertIn("Scan incomplete", github.posts[0][1])
+
+    def test_new_head_failure_supersedes_old_findings(self):
+        github = FakeGitHub(self.prior_report("c" * 40))
+        run(EVENT, self.root, {"GH_TOKEN": "github-test-token"}, github)
+        self.assertNotIn(FINDING["title"], github.posts[0][1])
+        self.assertIn("superseded", github.posts[0][1])
+
+    def test_complete_same_head_retry_can_clear_findings(self):
+        github = FakeGitHub(self.prior_report())
+        run(EVENT, self.root, self.env, github, self.reviewer([]))
+        self.assertNotIn(FINDING["title"], github.posts[0][1])
+        self.assertIn("No actionable findings", github.posts[0][1])
+
+    def test_retry_capacity_preserves_comment_and_reports_partial_findings_in_summary(self):
+        existing = self.prior_report()
+        existing["body"] += "\n" + "x" * (59900 - len(existing["body"]))
+        github = FakeGitHub(existing)
+        def reviewer(threat, files, key, model):
+            if model == "bad/model":
+                raise ReviewUnavailable("model unavailable")
+            return self.reviewer([dict(FINDING, title="New partial finding")])(threat, files, key, model)
+        result = run(EVENT, self.root, dict(self.env, THREAT_REVIEW_MODELS="good/model,bad/model"), github, reviewer)
+        self.assertEqual(github.posts, [])
+        self.assertIn("earlier same-head findings remain", result)
+        self.assertIn("New partial finding", result)
+
     def test_legacy_bot_comment_is_migrated_in_place(self):
         for findings in ([], [FINDING]):
             with self.subTest(findings=bool(findings)):

@@ -660,8 +660,8 @@ Streaming providers emit the concrete build ID; the HTTP assertions require
 the caller's alias, so bypassing the coordinator's model rewrite fails.
 Current-wire fixtures send typed `invalid_request` errors and use explicit
 template readiness for the unsupported-tool fence; they do not reintroduce
-upstream's retired version-based tool heuristic. Small adapter aliases retain
-the shared fixture helpers used by the separate composed cache tests.
+upstream's retired version-based tool heuristic. The test-support subpackage
+also exposes shared fixture helpers for the separate composed cache tests.
 
 `TestOpenRouterConformance` exercises `Server.Handler` with synthetic catalog
 records, account-owned API keys, memory storage and encrypted loopback provider

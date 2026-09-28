@@ -1,7 +1,10 @@
-"""Render private draft advisory content; never send this text to public output."""
+"""Render fixed-format advisory comments; model output cannot create mentions/HTML."""
 import re
 import html
 from urllib.parse import quote
+
+MARKER = "<!-- threat-model-review:openrouter:v1 -->"
+LEGACY_MARKER = "<!-- threat-model-review -->"
 
 
 def plain(value):
@@ -10,13 +13,14 @@ def plain(value):
     return re.sub(r"([\\`*_{}\[\]()#+.!|<>~-])", r"\\\1", value)
 
 
-def render(repository, head, base, model, findings, evidence, limits, diff_base=None):
+def render(repository, head, base, model, findings, evidence, limits, error=None, diff_base=None):
     root = f"https://github.com/{repository}"
-    lines = ["## Private threat model review — unconfirmed", "",
-             f"Reviewed head [`{head[:12]}`]({root}/commit/{head}) against base `{base[:12]}`.", "",
-             "This is a historical snapshot of this revision, not the PR's current status. "
-             + "Validate each finding before taking action. Later runs do not update this draft.", ""]
-    if findings:
+    lines = [MARKER, "## Threat model review — advisory", "",
+             f"Reviewed head [`{head[:12]}`]({root}/commit/{head}) against base `{base[:12]}`.", ""]
+    if error:
+        lines += ["**Review not completed for this head.** Previous findings are superseded, not confirmed resolved.",
+                  plain(error)]
+    elif findings:
         for finding in findings:
             path = finding["file"]
             sha = head if finding["side"] == "head" else (diff_base or base)

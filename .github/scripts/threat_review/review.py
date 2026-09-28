@@ -3,7 +3,7 @@ import json
 import re
 from .client import ReviewUnavailable, request_json
 
-DEFAULT_MODEL = "anthropic/claude-sonnet-4.6"
+DEFAULT_MODEL = "anthropic/claude-opus-5.5"
 MAX_DIFF = 80_000
 MAX_FILE = 12_000
 MAX_THREAT_MODEL = 220_000

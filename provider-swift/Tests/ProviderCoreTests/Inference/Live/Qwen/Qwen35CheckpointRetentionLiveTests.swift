@@ -358,6 +358,17 @@ struct Qwen35CheckpointRetentionLiveTests {
             #expect(captured.contains { $0 > firstStripeEnd }, "boundaries continue past the switch: \(captured)")
             #expect(mixedStore.stats().recurrentCaptureDisarmedPacked == 0)
             let mixedKept = try fixture.positions(scope: "tenant-b", prefixOf: donorTokens)
+            let mixedDeepest = try #require(captured.max())
+            #expect(mixedKept.positions.last == mixedDeepest,
+                    "the deepest captured boundary is published for tenant-b: \(mixedKept.positions)")
+            #expect(mixedKept.positions.count == 3,
+                    "first, the deepest boundary at or below 5,120, deepest: \(mixedKept.positions)")
+            let mixedFirst = try #require(mixedKept.positions.first,
+                                          "no checkpoint published for tenant-b: \(mixedKept.positions)")
+            #expect(mixedFirst > firstStripeEnd - Qwen35CheckpointRetentionFixture.stripeTokens || mixedFirst >= 1_024,
+                    "the first retained boundary is at or above the store floor: \(mixedKept.positions)")
+            #expect(mixedKept.positions.contains { $0 <= 5_120 && $0 > mixedFirst },
+                    "the fork target below the hint is kept: \(mixedKept.positions)")
             print("[qwen36-moe-mixed] widths=\(widths) captured=\(captured) positions=\(mixedKept.positions) "
                 + "tensorBytes=\(mixedKept.bytes) disarmed=\(mixedStore.stats().recurrentCaptureDisarmedPacked) "
                 + "answer=\(mixed.answer.debugDescription)")

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -138,9 +139,10 @@ func TestIntegrationExactCacheRecurrentCompanyLeaves(t *testing.T) {
 	companyCtx, cancelCompany := context.WithCancel(suite.Ctx)
 	defer cancelCompany()
 	companyFirst := make(chan time.Time, 1)
+	companyTokens := make(chan time.Time, 8192)
 	companyDone := make(chan recurrentStreamOutcome, 1)
 	go func() {
-		result, err := streamRecurrentChat(companyCtx, suite, companyUser, model, recurrentCompanyPrompt(), 512, companyFirst)
+		result, err := streamRecurrentChat(companyCtx, suite, companyUser, model, recurrentCompanyPrompt(), 512, companyFirst, companyTokens)
 		companyDone <- recurrentStreamOutcome{result: result, err: err}
 	}()
 	select {
@@ -152,25 +154,62 @@ func TestIntegrationExactCacheRecurrentCompanyLeaves(t *testing.T) {
 	case <-time.After(3 * time.Minute):
 		t.Fatal("company never produced a first token")
 	}
+	// Cancel the company by the donor's progress, not by the clock. Solo,
+	// the company decodes a token every few milliseconds; once the donor is
+	// prefilling beside it, every engine step carries one donor chunk (the
+	// plain cap, 512 tokens) and one company token, so the company's
+	// inter-token gap jumps by an order of magnitude. Sample the solo
+	// cadence first, submit the donor, then count the company tokens that
+	// arrive at the slower cadence and cancel at the Nth: the donor has then
+	// computed about N plain chunks, far below the depth the repeat must
+	// restore, whatever the machine's speed.
+	solo := recurrentGapSample{}
+	sampleDeadline := time.After(2 * time.Minute)
+	for len(solo.times) < recurrentSoloCadenceSamples {
+		select {
+		case at := <-companyTokens:
+			solo.times = append(solo.times, at)
+		case outcome := <-companyDone:
+			require.NoError(t, outcome.err)
+			t.Fatalf("company stream ended after %d solo tokens", len(solo.times))
+		case <-sampleDeadline:
+			t.Fatalf("company produced only %d solo tokens", len(solo.times))
+		}
+	}
+	threshold := recurrentSlowGapThreshold(solo)
 	donorFirst := make(chan time.Time, 1)
 	donorDone := make(chan recurrentStreamOutcome, 1)
 	donorStarted := time.Now()
 	go func() {
-		result, err := streamRecurrentChat(suite.Ctx, suite, donorUser, model, donorPrompt, 16, donorFirst)
+		result, err := streamRecurrentChat(suite.Ctx, suite, donorUser, model, donorPrompt, 16, donorFirst, nil)
 		donorDone <- recurrentStreamOutcome{result: result, err: err}
 	}()
-	// Let the donor land and run a few plain chunks beside the company, then
-	// take the company away. Its stream must still be producing tokens at
-	// that point, and the donor must not have produced its first token yet.
-	time.Sleep(recurrentCompanyLeaveAfter)
+	slow := 0
+	previous := solo.times[len(solo.times)-1]
+	deadline := time.After(3 * time.Minute)
+	for slow < recurrentCompanyChunksBesideDonor {
+		select {
+		case at := <-companyTokens:
+			if at.After(donorStarted) && at.Sub(previous) > threshold {
+				slow++
+			}
+			previous = at
+		case outcome := <-companyDone:
+			require.NoError(t, outcome.err)
+			t.Fatalf("company stream ended after %d slow tokens, before the donor was beside it", slow)
+		case <-deadline:
+			t.Fatalf("company never slowed beside the donor: %d slow tokens, threshold %s", slow, threshold)
+		}
+	}
 	companyLeft := time.Now()
 	cancelCompany()
+	t.Logf("company cancelled after %d tokens beside the donor (solo median gap %s, threshold %s)",
+		slow, solo.median().Round(time.Millisecond), threshold.Round(time.Millisecond))
 	companyOutcome := <-companyDone
 	company := companyOutcome.result
 	require.Error(t, companyOutcome.err, "the company stream must have been cut short by the cancel")
 	require.True(t, company.firstToken.Before(donorStarted),
 		"the donor must be submitted after the company's first token")
-	require.Greater(t, company.chunks, 1, "the company must have streamed more than one content chunk")
 	require.True(t, company.lastToken.After(donorStarted),
 		"the company must still be decoding after the donor was submitted: last token %s, donor started %s",
 		company.lastToken.Format(time.StampMilli), donorStarted.Format(time.StampMilli))
@@ -199,10 +238,10 @@ func TestIntegrationExactCacheRecurrentCompanyLeaves(t *testing.T) {
 	// tail, at most one solo stripe below the prompt end; the largest
 	// production stripe is the dense default of 4,096
 	// (`EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens`). The old
-	// uniform-chunk rule disarmed at the cap switch, which happens within
-	// `recurrentCompanyLeaveAfter` of the donor's start, a handful of plain
-	// chunks in, so it could publish nothing beyond the first few thousand
-	// tokens; the floor below is far above that and far below the allowance.
+	// uniform-chunk rule disarmed at the cap switch, which the company's
+	// cancel forces after about `recurrentCompanyChunksBesideDonor` plain
+	// chunks (a few thousand tokens at most), so it could publish nothing
+	// deeper; the floor below is far above that and far below the allowance.
 	require.GreaterOrEqual(t, repeat.cachedTokens, repeat.promptTokens-4_096,
 		"restored %d of %d prompt tokens: capture stopped early", repeat.cachedTokens, repeat.promptTokens)
 	require.Greater(t, repeat.cachedTokens, 8_192,
@@ -233,11 +272,46 @@ const (
 	recurrentBackupMarker  = "BRONZE-913"
 )
 
-// recurrentCompanyLeaveAfter is how long the company keeps decoding beside
-// the donor before the test cancels it: long enough for the donor to land
-// and prefill several plain chunks (each engine step is one donor chunk plus
-// one company token), far shorter than the donor's whole prefill.
-const recurrentCompanyLeaveAfter = 12 * time.Second
+// recurrentCompanyChunksBesideDonor is how many company tokens must arrive at
+// the slowed, one-per-step cadence after the donor was submitted before the
+// test cancels the company. Each such step carried one plain donor chunk, so
+// the donor has computed about that many chunks (at most a few thousand
+// tokens) when the company leaves: enough to have prefilled beside it, far
+// below the depth the repeat must restore.
+const recurrentCompanyChunksBesideDonor = 4
+
+// recurrentSoloCadenceSamples is how many company tokens (the first
+// included) are observed solo, before the donor is submitted, to measure
+// the company's unshared decode cadence.
+const recurrentSoloCadenceSamples = 9
+
+// recurrentGapSample holds the arrival times of the company's solo tokens.
+type recurrentGapSample struct {
+	times []time.Time
+}
+
+// median is the median inter-token gap of the solo sample.
+func (s recurrentGapSample) median() time.Duration {
+	var gaps []time.Duration
+	for i := 1; i < len(s.times); i++ {
+		gaps = append(gaps, s.times[i].Sub(s.times[i-1]))
+	}
+	if len(gaps) == 0 {
+		return 0
+	}
+	sort.Slice(gaps, func(i, j int) bool { return gaps[i] < gaps[j] })
+	return gaps[len(gaps)/2]
+}
+
+// recurrentSlowGapThreshold separates solo decode from decode beside a
+// prefilling donor: five times the solo median, never below 50 ms.
+func recurrentSlowGapThreshold(sample recurrentGapSample) time.Duration {
+	threshold := 5 * sample.median()
+	if threshold < 50*time.Millisecond {
+		threshold = 50 * time.Millisecond
+	}
+	return threshold
+}
 
 type recurrentStreamResult struct {
 	content      string
@@ -255,14 +329,14 @@ type recurrentStreamOutcome struct {
 }
 
 // streamRecurrentChat posts a streaming chat completion (with usage in the
-// terminal chunk) and reports the wall-clock time of the first content delta
-// on `firstToken` (once), then returns when the stream ends or `ctx` is
-// cancelled. It never asserts: it runs on a worker goroutine, and the test
+// terminal chunk), reports the wall-clock time of the first content delta on
+// `firstToken` (once) and of every content delta on `tokens` (when non-nil,
+// never blocking), then returns when the stream ends or `ctx` is cancelled. It never asserts: it runs on a worker goroutine, and the test
 // goroutine judges the returned result and error. The first delta is the
 // provider's evidence that the row has left prefill and is decoding.
 func streamRecurrentChat(
 	ctx context.Context, suite *testbed.Suite, apiKey, model, prompt string, maxTokens int,
-	firstToken chan<- time.Time,
+	firstToken chan<- time.Time, tokens chan<- time.Time,
 ) (recurrentStreamResult, error) {
 	var result recurrentStreamResult
 	body, err := json.Marshal(map[string]any{
@@ -333,6 +407,12 @@ func streamRecurrentChat(
 			content.WriteString(delta)
 			result.chunks++
 			result.lastToken = time.Now()
+			if tokens != nil {
+				select {
+				case tokens <- result.lastToken:
+				default:
+				}
+			}
 			if !signalled {
 				result.firstToken = result.lastToken
 				firstToken <- result.firstToken

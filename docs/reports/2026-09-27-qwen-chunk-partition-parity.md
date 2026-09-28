@@ -82,16 +82,18 @@ provider: an 18,438-token prompt is primed once (fleet-novel, the coordinator
 sends a 0 repeat hint, the provider settles `skipped_novel`, no holder), sent
 again once a second tenant's streamed request has produced its first token
 (so the donor's first chunks share the step with a decoding row), the second
-tenant is cancelled 12 seconds later while the donor is still prefilling
-(the donor's own first streamed token marks the end of its prefill), so the
-donor's remaining ranges run solo on the 4,096 stripe, and the prompt is
-then repeated. With Qwen thinking disabled so the 16-token answers are
+tenant is cancelled once four of its tokens have arrived at the slowed
+one-per-step cadence that means each step is also carrying a plain donor
+chunk (so the donor has computed only a few thousand tokens, whatever the
+machine's speed) and while the donor is still prefilling (the donor's own
+first streamed token marks the end of its prefill), so the donor's remaining
+ranges run solo on the 4,096 stripe, and the prompt is then repeated. With Qwen thinking disabled so the 16-token answers are
 comparable:
 
-| Checkpoint (release provider, paged KV) | Prime, cold | Donor, company cancelled at 12 s | Repeat | Restored |
+| Checkpoint (release provider, paged KV) | Prime, cold | Donor, company cancelled beside it | Repeat | Restored |
 |---|---:|---:|---:|---:|
-| Qwen3.5-9B | 57.7 s | 57.2 s | 5.69 s | 16,896 of 18,438 |
-| Qwen3.5-35B-A3B (`qwen3.5-35b-a3b`) | 31.3 s | 32.8 s | 1.93 s | 17,920 of 18,438 |
+| Qwen3.5-9B | 26.3 s | 27.6 s (company beside it 3.1 s, 4 chunks) | 5.94 s | 14,848 of 18,438 |
+| Qwen3.5-35B-A3B (`qwen3.5-35b-a3b`) | 13.6 s | 14.1 s (company beside it 1.8 s, 4 chunks) | 1.97 s | 16,896 of 18,438 |
 
 The restored depth is the last full range end before the ragged tail, at
 most one 4,096 stripe below the prompt end; the test allows that and

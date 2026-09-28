@@ -1,6 +1,6 @@
 # MiMo prompt fixture reproduction
 
-> Last updated: 2026-09-28 · commit `b6f9574ed`
+> Last updated: 2026-09-28 · commit `05d26caaf`
 
 The Rust MiMo parity tests intentionally require pinned metadata and an
 independent20-case corpus. Missing inputs are failures, not silently skipped

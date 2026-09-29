@@ -57,6 +57,16 @@ func (t *cacheRoutingTracker) persistHolderRemoval(key string, h cacheHolder, re
 	case cacheHolderRemovalTTL:
 		// Loads filter expired rows and the store prune removes them.
 	default:
+		// Two overlapping sessions of one machine share the durable identity
+		// (key, epoch). If another live session still holds this boundary
+		// under the same epoch, the row is its evidence now: refresh it
+		// instead of deleting it.
+		for providerID, other := range t.holders[key] {
+			if providerID != h.ProviderID && other.CacheEpoch == h.CacheEpoch && other.persistable() {
+				t.persister.MarkHolderUpsert(holderRecordFor(key, other))
+				return
+			}
+		}
 		t.persister.MarkHolderDelete(crs.HolderKey{Key: key, CacheEpoch: h.CacheEpoch})
 	}
 }
@@ -94,10 +104,17 @@ func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability prot
 	defer func() { t.restoring = false }()
 	for _, rec := range rows {
 		rec, ok := cachepersist.ClampToTTL(rec, now, t.ttl)
-		if !ok || rec.ModelID != capability.ModelID ||
+		if !ok {
+			continue
+		}
+		if rec.ModelID != capability.ModelID ||
 			rec.ModelAggregateHash != capability.ModelAggregateHash ||
 			rec.PromptContractID != capability.PromptContractID ||
 			(rec.BlockHashVersion != "" && capability.BlockHashVersion != "" && rec.BlockHashVersion != capability.BlockHashVersion) {
+			// The provider's capability for this epoch and model no longer
+			// describes the checkpoint; the durable row would only be
+			// reloaded and rejected again on every boot.
+			t.persister.MarkHolderDelete(rec.HolderKey())
 			continue
 		}
 		if live, ok := t.holders[rec.Key][provider.ID]; ok && !rec.UpdatedAt.After(live.UpdatedAt) {

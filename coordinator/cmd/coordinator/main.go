@@ -281,7 +281,8 @@ func main() {
 			logger.Warn("cache routing persistence restore failed; write-behind is on but the index starts empty", "error", err)
 		} else if status.Enabled {
 			logger.Info("cache routing persistence restored",
-				"holders_pending", status.PendingHolders, "demand_entries", status.RestoredDemand)
+				"holders_pending", status.PendingHolders, "demand_entries", status.RestoredDemand,
+				"key_rotated", status.KeyRotated)
 		}
 	}
 	var promptProvisioner *promptcontract.Provisioner

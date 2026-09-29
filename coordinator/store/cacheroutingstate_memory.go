@@ -105,7 +105,7 @@ func (s *MemoryStore) UpsertCacheDemand(ctx context.Context, records []crs.Deman
 	return nil
 }
 
-func (s *MemoryStore) LoadCacheDemand(ctx context.Context, notBefore time.Time) ([]crs.DemandRecord, error) {
+func (s *MemoryStore) LoadCacheDemand(ctx context.Context, notBefore time.Time, limit int) ([]crs.DemandRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -117,7 +117,38 @@ func (s *MemoryStore) LoadCacheDemand(ctx context.Context, notBefore time.Time) 
 			out = append(out, crs.DemandRecord{Key: key, SeenAt: seen})
 		}
 	}
+	// Newest first, then key, matching the Postgres ORDER BY.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].SeenAt.Equal(out[j].SeenAt) {
+			return out[i].SeenAt.After(out[j].SeenAt)
+		}
+		return out[i].Key < out[j].Key
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
+}
+
+func (s *MemoryStore) CacheRoutingKeyFingerprint(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cacheRoutingFingerprint, nil
+}
+
+func (s *MemoryStore) ResetCacheRoutingState(ctx context.Context, fingerprint string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cacheHolders = make(map[crs.HolderKey]crs.HolderRecord)
+	s.cacheDemand = make(map[string]time.Time)
+	s.cacheRoutingFingerprint = fingerprint
+	return nil
 }
 
 func (s *MemoryStore) PruneCacheRoutingState(ctx context.Context, now, demandNotBefore time.Time) (int64, error) {

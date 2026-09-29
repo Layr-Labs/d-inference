@@ -7,16 +7,32 @@ import (
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
 
-// Restore loads the durable copy. Demand entries within ttl are returned for
-// the registry to seed its index directly. Holder rows are clamped to the
-// current ttl (a row written under a longer TTL must not outlive today's
-// setting), loaded longest-lived first up to maxHolders, and parked until the
-// registry binds them to a provider whose capabilities match.
-func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duration, maxHolders int) ([]crs.DemandRecord, error) {
+// Restore loads the durable copy. If the store's rows were written under a
+// different cache-key generation (the master key changed), both tables are
+// reset first: their HMAC-derived keys can never match a request. Demand
+// entries within ttl are returned, newest first up to maxDemand, for the
+// registry to seed its index directly. Holder rows are clamped to the current
+// ttl (a row written under a longer TTL must not outlive today's setting),
+// loaded longest-lived first up to maxHolders, and parked until the registry
+// binds them to a provider whose capabilities match.
+func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duration, maxHolders, maxDemand int) ([]crs.DemandRecord, error) {
 	if p == nil {
 		return nil, nil
 	}
-	demand, err := p.store.LoadCacheDemand(ctx, now.Add(-ttl))
+	stored, err := p.store.CacheRoutingKeyFingerprint(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if stored != p.fingerprint {
+		if err := p.store.ResetCacheRoutingState(ctx, p.fingerprint); err != nil {
+			return nil, err
+		}
+		p.mu.Lock()
+		p.counters.keyRotated = stored != ""
+		p.mu.Unlock()
+		return nil, nil
+	}
+	demand, err := p.store.LoadCacheDemand(ctx, now.Add(-ttl), maxDemand)
 	if err != nil {
 		return nil, err
 	}

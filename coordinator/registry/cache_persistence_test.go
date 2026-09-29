@@ -151,7 +151,7 @@ func testCacheRoutingPersistenceSurvivesRestart(t *testing.T, st store.Store) {
 		rows[0].AnchorTokenCount != checkpoint.TokenCount || rows[0].ModelID != "model" {
 		t.Fatalf("durable holder row wrong: %+v", rows)
 	}
-	demand, _ := cacheStore.LoadCacheDemand(context.Background(), time.Now().Add(-time.Minute))
+	demand, _ := cacheStore.LoadCacheDemand(context.Background(), time.Now().Add(-time.Minute), 0)
 	if len(demand) == 0 {
 		t.Fatal("demand keys were not persisted")
 	}
@@ -503,5 +503,119 @@ func TestCacheRoutingPersistenceSkipsMemoryTier(t *testing.T) {
 	rows := storedHolders(t, st)
 	if len(rows) != 1 || rows[0].Key != "ssd-key" {
 		t.Fatalf("only the SSD holder may be persisted: %+v", rows)
+	}
+}
+
+// A restored row whose provider returns with the same epoch and model but a
+// different prompt contract is deleted durably at bind, not reloaded and
+// rejected again on every boot.
+func TestCacheRoutingPersistenceDeletesMismatchedRestoredRows(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r1, _, capability := exactTestRegistry(t)
+	removeTestProvider(r1, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r1, st)
+	a := persistenceTestProvider(t, r1, "machine-a", capability)
+	checkpoint := exactTestAnchor(16, "c")
+	floor := exactTestAnchor(17, "d")
+	plan := boundTestCachePlan(r1, exactTestPlan(checkpoint, floor))
+	_, ready := checkpointTestAttempt(t, r1, a, capability, "donor", plan, 1)
+	ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+	ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+	if !r1.ApplyPrefixCacheReadyV2(a.ID, ready) {
+		t.Fatal("ready receipt rejected")
+	}
+	if err := r1.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 1 {
+		t.Fatalf("expected one durable row: %+v", rows)
+	}
+
+	r2, _, _ := exactTestRegistry(t)
+	removeTestProvider(r2, "provider-a")
+	if s := startPersistence(t, r2, st); s.PendingHolders != 1 {
+		t.Fatalf("restore did not park the row: %+v", s)
+	}
+	changed := capability
+	changed.PromptContractID = strings.Repeat("e", 64)
+	back := persistenceTestProvider(t, r2, "machine-a-back", changed)
+	plan2 := boundTestCachePlan(r2, exactTestPlan(checkpoint, floor))
+	if hints := memoryTestHints(r2, plan2, time.Now()); len(hints) != 0 {
+		t.Fatalf("mismatched row must not become a live holder: %+v", hints)
+	}
+	if s := r2.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 || s.BoundHolders != 0 || s.DroppedPending != 1 {
+		t.Fatalf("mismatched row must be taken and dropped: %+v", s)
+	}
+	if err := r2.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 0 {
+		t.Fatalf("mismatched row must be deleted durably: %+v", rows)
+	}
+	if s := r2.CacheRoutingPersistenceStatus(); s.RowsDeleted != 1 {
+		t.Fatalf("delete not counted: %+v", s)
+	}
+	// A third boot has nothing to reload for that provider.
+	r3, _, _ := exactTestRegistry(t)
+	removeTestProvider(r3, "provider-a")
+	if s := startPersistence(t, r3, st); s.PendingHolders != 0 || s.RestoredHolders != 0 {
+		t.Fatalf("deleted row came back: %+v", s)
+	}
+	_ = back
+}
+
+// Two overlapping sessions of one machine share one durable row (same key and
+// epoch). Invalidating the older session's holder must not delete the row that
+// is now the newer session's evidence.
+func TestCacheRoutingPersistenceKeepsRowOwnedByOtherLiveSession(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r, st)
+	checkpoint := exactTestAnchor(16, "c")
+	floor := exactTestAnchor(17, "d")
+	plan := boundTestCachePlan(r, exactTestPlan(checkpoint, floor))
+	first := persistenceTestProvider(t, r, "session-1", capability)
+	second := persistenceTestProvider(t, r, "session-2", capability)
+	for i, p := range []*Provider{first, second} {
+		_, ready := checkpointTestAttempt(t, r, p, capability, fmt.Sprintf("donor-%d", i), plan, 1)
+		ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+		ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+		if !r.ApplyPrefixCacheReadyV2(p.ID, ready) {
+			t.Fatalf("receipt for %s rejected", p.ID)
+		}
+	}
+	if hints := memoryTestHints(r, plan, time.Now()); len(hints) != 2 {
+		t.Fatalf("both sessions should hold the boundary: %+v", hints)
+	}
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 1 {
+		t.Fatalf("both sessions share one durable row: %+v", rows)
+	}
+	// The older session's evidence is invalidated for a non-disconnect reason.
+	r.cacheRouting.invalidateProviderEvidence(first.ID, cacheHolderRemovalCapabilityChange, true)
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 1 || rows[0].CacheEpoch != capability.CacheEpoch {
+		t.Fatalf("row owned by the live second session was deleted: %+v", rows)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.RowsDeleted != 0 {
+		t.Fatalf("no delete should have been issued: %+v", s)
+	}
+	if hints := memoryTestHints(r, plan, time.Now()); len(hints) != 1 || hints[second.ID].Tier != "ssd" {
+		t.Fatalf("second session's holder lost: %+v", hints)
+	}
+	// Once the last session's evidence goes too, the row is deleted.
+	r.cacheRouting.invalidateProviderEvidence(second.ID, cacheHolderRemovalCapabilityChange, true)
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 0 {
+		t.Fatalf("row must be deleted once no live session holds it: %+v", rows)
 	}
 }

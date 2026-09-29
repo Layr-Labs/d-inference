@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `6f7bd61cb`
+> Last updated: 2026-09-29 · commit `2fea54f1c`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -743,11 +743,23 @@ back are operator procedures, kept in the runbook
    capabilities with that epoch, model, artifact and contract
    (`bindPendingLocked`, run at the end of `Register` and on every capability
    apply in `UpdatePrefixCacheSnapshot`, changed or not), so a bound
-   holder carries a live `*Provider` exactly like a fresh receipt; a
-   disconnect parks the holder instead of deleting its row, and every other
-   removal reason deletes it. Resident (memory-tier) holders are never
-   persisted. `lifecycle.persistence` on `GET /v1/cache/status` reports the
-   restored, parked and bound counts and the flush health.
+   holder carries a live `*Provider` exactly like a fresh receipt. A parked
+   row whose provider returns under the same epoch and model but another
+   artifact or contract is deleted at bind, not reloaded on every boot. A
+   disconnect parks the holder instead of deleting its row; every other
+   removal reason deletes the row unless another live session of the same
+   machine (same key and epoch, as during an overlapping reconnect) still
+   holds the boundary, in which case the row is refreshed as that session's
+   evidence. Restores are bounded by the index caps (holders longest-lived
+   first, demand newest first) and clamped to the current TTL; the demand
+   write granularity is bounded by the TTL so a short TTL never leaves the
+   durable timestamp stale. Rows are fenced by cache-key generation: the
+   store keeps a non-secret HMAC fingerprint of the master key
+   (`cache_routing_meta`), and a boot under a different key resets the
+   tables instead of parking rows that could never match a request
+   (`lifecycle.persistence.key_rotated`). Resident (memory-tier) holders are
+   never persisted. `lifecycle.persistence` on `GET /v1/cache/status`
+   reports the restored, parked and bound counts and the flush health.
 2. **Cache routing never rejects, delays or otherwise changes ordinary
    inference.** The activation cohort and the plan-QPS bucket only decline
    participation (`cacheActivationGate`,

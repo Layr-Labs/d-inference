@@ -106,6 +106,9 @@ type cacheRouteKeys struct {
 	route      []byte
 	scope      []byte
 	activation []byte
+	// persistFingerprint is a non-secret marker of the key generation used to
+	// fence persisted cache routing rows (cachepersist.Restore).
+	persistFingerprint string
 }
 
 type cacheHolder struct {

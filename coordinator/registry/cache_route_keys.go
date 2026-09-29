@@ -41,6 +41,12 @@ func deriveCacheKeys(master []byte) cacheRouteKeys {
 		route:      hmacBytes(master, []byte("darkbloom/cache-routing/route/v3")),
 		scope:      hmacBytes(master, []byte("darkbloom/cache-routing/scope/v3")),
 		activation: hmacBytes(master, []byte("darkbloom/cache-routing/activation/v1")),
+		// A non-secret marker of this key generation: persisted holder and
+		// demand keys are HMAC-derived from the master key, so rows written
+		// under another key can never match a request and are reset instead
+		// of restored (cachepersist.Restore).
+		persistFingerprint: hex.EncodeToString(
+			hmacBytes(master, []byte("darkbloom/cache-routing/persistence-fingerprint/v1")))[:24],
 	}
 }
 

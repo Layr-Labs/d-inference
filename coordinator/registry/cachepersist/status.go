@@ -14,6 +14,7 @@ type counters struct {
 	droppedDirty    uint64
 	lastFlushMs     int64
 	lastFlushAt     time.Time
+	keyRotated      bool
 }
 
 // Status is the aggregate, content-free view exposed on the cache status
@@ -32,6 +33,9 @@ type Status struct {
 	DroppedDirty    uint64 `json:"dropped_dirty"`
 	LastFlushMs     int64  `json:"last_flush_ms"`
 	LastFlushAt     string `json:"last_flush_at,omitempty"`
+	// KeyRotated is true when this boot found rows written under another
+	// cache-key generation and reset the tables instead of restoring them.
+	KeyRotated bool `json:"key_rotated"`
 }
 
 // Status snapshots the counters. A nil persister reports Enabled=false.
@@ -46,7 +50,7 @@ func (p *Persister) Status() Status {
 		Enabled: true, RestoredHolders: c.restoredHolders, RestoredDemand: c.restoredDemand,
 		PendingHolders: p.pendingCount, BoundHolders: c.boundHolders, DroppedPending: c.droppedPending,
 		Flushes: c.flushes, FlushErrors: c.flushErrors, RowsWritten: c.rowsWritten, RowsDeleted: c.rowsDeleted,
-		DroppedDirty: c.droppedDirty, LastFlushMs: c.lastFlushMs,
+		DroppedDirty: c.droppedDirty, LastFlushMs: c.lastFlushMs, KeyRotated: c.keyRotated,
 	}
 	if !c.lastFlushAt.IsZero() {
 		s.LastFlushAt = c.lastFlushAt.UTC().Format(time.RFC3339)

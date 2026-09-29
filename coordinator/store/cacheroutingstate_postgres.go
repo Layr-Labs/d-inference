@@ -2,9 +2,12 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
@@ -40,6 +43,17 @@ const cacheRoutingDemandDDL = `CREATE TABLE IF NOT EXISTS cache_routing_demand (
 )`
 
 const cacheRoutingDemandSeenIndexDDL = `CREATE INDEX IF NOT EXISTS idx_cache_routing_demand_seen ON cache_routing_demand(seen_at)`
+
+// cacheRoutingMetaDDL records the derived cache-key generation the rows were
+// written under (a non-secret fingerprint), so a master-key rotation resets
+// the tables instead of restoring rows no request can ever match.
+const cacheRoutingMetaDDL = `CREATE TABLE IF NOT EXISTS cache_routing_meta (
+ name TEXT PRIMARY KEY,
+ value TEXT NOT NULL,
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`
+
+const cacheRoutingKeyFingerprintName = "key_fingerprint"
 
 const cacheHolderInsertColumns = 13
 
@@ -171,8 +185,16 @@ func (s *PostgresStore) UpsertCacheDemand(ctx context.Context, records []crs.Dem
 	return nil
 }
 
-func (s *PostgresStore) LoadCacheDemand(ctx context.Context, notBefore time.Time) ([]crs.DemandRecord, error) {
-	rows, err := s.pool.Query(ctx, `SELECT key, seen_at FROM cache_routing_demand WHERE seen_at >= $1`, notBefore.UTC())
+func (s *PostgresStore) LoadCacheDemand(ctx context.Context, notBefore time.Time, limit int) ([]crs.DemandRecord, error) {
+	// Newest first so a capped restore keeps the freshest keys; a limit of 0
+	// or less loads everything.
+	query := `SELECT key, seen_at FROM cache_routing_demand WHERE seen_at >= $1 ORDER BY seen_at DESC, key`
+	args := []any{notBefore.UTC()}
+	if limit > 0 {
+		query += ` LIMIT $2`
+		args = append(args, limit)
+	}
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load cache demand: %w", err)
 	}
@@ -186,6 +208,34 @@ func (s *PostgresStore) LoadCacheDemand(ctx context.Context, notBefore time.Time
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *PostgresStore) CacheRoutingKeyFingerprint(ctx context.Context) (string, error) {
+	var value string
+	err := s.pool.QueryRow(ctx, `SELECT value FROM cache_routing_meta WHERE name = $1`, cacheRoutingKeyFingerprintName).Scan(&value)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("load cache routing key fingerprint: %w", err)
+	}
+	return value, nil
+}
+
+// ResetCacheRoutingState empties both tables in bounded batches and records
+// the new key generation last, so a crash mid-way leaves the old fingerprint
+// and the next boot resets again.
+func (s *PostgresStore) ResetCacheRoutingState(ctx context.Context, fingerprint string) error {
+	far := time.Now().Add(1000 * time.Hour)
+	if _, err := s.PruneCacheRoutingState(ctx, far, far); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO cache_routing_meta (name, value, updated_at) VALUES ($1, $2, now())
+ ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, cacheRoutingKeyFingerprintName, fingerprint)
+	if err != nil {
+		return fmt.Errorf("store cache routing key fingerprint: %w", err)
+	}
+	return nil
 }
 
 // PruneCacheRoutingState deletes in bounded batches so a 250k-row table never

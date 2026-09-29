@@ -36,8 +36,7 @@ func testPostgresStoreOrNil(t *testing.T) *PostgresStore {
 
 func clearCacheRoutingState(t *testing.T, s crs.Store) {
 	t.Helper()
-	far := time.Now().Add(1000 * time.Hour)
-	if _, err := s.PruneCacheRoutingState(context.Background(), far, far); err != nil {
+	if err := s.ResetCacheRoutingState(context.Background(), ""); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 }
@@ -151,7 +150,7 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("merge: %v", err)
 			}
-			got, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second))
+			got, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), 0)
 			if err != nil {
 				t.Fatalf("load: %v", err)
 			}
@@ -162,9 +161,27 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			if !got[0].SeenAt.Equal(now) || !got[1].SeenAt.Equal(now.Add(time.Minute)) {
 				t.Fatalf("merge semantics wrong: %v %v", got[0].SeenAt, got[1].SeenAt)
 			}
+			// A capped load keeps the newest keys.
+			top, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), 2)
+			if err != nil || len(top) != 2 || top[0].Key != "d0001" || top[1].Key != "d0000" {
+				t.Fatalf("capped demand load must return the newest keys first: %+v %v", top, err)
+			}
 			removed, err := s.PruneCacheRoutingState(ctx, now, now.Add(-600*time.Second))
 			if err != nil || removed != 499 {
 				t.Fatalf("prune removed %d (err %v), want 499", removed, err)
+			}
+			// Key rotation: reset empties both tables and records the generation.
+			if fp, err := s.CacheRoutingKeyFingerprint(ctx); err != nil || fp != "" {
+				t.Fatalf("fingerprint before reset: %q %v", fp, err)
+			}
+			if err := s.ResetCacheRoutingState(ctx, "gen-2"); err != nil {
+				t.Fatalf("reset: %v", err)
+			}
+			if fp, _ := s.CacheRoutingKeyFingerprint(ctx); fp != "gen-2" {
+				t.Fatalf("fingerprint after reset: %q", fp)
+			}
+			if rest, _ := s.LoadCacheDemand(ctx, now.Add(-time.Hour), 0); len(rest) != 0 {
+				t.Fatalf("reset must empty the demand table: %d rows", len(rest))
 			}
 		})
 	}

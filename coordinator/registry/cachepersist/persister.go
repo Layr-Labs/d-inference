@@ -59,6 +59,13 @@ type Persister struct {
 	// counted).
 	maxPending int
 	dirtyCap   int
+	// demandGranularity is DemandPersistGranularity bounded by the demand
+	// TTL, so a short TTL never leaves the durable timestamp older than the
+	// TTL while the key is still being refreshed in memory.
+	demandGranularity time.Duration
+	// fingerprint names the derived cache-key generation; rows stored under
+	// another generation are reset at restore rather than restored.
+	fingerprint string
 
 	// flushMu serializes flushes so a shutdown flush cannot drain a later
 	// delete before a periodic flush commits an older upsert, or observe empty
@@ -75,17 +82,34 @@ type Persister struct {
 	counters        counters
 }
 
-// New builds a persister over st. maxPending is the registry's holder index
-// cap; the dirty sets allow four times that before dropping marks.
-func New(st crs.Store, logger *slog.Logger, maxPending int) *Persister {
+// Options shape a persister for the registry's current configuration.
+type Options struct {
+	// MaxPending is the registry's holder index cap; the dirty sets allow
+	// four times that before dropping marks.
+	MaxPending int
+	// DemandTTL is the routing TTL the demand index uses; it bounds the
+	// demand persistence granularity.
+	DemandTTL time.Duration
+	// Fingerprint names the derived cache-key generation (non-secret).
+	Fingerprint string
+}
+
+// New builds a persister over st.
+func New(st crs.Store, logger *slog.Logger, opts Options) *Persister {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	maxPending := opts.MaxPending
 	if maxPending <= 0 {
 		maxPending = 250_000
 	}
+	granularity := DemandPersistGranularity
+	if opts.DemandTTL > 0 && opts.DemandTTL/4 < granularity {
+		granularity = opts.DemandTTL / 4
+	}
 	return &Persister{
 		store: st, logger: logger, maxPending: maxPending, dirtyCap: 4 * maxPending,
+		demandGranularity: granularity, fingerprint: opts.Fingerprint,
 		holderUpserts:   make(map[crs.HolderKey]crs.HolderRecord),
 		holderDeletes:   make(map[crs.HolderKey]struct{}),
 		demandTouched:   make(map[string]time.Time),
@@ -144,7 +168,7 @@ func (p *Persister) MarkDemand(keys []string, now time.Time) {
 	}
 	p.mu.Lock()
 	for _, key := range keys {
-		if last, ok := p.demandPersisted[key]; ok && now.Sub(last) < DemandPersistGranularity {
+		if last, ok := p.demandPersisted[key]; ok && now.Sub(last) < p.demandGranularity {
 			continue
 		}
 		prev, present := p.demandTouched[key]

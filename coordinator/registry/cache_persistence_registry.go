@@ -53,10 +53,15 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 	if tracker == nil || mode == CacheRoutingOff {
 		return CacheRoutingPersistenceStatus{}, nil
 	}
-	persister := cachepersist.New(st, r.logger, tracker.maxEntries)
+	r.mu.RLock()
+	fingerprint := r.cacheRouteKeys.persistFingerprint
+	r.mu.RUnlock()
+	persister := cachepersist.New(st, r.logger, cachepersist.Options{
+		MaxPending: tracker.maxEntries, DemandTTL: tracker.ttl, Fingerprint: fingerprint,
+	})
 	now := tracker.now()
 	restoreCtx, cancel := context.WithTimeout(ctx, cacheRoutingRestoreTimeout)
-	demand, restoreErr := persister.Restore(restoreCtx, now, tracker.ttl, tracker.maxEntries)
+	demand, restoreErr := persister.Restore(restoreCtx, now, tracker.ttl, tracker.maxEntries, tracker.demand.limit)
 	cancel()
 	if restoreErr == nil {
 		tracker.demand.restore(demand, now)

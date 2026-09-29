@@ -38,7 +38,7 @@ func rec(key, epoch string, now time.Time, ttl time.Duration) crs.HolderRecord {
 func TestFlushRetriesUnwrittenRemainderAndDedupesDemand(t *testing.T) {
 	mem := store.NewMemory(store.Config{})
 	flaky := &flakyStore{Store: mem, broken: true}
-	p := New(flaky, nil, 1000)
+	p := New(flaky, nil, Options{MaxPending: 1000})
 	now := time.Now()
 	p.MarkHolderUpsert(rec("key-1", "e", now, time.Minute))
 	p.MarkDemand([]string{"d-1", "d-2"}, now)
@@ -55,7 +55,7 @@ func TestFlushRetriesUnwrittenRemainderAndDedupesDemand(t *testing.T) {
 	if rows, _ := mem.LoadCacheHolders(context.Background(), now, 0); len(rows) != 1 {
 		t.Fatalf("requeued holder not written: %d", len(rows))
 	}
-	if d, _ := mem.LoadCacheDemand(context.Background(), now.Add(-time.Minute)); len(d) != 2 {
+	if d, _ := mem.LoadCacheDemand(context.Background(), now.Add(-time.Minute), 0); len(d) != 2 {
 		t.Fatalf("requeued demand not written: %d", len(d))
 	}
 	// Within the granularity window the same key is not written again.
@@ -71,7 +71,7 @@ func TestFlushRetriesUnwrittenRemainderAndDedupesDemand(t *testing.T) {
 
 func TestFlushWritesInBoundedChunksAndKeepsPartialProgress(t *testing.T) {
 	mem := store.NewMemory(store.Config{})
-	p := New(mem, nil, 100_000)
+	p := New(mem, nil, Options{MaxPending: 100_000})
 	now := time.Now()
 	for i := 0; i < HolderFlushRows+300; i++ {
 		p.MarkHolderUpsert(rec("k"+time.Duration(i).String(), "e", now, time.Minute))
@@ -92,7 +92,7 @@ func TestFlushWritesInBoundedChunksAndKeepsPartialProgress(t *testing.T) {
 
 func TestPendingParkTakeDropAndPrune(t *testing.T) {
 	mem := store.NewMemory(store.Config{})
-	p := New(mem, nil, 2)
+	p := New(mem, nil, Options{MaxPending: 2})
 	now := time.Now()
 	p.Park(rec("a", "e1", now, time.Minute))
 	p.Park(rec("b", "e1", now, -time.Second)) // already expired
@@ -136,8 +136,8 @@ func TestRestoreClampsToCurrentTTLAndKeepsLongestLived(t *testing.T) {
 	if err := mem.UpsertCacheDemand(ctx, []crs.DemandRecord{{Key: "d", SeenAt: now}}); err != nil {
 		t.Fatal(err)
 	}
-	p := New(mem, nil, 1000)
-	demand, err := p.Restore(ctx, now, 29*time.Minute, 1000)
+	p := New(mem, nil, Options{MaxPending: 1000})
+	demand, err := p.Restore(ctx, now, 29*time.Minute, 1000, 0)
 	if err != nil || len(demand) != 1 {
 		t.Fatalf("restore: %v %+v", err, demand)
 	}
@@ -151,11 +151,111 @@ func TestRestoreClampsToCurrentTTLAndKeepsLongestLived(t *testing.T) {
 		}
 	}
 	// A capped restore keeps the longest-lived rows.
-	p2 := New(mem, nil, 1000)
-	if _, err := p2.Restore(ctx, now, 29*time.Minute, 1); err != nil {
+	p2 := New(mem, nil, Options{MaxPending: 1000})
+	if _, err := p2.Restore(ctx, now, 29*time.Minute, 1, 0); err != nil {
 		t.Fatal(err)
 	}
 	if rows := p2.Take("e", "model"); len(rows) != 1 || rows[0].Key != "old" {
 		t.Fatalf("capped restore must keep the longest-lived row (old expires latest before clamping): %+v", rows)
+	}
+}
+
+func TestRestoreResetsRowsFromAnotherKeyGeneration(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	if err := mem.ResetCacheRoutingState(ctx, "gen-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.UpsertCacheHolders(ctx, []crs.HolderRecord{rec("a", "e", now, time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.UpsertCacheDemand(ctx, []crs.DemandRecord{{Key: "d", SeenAt: now}}); err != nil {
+		t.Fatal(err)
+	}
+	// The same generation restores.
+	same := New(mem, nil, Options{MaxPending: 10, Fingerprint: "gen-1"})
+	demand, err := same.Restore(ctx, now, time.Minute, 10, 10)
+	if err != nil || len(demand) != 1 || same.Status().RestoredHolders != 1 || same.Status().KeyRotated {
+		t.Fatalf("same generation must restore: %v %+v %+v", err, demand, same.Status())
+	}
+	// A rotated master key resets both tables and records the new generation
+	// instead of parking rows whose keys can never match a request again.
+	rotated := New(mem, nil, Options{MaxPending: 10, Fingerprint: "gen-2"})
+	demand, err = rotated.Restore(ctx, now, time.Minute, 10, 10)
+	if err != nil || len(demand) != 0 {
+		t.Fatalf("rotation must not hand back old demand: %v %+v", err, demand)
+	}
+	if s := rotated.Status(); s.RestoredHolders != 0 || s.PendingHolders != 0 || !s.KeyRotated {
+		t.Fatalf("rotation must reset instead of restore: %+v", s)
+	}
+	if fp, err := mem.CacheRoutingKeyFingerprint(ctx); err != nil || fp != "gen-2" {
+		t.Fatalf("new generation not recorded: %q %v", fp, err)
+	}
+	if rows, _ := mem.LoadCacheHolders(ctx, now, 0); len(rows) != 0 {
+		t.Fatalf("old-generation holder rows survived the reset: %d", len(rows))
+	}
+	if rows, _ := mem.LoadCacheDemand(ctx, now.Add(-time.Minute), 0); len(rows) != 0 {
+		t.Fatalf("old-generation demand rows survived the reset: %d", len(rows))
+	}
+	// The next boot under the new generation restores what it wrote.
+	if err := mem.UpsertCacheHolders(ctx, []crs.HolderRecord{rec("b", "e", now, time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	next := New(mem, nil, Options{MaxPending: 10, Fingerprint: "gen-2"})
+	if _, err := next.Restore(ctx, now, time.Minute, 10, 10); err != nil || next.Status().RestoredHolders != 1 || next.Status().KeyRotated {
+		t.Fatalf("new generation must restore its own rows: %v %+v", err, next.Status())
+	}
+	// A first boot with no recorded generation stamps it without reporting a rotation.
+	fresh := New(store.NewMemory(store.Config{}), nil, Options{MaxPending: 10, Fingerprint: "gen-1"})
+	if _, err := fresh.Restore(ctx, now, time.Minute, 10, 10); err != nil || fresh.Status().KeyRotated {
+		t.Fatalf("first boot must not report a rotation: %v %+v", err, fresh.Status())
+	}
+}
+
+func TestDemandGranularityFollowsShortTTLAndRestoreIsCapped(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	// A 30 s TTL bounds the granularity to 7.5 s; the default minute would
+	// leave the durable timestamp older than the TTL while the key is still
+	// hot in memory, so it would not survive a restart.
+	p := New(mem, nil, Options{MaxPending: 10, DemandTTL: 30 * time.Second})
+	if p.demandGranularity != 7500*time.Millisecond {
+		t.Fatalf("granularity not bounded by the TTL: %v", p.demandGranularity)
+	}
+	p.MarkDemand([]string{"k"}, now)
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.MarkDemand([]string{"k"}, now.Add(5*time.Second))
+	if b := p.drain(); len(b.demand) != 0 {
+		t.Fatalf("refresh inside the granularity must be skipped: %+v", b.demand)
+	}
+	p.MarkDemand([]string{"k"}, now.Add(20*time.Second))
+	if b := p.drain(); len(b.demand) != 1 || !b.demand[0].SeenAt.Equal(now.Add(20*time.Second)) {
+		t.Fatalf("refresh past the granularity must persist: %+v", b.demand)
+	}
+	// A long TTL keeps the default minute.
+	if q := New(mem, nil, Options{MaxPending: 10, DemandTTL: 29 * time.Minute}); q.demandGranularity != DemandPersistGranularity {
+		t.Fatalf("long TTL must keep the default granularity: %v", q.demandGranularity)
+	}
+	// A capped restore keeps the newest demand keys and stays within the TTL.
+	mem = store.NewMemory(store.Config{})
+	var rows []crs.DemandRecord
+	for i := 0; i < 5; i++ {
+		rows = append(rows, crs.DemandRecord{Key: string(rune('a' + i)), SeenAt: now.Add(time.Duration(i) * time.Second)})
+	}
+	rows = append(rows, crs.DemandRecord{Key: "expired", SeenAt: now.Add(-2 * time.Minute)})
+	if err := mem.UpsertCacheDemand(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	demand, err := New(mem, nil, Options{MaxPending: 10}).Restore(ctx, now.Add(10*time.Second), time.Minute, 10, 2)
+	if err != nil || len(demand) != 2 || demand[0].Key != "e" || demand[1].Key != "d" {
+		t.Fatalf("capped demand restore must keep the newest keys: %+v %v", demand, err)
+	}
+	demand, err = New(mem, nil, Options{MaxPending: 10}).Restore(ctx, now.Add(10*time.Second), time.Minute, 10, 0)
+	if err != nil || len(demand) != 5 {
+		t.Fatalf("uncapped restore must drop only the expired key: %+v %v", demand, err)
 	}
 }

@@ -21,8 +21,17 @@ type Store interface {
 	LoadCacheHolders(ctx context.Context, now time.Time, limit int) ([]HolderRecord, error)
 	// UpsertCacheDemand inserts or refreshes rows, keeping the later SeenAt.
 	UpsertCacheDemand(context.Context, []DemandRecord) error
-	// LoadCacheDemand returns every row whose SeenAt is at or after notBefore.
-	LoadCacheDemand(ctx context.Context, notBefore time.Time) ([]DemandRecord, error)
+	// LoadCacheDemand returns up to limit rows whose SeenAt is at or after
+	// notBefore, newest first. A limit of 0 or less means no limit.
+	LoadCacheDemand(ctx context.Context, notBefore time.Time, limit int) ([]DemandRecord, error)
+	// CacheRoutingKeyFingerprint returns the fingerprint of the derived cache
+	// key generation the stored rows were written under, or "" when none was
+	// recorded.
+	CacheRoutingKeyFingerprint(ctx context.Context) (string, error)
+	// ResetCacheRoutingState deletes every holder and demand row and records
+	// fingerprint as the current key generation. Used when the master key
+	// changed: rows derived under the old key can never match a request.
+	ResetCacheRoutingState(ctx context.Context, fingerprint string) error
 	// PruneCacheRoutingState deletes holders expired before now and demand
 	// entries seen before demandNotBefore, in bounded batches, and returns
 	// the number of rows removed.

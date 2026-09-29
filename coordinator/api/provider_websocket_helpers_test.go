@@ -208,21 +208,28 @@ func connectProviderWithAttestation(t *testing.T, ctx context.Context, tsURL str
 // messages are discarded.
 func waitForChallenge(t *testing.T, ctx context.Context, conn *websocket.Conn, pubKey string) {
 	t.Helper()
+	data := readAttestationChallenge(t, ctx, conn)
+	resp := makeValidChallengeResponse(data, pubKey)
+	if err := conn.Write(ctx, websocket.MessageText, resp); err != nil {
+		t.Fatalf("waitForChallenge: write error: %v", err)
+	}
+}
+
+// readAttestationChallenge observes completed registration without starting an
+// asynchronous challenge response that can mutate the state under assertion.
+func readAttestationChallenge(t *testing.T, ctx context.Context, conn *websocket.Conn) []byte {
+	t.Helper()
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
-			t.Fatalf("waitForChallenge: read error: %v", err)
+			t.Fatalf("readAttestationChallenge: read error: %v", err)
 		}
 		var env struct {
 			Type string `json:"type"`
 		}
 		json.Unmarshal(data, &env)
 		if env.Type == protocol.TypeAttestationChallenge {
-			resp := makeValidChallengeResponse(data, pubKey)
-			if err := conn.Write(ctx, websocket.MessageText, resp); err != nil {
-				t.Fatalf("waitForChallenge: write error: %v", err)
-			}
-			return
+			return data
 		}
 	}
 }

@@ -67,9 +67,11 @@ extension EngineV2SlotFactory {
     static func makeProductionBundle(
         modelId: String, modelType: String?, isVLM: Bool, modelDirectory: URL?,
         container: ProviderModelContainer, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
-        kvBytesCapacity: Int, maxConcurrentRequests: Int, kvBudget: GlobalKVCacheBudget?,
+        kvBytesCapacity: Int, maxConcurrentRequests: Int, automaticallySelectConcurrency: Bool = false,
+        kvBudget: GlobalKVCacheBudget?,
         activationReserveBytes: UInt64? = nil, kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:], prefillDeadlineMode: PrefillDeadlineMode? = nil,
+        modelArtifactSHA256: String? = nil,
         weightHash: String? = nil, specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2ServingPreparation? = nil,
         assemblyOverrides: AssemblyOverrides = AssemblyOverrides(),
@@ -86,9 +88,11 @@ extension EngineV2SlotFactory {
             return try await makeProductionBundle(
                 modelId: modelId, modelType: modelType, isVLM: isVLM, modelDirectory: modelDirectory,
                 container: target, tokenizer: tokenizer, sizing: sizing, kvBytesCapacity: kvBytesCapacity,
-                maxConcurrentRequests: maxConcurrentRequests, kvBudget: kvBudget,
+                maxConcurrentRequests: maxConcurrentRequests,
+                automaticallySelectConcurrency: automaticallySelectConcurrency, kvBudget: kvBudget,
                 activationReserveBytes: activationReserveBytes, kvBackendConfig: kvBackendConfig,
                 kvBackendConfigByModel: kvBackendConfigByModel, prefillDeadlineMode: prefillDeadlineMode,
+                modelArtifactSHA256: modelArtifactSHA256,
                 weightHash: weightHash, specDecPreparation: specDecPreparation,
                 preparedModel: preparedModel?.autoregressive, assemblyOverrides: assemblyOverrides,
                 environment: environment, persistentTestNamespace: persistentTestNamespace,
@@ -110,7 +114,8 @@ extension EngineV2SlotFactory {
             let prepared: DiffusionGemmaProviderBridge.Prepared
             do { prepared = try await DiffusionGemmaProviderBridge.make(
                 container: target, modelID: modelId, kvBytesCapacity: kvBytesCapacity,
-                maxConcurrentRequests: maxConcurrentRequests, sharedBudget: kvBudget,
+                maxConcurrentRequests: ServingPerformanceProfiles.concurrency(
+                    configured: UInt64(max(1, maxConcurrentRequests))), sharedBudget: kvBudget,
                 prefixCache: prefix.snapshots, completePrefixCache: prefix.store,
                 retainMemoryPrefixes: prefix.retainMemory, prefillChunkSize: diffusionPrefillChunkSize,
                 prefixCacheStatus: .init(modelId: modelId, backend: pageBacked ? .paged : .contiguous,

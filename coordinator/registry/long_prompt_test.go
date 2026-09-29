@@ -112,16 +112,14 @@ func TestLongPromptSettersClampAndDefaults(t *testing.T) {
 }
 
 // longPromptScenarioRegistry builds two providers that differ only in prefill
-// rate plus a token-budget backlog handicap on the faster-prefill box:
+// rate plus a token-budget memory commitment on the faster-prefill box:
 //
-//   - "fast-prefill": PrefillTPS=1000, 1800 tokens of active budget backlog
-//     (≈18s of queue) so it is the WORSE choice for short prompts.
-//   - "slow-prefill": PrefillTPS=500, idle (no backlog).
+//   - "fast-prefill": PrefillTPS=1000, 1800 tokens of active budget commitment.
+//   - "slow-prefill": PrefillTPS=500, no active budget commitment.
 //
 // Decode/effective TPS is pinned equal (100) on both so the only prompt-length-
-// dependent difference in cost is the prefill term. The handicap is sized so the
-// raw prefill gap alone (≈12s at 12k tokens) does NOT overcome it, but the
-// amplified gap (weight 2) does — isolating the feature as the cause of the flip.
+// dependent difference is the prefill term. Memory commitments remain admission
+// inputs and legacy cost diagnostics; they do not represent queued service work.
 func longPromptScenarioRegistry(t *testing.T) (reg *Registry, model, fastID, slowID string) {
 	t.Helper()
 	reg = New(testLogger())
@@ -141,50 +139,48 @@ func longPromptScenarioRegistry(t *testing.T) (reg *Registry, model, fastID, slo
 	return reg, model, fast.ID, slow.ID
 }
 
-// TestReserveProviderLongPromptPrefersFasterPrefill proves the long-prompt
-// fastest-tier preference:
-//  1. short prompts are unaffected (idle slow box still wins),
-//  2. with the preference OFF a long prompt keeps the baseline winner, and
-//  3. with the preference ON the same long prompt flips to the fastest-prefill box.
+// First-content selection prefers faster prefill for long requests without
+// needing the historical diagnostic cost multiplier. Short requests within the
+// 100-ms band spread across providers with equal committed service work.
 func TestReserveProviderLongPromptPrefersFasterPrefill(t *testing.T) {
 	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
 	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
 
-	// 1) Short prompt, preference ENABLED → short prompts unaffected: the idle
-	//    slow-prefill provider (far lower total cost) still wins.
+	// 1) The 100-token prompt puts both providers within the 100-ms fast band.
+	//    Both have zero reported or reserved service work, so either may win.
 	SetLongPromptThreshold(8_000)
 	SetLongPromptPrefillWeight(2.0)
 	{
-		reg, model, _, slowID := longPromptScenarioRegistry(t)
+		reg, model, fastID, slowID := longPromptScenarioRegistry(t)
 		sel, dec := reg.ReserveProviderEx(model, &PendingRequest{
 			RequestID: "short", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 256,
 		})
 		if sel == nil {
 			t.Fatalf("short prompt returned nil provider; decision=%+v", dec)
 		}
-		if sel.ID != slowID {
-			t.Fatalf("short prompt selected %q, want idle slow-prefill %q (short prompts must be unaffected)", sel.ID, slowID)
+		if (sel.ID != fastID && sel.ID != slowID) || dec.NearTiePoolSize != 2 || dec.SelectionPath != SelectionRandom {
+			t.Fatalf("short prompt selected %q with band=%d path=%s; want either equally committed provider in a random two-provider band", sel.ID, dec.NearTiePoolSize, dec.SelectionPath)
 		}
 	}
 
-	// 2) Long prompt, preference DISABLED → baseline: the slow box's backlog
-	//    handicap is smaller than the raw prefill gap, so it still wins.
+	// 2) The new first-content policy already selects the faster provider
+	//    with historical long-prompt cost weighting disabled.
 	SetLongPromptThreshold(0)
 	{
-		reg, model, _, slowID := longPromptScenarioRegistry(t)
+		reg, model, fastID, _ := longPromptScenarioRegistry(t)
 		sel, dec := reg.ReserveProviderEx(model, &PendingRequest{
 			RequestID: "long-off", Model: model, EstimatedPromptTokens: 12_000, RequestedMaxTokens: 256,
 		})
 		if sel == nil {
 			t.Fatalf("long prompt (preference off) returned nil provider; decision=%+v", dec)
 		}
-		if sel.ID != slowID {
-			t.Fatalf("long prompt with preference OFF selected %q, want %q (baseline must be unchanged)", sel.ID, slowID)
+		if sel.ID != fastID {
+			t.Fatalf("first-content policy selected %q, want %q without legacy weighting", sel.ID, fastID)
 		}
 	}
 
-	// 3) Long prompt, preference ENABLED → the amplified prefill term flips the
-	//    decision to the fastest-prefill provider.
+	// 3) Historical cost diagnostics still price the multiplier, but do not
+	//    change the first-content winner.
 	SetLongPromptThreshold(8_000)
 	SetLongPromptPrefillWeight(2.0)
 	{

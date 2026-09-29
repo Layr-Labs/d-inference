@@ -369,6 +369,13 @@ public actor ProviderLoop {
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()
     internal var mtpUpgradeMonitorTask: Task<Void, Never>?
+    internal var modelRevisionMonitorTask: Task<Void, Never>?
+    internal var modelRevisionAttempt: (entry: CoordinatorMessage.DesiredModelEntry, task: Task<Void, Never>)?
+    internal var desiredModelRevisions: [String: CoordinatorMessage.DesiredModelEntry] = [:]
+    internal var revisionUpdatesInProgress = Set<String>()
+    internal var modelRevisionActivationID: String?
+    internal var failedModelRevisionRestores: [String: UUID] = [:]
+    internal var prefetchPublicationCounts: [String: Int] = [:]
     internal var mtpUpgradeTransitions: Set<String> = []
     internal var mtpUpgradeWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
@@ -652,6 +659,12 @@ public actor ProviderLoop {
     /// reflect active/queued requests and adaptive batch-cap changes while
     /// long-running generations are still in flight.
     internal var capacityRefreshTask: Task<Void, Never>?
+    /// Rebuild capacity on shared service acquisition/retirement, independently
+    /// of slot counters and the periodic capacity monitor.
+    internal var serviceAllowanceRefreshTask: Task<Void, Never>?
+    /// Rebuild after once-only prompt/terminal measurements, independent of
+    /// output tokens and the periodic monitor. The heartbeat throttle bounds sends.
+    internal var performanceRefreshTask: Task<Void, Never>?
 
     /// Background task that periodically checks for provider updates and
     /// applies them automatically. nil when auto-update is disabled or
@@ -825,8 +838,10 @@ public actor ProviderLoop {
         /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —
         /// feeds re-slicing, heartbeat fleet context, and the vision gate.
         let sizing: SlotSizingSnapshot
-        /// Hash verified for the exact bytes bracketed around this slot's load.
-        /// Reused only when rebuilding the engine over the retained container.
+        /// Load-bound profile identity, retained across engine rebuilds.
+        /// Reviewed candidates verify matching reads around the container load.
+        let modelArtifactSHA256: String?
+        /// Separate cache eligibility; nil never removes the artifact identity.
         let cacheEligibleWeightHash: String?
         /// Vision-language model (config has `vision_config`). The container
         /// supplies vision preprocessing before multimodal EngineV2 prefill.
@@ -859,13 +874,15 @@ public actor ProviderLoop {
             container: MLXLMCommon.ModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
             lastInferenceAt: ContinuousClock.Instant
         ) {
             self.init(engineBundle: engineBundle, modelContainer: .autoregressive(container),
-                tokenizer: tokenizer, sizing: sizing, cacheEligibleWeightHash: cacheEligibleWeightHash,
+                tokenizer: tokenizer, sizing: sizing, modelArtifactSHA256: modelArtifactSHA256,
+                cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: isVLM, modelType: modelType, lastInferenceAt: lastInferenceAt)
         }
 
@@ -874,6 +891,7 @@ public actor ProviderLoop {
             modelContainer: ProviderModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
@@ -883,6 +901,7 @@ public actor ProviderLoop {
             self.modelContainer = modelContainer
             self.tokenizer = tokenizer
             self.sizing = sizing
+            self.modelArtifactSHA256 = modelArtifactSHA256
             self.cacheEligibleWeightHash = cacheEligibleWeightHash
             self.isVLM = isVLM
             self.modelType = modelType
@@ -895,6 +914,7 @@ public actor ProviderLoop {
             container: MLXLMCommon.ModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
@@ -912,6 +932,7 @@ public actor ProviderLoop {
                 container: container,
                 tokenizer: tokenizer,
                 sizing: sizing,
+                modelArtifactSHA256: modelArtifactSHA256,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: isVLM,
                 modelType: modelType,
@@ -929,18 +950,17 @@ public actor ProviderLoop {
         }
     }
 
-    /// Effective concurrent-request cap for a v2 engine slot: the
-    /// per-model override when configured, else the box-wide
-    /// `engine_v2_max_concurrent`, clamped to [1, 8] (the CBv2 product
-    /// ceiling — see `BackendSettings.engineV2MaxConcurrent`).
+    /// Requested cap, carried to final artifact/backend profile resolution.
+    /// Unknown profiles retain the existing 8 ceiling; reviewed profiles can
+    /// qualify up to 16. The preparation owns the effective advertised value.
     internal func engineV2MaxConcurrent(forModel modelId: String) -> Int {
         let backend = loopConfig.config.backend
         let raw = backend.engineV2MaxConcurrentByModel[modelId]
             ?? backend.engineV2MaxConcurrent
-        return Self.clampEngineV2Concurrency(raw)
+        return ServingPerformanceProfiles.requestedConcurrency(raw)
     }
 
-    /// Pure clamp for the configured concurrency (unit-testable).
+    /// Legacy unknown-profile clamp retained for compatibility tests.
     internal static func clampEngineV2Concurrency(_ raw: UInt64) -> Int {
         Int(min(max(raw, 1), 8))
     }

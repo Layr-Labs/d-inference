@@ -98,6 +98,9 @@ func (r *Registry) ReconcileAttestedRuntimeCapabilities(providerID string) error
 			changed = len(provider.RuntimeCapabilities) > 0
 			provider.runtimeCapabilitiesReconciled = true
 		}
+		if changed {
+			provider.warmWorkCounters = nil
+		}
 		provider.lastReconciledRuntimeCapabilities = append(
 			[]string(nil), provider.RuntimeCapabilities...)
 		provider.mu.Unlock()

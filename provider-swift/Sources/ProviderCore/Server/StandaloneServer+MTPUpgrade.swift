@@ -37,7 +37,7 @@ extension StandaloneServer {
         guard mtpUpgradeMonitorTask == nil else { return }
         mtpUpgradeMonitorTask = Task { [weak self] in
             var nextAttempt: [String: ContinuousClock.Instant] = [:]
-            var lastOutcome: [String: MTPIdleUpgrade.Outcome] = [:]
+            var lastOutcome: [String: ModelIdleUpgrade.Outcome] = [:]
             while !Task.isCancelled {
                 guard let self else { return }
                 let candidates = await self.pendingMTPUpgradeModels()
@@ -47,7 +47,7 @@ extension StandaloneServer {
                     if lastOutcome[modelID] == nil {
                         await self.logMTPUpgrade("checking/downloading verified assistant; target remains available", modelID: modelID)
                     }
-                    let outcome = await MTPIdleUpgrade.run(
+                    let outcome = await ModelIdleUpgrade.run(
                         prepare: { try await self.prepareMTPUpgrade(modelID) },
                         beginDrain: { try await self.beginMTPUpgradeDrain($0) },
                         commitIfIdle: { try await self.commitMTPUpgradeIfIdle($0) },
@@ -127,7 +127,7 @@ extension StandaloneServer {
         else {
             standaloneLogger.warning("mtp: model=\(modelID) assistant staging deferred: insufficient memory; retaining target engine")
             await finishMTPUpgradeLoad()
-            throw MTPIdleUpgrade.PreparationError.insufficientMemory
+            throw ModelIdleUpgrade.PreparationError.insufficientMemory
         }
         mtpStagingReservations.reserve(lease, target: original.modelContainer.identity,
             targetBytes: UInt64(max(0, original.sizing.weightsBytes)),
@@ -152,16 +152,21 @@ extension StandaloneServer {
                 await kvBudget.recheckPendingLoad(lease)
             else { throw CancellationError() }
             let sizing = original.sizing.replacingAuxiliaryWeightBytes(prepared.assistantBytes)
+            v2TestHooks?.onModelArtifactSHA256?(original.modelArtifactSHA256)
             v2TestHooks?.onCacheEligibleWeightHash?(original.cacheEligibleWeightHash)
             replacement = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelID, modelType: original.modelType, isVLM: original.isVLM,
                 modelDirectory: directory, container: originalContainer, tokenizer: original.tokenizer,
                 sizing: sizing, kvBytesCapacity: grant,
-                maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelID), kvBudget: kvBudget,
+                maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelID),
+                automaticallySelectConcurrency: !config.engineV2MaxConcurrentIsExplicit
+                    && config.engineV2MaxConcurrentByModel[modelID] == nil,
+                kvBudget: kvBudget,
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,
+                modelArtifactSHA256: original.modelArtifactSHA256,
                 weightHash: original.cacheEligibleWeightHash,
                 specDecPreparation: preparation, preparedModel: prepared,
                 startServingTelemetry: false,
@@ -225,6 +230,7 @@ extension StandaloneServer {
             tokenizer: original.tokenizer, modelType: original.modelType,
             isVLM: original.isVLM, sizing: staged.sizing,
             lastUsedAt: original.lastUsedAt,
+            modelArtifactSHA256: original.modelArtifactSHA256,
             cacheEligibleWeightHash: original.cacheEligibleWeightHash)
         // Publication is committed. Shutdown of the old idle engine releases
         // its pool before the minimal replacement grant is grown.

@@ -583,6 +583,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					schedulerGeneration = s.mdmScheduler.Submit(loopCtx, providerID, provider, priority)
 				}
 			}
+			saferun.Go(s.logger, "providerTransportLoop", func() {
+				s.providerTransportLoop(loopCtx, provider)
+			})
 			// Start challenge loop after registration
 			saferun.Go(s.logger, "challengeLoop", func() {
 				s.challengeLoop(loopCtx, providerID, provider, tracker)
@@ -709,6 +712,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// with the probe state; the read loop only delivers. Synchronous
 			// like heartbeat ingest — no DB or lock-heavy work on this path.
 			s.registry.HandleCapacityQuote(providerID, quoteMsg)
+
+		case protocol.TypeServiceReservationReleased:
+			released := msg.Payload.(*protocol.ServiceReservationReleasedMessage)
+			s.registry.ReleaseServiceReservation(provider, released.ServiceReservationID)
 
 		case protocol.TypeInferenceAccepted:
 			acceptMsg := msg.Payload.(*protocol.InferenceAcceptedMessage)
@@ -1466,7 +1473,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			continue
 		}
 		expectedHash := s.registry.CatalogWeightHash(modelID)
-		if expectedHash != "" && hash != expectedHash {
+		if expectedHash != "" && !s.registry.CatalogAcceptsWeightHash(modelID, hash) {
 			s.logger.Error("provider model weight hash mismatch — possible model swap",
 				"provider_id", providerID,
 				"model", modelID,
@@ -1500,7 +1507,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				allEnforced = false
 				break
 			}
-			if resp.ActiveModelHash == expectedHash {
+			if s.registry.CatalogAcceptsWeightHash(m.ID, resp.ActiveModelHash) {
 				matched = true
 			}
 		}
@@ -1527,7 +1534,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				if !s.registry.IsAliasLineageBuild(modelID) {
 					continue
 				}
-				if expected := s.registry.CatalogWeightHash(modelID); expected != "" && hash == expected {
+				if expected := s.registry.CatalogWeightHash(modelID); expected != "" && s.registry.CatalogAcceptsWeightHash(modelID, hash) {
 					matched = true
 					break
 				}
@@ -2381,24 +2388,33 @@ func (s *Server) handleCompleteAt(
 	// Service/wholesale traffic is billed at the advertised platform price
 	// (never a provider's higher custom price) and is exempt from the minimum,
 	// so the debit matches the published per-token OpenRouter feed exactly.
+	//
+	// Prompt tokens the provider served from its prefix cache bill at the
+	// cache-read rate (the feed's input_cache_read); the cache usage was
+	// validated above, so billableUsage sees the same cached_tokens the
+	// consumer does and the bill and the usage agree. A model-token promotion
+	// settles through priceModelTokens instead, which prices every prompt token
+	// at rates.Input (no cache-read discount on that path).
 	providerAccountForPricing := ""
 	if p := s.registry.GetProvider(providerID); p != nil {
 		providerAccountForPricing = providerPricingKeys(p)
 	}
-	var customIn, customOut int64
-	var hasCustom bool
+	var price store.ModelPrice
+	var priced bool
 	if !isServiceConsumer && pr.PromotionFreeTokens == 0 {
-		customIn, customOut, hasCustom = s.store.GetModelPrice(providerAccountForPricing, pr.Model)
+		price, priced = s.store.GetModelPrice(providerAccountForPricing, pr.Model)
 	}
-	if !hasCustom {
-		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
+	if !priced {
+		price, priced = s.store.GetModelPrice("platform", pr.Model)
 	}
-	var totalCost int64
+	rates := payments.RatesFor(price, priced)
+	billable := billableUsage(msg.Usage)
+	settle := rates.CostWithMinimum
 	if isServiceConsumer {
-		totalCost = payments.CalculateCostWithOverridesNoMinimum(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
-	} else {
-		totalCost = payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+		settle = rates.Cost
 	}
+	totalCost := settle(billable)
+	pricedCost := totalCost // before free-route, clamp and uncollected adjustments
 
 	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
 
@@ -2452,7 +2468,7 @@ func (s *Server) handleCompleteAt(
 	// with the settlement here.
 	if pr.ModelTokenReservationID != "" {
 		var promotionErr error
-		billingFinalized, totalCost, providerPayout, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, customIn, customOut, hasCustom, feePercent, freeSelfRoute, recordAccounting)
+		billingFinalized, totalCost, providerPayout, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, rates, feePercent, freeSelfRoute, recordAccounting)
 		if promotionErr != nil {
 			s.logger.Error("promotion settlement failed", "request_id", msg.RequestID, "reservation_id", pr.ModelTokenReservationID, "error", promotionErr)
 		}
@@ -2599,6 +2615,19 @@ func (s *Server) handleCompleteAt(
 	}
 
 	if billingFinalized {
+		// Revenue effect of the cache hit that was actually settled: what this
+		// request would have cost with every prompt token at the input rate,
+		// less what it did cost, through the same settle function (so the
+		// per-request minimum is honoured). Only a request that settled at its
+		// computed price counts: free self-route and an uncollected charge
+		// settle at 0, an overage clamp or a failed overage charge settles at a
+		// cap the cold price would have hit too, and a model-token promotion
+		// settles through priceModelTokens at the input rate.
+		if pr.ModelTokenReservationID == "" && totalCost > 0 && totalCost == pricedCost && billable.CachedTokens > 0 {
+			if discount := payments.CacheReadDiscount(settle, billable); discount > 0 {
+				s.ddCount("billing.cache_read_discount_micro_usd", discount, []string{"model:" + pr.Model})
+			}
+		}
 
 		// Fallback actual_ttft_ms anchor for the COMMITTED attempt only. The
 		// dispatch/handler goroutine normally stamps FirstContentAt at the

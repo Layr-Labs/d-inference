@@ -126,22 +126,24 @@ class GemmaOptimizationProvenanceTests(unittest.TestCase):
         outputs["arrivalInvariance"]["promptLengthsPerRequest"] = [
             make_args().arrival_prompt_tokens
         ] * 4
-        for version in (5, 6, 7):
+        for version in (5, 6, 7, 8):
             with self.subTest(version=version):
                 outputs["throughputSweep"]["schemaVersion"] = version
                 validate_raw_outputs(make_args(), *outputs.values())
 
     def test_new_arrival_schema_cannot_hide_mixed_prompt_lengths(self):
         outputs = raw_outputs()
-        outputs["arrivalInvariance"]["schemaVersion"] = 5
-        outputs["arrivalInvariance"]["promptLengthsPerRequest"] = [8192, 512, 512, 512]
-        with self.assertRaisesRegex(RuntimeError, "wrong per-row prompt lengths"):
-            validate_raw_outputs(make_args(), *outputs.values())
+        for version in (5, 6):
+            with self.subTest(version=version):
+                outputs["arrivalInvariance"]["schemaVersion"] = version
+                outputs["arrivalInvariance"]["promptLengthsPerRequest"] = [8192, 512, 512, 512]
+                with self.assertRaisesRegex(RuntimeError, "wrong per-row prompt lengths"):
+                    validate_raw_outputs(make_args(), *outputs.values())
 
     def test_unknown_future_raw_schema_is_refused(self):
         outputs = raw_outputs()
-        outputs["throughputSweep"]["schemaVersion"] = 8
-        with self.assertRaisesRegex(RuntimeError, "schemaVersion is 8"):
+        outputs["throughputSweep"]["schemaVersion"] = 9
+        with self.assertRaisesRegex(RuntimeError, "schemaVersion is 9"):
             validate_raw_outputs(make_args(), *outputs.values())
 
     def test_explicit_config_is_forwarded_to_every_phase_prefix(self):

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -27,13 +28,13 @@ func TestModelTokenPromotionExactPricing(t *testing.T) {
 		{"paid after exhaustion", 1, 0, 0, nil, modelTokenPrice{gross: 100, paid: 100, payout: 100}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := priceModelTokens(promoTestModel, tt.prompt, tt.output, 50_000, 200_000, true, tt.free, tt.fee)
+			got, err := priceModelTokens(tt.prompt, tt.output, payments.Rates{Input: 50_000, Output: 200_000}, tt.free, tt.fee)
 			if err != nil || got != tt.want {
 				t.Fatalf("got %+v %v; want %+v", got, err, tt.want)
 			}
 		})
 	}
-	if _, err := priceModelTokens(promoTestModel, math.MaxInt, math.MaxInt, math.MaxInt64, math.MaxInt64, true, 1, nil); err == nil {
+	if _, err := priceModelTokens(math.MaxInt, math.MaxInt, payments.Rates{Input: math.MaxInt64, Output: math.MaxInt64}, 1, nil); err == nil {
 		t.Fatal("overflowing price accepted")
 	}
 }
@@ -43,7 +44,7 @@ func TestModelTokenPromotionTinyRequestsCannotAmplifyPayout(t *testing.T) {
 	// The first fractional earning commits but loses its acknowledgement.
 	// Reconciliation must neither lose nor duplicate that remainder.
 	s.store = &promotionSettlementFaultStore{Store: st, ModelTokenPromotionStore: st}
-	if err := st.SetModelPrice("platform", promoTestModel, 50_000, 200_000); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: promoTestModel, InputPrice: 50_000, OutputPrice: 200_000}); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 100 {

@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased — SSD cache write budget
+
+- Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.
+
+## Unreleased — automatic model artifact revisions
+
+- Reject cached or staged revisions with unmanifested integrity files, so an added template, tokenizer or weight file cannot be activated under the original approved hash.
+
+- Return retryable publication errors when alias refresh fails, and accept retained approved hashes during drained model replacement. Retired and unapproved hashes remain rejected.
+
+- Preserve model writer locks across cache removal and refuse removal during an active download or update. Revalidate replacement and rollback snapshots under the activation lease before draining. Keep a first verified download discoverable if the process exits immediately after publishing its snapshot.
+
+- Restore missing or damaged revision receipts only after re-verifying cached bytes, avoiding repeated activation of an already-selected revision. Preserve rollback through valid linked model cache directories.
+
+- Keep a revision's stored download source on `publish-revision` retries, including retries after a committed promotion returns 503. Explicit mirror edits through normal registration remain supported.
+
+- Let each revision declare a different pinned Hugging Face repo, commit and subdirectory through publishing flags or the API, with checksum-verified R2 fallback. Preserve retirement and original upload attribution across registration retries, report failed live refreshes or provider desired-state sends as retryable errors, and retain updates for eligible alias lineage builds.
+
+- Add automatic artifact revisions for existing model IDs: publish immutable R2 bytes and a manifest once, then supporting providers resume/verify downloads, drain accepted requests and activate with rollback. Retain approved older hashes during convergence; add explicit inactive-revision retirement. Share the idle-upgrade lifecycle with Gemma MTP.
+
+## Unreleased — provider measurements and placement
+
+- Publish prompt-completion observations through coalesced event heartbeats, with sample age/count, workload buckets and cross-model contention. Keep engine decode capacity, delivered streaming and end-to-end throughput separate.
+- Add exact reviewed serving profiles, per-engine mixed-prefill policy and a shared whole-Mac service allowance. Show explicit per-model concurrency overrides in status and doctor diagnostics. Unknown profiles retain existing limits; no M5 B8/B16 expansion is certified by this change.
+- Size warm pools using actual prompt/generation work and qualified batch curves, keep one model-load planner, retain load hysteresis and use fresh WebSocket RTT in first-content forecasts.
+- Extend arrival benchmarks through width 16 and add a qualification receipt evaluator that rejects missing performance, correctness, memory and lifecycle evidence.
+
+## Unreleased — coordinator first-content routing
+
+- Rank eligible providers by cache-adjusted first-content forecasts by default, prefer credible deadline-feasible choices, and spread near-equal choices by whole-machine service work within a 100-ms band. Preserve physical prompt/output reservations and explicit owner routing.
+- Preserve valid prefill observations through 20,000 tokens/s. Track accepted capacity and observed performance freshness separately; missing or stale evidence stays unknown.
+- Revalidate reservations and retained alternatives against the original request deadline. After two predictive refusals, require fresh feasible evidence; bound quote fanout to two and launch at most one feasible backup.
+
+## Unreleased — cached prompt pricing
+
+- Bill prompt tokens a provider serves from its prefix cache at a per-model `cache_read_price` instead of the input price, on the same `cached_tokens` count the consumer receives in `usage.prompt_tokens_details`; a malformed cache report bills at the full input price. Rows without an explicit rate derive half the input price; `cache_read_price` is accepted by `PUT /v1/admin/pricing`, `PUT /v1/pricing` and model registration (`0 ≤ cache_read_price ≤ input_price`).
+- Advertise the same rate to OpenRouter as `pricing.input_cache_read` in the provider feed, so a service-account debit equals the feed's per-token math (previously the feed declared `"0"` while cached tokens were billed at the full input price). No cache-write SKU: caching is provider-initiated.
+- Publish `cache_read_price` on `GET /v1/pricing`, persist `cached_tokens` on usage rows and `GET /v1/payments/usage`, and surface the rate in the console model catalog and the admin models table. Reservations are unchanged (worst case assumes no cache hit); settlement refunds the discount and emits `billing.cache_read_discount_micro_usd`. The `*_usd` strings returned by `PUT /v1/admin/pricing` and `PUT /v1/pricing` drop the trailing " per 1M tokens" to match `GET /v1/pricing`. Cost arithmetic saturates instead of wrapping on absurd provider-reported counts.
+- `/v1/completions` and `/v1/messages` report a validated cache hit in usage, streamed or not: `prompt_tokens_details.cached_tokens` for completions (streams: on the final chunk), and `cache_read_input_tokens` (excluded from `input_tokens`, as Anthropic counts it) for messages (streams: on `message_delta`). The console model catalog resolves an alias's prices from its embedded `/v1/models` pricing, so aliases show input, output and cached-input rates.
+- Requests settled against a model-token grant keep pricing every prompt token at the input rate (no cache-read discount on that path) and record `cached_tokens = 0`.
+- The coordinator refuses to start if `usage.cached_tokens` or `model_prices.cache_read_price` cannot be added at boot (for example a lock timeout behind a long query on `usage`), instead of booting with price lookups and usage inserts failing.
+- On deploy every existing price row — platform and provider custom — starts billing cache hits at half its own input price until an explicit `cache_read_price` is set; the feed's `input_cache_read` moves from `"0"` to that rate.
+
 ## Unreleased — provider readiness diagnostics
 
 - Explain cold model-load memory failures in `darkbloom status`, a color-coded `darkbloom doctor` readiness summary, and the owner My Macs page. The provider reports live no-eviction usable memory and serving headroom separately from the eviction-aware routing capacity; older providers remain compatible and show unknown rather than a guessed verdict.

@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-26 · commit `76b44a972`
+> Last updated: 2026-09-28 · commit `1f664f507`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -109,6 +109,12 @@ print(msg.content[0].text)
 ```
 
 Requests land on `POST /v1/messages` (`handleAnthropicMessages`, `coordinator/api/consumer.go`) and are translated to the same pipeline as chat completions.
+
+## Handling overload
+
+If inference returns HTTP 429, wait for `Retry-After` before retrying, or choose
+another available model. Internal attempts spend the original first-content
+budget; they do not restart it. See the [error and retry contract](../reference/api-contracts.md#first-content-routing-and-retry-behavior).
 
 ## Verify
 

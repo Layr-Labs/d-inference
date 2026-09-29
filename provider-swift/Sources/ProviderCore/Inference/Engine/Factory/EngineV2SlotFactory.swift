@@ -96,6 +96,8 @@ enum EngineV2SlotFactory {
     ///   - kvBudget: process-wide shared KV reservation ledger (nil ⇒ no
     ///     shared gating — unit tests only; both production callers pass
     ///     their ledger).
+    ///   - modelArtifactSHA256: verified identity of the loaded artifact for
+    ///     serving-profile matching, independent of prefix-cache policy.
     ///   - weightHash: the slot's verified weight hash binding for SSD
     ///     artifacts. Nil or blank disables reusable SSD caching.
     ///   - environment: runtime policy environment (including prefix-cache,
@@ -123,6 +125,7 @@ enum EngineV2SlotFactory {
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
+        modelArtifactSHA256: String? = nil,
         weightHash: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
@@ -144,6 +147,7 @@ enum EngineV2SlotFactory {
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
             prefillDeadlineMode: prefillDeadlineMode,
+            modelArtifactSHA256: modelArtifactSHA256,
             weightHash: weightHash,
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
@@ -168,11 +172,14 @@ enum EngineV2SlotFactory {
         sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
+        automaticallySelectConcurrency: Bool = false,
+        constructionPurpose: EngineV2Factory.ConstructionPurpose = .serving,
         kvBudget: GlobalKVCacheBudget?,
         activationReserveBytes: UInt64? = nil,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
+        modelArtifactSHA256: String? = nil,
         weightHash: String? = nil,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel? = nil,
@@ -287,6 +294,12 @@ enum EngineV2SlotFactory {
                 preparedBackend = try EngineV2Factory.prepareProductionBackend(
                     model: servingModel,
                     modelID: modelId,
+                    modelArtifactSHA256: modelArtifactSHA256,
+                    constructionPurpose: constructionPurpose,
+                    automaticallySelectConcurrency: automaticallySelectConcurrency,
+                    // Keep exact static qualification across transient power/
+                    // thermal changes. The bridge gates admission dynamically.
+                    performanceQualificationAllowed: assistantHandle?.drafter == nil,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,
@@ -313,7 +326,10 @@ enum EngineV2SlotFactory {
         // Scripted engines have no preparation, so apply the same pure policy.
         let effectiveMaxConcurrentRequests = preparedBackend?.effectiveMaxConcurrentRequests
             ?? EngineV2Factory.nativeConcurrentRequestLimit(
-                requested: maxConcurrentRequests, model: servingModel, environment: environment)
+                requested: constructionPurpose == .benchmark ? max(1, maxConcurrentRequests)
+                    : ServingPerformanceProfiles.concurrency(
+                        configured: UInt64(max(1, maxConcurrentRequests))),
+                model: servingModel, environment: environment)
 
         // SSD staging reserves transient RAM through GlobalKVCacheBudget;
         // refused staging falls back to recomputation. Complete recurrent
@@ -362,7 +378,8 @@ enum EngineV2SlotFactory {
                     engine: try makeEngineOverride(modelId, engineKVBytesCapacity),
                     fixedRequestBytes: 0,
                     kvBackendKind: .contiguous,
-                    kvBackendFallbackReason: nil)
+                    kvBackendFallbackReason: nil,
+                    effectiveMaxConcurrentRequests: effectiveMaxConcurrentRequests)
             }
         } else {
             guard let preparedBackend else {
@@ -433,10 +450,14 @@ enum EngineV2SlotFactory {
             extraEOSTokens: snapshot.extraEOSTokens,
             defaultMaxTokens: sizing.defaultMaxTokens,
             maxConcurrentRequests: effectiveMaxConcurrentRequests,
+            performanceProfile: preparedBackend?.performanceProfile,
+            unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
+                configured: UInt64(max(1, maxConcurrentRequests))),
             prefillDeadlineMode: prefillDeadlineMode,
             advertisedContextTokens: Qwen4SupportPolicy.contextLimit(
                 modelID: modelId, modelType: modelType,
-                nativeContextTokens: sizing.maxContextLength, environment: environment),
+                nativeContextTokens: sizing.maxContextLength, environment: environment)
+                ?? (preparedBackend?.performanceProfile == nil ? nil : sizing.maxContextLength),
             pagedPageSize: preparedBackend?.pagedPoolConfig?.pageSize,
             runtimePolicyEnvironment: environment,
             kvBytesPerToken: processKVBytesPerToken,

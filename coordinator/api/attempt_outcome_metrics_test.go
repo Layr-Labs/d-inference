@@ -635,7 +635,8 @@ func TestEmitAttemptOutcomeMetric_QueueExitIsNotAnAttempt(t *testing.T) {
 }
 
 // TestQueuedExit_LiveQueueDeadline_CountsOnQueueOutcome drives the REAL HTTP
-// + WebSocket path: the single slot is saturated, the request queues, and the
+// + WebSocket path: the single slot is saturated, an explicit prefer-owner
+// request queues, and the
 // first-content clock expires inside the queue wait. Nothing was dispatched,
 // so attempt_outcome must stay at zero for the model while queue_outcome
 // records exactly one queue_deadline — the amplification denominator must not
@@ -654,7 +655,7 @@ func TestQueuedExit_LiveQueueDeadline_CountsOnQueueOutcome(t *testing.T) {
 		s.SetDatadog(dd)
 	})
 
-	res := chatRequestWithID(ctx, ts.URL, model, "queue-exit-live")
+	res := chatRequestWithID(ctx, ts.URL, model, "queue-exit-live", "prefer")
 	if res.err != nil {
 		t.Fatalf("chat request: %v", res.err)
 	}

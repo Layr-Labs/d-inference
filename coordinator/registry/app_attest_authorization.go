@@ -34,7 +34,7 @@ func (r *Registry) SetAppAttestServingPolicy(enabled bool, generation uint64) {
 	if !enabled || generation != r.appAttestPolicyGeneration {
 		for _, p := range r.providers {
 			p.mu.Lock()
-			p.appAttestAuthorization = AppAttestServingAuthorization{}
+			p.clearAppAttestServingAuthorizationLocked()
 			p.mu.Unlock()
 		}
 	}
@@ -69,6 +69,7 @@ func (r *Registry) GrantAppAttestServingAuthorization(p *Provider, lease AppAtte
 		return false
 	}
 	previous := p.appAttestAuthorization
+	previouslyAuthorized := r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now)
 	previousStatus := p.Status
 	recovering := p.Status == StatusUntrusted && p.untrustedRecoverable && !p.appAttestSecurityDenied
 	if recovering {
@@ -85,6 +86,9 @@ func (r *Registry) GrantAppAttestServingAuthorization(p *Provider, lease AppAtte
 		p.appAttestAuthorization = previous
 		p.Status = previousStatus
 	} else {
+		if !previouslyAuthorized {
+			p.warmWorkCounters = nil
+		}
 		p.appAttestCredentialID = lease.CredentialID
 		if recovering {
 			p.untrustedRecoverable = false
@@ -104,7 +108,7 @@ func (r *Registry) ClearAppAttestServingAuthorization(p *Provider) {
 		return
 	}
 	p.mu.Lock()
-	p.appAttestAuthorization = AppAttestServingAuthorization{}
+	p.clearAppAttestServingAuthorizationLocked()
 	p.mu.Unlock()
 }
 
@@ -273,7 +277,17 @@ func (r *Registry) SetAppAttestQualificationGeneration(generation uint64) {
 	r.appAttestQualificationGeneration = generation
 	for _, p := range r.providers {
 		p.mu.Lock()
-		p.appAttestAuthorization = AppAttestServingAuthorization{}
+		p.clearAppAttestServingAuthorizationLocked()
 		p.mu.Unlock()
 	}
+}
+
+// Caller holds p.mu. A policy recheck may clear an already absent lease every
+// heartbeat while independent legacy authorization remains valid. Only an
+// actual lease loss invalidates its cumulative work baseline.
+func (p *Provider) clearAppAttestServingAuthorizationLocked() {
+	if p.appAttestAuthorization.PolicyGeneration != 0 {
+		p.warmWorkCounters = nil
+	}
+	p.appAttestAuthorization = AppAttestServingAuthorization{}
 }

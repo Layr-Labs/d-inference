@@ -180,6 +180,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case register(Register)
     case heartbeat(Heartbeat)
     case inferenceAccepted(InferenceAccepted)
+    case serviceReservationReleased(String)
     case inferenceResponseChunk(InferenceResponseChunk)
     case inferenceComplete(InferenceComplete)
     case inferenceError(InferenceError)
@@ -850,6 +851,7 @@ extension ProviderMessage: Codable {
         case register
         case heartbeat
         case inferenceAccepted = "inference_accepted"
+        case serviceReservationReleased = "service_reservation_released"
         case inferenceResponseChunk = "inference_response_chunk"
         case inferenceComplete = "inference_complete"
         case inferenceError = "inference_error"
@@ -870,6 +872,7 @@ extension ProviderMessage: Codable {
 
     enum CodingKeys: String, CodingKey {
         case type
+        case serviceReservationID = "service_reservation_id"
         // Register
         case hardware, models, backend, version
         case publicKey = "public_key"
@@ -1036,6 +1039,10 @@ extension ProviderMessage: Codable {
             // 0 ("always ready") is a real value and MUST reach the wire; only
             // nil (policy not reported) is omitted — Go decodes into *int.
             try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
+
+        case .serviceReservationReleased(let id):
+            try container.encode(TypeValue.serviceReservationReleased, forKey: .type)
+            try container.encode(id, forKey: .serviceReservationID)
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -1295,6 +1302,9 @@ extension ProviderMessage: Codable {
                 idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins)
             ))
 
+        case .serviceReservationReleased:
+            self = .serviceReservationReleased(try container.decode(String.self, forKey: .serviceReservationID))
+
         case .inferenceAccepted:
             self = .inferenceAccepted(InferenceAccepted(
                 requestId: try container.decode(String.self, forKey: .requestId)
@@ -1539,6 +1549,9 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// value, so it is NOT normalised away like `firstContentBudgetMs`.
         public var cacheRepeatedPrefixTokens: Int?
         public var toolSchemaMetadataProtocol: Int?
+        /// Opaque coordinator reservation identity, independent of requestId.
+        /// Nil preserves compatibility with coordinators without service leases.
+        public var serviceReservationID: String?
 
         public init(
             requestId: String,
@@ -1549,7 +1562,8 @@ public enum CoordinatorMessage: Sendable, Equatable {
             prefixCacheProtocol: Int? = nil,
             cacheReceiptBoundaryMode: String? = nil,
             cacheRepeatedPrefixTokens: Int? = nil,
-            toolSchemaMetadataProtocol: Int? = nil
+            toolSchemaMetadataProtocol: Int? = nil,
+            serviceReservationID: String? = nil
         ) {
             self.requestId = requestId
             self.encryptedBody = encryptedBody
@@ -1560,6 +1574,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.cacheReceiptBoundaryMode = cacheReceiptBoundaryMode
             self.cacheRepeatedPrefixTokens = cacheRepeatedPrefixTokens.map { max(0, $0) }
             self.toolSchemaMetadataProtocol = toolSchemaMetadataProtocol
+            self.serviceReservationID = serviceReservationID
         }
     }
 
@@ -1666,16 +1681,22 @@ public enum CoordinatorMessage: Sendable, Equatable {
     public struct DesiredModelEntry: Sendable, Equatable, Codable {
         public var modelName: String
         public var desiredBuild: String
+        public var revision: String?
+        public var aggregateSHA256: String?
         public var previousBuild: String?
-        public init(modelName: String, desiredBuild: String, previousBuild: String? = nil) {
+        public init(modelName: String, desiredBuild: String, previousBuild: String? = nil, revision: String? = nil, aggregateSHA256: String? = nil) {
             self.modelName = modelName
             self.desiredBuild = desiredBuild
             self.previousBuild = previousBuild
+            self.revision = revision
+            self.aggregateSHA256 = aggregateSHA256
         }
         enum CodingKeys: String, CodingKey {
             case modelName = "model_name"
             case desiredBuild = "desired_build"
             case previousBuild = "previous_build"
+            case revision
+            case aggregateSHA256 = "aggregate_sha256"
         }
     }
 
@@ -1730,6 +1751,7 @@ extension CoordinatorMessage: Codable {
         case requestId = "request_id"
         case encryptedBody = "encrypted_body"
         case firstContentBudgetMs = "first_content_budget_ms"
+        case serviceReservationID = "service_reservation_id"
         case cacheReceiptNonce = "cache_receipt_nonce"
         case cacheScope = "cache_scope"
         case prefixCacheProtocol = "prefix_cache_protocol"
@@ -1783,6 +1805,7 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(
                 r.toolSchemaMetadataProtocol,
                 forKey: .toolSchemaMetadataProtocol)
+            try container.encodeIfPresent(r.serviceReservationID, forKey: .serviceReservationID)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -1877,7 +1900,9 @@ extension CoordinatorMessage: Codable {
                 cacheRepeatedPrefixTokens: try container.decodeIfPresent(
                     Int.self, forKey: .cacheRepeatedPrefixTokens),
                 toolSchemaMetadataProtocol: try container.decodeIfPresent(
-                    Int.self, forKey: .toolSchemaMetadataProtocol)
+                    Int.self, forKey: .toolSchemaMetadataProtocol),
+                serviceReservationID: try container.decodeIfPresent(
+                    String.self, forKey: .serviceReservationID)
             ))
 
         case .cancel:

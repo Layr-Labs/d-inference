@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-28 · commit `e1441c2e8`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -47,7 +47,18 @@ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its 
 
 Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
 
+The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
+artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
+The [revision runbook](../operations/model-revisions.md) describes its invocation.
+
 ## SDK 27 release builds and caches
+
+Serving performance work changes the pinned CBv2 library as well as the
+provider. Initialize the recorded submodules before building, and retain
+source-matched Metal libraries for benchmarks. The
+[profile qualification procedure](serving-performance-qualification.md)
+records the exact model/runtime/backend/hardware identity; a successful build
+alone does not qualify a wider serving limit.
 
 The release pipeline runs optimized products and SDK qualification on separate
 `xcode-27-xlarge` runners. Both call `.github/actions/provider-release-build/action.yml`;
@@ -125,7 +136,7 @@ The provider consumes the local packages through immutable Git submodule pins:
 | Package | Merged revision | Included update |
 |---|---|---|
 | `libs/mlx-swift` | `0f4fe403bef6899e8a72882bc6d4036a7a62ae31` | [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28): exact constant reuse for eligible Bonsai packed projections |
-| `libs/mlx-swift-lm` | `e22fc82bdb7bfbd93874d56c7df9ca3306782b09` | [PR #155](https://github.com/Layr-Labs/mlx-swift-lm/pull/155): exact Bonsai carry scheduling and safe HTTP failures |
+| `libs/mlx-swift-lm` | `4101d4c1bfa6b3175e7f34393e8c235a75a7c1be` | [PR #170](https://github.com/Layr-Labs/mlx-swift-lm/pull/170): completed prefill receipts, confirmed-token timing and per-engine mixed-prefill policy |
 
 Keep both local packages in the provider build. The SDK's standalone package
 manifest can still reference a pre-merge Swift review revision; the nested-test
@@ -133,6 +144,9 @@ procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matche
 Swift gitlink. The MLX core and C-wrapper pins are unchanged by this update.
 Rebuild the consumer after changing pins; earlier full-model measurements are
 evidence for their recorded dependency set, not a new benchmark of these pins.
+The pin uses merged SDK `main` history. Its production libraries and package
+manifest match the reviewed head `b52335b839d80c8e6d4194ebbd8809d737cd8eb3`;
+subsequent merged changes improve test reliability, fork CI and documentation.
 
 ### Native Flash-Next candidate
 

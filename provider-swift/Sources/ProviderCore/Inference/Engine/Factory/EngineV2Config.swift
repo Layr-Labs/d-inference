@@ -154,6 +154,8 @@ public enum EngineV2Factory {
         extraEOSTokens: [String] = [],
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
+        performanceProfile: ServingPerformanceProfile? = nil,
+        unqualifiedMaxConcurrentRequests: Int? = nil,
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         advertisedContextTokens: Int? = nil,
         pagedPageSize: Int? = nil,
@@ -186,6 +188,8 @@ public enum EngineV2Factory {
                 extraEOSTokens: extraEOSTokens,
                 defaultMaxTokens: defaultMaxTokens,
                 maxConcurrentRequests: maxConcurrentRequests,
+                performanceProfile: performanceProfile,
+                unqualifiedMaxConcurrentRequests: unqualifiedMaxConcurrentRequests,
                 prefillDeadlineMode: PrefillDeadlineMode.resolve(
                     configured: prefillDeadlineMode,
                     environment: runtimePolicyEnvironment),

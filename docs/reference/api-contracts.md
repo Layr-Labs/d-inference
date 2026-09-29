@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-28 · commit `2496ac833`
+> Last updated: 2026-09-28 · commit `1902940eb`
 
 The complete public HTTP surface of the coordinator, derived from the 115 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -215,7 +215,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
 | GET | `/v1/payments/balance` | `handleBalance` (`coordinator/api/consumer.go`) | `key` | — | `BalanceResponse` `{balance_micro_usd, balance_usd, withdrawable_micro_usd, withdrawable_usd}` |
-| GET | `/v1/payments/usage` | `handleUsage` (`coordinator/api/consumer.go`) | `key` | — | `UsageResponse` `{usage: [...]}`; recent history only ([retention](pricing-model.md#constants)) |
+| GET | `/v1/payments/usage` | `handleUsage` (`coordinator/api/consumer.go`) | `key` | — | `UsageResponse` `{usage: [...]}`; each `payments.UsageEntry` carries `cached_tokens` (omitted when 0) — the subset of `prompt_tokens` billed at the cache-read rate; recent history only ([retention](pricing-model.md#constants)) |
 | GET | `/v1/billing/wallet/balance` | `handleWalletBalance` (`coordinator/api/billing_handlers.go`) | `key` | — | Wallet view of the ledger balance |
 | GET | `/v1/billing/methods` | `handleBillingMethods` (`coordinator/api/billing_handlers.go`) | `—` | — | Which top-up methods are enabled |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
@@ -225,8 +225,8 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/me/providers` | `handleMyProviders` (`coordinator/api/me_handlers.go`) | `user` | — | Machines linked to the account |
 | GET | `/v1/me/self-route-models` | `handleMySelfRouteModels` (`coordinator/api/me_handlers.go`) | `user` | — | Models the account's own machines can serve |
 | DELETE | `/v1/me/providers/{id}` | `handleDeleteMyProvider` (`coordinator/api/me_handlers.go`) | `user` | `fin` | Unlink a machine |
-| GET | `/v1/pricing` | `handleGetPricing` (`coordinator/api/billing_handlers.go`) | `—` | — | Public price table; see [`pricing-model.md`](pricing-model.md) |
-| PUT | `/v1/pricing` | `handleSetPricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Provider sets its own prices |
+| GET | `/v1/pricing` | `handleGetPricing` (`coordinator/api/billing_handlers.go`) | `—` | — | Public price table, `types.PricingResponse` `{prices: [{model, input_price, output_price, cache_read_price, input_usd, output_usd, cache_read_usd}], fallback_input_price, fallback_output_price, fallback_cache_read_price, fallback_*_usd}`; `cache_read_price` is the effective rate (derived when the row sets none); see [`pricing-model.md`](pricing-model.md) |
+| PUT | `/v1/pricing` | `handleSetPricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Provider sets its own prices: `{model, input_price, output_price, cache_read_price?}` (`modelPriceInput`, `coordinator/api/model_pricing.go`; `0 ≤ cache_read_price ≤ input_price`, omitted = derived) → `types.PriceUpdateResponse` |
 | DELETE | `/v1/pricing` | `handleDeletePricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Revert to defaults |
 
 All six `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
@@ -379,11 +379,11 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
-| PUT | `/v1/admin/pricing` | `handleAdminPricing` (`coordinator/api/billing_handlers.go`) | `admin` | Platform default price table |
+| PUT | `/v1/admin/pricing` | `handleAdminPricing` (`coordinator/api/billing_handlers.go`) | `admin` | Platform default price table; same body and response as `PUT /v1/pricing` (`modelPriceInput` → `types.PriceUpdateResponse`) |
 | PUT | `/v1/admin/users/role` | `handleAdminSetUserRole` (`coordinator/api/billing_handlers.go`) | `admin` | Role selects the consumer or service limiter |
 | PUT | `/v1/admin/users/platform-fee` | `handleAdminSetUserPlatformFee` (`coordinator/api/billing_handlers.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
-| POST | `/v1/admin/models/register` | `handleRegisterModel` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Publish a model build |
-| POST | `/v1/admin/models/` | `handleAdminModelRegistryAction` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Registry actions selected by path suffix |
+| POST | `/v1/admin/models/register` | `handleRegisterModel` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Publish a model build; optional `cache_read_price` beside `input_price`/`output_price` (`modelPriceInput`); the response (`registerModelResponse`) quotes the effective platform rates |
+| POST | `/v1/admin/models/` | `handleAdminModelRegistryAction` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Registry actions selected by path suffix, including `publish-revision` (version plus optional pinned `hugging_face_artifact`) and `retire-revision` (version); publication returns 503 if its committed promotion has not reached live policy or desired-state delivery to a provider fails; [revision contracts](model-registry-format.md#admin-actions) |
 | GET / POST | `/v1/admin/models/aliases` | `handleModelAliasList`, `handleModelAliasUpsert` (`coordinator/api/model_alias_handlers.go`) | `publishing` | Two registrations; upserts fan out `desired_models` (see [Version gating](#version-gating)) |
 | DELETE | `/v1/admin/models/aliases/{aliasID}` | `handleModelAliasDelete` (`coordinator/api/model_alias_handlers.go`) | `publishing` | |
 | GET / POST | `/v1/admin/models/openrouter-aliases` | `handleOpenRouterAliasList`, `handleOpenRouterAliasUpsert` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | Two registrations |
@@ -488,6 +488,20 @@ Deploy the updated console before the coordinator field removal: older console
 bundles dereference `reputation.score` and cannot consume the new response.
 Existing tabs running an older bundle must reload. The updated console also
 accepts older responses containing the extra field.
+
+## First-content routing and retry behavior
+
+Public inference uses [first-content routing](../architecture/first-content-routing.md)
+by default across chat completions, Responses, completions and Anthropic messages.
+Internal retries, cache planning, quotes, queue waits and hedges consume the same
+original request deadline. Predictive provider refusals do not count as node
+health failures; after two, another attempt needs fresh feasible evidence.
+A request can launch at most one speculative backup. Current error JSON and
+`Retry-After` contracts remain; unavailable deadline-bound capacity can produce
+an earlier overload response instead of waiting the queue maximum. Explicit
+owner routing, deadline exemptions and valid empty completions keep their
+existing contracts (`coordinator/api/first_content_retry.go`,
+`coordinator/api/first_content_preflight.go`).
 
 ## Provider capacity observations
 
@@ -722,7 +736,7 @@ root response marked `incomplete` because generation reached its output limit.
 
 ### Completions and Messages
 
-`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/generic_endpoint_response.go` and streams by `coordinator/api/generic_endpoint_stream.go`, which terminates with `data: [DONE]`.
+`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/generic_endpoint_response.go` and streams by `coordinator/api/generic_endpoint_stream.go`, which terminates with `data: [DONE]`. Usage reports a validated cache hit in each endpoint's own schema (`completionsUsage`, `messagesUsage`): `/v1/completions` adds `usage.prompt_tokens_details.cached_tokens` (a subset of `prompt_tokens`); `/v1/messages` reports `cache_read_input_tokens` and excludes those tokens from `input_tokens`, as Anthropic does. Streams carry the same object on their terminal event: the final `text_completion` chunk's `usage` for completions, and the `message_delta` `usage` for messages (its `message_start` still reports `input_tokens: 0`, because usage is known only at the end).
 
 ## SSE framing
 

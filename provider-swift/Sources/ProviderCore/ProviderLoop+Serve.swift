@@ -85,6 +85,7 @@ extension ProviderLoop {
             return
         }
         startMTPUpgradeMonitor()
+        startModelRevisionMonitor()
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. It starts after the bounded metadata prewarm, but still before
@@ -292,7 +293,7 @@ extension ProviderLoop {
                     let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
-                    let profile
+                    let profile, let serviceReservationID
                 ):
                     await handleInferenceRequest(
                         requestId: requestId,
@@ -307,6 +308,7 @@ extension ProviderLoop {
                         firstContentDeadline: firstContentDeadline,
                         receivedAt: receivedAt,
                         profile: profile,
+                        serviceReservationID: serviceReservationID,
                         send: send
                     )
 
@@ -372,6 +374,8 @@ extension ProviderLoop {
         pendingRetirementReconnect?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
+        await stopServiceAllowanceRefreshMonitor()
+        await stopPerformanceRefreshMonitor()
         trailingHeartbeatTask?.cancel()
         trailingHeartbeatTask = nil
         capacityRefreshTask = nil
@@ -384,6 +388,10 @@ extension ProviderLoop {
         for task in desiredPrefetchRetryTasks.values { task.cancel() }
         desiredPrefetchRetryTasks.removeAll()
         desiredPrefetchRetryAttempts.removeAll()
+        modelRevisionMonitorTask?.cancel()
+        modelRevisionAttempt?.task.cancel()
+        await modelRevisionMonitorTask?.value
+        modelRevisionMonitorTask = nil
         let mtpUpgradeTask = mtpUpgradeMonitorTask
         mtpUpgradeMonitorTask = nil
         mtpUpgradeTask?.cancel()

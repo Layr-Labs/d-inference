@@ -407,6 +407,7 @@ public enum BackendParityHarness {
                 tokenizer: serving.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,
+                constructionPurpose: .benchmark,
                 kvBudget: BenchmarkMemoryBudget.shared,
                 prefixCache: prefixCache,
                 mtpDrafter: drafter?.drafter,

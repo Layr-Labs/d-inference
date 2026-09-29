@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `0bd16a9fa`
+> Last updated: 2026-09-28 · commit `9b2a28f59`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -253,6 +253,20 @@ Build qualification regressions run in `coordinator/store/app_attest_builds_test
 
 ## Provider lifecycle regression checks
 
+Serving measurements and profile admission have focused suites
+`EngineEarlyPerformanceTests`, `EngineV2PrefillSamplingTests`,
+`ServingPerformanceProfileTests` and the shared profiler-wire fixture. Run the
+ordinary provider test target as well as dependency tests for
+`CBv2RequestTimingTests`, `NativeBlockEngineTests` and
+`CBv2MixedStepPrefillQuotaTests` after changing the CBv2 pin. The Go registry
+suite covers accepted counter deltas, stale/replayed observations, shared
+service admission, warm-load ownership and transport freshness.
+
+`make benchmark-wrapper-test` also runs the offline serving-profile evaluator
+regressions. For real hardware coverage and required evidence, follow
+[serving performance qualification](serving-performance-qualification.md).
+Synthetic tests never certify M5 concurrency or a mixed-prefill default.
+
 Run `make provider-test` to build tests and install the source-matched Metal
 library beside the runner. Focused suites include `ProviderLifecycleTests`,
 `LifecycleMailboxTests`, `ServiceDrainTests`, `LocalResponseTrackerTests`,
@@ -335,6 +349,23 @@ call. The SDK's `ChatStreamingFailureHTTPTests` covers Chat/Completions framing,
 observed-only usage, cancellation and the unchanged direct-service throwing
 contract. Successful tool-generation gates remain separate: a correctly framed
 error does not satisfy a required tool call or repair its generated arguments.
+
+## Model revision validation
+
+Model revision changes are covered by `ModelPrefetchDownloaderTests`,
+`ModelRevisionActivationTests`, `ModelRevisionPublicationTests`, and the existing MTP drain suites in
+`provider-swift/Tests/ProviderCoreTests`. Run them with a source-matched metallib.
+Coordinator lifecycle tests cover memory/cached stores and, when `DATABASE_URL`
+points to a disposable database, `TestPostgresModelRevisionLifecycle`.
+`python3 scripts/test_publish_model_revision.py` tests publication ordering,
+immutable reservations and per-revision HF arguments/request bodies. API and
+store regressions cover retired re-registration, publisher attribution, failed
+live refresh retries and alias-lineage eligibility; HF download fixtures change
+the pinned repo/commit/subdirectory between two revisions. Renamed-file fixtures
+exercise equal aggregates through both download paths, and controlled reserve/client
+suspensions verify cancellation, rollback, pending alias cleanup and retry. These
+fixture tests do not qualify a full-weight fleet swap.
+
 
 ## SDK 27 release qualification
 

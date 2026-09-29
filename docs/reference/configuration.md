@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-27 · commit `c2fa18e02`
+> Last updated: 2026-09-29 · commit `3c12f9025`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -154,6 +154,12 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 
 ### Routing, admission and TTFT
 
+First-content ranking is active by default with no mode or percentage setting.
+The 100-ms band, confidence/freshness rules and bounded retry policy are defined
+in [first-content routing](../architecture/first-content-routing.md). Existing
+TTFT shadow metrics remain observational and do not control this selection.
+
+
 Trust floor, model routing and per-request quality:
 
 | Variable | Values / type | Default | Read in | Effect |
@@ -164,10 +170,10 @@ Trust floor, model routing and per-request quality:
 | `EIGENINFERENCE_MIN_DECODE_TPS` | float ≥ 0 (`0` disables) | `15` | `coordinator/cmd/coordinator/main.go` (`SetMinDecodeTPS`) | Per-request decode floor (tokens/s) used by admission; see [`../architecture/scheduling.md`](../architecture/scheduling.md). |
 | `EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN` | bool | `true` (*live*) | `coordinator/registry/scheduler.go` (`decodeFloorUseFleetMedian`) | Lets the per-request decode projection fall back to the fleet-median solo rate before the static benchmark. |
 | `EIGENINFERENCE_SERVABILITY_GATE` | bool | `true` (*live*) | `coordinator/cmd/coordinator/main.go`; `coordinator/api/servability_gate.go` (`servabilityGateEnabled`) | Early 429 for requests whose prompt + `max_tokens` fit no provider; only an explicit `false` disables it. |
-| `EIGENINFERENCE_LONG_PROMPT_TOKENS` | integer > 0 | unset (preference off) | `coordinator/cmd/coordinator/main.go` (`SetLongPromptThreshold`) | Prompts above this size prefer the fastest provider tier. |
-| `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | float (values below 1 clamp to neutral) | `2.0` | `coordinator/cmd/coordinator/main.go` (`SetLongPromptPrefillWeight`) | Prefill weight applied to long prompts; read only when the threshold is set. |
+| `EIGENINFERENCE_LONG_PROMPT_TOKENS` | integer > 0 | unset (preference off) | `coordinator/cmd/coordinator/main.go` (`SetLongPromptThreshold`) | Threshold for the retained historical cost diagnostic; active first-content selection uses measured forecast work for every prompt size. |
+| `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | float (values below 1 clamp to neutral) | `2.0` | `coordinator/cmd/coordinator/main.go` (`SetLongPromptPrefillWeight`) | Long-prompt weight in the historical cost diagnostic; read only when the threshold is set. Does not widen the first-content band. |
 | `EIGENINFERENCE_PREFILL_DECODE_RATIO` | float > 0 | `12.0` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/scheduler.go` (`SetPrefillToDecodeRatio`) | Prefill-to-decode speed ratio in the TTFT estimate. |
-| `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/api/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces the per-family prompt-token calibration used by the context gate. |
+| `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/api/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces per-family prompt-token calibration for the context gate and conservative first-content work; physical and billing estimates remain separate. |
 | `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS` | comma-separated exact account IDs or stored emails | empty (no accounts); provision selected identities in the deployment environment | `coordinator/api/first_content_accounts.go` (`accountHasFirstContentSLA`); `coordinator/api/server_config.go` (`ReadServerConfig`) | Enables the request-absolute SLA only for selected authenticated accounts. Email matching is case-insensitive and uses the stored user, never headers or the service role. Verify the production selector before rollout; a verified account ID avoids dependence on email changes. |
 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_SLAS` | `model=upstream_base_ms:per_input_token_ms,…`; `model=off` removes | Bonsai exact IDs: `10000:5` | `coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) | For selected accounts, overrides both SLA terms for exact model IDs; an explicit public alias policy takes precedence over the resolved build. Retains one second of coordinator headroom. Base 1001–600000 ms, slope 0–100 ms/token; invalid/duplicate entries fail startup atomically. Applied after the legacy base table. |
 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `model=upstream_ms,…` (`0`/`off` removes) | built-in table | `coordinator/modelpolicy/first_content_deadline.go` (`SetFirstContentBasesFromEnv`) | Overrides exact-model first-content deadline bases. |
@@ -178,13 +184,13 @@ TTFT admission and dispatch termination:
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_TTFT_HARD_REJECT` | `true` | `false` (soft preference) | `coordinator/cmd/coordinator/main.go` (`SetTTFTHardReject`) | Restores the legacy 429 when the best estimated TTFT exceeds the model deadline. |
+| `EIGENINFERENCE_TTFT_HARD_REJECT` | `true` | `false` (soft preference) | `coordinator/cmd/coordinator/main.go` (`SetTTFTHardReject`) | Enables 429 when all eligible candidates have credible conservative first-content forecasts beyond the original remaining deadline; Unknown evidence is not hard rejected. |
 | `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` | 1000–120000 | `5000` (production pins `9000`) | `coordinator/cmd/coordinator/main.go` (`validateTTFTDeadlineBaseMs`) | Live first-content deadline base for selected accounts (`FirstContentDeadlineBase`, plus 1 ms per prompt token); legacy base-only policy may tighten it; an explicit model SLA overrides both terms. |
 | `EIGENINFERENCE_TTFT_DEADLINE_BASE_MS` | 1000–120000 | `10000` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/ttft_shadow.go` | Deadline base for shadow TTFT evaluation. |
 | `EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA` | float 0–1e6 | `0` (term off) | `coordinator/cmd/coordinator/main.go` (`validateTTFTOccupancyAlpha`) | Weight of the occupancy term in the TTFT estimate. |
 | `EIGENINFERENCE_TTFT_ADMISSION_MODE` | `off`, `shadow`, `enforce` | `off` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/ttft_shadow.go` (`ParseTTFTAdmissionMode`) | Shadow evaluation of TTFT admission that emits `routing.ttft_admission` metrics without changing decisions; `enforce` currently behaves like `shadow`. |
-| `EIGENINFERENCE_TTFT_CALIBRATION` | `off`/`false`/`0` disables | `on` (*live*) | `coordinator/registry/ttft_calibration.go` (`ttftCalibrationEnabled`) | Per-model TTFT calibration from observed samples; off makes the apply path return ratio 1.0. |
-| `EIGENINFERENCE_TTFT_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/dispatch.go` (`ttftTerminalRejectEnabled`) | A TTFT-too-slow rejection ends the dispatch ladder on any attempt. |
+| `EIGENINFERENCE_TTFT_CALIBRATION` | `off`/`false`/`0` disables | `on` (*live*) | `coordinator/registry/ttft_calibration.go` (`ttftCalibrationEnabled`) | Historical TTFT diagnostic calibration; off returns ratio 1.0. It does not certify first-content feasibility. |
+| `EIGENINFERENCE_TTFT_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/dispatch.go` (`ttftTerminalRejectEnabled`) | Legacy text TTFT refusal handling; typed predictive refusals use the bounded fresh-evidence ladder in `coordinator/api/first_content_retry.go`. |
 | `EIGENINFERENCE_JINJA_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/dispatch.go` (`jinjaTerminalRejectEnabled`) | A chat-template render failure ends the ladder with one 422 instead of failing over. |
 
 Queue and cold dispatch:
@@ -192,9 +198,9 @@ Queue and cold dispatch:
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_QUEUE_MAX_DEPTH` | integer ≥ 1 | `32` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Per-model queue depth before 429. |
-| `EIGENINFERENCE_QUEUE_MAX_WAIT` | Go duration > 0 | `120s` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Maximum time a request waits in the queue. |
-| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`queueBeforeShedEnabled`) | Queue `machine_busy` preflight rejections instead of returning 429 immediately. |
-| `EIGENINFERENCE_COLD_DISPATCH` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`coldDispatchEnabled`) | Spill `no_provider` requests into the queue when an idle on-disk provider can be warmed, and kick the load. |
+| `EIGENINFERENCE_QUEUE_MAX_WAIT` | Go duration > 0 | `120s` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Upper bound on eligible queue waits; a public deadline-bound request also needs credible useful release evidence. |
+| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`queueBeforeShedEnabled`) | Permit `machine_busy` preflight requests to reach dispatch queue policy. Public deadlines still require credible capacity-release evidence; owner/exempt requests retain queue behavior. |
+| `EIGENINFERENCE_COLD_DISPATCH` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`coldDispatchEnabled`) | Trigger warming for eligible idle on-disk providers and allow eligible owner/exempt waits; public deadlines still require credible release evidence before waiting. |
 
 Capacity breakers:
 
@@ -398,6 +404,16 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 
 ### Startup model preload
 
+Serving concurrency is resolved after the model's KV backend and verified
+artifact are known. `BackendSettings.engineV2MaxConcurrentIsExplicit`
+distinguishes an absent `engine_v2_max_concurrent` key (automatic, legacy
+default `4` until an exact reviewed profile applies) from any existing literal
+operator cap. Serialization preserves that distinction; historical literal
+values are not silently raised. Per-model overrides remain explicit limits.
+Daemon and standalone engines use the same profile resolver and preserve
+narrower architecture and physical memory constraints. `darkbloom status` and
+`doctor` explain the selection. See [qualification](../developer/serving-performance-qualification.md).
+
 Startup loading is independent of the idle-unload policy. The default
 preloads selected models on coordinator-connected and standalone `--local`
 starts; an explicit list takes precedence. All loads retain the normal memory
@@ -463,6 +479,14 @@ The command never moves weights or restarts a provider. Apply a saved change wit
 `darkbloom restart` (or `darkbloom start` if stopped). The CLI reports its selected
 config, not proof that an already-running daemon has adopted a new setting.
 
+The selected cache root also holds `.artifact-writer-locks`, whose persistent
+per-model lock files coordinate downloads, revision activation and
+[`models remove`](../provider/cli-reference.md#darkbloom-models-remove-id).
+They remain outside removed model directories; do not delete them while a
+provider or model command is running. Code:
+`provider-swift/Sources/ProviderCore/Models/ModelArtifactWriteLease.swift`
+(`openDescriptor`).
+
 ### Operator-facing: daemon, paths, updates
 
 | Variable | Values / type | Default | Read in | Effect |
@@ -486,6 +510,8 @@ config, not proof that an already-running daemon has adopted a new setting.
 | `DARKBLOOM_CBV2_PAGED_KV` | `0` forces contiguous | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the `provider.toml` setting. The [owned Flash-Next candidate](qwen4-next-support.md#identity-and-serving-policy) joins the exact automatic policy; a default is not runtime qualification. |
 | `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | unset: observed native per-layer types | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` | Optional assertion for resolved paged storage; a nonempty value must match every measured native layer. Unsupported values or mismatches refuse explicit paged construction. |
 | `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | tokens | engine default | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Solo-prefill stripe size. |
+| `DARKBLOOM_CBV2_MIXED_PREFILL_CAP` | nonnegative tokens | reviewed profile cap; otherwise uncapped | `provider-swift/Sources/ProviderCore/Inference/Performance/MixedPrefillPolicy.swift` (`resolve`) | Caps prompt tokens in steps that also decode. Positive Gemma caps have a 128-token minimum; `0` defers prefill while decode is active. Does not change the pure-prefill stripe. Foreground/local only. |
+| `DARKBLOOM_CBV2_MIXED_PREFILL_CAP_BY_MODEL` | comma-separated `model-id=tokens` | unset | `provider-swift/Sources/ProviderCore/Inference/Performance/MixedPrefillPolicy.swift` (`resolve`) | Exact model-ID overrides take precedence over the global cap, then the reviewed profile. Same nonnegative parsing and Gemma minimum; malformed entries are ignored. Foreground/local only. |
 | `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | integer (`0` = unlimited) | `1` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Maximum concurrent partial prefills. |
 | `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` | affirmative | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Restores the legacy per-request timeout. |
 | `DARKBLOOM_CBV2_MTP` | negative disables | unset (beta flag decides) | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift`; `provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift` | Kill switch for MTP speculation; beats the `provider.toml` beta flag. See [`../provider/beta-features.md`](../provider/beta-features.md). |
@@ -602,7 +628,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | directory | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Isolated payload root, accepted only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`; normally forces an ephemeral key. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | exactly `1` | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) | Benchmark-only: use the normal persistent KEK path within an accepted test root. Fallback is still possible; the benchmark SPI defaults to requiring actual persistent mode. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | seconds ≤ 1800 | `1800` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Entry time-to-live. |
-| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `150` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Write-endurance budget. |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `750` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Write-endurance budget. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | tokens | `1024` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Smallest prefix worth persisting. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persists the sliding-window sidecar. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Attention staging byte/time caps. Complete checkpoints use the byte value as a payload-read cap; native destination plus bounded scratch is separately reserved before allocation, with no permanent RAM carve. |

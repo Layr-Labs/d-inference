@@ -110,6 +110,30 @@ type PendingRequest struct {
 	// EstimatedPromptTokens is a coordinator-side heuristic used only for
 	// routing and queue admission. It does not need tokenizer-perfect accuracy.
 	EstimatedPromptTokens int
+	// Calibrated conservative prompt-work estimate; a trusted CachePlan
+	// supplies exact counts instead. Physical commitment estimates are separate.
+	FirstContentPromptTokens int
+	// Request-local retry/hedge policy; no wire protocol change.
+	RequireFreshFeasible      bool
+	RequireFreshFeasibleAfter time.Time
+	// Advisory horizon for deadline-exempt hedges or fresh-evidence retries;
+	// never a timer and unused by ordinary deadline-exempt selection.
+	FirstContentPlanningHorizon time.Duration
+	Hedge                       bool
+	// Reservation metadata is owned by the provider pending set and read only
+	// under provider.mu. Removing the pending owner retires prompt reservations;
+	// a dispatched service charge survives in the provider retirement shadow
+	// until explicit producer proof confirms that its leases have retired.
+	reservedPrefillTokens      float64
+	reservedPrefillRestoreMs   float64
+	reservedPrefillKnown       bool
+	reservedAt                 time.Time
+	reservedServiceCharge      float64
+	serviceRetirementTracked   bool
+	serviceHandoffAuthorized   bool
+	serviceHandoffAborted      bool
+	serviceReservationReleased bool
+	serviceReservationID       atomic.Pointer[serviceReservationIdentity]
 	// RequiresVision is true when the request carries image/video input. Such a
 	// request must only be routed to a provider advertising a vision-capable
 	// (VLM) build for the resolved model; otherwise the provider would silently

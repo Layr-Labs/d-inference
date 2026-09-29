@@ -61,20 +61,16 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 	// pending set, or the flush that drains the tombstone would let a later
 	// reconnect bind it.
 	if len(p.holderDeletes) > 0 {
-		for pk, rows := range p.pending {
-			kept := rows[:0]
-			for _, row := range rows {
-				if _, dead := p.holderDeletes[row.HolderKey()]; dead {
+		for pk, bucket := range p.pending {
+			for hk := range bucket {
+				if _, dead := p.holderDeletes[hk]; dead {
+					delete(bucket, hk)
 					p.counters.droppedPending++
 					p.pendingCount--
-					continue
 				}
-				kept = append(kept, row)
 			}
-			if len(kept) == 0 {
+			if len(bucket) == 0 {
 				delete(p.pending, pk)
-			} else {
-				p.pending[pk] = kept
 			}
 		}
 	}
@@ -82,29 +78,20 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 	// before a retried restore parked this run's evidence here, and the
 	// store may not hold it yet. The newer record wins per (key, epoch).
 	restored := 0
-	// Positions of the rows already parked, built once per touched bucket.
-	parked := make(map[string]map[crs.HolderKey]int)
 	for _, rec := range holders {
 		rec, ok := ClampToTTL(rec, now, ttl)
 		if !ok {
 			p.counters.droppedPending++
 			continue
 		}
-		if _, dead := p.holderDeletes[rec.HolderKey()]; dead {
+		hk := rec.HolderKey()
+		if _, dead := p.holderDeletes[hk]; dead {
 			p.counters.droppedPending++
 			continue
 		}
 		pk := pendingKey(rec.CacheEpoch, rec.ModelID)
-		idx, seen := parked[pk]
-		if !seen {
-			idx = make(map[crs.HolderKey]int, len(p.pending[pk]))
-			for i, row := range p.pending[pk] {
-				idx[row.HolderKey()] = i
-			}
-			parked[pk] = idx
-		}
-		if i, ok := idx[rec.HolderKey()]; ok {
-			p.pending[pk][i] = crs.Later(p.pending[pk][i], rec)
+		if parked, ok := p.pending[pk][hk]; ok {
+			p.pending[pk][hk] = crs.Later(parked, rec)
 			restored++
 			continue
 		}
@@ -112,8 +99,12 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 			p.counters.droppedPending++
 			continue
 		}
-		idx[rec.HolderKey()] = len(p.pending[pk])
-		p.pending[pk] = append(p.pending[pk], rec)
+		bucket := p.pending[pk]
+		if bucket == nil {
+			bucket = make(map[crs.HolderKey]crs.HolderRecord)
+			p.pending[pk] = bucket
+		}
+		bucket[hk] = rec
 		p.pendingCount++
 		restored++
 	}

@@ -23,6 +23,13 @@ func (f *flakyStore) UpsertCacheHolders(ctx context.Context, r []crs.HolderRecor
 	return f.Store.UpsertCacheHolders(ctx, r)
 }
 
+func (f *flakyStore) DeleteCacheHolders(ctx context.Context, k []crs.HolderKey) error {
+	if f.broken {
+		return errors.New("store down")
+	}
+	return f.Store.DeleteCacheHolders(ctx, k)
+}
+
 func (f *flakyStore) UpsertCacheDemand(ctx context.Context, r []crs.DemandRecord) error {
 	if f.broken {
 		return errors.New("store down")
@@ -128,7 +135,7 @@ func TestPendingParkTakeAndPrune(t *testing.T) {
 	// durable row (here: delete) and reports them dropped.
 	p.Park(rec("d", "e2", now, time.Minute))
 	for _, r := range p.Take("e2", "model") {
-		p.MarkHolderDelete(r.HolderKey())
+		p.MarkHolderDelete(r.HolderKey(), time.Now())
 		p.AddBound(0, 1)
 	}
 	if err := p.Flush(context.Background()); err != nil {
@@ -537,7 +544,7 @@ func TestTombstoneOutlivesItsFlushForOneTTL(t *testing.T) {
 	restoreForTest(t, p, now)
 	k := crs.HolderKey{Key: "a", CacheEpoch: "e"}
 	before := now.Add(-time.Second)
-	p.MarkHolderDelete(k) // decided now
+	p.MarkHolderDelete(k, time.Now()) // decided now
 	if !p.Tombstoned(k, before) {
 		t.Fatal("a pending delete outranks any row")
 	}
@@ -577,7 +584,7 @@ func TestDelayedOlderReceiptCannotCancelANewerTombstone(t *testing.T) {
 	p := New(mem, nil, Options{MaxPending: 10})
 	restoreForTest(t, p, now)
 	stale := rec("a", "e", now.Add(-time.Second), time.Minute)
-	p.MarkHolderDelete(stale.HolderKey()) // decided now, after the stale receipt's time
+	p.MarkHolderDelete(stale.HolderKey(), time.Now()) // decided now, after the stale receipt's time
 	p.MarkHolderUpsert(stale)
 	if b := p.drain(); len(b.deletes) != 1 || len(b.upserts) != 0 {
 		t.Fatalf("stale receipt must neither cancel the tombstone nor queue: %+v %+v", b.deletes, b.upserts)
@@ -593,7 +600,7 @@ func TestDelayedOlderReceiptCannotCancelANewerTombstone(t *testing.T) {
 		t.Fatalf("a receipt newer than the decision re-proves the row: %+v", b.upserts)
 	}
 	// And a pending tombstone is cancelled only by a newer receipt.
-	p.MarkHolderDelete(stale.HolderKey())
+	p.MarkHolderDelete(stale.HolderKey(), time.Now())
 	p.MarkHolderUpsert(rec("a", "e", time.Now().Add(2*time.Second), time.Minute))
 	if b := p.drain(); len(b.deletes) != 0 || len(b.upserts) != 1 {
 		t.Fatalf("newer receipt must cancel the pending tombstone: %+v %+v", b.deletes, b.upserts)
@@ -607,9 +614,10 @@ func TestRecentDeletesBoundedByHolderBudget(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	p := New(mem, nil, Options{MaxPending: 3})
+	p.retentionLimit = 3 // production never goes below one flush batch
 	restoreForTest(t, p, now)
 	for i := 0; i < 5; i++ {
-		p.MarkHolderDelete(crs.HolderKey{Key: string(rune('a' + i)), CacheEpoch: "e"})
+		p.MarkHolderDelete(crs.HolderKey{Key: string(rune('a' + i)), CacheEpoch: "e"}, time.Now())
 		if err := p.Flush(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -627,12 +635,12 @@ func TestRecentDeletesBoundedByHolderBudget(t *testing.T) {
 	// A key decided again moves to the retention tail: with c, d, e kept,
 	// deciding c again and then adding f and g must evict d and e, not c.
 	time.Sleep(2 * time.Millisecond)
-	p.MarkHolderDelete(crs.HolderKey{Key: "c", CacheEpoch: "e"})
+	p.MarkHolderDelete(crs.HolderKey{Key: "c", CacheEpoch: "e"}, time.Now())
 	if err := p.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"f", "g"} {
-		p.MarkHolderDelete(crs.HolderKey{Key: key, CacheEpoch: "e"})
+		p.MarkHolderDelete(crs.HolderKey{Key: key, CacheEpoch: "e"}, time.Now())
 		if err := p.Flush(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -647,5 +655,48 @@ func TestRecentDeletesBoundedByHolderBudget(t *testing.T) {
 	}
 	if !p.Tombstoned(crs.HolderKey{Key: "c", CacheEpoch: "e"}, before) || p.Tombstoned(crs.HolderKey{Key: "d", CacheEpoch: "e"}, before) {
 		t.Fatal("a refreshed decision must outlive older ones")
+	}
+}
+
+// A delete whose write failed is requeued with its original decision time:
+// a receipt newer than that decision still cancels it, and one older than it
+// is still rejected, exactly as before the failure.
+func TestFailedDeleteWriteKeepsTheDecisionTime(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	flaky := &flakyStore{Store: mem}
+	ctx := context.Background()
+	now := time.Now()
+	p := New(flaky, nil, Options{MaxPending: 10})
+	restoreForTest(t, p, now)
+	k := crs.HolderKey{Key: "a", CacheEpoch: "e"}
+	decided := now
+	p.MarkHolderDelete(k, decided)
+	flaky.broken = true
+	if err := p.Flush(ctx); err == nil {
+		t.Fatal("flush must report the failed delete")
+	}
+	p.mu.Lock()
+	at, pending := p.holderDeletes[k]
+	p.mu.Unlock()
+	if !pending || !at.Equal(decided) {
+		t.Fatalf("requeued delete must keep its decision time: pending=%v at=%v want %v", pending, at, decided)
+	}
+	if !p.Tombstoned(k, decided.Add(-time.Millisecond)) || p.Tombstoned(k, decided.Add(time.Millisecond)) {
+		t.Fatal("the tombstone window must not move with the retry")
+	}
+	// Evidence newer than the decision re-proves the row and cancels the
+	// requeued tombstone; the retried flush then writes the row.
+	fresh := rec("a", "e", decided.Add(time.Millisecond), time.Minute)
+	p.MarkHolderUpsert(fresh)
+	flaky.broken = false
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Read a second later: the row's update time is just after the decision.
+	if rows, _ := mem.LoadCacheHolders(ctx, now.Add(time.Second), 0, 0); len(rows) != 1 {
+		t.Fatalf("re-proved row must be written, not deleted: %+v", rows)
+	}
+	if s := p.Status(); s.StaleUpserts != 0 {
+		t.Fatalf("a receipt newer than the decision is not stale: %+v", s)
 	}
 }

@@ -20,20 +20,24 @@ func (p *Persister) Park(rec crs.HolderRecord) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	pk := pendingKey(rec.CacheEpoch, rec.ModelID)
+	hk := rec.HolderKey()
 	// Overlapping sessions of one machine park the same durable row more
 	// than once; one parked copy per (key, epoch), the newer evidence.
-	for i, parked := range p.pending[pk] {
-		if parked.HolderKey() == rec.HolderKey() {
-			p.pending[pk][i] = crs.Later(parked, rec)
-			return
-		}
+	if parked, ok := p.pending[pk][hk]; ok {
+		p.pending[pk][hk] = crs.Later(parked, rec)
+		return
 	}
-	if p.pendingCount < p.maxPending {
-		p.pending[pk] = append(p.pending[pk], rec)
-		p.pendingCount++
-	} else {
+	if p.pendingCount >= p.maxPending {
 		p.counters.droppedPending++
+		return
 	}
+	bucket := p.pending[pk]
+	if bucket == nil {
+		bucket = make(map[crs.HolderKey]crs.HolderRecord)
+		p.pending[pk] = bucket
+	}
+	bucket[hk] = rec
+	p.pendingCount++
 }
 
 // Take pops the rows parked under one (cache epoch, model). The caller binds
@@ -46,12 +50,16 @@ func (p *Persister) Take(epoch, model string) []crs.HolderRecord {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	pk := pendingKey(epoch, model)
-	rows := p.pending[pk]
-	if len(rows) == 0 {
+	bucket := p.pending[pk]
+	if len(bucket) == 0 {
 		return nil
 	}
 	delete(p.pending, pk)
-	p.pendingCount -= len(rows)
+	p.pendingCount -= len(bucket)
+	rows := make([]crs.HolderRecord, 0, len(bucket))
+	for _, rec := range bucket {
+		rows = append(rows, rec)
+	}
 	return rows
 }
 
@@ -89,20 +97,16 @@ func (p *Persister) prunePending(now time.Time) {
 }
 
 func (p *Persister) prunePendingLocked(now time.Time) {
-	for pk, rows := range p.pending {
-		kept := rows[:0]
-		for _, rec := range rows {
-			if rec.ExpiresAt.After(now) {
-				kept = append(kept, rec)
-			} else {
+	for pk, bucket := range p.pending {
+		for hk, rec := range bucket {
+			if !rec.ExpiresAt.After(now) {
+				delete(bucket, hk)
 				p.counters.droppedPending++
 				p.pendingCount--
 			}
 		}
-		if len(kept) == 0 {
+		if len(bucket) == 0 {
 			delete(p.pending, pk)
-		} else {
-			p.pending[pk] = kept
 		}
 	}
 }

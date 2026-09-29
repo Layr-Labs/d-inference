@@ -87,12 +87,19 @@ type Persister struct {
 	// first. A key decided again is appended again with its new time; the
 	// earlier entry is then stale (its time no longer matches the map) and
 	// is skipped when it reaches the front.
-	recentOrder     []recentDelete
+	recentOrder []recentDelete
+	// retentionLimit bounds recentDeletes: the holder budget, but never
+	// below one flush batch, or the cap could evict a tombstone whose
+	// delete is still in flight.
+	retentionLimit  int
 	demandTouched   map[string]time.Time
 	demandPersisted map[string]time.Time
-	pending         map[string][]crs.HolderRecord
-	pendingCount    int
-	counters        counters
+	// pending holds parked rows per (cache epoch, model) bucket, indexed by
+	// durable identity so a park, a merge and a tombstone check are O(1);
+	// a disconnect parks one row per holder under the tracker lock.
+	pending      map[string]map[crs.HolderKey]crs.HolderRecord
+	pendingCount int
+	counters     counters
 	// ready is set once Restore has established the key generation (and
 	// loaded the durable copy). Until then flushes and prunes are no-ops
 	// and marks stay dirty: rows written before the generation is recorded
@@ -127,13 +134,14 @@ func New(st crs.Store, logger *slog.Logger, opts Options) *Persister {
 	}
 	return &Persister{
 		store: st, logger: logger, maxPending: maxPending, dirtyCap: 4 * maxPending,
+		retentionLimit:    max(maxPending, HolderFlushRows),
 		demandGranularity: granularity, fingerprint: opts.Fingerprint,
 		holderUpserts:   make(map[crs.HolderKey]crs.HolderRecord),
 		holderDeletes:   make(map[crs.HolderKey]time.Time),
 		recentDeletes:   make(map[crs.HolderKey]time.Time),
 		demandTouched:   make(map[string]time.Time),
 		demandPersisted: make(map[string]time.Time),
-		pending:         make(map[string][]crs.HolderRecord),
+		pending:         make(map[string]map[crs.HolderKey]crs.HolderRecord),
 	}
 }
 
@@ -151,9 +159,11 @@ func (p *Persister) MarkHolderUpsert(rec crs.HolderRecord) {
 	// is stale evidence and must neither cancel the tombstone nor reach the
 	// store. A newer receipt re-proves the row and cancels the tombstone.
 	if at, pending := p.holderDeletes[k]; pending && at.After(rec.UpdatedAt) {
+		p.counters.staleUpserts++
 		return
 	}
 	if at, ok := p.recentDeletes[k]; ok && at.After(rec.UpdatedAt) {
+		p.counters.staleUpserts++
 		return
 	}
 	delete(p.holderDeletes, k)
@@ -170,14 +180,16 @@ func (p *Persister) MarkHolderUpsert(rec crs.HolderRecord) {
 }
 
 // MarkHolderDelete schedules a row delete. Nil-safe.
-func (p *Persister) MarkHolderDelete(k crs.HolderKey) {
+func (p *Persister) MarkHolderDelete(k crs.HolderKey, decidedAt time.Time) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	delete(p.holderUpserts, k)
 	if _, present := p.holderDeletes[k]; present || len(p.holderDeletes) < p.dirtyCap {
-		p.holderDeletes[k] = time.Now()
+		// decidedAt comes from the tracker's clock, the same clock receipt
+		// times are sampled from, so Tombstoned compares like with like.
+		p.holderDeletes[k] = decidedAt
 	} else {
 		p.counters.droppedDirty++
 	}
@@ -185,8 +197,8 @@ func (p *Persister) MarkHolderDelete(k crs.HolderKey) {
 }
 
 // Tombstoned reports whether a row whose evidence dates from updatedAt is
-// outranked by a delete this run decided: one still pending, or one written
-// within the last TTL and decided after that evidence. Such a row (loaded by
+// outranked by a delete this run decided after that evidence: one still
+// pending, in flight, or written within the last TTL. Such a row (loaded by
 // a retried restore, or parked by an older session before the decision) must
 // not bind.
 func (p *Persister) Tombstoned(k crs.HolderKey, updatedAt time.Time) bool {
@@ -195,7 +207,7 @@ func (p *Persister) Tombstoned(k crs.HolderKey, updatedAt time.Time) bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if _, pending := p.holderDeletes[k]; pending {
+	if decided, pending := p.holderDeletes[k]; pending && decided.After(updatedAt) {
 		return true
 	}
 	decided, ok := p.recentDeletes[k]
@@ -309,9 +321,13 @@ func (p *Persister) requeue(b batch) {
 			p.counters.droppedDirty++
 			continue
 		}
+		// Flush always carries the decision times through; a batch without
+		// them would give a requeued delete a later decision, which rejects
+		// receipts it should not and widens the tombstone's window.
 		at, ok := b.deleteAt[k]
 		if !ok {
 			at = time.Now()
+			p.counters.droppedDirty++
 		}
 		p.holderDeletes[k] = at
 	}
@@ -379,7 +395,7 @@ func (p *Persister) Flush(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 	if err != nil {
-		p.requeue(batch{upserts: b.upserts[wrote:], deletes: b.deletes[deleted:], demand: b.demand[demand:]})
+		p.requeue(batch{upserts: b.upserts[wrote:], deletes: b.deletes[deleted:], deleteAt: b.deleteAt, demand: b.demand[demand:]})
 		p.logger.Warn("cache routing persistence flush failed; unwritten rows requeued", "error", err,
 			"upserts_left", len(b.upserts)-wrote, "deletes_left", len(b.deletes)-deleted,
 			"demand_left", len(b.demand)-demand)
@@ -473,14 +489,15 @@ func (p *Persister) rememberDeleteLocked(k crs.HolderKey, at time.Time) {
 	}
 	p.recentDeletes[k] = at
 	p.recentOrder = append(p.recentOrder, recentDelete{key: k, at: at})
-	for len(p.recentDeletes) > p.maxPending && len(p.recentOrder) > 0 {
+	limit := p.retentionLimit
+	for len(p.recentDeletes) > limit && len(p.recentOrder) > 0 {
 		oldest := p.recentOrder[0]
 		p.recentOrder = p.recentOrder[1:]
 		if cur, ok := p.recentDeletes[oldest.key]; ok && cur.Equal(oldest.at) {
 			delete(p.recentDeletes, oldest.key)
 		}
 	}
-	if len(p.recentOrder) > 2*p.maxPending {
+	if len(p.recentOrder) > 2*limit {
 		p.compactRecentOrderLocked()
 	}
 }

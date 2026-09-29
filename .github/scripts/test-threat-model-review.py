@@ -380,7 +380,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(github.posts, [])
 
     def test_base_tip_advance_before_or_during_scan_keeps_review(self):
-        for advance_on_read in (1, 2):
+        for advance_on_read in (1, 2, 3):
             with self.subTest(advance_on_read=advance_on_read):
                 github = FakeGitHub()
                 pull = github.pull
@@ -397,7 +397,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertIn(f"against base `{BASE[:12]}`", github.posts[0][1])
 
     def test_retarget_or_close_before_or_during_scan_suppresses_review(self):
-        for change_on_read in (1, 2):
+        for change_on_read in (1, 2, 3):
             for change in ("retarget", "close"):
                 with self.subTest(change_on_read=change_on_read, change=change):
                     github = FakeGitHub()
@@ -436,6 +436,55 @@ class RunnerTests(unittest.TestCase):
                 self.assertIn(FINDING["title"], github.posts[0][1])
                 self.assertNotIn("No actionable findings", github.posts[0][1])
                 self.assertNotIn("private-test-key", result + github.posts[0][1])
+
+    def test_changed_merge_base_before_or_during_collection_never_calls_models(self):
+        for change_on_read in (1, 2):
+            with self.subTest(change_on_read=change_on_read):
+                github = FakeGitHub()
+                pull = github.pull
+                def advancing():
+                    current = pull()
+                    if github.reads >= change_on_read:
+                        current["base"]["sha"] = "d" * 40
+                    return current
+                github.pull = advancing
+                github.comparison_base = lambda base, head: BASE if base == BASE else "e" * 40
+                if change_on_read == 1:
+                    github.files = lambda count: self.fail("known mismatched diffs must not be enumerated")
+                result = run(EVENT, self.root, self.env, github,
+                             lambda *args: self.fail("mismatched snapshots must not reach models"))
+                self.assertIn("before scanning", result)
+                self.assertIn("Scan incomplete", github.posts[0][1])
+
+    def test_merge_base_change_after_scan_discards_new_but_retains_prior_findings(self):
+        for partial in (False, True):
+            for unavailable in (False, True):
+                with self.subTest(partial=partial, unavailable=unavailable):
+                    github = FakeGitHub(self.prior_report())
+                    pull = github.pull
+                    def advancing():
+                        current = pull()
+                        if github.reads >= 3:
+                            current["base"]["sha"] = "d" * 40
+                        return current
+                    def comparison(base, head):
+                        if base == BASE:
+                            return BASE
+                        if unavailable:
+                            raise ReviewUnavailable("private-test-key")
+                        return "e" * 40
+                    def reviewer(threat, files, key, model):
+                        if partial and model == "bad/model":
+                            raise ReviewUnavailable("unavailable")
+                        return self.reviewer([dict(FINDING, title="Untrusted mixed snapshot")])(threat, files, key, model)
+                    github.pull, github.comparison_base = advancing, comparison
+                    env = dict(self.env, THREAT_REVIEW_MODELS="good/model,bad/model")
+                    result = run(EVENT, self.root, env, github, reviewer)
+                    self.assertIn("new findings were discarded", result)
+                    body = github.posts[0][1]
+                    self.assertIn(FINDING["title"], body)
+                    self.assertNotIn("Untrusted mixed snapshot", body)
+                    self.assertNotIn("private-test-key", result + body)
 
     def test_fork_head_is_data_and_never_a_checkout(self):
         event = copy.deepcopy(EVENT)

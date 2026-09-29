@@ -68,7 +68,7 @@ After activation, inspect **Actions → Threat Model Review (advisory)** and the
 | One model fails | Findings from the completed reviewer remain visible; the comment names the incomplete reviewer. A clean surviving review does not clear the incomplete status. |
 | Incomplete retry of the same head | Earlier findings remain visible, followed by the incomplete retry report and any new partial findings. Identical retry reports do not accumulate. If both reports exceed the comment budget, the existing comment is preserved and the retry report appears in the Actions summary. A complete rerun can replace earlier findings. |
 | PR head changed, target branch changed, or PR closed during scan | Stale output is suppressed. |
-| Target branch tip advances, with the same PR head and merge base | The review still publishes against its recorded immutable base snapshot; unrelated merges do not silently discard feedback. If the merge base changes or cannot be verified, the result explicitly reports incomplete coverage. |
+| Target branch tip advances, with the same PR head and merge base | The review still publishes against its recorded immutable base snapshot; unrelated merges do not silently discard feedback. The merge base is checked before and after live file enumeration and before publication. A changed or unverifiable comparison produces incomplete coverage; new findings from that scan are discarded, while prior same-head findings remain visible. |
 
 Legacy comments from the previous reviewer are updated in place. Findings are
 unconfirmed and visible to anyone who can read the public PR. Authors and reviewers

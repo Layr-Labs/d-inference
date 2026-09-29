@@ -1,20 +1,40 @@
 """Read immutable Git objects as data; never check out or execute PR source."""
 import base64
 import difflib
+import json
 import re
 from .client import ReviewUnavailable
+
+MAX_SOURCE_BYTES = 8_000_000
+MAX_TREE_BYTES = 8_000_000
+
+
+class SourceBudgetExceeded(ReviewUnavailable):
+    """Stop the entire collection before aggregate source memory grows further."""
 
 
 class Sources:
     def __init__(self, github):
         self.github = github
         self.trees, self.roots, self.blobs = {}, {}, {}
+        self.source_bytes = self.tree_bytes = 0
+
+    def reserve_source(self, size):
+        # Charge every use, including cached blobs: each file occurrence can
+        # generate a separate diff, evidence set and serialized review record.
+        if self.source_bytes + size > MAX_SOURCE_BYTES:
+            raise SourceBudgetExceeded("Aggregate source budget exceeded; scan incomplete")
+        self.source_bytes += size
 
     def tree(self, sha):
         if sha not in self.trees:
             result = self.github.call(f"/git/trees/{sha}")
             if result.get("truncated") or not isinstance(result.get("tree"), list):
                 raise ReviewUnavailable("Incomplete source tree")
+            size = len(json.dumps(result).encode("utf-8"))
+            if self.tree_bytes + size > MAX_TREE_BYTES:
+                raise SourceBudgetExceeded("Aggregate source-tree budget exceeded; scan incomplete")
+            self.tree_bytes += size
             self.trees[sha] = {entry["path"]: entry for entry in result["tree"]}
         return self.trees[sha]
 
@@ -46,11 +66,14 @@ class Sources:
             raw = base64.b64decode(blob["content"], validate=False)
             if len(raw) != blob["size"] or b"\0" in raw:
                 raise ReviewUnavailable("Binary or incomplete source")
+            self.reserve_source(len(raw))
             try:
-                self.blobs[sha] = raw.decode("utf-8")
+                self.blobs[sha] = (raw.decode("utf-8"), len(raw))
             except UnicodeDecodeError:
                 raise ReviewUnavailable("Non-text source requires a separate review") from None
-        return self.blobs[sha], entry["mode"]
+        else:
+            self.reserve_source(self.blobs[sha][1])
+        return self.blobs[sha][0], entry["mode"]
 
 
 def complete_files(github, files, base, head):
@@ -71,6 +94,9 @@ def complete_files(github, files, base, head):
             file["additions"] = sum(line.startswith("+") for line in lines[2:])
             file["deletions"] = sum(line.startswith("-") for line in lines[2:])
             file["source_complete"] = True
+        except SourceBudgetExceeded:
+            # A global resource limit must abort, not keep fetching later files.
+            raise
         except (ReviewUnavailable, KeyError, ValueError, TypeError):
             # Do not expose API response/exception text. Preserve any API patch,
             # but never classify this file as completely reviewed.

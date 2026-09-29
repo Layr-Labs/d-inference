@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("fixtures", Path(__file__).with_name("test-threat-model-review.py"))
 fixtures = importlib.util.module_from_spec(spec)
@@ -12,11 +13,61 @@ spec.loader.exec_module(fixtures)
 from threat_review.client import GitHub, ReviewUnavailable, ScanTimeout
 from threat_review.review import prepare, review, validate_findings
 from threat_review.report import render
-from threat_review.source import Sources, complete_files
+from threat_review.source import SourceBudgetExceeded, Sources, complete_files
 from threat_review.scan import units
 
 
 class SourceTests(unittest.TestCase):
+    def test_aggregate_source_budget_stops_before_caching_next_blob(self):
+        first_sha, second_sha = "5" * 40, "6" * 40
+        size = fixtures.source_response("/git/blobs/" + first_sha)["size"]
+        sources = Sources(fixtures.FakeGitHub())
+        with patch("threat_review.source.MAX_SOURCE_BYTES", size):
+            sources.read(fixtures.BASE, "coordinator/auth.go")
+            with self.assertRaises(SourceBudgetExceeded):
+                sources.read(fixtures.HEAD, "coordinator/auth.go")
+        self.assertIn(first_sha, sources.blobs)
+        self.assertNotIn(second_sha, sources.blobs)
+        self.assertEqual(sources.source_bytes, size)
+
+    def test_repeated_cached_source_is_charged_for_each_use(self):
+        github, calls = fixtures.FakeGitHub(), []
+        def call(path):
+            calls.append(path)
+            return fixtures.source_response(path)
+        github.call = call
+        sources = Sources(github)
+        size = fixtures.source_response("/git/blobs/" + "5" * 40)["size"]
+        with patch("threat_review.source.MAX_SOURCE_BYTES", 2 * size):
+            for _ in range(2):
+                sources.read(fixtures.BASE, "coordinator/auth.go")
+            with self.assertRaises(SourceBudgetExceeded):
+                sources.read(fixtures.BASE, "coordinator/auth.go")
+        self.assertEqual(sources.source_bytes, 2 * size)
+        self.assertEqual(len([path for path in calls if "/blobs/" in path]), 1)
+
+    def test_aggregate_tree_budget_stops_before_caching_next_tree(self):
+        sources = Sources(fixtures.FakeGitHub())
+        root = fixtures.source_response("/git/trees/" + "1" * 40)
+        size = len(json.dumps(root).encode("utf-8"))
+        with patch("threat_review.source.MAX_TREE_BYTES", size):
+            with self.assertRaises(SourceBudgetExceeded):
+                sources.read(fixtures.BASE, "coordinator/auth.go")
+        self.assertEqual(set(sources.trees), {"1" * 40})
+        self.assertEqual(sources.tree_bytes, size)
+        self.assertFalse(sources.blobs)
+
+    def test_global_budget_aborts_collection_instead_of_continuing_files(self):
+        github, calls = fixtures.FakeGitHub(), []
+        def call(path):
+            calls.append(path)
+            return fixtures.source_response(path)
+        github.call = call
+        with patch("threat_review.source.MAX_SOURCE_BYTES", 0):
+            with self.assertRaises(SourceBudgetExceeded):
+                complete_files(github, fixtures.FILES * 10, fixtures.BASE, fixtures.HEAD)
+        self.assertEqual(len([path for path in calls if "/blobs/" in path]), 1)
+
     def test_missing_api_patch_rebuilt_from_complete_immutable_sources(self):
         github = fixtures.FakeGitHub()
         files = complete_files(github, [dict(fixtures.FILES[0], patch="")], fixtures.BASE, fixtures.HEAD)

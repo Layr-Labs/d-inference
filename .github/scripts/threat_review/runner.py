@@ -4,7 +4,7 @@ from .client import GitHub, ReviewUnavailable, ScanTimeout
 from .report import MARKER, LEGACY_MARKER, COMMENT_LIMIT, render, retain_same_head_findings
 from .review import review
 from .ensemble import configured_models, review_models
-from .source import complete_files
+from .source import SourceBudgetExceeded, complete_files
 
 
 def same_revision(pull, head, base_ref):
@@ -48,6 +48,8 @@ def run(event, root, env, github=None, reviewer=review):
             findings, evidence, limits, outcomes = review_models(threat_model, files, key, models, reviewer)
             if any(outcome["status"] != "completed" for outcome in outcomes):
                 error = "Scan incomplete: one or more configured reviewers did not finish; completed reviewers' findings are shown below"
+    except SourceBudgetExceeded:
+        error = "Scan incomplete: aggregate source or source-tree budget exceeded; split the PR for complete feedback"
     except ScanTimeout:
         error = "Scan incomplete: runtime limit reached; no complete review was produced"
     except ReviewUnavailable:

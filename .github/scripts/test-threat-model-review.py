@@ -335,6 +335,15 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("Review unavailable", result)
         self.assertIn("Review not completed", github.posts[0][1])
 
+    def test_aggregate_source_limit_posts_incomplete_without_model_call(self):
+        github = FakeGitHub()
+        with patch("threat_review.source.MAX_SOURCE_BYTES", 0):
+            result = run(EVENT, self.root, self.env, github,
+                         lambda *args: self.fail("an over-budget collection must not call the model"))
+        self.assertIn("aggregate source", result)
+        self.assertIn("split the PR", github.posts[0][1])
+        self.assertNotIn("No actionable findings", github.posts[0][1])
+
     def test_outage_marks_old_comment_unreviewed_not_clean(self):
         github = FakeGitHub({"id": 17})
         def unavailable(*args):

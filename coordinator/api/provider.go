@@ -262,6 +262,11 @@ func (s *Server) providerSocketsClosing() bool {
 // caching above 64 bytes.
 const maxProviderVersionLength = 128
 
+// sessionDisconnectReasonCoordinatorShutdown stamps a session whose socket
+// the coordinator itself closed for shutdown: distinct from ws_close_<code>,
+// which means the peer sent that close frame.
+const sessionDisconnectReasonCoordinatorShutdown = "coordinator_shutdown"
+
 // sessionDisconnectReason maps a provider read-loop exit to the disconnect
 // reason recorded on its provider_sessions row. Kept to a small, fixed
 // vocabulary so the column stays aggregatable:
@@ -280,11 +285,8 @@ const maxProviderVersionLength = 128
 // The registry's own generic "disconnect" remains the reason for closes the
 // read loop did NOT observe first — in practice the stale-eviction sweep —
 // so post-fix, lingering "disconnect" rows ≈ silent drops reaped by eviction.
-// sessionDisconnectReasonCoordinatorShutdown stamps a session whose socket
-// the coordinator itself closed for shutdown: distinct from ws_close_<code>,
-// which means the peer sent that close frame.
-const sessionDisconnectReasonCoordinatorShutdown = "coordinator_shutdown"
-
+// closing marks a socket the coordinator closed for shutdown, stamped
+// coordinator_shutdown whatever status the read reported.
 func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string, closing bool) string {
 	switch {
 	case oomSuspected:

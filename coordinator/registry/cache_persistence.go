@@ -135,7 +135,7 @@ func (t *cacheRoutingTracker) persistRowAfterLossLocked(key, epoch, except strin
 		t.persister.MarkHolderUpsert(holderRecordFor(key, newest))
 		return
 	}
-	t.persister.MarkHolderDelete(crs.HolderKey{Key: key, CacheEpoch: epoch}, t.now())
+	t.persister.MarkHolderDelete(crs.HolderKey{Key: key, CacheEpoch: epoch}, now)
 }
 
 // bindPendingLocked runs under tracker.mu (and the provider's lock, in the

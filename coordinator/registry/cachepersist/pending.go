@@ -33,7 +33,7 @@ func (p *Persister) Park(rec crs.HolderRecord) {
 		merged := crs.Later(parked, rec)
 		p.pending[pk][hk] = merged
 		if !merged.ExpiresAt.Equal(parked.ExpiresAt) {
-			heap.Push(&p.parkedExpiry, parkedEntry{bucket: pk, key: hk, expiry: merged.ExpiresAt})
+			p.pushParkedExpiryLocked(hk, merged.ExpiresAt)
 		}
 		return
 	}
@@ -56,7 +56,14 @@ func (p *Persister) addParkedLocked(pk string, rec crs.HolderRecord) {
 	bucket[hk] = rec
 	p.parkedBucket[hk] = pk
 	p.pendingCount++
-	heap.Push(&p.parkedExpiry, parkedEntry{bucket: pk, key: hk, expiry: rec.ExpiresAt})
+	p.pushParkedExpiryLocked(hk, rec.ExpiresAt)
+}
+
+// pushParkedExpiryLocked records a parked row's expiry in the expiry order
+// and compacts the order when it outgrows the parked set. Called with p.mu
+// held.
+func (p *Persister) pushParkedExpiryLocked(hk crs.HolderKey, expiry time.Time) {
+	heap.Push(&p.parkedExpiry, parkedEntry{key: hk, expiry: expiry})
 	if p.parkedExpiry.Len() > 2*p.pendingCount+1024 {
 		p.compactParkedExpiryLocked()
 	}
@@ -68,7 +75,7 @@ func (p *Persister) addParkedLocked(pk string, rec crs.HolderRecord) {
 func (p *Persister) compactParkedExpiryLocked() {
 	kept := p.parkedExpiry[:0]
 	for _, e := range p.parkedExpiry {
-		if rec, ok := p.pending[e.bucket][e.key]; ok && rec.ExpiresAt.Equal(e.expiry) {
+		if rec, ok := p.pending[p.parkedBucket[e.key]][e.key]; ok && rec.ExpiresAt.Equal(e.expiry) {
 			kept = append(kept, e)
 		}
 	}
@@ -160,8 +167,7 @@ func (p *Persister) prunePending(now time.Time) {
 }
 
 func (p *Persister) prunePendingLocked(now time.Time) {
-	for p.prunePendingBatchLocked(now, 0) {
-	}
+	p.prunePendingBatchLocked(now, 0)
 }
 
 // pruneParkedBatchRows bounds the parked rows one prune lock hold examines.
@@ -183,11 +189,12 @@ func (p *Persister) prunePendingBatchLocked(now time.Time, limit int) bool {
 		}
 		examined++
 		heap.Pop(&p.parkedExpiry)
-		rec, ok := p.pending[top.bucket][top.key]
-		if !ok || !rec.ExpiresAt.Equal(top.expiry) {
+		pk, parked := p.parkedBucket[top.key]
+		rec, ok := p.pending[pk][top.key]
+		if !parked || !ok || !rec.ExpiresAt.Equal(top.expiry) {
 			continue // stale: taken, dropped, or merged to a later expiry
 		}
-		p.removeParkedLocked(top.bucket, top.key)
+		p.removeParkedLocked(pk, top.key)
 		p.counters.droppedPending++
 	}
 	return false

@@ -284,9 +284,9 @@ type recentDelete struct {
 	at  time.Time
 }
 
-// parkedEntry is one parked row's position in the expiry order.
+// parkedEntry is one parked row's position in the expiry order; the bucket
+// is resolved through parkedBucket when the entry surfaces.
 type parkedEntry struct {
-	bucket string
 	key    crs.HolderKey
 	expiry time.Time
 }

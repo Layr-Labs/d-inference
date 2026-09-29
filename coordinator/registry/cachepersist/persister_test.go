@@ -884,14 +884,22 @@ func TestPrunePendingPopsOnlyExpiredRowsInChunks(t *testing.T) {
 	for i := 0; i < live; i++ {
 		p.Park(rec(fmt.Sprintf("l%05d", i), "e", now, time.Minute))
 	}
+	// Extending a live row's expiry by a merge leaves its earlier entry stale.
+	extended := rec("l00000", "e", now, 2*time.Minute)
+	p.Park(extended)
 	// A parked row taken before the prune leaves a stale heap entry.
 	taken, _ := p.Take("e", "model", 1)
 	if len(taken) != 1 {
 		t.Fatal("take one row")
 	}
-	// Extending a live row's expiry by a merge leaves its earlier entry stale.
-	extended := rec("l00000", "e", now, 2*time.Minute)
-	p.Park(extended)
+	// One lock hold examines at most its chunk and reports the rest.
+	p.mu.Lock()
+	more := p.prunePendingBatchLocked(now, 5)
+	dropped := p.counters.droppedPending
+	p.mu.Unlock()
+	if !more || dropped > 5 {
+		t.Fatalf("a bounded chunk must stop early and report more: more=%v dropped=%d", more, dropped)
+	}
 	p.Prune(context.Background(), now, time.Minute) // not ready: parked prune only
 	s := p.Status()
 	wantLive := live

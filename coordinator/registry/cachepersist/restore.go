@@ -1,7 +1,6 @@
 package cachepersist
 
 import (
-	"container/heap"
 	"context"
 	"time"
 
@@ -108,7 +107,7 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 			merged := crs.Later(parked, rec)
 			p.pending[pk][hk] = merged
 			if !merged.ExpiresAt.Equal(parked.ExpiresAt) {
-				heap.Push(&p.parkedExpiry, parkedEntry{bucket: pk, key: hk, expiry: merged.ExpiresAt})
+				p.pushParkedExpiryLocked(hk, merged.ExpiresAt)
 			}
 			restored++
 			continue

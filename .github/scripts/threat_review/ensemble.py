@@ -2,7 +2,7 @@
 import json
 import re
 from .client import ReviewUnavailable, ScanTimeout
-from .review import DEFAULT_MODEL, prepare, review
+from .review import DEFAULT_MODEL, FindingCapacityReached, prepare, review
 
 DEFAULT_MODELS = (DEFAULT_MODEL, "openai/gpt-6-astra")
 
@@ -20,8 +20,12 @@ def review_models(threat_model, files, key, models, reviewer=review):
     _, evidence, limits = prepare(threat_model, files)
     unique, outcomes = {}, []
     for index, model in enumerate(models):
+        status = "completed"
         try:
             findings, _, _ = reviewer(threat_model, files, key, model)
+        except FindingCapacityReached as error:
+            findings = error.findings
+            status = "incomplete (finding capacity reached)"
         except ScanTimeout:
             # Preserve completed reviewers even when the global deadline expires.
             outcomes.extend({"model": pending, "status": "incomplete (runtime limit)"}
@@ -31,7 +35,7 @@ def review_models(threat_model, files, key, models, reviewer=review):
             # Never expose exception text: it can contain prompts or credentials.
             outcomes.append({"model": model, "status": "incomplete (review unavailable)"})
             continue
-        outcomes.append({"model": model, "status": "completed"})
+        outcomes.append({"model": model, "status": status})
         for finding in findings:
             canonical = dict(finding, threat_ids=sorted(set(finding["threat_ids"])))
             identity = json.dumps(canonical, sort_keys=True)

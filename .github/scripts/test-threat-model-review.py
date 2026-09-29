@@ -363,6 +363,34 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("Review unavailable", result)
         self.assertIn("Review not completed", github.posts[0][1])
 
+    def test_invalid_model_configuration_posts_incomplete_and_retains_same_diff(self):
+        for value in ("a/one,", "a/one,a/one", "a/one,@private-test-key"):
+            with self.subTest(value=value):
+                github = FakeGitHub(self.prior_report())
+                result = run(EVENT, self.root, dict(self.env, THREAT_REVIEW_MODELS=value), github,
+                             lambda *args: self.fail("invalid configuration must not call models"))
+                self.assertEqual(len(github.posts), 1)
+                self.assertIn("Review unavailable", result)
+                self.assertIn("Retry incomplete", github.posts[0][1])
+                self.assertIn(FINDING["title"], github.posts[0][1])
+                self.assertNotIn("private-test-key", result + github.posts[0][1])
+
+    def test_oversized_new_diff_report_keeps_subset_and_full_summary(self):
+        findings = [dict(FINDING, title=f"Finding {i:02d}", detail="*" * 1600) for i in range(31)]
+        for prior in (None, self.prior_report("c" * 40)):
+            with self.subTest(prior=bool(prior)):
+                github = FakeGitHub(prior)
+                result = run(EVENT, self.root, self.env, github, self.reviewer(findings))
+                self.assertEqual(len(github.posts), 1)
+                body = github.posts[0][1]
+                self.assertLessEqual(len(body), 60000)
+                self.assertIn("Finding 00", body)
+                self.assertIn("Actions summary", body)
+                self.assertNotIn("No actionable findings", body)
+                for finding in findings:
+                    self.assertIn(finding["title"], result)
+                self.assertNotIn(FINDING["title"], body)
+
     def test_aggregate_source_limit_posts_incomplete_without_model_call(self):
         github = FakeGitHub()
         with patch("threat_review.source.MAX_SOURCE_BYTES", 0):

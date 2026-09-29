@@ -66,6 +66,28 @@ class EnsembleTests(unittest.TestCase):
                 self.assertEqual(sum(o["status"] == "completed" for o in outcomes), 1)
                 self.assertNotIn("synthetic-key", json.dumps(outcomes))
 
+    def test_finding_cap_preserves_validated_advice_and_marks_reviewer_incomplete(self):
+        for capped_stage in ("source", "integration"):
+            with self.subTest(stage=capped_stage):
+                capped = [dict(fixtures.FINDING, title=f"Finding {i:02d}") for i in range(32)]
+                def transport(url, key, body):
+                    stage = json.loads(body["messages"][1]["content"])["stage"]
+                    findings = capped if body["model"] == DEFAULT_MODELS[0] and stage == capped_stage else []
+                    return fixtures.completion(findings, body=body)
+                findings, _, _, outcomes = self.run_models(transport)
+                self.assertEqual(len(findings), 32)
+                self.assertEqual({f["title"] for f in findings}, {f["title"] for f in capped})
+                self.assertTrue(all(f["models"] == [DEFAULT_MODELS[0]] for f in findings))
+                self.assertIn("finding capacity", outcomes[0]["status"])
+                self.assertEqual(outcomes[1]["status"], "completed")
+
+    def test_capped_invalid_response_does_not_publish_unvalidated_findings(self):
+        capped = [dict(fixtures.FINDING, title=f"Finding {i}") for i in range(32)]
+        capped[-1]["line"] = 999999
+        findings, _, _, outcomes = self.run_models(lambda url, key, body: fixtures.completion(capped, body=body))
+        self.assertEqual(findings, [])
+        self.assertTrue(all(o["status"] != "completed" for o in outcomes))
+
     def test_deadline_preserves_completed_review_and_skips_remaining_calls(self):
         for expire_at in (0, 1):
             calls = []

@@ -32,8 +32,7 @@ def run(event, root, env, github=None, reviewer=review):
             or not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (head, base))
             or type(number) is not int or number <= 0):
         raise ReviewUnavailable("Invalid PR event identity")
-    models = configured_models(env)
-    model = ", ".join(models)
+    model = "unconfigured"
     github = github or GitHub(repository, number, env["GH_TOKEN"])
     if pr.get("draft"):
         return "Skipped: draft PR."
@@ -49,6 +48,8 @@ def run(event, root, env, github=None, reviewer=review):
         verify_diff(github, current, base, head, diff_base)
         existing = github.existing_comment((MARKER, LEGACY_MARKER))
         comment_loaded = True
+        models = configured_models(env)
+        model = ", ".join(models)
         key = env.get("OPENROUTER_API_KEY")
         if not key:
             raise ReviewUnavailable("OPENROUTER_API_KEY is not configured")
@@ -109,6 +110,7 @@ def publish_result(github, repository, head, base, base_ref, model, findings,
             diff_base = None
             outcomes = [{"model": item["model"], "status": "incomplete (diff snapshot unverified)"}
                         for item in outcomes]
+    overflow_report = None
     # Clean first scans stay quiet; incomplete scans always notify the author.
     if findings or existing or error or limits:
         body = render(repository, head, base, model, findings, evidence, limits, error, diff_base, outcomes)
@@ -119,11 +121,19 @@ def publish_result(github, repository, head, base, base_ref, model, findings,
                         "The retry exceeds the combined comment capacity; its report follows here.\n\n" + body)
             body = retained
         if len(body) > COMMENT_LIMIT:
-            error = "Scan incomplete: findings exceed the PR comment capacity; split the PR for complete feedback"
-            body = render(repository, head, base, model, [], {}, [], error, diff_base, outcomes)
+            overflow_report = body
+            capacity = "Scan incomplete: findings exceed the PR comment capacity; a fitting subset is shown below and the full report is in this workflow run's Actions summary. Split the PR for complete feedback"
+            error = f"{error}; {capacity}" if error else capacity
+            shown = []
+            body = render(repository, head, base, model, shown, evidence, [], error, diff_base, outcomes)
+            for finding in findings:
+                candidate = render(repository, head, base, model, shown + [finding], evidence, [], error, diff_base, outcomes)
+                if len(candidate) <= COMMENT_LIMIT:
+                    shown.append(finding)
+                    body = candidate
         github.publish(existing, body)
     if error:
-        return f"Review unavailable (non-blocking): {error}."
+        return f"Review unavailable (non-blocking): {error}." + ("\n\n" + overflow_report if overflow_report else "")
     if limits:
         return f"Scan incomplete (non-blocking): {len(limits)} file(s) lack complete text source."
     return f"Full PR scan completed: {len(findings)} finding(s); {len(limits)} file(s) with limited coverage; {len(outcomes)} reviewer(s) completed."

@@ -45,6 +45,13 @@ Return only the JSON object required by the response schema. Never output secret
 """
 
 
+class FindingCapacityReached(ReviewUnavailable):
+    """Validated findings remain useful even when coverage hits the output cap."""
+    def __init__(self, findings):
+        super().__init__("Finding capacity reached; scan incomplete")
+        self.findings = findings
+
+
 def patch_lines(patch):
     """Lines actually visible in a patch, on either side (including deletions)."""
     result = {"base": set(), "head": set()}
@@ -136,7 +143,7 @@ def model_call(message, evidence, threat_model, key, model, transport, schema=SC
             raise ReviewUnavailable("Model returned an invalid scan object")
         findings = validate_findings({"findings": result["findings"]}, evidence, threat_model)
         if len(findings) == 32:
-            raise ReviewUnavailable("Finding capacity reached; scan incomplete")
+            raise FindingCapacityReached(findings)
     except (KeyError, IndexError, TypeError, ValueError):
         raise ReviewUnavailable("Model returned an invalid review response") from None
     return result

@@ -133,8 +133,11 @@ units contain up to 32,000 characters split at whole lines; a single longer line
 requires manual review. Batches have an 80,000-character encoded-unit budget.
 Non-UTF-8/binary files, Git LFS objects and submodule contents require manual review and are named
 in the comment. A request permits 16,384 output tokens; incomplete responses or a
-full 32-finding response are treated as incomplete. A report exceeding the single
-comment's 60,000-character budget asks the author to split the PR. The process has
+full 32-finding response are treated as incomplete; validated findings at the cap
+remain visible with reviewer attribution. A report exceeding the single comment's
+60,000-character budget shows a fitting subset, preserves the full report in the
+Actions summary and asks the author to split the PR. Invalid model configuration
+also produces an incomplete PR notice. The process has
 a shared 50-minute scan deadline within a 60-minute workflow timeout. Models run
 sequentially, so a first scan that uses the whole budget leaves the second incomplete.
 If that one-shot deadline interrupts initial identity/comment lookup, final

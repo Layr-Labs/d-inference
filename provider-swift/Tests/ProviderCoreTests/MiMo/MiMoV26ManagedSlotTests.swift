@@ -359,12 +359,35 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
     func testBF16AsymmetricActualInternalAndSharedTargetRingCharges() async throws {
         try await assertActualGeometry(float32: false, mtp: false)
     }
-    func testFP32AsymmetricActualInternalAndSharedTargetRingCharges() async throws {
-        try await assertActualGeometry(float32: true, mtp: false)
+    /// Coverage correction: the strict serving-load contract is BF16-only.
+    /// These cases previously attempted positive FP32 native geometry through
+    /// that contract and failed at preflight, before any geometry was observed.
+    /// FP32 byte arithmetic remains covered by the pure admission geometry tests;
+    /// refusing this fixture must not be reported as native FP32 execution.
+    private func assertFP32PreflightRefusesBeforeOwnership(mtp: Bool) throws {
+        let root = try fixture(float32: true, asymmetric: true)
+        let intent = try MiMoV26ServingLoad.preparation(mode: mtp ? .on : .off,
+            externalPath: nil, environment: ["DARKBLOOM_CBV2_MTP": "1"])
+        XCTAssertEqual(intent.status.configured, mtp)
+        XCTAssertFalse(intent.status.active)
+        XCTAssertNil(intent.artifact)
+        XCTAssertTrue(registries.isEmpty)
+        var inspected: MiMoV26ServingLoad?
+        do {
+            inspected = try MiMoV26ServingLoad.inspect(directory: root)
+            XCTFail("FP32 must be refused before a serving load can be claimed")
+        } catch {
+            XCTAssertEqual(error as? MiMoV26LoadFootprintError, .unsupportedProfile)
+        }
+        XCTAssertNil(inspected)
+        XCTAssertTrue(registries.isEmpty, "Preflight must not create a managed owner")
+        // No claim, native load, slot factory, engine or assistant is reached.
     }
-    func testFP32AsymmetricActualBoundedHeadAddsFixedChargeExactlyOnce() async throws {
-        XCTAssertTrue(CBv2MTPConfig.envEnabled)
-        try await assertActualGeometry(float32: true, mtp: true)
+    func testFP32AsymmetricTargetOnlyIntentRefusesBeforeManagedSlotOwnership() throws {
+        try assertFP32PreflightRefusesBeforeOwnership(mtp: false)
+    }
+    func testFP32AsymmetricMTPIntentRefusesBeforeManagedSlotOwnership() throws {
+        try assertFP32PreflightRefusesBeforeOwnership(mtp: true)
     }
 
     func testForeignPreparedOwnerAndForeignBudgetRefuseBeforeNativeAssembly() async throws {

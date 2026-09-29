@@ -710,14 +710,29 @@ final class MiMoV26ServingLoadTests: XCTestCase {
             probedDTypes: [.float16, .float16, .float16], maximumContextTokens: 1024)
         XCTAssertEqual(fp16.elementBytes, 2)
         XCTAssertEqual(fp16.targetWindowLogicalBytes, bf16.targetWindowLogicalBytes)
-        // Metadata-only mixed-resolution discrimination. The current native
-        // MiMo graph enforces uniform KV; this is not a mixed native-run claim.
+        // Pure component arithmetic, not a serving-load or native-run claim.
+        // The strict root serving contract is BF16-only; the geometry component
+        // must still conservatively price FP32 and mixed dtype observations.
         let tables: [[DType]] = [[.bfloat16, .float32, .float32], [.bfloat16, .float16, .float16], [.float32, .float32, .float32]]
         for types in tables {
             let value = try MiMoV26AdmissionGeometry(layerKinds: kinds, probedDTypes: types, maximumContextTokens: 1024)
             XCTAssertEqual(value.elementBytes, 4)
             XCTAssertEqual(value.fullKVBytesPerToken, 2560)
             XCTAssertEqual(value.targetWindowLogicalBytes, 657_920)
+            XCTAssertEqual(value.internalAdmissionConfig.fixedBytesPerRequest, 0)
+            XCTAssertEqual(try value.sharedFixedRequestBytes(resolvedNonTargetFixedBytes: 73), 657_993)
+            let actualCost = 2560 * 258 + 657_920
+            let admission = AdmissionV2(layerKinds: kinds, bytesCapacity: actualCost,
+                config: value.internalAdmissionConfig)
+            for n in [1, 256, 257, 258, 1024] {
+                let expected = 2560 * n + 657_920
+                XCTAssertEqual(try value.logicalTargetBytes(positiveTokens: n), expected)
+                XCTAssertEqual(admission.allocatedBytes(forTokens: n), expected)
+            }
+            XCTAssertGreaterThan(admission.admissibleBytesCapacity, actualCost / 2)
+            XCTAssertLessThan(admission.admissibleBytesCapacity, actualCost)
+            XCTAssertFalse(admission.canEverFit(promptTokens: 257, maxTokens: 1))
+            XCTAssertEqual(admission.bytesReserved, 0)
         }
     }
 
@@ -800,31 +815,33 @@ final class MiMoV26ServingLoadTests: XCTestCase {
         try await exerciseRealTargetAdmission(float32: false)
     }
 
-    func testRealFP32AsymmetricFactoryAdmissionAndBridgeAcrossWindowAndContext() async throws {
-        try await exerciseRealTargetAdmission(float32: true)
+    /// Coverage correction: former positive FP32 factory/bridge cases could
+    /// never reach their native assertions under the BF16-only load contract.
+    /// Keep real preflight refusal explicit; pure FP32 admission math above is
+    /// not evidence that an FP32 serving model was loaded or executed.
+    private func assertFP32PreflightRefusesBeforeOwnership(asymmetric: Bool) throws {
+        let root = try fixture(float32: true, asymmetric: asymmetric)
+        XCTAssertTrue(nativeOwners.isEmpty)
+        XCTAssertTrue(metadataRegistries.isEmpty)
+        var inspected: MiMoV26ServingLoad?
+        do {
+            inspected = try MiMoV26ServingLoad.inspect(directory: root)
+            XCTFail("FP32 must be refused before a serving load can be claimed")
+        } catch {
+            XCTAssertEqual(error as? MiMoV26LoadFootprintError, .unsupportedProfile)
+        }
+        XCTAssertNil(inspected)
+        XCTAssertTrue(nativeOwners.isEmpty, "Preflight must not create a native owner")
+        XCTAssertTrue(metadataRegistries.isEmpty, "Preflight must not create a load registry")
+        // No claim, native load, bridge, engine or capacity submission is reached.
     }
 
-    func testRealFP32FactoryRejectsCapacityBetweenOldTwoByteAndActualCostsBeforeWrites() async throws {
-        let slot = try await admissionSlot(float32: true, mtp: false)
-        slot.engine.loopForTesting.onEngineQueueSync {
-            slot.engine.loopForTesting.suspendStepExecutionAtCountForTesting = 0
-        }
-        let total = 9, oldTwoByteCost = (32 + 64) * 2 * (total + 8)
-        let actualCost = (32 + 64) * 4 * (total + 8)
-        slot.engine.updateKVBytesCapacity(actualCost)
-        let admission = slot.engine.admissionForTesting
-        XCTAssertGreaterThan(admission.admissibleBytesCapacity, oldTwoByteCost)
-        XCTAssertLessThan(admission.admissibleBytesCapacity, actualCost)
-        XCTAssertFalse(admission.canEverFit(promptTokens: 8, maxTokens: 1))
-        XCTAssertThrowsError(try slot.engine.submit(.init(id: .init(801),
-            promptTokens: Array(repeating: 12, count: 8), sampling: .init(temperature: 0),
-            maxTokens: 1, prefixCacheEnabled: false)))
-        XCTAssertEqual(slot.engine.stepCount, 0)
-        XCTAssertEqual(admission.bytesReserved, 0)
-        slot.engine.loopForTesting.onEngineQueueSync {
-            slot.engine.loopForTesting.suspendStepExecutionAtCountForTesting = nil
-        }
-        try await slot.close()
+    func testFP32ProfileRefusesBeforeNativeServingOwnership() throws {
+        try assertFP32PreflightRefusesBeforeOwnership(asymmetric: false)
+    }
+
+    func testFP32AsymmetricProfileRefusesBeforeNativeServingOwnership() throws {
+        try assertFP32PreflightRefusesBeforeOwnership(asymmetric: true)
     }
 
     private func exerciseRealSharedRingCharge(mtp: Bool) async throws {

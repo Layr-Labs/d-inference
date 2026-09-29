@@ -1,6 +1,6 @@
 # Configure advisory threat-model review
 
-> Last updated: 2026-09-29 · commit `2bdf80bea`
+> Last updated: 2026-09-29 · commit `0404aac3e`
 
 The OpenRouter reviewer scans every PR change against the entire canonical threat
 model and posts actionable findings in one updatable public PR comment. It includes

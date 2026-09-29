@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-29 · commit `3c12f9025`
+> Last updated: 2026-09-29 · commit `d2a7b643`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -79,6 +79,26 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--no-auth` | flag | `false` | Disable the local bearer-token check |
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Drain a running provider before replacing its process/configuration |
 | `--force` | flag | `false` | Explicitly permit cancellation if the old provider cannot drain |
+
+Both the interactive and non-TTY pickers fetch `/v1/models/capacity` and
+`/v1/pricing` from the same coordinator once, each GET with a 3 s per-request
+idle timeout (`URLRequest.timeoutInterval`); a failed, non-2xx, or slow fetch
+falls back to the size-only order with no labels exactly. On success, each row
+gets a demand label from `pickerDemandSignal` (`active_requests / max(1,
+warm_providers + cold_providers) * output_price`) and `pickerDemandTiers`
+(`provider-swift/Sources/darkbloom/StartCommand+PickerDemand.swift`):
+`demand: high` (at least 50% of the top signal among the shown rows), `demand:
+medium` (at least 10%), `demand: low` (above 0, or 0 without zero traffic),
+`no traffic right now` (`active_requests == 0 && running_providers == 0`,
+regardless of price), or `demand: unknown` (model absent from
+`/v1/models/capacity`). Within each section (downloaded, then not downloaded),
+rows sort by signal descending, then size descending; unknown-demand rows sort
+after every known row in their section. The pre-select
+(`StartCommand+TUIPicker.swift`) is unchanged — it still lands on the first
+downloaded row that fits, which is the highest-demand downloaded model that
+fits. `darkbloom switch` opens the same picker (`SwitchCommand.swift` calls
+`Start().interactiveCatalogPicker` when no `--model`/`--all` flag is given), so
+the same demand labels and sort apply there too.
 
 Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware

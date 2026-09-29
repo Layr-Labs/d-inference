@@ -2,7 +2,8 @@ import Foundation
 
 /// One sampler exists only while a loaded bridge owns reviewed deadline
 /// evidence. Admission reads the cached state; it never starts or awaits an OS
-/// process. Qualification and runtime both observe thermal state every 500ms.
+/// process. Qualification and runtime both observe thermal state every 500ms;
+/// this revision admits reviewed evidence only on AC power in Automatic mode.
 final class DeadlinePostureMonitor: @unchecked Sendable {
     static let shared = DeadlinePostureMonitor()
     let state = DeadlinePostureState()

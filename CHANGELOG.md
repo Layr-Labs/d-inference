@@ -4,7 +4,7 @@
 
 - Share verified model/template prompt counts across preflight, retries and provider reconciliation while preserving the original deadline, completion limits and billing usage. Keep unsupported counts explicitly uncertain.
 - Add workload-bounded measured deadline calibration with exact MTP identity and conservative fallback for stale, unmatched or incomplete evidence. Preserve measured idle/thermal/power prerequisites without delaying requests. Correlate whole-Mac work through pre-submit and retirement before pricing contention.
-- Enable the measured cold, isolated 4k–12k Qwen3.8 MTP deadline cell on matching M5 Max hardware. Its frozen bound covers all 100 independent validation trials; unsupported hardware/workloads retain conservative admission, and concurrency/chunk defaults stay unchanged.
+- Enable the measured cold, isolated 4k–12k Qwen3.8 MTP deadline cell on matching M5 Max hardware in Automatic mode on AC power. Its frozen bound covers all 100 independent validation trials; unsupported hardware/workloads retain conservative admission, and concurrency/chunk defaults stay unchanged.
 - Add production-path qualification receipts with actual MTP and individual mixed-prefill step timings; profile promotion remains tied to reviewed hardware and held-out prediction evidence.
 
 ## Unreleased — SSD cache write budget

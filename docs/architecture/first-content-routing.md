@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-28 · commit `21d762c4a`
+> Last updated: 2026-09-28 · commit `ad42fb0ce`
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -114,7 +114,8 @@ hardware; its [evidence report](../reports/2026-09-28-calibrated-admission-quali
 records the qualified domain and unchanged serving defaults.
 
 A cooled profile additionally requires its measured whole-Mac idle interval,
-stable nominal posture and Automatic power mode. The provider advertises the
+stable nominal posture and Automatic power mode on AC. This deadline-policy
+revision cannot transfer AC measurements to Battery Automatic. The provider advertises the
 reference only while these prerequisites hold. The coordinator requires
 explicit nominal thermal state and `low_power_mode=false`, and invalidates
 an old idle reference after locally tracked work, load transitions or reported

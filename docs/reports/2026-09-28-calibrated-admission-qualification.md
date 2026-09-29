@@ -1,6 +1,6 @@
 # Qwen3.8 calibrated admission qualification
 
-> Last updated: 2026-09-28 · commit `21d762c4a`
+> Last updated: 2026-09-28 · commit `ad42fb0ce`
 
 The initial dedicated M5 Max screen completed real Qwen3.8 inference with active
 MTP. It is **screening evidence, not a qualified serving profile**: the initial
@@ -13,6 +13,10 @@ bound and no posture/runtime failures. The closest observation retained
 1,047.625 ms of coverage margin. Authoritative lifecycle checks passed on the isolated observer correction.
 Strict evaluation qualified the narrow cooled deadline profile; final-build
 admission proof remains outstanding, and no concurrency/chunk default is certified.
+This first deadline-policy revision is AC-only: both measured cohorts used AC
+Automatic, and Battery Automatic remains ineligible even while older AC rates
+are fresh. A regression verifies source changes invalidate captured atomic guards
+and that 30 seconds on battery cannot restore eligibility.
 
 ## Hardware and artifact
 

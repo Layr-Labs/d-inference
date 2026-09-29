@@ -27,8 +27,10 @@ model attribution. Findings and incomplete scans never block merging or request 
    reviewer when the plural variable is absent. With neither variable set, the
    default is Opus 5.5 plus Astra. No separate OpenAI key is needed.
 3. Land the workflow through the reviewed PR process. Opening, updating, reopening,
-   or marking a PR ready triggers a scan. Drafts are skipped. The workflow must be
-   present on the base branch before it can run.
+   marking a PR ready, or retargeting it into `master`/`main` triggers a scan.
+   The `edited` event runs only when `changes.base.ref.from` is present; title/body
+   edits and drafts are skipped before entering the job's cancellation group.
+   The workflow must be present on the base branch before it can run.
 4. Keep **Threat Model Review (advisory)** out of required status checks. No separate
    GitHub PAT is needed: the built-in token has contents read and PR write access.
 5. Set an OpenRouter key spend limit and monitor usage. Full scans make multiple

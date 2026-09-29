@@ -507,6 +507,13 @@ class TransportTests(unittest.TestCase):
 
 
 class WorkflowBoundaryTests(unittest.TestCase):
+    def test_retarget_events_are_gated_before_review_concurrency(self):
+        source = (Path(__file__).resolve().parents[1] / "workflows/threat-model-review.yml").read_text()
+        self.assertRegex(source, r"types: \[[^\n\]]*\bedited\b")
+        self.assertIn("github.event.action != 'edited' || github.event.changes.base.ref.from != ''", source)
+        self.assertNotIn("\nconcurrency:", source)
+        self.assertIn("\n    concurrency:\n", source)
+
     def test_secret_bearing_workflow_uses_only_trusted_base_code(self):
         source = (Path(__file__).resolve().parents[1] / "workflows/threat-model-review.yml").read_text()
         self.assertIn("pull_request_target:", source)

@@ -814,3 +814,46 @@ func TestRestoreRemovesFutureDatedRows(t *testing.T) {
 		t.Fatalf("this run's receipt must replace the future-dated row: %+v", rows)
 	}
 }
+
+// A delete decision discards the parked copy it outranks at once, and a row
+// parked after the decision with older evidence is refused, so a parked
+// copy never depends on the bounded tombstone retention to stay unbound.
+func TestDeleteDecisionDiscardsOutrankedParkedCopy(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	p := New(mem, nil, Options{MaxPending: 10})
+	restoreForTest(t, p, time.Now())
+	now := time.Now()
+	older := rec("a", "e", now.Add(-time.Second), time.Minute)
+	p.Park(older)
+	if s := p.Status(); s.PendingHolders != 1 {
+		t.Fatalf("parked: %+v", s)
+	}
+	// Park, then decide: the parked copy goes with the decision.
+	p.MarkHolderDelete(older.HolderKey(), now)
+	if s := p.Status(); s.PendingHolders != 0 || s.DroppedPending != 1 {
+		t.Fatalf("a decision must discard the parked copy it outranks: %+v", s)
+	}
+	// Decide, then park older evidence: refused. Newer evidence: kept.
+	p.Park(older)
+	if s := p.Status(); s.PendingHolders != 0 || s.DroppedPending != 2 {
+		t.Fatalf("older evidence must not park behind a decision: %+v", s)
+	}
+	newer := rec("a", "e", now.Add(time.Second), time.Minute)
+	p.Park(newer)
+	if s := p.Status(); s.PendingHolders != 1 {
+		t.Fatalf("newer evidence parks: %+v", s)
+	}
+	// Even once the retention forgets the decision, nothing stale is parked.
+	p.retentionLimit = 1
+	p.mu.Lock()
+	p.rememberDeleteLocked(crs.HolderKey{Key: "b", CacheEpoch: "e"}, now.Add(2*time.Second))
+	p.rememberDeleteLocked(crs.HolderKey{Key: "c", CacheEpoch: "e"}, now.Add(3*time.Second))
+	p.mu.Unlock()
+	rows, _ := p.Take("e", "model", 0)
+	if len(rows) != 1 || !rows[0].UpdatedAt.Equal(newer.UpdatedAt) {
+		t.Fatalf("only the newer copy remains parked: %+v", rows)
+	}
+	if p.HasPending() {
+		t.Fatal("take must clear the identity index too")
+	}
+}

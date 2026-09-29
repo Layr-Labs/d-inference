@@ -18,6 +18,10 @@ import (
 // today's setting nor crowds a valid row out of the cap), longest-lived first
 // up to maxHolders, and parked until the registry binds them to a provider
 // whose capabilities match.
+// restorePruneBudget bounds the prune Restore runs before loading, inside the
+// registry's restore timeout.
+const restorePruneBudget = 10 * time.Second
+
 func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duration, maxHolders, maxDemand int) ([]crs.DemandRecord, error) {
 	if p == nil {
 		return nil, nil
@@ -45,9 +49,15 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 	// go before the load: a future-dated row is quarantined by the load, and
 	// left in place its timestamp would outrank every receipt this run
 	// writes for the same key until the clock caught up.
-	if _, err := p.store.PruneCacheRoutingState(ctx, now, ttl, now.Add(-ttl)); err != nil {
-		return nil, err
+	// Bounded and non-fatal: after an outage longer than the TTL the whole
+	// table is expired and the prune could otherwise eat the restore's
+	// budget; the loads quarantine what it did not reach and the periodic
+	// prune catches up.
+	pruneCtx, cancelPrune := context.WithTimeout(ctx, restorePruneBudget)
+	if _, err := p.store.PruneCacheRoutingState(pruneCtx, now, ttl, now.Add(-ttl)); err != nil {
+		p.logger.Warn("cache routing persistence: boot prune did not finish; the periodic prune catches up", "error", err)
 	}
+	cancelPrune()
 	demand, err := p.store.LoadCacheDemand(ctx, now.Add(-ttl), now, maxDemand)
 	if err != nil {
 		return nil, err
@@ -71,13 +81,9 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		for pk, bucket := range p.pending {
 			for hk := range bucket {
 				if _, dead := p.holderDeletes[hk]; dead {
-					delete(bucket, hk)
+					p.removeParkedLocked(pk, hk)
 					p.counters.droppedPending++
-					p.pendingCount--
 				}
-			}
-			if len(bucket) == 0 {
-				delete(p.pending, pk)
 			}
 		}
 	}
@@ -106,13 +112,7 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 			p.counters.droppedPending++
 			continue
 		}
-		bucket := p.pending[pk]
-		if bucket == nil {
-			bucket = make(map[crs.HolderKey]crs.HolderRecord)
-			p.pending[pk] = bucket
-		}
-		bucket[hk] = rec
-		p.pendingCount++
+		p.addParkedLocked(pk, rec)
 		restored++
 	}
 	p.counters.restoredHolders = restored

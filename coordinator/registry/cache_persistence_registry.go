@@ -121,8 +121,9 @@ func (r *Registry) restoreCacheRoutingState(ctx context.Context, persister *cach
 
 // bindRestoredHolders binds parked rows for one provider's capabilities in
 // the provider.mu → tracker.mu order the receipt path uses. It is called from
-// UpdatePrefixCacheSnapshot (provider.mu already held), from Register, and
-// for every connected provider after a (retried) restore.
+// UpdatePrefixCacheSnapshot (provider.mu held for that first chunk), from
+// bindChunksWhileOwned at registration, on the heartbeat path and for every
+// connected provider after a (retried) restore.
 func (t *cacheRoutingTracker) bindRestoredHolders(provider *Provider, capabilities map[string]protocol.PrefixCacheV2Capability) (remaining bool) {
 	if t == nil || len(capabilities) == 0 {
 		return false

@@ -97,7 +97,11 @@ type Persister struct {
 	// pending holds parked rows per (cache epoch, model) bucket, indexed by
 	// durable identity so a park, a merge and a tombstone check are O(1);
 	// a disconnect parks one row per holder under the tracker lock.
-	pending      map[string]map[crs.HolderKey]crs.HolderRecord
+	pending map[string]map[crs.HolderKey]crs.HolderRecord
+	// parkedBucket maps each parked row's durable identity to its bucket, so
+	// a delete decision can discard the parked copy it outranks at once
+	// (MarkHolderDelete) without knowing the model.
+	parkedBucket map[crs.HolderKey]string
 	pendingCount int
 	counters     counters
 	// ready is set once Restore has established the key generation (and
@@ -142,6 +146,7 @@ func New(st crs.Store, logger *slog.Logger, opts Options) *Persister {
 		demandTouched:   make(map[string]time.Time),
 		demandPersisted: make(map[string]time.Time),
 		pending:         make(map[string]map[crs.HolderKey]crs.HolderRecord),
+		parkedBucket:    make(map[crs.HolderKey]string),
 	}
 }
 
@@ -193,7 +198,34 @@ func (p *Persister) MarkHolderDelete(k crs.HolderKey, decidedAt time.Time) {
 	} else {
 		p.counters.droppedDirty++
 	}
+	// A parked copy this decision outranks is dropped now rather than left
+	// for a bind-time check: the tombstone retention is bounded on its own,
+	// so a tombstone may be forgotten while the parked copy remains.
+	p.dropParkedIfOutrankedLocked(k, decidedAt)
 	p.mu.Unlock()
+}
+
+// dropParkedIfOutrankedLocked discards the parked copy of a row whose
+// evidence is not newer than a delete decided at decidedAt. Called with p.mu
+// held.
+func (p *Persister) dropParkedIfOutrankedLocked(k crs.HolderKey, decidedAt time.Time) {
+	pk, ok := p.parkedBucket[k]
+	if !ok {
+		return
+	}
+	if rec, ok := p.pending[pk][k]; ok && !rec.UpdatedAt.After(decidedAt) {
+		p.removeParkedLocked(pk, k)
+		p.counters.droppedPending++
+	}
+}
+
+// tombstonedLocked is Tombstoned with p.mu held.
+func (p *Persister) tombstonedLocked(k crs.HolderKey, updatedAt time.Time) bool {
+	if decided, pending := p.holderDeletes[k]; pending && decided.After(updatedAt) {
+		return true
+	}
+	decided, ok := p.recentDeletes[k]
+	return ok && decided.After(updatedAt)
 }
 
 // Tombstoned reports whether a row whose evidence dates from updatedAt is
@@ -207,11 +239,7 @@ func (p *Persister) Tombstoned(k crs.HolderKey, updatedAt time.Time) bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if decided, pending := p.holderDeletes[k]; pending && decided.After(updatedAt) {
-		return true
-	}
-	decided, ok := p.recentDeletes[k]
-	return ok && decided.After(updatedAt)
+	return p.tombstonedLocked(k, updatedAt)
 }
 
 // MarkDemand records keys the demand index just observed, skipping keys whose

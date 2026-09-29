@@ -28,21 +28,24 @@ func clonePrefixCacheStatuses(
 	return out
 }
 
-// UpdatePrefixCacheSnapshot atomically applies the resulting authoritative
-// capability and optional observability state from one heartbeat. Strict
-// capability errors abort the update. Optional status is sanitized and
-// reconciled against the same resulting capability map before either becomes
-// visible, so /v1/cache/status cannot observe a transient contradiction.
+// UpdatePrefixCacheSnapshot applies the resulting authoritative capability
+// and optional observability state from one heartbeat. The apply itself is
+// atomic under the registry read lock and the provider lock (Strict
+// capability errors abort it; optional status is sanitized and reconciled
+// against the same resulting capability map before either becomes visible,
+// so /v1/cache/status cannot observe a transient contradiction) and binds
+// one chunk of parked rows; any remaining chunks bind afterwards outside
+// those locks, chunk by chunk, with ownership re-checked.
 func (r *Registry) UpdatePrefixCacheSnapshot(
 	providerID string,
-	present bool,
+	replaceCapabilities bool,
 	version int,
 	capabilities []protocol.PrefixCacheV2Capability,
 	memoryCapabilities *[]protocol.PrefixCacheV2Capability,
 	statuses *[]protocol.PrefixCacheModelStatus,
 	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
 ) (bool, error) {
-	changed, provider, remaining, err := r.applyPrefixCacheSnapshot(providerID, present, version, capabilities, memoryCapabilities, statuses, outcomes)
+	changed, provider, remaining, err := r.applyPrefixCacheSnapshot(providerID, replaceCapabilities, version, capabilities, memoryCapabilities, statuses, outcomes)
 	if err == nil && remaining && provider != nil {
 		// The snapshot bound one chunk of parked rows under its locks (the
 		// heartbeat path); the rest binds here, chunk by chunk, with the

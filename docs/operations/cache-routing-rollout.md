@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-29 · commit `fa8eb08f3`
+> Last updated: 2026-09-29 · commit `7f377633c`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -182,8 +182,11 @@ the same request from the same account remains in or out of the cohort.
    `EIGENINFERENCE_CACHE_MASTER_KEY` empties the durable copy on the next boot
    (`lifecycle.persistence.key_rotated: true`): persisted keys are derived from
    the master key, so a rotation is a full index rebuild, as before persistence.
-   Rotate the key with a non-overlapping restart (stop the old container
-   before the new one boots): rows the old container still flushes after the
+   Both containers of a swap share the VM's clock, which the prune's
+   one-minute skew allowance assumes: two instances whose clocks differ by
+   more than that would prune each other's freshest rows. Rotate the key
+   with a non-overlapping restart (stop the old container before the new
+   one boots): rows the old container still flushes after the
    reset would be stamped into the new generation and restored on any boot
    inside their TTL, as holders no request can reach.
 

@@ -21,6 +21,11 @@ func (p *Persister) Park(rec crs.HolderRecord) {
 	defer p.mu.Unlock()
 	pk := pendingKey(rec.CacheEpoch, rec.ModelID)
 	hk := rec.HolderKey()
+	// Evidence a delete already decided outranks is not worth parking.
+	if p.tombstonedLocked(hk, rec.UpdatedAt) {
+		p.counters.droppedPending++
+		return
+	}
 	// Overlapping sessions of one machine park the same durable row more
 	// than once; one parked copy per (key, epoch), the newer evidence.
 	if parked, ok := p.pending[pk][hk]; ok {
@@ -31,13 +36,33 @@ func (p *Persister) Park(rec crs.HolderRecord) {
 		p.counters.droppedPending++
 		return
 	}
+	p.addParkedLocked(pk, rec)
+}
+
+// addParkedLocked inserts a parked row into its bucket and the identity
+// index. Called with p.mu held; the caller has checked the cap.
+func (p *Persister) addParkedLocked(pk string, rec crs.HolderRecord) {
 	bucket := p.pending[pk]
 	if bucket == nil {
 		bucket = make(map[crs.HolderKey]crs.HolderRecord)
 		p.pending[pk] = bucket
 	}
+	hk := rec.HolderKey()
 	bucket[hk] = rec
+	p.parkedBucket[hk] = pk
 	p.pendingCount++
+}
+
+// removeParkedLocked removes one parked row from its bucket and the identity
+// index, dropping the bucket when it empties. Called with p.mu held.
+func (p *Persister) removeParkedLocked(pk string, hk crs.HolderKey) {
+	bucket := p.pending[pk]
+	delete(bucket, hk)
+	delete(p.parkedBucket, hk)
+	p.pendingCount--
+	if len(bucket) == 0 {
+		delete(p.pending, pk)
+	}
 }
 
 // Take pops up to limit rows parked under one (cache epoch, model) (limit
@@ -67,11 +92,9 @@ func (p *Persister) Take(epoch, model string, limit int) ([]crs.HolderRecord, bo
 			break
 		}
 		rows = append(rows, rec)
-		delete(bucket, hk)
+		p.removeParkedLocked(pk, hk)
 	}
-	p.pendingCount -= len(rows)
-	if len(bucket) == 0 {
-		delete(p.pending, pk)
+	if len(p.pending[pk]) == 0 {
 		return rows, false
 	}
 	return rows, true
@@ -114,13 +137,9 @@ func (p *Persister) prunePendingLocked(now time.Time) {
 	for pk, bucket := range p.pending {
 		for hk, rec := range bucket {
 			if !rec.ExpiresAt.After(now) {
-				delete(bucket, hk)
+				p.removeParkedLocked(pk, hk)
 				p.counters.droppedPending++
-				p.pendingCount--
 			}
-		}
-		if len(bucket) == 0 {
-			delete(p.pending, pk)
 		}
 	}
 }

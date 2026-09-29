@@ -263,8 +263,9 @@ func (s *Server) providerSocketsClosing() bool {
 const maxProviderVersionLength = 128
 
 // sessionDisconnectReasonCoordinatorShutdown stamps a session whose socket
-// the coordinator itself closed for shutdown: distinct from ws_close_<code>,
-// which means the peer sent that close frame.
+// the coordinator itself closed for shutdown, or whose registration was
+// processed after that close began: distinct from ws_close_<code>, which
+// means the peer sent that close frame.
 const sessionDisconnectReasonCoordinatorShutdown = "coordinator_shutdown"
 
 // sessionDisconnectReason maps a provider read-loop exit to the disconnect
@@ -344,6 +345,22 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 		s.logger.Warn("failed to close provider session with reason",
 			"provider_id", providerID, "reason", reason, "error", err)
 	}
+}
+
+// closeSessionOffline flips the provider offline and stamps its session row
+// with reason, ahead of the deferred registry.Disconnect (first close wins
+// requires that order). Offline first — StatusOffline fails every
+// routing-eligibility gate — so a slow store write can never leave a dead
+// provider selectable. Untrusted stays untrusted: it is equally unroutable,
+// and overwriting it would make Disconnect's status-gated online/model
+// decrements run a second time after markUntrusted already decremented.
+func (s *Server) closeSessionOffline(providerID string, provider *registry.Provider, reason string) {
+	provider.Mu().Lock()
+	if provider.Status != registry.StatusUntrusted {
+		provider.Status = registry.StatusOffline
+	}
+	provider.Mu().Unlock()
+	s.closeSessionWithReason(providerID, reason)
 }
 
 // providerReadLoop reads messages from the provider WebSocket and dispatches
@@ -470,20 +487,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			//     already ran (stale eviction, duplicate-serial kick) and owns
 			//     the reason for that path.
 			if provider != nil && ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
-				// The socket is dead, but the deferred registry.Disconnect
-				// only runs after the stamp lands (first close wins requires
-				// that order). Flip the provider offline first — StatusOffline
-				// fails every routing-eligibility gate — so a slow store write
-				// can never leave a dead provider selectable. Untrusted stays
-				// untrusted: it is equally unroutable, and overwriting it would
-				// make Disconnect's status-gated online/model decrements run a
-				// second time after markUntrusted already decremented.
-				provider.Mu().Lock()
-				if provider.Status != registry.StatusUntrusted {
-					provider.Status = registry.StatusOffline
-				}
-				provider.Mu().Unlock()
-				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected, readReason, closing))
+				s.closeSessionOffline(providerID, provider, sessionDisconnectReason(closeStatus, oomSuspected, readReason, closing))
 			}
 			return
 		}
@@ -556,9 +560,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				// Registered after shutdown began closing sockets; the
 				// socket is being closed, so leave before reading anything,
 				// with the same restart-neutral classification a closed
-				// socket gets.
+				// socket gets. The session row this registration opens is
+				// stamped coordinator_shutdown here, as the read-error path
+				// stamps its row: the deferred registry teardown only knows
+				// the generic reason. The open is asynchronous, and a close
+				// that lands first records the closed row itself (first
+				// close wins), so the stamp holds either way.
 				peerCloseStatus = websocket.StatusGoingAway
 				s.logger.Info("provider registered during shutdown; closing", "provider_id", providerID)
+				if ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
+					s.closeSessionOffline(providerID, provider, sessionDisconnectReasonCoordinatorShutdown)
+				}
 				return
 			}
 			if s.appAttestIdentityCandidate(regMsg, authenticatedAccountID) {

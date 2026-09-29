@@ -201,9 +201,10 @@ func (r *Registry) applyPrefixCacheSnapshot(
 		// are deleted as mismatches (bindRowsLocked); sweeping the bucket
 		// here would discard them unread. (A parked row for a key this
 		// session itself held live under the old capability is still
-		// dropped: unless another live session holds the key, the
-		// invalidation above is a delete decision that outranks the older
-		// parked evidence, whatever its identity.) Only the SSD
+		// dropped: unless another live session still holds the key under
+		// the same epoch, the invalidation above is a delete decision that
+		// outranks the older parked evidence, whatever its identity.) Only
+		// the SSD
 		// capability counts: changedModels also names models whose
 		// resident-tier capability moved, and parked rows are SSD evidence
 		// under the SSD epoch (the live invalidation above stays per model

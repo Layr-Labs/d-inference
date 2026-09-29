@@ -1397,8 +1397,8 @@ func TestCacheRoutingPersistenceCapabilityChangeSettlesLargeBucket(t *testing.T)
 // of the old capability are settled as mismatches at bind rather than swept
 // away with them. Parked rows for keys the changing session itself held live
 // under the old capability are the exception: unless another live session
-// holds the key, their invalidation is a delete decision that outranks the
-// older parked evidence, whatever its identity.
+// still holds the key under the same epoch, their invalidation is a delete
+// decision that outranks the older parked evidence, whatever its identity.
 func TestCacheRoutingPersistenceSameEpochChangeBindsNewCapabilityRows(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
@@ -1512,7 +1512,7 @@ func TestCacheRoutingPersistenceStaleDropYieldsToRepublishedEpoch(t *testing.T) 
 	removeTestProvider(r, p.ID)
 	r.cacheRouting.invalidateProviderEvidence(p.ID, cacheHolderRemovalDisconnect, true)
 	p.mu.Lock()
-	p.PrefixCacheV2Models["model"] = other // the dead session's last apply left A behind
+	p.PrefixCacheV2Models["model"] = other // the dead session's last apply moved off A
 	p.mu.Unlock()
 	if before := r.CacheRoutingPersistenceStatus(); before.PendingHolders != parked {
 		t.Fatalf("the disconnect must park every bound row: %+v", before)

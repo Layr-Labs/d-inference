@@ -136,6 +136,70 @@ func shortCtx(t *testing.T, d time.Duration) context.Context {
 	return ctx
 }
 
+// A registration processed after shutdown began closing sockets is torn
+// down with its session row stamped coordinator_shutdown, like a session
+// whose socket the close reached, not with the registry's generic reason.
+func TestLateRegistrationDuringShutdownIsStampedCoordinatorShutdown(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.CloseNow() })
+	waitFor(t, 5*time.Second, "socket tracked", func() bool {
+		srv.providerAdmit.Lock()
+		defer srv.providerAdmit.Unlock()
+		return len(srv.providerConns) == 1
+	})
+	// Admitted before the close began; its register frame is processed
+	// after.
+	srv.providerAdmit.Lock()
+	srv.providersClosing = true
+	srv.providerAdmit.Unlock()
+	regMsg := protocol.RegisterMessage{
+		Type:     protocol.TypeRegister,
+		Hardware: protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:   []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:  "mlx-swift",
+	}
+	regData, _ := json.Marshal(regMsg)
+	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+		t.Fatalf("write register: %v", err)
+	}
+	waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer waitCancel()
+	if !srv.WaitProviderHandlers(waitCtx) {
+		t.Fatal("the late registration's handler did not return")
+	}
+	if ids := reg.ProviderIDs(); len(ids) != 0 {
+		t.Fatalf("provider still registered after the shutdown exit: %v", ids)
+	}
+	var row store.ProviderSession
+	waitFor(t, 5*time.Second, "session row closed", func() bool {
+		rows, err := st.ListProviderSessionsOverlapping(context.Background(),
+			time.Now().Add(-time.Hour), time.Now().Add(time.Hour), time.Hour)
+		if err != nil {
+			t.Fatalf("list provider sessions: %v", err)
+		}
+		if len(rows) != 1 || rows[0].DisconnectedAt == nil {
+			return false
+		}
+		row = rows[0]
+		return true
+	})
+	if row.DisconnectReason != sessionDisconnectReasonCoordinatorShutdown {
+		t.Fatalf("late registration stamped %q, want %q", row.DisconnectReason, sessionDisconnectReasonCoordinatorShutdown)
+	}
+}
+
 // A socket the coordinator closed for shutdown reads as going-away, the
 // restart-neutral classification, not as a drop.
 func TestShutdownCloseStatusIsRestartNeutral(t *testing.T) {

@@ -80,6 +80,23 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `--timeout <seconds>` | integer, 0–3600 | `600` | Drain a running provider before replacing its process/configuration |
 | `--force` | flag | `false` | Explicitly permit cancellation if the old provider cannot drain |
 
+Both the interactive and non-TTY pickers fetch `/v1/models/capacity` and
+`/v1/pricing` from the same coordinator once, each GET bounded by a ~3 s
+timeout; a failed, non-2xx, or slow fetch falls back to today's picker exactly
+(size order, no labels). On success, each row gets a demand label from
+`pickerDemandSignal` (`active_requests / max(1, warm_providers +
+cold_providers) * output_price`) and `pickerDemandTiers`
+(`provider-swift/Sources/darkbloom/StartCommand+PickerDemand.swift`):
+`demand: high` (at least 50% of the top signal among the shown rows), `demand:
+medium` (at least 10%), `demand: low` (above 0, or 0 without zero traffic),
+`no traffic right now` (`active_requests == 0 && running_providers == 0`,
+regardless of price), or `demand: unknown` (model absent from
+`/v1/models/capacity`). Within each section (downloaded, then not downloaded),
+rows sort by signal descending, then size descending; unknown-demand rows sort
+after every known row in their section. The pre-select
+(`StartCommand+TUIPicker.swift`) is unchanged — it still lands on the first
+downloaded row that fits, which is now the highest-demand fitting model.
+
 Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within

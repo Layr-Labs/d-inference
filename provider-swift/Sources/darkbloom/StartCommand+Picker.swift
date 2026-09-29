@@ -25,6 +25,7 @@ extension Start {
         let minRamGb: Int?
         let downloaded: Bool
         var resumable: Bool = false
+        var demandTier: PickerDemandTier? = nil
     }
 
     struct PickerCatalogRow {
@@ -50,12 +51,21 @@ extension Start {
     /// - A not-yet-downloaded model whose declared `min_ram_gb` exceeds this box
     ///   is hidden; a downloaded one is always shown (with a won't-fit note in
     ///   the renderer).
+    /// - `demand` is an optional live capacity/pricing snapshot (see
+    ///   `StartCommand+PickerDemand.swift`). When nil (no fetch attempted, or
+    ///   the fetch failed/timed out), sort and output are byte-identical to
+    ///   omitting the parameter -- today's downloaded-first/larger-first order,
+    ///   no `demandTier` on any entry. When present, each entry's `demandTier`
+    ///   is filled in and the sort becomes downloaded-first, then within each
+    ///   section by demand signal descending, then size descending; a model
+    ///   missing from the snapshot sorts after every known model in its section.
     static func buildPickerEntries(
         rows: [PickerCatalogRow],
         downloadedIDs: Set<String>,
         localMemoryByID: [String: Double],
         resumableIDs: Set<String>,
-        memoryGb: Double
+        memoryGb: Double,
+        demand: PickerDemandSnapshot? = nil
     ) -> [PickerEntry] {
         var entries: [PickerEntry] = rows.compactMap { row in
             let model = row.model
@@ -74,9 +84,32 @@ extension Start {
                 resumable: !isDownloaded && resumableIDs.contains(model.id)
             )
         }
-        // Downloaded first, then larger first.
+
+        guard let demand else {
+            // Downloaded first, then larger first.
+            entries.sort { a, b in
+                if a.downloaded != b.downloaded { return a.downloaded }
+                return a.sizeGb > b.sizeGb
+            }
+            return entries
+        }
+
+        let ids = entries.map(\.id)
+        let tierByID = pickerDemandTiers(modelIDs: ids, snapshot: demand)
+        let signalByID = pickerDemandSignals(modelIDs: ids, snapshot: demand)
+        for i in entries.indices {
+            entries[i].demandTier = tierByID[entries[i].id]
+        }
+        // Downloaded first; within each section, signal desc (known models
+        // before unknown), then size desc.
         entries.sort { a, b in
             if a.downloaded != b.downloaded { return a.downloaded }
+            let aKnown = signalByID[a.id] != nil
+            let bKnown = signalByID[b.id] != nil
+            if aKnown != bKnown { return aKnown }
+            let sigA = signalByID[a.id] ?? 0
+            let sigB = signalByID[b.id] ?? 0
+            if sigA != sigB { return sigA > sigB }
             return a.sizeGb > b.sizeGb
         }
         return entries
@@ -286,12 +319,18 @@ extension Start {
             return ModelDownloader.hasResumableStaging(modelID: row.model.id, r2Prefix: prefix) ? row.model.id : nil
         })
 
+        // Rank the picker by what each model earns per Mac right now. A
+        // slow/unreachable coordinator falls back to nil, which reproduces
+        // today's picker exactly (StartCommand+PickerDemand.swift).
+        let demand = await Start.fetchPickerDemandSnapshot(coordinatorURL: coordinatorURL)
+
         let entries = Start.buildPickerEntries(
             rows: catalog,
             downloadedIDs: downloadedIDs,
             localMemoryByID: localMemoryByID,
             resumableIDs: resumableIDs,
-            memoryGb: memoryGb
+            memoryGb: memoryGb,
+            demand: demand
         )
 
         guard !entries.isEmpty else {
@@ -375,7 +414,8 @@ extension Start {
             // Parity with the TUI: a downloaded-but-too-big model is shown but
             // flagged so a non-interactive caller knows it can't be served here.
             let fitStr = Start.modelFitsBudget(sizeGb: entry.sizeGb, memoryGb: memoryGb) ? "" : "  [won't fit]"
-            print("    [\(i + 1)] \(entry.displayName)  \(sizeStr)\(ramStr)  [\(status)]\(fitStr)")
+            let demandStr = entry.demandTier.map { "  [\(Start.pickerDemandLabel($0))]" } ?? ""
+            print("    [\(i + 1)] \(entry.displayName)  \(sizeStr)\(ramStr)  [\(status)]\(fitStr)\(demandStr)")
         }
         print()
         print("  Select models (comma-separated numbers, or 'all'): ", terminator: "")

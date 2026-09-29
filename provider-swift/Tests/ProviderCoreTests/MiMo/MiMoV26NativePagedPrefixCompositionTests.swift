@@ -14,6 +14,23 @@ import XCTest
 /// remain unchanged. Native selectors also exercise actual cache-factory
 /// refusal and uncached reuse; no receipt, M credit or full-model result is fabricated.
 final class MiMoV26NativePagedPrefixCompositionTests: XCTestCase {
+    private static func bindTestRuntimeMetallib() throws {
+        // XCTest's executable is the system host, not this test bundle. Use
+        // the source-matched resource staged for this actual configuration.
+        let resources = try XCTUnwrap(Bundle(for: Self.self).resourceURL)
+        let library = resources
+            .appendingPathComponent("mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib")
+            .standardizedFileURL.resolvingSymlinksInPath()
+        guard try library.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
+        else { throw NativeFixtureError.requiredFixture }
+        let expected = try XCTUnwrap(hashFile(atPath: library.path))
+        guard bindRuntimeMetallibForMLX(from: library) == expected,
+              let bound = runtimeMetallibBindingInfo(), bound.sourceURL == library,
+              bound.digest == expected, metallibHash() == expected else {
+            throw NativeFixtureError.requiredFixture
+        }
+    }
+
     func testNativeTargetPagingServesAfterActualNoStoreCacheRefusal() async throws {
         try await noStoreFallback(mtp: false)
     }
@@ -59,7 +76,7 @@ final class MiMoV26NativePagedPrefixCompositionTests: XCTestCase {
         ]
         XCTAssertTrue(SSDPrefixCacheFactory.forceEphemeralKey(environment: environment))
         XCTAssertEqual(SSDPrefixCacheFactory.cacheRootDirectory(environment: environment).path, refusedRoot.path)
-        guard bindRuntimeMetallibForMLX() != nil else { throw NativeFixtureError.requiredFixture }
+        try Self.bindTestRuntimeMetallib()
         let weightHash = try XCTUnwrap(WeightHasher.computeHash(snapshotDir: root, modelID: modelID))
         let budget = GlobalKVCacheBudget(configReserveBytes: 4 << 30)
         let registry = MiMoV26NativeLoadRegistry()
@@ -278,6 +295,7 @@ final class MiMoV26NativePagedPrefixCompositionTests: XCTestCase {
                 throw NativeFixtureError.requiredFixture
             }
         }
+        try Self.bindTestRuntimeMetallib()
         // Production budget reader/reserves and genuine claim/load. This test
         // never clears or fabricates an engine/process charge.
         let budget = GlobalKVCacheBudget(configReserveBytes: 4 << 30)

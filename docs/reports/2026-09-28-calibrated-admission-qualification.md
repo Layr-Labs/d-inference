@@ -1,6 +1,6 @@
 # Qwen3.8 calibrated admission qualification
 
-> Last updated: 2026-09-28 · commit `d89ef42be`
+> Last updated: 2026-09-28 · commit `78889be8c`
 
 The initial dedicated M5 Max screen completed real Qwen3.8 inference with active
 MTP. It is **screening evidence, not a qualified serving profile**: the initial
@@ -165,9 +165,15 @@ Exported confidence lower bounds are rounded downward to 12 decimal places.
 This conservative rounding avoids an amd64/arm64 last-bit difference at the
 strict binomial threshold; it changes no observations, fitted coefficients,
 shape domains or acceptance threshold. Raw counts and the evidence digest
-remain unchanged. The collector now verifies actual weight/configuration bytes
-before and after counting, and a fresh verification run is required before
-retaining these reviewed records on the final candidate.
+remain unchanged. The collector verifies actual weight/configuration bytes
+before and after counting. A fresh 9,000-body run through that collector passed
+in 1,660.671 seconds, with both actual artifact hashes matching the target.
+Its entire numeric receipt is byte-for-byte identical to the committed receipt,
+SHA-256 `333807e1899620390559a0464f45792ef8360c77a4dfbd9e68d00552d5b762f8`.
+Re-evaluation still qualifies all six groups. The
+[verification record](evidence/2026-09-28-calibrated-admission/prompt-count-artifact-reverification.json)
+and [actual test log](evidence/2026-09-28-calibrated-admission/prompt-count-artifact-reverification-tests.txt)
+retain that check; its duration is functional-test runtime, not inference timing.
 All six records are promoted unchanged in `coordinator/api/promptwork/catalog/`.
 Regression tests reproduce every held-out covered count and exercise all 6,000
 training shapes through the production estimator.

@@ -6,7 +6,7 @@ import re
 from .calibration import evaluate_calibration
 from .check_receipts import check_errors
 from .calibration_statistics import percentile
-from .matrix import CHECKS, IDENTITY_FIELDS, digest, identity_errors, positive
+from .matrix import IDENTITY_FIELDS, digest, identity_errors, positive
 
 RUNTIME_FIELDS = ("configured_context_tokens", "effective_max_concurrency", "prefill_chunk_size",
                   "max_concurrent_partial_prefills", "solo_prefill_stripe_tokens", "mixed_prefill_token_cap")

@@ -1391,6 +1391,48 @@ func TestCacheRoutingPersistenceCapabilityChangeSettlesLargeBucket(t *testing.T)
 	}
 }
 
+// An overflow wakes the persistence loop: the reset lands well inside the
+// flush tick rather than at the next one.
+func TestCacheRoutingPersistenceOverflowWakesTheLoop(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, _ := exactTestRegistry(t)
+	r.cacheRouting.mu.Lock()
+	r.cacheRouting.maxEntries = 8 // the persister's dirty cap follows: 32
+	r.cacheRouting.mu.Unlock()
+	startPersistence(t, r, st)
+	r.mu.RLock()
+	persister := r.cachePersister
+	r.mu.RUnlock()
+	now := time.Now()
+	condemned := crs.HolderRecord{
+		Key: "condemned", CacheEpoch: "e", Tier: "ssd", ModelID: "model",
+		AnchorTokenCount: 1024, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(time.Minute),
+	}
+	persister.MarkHolderUpsert(condemned)
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 1 {
+		t.Fatalf("the row must be stored before the overflow: %+v", rows)
+	}
+	// The fillers fill the backlog; the row's own decision overflows it and
+	// is released with the rest, so only the reset removes the row.
+	for i := 0; i < 32; i++ {
+		persister.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+	}
+	persister.MarkHolderDelete(condemned.HolderKey(), now.Add(time.Second))
+	deadline := time.Now().Add(3 * time.Second) // the flush tick is 5 s
+	for time.Now().Before(deadline) && len(storedHolders(t, st)) != 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if rows := storedHolders(t, st); len(rows) != 0 {
+		t.Fatalf("the overflow must wake the loop and reset the durable copy inside the tick: %+v", rows)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.OverflowResets != 1 {
+		t.Fatalf("the overflow must be counted: %+v", s)
+	}
+}
+
 // A capability change that keeps its cache epoch (here the ready-boundary
 // mode moves) leaves the bucket to the bind: rows an overlapping session
 // parked under the new capability bind, across more than one chunk, and rows

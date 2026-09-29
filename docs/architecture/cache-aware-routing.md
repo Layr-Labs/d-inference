@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `ec9f709e6`
+> Last updated: 2026-09-29 · commit `344c42a1f`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -818,10 +818,14 @@ back are operator procedures, kept in the runbook
    reset a crash or a shutdown deadline interrupted is completed by the
    next boot rather than read as complete, and upserts drained before an
    overflow are not requeued after it. A drain never proceeds while a reset
-   is pending (the check and the drain share one lock hold), and an
+   is pending (the check and the drain share one lock hold), a flush that
+   sees an overflow after its drain stops writing upserts and resets
+   instead (the remainder is requeued, its upserts dropped), and an
    overflow wakes the flush loop so the reset's marker lands at the next
-   flush rather than the next tick; a crash between the overflow and that
-   marker is the residual and leaves the condemned rows restorable once.
+   flush rather than the next tick (after whatever flush or prune the loop
+   has in flight, once the store is reachable); a crash between the
+   overflow and that marker is the residual and leaves the condemned rows
+   restorable once.
    Rows are fenced by cache-key generation: the
    store keeps a non-secret HMAC fingerprint of the master key and every
    key-derivation version (`cache_routing_meta`), and a boot under a

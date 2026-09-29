@@ -1217,20 +1217,57 @@ func TestRestoreCompletesAnInterruptedReset(t *testing.T) {
 	}
 }
 
-// upsertHookStore fails the first upsert batch after running a hook during
-// the failing call: the window in which the batch is in flight.
+// upsertHookStore runs a hook during the first upsert batch (the window in
+// which the batch is in flight) and then fails it, or lets it through when
+// passThrough is set.
 type upsertHookStore struct {
 	crs.Store
 	onFirstUpsert func()
+	passThrough   bool
 }
 
 func (s *upsertHookStore) UpsertCacheHolders(ctx context.Context, rows []crs.HolderRecord) error {
 	if hook := s.onFirstUpsert; hook != nil {
 		s.onFirstUpsert = nil
 		hook()
-		return fmt.Errorf("store unavailable")
+		if !s.passThrough {
+			return fmt.Errorf("store unavailable")
+		}
 	}
 	return s.Store.UpsertCacheHolders(ctx, rows)
+}
+
+// An overflow that lands after the drain, while the batch is being written,
+// stops the flush before its next upsert chunk: the remainder is requeued
+// with its upserts dropped, and the reset runs in that same flush.
+func TestFlushStopsWritingUpsertsWhenTheBacklogOverflowsAfterTheDrain(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	hook := &upsertHookStore{Store: mem, passThrough: true}
+	st := &resetCountingStore{Store: hook}
+	ctx := context.Background()
+	now := time.Now()
+	p := New(st, nil, Options{MaxPending: 200}) // dirty cap 800: room for two chunks of upserts
+	restoreForTest(t, p, now)
+	const n = crs.BatchRows + 1 // two chunks
+	for i := 0; i < n; i++ {
+		p.MarkHolderUpsert(rec(fmt.Sprintf("u%04d", i), "e", now, time.Minute))
+	}
+	hook.onFirstUpsert = func() {
+		// During the first chunk's write: the backlog overflows.
+		for i := 0; i <= p.dirtyCap; i++ {
+			p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+		}
+	}
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	pending, queued := p.resetPending, len(p.holderUpserts)
+	p.mu.Unlock()
+	rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0)
+	if s := p.Status(); len(rows) != 0 || st.resets != 1 || pending || queued != 0 || s.DroppedDirty != n-crs.BatchRows || s.FlushErrors != 0 {
+		t.Fatalf("an overflow after the drain must stop the writes, drop the remainder and reset in the same flush: rows=%d resets=%d pending=%v queued=%d %+v", len(rows), st.resets, pending, queued, s)
+	}
 }
 
 // An upsert drained before a backlog overflow is not requeued after it: its
@@ -1333,6 +1370,43 @@ func TestDrainRefusesWhileAResetIsPending(t *testing.T) {
 	}
 	if b, pending := p.drainUnlessReset(); pending || len(b.upserts) != 0 {
 		t.Fatalf("after the reset the flush must have drained and written the batch: pending=%v upserts=%d", pending, len(b.upserts))
+	}
+}
+
+// An overflow that lands between a flush's reset check and its drain is
+// reset by that same flush: the drain refuses, the reset runs, and only
+// then is anything written.
+func TestFlushResetsWhenTheBacklogOverflowsAfterTheCheck(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	st := &resetCountingStore{Store: mem}
+	ctx := context.Background()
+	now := time.Now()
+	p := New(st, nil, Options{MaxPending: 2}) // dirty cap 8
+	restoreForTest(t, p, now)
+	condemned := rec("condemned", "e", now, time.Minute)
+	p.MarkHolderUpsert(condemned)
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.beforeDrain = func() {
+		p.beforeDrain = nil
+		// The row's decision is released by the overflow the fillers cause.
+		p.MarkHolderDelete(condemned.HolderKey(), now.Add(time.Second))
+		for i := 0; i < p.dirtyCap; i++ {
+			p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+		}
+	}
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	pending := p.resetPending
+	p.mu.Unlock()
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 || st.resets != 1 || pending {
+		t.Fatalf("an overflow after the check must be reset by the same flush: rows=%+v resets=%d pending=%v", rows, st.resets, pending)
+	}
+	if fp, _ := mem.CacheRoutingKeyFingerprint(ctx); fp != "" {
+		t.Fatalf("the reset must have recorded the generation: %q", fp)
 	}
 }
 

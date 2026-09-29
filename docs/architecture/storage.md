@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-29 · commit `ec9f709e6`
+> Last updated: 2026-09-29 · commit `344c42a1f`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own

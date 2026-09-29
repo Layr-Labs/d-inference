@@ -49,24 +49,28 @@ Qwen3.8 text/tool shapes; they grant no hardware scheduling authority.
    profile limits. Engine timing records actual batch rows; a constructed
    scheduler cap alone is insufficient evidence of an actual forward width.
 
-   For an inline Qwen target with active production MTP, build the provider
-   tests in release mode, stage the matching metallib, acquire an exclusive
-   test-machine lease, then run the supervised collector:
+   For an inline Qwen target with active production MTP, commit the candidate,
+   acquire an exclusive test-machine lease, create a clean release build record,
+   then run the supervised collector:
 
    ```bash
-   cd provider-swift
-   DARKBLOOM_SERVING_QUALIFICATION_BUILD=1 swift build -c release --build-tests \
-     -Xswiftc -enable-testing
-   cd ..
-   ./scripts/stage-test-metallib.sh provider-swift/.build/arm64-apple-macosx/release
+   python3 scripts/build-serving-qualification.py --output /tmp/qualification-build
    python3 scripts/run-serving-qualification.py \
+     --build-receipt /tmp/qualification-build/build-receipt.json \
      --model-path /path/to/verified/snapshot --model-id EXACT_CATALOG_ID \
      --artifact-sha256 VERIFIED_WEIGHT_HASH --exclusive-gpu-lease LEASE_REFERENCE \
      --prompt-lengths 4096,16384,32768 --width 1 --iterations 20 \
      --output-tokens 128 --partition baseline
    ```
 
-   This command uses prebuilt tests, never downloads weights, and writes a
+   The builder first runs `swift package clean`, then builds the isolated release
+   tests, stages the matching metallib and runs the executable-identity test.
+   Its record binds the unchanged committed source, SDK, toolchain, command log
+   and resulting binary/metallib hashes. Reuse that record across cohorts only
+   while those exact bytes and identities remain unchanged. A stale test bundle
+   cannot acquire the identity of a newer checkout through the runner.
+
+   The collector uses those verified prebuilt tests, never downloads weights, and writes a
    private temporary run directory containing receipts, logs, hashes and a
    summary. Its hard timeout terminates only its own process group. Add
    `--tool-history`, `--reused`, `--stagger-ms`, and each
@@ -81,6 +85,11 @@ Qwen3.8 text/tool shapes; they grant no hardware scheduling authority.
    compilers and known inference/test runners. Detection terminates only its
    own workload and preserves an ineligible receipt. Idle CI listeners are
    allowed; unrelated work is never stopped.
+   Each trial also samples thermal and Low Power state before, during and after
+   execution. The nominal-only cohort declares a minimum 20-second cooldown,
+   five seconds of stable nominal state, and a bounded 180-second recovery wait.
+   A posture failure invalidates the cohort; samples are never dropped to repair
+   its coverage. Cooldown policy and actual observations remain in the receipt.
 
    The explicit qualification build selects only `ServingQualificationTests`;
    production targets and release optimization remain unchanged. The
@@ -137,11 +146,11 @@ are **not hardware evidence**.
 
 | Object | Required fields |
 |---|---|
-| Root | `schema_version: 2`, `identity`, `serving_sets` (includes `[]` and explicit competing model IDs distinct from `identity.model_id`), `qualification_cells`, `deadline_calibration`; optional `mixed_prefill_token_cap` |
+| Root | `schema_version: 2`, `identity`, `serving_sets` (includes `[]` and explicit competing model IDs distinct from `identity.model_id`), `qualification_cells`, `deadline_calibration`, candidate `build` identity; optional `mixed_prefill_token_cap` |
 | Identity | `id`, `model_id`, `artifact_sha256`, `provider_version`, `runtime_revision`, `kv_backend`, `chip_name`, `gpu_cores`, `memory_gb`, `context_tokens_max`; optional exact `mtp` configuration |
 | MTP identity | `enabled: true`, verified `artifact_sha256`, `max_draft_tokens`, optional `fixed_draft_tokens`, `max_speculative_batch`, `verification_mode`, `max_automatic_rectangular_tokens`; omitted for plain-target execution |
 | Cell | `width`, `prompt_tokens`, `output_tokens`, `arrival_pattern` (`fixed`/`staggered`), `cache_state` (`cold`/`reused`), `competing_models`, `failures`, `raw_measurements_sha256`, `absolute_first_content_budget_ms`, `resolved_activation_floor_bytes`, `checks`, `samples` |
-| Checks | Each of `correctness`, `constraints`, `isolation`, `cancellation`, `accounting`, `retirement` has `passed: true` and `receipt_sha256` |
+| Checks | Each of `correctness`, `constraints`, `isolation`, `cancellation`, `accounting`, `retirement` references actual `receipt_path` and `receipt_sha256`; live checks also require `provenance_path` and `provenance_sha256` |
 | Sample | Unique `run_id`, `decode_p10_tps`, `aggregate_decode_tps`, `prefill_tps`, `first_content_p95_ms`, `token_gap_p95_ms`, actual `forward_widths`, `competing_model_active_requests` (positive measured count for every competing model), `power_mode: "automatic"`, `thermal_state: "nominal"`, `mtp_active` matching the identity, matching `mtp` and positive `mtp_rounds`/`mtp_proposed_tokens` when active, `effective_mixed_prefill_token_cap` (explicit integer engine cap; `null` selects the existing runtime/model default), `runtime_policy_overrides` (empty, or only the exact candidate global override), `activation_peak_bytes`, `kv_peak_bytes`, `resident_bytes`, `activation_reserve_bytes`, `memory_budget_bytes` |
 | Chunk comparison | Each mixed staggered cell also carries `mixed_prefill_work_p95_ms` and `mixed_prefill_baseline` (the five rate/latency metrics, `receipt_sha256`, and explicit `effective_mixed_prefill_token_cap`: `null` for the runtime/model default or a nonnegative integer different from the candidate) |
 
@@ -178,6 +187,39 @@ representative trials; changing only an ID does not make a repeated prompt an
 independent workload. Explicit relaxed-confidence receipts remain evidence
 only and cannot produce a profile. Schema 1 concurrency-only receipts remain
 readable for existing tooling; use schema 2 for new calibrated profiles.
+
+### Verify prerequisite files
+
+Preserve the actual prerequisite JSON files beside the assembled receipt, or
+supply `--evidence-root /path/to/reviewed/evidence` to either qualification
+command. Relative references resolve under that root; references outside it,
+missing files, changed bytes, and files over 8 MiB fail closed. A caller-supplied
+`passed` flag and a digest-shaped string cannot replace execution evidence.
+
+Use these two receipt kinds:
+
+- `deterministic_regression` may cover only explicit `scopes` of `constraints`
+  and/or `isolation`. It must record the candidate's exact `sdk_commit`, a zero
+  test exit status, positive passed-test counts and its test-log digest. These
+  SDK unit fixtures do not claim a hardware/model match or certify live
+  cancellation/accounting. Rerun them when the SDK commit changes.
+- `serving_lifecycle` covers `correctness`, `cancellation`, `accounting` and
+  `retirement`. Retain both the supervised raw receipt and provenance. The
+  verifier binds model, artifact, provider version, runtime revision, KV backend,
+  actual scheduler configuration, MTP identity, source commit/tree, SDK, binary
+  and metallib to the candidate. Both real cancellation phases must be present,
+  with actual work accounting, native retirement and post-cancellation greedy
+  parity. Live checks cannot transfer from another artifact or build.
+
+The `build` object supplies `source_commit`, `sdk_commit`,
+`source_tree_sha256`, `test_binary_sha256` and `metallib_sha256`; deadline-only
+receipts additionally require their existing clean optimized build fields.
+The live prerequisite's embedded clean-build record is verified by the same
+build-identity validator as performance observations. One raw receipt may cover
+several applicable checks; each reference retains its exact file hash. See
+[`check_receipts.py`](../../scripts/serving_performance/check_receipts.py) for
+the closed scope and identity rules. Review the referenced test receipts as
+well as the numeric performance report before promoting any record.
 
 ### Narrow deadline-only qualification
 

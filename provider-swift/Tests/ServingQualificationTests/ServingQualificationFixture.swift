@@ -26,7 +26,11 @@ final class ServingQualificationFixture: @unchecked Sendable {
         self.promptContractID = promptContractID; self.mtp = mtp; self.budget = budget
     }
 
-    static func load(_ job: ServingQualificationJob) async throws -> ServingQualificationFixture {
+    static func load(
+        _ job: ServingQualificationJob, sharedBudget: GlobalKVCacheBudget? = nil,
+        kvGrantUpperBound: UInt64? = nil, activationReserveBytes: UInt64? = nil,
+        requireInlineMTP: Bool = true
+    ) async throws -> ServingQualificationFixture {
         let executable = try #require(Bundle(for: QualificationBundleMarker.self).executableURL)
         try #require(FileManager.default.fileExists(atPath:
             executable.deletingLastPathComponent().appendingPathComponent("mlx.metallib").path),
@@ -36,8 +40,14 @@ final class ServingQualificationFixture: @unchecked Sendable {
         let hash = try #require(WeightHasher.computeHash(snapshotDir: path, modelID: job.modelID))
         #expect(hash == job.artifactSHA256, "verified serving artifact changed")
         guard hash == job.artifactSHA256 else { throw QualificationFailure.artifactMismatch }
-        let artifact = try SpecDecStore.inspectInlineArtifact(directory: path).get()
-        let preparation = SpecDecPreparation(artifact: artifact, status: .candidate(artifact))
+        let preparation: SpecDecPreparation
+        if requireInlineMTP {
+            let artifact = try SpecDecStore.inspectInlineArtifact(directory: path).get()
+            preparation = SpecDecPreparation(artifact: artifact, status: .candidate(artifact))
+        } else {
+            preparation = SpecDecPreparation(artifact: nil,
+                status: .disabled(.configDisabled, configured: false))
+        }
         let cap = UnifiedMemoryCap.hardCapBytes(physicalBytes: ProcessInfo.processInfo.physicalMemory)
         MLX.Memory.cacheLimit = Int(cap)
         MLX.Memory.memoryLimit = Int(cap)
@@ -60,10 +70,11 @@ final class ServingQualificationFixture: @unchecked Sendable {
         let sizing = await SlotSizingSnapshot.build(
             container: container, modelPath: path, fallbackDefaultMaxTokens: job.outputTokens)
             .replacingAuxiliaryWeightBytes(prepared.assistantBytes)
-        let grant = UnifiedMemoryCap.kvBudgetBytes(
+        let grant = min(kvGrantUpperBound ?? .max, UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: ProcessInfo.processInfo.physicalMemory,
-            residentWeightBytes: UInt64(max(0, sizing.weightsBytes)), configReserveBytes: 0)
-        let budget = GlobalKVCacheBudget()
+            residentWeightBytes: UInt64(max(0, sizing.weightsBytes)),
+            activationReserveBytes: activationReserveBytes, configReserveBytes: 0))
+        let budget = sharedBudget ?? GlobalKVCacheBudget()
         let bundle: ProviderEngineBundle
         do {
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
@@ -72,7 +83,7 @@ final class ServingQualificationFixture: @unchecked Sendable {
                 sizing: sizing, kvBytesCapacity: Int(grant),
                 maxConcurrentRequests: job.schedulerMaxConcurrentRequests ?? job.width,
                 constructionPurpose: job.servingPolicy == true ? .serving : .benchmark,
-                kvBudget: budget, kvBackendConfig: job.kvBackend,
+                kvBudget: budget, activationReserveBytes: activationReserveBytes, kvBackendConfig: job.kvBackend,
                 prefillDeadlineMode: .enforce, modelArtifactSHA256: hash, weightHash: hash,
                 specDecPreparation: preparation, preparedModel: prepared,
                 environment: environment, startServingTelemetry: false)
@@ -95,7 +106,8 @@ final class ServingQualificationFixture: @unchecked Sendable {
             promptContractID: promptContractID, mtp: mtp, budget: budget)
     }
 
-    func service(profile: RequestProfileBuilder, usage: EngineV2RequestUsageSignal) -> MLXOpenAIService {
+    func service(profile: RequestProfileBuilder, usage: EngineV2RequestUsageSignal,
+                 promptWork: PromptWork? = nil) -> MLXOpenAIService {
         let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
             tokenizer: tokenizer, modelType: "qwen3_5", container: container,
             isVLM: true, engineV2Bridge: bundle.bridge)
@@ -103,7 +115,9 @@ final class ServingQualificationFixture: @unchecked Sendable {
             registryProvider: { [entry, job] in [job.modelID: entry] },
             defaultMaxTokens: job.outputTokens, cacheScope: "dedicated-serving-qualification",
             cacheEnabled: job.reused || job.servingPolicy == true, engineV2Usage: usage,
-            firstContentDeadline: FirstContentDeadline(relativeBudgetMilliseconds: 3_600_000), profile: profile))
+            firstContentDeadline: FirstContentDeadline(
+                relativeBudgetMilliseconds: Int64(job.firstContentBudgetMilliseconds ?? 3_600_000)),
+            profile: profile, promptWork: promptWork))
     }
 
     func retire() async {

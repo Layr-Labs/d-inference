@@ -4,6 +4,7 @@ import json
 import re
 
 from .calibration import evaluate_calibration
+from .check_receipts import check_errors
 from .calibration_statistics import percentile
 from .matrix import CHECKS, IDENTITY_FIELDS, digest, identity_errors, positive
 
@@ -12,7 +13,7 @@ RUNTIME_FIELDS = ("configured_context_tokens", "effective_max_concurrency", "pre
 BASE_FIELDS = set(IDENTITY_FIELDS) - {"context_tokens_max"}
 
 
-def evaluate_deadline_profile(raw):
+def evaluate_deadline_profile(raw, *, evidence_root=None):
     receipt = json.loads(raw)
     result = {"qualified": False, "kind": "deadline_only", "receipt_sha256": hashlib.sha256(raw).hexdigest(),
               "errors": [], "profile": None}
@@ -54,11 +55,7 @@ def evaluate_deadline_profile(raw):
     for key in ("source_tree_sha256", "test_binary_sha256", "metallib_sha256"):
         if not digest(build.get(key)):
             errors.append(f"verified {key} is required")
-    checks = receipt.get("checks", {})
-    for check in CHECKS:
-        evidence = checks.get(check, {}) if isinstance(checks, dict) else {}
-        if not isinstance(evidence, dict) or evidence.get("passed") is not True or not digest(evidence.get("receipt_sha256")):
-            errors.append(f"missing passing {check} receipt")
+    errors.extend(check_errors(receipt.get("checks"), identity, build, evidence_root=evidence_root))
     if errors:
         return result
     calibration = evaluate_calibration(receipt.get("deadline_calibration"), result["receipt_sha256"],

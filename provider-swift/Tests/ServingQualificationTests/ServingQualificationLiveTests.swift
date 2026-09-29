@@ -20,6 +20,9 @@ struct ServingQualificationLiveTests {
         try #require(job.promptLengths.allSatisfy { $0 > 0 } && !job.promptLengths.isEmpty)
         try #require(job.mixedPrefillTokenCap == nil || [128, 256, 512].contains(job.mixedPrefillTokenCap!))
         try #require(job.outputTokens > 0 && job.staggerMilliseconds >= 0)
+        try #require(job.competitor == nil, "use the separate competing-model test")
+        try #require(job.firstContentBudgetMilliseconds.map { (1...3_600_000).contains($0) } ?? true)
+        try #require(job.requireCalibratedAdmission != true || job.firstContentBudgetMilliseconds != nil)
         let buildIdentity = try ServingQualificationBuildIdentity.capture()
         let fixture = try await ServingQualificationFixture.load(job)
         let hardware = try HardwareDetector.detect()
@@ -29,6 +32,7 @@ struct ServingQualificationLiveTests {
             throw QualificationFailure.unsupportedEngine
         }
         var trials: [ServingQualificationTrial] = []
+        var cooldowns: [QualificationCooldownReceipt] = []
         func write(complete: Bool) throws {
             let report = ServingQualificationRun(buildIdentity: buildIdentity, schemaVersion: 1, job: job,
                 providerVersion: ProviderCore.version, runtimeRevision: ServingPerformanceProfiles.runtimeRevision,
@@ -36,7 +40,7 @@ struct ServingQualificationLiveTests {
                 deadlineRuntimeConfiguration: fixture.bundle.bridge.deadlineRuntimeConfiguration,
                 configuredContextTokens: fixture.sizing.maxContextLength, chipName: hardware.chipName,
                 gpuCores: Int(hardware.gpuCores), memoryBytes: ProcessInfo.processInfo.physicalMemory,
-                mtp: fixture.mtp, trials: trials, complete: complete, qualified: false)
+                mtp: fixture.mtp, trials: trials, complete: complete, qualified: false, cooldowns: cooldowns)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             try encoder.encode(report).write(to: URL(fileURLWithPath: job.outputPath), options: .atomic)
@@ -44,14 +48,14 @@ struct ServingQualificationLiveTests {
         do {
             // Exclude compilation/first-allocation warmup from measured trials.
             let (warmup, warmTokens) = try fixture.request(targetTokens: job.toolHistory ? 2048 : 256,
-                                                         nonce: job.runID + "-warmup")
+                                                         nonce: (job.corpusSeed ?? job.runID) + "-warmup")
             _ = await fixture.collect(request: warmup, tokens: warmTokens, id: "warmup")
             _ = try await fixture.waitForIdle()
             for (promptIndex, prompt) in job.promptLengths.enumerated() {
                 for iteration in 0..<job.iterations {
                     let trialOrdinal = promptIndex * job.iterations + iteration
                     let requests = try (0..<job.width).map { row in
-                        try fixture.request(targetTokens: prompt, nonce: "\(job.runID)-\(prompt)-\(trialOrdinal)-\(row)")
+                        try fixture.request(targetTokens: prompt, nonce: "\(job.corpusSeed ?? job.runID)-\(prompt)-\(trialOrdinal)-\(row)")
                     }
                     if job.reused {
                         for (request, tokens) in requests {
@@ -61,6 +65,11 @@ struct ServingQualificationLiveTests {
                         }
                         _ = try await fixture.waitForIdle()
                     }
+                    let cooldown = try await QualificationPostureGate.waitForNominal()
+                    cooldowns.append(cooldown)
+                    try write(complete: false)
+                    guard cooldown.passed else { throw QualificationPostureFailure.recoveryTimedOut }
+                    let postureMonitor = QualificationPostureMonitor()
                     _ = try concrete.beginForwardShapeObservation()
                     let beforeMTP = await fixture.bundle.bridge.mtpStatusSnapshot()
                     MLX.Memory.peakMemory = 0
@@ -80,16 +89,24 @@ struct ServingQualificationLiveTests {
                     }
                     let capacity = try await fixture.waitForIdle()
                     let afterMTP = await fixture.bundle.bridge.mtpStatusSnapshot()
+                    let posture = await postureMonitor.finish()
                     trials.append(ServingQualificationTrial(iteration: trialOrdinal, promptTarget: prompt, rows: rows,
                         forwardShapes: concrete.forwardShapeSnapshot(), mtpActive: afterMTP.active,
                         mtpRounds: afterMTP.rounds - beforeMTP.rounds,
                         mtpProposed: afterMTP.proposedTokens - beforeMTP.proposedTokens,
                         mtpAccepted: afterMTP.acceptedDraftTokens - beforeMTP.acceptedDraftTokens,
                         peakMemoryBytes: MLX.Memory.peakMemory, activeMemoryBytes: MLX.Memory.activeMemory,
-                        thermalState: ProcessInfo.processInfo.thermalState.rawValue,
-                        lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
-                        retired: capacity.activeRequests == 0 && capacity.kvBytesReserved == 0))
+                        thermalState: posture.worstThermalState, lowPowerMode: posture.lowPowerObserved,
+                        retired: capacity.activeRequests == 0 && capacity.kvBytesReserved == 0, posture: posture))
                     try write(complete: false)
+                    guard posture.isNominal else { throw QualificationPostureFailure.nonNominalMeasurement }
+                    if job.requireCalibratedAdmission == true {
+                        #expect(rows.allSatisfy { $0.failure == nil
+                            && $0.deadlineEvidence?.calibratedPathProven == true
+                            && $0.deadlineEvidence?.legacyWouldReject == true
+                            && $0.deadlineEvidence?.deliveredWithinBudget == true },
+                            "retain failures: reviewed calibration must actually admit and deliver within the original budget")
+                    }
                     print("SERVING_QUALIFICATION prompt=\(prompt) iteration=\(iteration) width=\(job.width) mtp_rounds=\(afterMTP.rounds - beforeMTP.rounds)")
                 }
             }

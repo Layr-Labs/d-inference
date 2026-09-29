@@ -21,6 +21,11 @@ struct ServingQualificationJob: Codable, Sendable {
     let partition: String
     let runID: String
     let kvBackend: String
+    var competitor: ServingQualificationCompetitor? = nil
+    var firstContentBudgetMilliseconds: Int? = nil
+    var requireCalibratedAdmission: Bool? = nil
+    // Explicit replay only; ordinary training/holdout retains independent runID.
+    var corpusSeed: String? = nil
 }
 
 /// Numeric timings, hashes, and configuration only; never prompt/output text.
@@ -37,6 +42,7 @@ struct ServingQualificationRow: Codable, Sendable {
     let cachedTokens: Int
     let profile: InferenceProfile
     let failure: String?
+    var deadlineEvidence: ServingQualificationDeadlineEvidence? = nil
 }
 
 struct ServingQualificationTrial: Codable, Sendable {
@@ -53,6 +59,7 @@ struct ServingQualificationTrial: Codable, Sendable {
     let thermalState: Int
     let lowPowerMode: Bool
     let retired: Bool
+    var posture: QualificationTrialPostureReceipt? = nil
 }
 
 struct ServingQualificationRun: Codable, Sendable {
@@ -74,4 +81,5 @@ struct ServingQualificationRun: Codable, Sendable {
     // This collector alone does not establish the full release matrix,
     // per-step mixed-prefill tails, accounting correctness, or confidence.
     let qualified: Bool
+    var cooldowns: [QualificationCooldownReceipt] = []
 }

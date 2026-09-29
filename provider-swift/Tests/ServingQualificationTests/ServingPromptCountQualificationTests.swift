@@ -43,6 +43,7 @@ struct ServingPromptCountQualificationTests {
         let inputPath = try #require(env["DARKBLOOM_PROMPT_COUNT_INPUT"])
         let outputPath = try #require(env["DARKBLOOM_PROMPT_COUNT_OUTPUT"])
         let directory = URL(fileURLWithPath: modelPath)
+        let actualArtifact = try Self.verifiedArtifactHash(directory: directory, modelID: modelID, expected: artifact)
         let contract = try PromptContractIdentity.compute(modelDirectory: directory)
         let tokenizer = try await LocalTokenizerLoader().load(from: directory)
         let inputs = try JSONDecoder().decode([Input].self, from: Data(contentsOf: URL(fileURLWithPath: inputPath)))
@@ -61,10 +62,20 @@ struct ServingPromptCountQualificationTests {
                 workloadSHA256: SHA256.hash(data: input.request).map { String(format: "%02x", $0) }.joined(),
                 actualPromptTokens: count, failure: failure))
         }
-        let receipt = Receipt(schemaVersion: 1, modelID: modelID, artifactSHA256: artifact,
+        _ = try Self.verifiedArtifactHash(directory: directory, modelID: modelID, expected: actualArtifact)
+        let receipt = Receipt(schemaVersion: 1, modelID: modelID, artifactSHA256: actualArtifact,
                               promptContractID: contract, observations: observations, qualified: false)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(receipt).write(to: URL(fileURLWithPath: outputPath), options: .atomic)
     }
+
+    static func verifiedArtifactHash(directory: URL, modelID: String, expected: String) throws -> String {
+        guard let actual = WeightHasher.computeHash(snapshotDir: directory, modelID: modelID),
+              actual == expected else { throw PromptCountArtifactFailure.mismatch }
+        return actual
+    }
+
 }
+
+private enum PromptCountArtifactFailure: Error { case mismatch }

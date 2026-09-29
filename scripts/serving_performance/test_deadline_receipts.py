@@ -1,8 +1,11 @@
 import copy
+import hashlib
 import json
 import unittest
 
 from .deadline_receipts import assemble_deadline_receipt
+from .qualification_build import encode_build_record
+from .test_qualification_build import fixture_build_record
 
 
 def run(partition, duration=1_000_000_000):
@@ -27,12 +30,21 @@ def run(partition, duration=1_000_000_000):
                 "droppedTokenTimings": 0, "entries": [], "confirmedTokenTimings": [
                     {"rowOrdinal": 0, "tokenCount": 1, "relativeNanos": 0},
                     {"rowOrdinal": 0, "tokenCount": 1, "relativeNanos": 10_000_000}]}}]}
+    snapshot = {"thermalState": 0, "lowPowerMode": False}
+    report["trials"][0]["posture"] = {"before": snapshot.copy(), "after": snapshot.copy(),
+        "worstThermalState": 0, "lowPowerObserved": False}
+    report["cooldowns"] = [{"passed": True, "before": snapshot.copy(), "after": snapshot.copy(),
+        "waitedMilliseconds": 20000, "nominalStableMilliseconds": 20000,
+        "minimumMilliseconds": 20000, "stableMilliseconds": 5000, "recoveryLimitMilliseconds": 180000}]
     posture = {"source": "ac", "mode": "automatic", "raw_mode": 0}
     provenance = {"return_code": 0, "artifact_unchanged": True, "source_unchanged": True, "binary_unchanged": True,
         "power_posture_before": posture, "power_posture_after": copy.deepcopy(posture),
         "source": {"dirty": False, "head": "a" * 40, "dependency_head": "b" * 40, "source_tree_sha256": "c" * 64},
         "build_configuration": "release", "debug_compilation_condition": False,
         "test_binaries_sha256": {"test-binary": "d" * 64}, "metallibs_sha256": {"mlx.metallib": "e" * 64}}
+    provenance["build_record"] = fixture_build_record(provenance["source"], "release",
+        provenance["test_binaries_sha256"], provenance["metallibs_sha256"])
+    provenance["build_record_sha256"] = hashlib.sha256(encode_build_record(provenance["build_record"])).hexdigest()
     return report, provenance
 
 
@@ -81,3 +93,15 @@ class DeadlineReceiptTests(unittest.TestCase):
         broken["trials"][0]["rows"][0]["completionTokens"] = 3
         with self.assertRaises(ValueError):
             assemble((broken, provenance))
+
+    def test_full_fixed_recovery_and_midtrial_nominal_evidence_are_mandatory(self):
+        for mutation in ("missing", "short", "unstable", "failed", "midtrial", "before", "after"):
+            report, provenance = run("calibration")
+            if mutation == "missing": report.pop("cooldowns")
+            elif mutation == "short": report["cooldowns"][0]["waitedMilliseconds"] = 19999
+            elif mutation == "unstable": report["cooldowns"][0]["nominalStableMilliseconds"] = 4999
+            elif mutation == "failed": report["cooldowns"][0]["passed"] = False
+            elif mutation == "midtrial": report["trials"][0]["posture"]["worstThermalState"] = 1
+            else: report["trials"][0]["posture"][mutation]["thermalState"] = 1
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                assemble((report, provenance))

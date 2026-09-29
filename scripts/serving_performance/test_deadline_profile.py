@@ -2,6 +2,7 @@ import json
 import unittest
 
 from .deadline_profile import evaluate_deadline_profile
+from .check_receipt_fixtures import ROOT as EVIDENCE_ROOT, references
 from .matrix import CHECKS, RUNTIME_REVISION
 from .test_calibration import receipt as calibration_receipt
 
@@ -10,7 +11,7 @@ def receipt():
     calibration = calibration_receipt()
     for sample in calibration["cells"][0]["samples"]:
         sample.update(engine_decode_tps=60, thermal_state="nominal", power_mode="automatic", retired=True)
-    return {"schema_version": 1, "kind": "deadline_only", "identity": {
+    result = {"schema_version": 1, "kind": "deadline_only", "identity": {
         "id": "deadline-fixture", "model_id": "fixture", "artifact_sha256": "a" * 64,
         "provider_version": "test", "runtime_revision": RUNTIME_REVISION, "kv_backend": "paged",
         "chip_name": "Apple M5 Max", "gpu_cores": 40, "memory_gb": 128,
@@ -22,12 +23,13 @@ def receipt():
                   "source_commit": "a" * 40, "sdk_commit": "b" * 40,
                   "source_tree_sha256": "c" * 64, "test_binary_sha256": "d" * 64,
                   "metallib_sha256": "e" * 64},
-        "checks": {key: {"passed": True, "receipt_sha256": "f" * 64} for key in CHECKS},
         "deadline_calibration": calibration}
+    result["checks"] = references(result["identity"], result["build"])
+    return result
 
 
 def evaluate(value):
-    return evaluate_deadline_profile(json.dumps(value).encode())
+    return evaluate_deadline_profile(json.dumps(value).encode(), evidence_root=EVIDENCE_ROOT)
 
 
 class DeadlineProfileTests(unittest.TestCase):

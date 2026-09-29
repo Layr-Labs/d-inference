@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Collect exact-artifact receipts on explicitly leased, dedicated local hardware.
 
-Build tests and stage the matching metallib before invocation. This supervisor
+Use build-serving-qualification.py before invocation. This supervisor
 never builds, downloads, deploys, edits model files, or interrupts other jobs.
 """
 import argparse
@@ -18,7 +18,9 @@ import time
 import uuid
 
 from serving_performance.live_receipts import summarize
+from serving_performance.supplemental_receipts import supplemental_summary
 from serving_performance.build_identity import verified_build_identity
+from serving_performance.qualification_build import load_build_record
 from serving_performance.power_posture import read_posture
 from serving_performance.exclusive_host import foreign_work
 from serving_performance.source_provenance import source_identity as identify_source
@@ -73,9 +75,21 @@ def main():
     parser.add_argument("--partition", choices=("baseline", "calibration", "validation"), default="baseline")
     parser.add_argument("--kv-backend", choices=("auto", "paged", "contiguous"), default="auto")
     parser.add_argument("--build-configuration", choices=("debug", "release"), default="release")
+    parser.add_argument("--build-receipt", type=Path, required=True,
+                        help="build-serving-qualification.py clean-build receipt; adjacent build.log is verified")
     parser.add_argument("--test-executable", type=Path, help="prebuilt portable Swift Testing executable")
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     parser.add_argument("--output-root", type=Path, default=Path(tempfile.gettempdir()))
+    parser.add_argument("--corpus-seed", help="explicit baseline replay seed; never used for independent calibration/holdout")
+    parser.add_argument("--first-content-budget-ms", type=int, help="unchanged original deadline for post-promotion integration")
+    parser.add_argument("--require-calibrated-admission", action="store_true",
+                        help="require actual calibrated admission where legacy would reject, plus on-time delivery")
+    parser.add_argument("--competitor-model-path", type=Path)
+    parser.add_argument("--competitor-model-id")
+    parser.add_argument("--competitor-artifact-sha256")
+    parser.add_argument("--competitor-prompt-tokens", type=int, default=2048)
+    parser.add_argument("--competitor-output-tokens", type=int, default=4096)
+    parser.add_argument("--competitor-inline-mtp", action="store_true")
     args = parser.parse_args()
     if not (1 <= args.width <= 16 and 1 <= args.iterations <= 1000 and
             1 <= args.output_tokens <= 4096 and 1 <= args.timeout_seconds <= 86400 and args.stagger_ms >= 0):
@@ -88,7 +102,32 @@ def main():
     band = [int(value) for value in args.prompt_band.split(":")] if args.prompt_band else None
     if band is not None and (len(band) != 2 or not 1 <= band[0] < band[1] <= 1_048_576 or args.iterations < 2):
         parser.error("prompt band requires ordered bounded endpoints and at least two trials")
+    competitor_identity = [args.competitor_model_path, args.competitor_model_id, args.competitor_artifact_sha256]
+    has_competitor = any(value is not None for value in competitor_identity)
+    if has_competitor and not all(value is not None for value in competitor_identity):
+        parser.error("competitor path, model ID, and verified artifact hash must be supplied together")
+    if args.corpus_seed is not None and (not 1 <= len(args.corpus_seed) <= 128 or args.partition != "baseline"):
+        parser.error("a bounded replay seed is permitted only for explicit baseline comparisons")
+    if args.first_content_budget_ms is not None and (not 1 <= args.first_content_budget_ms <= 3_600_000
+            or args.partition != "baseline" or not args.serving_policy or args.lifecycle_checks):
+        parser.error("deadline integration requires a bounded budget, baseline partition, and ordinary serving policy")
+    if args.require_calibrated_admission and args.first_content_budget_ms is None:
+        parser.error("calibrated admission proof requires an explicit original first-content budget")
+    if has_competitor and (args.width != 1 or not args.serving_policy or args.reused or args.stagger_ms != 0
+            or args.lifecycle_checks or args.first_content_budget_ms is not None or args.partition != "baseline"
+            or args.prompt_band or args.iterations > 20 or len(prompt_lengths) > 8
+            or not all(256 <= value <= 32768 for value in prompt_lengths)
+            or not 256 <= args.competitor_prompt_tokens <= 8192
+            or not 128 <= args.competitor_output_tokens <= 16384):
+        parser.error("competing-model supplements require bounded cold B1 serving workloads in baseline partition")
+    competitor_path = args.competitor_model_path.expanduser().resolve(strict=True) if has_competitor else None
+    competitor_members = sorted(p for p in competitor_path.iterdir() if p.is_file()) if has_competitor else []
+    if has_competitor and (not any(p.suffix == ".safetensors" for p in competitor_members)
+            or not (competitor_path / "config.json").is_file()):
+        parser.error("complete local competitor artifact required; downloads are not permitted")
     path = args.model_path.expanduser().resolve(strict=True)
+    if has_competitor and (competitor_path == path or args.competitor_model_id == args.model_id):
+        parser.error("competing-model evidence requires distinct real models")
     members = sorted(p for p in path.iterdir() if p.is_file())
     weights = [p for p in members if p.suffix == ".safetensors"]
     if not weights or not (path / "config.json").is_file():
@@ -112,6 +151,15 @@ def main():
                    mixedPrefillTokenCap=args.mixed_prefill_token_cap,
                    staggerMilliseconds=args.stagger_ms, reused=args.reused, toolHistory=args.tool_history,
                    partition=args.partition, runID=run_id, kvBackend=args.kv_backend)
+        if args.corpus_seed is not None:
+            job["corpusSeed"] = args.corpus_seed
+        if args.first_content_budget_ms is not None:
+            job.update(firstContentBudgetMilliseconds=args.first_content_budget_ms,
+                       requireCalibratedAdmission=args.require_calibrated_admission)
+        if has_competitor:
+            job["competitor"] = dict(modelID=args.competitor_model_id, modelPath=str(competitor_path),
+                artifactSHA256=args.competitor_artifact_sha256, promptTokens=args.competitor_prompt_tokens,
+                outputTokens=args.competitor_output_tokens, requireInlineMTP=args.competitor_inline_mtp)
         job_path = run / "job.json"
         job_path.write_text(json.dumps(job, indent=2) + "\n")
         before = {p.name: {"bytes": p.stat().st_size, "sha256": digest(p)} for p in members}
@@ -119,6 +167,9 @@ def main():
                           lease_sha256=hashlib.sha256(args.exclusive_gpu_lease.encode()).hexdigest(),
                           build_configuration=args.build_configuration,
                           qualification_test_graph=True, swift_enable_testing=True)
+        if has_competitor:
+            provenance["competitor_files"] = {p.name: {"bytes": p.stat().st_size, "sha256": digest(p)}
+                                              for p in competitor_members}
         provenance["power_posture_before"] = read_posture()
         binaries = ([args.test_executable.resolve(strict=True)] if args.test_executable else
                     sorted((ROOT / "provider-swift/.build").glob(
@@ -130,6 +181,10 @@ def main():
         if not all(p.is_file() for p in metallibs):
             parser.error("stage the source-matched metallib beside the test binary")
         provenance["metallibs_sha256"] = {str(p): digest(p) for p in sorted(metallibs)}
+        build_record, build_record_digest = load_build_record(args.build_receipt, provenance["source"],
+            args.build_configuration, provenance["test_binaries_sha256"], provenance["metallibs_sha256"])
+        provenance["build_record"] = build_record
+        provenance["build_record_sha256"] = build_record_digest
         environment = {k: v for k, v in os.environ.items()
                        if not k.startswith(("DARKBLOOM_", "MLX_", "MTPLX_", "QWEN_"))}
         environment.update(DARKBLOOM_SERVING_QUALIFICATION="supervised-v1",
@@ -140,6 +195,9 @@ def main():
         if args.lifecycle_checks:
             environment["DARKBLOOM_SERVING_QUALIFICATION_LIFECYCLE"] = "supervised-v1"
             test_filter = "ServingQualificationLifecycleTests.cancellationRetiresActualWorkAndPreservesGreedyOutput"
+        if has_competitor:
+            environment["DARKBLOOM_SERVING_QUALIFICATION_COMPETING"] = "supervised-v1"
+            test_filter = "ServingQualificationCompetingModelsTests.collectRealCompetingModelReceipts"
         command = ([str(args.test_executable.resolve()), "--testing-library", "swift-testing",
                     "--filter", test_filter]
                    if args.test_executable else ["swift", "test", "--skip-build", "-c", args.build_configuration,
@@ -180,6 +238,11 @@ def main():
         provenance.update(return_code=status, artifact_unchanged=before == after,
                           source_unchanged=provenance["source"] == source_identity(),
                           power_posture_after=read_posture())
+        if has_competitor:
+            competitor_after = {p.name: {"bytes": p.stat().st_size, "sha256": digest(p)}
+                                for p in competitor_members}
+            provenance["competitor_artifact_unchanged"] = provenance["competitor_files"] == competitor_after
+            provenance["artifact_unchanged"] &= provenance["competitor_artifact_unchanged"]
         provenance["binary_unchanged"] = all(Path(p).is_file() and digest(Path(p)) == expected
             for p, expected in {**provenance["test_binaries_sha256"], **provenance["metallibs_sha256"]}.items())
         if receipt.is_file():
@@ -197,7 +260,10 @@ def main():
             collected = json.loads(receipt.read_bytes())
             summary = ({"qualified": False, "kind": "lifecycle", "passed": collected.get("passed", False),
                         "promotion_blockers": ["lifecycle checks alone do not qualify performance"]}
-                       if args.lifecycle_checks else summarize(collected))
+                       if args.lifecycle_checks else supplemental_summary(collected)
+                       if has_competitor or args.first_content_budget_ms is not None else summarize(collected))
+            if (has_competitor or args.first_content_budget_ms is not None) and not summary["passed"]:
+                status = status or 1
             if any(provenance[key]["mode"] != "automatic" for key in ("power_posture_before", "power_posture_after")):
                 summary["promotion_blockers"].append("measured power policy is not Automatic")
             if provenance["power_posture_before"] != provenance["power_posture_after"]:

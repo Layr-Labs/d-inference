@@ -58,14 +58,15 @@ provider. Initialize the recorded submodules before building, and retain
 source-matched Metal libraries for benchmarks. The
 [profile qualification procedure](serving-performance-qualification.md)
 records the exact model/runtime/backend/hardware identity; a successful build
-alone does not qualify a wider serving limit. Build hardware qualification
-runners with `DARKBLOOM_SERVING_QUALIFICATION_BUILD=1 swift build -c release --build-tests -Xswiftc -enable-testing`;
-this selects the dedicated `ServingQualificationTests` target, retaining
-production optimization while allowing its tests to import internal APIs.
-The ordinary package graph still includes all unit tests. Stage the runner's
-Metal library with `scripts/stage-test-metallib.sh`
-before invoking `scripts/run-serving-qualification.py`. The runner records
-source, binary, model and runtime identity and does not install a provider.
+alone does not qualify a wider serving limit. Use
+`python3 scripts/build-serving-qualification.py --output /tmp/qualification-build`
+after committing the candidate. This cleans prior products, selects the dedicated
+`ServingQualificationTests` target with release optimization and `-enable-testing`,
+stages its source-matched Metal library, and runs the actual executable-identity
+test. The ordinary package graph still includes all unit tests. Pass the generated
+`build-receipt.json` to `scripts/run-serving-qualification.py --build-receipt`;
+the runner verifies the source, binary and metallib binding before collecting
+model/runtime evidence. Neither command installs a provider.
 
 The release pipeline runs optimized products and SDK qualification on separate
 `xcode-27-xlarge` runners. Both call `.github/actions/provider-release-build/action.yml`;

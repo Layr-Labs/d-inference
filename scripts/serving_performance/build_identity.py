@@ -1,5 +1,7 @@
 """Verify compile-time facts emitted by the actual running test image."""
+import hashlib
 from .matrix import digest
+from .qualification_build import encode_build_record, verified_build_record
 
 
 def verified_build_identity(report, provenance, *, require_release=True):
@@ -12,6 +14,12 @@ def verified_build_identity(report, provenance, *, require_release=True):
     binaries = provenance.get("test_binaries_sha256")
     if not isinstance(binaries, dict) or actual["binarySHA256"] not in binaries.values():
         raise ValueError("reported build identity does not match a supervised test image")
+    verified_build_record(provenance.get("build_record"), provenance.get("source"),
+        provenance.get("build_configuration"), binaries, provenance.get("metallibs_sha256"))
+    if (not digest(provenance.get("build_record_sha256")) or
+            hashlib.sha256(encode_build_record(provenance["build_record"])).hexdigest()
+            != provenance["build_record_sha256"]):
+        raise ValueError("raw clean-build receipt digest is required")
     if require_release and (provenance.get("build_configuration") != "release"
             or actual["debugCompilationCondition"] or actual["debugAssertionsEnabled"]):
         raise ValueError("qualification requires a release image without DEBUG or debug assertions")

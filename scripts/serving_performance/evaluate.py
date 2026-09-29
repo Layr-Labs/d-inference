@@ -4,12 +4,13 @@ import json
 
 from .matrix import CHECKS, IDENTITY_FIELDS, MIN_SAMPLES, cell_key, digest, identity_errors, positive, shapes, widths
 from .calibration import evaluate_calibration
+from .check_receipts import check_errors
 
 METRICS = ("decode_p10_tps", "aggregate_decode_tps", "prefill_tps",
            "first_content_p95_ms", "token_gap_p95_ms")
 
 
-def measure(cell, identity, mixed_prefill_token_cap=None):
+def measure(cell, identity, mixed_prefill_token_cap=None, *, build=None, evidence_root=None, check_cache=None):
     errors = []
     samples = cell.get("samples", [])
     if not isinstance(samples, list) or len(samples) < MIN_SAMPLES:
@@ -17,11 +18,8 @@ def measure(cell, identity, mixed_prefill_token_cap=None):
     run_ids = [s.get("run_id") if isinstance(s, dict) else None for s in samples]
     if any(not isinstance(r, str) or not r for r in run_ids) or len(set(run_ids)) != len(samples):
         errors.append("independent samples require unique nonempty run_id values")
-    checks = cell.get("checks", {})
-    for check in CHECKS:
-        evidence = checks.get(check, {}) if isinstance(checks, dict) else {}
-        if not isinstance(evidence, dict) or evidence.get("passed") is not True or not digest(evidence.get("receipt_sha256")):
-            errors.append(f"missing passing {check} receipt")
+    errors.extend(check_errors(cell.get("checks"), identity, build,
+                               evidence_root=evidence_root, cache=check_cache))
     if not digest(cell.get("raw_measurements_sha256")):
         errors.append("missing raw measurements receipt")
     if cell.get("failures") != 0 or type(cell.get("failures")) is not int:
@@ -87,7 +85,7 @@ def measure(cell, identity, mixed_prefill_token_cap=None):
     return result, errors
 
 
-def evaluate(raw):
+def evaluate(raw, *, evidence_root=None):
     report = json.loads(raw)
     if not isinstance(report, dict) or not isinstance(report.get("identity"), dict):
         raise ValueError("receipt and identity must be JSON objects")
@@ -126,6 +124,7 @@ def evaluate(raw):
             errors.append("malformed qualification cell")
     if errors:
         return result
+    check_cache = {}
     measured = {}
     selected = []
     previous_width = None
@@ -140,7 +139,8 @@ def evaluate(raw):
             if cell is None:
                 failures.append(f"missing {key}")
                 continue
-            metrics, problems = measure(cell, identity, report.get("mixed_prefill_token_cap"))
+            metrics, problems = measure(cell, identity, report.get("mixed_prefill_token_cap"),
+                                        build=report.get("build"), evidence_root=evidence_root, check_cache=check_cache)
             if metrics:
                 measured[key] = metrics
                 baseline = measured.get((1, *shape))

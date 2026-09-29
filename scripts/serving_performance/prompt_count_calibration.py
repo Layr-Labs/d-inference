@@ -6,6 +6,9 @@ import math
 from .calibration_statistics import coverage_lower_bound, fit_upper_bound, percentile
 from .matrix import digest
 
+EXPECTED_GROUPS = frozenset((f"tools{tools}", f"band{band}")
+                            for tools in (0, 1) for band in range(3))
+
 SHAPE_FIELDS = ("body_bytes", "message_count", "message_bytes", "system_message_count",
                 "developer_message_count", "assistant_message_count", "tool_definition_count",
                 "tool_definition_bytes", "tool_call_count", "tool_call_bytes",
@@ -43,6 +46,8 @@ def evaluate_prompt_counts(provider_raw, coordinator_raw):
         groups.setdefault(group, []).append((observed, projection))
     if seen != set(by_hash):
         result["errors"].append("count and shape receipt populations do not match")
+    if set(groups) != EXPECTED_GROUPS:
+        result["errors"].append("requires the exact six declared tools/estimate-band cohorts")
     for key, rows in sorted(groups.items()):
         errors = []
         training = [(o, p) for o, p in rows if o.get("partition") == "calibration"]
@@ -72,7 +77,11 @@ def evaluate_prompt_counts(provider_raw, coordinator_raw):
                 bounds["min"] <= projection["shape"].get(name, -1) <= bounds["max"] for name, bounds in domain.items())
         covered = sum(in_domain(p) and o["actualPromptTokens"] <= math.ceil(p["estimated_tokens"] * ratio + additive)
                       for o, p in validation)
-        lower = coverage_lower_bound(covered, len(validation))
+        # Export the confidence bound outward at decimal precision shared by
+        # Python and Go/arm64/amd64. An unrounded root can land just above
+        # the strict 0.05 binomial-tail gate on another math implementation.
+        # This lowers the claimed confidence, never the admission upper bound.
+        lower = math.floor(coverage_lower_bound(covered, len(validation)) * 1e12) / 1e12
         if lower < .95:
             errors.append("held-out coverage confidence lower bound is below95percent")
         candidate = {"id": "prompt-count-" + combined_hash[:16] + "-" + "-".join(key), "model_id": provider["modelID"],
@@ -87,5 +96,5 @@ def evaluate_prompt_counts(provider_raw, coordinator_raw):
                                 "validation_out_of_domain": sum(not in_domain(p) for _, p in validation),
                                 "validation_upper_error_max_tokens": max(
                                     o["actualPromptTokens"] - math.ceil(p["estimated_tokens"] * ratio + additive) for o, p in validation)})
-    result["qualified"] = not result["errors"] and any(cell["qualified"] for cell in result["cells"])
+    result["qualified"] = not result["errors"] and len(result["cells"]) == len(EXPECTED_GROUPS) and all(cell["qualified"] for cell in result["cells"])
     return result

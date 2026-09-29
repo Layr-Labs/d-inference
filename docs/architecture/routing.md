@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-09-29 · commit `d2a7b6431`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -16,6 +16,36 @@ accept the desired and retained approved revisions for that same model. An
 unpromoted or explicitly retired hash is not accepted. Catalog size uses the
 largest retained revision as a conservative admission bound during convergence.
 [Model revisions](model-revisions.md) defines this transition policy.
+
+## Idle decode measurement aging
+
+Without a matching reviewed profile point, `resolveEffectiveTPS`
+(`coordinator/registry/scheduler.go`) stops preferring a positive observed
+decode rate when its independently tracked decode observation
+is older than `idleDecodeMeasurementMaxAge = 30 * time.Minute` and the model is
+loaded on an idle machine with no local reservations. It then uses the existing
+model/chip-family fleet median, or the load-scaled registration estimate when
+no median exists. A matching reviewed profile point keeps priority over both
+observed and fallback rates. The thirty-minute ranking horizon deliberately
+outlives the two-minute first-content evidence horizon so ordinary idle intervals retain
+their measured ranking.
+
+`staleIdleDecodeMeasurement`
+(`coordinator/registry/decode_measurement_freshness.go`) preserves observed
+rates for busy machines, cold models and observations whose age is unknown.
+`fillFirstContentSnapshot` (`coordinator/registry/first_content_snapshot.go`)
+copies decode age separately from prefill age. Unchanged heartbeats or new
+prefill measurements cannot renew it; new decode observations restore the
+observed-rate preference through `reconcileFirstContentMeasurementsLocked`
+(`coordinator/registry/first_content_measurements.go`). Explicit producer
+sample counts can establish a new observation even when its rate is unchanged;
+legacy providers require a changed rate between accepted reports.
+
+This is a ranking fallback, not new deadline evidence or added physical
+capacity. A stale first-content forecast remains `unknown`, and the existing
+feasible-first preference, admission limits, health penalties, retries and
+hedge qualification still apply. It does not guarantee traffic for every idle
+provider or expire the fleet median itself.
 
 ## Provider lifecycle drain boundary
 
@@ -335,8 +365,9 @@ exact matching reviewed profile's conservative point at or above the batch
 width after admission (`coordinator/registry/performance_profile.go`, `batchAt`).
 A workload-specific live EWMA does not replace that point. Without a fitting
 profile point, `resolveEffectiveTPS` prefers the slot's
-`ObservedDecodeTPS` EWMA, then the fleet median for the model, then the
-static registration rate derated by load:
+`ObservedDecodeTPS` EWMA unless it has expired under the
+[idle aging policy](#idle-decode-measurement-aging), then the fleet median for
+the model, then the static registration rate derated by load:
 `effectiveDecodeTPS = staticTPS / (1 + effectiveTPSLoadFactor × backendRunning)`,
 floored at 1 tok/s. The prefill fallback prefers `ObservedPrefillTPS`, else
 the static prefill rate (`resolvedPrefillTPS`: the registered `PrefillTPS`,

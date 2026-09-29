@@ -49,6 +49,7 @@ type firstContentSnapshot struct {
 	capacityAcceptedAt         time.Time
 	capacitySeq                uint64
 	performanceAgeMs           int32
+	decodePerformanceAgeMs     int32
 	isolatedPrefillTPS         float64
 	isolatedPrefillInitialized bool
 	wholeMacBusy               bool

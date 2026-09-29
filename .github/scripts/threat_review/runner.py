@@ -75,12 +75,29 @@ def run(event, root, env, github=None, reviewer=review):
     except Exception:
         # Exception reprs from libraries can include request data or credentials.
         error = "Unexpected review error; no review was completed"
+    args = (github, repository, head, base, base_ref, model, findings, evidence,
+            limits, diff_base, outcomes)
+    try:
+        return publish_result(*args, existing=existing, error=error)
+    except ScanTimeout:
+        # SIGALRM is one-shot. Its scan budget leaves ten minutes for delivery.
+        # Refresh comment identity: a POST may have succeeded before its response
+        # was interrupted, so retrying it blindly could create a duplicate.
+        existing = github.existing_comment((MARKER, LEGACY_MARKER))
+        return publish_result(*args, existing=existing,
+                              error="Scan incomplete: runtime limit reached during final verification or publication; completed findings are retained")
+
+
+def publish_result(github, repository, head, base, base_ref, model, findings,
+                   evidence, limits, diff_base, outcomes, existing, error):
     current = github.pull()
     if not same_revision(current, head, base_ref):
         return "Skipped: PR revision changed during review; no stale comment published."
     if current["base"]["sha"] != base and (findings or not error):
         try:
             verify_diff(github, current, base, head, diff_base)
+        except ScanTimeout:
+            raise
         except Exception:
             error = "Scan incomplete: the PR diff changed or could not be verified; new findings were discarded, rerun against the updated target"
             findings, evidence, limits = [], {}, []

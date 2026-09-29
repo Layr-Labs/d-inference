@@ -70,7 +70,10 @@ After activation, inspect **Actions → Threat Model Review (advisory)** and the
 | PR head changed, target branch changed, or PR closed during scan | Stale output is suppressed. |
 | Target branch tip advances, with the same PR head and merge base | The review still publishes against its recorded immutable base snapshot; unrelated merges do not silently discard feedback. The merge base is checked before and after live file enumeration and before publication. A changed or unverifiable comparison produces incomplete coverage; new findings from that scan are discarded, while prior same-head findings remain visible. |
 
-Legacy comments from the previous reviewer are updated in place. Findings are
+Legacy comments from the previous reviewer are updated in place. If several bot
+reports exist, the newest canonical report is preferred and updated first;
+other matching bot reports become links to it, leaving one active findings comment.
+Findings are
 unconfirmed and visible to anyone who can read the public PR. Authors and reviewers
 must validate them before changing code.
 
@@ -134,6 +137,10 @@ full 32-finding response are treated as incomplete. A report exceeding the singl
 comment's 60,000-character budget asks the author to split the PR. The process has
 a shared 50-minute scan deadline within a 60-minute workflow timeout. Models run
 sequentially, so a first scan that uses the whole budget leaves the second incomplete.
+If that one-shot deadline interrupts final verification or publication, the runner
+refreshes the comment identity and retries delivery once with an incomplete status,
+retaining completed findings. Refreshing first avoids blindly repeating a POST
+whose response was interrupted after GitHub created the comment.
 
 For an incomplete scan, inspect the listed files and source/model availability,
 OpenRouter balance/rate limits, and whether splitting the PR would allow complete

@@ -20,4 +20,6 @@ if __name__ == "__main__":
         result = run(event, Path.cwd(), os.environ)
     except Exception:
         result = "Review unavailable (non-blocking): setup or GitHub API failed; no complete review was produced."
+    finally:
+        signal.alarm(0)
     summarize(result, os.environ)

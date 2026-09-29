@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from threat_review.client import GitHub, NoRedirects, ReviewUnavailable, SourceBudgetExceeded, request_json
+from threat_review.client import GitHub, NoRedirects, ReviewUnavailable, ScanTimeout, SourceBudgetExceeded, request_json
 from threat_review.report import MARKER, LEGACY_MARKER, render
 from threat_review.review import prepare, review, validate_findings
 from threat_review.runner import run
@@ -379,6 +379,51 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("no stale comment", result)
         self.assertEqual(github.posts, [])
 
+    def test_deadline_during_final_read_preserves_completed_and_prior_findings(self):
+        github = FakeGitHub(self.prior_report())
+        pull = github.pull
+        def timed_pull():
+            current = pull()
+            if github.reads == 3:
+                raise ScanTimeout("deadline")
+            return current
+        github.pull = timed_pull
+        result = run(EVENT, self.root, self.env, github,
+                     self.reviewer([dict(FINDING, title="Completed current finding")]))
+        self.assertIn("runtime limit reached during final", result)
+        self.assertEqual(len(github.posts), 1)
+        self.assertIn(FINDING["title"], github.posts[0][1])
+        self.assertIn("Completed current finding", github.posts[0][1])
+
+    def test_deadline_after_comment_creation_reuses_the_created_comment(self):
+        comments, writes = [], []
+        def transport(url, token, payload, method):
+            if method == "POST":
+                writes.append(method)
+                comments.append({"id": 44, "user": {"login": "github-actions[bot]"}, "body": payload["body"]})
+                raise ScanTimeout("response interrupted after creation")
+            if method == "PATCH":
+                writes.append(method)
+                self.assertTrue(url.endswith("/issues/comments/44"))
+                comments[0]["body"] = payload["body"]
+                return comments[0]
+            if "/comments?" in url:
+                return comments
+            if "/git/" in url:
+                return source_response(url)
+            if "/compare/" in url:
+                return {"merge_base_commit": {"sha": BASE}}
+            if "/files?" in url:
+                return FILES
+            return FakeGitHub().pull()
+        github = GitHub("example/repo", 12, "key", transport)
+        result = run(EVENT, self.root, self.env, github, self.reviewer([FINDING]))
+        self.assertIn("runtime limit reached during final", result)
+        self.assertEqual(writes, ["POST", "PATCH"])
+        self.assertEqual(len(comments), 1)
+        self.assertIn(FINDING["title"], comments[0]["body"])
+        self.assertIn("Retry incomplete", comments[0]["body"])
+
     def test_base_tip_advance_before_or_during_scan_keeps_review(self):
         for advance_on_read in (1, 2, 3):
             with self.subTest(advance_on_read=advance_on_read):
@@ -529,6 +574,37 @@ class TransportTests(unittest.TestCase):
             return [{"id": 7, "user": {"login": "github-actions[bot]"}, "body": MARKER + "\nold"}]
         github = GitHub("example/repo", 12, "token", transport)
         self.assertEqual(github.existing_comment(MARKER)["id"], 7)
+
+    def test_canonical_comment_consolidates_legacy_and_versioned_duplicates(self):
+        comments = [{"id": 1, "user": {"login": "github-actions[bot]"}, "body": LEGACY_MARKER + " old"}]
+        comments += [{"id": id, "user": {"login": "attacker"}, "body": MARKER if id == 2 else "note"}
+                     for id in range(2, 101)]
+        comments += [{"id": id, "user": {"login": "github-actions[bot]"}, "body": MARKER + f" report {id}"}
+                     for id in (101, 102)]
+        writes = []
+        def transport(url, token, payload, method):
+            if method == "PATCH":
+                id = int(url.rsplit("/", 1)[-1])
+                writes.append(id)
+                comment = next(comment for comment in comments if comment["id"] == id)
+                comment["body"] = payload["body"]
+                return comment
+            page = int(url.rsplit("=", 1)[-1])
+            return comments[(page - 1) * 100:page * 100]
+        github = GitHub("example/repo", 12, "key", transport)
+        existing = github.existing_comment((MARKER, LEGACY_MARKER))
+        self.assertEqual(existing["id"], 102)
+        github.publish(existing, MARKER + " current")
+        self.assertEqual(writes, [102, 1, 101])
+        for id in (1, 101):
+            body = next(comment["body"] for comment in comments if comment["id"] == id)
+            self.assertIn("#issuecomment-102", body)
+            self.assertFalse(body.startswith((MARKER, LEGACY_MARKER)))
+        self.assertEqual(comments[1]["body"], MARKER)  # Human spoof is untouched.
+        existing = github.existing_comment((MARKER, LEGACY_MARKER))
+        self.assertEqual(existing["duplicate_ids"], [])
+        github.publish(existing, MARKER + " refreshed")
+        self.assertEqual(writes, [102, 1, 101, 102])
 
     def test_comparison_base_must_be_an_immutable_sha(self):
         github = GitHub("example/repo", 12, "token", lambda *args: {"merge_base_commit": {"sha": "main"}})

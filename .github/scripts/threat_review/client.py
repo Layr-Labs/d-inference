@@ -80,17 +80,35 @@ class GitHub:
 
     def existing_comment(self, marker):
         # Paginate instead of only inspecting the first 100 PR comments.
+        markers = (marker,) if isinstance(marker, str) else marker
+        matches = {}
         for page in range(1, 31):
             comments = self.call(f"/issues/{self.number}/comments?per_page=100&page={page}")
             for comment in comments:
                 if (comment.get("user", {}).get("login") == "github-actions[bot]"
-                        and comment.get("body", "").startswith(marker)):
-                    return comment
+                        and comment.get("body", "").startswith(markers)):
+                    matches[comment["id"]] = comment
             if len(comments) < 100:
-                return None
-        raise ReviewUnavailable("Comment history exceeds the pagination limit")
+                break
+        else:
+            raise ReviewUnavailable("Comment history exceeds the pagination limit")
+        # Prefer the canonical marker even when an older legacy report appears
+        # first. Within a marker, keep the most recently created bot report.
+        ordered = sorted(matches.values(), key=lambda comment: comment["id"], reverse=True)
+        for prefix in markers:
+            for comment in ordered:
+                if comment["body"].startswith(prefix):
+                    return dict(comment, duplicate_ids=[id for id in matches if id != comment["id"]])
+        return None
 
     def publish(self, existing, body):
         if existing:
-            return self.call(f"/issues/comments/{existing['id']}", {"body": body}, "PATCH")
+            result = self.call(f"/issues/comments/{existing['id']}", {"body": body}, "PATCH")
+            url = self.root.replace("https://api.github.com/repos/", "https://github.com/")
+            url += f"/pull/{self.number}#issuecomment-{existing['id']}"
+            for id in existing.get("duplicate_ids", []):
+                self.call(f"/issues/comments/{id}", {"body":
+                    f"This earlier advisory report is superseded by [the current review]({url}). "
+                    "Use that report for current findings and coverage."}, "PATCH")
+            return result
         return self.call(f"/issues/{self.number}/comments", {"body": body}, "POST")

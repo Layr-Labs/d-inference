@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -342,12 +342,18 @@ referral service returns 503 `billing_error`
 |---|---|---|---|---|
 | GET | `/v1/stats` | `HandleStats` (`coordinator/api/reporting/stats_handler.go`) | `—` | Refresh every 30 s; preserve the UTC source observation time in `snapshot_at` (`time.RFC3339Nano`). Geography refreshes independently and reports availability per section. Retain a successful core body up to 5 min on core refresh failure; 503 `service_unavailable` without an unexpired success |
 | GET | `/v1/leaderboard` | `HandleLeaderboard` (`coordinator/api/reporting/leaderboard.go`) | `—` | Successful top-200 rankings, including genuinely empty windows, cached 5 min per metric/canonical window; caller limits and aliases share one fill. Query, scan, or iteration failures return 503 `service_unavailable` with `Retry-After`; only a 10 s failure cooldown is retained, never empty/partial data |
-| GET | `/v1/network/totals` | `HandleNetworkTotals` (`coordinator/api/reporting/totals_handler.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
+| GET | `/v1/network/totals` | `HandleNetworkTotals` (`coordinator/api/reporting/totals_handler.go`) | `—` | Database-backed totals refreshed every 5 min with a 15 min stale-success ceiling; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
 | GET | `/v1/network/model-demand` | `HandleModelDemand` (`coordinator/api/`) | `—` | Recorded public model demand; `window=24h` (default), `7d`, `30d`; cached up to 5 min; 400 for other windows; 503 on unavailable aggregation |
-| GET | `/v1/network/series` | `HandleNetworkSeries` (`coordinator/api/reporting/network_series.go`) | `—` | Time series, cached 1 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
+| GET | `/v1/network/series` | `HandleNetworkSeries` (`coordinator/api/reporting/network_series.go`) | `—` | Time series for `30m`, `24h`, `7d`, `30d`, successful database results cached 5 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
 | GET | `/health` | `HandleHealth` (`coordinator/api/operations/health.go`) | `—` | `HealthResponse` `{status: "ok", draining, providers, version, build_commit, build_date}` |
 
 A successful empty analytics window returns 200 with empty arrays or zero totals.
+When configured, the [archived snapshot mode](../operations/analytics-snapshots.md)
+replaces leaderboard, network totals and all four network series reads with
+validated local data. `updated_at` reports the source `as_of` time. Missing,
+unqualified or expired data returns 503 without a SQL fallback or an ordinary
+cache hit. Only the totals background queries are disabled; core stats and
+geography retain their independent database-backed refreshes.
 Core stats query failures retain the unexpired success or return 503; request
 geography never blocks core stats. Geography refreshes on its own
 `statsRefreshInterval` loop, using `statsGeographyCacheKey`. Core snapshots

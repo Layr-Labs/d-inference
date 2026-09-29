@@ -1,6 +1,6 @@
 # Queryable telemetry history
 
-> Last updated: 2026-09-27 · commit `7eaf8b148`
+> Last updated: 2026-09-27
 
 Copy and verify retained PostgreSQL telemetry into private Cloud Storage, then
 publish BigQuery views without changing coordinator writes, retention, or

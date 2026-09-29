@@ -1,6 +1,6 @@
 # Launch the copy-only telemetry backfill
 
-> Last updated: 2026-09-27 · commit `a7a672cf1`
+> Last updated: 2026-09-27
 
 Run a finite historical copy in us-east4 near the database, with resumable
 Cloud Storage checkpoints and BigQuery verification. This runbook prepares a

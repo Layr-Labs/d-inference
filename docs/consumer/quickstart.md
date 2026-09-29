@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -175,6 +175,11 @@ Direct accounts do not have the upstream first-content SLA. Allow enough time fo
 | Silence before the first byte | Expected: nothing is sent until a provider has produced content (`commitFirstContent`) | Wait; a real error status can still arrive |
 
 ## Related
+
+Public leaderboard and network charts can use archived snapshots. In that mode,
+`updated_at` reports the source snapshot time, and missing or expired results
+return 503 rather than an empty ranking. See [public analytics contracts](../reference/api-contracts.md#public-stats-and-health-5)
+for refresh and retry behavior.
 
 - Balance and top-ups: `GET /v1/payments/balance` and [`billing.md`](billing.md). The platform fee is stated once, in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants).
 - Key limits, rotation, Privy-only routes: [`authentication.md`](authentication.md).

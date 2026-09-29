@@ -1,6 +1,7 @@
 package analyticssnapshot_test
 
 import (
+	"encoding/json"
 	. "github.com/eigeninference/d-inference/coordinator/analyticssnapshot"
 	"os"
 	"path/filepath"
@@ -72,6 +73,10 @@ func TestNewGenerationMustAdvanceSourceCutoffs(t *testing.T) {
 func TestGenerationReuseCannotRewriteAnEarlierIdentity(t *testing.T) {
 	now := time.Date(2026, 9, 27, 12, 0, 30, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "snapshot.json")
+	statePath := filepath.Join(t.TempDir(), "accepted.json")
+	if err := os.WriteFile(statePath, []byte(`{"version":1,"checksums":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var cache Cache
 	for i, generation := range []string{"first", "second", "first"} {
 		s := fixture(now)
@@ -81,7 +86,7 @@ func TestGenerationReuseCannotRewriteAnEarlierIdentity(t *testing.T) {
 		if err := os.WriteFile(path, data(t, s), 0600); err != nil {
 			t.Fatal(err)
 		}
-		err := cache.Load(path, now)
+		err := cache.LoadPersistent(path, statePath, now)
 		if i < 2 && err != nil {
 			t.Fatal(err)
 		}
@@ -90,7 +95,13 @@ func TestGenerationReuseCannotRewriteAnEarlierIdentity(t *testing.T) {
 		}
 	}
 	got, ok := cache.Get(now)
-	if !ok || got.Generation != "second" || len(cache.checksums) != 2 {
+	var accepted struct {
+		Checksums map[string]string `json:"checksums"`
+	}
+	if err := json.Unmarshal(mustReadFile(t, statePath), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got.Generation != "second" || len(accepted.Checksums) != 2 {
 		t.Fatal("reused generation altered accepted history")
 	}
 }

@@ -1,6 +1,6 @@
 # Archived analytics and verified source retention
 
-> Last updated: 2026-09-29 · commit `d78ac4138`
+> Last updated: 2026-09-29
 
 Status: In progress · 2026-09-26. Archive copying, SQL previews, private snapshot sync and the opt-in coordinator snapshot reader exist. A qualified snapshot producer, continuous capture, native analytical rollups, product activation and archive-aware source deletion remain incomplete. This design prepares the stage after the [copy-only archive](../operations/accounting-history.md).
 

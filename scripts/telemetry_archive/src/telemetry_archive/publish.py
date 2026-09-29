@@ -37,6 +37,19 @@ CATALOG_SCHEMA = [
     )
 ] + [bigquery.SchemaField(name, "INTEGER") for name in ("id_start", "id_end")]
 
+# Keep this in sync with model.ARCHIVE_SCHEMA. An existing table with the same
+# name but a different inferred or manually edited schema cannot be reused.
+FILE_SCHEMA = (
+    ("source_id", "INTEGER", "REQUIRED"),
+    ("source_time", "TIMESTAMP", "REQUIRED"),
+    ("model", "STRING", "NULLABLE"),
+    ("provider_id", "STRING", "NULLABLE"),
+    ("final_status", "STRING", "NULLABLE"),
+    ("error_reason", "STRING", "NULLABLE"),
+    ("row_json", "STRING", "REQUIRED"),
+    ("row_sha256", "STRING", "REQUIRED"),
+)
+
 
 def validate_destination(project, dataset):
     if not re.fullmatch(r"[a-z][a-z0-9-]{4,62}", project):
@@ -160,6 +173,15 @@ def publish(args):
                 }
             )
             client.create_table(external, exists_ok=True)
+            actual = client.get_table(external_id)
+            configuration = actual.external_data_configuration
+            if (
+                configuration is None
+                or configuration.to_api_repr() != external.external_data_configuration.to_api_repr()
+            ):
+                raise ArchiveError("existing external table manifest or configuration mismatch")
+            if tuple((f.name, f.field_type, f.mode) for f in actual.schema) != FILE_SCHEMA:
+                raise ArchiveError("existing external table schema mismatch")
             # Each alias changes independently after its backing objects exist.
             # Multi-table consumers must pin a catalog with reader_sql, as the
             # analytics preview does; these aliases are for single-table reads.

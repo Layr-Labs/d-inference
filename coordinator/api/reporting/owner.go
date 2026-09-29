@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/eigeninference/d-inference/coordinator/analyticssnapshot"
-
 	"github.com/eigeninference/d-inference/coordinator/api/readcache"
 	ranking "github.com/eigeninference/d-inference/coordinator/internal/api/reporting/ranking"
 	refresher "github.com/eigeninference/d-inference/coordinator/internal/api/reporting/refresher"

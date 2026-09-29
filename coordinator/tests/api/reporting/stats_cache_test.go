@@ -185,23 +185,23 @@ func TestStatsFailedRefreshPreservesTimestampAndSafetyExpiry(t *testing.T) {
 
 func TestNetworkTotalsFailedRefreshDoesNotExtendFifteenMinuteExpiry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		st := &countingStatsStore{Store: store.NewMemory(store.Config{})}
+		st := &countingStatsStore{Store: memory.NewMemory(store.Config{})}
 		srv := newStatsSnapshotServer(st)
-		good, ok := srv.refreshNetworkTotals("all")
+		good, ok := srv.RefreshNetworkTotals("all")
 		if !ok {
 			t.Fatal("initial totals failed")
 		}
 		st.totalsFail.Store(true)
 		for i := 0; i < 2; i++ {
 			time.Sleep(5 * time.Minute)
-			body, ok := srv.refreshNetworkTotals("all")
+			body, ok := srv.RefreshNetworkTotals("all")
 			if !ok || !bytes.Equal(body, good) {
 				t.Fatal("failed refresh lost the unexpired success")
 			}
 		}
 		time.Sleep(5*time.Minute + time.Nanosecond)
 		rr := httptest.NewRecorder()
-		srv.handleNetworkTotals(rr, httptest.NewRequest(http.MethodGet, "/v1/network/totals", nil))
+		srv.HandleNetworkTotals(rr, httptest.NewRequest(http.MethodGet, "/v1/network/totals", nil))
 		if rr.Code != http.StatusServiceUnavailable {
 			t.Fatalf("served expired totals after repeated failures: %d", rr.Code)
 		}

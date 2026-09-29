@@ -1,6 +1,6 @@
 # Serve public analytics from verified snapshots
 
-> Last updated: 2026-09-29 · commit `db349ab53`
+> Last updated: 2026-10-05
 
 Use the opt-in coordinator reader to serve leaderboard, network totals and network usage charts from a
 small local snapshot, removing history scans from those request paths. This
@@ -49,7 +49,9 @@ catalogs are incomplete and cannot supply a qualified production snapshot.
    `bucket_seconds` (60/1800/14400/43200), and `buckets` shaped as
    `store.UsageBucket`. Bounds are complete buckets ending at `as_of` rounded
    down to the bucket size. Buckets are strictly ordered, unique, aligned and
-   within their half-open interval.
+   within their half-open interval. Missing buckets mean zero. For every
+   fully aligned overlap, the finer series must sum exactly to the wider
+   series bucket, including signed prompt/completion token corrections.
 2. Run the explicitly bounded private sync command from the Python worker:
 
    ```sh
@@ -87,8 +89,9 @@ catalogs are incomplete and cannot supply a qualified production snapshot.
 The `coordinator/analyticssnapshot` package validates an 8 MiB cap, complete windows
 and ranks, exact work+reward sums without overflow, source/result freshness,
 cohort cardinality, cross-metric values, unique ranked job counts bounded by
-network job totals, nested nonnegative counts across windows, deterministic
-rank order and generation monotonicity. Every different generation must advance
+network job totals, nested nonnegative counts across windows, exact aligned
+usage-series overlap, deterministic rank order and generation monotonicity.
+Every different generation must advance
 `as_of` or `source_complete_through`, and neither may regress. Publish corrections with the
 next qualified source cut.
 It fsyncs the accepted source cutoffs and every generation checksum to the

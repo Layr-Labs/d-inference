@@ -2,16 +2,17 @@ package api
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
 	trustapi "github.com/eigeninference/d-inference/coordinator/api/provider/trust"
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/internal/inference/responselimit"
 	"github.com/eigeninference/d-inference/coordinator/internal/provider/journal"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
-	"os"
-	"path/filepath"
-	"strings"
-	"time"
 )
 
 // ServerConfig holds coordinator HTTP server and URL configuration applied

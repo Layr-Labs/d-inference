@@ -51,7 +51,7 @@ func (s *Owner) HandleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var rows []store.LeaderboardRow
-	var updatedAt time.Time
+	var updatedAt string
 	if s.analyticsSnapshotPath != "" {
 		snapshot, ok := s.analyticsSnapshot.Get(time.Now())
 		if !ok {
@@ -59,7 +59,7 @@ func (s *Owner) HandleLeaderboard(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rows = snapshot.Windows[windows.NetworkTotalsWindow(windowParam)].Leaderboards[metricParam]
-		updatedAt = snapshot.AsOf
+		updatedAt = snapshot.AsOf.UTC().Format(time.RFC3339)
 	} else {
 		result, err := s.CachedLeaderboard(r.Context(), metric, windowParam)
 		if err != nil {

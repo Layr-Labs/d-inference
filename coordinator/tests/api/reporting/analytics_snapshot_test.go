@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,16 +23,20 @@ import (
 
 type noAnalyticsScan struct {
 	store.Store
-	t *testing.T
+	t               *testing.T
+	seriesCalls     *atomic.Int64
+	statsSeriesDone chan struct{}
 }
 
 func (s noAnalyticsScan) Leaderboard(store.LeaderboardMetric, time.Time, int) ([]store.LeaderboardRow, error) {
 	s.t.Fatal("scanned PostgreSQL leaderboard")
 	return nil, nil
 }
-func (s noAnalyticsScan) UsageTimeSeries(time.Time, time.Time, time.Duration) ([]store.UsageBucket, error) {
-	s.t.Fatal("scanned PostgreSQL series")
-	return nil, nil
+func (s noAnalyticsScan) UsageTimeSeries(start, end time.Time, step time.Duration) ([]store.UsageBucket, error) {
+	s.seriesCalls.Add(1)
+	rows, err := s.Store.UsageTimeSeries(start, end, step)
+	s.statsSeriesDone <- struct{}{}
+	return rows, err
 }
 func (s noAnalyticsScan) NetworkTotals(time.Time) (store.NetworkTotalsRow, error) {
 	s.t.Fatal("scanned PostgreSQL totals")
@@ -64,7 +69,9 @@ func TestArchiveAnalyticsNeverScansSourceAndKeepsPseudonyms(t *testing.T) {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := reporting.New(reporting.Dependencies{AnalyticsSnapshotPath: path, AnalyticsSnapshotStatePath: statePath, Store: noAnalyticsScan{Store: memory.NewMemory(store.Config{}), t: t}, Cache: cache, Registry: registry.New(logger), Logger: logger})
+	var seriesCalls atomic.Int64
+	statsSeriesDone := make(chan struct{}, 10)
+	s := reporting.New(reporting.Dependencies{AnalyticsSnapshotPath: path, AnalyticsSnapshotStatePath: statePath, Store: noAnalyticsScan{Store: memory.NewMemory(store.Config{}), t: t, seriesCalls: &seriesCalls, statsSeriesDone: statsSeriesDone}, Cache: cache, Registry: registry.New(logger), Logger: logger})
 	// No valid snapshot must fail closed even if an old ordinary cache was populated.
 	cache.Set("leaderboard:earnings:all:50", []byte(`{"entries":[]}`), time.Hour)
 	missing := httptest.NewRecorder()
@@ -75,6 +82,12 @@ func TestArchiveAnalyticsNeverScansSourceAndKeepsPseudonyms(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.StartCacheRefreshers(ctx)
+	// Core stats retain their independent database-backed series refresh.
+	select {
+	case <-statsSeriesDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("core stats did not refresh")
+	}
 	for deadline := time.Now().Add(5 * time.Second); ; {
 		w := httptest.NewRecorder()
 		s.HandleLeaderboard(w, httptest.NewRequest("GET", "/v1/leaderboard?window=all", nil))
@@ -113,5 +126,8 @@ func TestArchiveAnalyticsNeverScansSourceAndKeepsPseudonyms(t *testing.T) {
 				t.Fatal("incorrect as-of time")
 			}
 		})
+	}
+	if got := seriesCalls.Load(); got != 1 {
+		t.Fatalf("snapshot handlers queried series: got %d calls, want only the core stats refresh", got)
 	}
 }

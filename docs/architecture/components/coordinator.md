@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -53,6 +53,7 @@ The application, transport and service owners under `coordinator/`:
 | `coordinator/api/catalog`, `coordinator/api/releases` | Ordered catalog publication and generation-fenced release policy, respectively. |
 | `coordinator/api/accounts`, `coordinator/api/billing` | Account projections and billing HTTP; the payouts child owns provider payout workflows, not a second ledger. |
 | `coordinator/api/reporting`, `coordinator/api/operations` | Public projections and operational liveness/readiness/drain handlers. |
+| `coordinator/analyticssnapshot` | Validates optional local public analytics snapshots and persists acceptance continuity. `ServerConfig` supplies the snapshot and state paths through reporting dependencies; the reporting owner polls and serves them without database fallback. See [snapshot operations](../../operations/analytics-snapshots.md). |
 | `coordinator/api/observation` | Metrics, request profiles, route records and compact outcomes; their queues and flush/loss policies remain distinct. |
 | `coordinator/internal/api` | Production-consumed middleware, account projections, catalog validation and reporting calculations; HTTP binding stays with API owners. |
 | `coordinator/internal/inference` | Cohesive request components: media preparation, provider-body sealing/memoization, first-content and scan/backoff policy, relay, non-streaming response limits, cancellation, promotions, monetary reservations, settlement and outcome recording. Each retains its own dependencies and private state; the inference owner coordinates them. |

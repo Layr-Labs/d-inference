@@ -8,6 +8,7 @@
 
 - Add an opt-in validated local snapshot path for leaderboard, network totals and network series with source freshness checks and 503 responses when unavailable. Persist accepted source cutoffs and generation checksums in a separate private state file; snapshot mode fails closed if that file is missing or corrupt.
 - Refresh database-backed network totals every 5 minutes with a 15-minute stale-success ceiling and cache successful network series for 5 minutes. Preserve shared top-200 leaderboard caching, failure cooldowns and the 30-second stats refresh.
+- Reconcile aligned usage buckets across public series and reject reused BigQuery external tables whose manifest, configuration or schema differs from the verified publication.
 - Record a disabled rolling 30-day telemetry retirement proposal. Exact financial detail remains outside the proposal pending separate scope and safeguards; no source deletion is enabled.
 
 ## Unreleased - provider email campaigns

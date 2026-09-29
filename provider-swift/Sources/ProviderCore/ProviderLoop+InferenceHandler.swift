@@ -354,6 +354,23 @@ extension ProviderLoop {
         }
         profile.mark(.parsed)
 
+        // A parsed audio part is still unsupported by this provider. Reject
+        // before acceptance or loading a cold model, while this handler still
+        // owns the lookup receipt and service reservation. Keep this separate
+        // from decode failures so the typed media rejection stays intact.
+        do {
+            try MediaIngest.rejectUnsupportedAudio(chatRequest)
+        } catch {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: Self.sanitizedInferenceFailure(from: error, phase: .request),
+                    profile: profile),
+                fallbackFailure: .policy,
+                send: send)
+            return
+        }
+
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
             requestId: requestId,

@@ -1358,3 +1358,35 @@ func TestCacheRoutingPersistenceMemoryOnlyChangeKeepsParkedRows(t *testing.T) {
 		t.Fatalf("a resident-only change must not settle parked SSD rows: %+v", s)
 	}
 }
+
+// A capability change settles a large parked bucket for the old capability
+// completely, in chunks outside the apply's locks.
+func TestCacheRoutingPersistenceCapabilityChangeSettlesLargeBucket(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r, st)
+	p := persistenceTestProvider(t, r, "machine-a", capability)
+	r.mu.RLock()
+	persister := r.cachePersister
+	r.mu.RUnlock()
+	now := time.Now()
+	const parked = 2*bindChunkRows + 5
+	for i := 0; i < parked; i++ {
+		persister.Park(crs.HolderRecord{
+			Key: fmt.Sprintf("k%05d", i), CacheEpoch: capability.CacheEpoch, Tier: "ssd", ModelID: "model",
+			ModelAggregateHash: capability.ModelAggregateHash, PromptContractID: capability.PromptContractID,
+			BlockHashVersion: capability.BlockHashVersion, ReadyBoundaryMode: capability.ReadyBoundaryMode,
+			AnchorTokenCount: 4096, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(time.Minute),
+		})
+	}
+	changed := capability
+	changed.CacheEpoch = "33333333-3333-3333-3333-333333333333"
+	if err := r.UpdatePrefixCacheCapabilities(p.ID, 2, []protocol.PrefixCacheV2Capability{changed}); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 || s.DroppedPending != parked || s.BoundHolders != 0 {
+		t.Fatalf("every row parked for the old epoch must be settled: %+v", s)
+	}
+}

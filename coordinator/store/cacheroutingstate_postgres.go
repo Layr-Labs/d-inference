@@ -157,12 +157,11 @@ func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl
 	// The effective expiry applies the current TTL before the filter, the
 	// order and the limit, so a capped load after a TTL reduction is over
 	// rows that are still valid. Rows updated after now (a previous
-	// instance's clock ran ahead) are skipped: they would sort first and be
-	// routed as fresh past the TTL. Longest-lived first; a limit of 0 or
-	// less loads everything.
-	// Rows the prune tolerates (updated at most FutureSkew ahead of now, a
-	// previous instance's slight skew) load with their update time clamped
-	// to now; rows further ahead are the prune's to remove and stay out.
+	// instance's clock ran ahead) load with their update time clamped to
+	// now when they are within FutureSkew, the prune's tolerance; rows
+	// further ahead are the prune's to remove and stay out, as they would
+	// sort first and be routed as fresh past the TTL. Longest-lived first; a
+	// limit of 0 or less loads everything.
 	expiry := "expires_at"
 	args := []any{now.UTC(), now.Add(crs.FutureSkew).UTC()}
 	if ttl > 0 {
@@ -232,11 +231,11 @@ func (s *PostgresStore) UpsertCacheDemand(ctx context.Context, records []crs.Dem
 }
 
 func (s *PostgresStore) LoadCacheDemand(ctx context.Context, notBefore, notAfter time.Time, limit int) ([]crs.DemandRecord, error) {
-	// Newest first so a capped restore keeps the freshest keys; rows stamped
-	// after notAfter (a previous instance's clock ran ahead) are skipped so
-	// they cannot take the cap; a limit of 0 or less loads everything.
-	// Rows within the skew tolerance past notAfter load with their seen
-	// time clamped to notAfter, as the holder load does.
+	// Newest first so a capped restore keeps the freshest keys. Rows stamped
+	// past notAfter (a previous instance's clock ran ahead) load with their
+	// seen time clamped to notAfter when within FutureSkew, as the holder
+	// load does; rows further ahead are skipped so they cannot take the cap.
+	// A limit of 0 or less loads everything.
 	query := `SELECT key, seen_at FROM cache_routing_demand WHERE seen_at >= $1 AND seen_at <= $2 ORDER BY seen_at DESC, key`
 	args := []any{notBefore.UTC(), notAfter.Add(crs.FutureSkew).UTC()}
 	if limit > 0 {

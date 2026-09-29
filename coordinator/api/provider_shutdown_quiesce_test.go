@@ -135,3 +135,20 @@ func shortCtx(t *testing.T, d time.Duration) context.Context {
 	t.Cleanup(cancel)
 	return ctx
 }
+
+// A socket the coordinator closed for shutdown reads as going-away, the
+// restart-neutral classification, not as a drop.
+func TestShutdownCloseStatusIsRestartNeutral(t *testing.T) {
+	if got := shutdownCloseStatus(-1, true); got != websocket.StatusGoingAway {
+		t.Fatalf("shutdown close must read as going-away: %v", got)
+	}
+	if got := shutdownCloseStatus(-1, false); got != -1 {
+		t.Fatalf("an ordinary drop keeps its status: %v", got)
+	}
+	if got := shutdownCloseStatus(websocket.StatusNormalClosure, true); got != websocket.StatusNormalClosure {
+		t.Fatalf("a peer close keeps its status: %v", got)
+	}
+	if registry.ClassifyPeerClose(shutdownCloseStatus(-1, true), false) != registry.DisconnectReasonPeerClose {
+		t.Fatal("the shutdown close must classify as a peer close")
+	}
+}

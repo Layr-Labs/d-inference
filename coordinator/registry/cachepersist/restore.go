@@ -14,8 +14,8 @@ const restorePruneBudget = 10 * time.Second
 // Restore loads the durable copy. If the store's rows were written under a
 // different cache-key generation (the master key changed), both tables are
 // reset first: their HMAC-derived keys can never match a request. Demand
-// entries within ttl and not after now are returned, newest first up to
-// maxDemand, for the registry to seed its index directly; the registry then
+// entries within ttl (at most FutureSkew ahead of now, clamped to it) are
+// returned, newest first up to maxDemand, for the registry to seed its index directly; the registry then
 // reports the entries its index accepted with SeedDemandPersisted. Holder rows are loaded under the
 // current ttl (the store clamps each row's expiry to UpdatedAt+ttl before it
 // orders and caps, so a row written under a longer TTL neither outlives

@@ -228,6 +228,18 @@ func (s *Server) WaitProviderHandlers(ctx context.Context) bool {
 	}
 }
 
+// shutdownCloseStatus maps the read error of a socket the coordinator closed
+// for shutdown (CloseNow sends no close frame, so the peer status is -1) to
+// going-away, so the teardown flushes pending requests with the
+// restart-neutral cause and the disconnect metrics count a shutdown close
+// rather than a drop that strikes the provider's health.
+func shutdownCloseStatus(closeStatus websocket.StatusCode, closing bool) websocket.StatusCode {
+	if closeStatus == -1 && closing {
+		return websocket.StatusGoingAway
+	}
+	return closeStatus
+}
+
 // providerSocketsClosing reports whether shutdown has begun closing provider
 // sockets. A read loop checks it right after registering and leaves at once:
 // its socket is being closed, and nothing it could read now may produce a
@@ -365,7 +377,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	for {
 		_, data, err := conn.Read(loopCtx)
 		if err != nil {
-			closeStatus := websocket.CloseStatus(err)
+			closeStatus := shutdownCloseStatus(websocket.CloseStatus(err), s.providerSocketsClosing())
 			oomSuspected := false
 			readReason := readErrorReasonGeneric
 			if closeStatus != -1 {

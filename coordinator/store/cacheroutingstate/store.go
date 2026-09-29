@@ -18,7 +18,8 @@ type Store interface {
 	// LoadCacheHolders returns up to limit rows that are live at now under the
 	// current routing ttl and were not updated more than FutureSkew after now
 	// (a previous instance's fast clock); a row inside that tolerance loads
-	// with UpdatedAt clamped to now. A row's effective expiry is the earlier of its
+	// with UpdatedAt clamped to now (its effective expiry is computed from
+	// the stored, unclamped time). A row's effective expiry is the earlier of its
 	// stored ExpiresAt and UpdatedAt+ttl (ttl <= 0 applies no clamp); rows
 	// past it are skipped, ExpiresAt in the result carries the effective
 	// value, and rows are ordered longest-lived first by that value. The

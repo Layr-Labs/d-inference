@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `18ea5df16`
+> Last updated: 2026-09-29 · commit `860375c36`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -126,9 +126,9 @@ coordinator-authored cache-bust key inserted into the sealed body for
 protocol-0 providers (`bodyForCacheAttempt`, `coordinator/api/consumer.go`;
 `LegacyCacheBustKeyLength`, `coordinator/registry/cache_receipts.go`).
 
-Coordinator route keys are separate domain-separated HMACs over the opaque scope,
-aggregate hash, prompt contract, boundary token count, and provider-confirmed
-chain hash. Provider epochs remain mandatory holder metadata, rather than part
+Coordinator boundary keys are domain-separated HMACs under the route key over
+the opaque scope, aggregate hash, prompt contract, boundary token count, and
+provider-confirmed chain hash. Provider epochs remain mandatory holder metadata, rather than part
 of the content key: independent machines holding the same exact prefix share
 one bounded bucket per tier. Route and scope keys (the HMAC key material
 derived from the master key), account identifiers, raw boundaries, and
@@ -763,14 +763,17 @@ back are operator procedures, kept in the runbook
    machine (same key and epoch: two sessions overlap when the per-key holder
    cap evicts the old session's holder as the new session's receipt arrives)
    still holds the boundary, in which case the row is refreshed as that
-   session's evidence; a capability change settles the rows parked for the
-   old capability the same way. A lookup's measured stage cost travels with
+   session's evidence; an SSD capability change settles the rows parked for
+   the old capability the same way (a resident-tier change leaves them to
+   bind). A lookup's measured stage cost travels with
    the row and is rebound at bind with its own deadline, so a restart inside
    that window keeps routing on the measured value rather than the Ready
-   estimate. Demand rows are restored only up to the current clock (a
-   previous instance's fast clock cannot take the cap), and only the entries
-   the index accepts count as already persisted; holder rows updated after
-   the current clock are skipped the same way. At shutdown the final flush
+   estimate. Demand and holder rows stamped up to one minute ahead of the
+   current clock (an earlier instance's slight skew) are restored with their
+   times clamped to the clock; rows further ahead are quarantined by the
+   loads and removed by the prune, so they can neither take the restore cap
+   nor outrank this run's receipts; and only the demand entries the index
+   accepts count as already persisted. At shutdown the final flush
    runs after the HTTP server has stopped and every hijacked provider
    socket, registered or not, has been closed and its handler joined
    (`CloseProviderConnections`, over the server's own socket tracking) and
@@ -813,8 +816,9 @@ back are operator procedures, kept in the runbook
    selection**; V1 receipt frames stay decodable but cannot mutate routing
    evidence (`coordinator/registry/cache_receipts.go`).
 4. **Cache ownership is never derived from a caller-controlled field.** The
-   provider-visible scope and the route keys are domain-separated HMACs over
-   authenticated account, concrete build, aggregate hash and prompt contract
+   provider-visible scope and the boundary keys are domain-separated HMACs
+   under the route and scope keys over authenticated account, concrete build,
+   aggregate hash and prompt contract
    (`coordinator/registry/cache_route_keys.go`).
 5. **Ordinary gates remain mandatory and credit removes only avoidable prefill**:
    optional numeric limits may reduce that credit, but no credit removes load,

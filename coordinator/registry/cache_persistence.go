@@ -78,20 +78,27 @@ func (t *cacheRoutingTracker) dropParkedForCapability(epoch, model string) {
 	if t == nil {
 		return
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	p := t.persister
-	if p == nil {
-		return
+	// In chunks, releasing the tracker lock between them, as the bind does:
+	// a request that needs the lock waits for at most one chunk.
+	for {
+		t.mu.Lock()
+		p := t.persister
+		if p == nil {
+			t.mu.Unlock()
+			return
+		}
+		rows, more := p.Take(epoch, model, bindChunkRows)
+		for _, rec := range rows {
+			t.persistRowAfterLossLocked(rec.Key, rec.CacheEpoch, "")
+		}
+		if len(rows) > 0 {
+			p.AddBound(0, uint64(len(rows)))
+		}
+		t.mu.Unlock()
+		if !more {
+			return
+		}
 	}
-	rows, _ := p.Take(epoch, model, 0)
-	if len(rows) == 0 {
-		return
-	}
-	for _, rec := range rows {
-		t.persistRowAfterLossLocked(rec.Key, rec.CacheEpoch, "")
-	}
-	p.AddBound(0, uint64(len(rows)))
 }
 
 // persistRowAfterLossLocked settles the durable row (key, epoch) after one

@@ -45,7 +45,17 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	statuses *[]protocol.PrefixCacheModelStatus,
 	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
 ) (bool, error) {
-	changed, provider, remaining, err := r.applyPrefixCacheSnapshot(providerID, replaceCapabilities, version, capabilities, memoryCapabilities, statuses, outcomes)
+	changed, provider, remaining, drops, err := r.applyPrefixCacheSnapshot(providerID, replaceCapabilities, version, capabilities, memoryCapabilities, statuses, outcomes)
+	if err == nil && len(drops) > 0 {
+		// Rows parked for capabilities that just changed are settled here,
+		// outside the apply's locks and in chunks.
+		r.mu.RLock()
+		tracker := r.cacheRouting
+		r.mu.RUnlock()
+		for _, d := range drops {
+			tracker.dropParkedForCapability(d.epoch, d.model)
+		}
+	}
 	if err == nil && remaining && provider != nil {
 		// The snapshot bound one chunk of parked rows under its locks (the
 		// heartbeat path); the rest binds here, chunk by chunk, with the
@@ -58,6 +68,12 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	return changed, err
 }
 
+// parkedDrop names a (cache epoch, model) whose parked rows a capability
+// change made stale.
+type parkedDrop struct {
+	epoch, model string
+}
+
 func (r *Registry) applyPrefixCacheSnapshot(
 	providerID string,
 	replaceCapabilities bool,
@@ -66,22 +82,22 @@ func (r *Registry) applyPrefixCacheSnapshot(
 	memoryCapabilities *[]protocol.PrefixCacheV2Capability,
 	statuses *[]protocol.PrefixCacheModelStatus,
 	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
-) (changed bool, boundProvider *Provider, remaining bool, err error) {
+) (changed bool, boundProvider *Provider, remaining bool, drops []parkedDrop, err error) {
 	if r == nil {
-		return false, nil, false, nil
+		return false, nil, false, nil, nil
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	provider := r.providers[providerID]
 	if provider == nil {
-		return false, nil, false, errInvalidPrefixCacheCapability
+		return false, nil, false, nil, errInvalidPrefixCacheCapability
 	}
 
 	provider.mu.Lock()
 	models, err := uniqueProviderModels(provider.Models)
 	if err != nil {
 		provider.mu.Unlock()
-		return false, nil, false, err
+		return false, nil, false, nil, err
 	}
 
 	resultVersion := provider.PrefixCacheProtocol
@@ -92,7 +108,7 @@ func (r *Registry) applyPrefixCacheSnapshot(
 			version, capabilities, models)
 		if err != nil {
 			provider.mu.Unlock()
-			return false, nil, false, err
+			return false, nil, false, nil, err
 		}
 		resultVersion = version
 	}
@@ -101,7 +117,7 @@ func (r *Registry) applyPrefixCacheSnapshot(
 			resultVersion, *memoryCapabilities, models)
 		if err != nil {
 			provider.mu.Unlock()
-			return false, nil, false, err
+			return false, nil, false, nil, err
 		}
 	} else if resultVersion < 2 {
 		resultMemoryCapabilities = nil
@@ -178,12 +194,18 @@ func (r *Registry) applyPrefixCacheSnapshot(
 		// holds is that session's evidence, not this capability's.
 		// Only for a change of the SSD capability itself: changedModels also
 		// names models whose resident-tier capability moved, and parked rows
-		// are SSD evidence under the SSD epoch.
+		// are SSD evidence under the SSD epoch. (The live invalidation above
+		// is still per model across tiers, as before this change; parked
+		// rows are settled only for the tier they belong to.) The rows are settled by the
+		// caller after these locks are released, in chunks: a bucket parked
+		// under the old epoch is never taken by the bind below (which takes
+		// the new epoch's), and one under an unchanged epoch is settled as a
+		// mismatch by the bind either way.
 		for model := range changedModels {
 			prev, had := previousCapabilities[model]
 			next, has := resultCapabilities[model]
 			if had && (!has || prev != next) {
-				tracker.dropParkedForCapability(prev.CacheEpoch, model)
+				drops = append(drops, parkedDrop{epoch: prev.CacheEpoch, model: model})
 			}
 		}
 	}
@@ -199,5 +221,5 @@ func (r *Registry) applyPrefixCacheSnapshot(
 	if tracker != nil {
 		tracker.recordDonationOutcomes(deltas)
 	}
-	return capabilitiesChanged, provider, remaining, nil
+	return capabilitiesChanged, provider, remaining, drops, nil
 }

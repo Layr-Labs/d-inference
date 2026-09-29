@@ -81,10 +81,13 @@ type Persister struct {
 	// once the tombstone is no longer pending (Tombstoned).
 	holderDeletes map[crs.HolderKey]time.Time
 	recentDeletes map[crs.HolderKey]time.Time
-	// recentOrder is recentDeletes in insertion order, so the retention can
-	// be bounded by the holder budget as well as by the TTL: under sustained
-	// churn with a long TTL the oldest tombstones go first.
-	recentOrder     []crs.HolderKey
+	// recentOrder lists the decisions in the order they were recorded, so
+	// the retention can be bounded by the holder budget as well as by the
+	// TTL: under sustained churn with a long TTL the oldest decisions go
+	// first. A key decided again is appended again with its new time; the
+	// earlier entry is then stale (its time no longer matches the map) and
+	// is skipped when it reaches the front.
+	recentOrder     []recentDelete
 	demandTouched   map[string]time.Time
 	demandPersisted map[string]time.Time
 	pending         map[string][]crs.HolderRecord
@@ -222,6 +225,12 @@ func (p *Persister) MarkDemand(keys []string, now time.Time) {
 		p.demandTouched[key] = now
 	}
 	p.mu.Unlock()
+}
+
+// recentDelete is one recorded delete decision in retention order.
+type recentDelete struct {
+	key crs.HolderKey
+	at  time.Time
 }
 
 type batch struct {
@@ -418,19 +427,12 @@ func (p *Persister) Prune(ctx context.Context, now time.Time, ttl time.Duration)
 	// such row has expired on its own.
 	p.prunePending(now)
 	p.mu.Lock()
-	kept := p.recentOrder[:0]
-	for _, k := range p.recentOrder {
-		at, ok := p.recentDeletes[k]
-		if !ok {
-			continue
-		}
+	for k, at := range p.recentDeletes {
 		if now.Sub(at) >= ttl {
 			delete(p.recentDeletes, k)
-			continue
 		}
-		kept = append(kept, k)
 	}
-	p.recentOrder = kept
+	p.compactRecentOrderLocked()
 	p.mu.Unlock()
 	if !p.Ready() {
 		return
@@ -462,16 +464,39 @@ func (p *Persister) Ready() bool {
 }
 
 // rememberDeleteLocked records a delete decision for Tombstoned, bounded by
-// the holder budget: beyond maxPending entries the oldest tombstones are
-// forgotten first (the TTL bound is applied by Prune). Called with p.mu held.
+// the holder budget: beyond maxPending live entries the oldest decisions are
+// forgotten first (the TTL bound is applied by Prune). A key decided again
+// moves to the retention tail with its new time. Called with p.mu held.
 func (p *Persister) rememberDeleteLocked(k crs.HolderKey, at time.Time) {
-	if _, present := p.recentDeletes[k]; !present {
-		p.recentOrder = append(p.recentOrder, k)
+	if cur, present := p.recentDeletes[k]; present && !at.After(cur) {
+		return
 	}
 	p.recentDeletes[k] = at
+	p.recentOrder = append(p.recentOrder, recentDelete{key: k, at: at})
 	for len(p.recentDeletes) > p.maxPending && len(p.recentOrder) > 0 {
 		oldest := p.recentOrder[0]
 		p.recentOrder = p.recentOrder[1:]
-		delete(p.recentDeletes, oldest)
+		if cur, ok := p.recentDeletes[oldest.key]; ok && cur.Equal(oldest.at) {
+			delete(p.recentDeletes, oldest.key)
+		}
 	}
+	if len(p.recentOrder) > 2*p.maxPending {
+		p.compactRecentOrderLocked()
+	}
+}
+
+// compactRecentOrderLocked drops retention entries whose decision the map no
+// longer holds (expired, evicted, or superseded by a newer decision for the
+// same key). Called with p.mu held.
+func (p *Persister) compactRecentOrderLocked() {
+	kept := p.recentOrder[:0]
+	for _, e := range p.recentOrder {
+		if cur, ok := p.recentDeletes[e.key]; ok && cur.Equal(e.at) {
+			kept = append(kept, e)
+		}
+	}
+	for i := len(kept); i < len(p.recentOrder); i++ {
+		p.recentOrder[i] = recentDelete{}
+	}
+	p.recentOrder = kept
 }

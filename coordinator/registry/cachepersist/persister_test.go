@@ -624,15 +624,28 @@ func TestRecentDeletesBoundedByHolderBudget(t *testing.T) {
 	if p.Tombstoned(crs.HolderKey{Key: "a", CacheEpoch: "e"}, before) || !p.Tombstoned(crs.HolderKey{Key: "e", CacheEpoch: "e"}, before) {
 		t.Fatal("the oldest tombstones must go first")
 	}
-	// A key re-tombstoned keeps one slot and its newest time.
-	p.MarkHolderDelete(crs.HolderKey{Key: "e", CacheEpoch: "e"})
+	// A key decided again moves to the retention tail: with c, d, e kept,
+	// deciding c again and then adding f and g must evict d and e, not c.
+	time.Sleep(2 * time.Millisecond)
+	p.MarkHolderDelete(crs.HolderKey{Key: "c", CacheEpoch: "e"})
 	if err := p.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
+	for _, key := range []string{"f", "g"} {
+		p.MarkHolderDelete(crs.HolderKey{Key: key, CacheEpoch: "e"})
+		if err := p.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
 	p.mu.Lock()
-	n, order = len(p.recentDeletes), len(p.recentOrder)
+	n = len(p.recentDeletes)
+	p.compactRecentOrderLocked()
+	order = len(p.recentOrder)
 	p.mu.Unlock()
 	if n != 3 || order != 3 {
-		t.Fatalf("a re-tombstoned key must not take a second slot: map=%d order=%d", n, order)
+		t.Fatalf("retention must stay within the holder budget after refreshes: map=%d order=%d", n, order)
+	}
+	if !p.Tombstoned(crs.HolderKey{Key: "c", CacheEpoch: "e"}, before) || p.Tombstoned(crs.HolderKey{Key: "d", CacheEpoch: "e"}, before) {
+		t.Fatal("a refreshed decision must outlive older ones")
 	}
 }

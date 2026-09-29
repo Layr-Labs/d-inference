@@ -118,7 +118,15 @@ func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, ow
 			withCode("model_capability_unsupported")))
 		return true
 	}
-	// Online, but no owned machine currently serves this model.
+	// Advertisement/residency and routing authorization are separate states.
+	// Loading again cannot repair a rejected build, template, or runtime.
+	if reasons := s.registry.OwnedModelRoutingBlockers(owner, model); len(reasons) > 0 {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("your machine advertises or reports model %q loaded, but coordinator routing checks block it (%s) — inspect `darkbloom doctor` and the model build; loading it again may not resolve this", model, strings.Join(reasons, ", ")),
+			withCode("model_routing_blocked")))
+		return true
+	}
+	// Online, with no advertisement or loaded-slot evidence for this model.
 	w.Header().Set("Retry-After", "15")
 	writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_loaded",
 		fmt.Sprintf("model %q is not available on your machine — load it on your node and retry", model),

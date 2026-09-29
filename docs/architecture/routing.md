@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-09-29 · commit `d2a7b6431`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -884,3 +884,15 @@ for update activation. Requests are coalesced by revision so an inventory change
 while a close is underway cannot be lost. Deadlines leave work alive; lifecycle
 stop takes precedence. Unexpected network loss still cancels work on the dead
 connection and does not replay partially emitted output.
+
+## Self-route preflight diagnostics
+
+`OwnedProviderSummary` (`coordinator/registry/scheduler.go`) checks owner
+servability independently of residency. When the base request cannot route,
+`OwnedModelRoutingBlockers` (`coordinator/registry/owned_model_blockers.go`)
+distinguishes an advertised or reported-loaded model excluded by coordinator
+gates from an absent model. Slot telemetry is authoritative over legacy
+`CurrentModel` for residency. This read-only diagnostic preserves all routing
+gates and limits reasons to the caller's own online providers. See the
+[error contract](../reference/api-contracts.md#self-route-model-blockers) and
+[self-route troubleshooting](../provider/self-route.md#troubleshooting).

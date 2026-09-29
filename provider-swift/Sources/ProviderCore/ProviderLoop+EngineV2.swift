@@ -308,6 +308,7 @@ extension ProviderLoop {
         newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         let build = try await resliceAndBuildEngineV2Bundle(
@@ -321,6 +322,7 @@ extension ProviderLoop {
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
                 status: .disabled(.configDisabled, configured: false)),
+            modelArtifactSHA256: modelArtifactSHA256,
             cacheEligibleWeightHash: cacheEligibleWeightHash)
         return build.bundle.bridge
     }
@@ -337,6 +339,7 @@ extension ProviderLoop {
         tokenizer: TokenizerHandle,
         targetSizing: SlotSizingSnapshot,
         specDecPreparation: SpecDecPreparation,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil,
         registerInRuntime: Bool = true
     ) async throws -> EngineV2SlotBuild {
@@ -466,6 +469,7 @@ extension ProviderLoop {
                 kvBytesCapacity: targets[modelId] ?? 0,
                 specDecPreparation: specDecPreparation,
                 preparedModel: prepared,
+                modelArtifactSHA256: modelArtifactSHA256,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
                 registerInRuntime: registerInRuntime)
         } catch {
@@ -591,6 +595,7 @@ extension ProviderLoop {
         kvBytesCapacity: Int,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel?,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil,
         registerInRuntime: Bool = true
     ) async throws -> ProviderEngineBundle {
@@ -599,6 +604,7 @@ extension ProviderLoop {
             container: .autoregressive(container), tokenizer: tokenizer, sizing: sizing,
             kvBytesCapacity: kvBytesCapacity, specDecPreparation: specDecPreparation,
             preparedModel: preparedModel.map(EngineV2ServingPreparation.autoregressive),
+            modelArtifactSHA256: modelArtifactSHA256,
             cacheEligibleWeightHash: cacheEligibleWeightHash, registerInRuntime: registerInRuntime)
     }
 
@@ -613,6 +619,7 @@ extension ProviderLoop {
         kvBytesCapacity: Int,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2ServingPreparation?,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil,
         registerInRuntime: Bool = true
     ) async throws -> ProviderEngineBundle {
@@ -677,6 +684,8 @@ extension ProviderLoop {
                 sizing: sizing,
                 kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: maxConcurrent,
+                automaticallySelectConcurrency: !loopConfig.config.backend.engineV2MaxConcurrentIsExplicit
+                    && loopConfig.config.backend.engineV2MaxConcurrentByModel[modelId] == nil,
                 kvBudget: kvBudget,
                 // The serving-set resolved reserve, so the paged capacity
                 // decision inside the factory measures headroom against the
@@ -686,8 +695,9 @@ extension ProviderLoop {
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 prefillDeadlineMode:
                     loopConfig.config.backend.prefillDeadlineMode,
-                // SSD-tier metadata binding: the verified hash for the bytes
-                // this slot loaded (nil/blank disables reusable SSD caching).
+                // The loaded artifact's profile identity is independent of
+                // SSD reuse eligibility (nil/blank cache hash disables SSD).
+                modelArtifactSHA256: modelArtifactSHA256,
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: preparedModel,

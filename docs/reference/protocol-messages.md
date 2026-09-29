@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `ac63cefa7`
+> Last updated: 2026-09-29 · commit `60230b143`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -101,6 +101,7 @@ deliver a graceful-drain acknowledgement.
 |---|---|---|---|
 | provider → coordinator | `register` | `RegisterMessage` | `ProviderMessage.register` (`Register`) |
 | provider → coordinator | `heartbeat` | `HeartbeatMessage` | `.heartbeat` (`Heartbeat`) |
+| provider → coordinator | `service_reservation_released` | `ServiceReservationReleasedMessage` | `.serviceReservationReleased` |
 | provider → coordinator | `inference_accepted` | `InferenceAcceptedMessage` | `.inferenceAccepted` |
 | provider → coordinator | `inference_response_chunk` | `InferenceResponseChunkMessage` | `.inferenceResponseChunk` |
 | provider → coordinator | `inference_complete` | `InferenceCompleteMessage` | `.inferenceComplete` |
@@ -203,9 +204,9 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See `coordinator/registry/native_media_tools.go` (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
-| `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Padded native-weight load estimate in GiB; used for reduced offload admission only with a valid family-matched offload declaration |
+| `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Full load estimate in GiB; explicit native Qwen4 offload or MiMo LOAD declarations require the family-matched supplement and source/catalog consistency checks |
 | `ssd_offloaded_weight_bytes` | `int64` | `UInt64?` | opt | Validated immutable payload excluded from native weight allocation; Swift omits nil/zero. It is not a KV cache byte count or a claim that OS-mapped pages use no RAM |
-| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Checkpoint-derived loading allowance for eligible native Qwen4 SSD offload; omitted by legacy/other layouts. Coordinator requires at least 1 GiB and checked addition; invalid/missing values retain 1.2 padding. This does not reduce OS, activation or request-KV reserves |
+| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Checkpoint-derived allowance for eligible native Qwen4 SSD offload, or full-LOAD supplement above all stored payload bytes for validated exact `mimo_v2` with no SSD subtraction. Requires at least 1 GiB and checked addition; invalid/missing declarations retain legacy pricing. OS, activation and request-KV reserves are unchanged |
 | `parameters` | — | `UInt64?` | Swift only | encoded by Swift, dropped by Go |
 
 Both memory fields are defined by `coordinator/protocol/messages.go`
@@ -215,7 +216,11 @@ Qwen4 types, an ID matching the requested model, finite positive memory, and a p
 payload smaller than the artifact; it floors the estimate against padded
 remaining weight bytes (`coordinator/registry/offloaded_weights.go`,
 `advertisedOffloadedMemoryGBLocked`). Missing/invalid declarations retain the
-existing catalog/measurement policy. See [offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights).
+existing catalog/measurement policy. Exact `mimo_v2` additionally requires zero
+SSD offload, positive source bytes, a checked supplement and a full estimate no
+smaller than their sum. Its load floor retains the greater raw catalog/source
+size plus the supplement once; callers supply raw decimal catalog GB, not GiB,
+minimum RAM or a padded estimate. See [offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights).
 
 #### `privacy_capabilities`
 
@@ -278,6 +283,9 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `slots` | `[]BackendSlotCapacity` | `[BackendSlotCapacity]` | req | [`slots[]`](#slots) |
+| `whole_mac_service_retirement_protocol` | `int` | `Int?` | opt | `1` opts this connection into explicit attempt retirement via [`service_reservation_released`](#service_reservation_released); sticky after an accepted capacity report with a service total. Omission/unknown version on a new connection retains legacy terminal cleanup |
+| `whole_mac_service_used` | `*float64` | `Double?` | opt | Fraction of the shared machine service allowance owned by requests until engine retirement; `[0,1]` |
+| `whole_mac_service_reservations` | `[]WholeMacServiceReservation` | `[WholeMacServiceReservation]` | opt | Exact coordinator attempts included in the aggregate above; omitted when empty, including local-only work. Missing decodes to an empty list; [entry schema and reconciliation](#service-reservation-correlation) |
 | `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `gpu_memory_cache_gb` | `float64` | `Double` | req | Metal active / peak / reclaimable cache, shared across slots |
 | `total_memory_gb` | `float64` | `Double` | req | |
 | `free_for_load_gb` | `*float64` | `Double` (always encoded) | ptr | **The single source of truth for cold-load admission**: max additional model-weight GB loadable now, net of the unified-memory cap (`defaultCapFraction`, [`../architecture/hardware-support.md#constants`](../architecture/hardware-support.md#constants)), the OS/operator reserve and activation + minimum-KV headroom, clamped to real OS-available memory, with idle resident models counted as evictable. Nil (legacy provider) → the coordinator falls back to its total-memory heuristic |
@@ -288,6 +296,35 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 | `capacity_seq` | `uint64` | `UInt64` | opt | per-connection monotonic snapshot sequence; the coordinator discards stale or reordered snapshots, and any `seq > 0` marks the connection quote-capable (`capacity_probe`). 0/omitted = legacy last-write-wins |
 | `telemetry` | `*CapacityTelemetry` | `CapacityTelemetry?` | opt | [`backend_capacity.telemetry`](#backend_capacitytelemetry) |
 | `prefix_cache_maintenance` | `*PrefixCacheMaintenanceTelemetry` | `PrefixCacheMaintenanceTelemetry?` | opt | Process-lifetime whole-root removal counters: `ttl_expired_total`, `budget_evicted_total`, `temp_removed_total`; includes unloaded models, separate from active-store evictions |
+
+#### Service reservation correlation
+
+Go `WholeMacServiceReservation` (`coordinator/protocol/whole_mac_service.go`) ·
+Swift `WholeMacServiceReservation`
+(`provider-swift/Sources/ProviderCore/Protocol/WholeMacServiceReservation.swift`).
+Each `whole_mac_service_reservations[]` entry has this shape:
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `id` | `string` | `String` | req | Opaque UUID echoed from the attempt's [`service_reservation_id`](#inference_request); independent of the client request ID |
+| `used_fraction` | `float64` | `Double` | req | Actual service allowance still held by this attempt; finite and in `(0,1]` |
+
+The provider snapshots the aggregate and this list atomically. Entries remain
+until engine retirement; local or legacy work without an attempt ID contributes
+only to the aggregate. Lists are bounded to 64 unique UUIDs, and their fractions
+must sum to no more than `whole_mac_service_used`. With a reported aggregate,
+malformed correlation metadata fails admission closed at full usage.
+
+The coordinator credits overlap only for an exact attempt ID, adding every
+unmatched pending or terminal-shadow charge and any positive difference between
+a matched local reservation and its reported fraction. Omitting the list while reporting the
+total is supported but conservatively counts all pending and shadow reservations
+in addition to that total. Omitting the total retains legacy admission only before
+retirement-protocol opt-in; afterward omission fails service admission closed
+and cannot reset ownership. The list alone cannot establish overlap. Receipt
+time never proves inclusion. Terminal shadows are frozen attempt UUID/fraction
+pairs retained until explicit release; absence from a heartbeat, even at a newer
+`capacity_seq`, does not prove retirement.
 
 #### `slots[]`
 
@@ -302,10 +339,12 @@ routing on them.
 | `state` | `string` | `String` | req | Coordinator accepts `running`, `idle`, `idle_shutdown`, `crashed`, `reloading`; `registry.SlotStateFold` (`coordinator/registry/gate_reason.go`) folds anything else to `other`. The v0.8.16 provider emits `running`, `idle`, `crashed`, `reloading` (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`); `idle_shutdown` stays accepted for older providers. `idle` means the model **is loaded** (`slotStateModelLoaded`, `coordinator/registry/scheduler.go`); `reloading`/`crashed` make the slot unroutable |
 | `num_running`, `num_waiting` | `int` | `UInt32` | req | |
 | `max_concurrency` | `int` | `UInt32` | opt | |
+| `performance_profile` | `*ServingPerformanceProfileReference` | `ServingPerformanceProfileReference?` | opt | Reviewed profile identity; omitted when no exact qualified profile applies |
+| `performance_measurements` | `*PerformanceMeasurements` | `PerformanceMeasurements?` | opt | Transient routing observations; [schema below](#slotsperformance_measurements) |
 | `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
 | `max_tokens_potential` | `int64` | `Int64` | req | Σ `max_tokens` over running requests |
 | `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS |
-| `observed_prefill_tps` | `float64` | `Double` | opt | EWMA (admission → first token); omitted when unmeasured |
+| `observed_prefill_tps` | `float64` | `Double` | opt | Cold-prefill engine-phase EWMA, published at prompt completion; omitted when unmeasured |
 | `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | `int64` | `Int64` | opt | `queued_token_budget` is hard-coded `0` by the v0.8.16 provider (`backendSlotCapacity`, `EngineV2Bridge+Capacity.swift`), so it is always omitted |
 | `kv_bytes_per_token` | `int64` | `Int64` | opt | |
 | `model_load_time_ms` | `int64` | `Int64` | opt | measured cold load; omitted when unmeasured |
@@ -410,7 +449,9 @@ Clamped by `registry.clampBackendCapacity`; persisted to `fleet_snapshots`
 |---|---|---|
 | `queued_prefill_tokens` | `int64` | Σ prompt tokens of requests whose engine submit has not returned |
 | `partial_prefill_rows` | `int64` | admitted rows with no first token yet |
-| `prefill_tokens_total` | `int64` | cumulative |
+| `prefill_tokens_total` | `int64` | Actual computed prompt/suffix tokens at prompt completion, including later cancellations |
+| `prefill_requests_total` | `int64` | Prompt-completion count paired with actual work, including fully reused zero-work prompts |
+| `generated_tokens_total`, `generation_requests_total` | `int64` | Actual output and terminal counts, including partial cancelled generations |
 | `isolated_prefill_tps` | `float64` | isolated prefill EWMA |
 | `ewma_initialized` | `bool` | whether `isolated_prefill_tps` has a sample |
 | `pump_tasks` | `int64` | live stream-pump tasks |
@@ -418,6 +459,41 @@ Clamped by `registry.clampBackendCapacity`; persisted to `fleet_snapshots`
 | `kv_bytes_in_use`, `kv_bytes_capacity` | `int64` | raw bytes |
 | `eval_in_flight_ms` | `int64` | same read as the slot-level key |
 | `step_wall_ns_total`, `decode_rows_total` | `int64` | cumulative engine counters (slice 3) |
+
+#### `slots[].performance_measurements`
+
+`slots[].performance_profile` optionally names reviewed release data with `id`,
+`runtime_revision` and `context_tokens`; it carries no self-certified curve.
+The coordinator resolves the reference against its own catalog and registered
+model artifact. Go `coordinator/protocol/performance_profile.go` and Swift
+`provider-swift/Sources/ProviderCore/Protocol/ServingPerformanceProfileReference.swift`
+define the mirror.
+
+`performance_measurements` is defined in
+`coordinator/protocol/performance_measurements.go` and
+`provider-swift/Sources/ProviderCore/Protocol/PerformanceMeasurements.swift`:
+
+| Key | Meaning |
+|---|---|
+| `epoch` | Per-engine measurement lifetime; replacement resets counter baselines |
+| `isolated_prefill`, `contended_prefill`, `decode`, `delivered_decode`, `end_to_end` | Optional `{tokens_per_second, sample_count, sample_age_ms}` observations; age is elapsed time at snapshot |
+| `workload_buckets` | Bounded numeric buckets with `phase`, `prompt_token_bucket`, `context_token_bucket`, `cache_state`, `contention`, `other_model_activity`, `observation` |
+
+Prompt-completion receipts request a capacity refresh. Changed measurement
+epochs, sample counts or cumulative work counters trigger the existing
+rate-limited event heartbeat; sample-age changes alone do not. This uses the
+existing payload and requires no additional wire message
+(`CapacityHeartbeatMateriality`,
+`provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`).
+
+New peers use count/epoch/age to prevent heartbeat replay from refreshing old
+samples. Malformed evidence clears its signal. Older peers may omit the entire
+object and keep legacy changed-EWMA freshness behavior. No prompt text, token IDs
+or cache keys appear in these measurements. Shared profiler fixtures pin the
+Go/Swift shape; these are transient capacity fields, not persisted profiler
+telemetry or telemetry-event fields. Numeric work counters remain in
+`slots[].telemetry`; the epoch and bucket list are excluded from persisted
+numeric-only provider telemetry.
 
 #### `backend_capacity.telemetry`
 
@@ -460,6 +536,34 @@ slots. Only accepted capacity replacements advance the reconciliation clock.
 New fresh captures emit gauges; repeated or stale captures emit only age and
 freshness (`coordinator/api/provider_process_memory_telemetry.go`,
 `recordProcessMemoryTelemetry`).
+
+### `service_reservation_released`
+
+Go `ServiceReservationReleasedMessage` · Swift
+`ProviderMessage.serviceReservationReleased` (via `OutboundMessage`).
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `type` | `string` | discriminator | req | `"service_reservation_released"` |
+| `service_reservation_id` | `string` | `String` | req | Exact attempt UUID; no client request ID, prompt or output content |
+
+A provider advertising retirement protocol `1` sends this reliable control frame
+exactly once after the request pipeline can no longer acquire service and every
+acquired service lease has retired. It also covers requests rejected before any
+lease was acquired and leases acquired/released entirely between heartbeats.
+A consumer terminal alone is not release evidence. The coordinator accepts proof
+before terminal (preventing a later shadow) or after terminal (removing the
+shadow and waking queued requests). Malformed, duplicate and unknown IDs allocate
+no retained history. Late callbacks from an old connection cannot release a new
+attempt. Definitively unsent writer attempts are retired locally; ambiguous
+socket writes retain ownership until proof or disconnect. Transient untrust and
+missing capacity do not clear ownership; disconnect clears all session state.
+Legacy providers that do not opt in keep their existing terminal cleanup.
+Coordinator tracking is decided at the final authorized handoff after this
+connection opts in, including reservations created before capability arrived.
+Attempts handed off before opt-in retain their original cleanup behavior; later
+heartbeats do not upgrade them because their release proof may already have
+arrived and been ignored under the legacy protocol.
 
 ### `inference_accepted`
 
@@ -751,6 +855,7 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `request_id` | `string` | `String` | req | attempt UUID |
+| `service_reservation_id` | `string` | `String?` | opt | Fresh opaque UUID for the committed service reservation, including retries of the same request; omitted by older coordinators. The provider echoes it with the actual held charge in [`whole_mac_service_reservations`](#service-reservation-correlation) until retirement. Distinct from `request_id`; missing or invalid IDs receive no overlap credit but still consume provider allowance |
 | `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; the only request body. There is no plaintext `body` key: the coordinator never sends one and Swift rejects a request without `encrypted_body` |
 | `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding |
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |

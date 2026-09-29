@@ -65,11 +65,12 @@ public struct StandaloneServerConfig: Sendable {
     public let authToken: String?
     public let runtimeCapabilities: Set<ProviderRuntimeCapability>
     /// Box-wide concurrent-decode cap per v2 engine
-    /// (`[backend] engine_v2_max_concurrent`), clamped to [1, 8]. Defaults to
+    /// (`[backend] engine_v2_max_concurrent`), bounded by the resolved profile. Defaults to
     /// ``BackendSettings/defaultEngineV2MaxConcurrent`` rather than a literal:
     /// a third independent copy of the fleet default is exactly how the
     /// memberwise/decode pair drifted in v0.8.0.
     public let engineV2MaxConcurrent: UInt64
+    public let engineV2MaxConcurrentIsExplicit: Bool
     /// Per-model overrides (`engine_v2_max_concurrent_by_model`).
     public let engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`[backend] engine_v2_kv_backend`):
@@ -90,7 +91,7 @@ public struct StandaloneServerConfig: Sendable {
         maxCachedModels: Int = 3,
         authToken: String? = nil,
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
-        engineV2MaxConcurrent: UInt64 = BackendSettings.defaultEngineV2MaxConcurrent,
+        engineV2MaxConcurrent: UInt64? = nil,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
@@ -104,7 +105,8 @@ public struct StandaloneServerConfig: Sendable {
         self.maxCachedModels = max(1, maxCachedModels)
         self.authToken = authToken
         self.runtimeCapabilities = runtimeCapabilities
-        self.engineV2MaxConcurrent = engineV2MaxConcurrent
+        self.engineV2MaxConcurrent = engineV2MaxConcurrent ?? BackendSettings.defaultEngineV2MaxConcurrent
+        self.engineV2MaxConcurrentIsExplicit = engineV2MaxConcurrent != nil
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
@@ -140,6 +142,8 @@ public actor StandaloneServer {
         let modelType: String?
         let isVLM: Bool
         let sizing: SlotSizingSnapshot
+        /// Verified load identity, retained independently of cache eligibility.
+        let modelArtifactSHA256: String?
         let cacheEligibleWeightHash: String?
         var lastUsedAt: ContinuousClock.Instant
 
@@ -151,10 +155,12 @@ public actor StandaloneServer {
             isVLM: Bool,
             sizing: SlotSizingSnapshot,
             lastUsedAt: ContinuousClock.Instant,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil
         ) {
             self.init(bundle: bundle, modelContainer: .autoregressive(container), tokenizer: tokenizer,
                 modelType: modelType, isVLM: isVLM, sizing: sizing, lastUsedAt: lastUsedAt,
+                modelArtifactSHA256: modelArtifactSHA256,
                 cacheEligibleWeightHash: cacheEligibleWeightHash)
         }
 
@@ -166,6 +172,7 @@ public actor StandaloneServer {
             isVLM: Bool,
             sizing: SlotSizingSnapshot,
             lastUsedAt: ContinuousClock.Instant,
+            modelArtifactSHA256: String? = nil,
             cacheEligibleWeightHash: String? = nil
         ) {
             self.bundle = bundle
@@ -175,6 +182,7 @@ public actor StandaloneServer {
             self.isVLM = isVLM
             self.sizing = sizing
             self.lastUsedAt = lastUsedAt
+            self.modelArtifactSHA256 = modelArtifactSHA256
             self.cacheEligibleWeightHash = cacheEligibleWeightHash
         }
 
@@ -185,7 +193,9 @@ public actor StandaloneServer {
             modelType: String?,
             isVLM: Bool,
             sizing: SlotSizingSnapshot,
-            lastUsedAt: ContinuousClock.Instant
+            lastUsedAt: ContinuousClock.Instant,
+            modelArtifactSHA256: String? = nil,
+            cacheEligibleWeightHash: String? = nil
         ) {
             self.init(
                 bundle: ProviderEngineBundle(targetOnly: bridge),
@@ -194,7 +204,9 @@ public actor StandaloneServer {
                 modelType: modelType,
                 isVLM: isVLM,
                 sizing: sizing,
-                lastUsedAt: lastUsedAt)
+                lastUsedAt: lastUsedAt,
+                modelArtifactSHA256: modelArtifactSHA256,
+                cacheEligibleWeightHash: cacheEligibleWeightHash)
         }
     }
 
@@ -208,6 +220,7 @@ public actor StandaloneServer {
         let beforeWeightLoad: (@Sendable (String) async throws -> Void)?
         let assistantLoader: (any ProviderMTPAssistantLoading)?
         let computeWeightHash: (@Sendable (URL, String) -> String?)?
+        let onModelArtifactSHA256: (@Sendable (String?) -> Void)?
         let onCacheEligibleWeightHash: (@Sendable (String?) -> Void)?
         let clearMemoryCache: (@Sendable () -> Void)?
         /// Deterministic suspension after an idle-eviction activity probe.
@@ -222,6 +235,7 @@ public actor StandaloneServer {
             beforeWeightLoad: (@Sendable (String) async throws -> Void)? = nil,
             assistantLoader: (any ProviderMTPAssistantLoading)? = nil,
             computeWeightHash: (@Sendable (URL, String) -> String?)? = nil,
+            onModelArtifactSHA256: (@Sendable (String?) -> Void)? = nil,
             onCacheEligibleWeightHash: (@Sendable (String?) -> Void)? = nil,
             clearMemoryCache: (@Sendable () -> Void)? = nil,
             afterEvictionActivityProbe: (@Sendable (String) async -> Void)? = nil,
@@ -233,6 +247,7 @@ public actor StandaloneServer {
             self.beforeWeightLoad = beforeWeightLoad
             self.assistantLoader = assistantLoader
             self.computeWeightHash = computeWeightHash
+            self.onModelArtifactSHA256 = onModelArtifactSHA256
             self.onCacheEligibleWeightHash = onCacheEligibleWeightHash
             self.clearMemoryCache = clearMemoryCache
             self.afterEvictionActivityProbe = afterEvictionActivityProbe
@@ -798,6 +813,7 @@ public actor StandaloneServer {
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
         isVLM: Bool = false,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         // Convenience shape: box the container the way loadModel does (the
@@ -812,6 +828,7 @@ public actor StandaloneServer {
             newcomer: newcomer,
             tokenizer: tokenizer,
             sizing: sizing,
+            modelArtifactSHA256: modelArtifactSHA256,
             cacheEligibleWeightHash: cacheEligibleWeightHash)
         guard let installContainer = newcomer.container else {
             throw StandaloneServerError.capacityUnavailable(
@@ -824,7 +841,9 @@ public actor StandaloneServer {
             modelType: modelType,
             isVLM: isVLM,
             sizing: sizing,
-            lastUsedAt: .now)
+            lastUsedAt: .now,
+            modelArtifactSHA256: modelArtifactSHA256,
+            cacheEligibleWeightHash: cacheEligibleWeightHash)
         return bridge
     }
 
@@ -840,6 +859,7 @@ public actor StandaloneServer {
         newcomer: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         try await resliceAndBuildSlot(
@@ -850,6 +870,7 @@ public actor StandaloneServer {
             newcomer: newcomer,
             tokenizer: tokenizer,
             sizing: sizing,
+            modelArtifactSHA256: modelArtifactSHA256,
             cacheEligibleWeightHash: cacheEligibleWeightHash)
     }
 
@@ -907,7 +928,7 @@ public actor StandaloneServer {
     func engineV2MaxConcurrent(forModel modelId: String) -> Int {
         let raw = config.engineV2MaxConcurrentByModel[modelId]
             ?? config.engineV2MaxConcurrent
-        return ProviderLoop.clampEngineV2Concurrency(raw)
+        return ServingPerformanceProfiles.requestedConcurrency(raw)
     }
 
     /// Fleet KV budget for a prospective residency set: the unified-memory
@@ -1018,6 +1039,7 @@ public actor StandaloneServer {
         newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         let build = try await resliceAndBuildBundle(
@@ -1031,6 +1053,7 @@ public actor StandaloneServer {
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
                 status: .disabled(.configDisabled, configured: false)),
+            modelArtifactSHA256: modelArtifactSHA256,
             cacheEligibleWeightHash: cacheEligibleWeightHash)
         return build.bundle.bridge
     }
@@ -1044,6 +1067,7 @@ public actor StandaloneServer {
         tokenizer: TokenizerHandle,
         targetSizing: SlotSizingSnapshot,
         specDecPreparation: SpecDecPreparation,
+        modelArtifactSHA256: String? = nil,
         cacheEligibleWeightHash: String? = nil
     ) async throws -> SlotBuild {
         if case .nativeMiMo? = newcomerBox.modelContainer {
@@ -1155,6 +1179,7 @@ public actor StandaloneServer {
         let bundle: ProviderEngineBundle
         do {
             try requireNativeMiMoNewWorkAllowed()
+            v2TestHooks?.onModelArtifactSHA256?(modelArtifactSHA256)
             v2TestHooks?.onCacheEligibleWeightHash?(cacheEligibleWeightHash)
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelId,
@@ -1166,6 +1191,8 @@ public actor StandaloneServer {
                 sizing: sizing,
                 kvBytesCapacity: targets[modelId] ?? 0,
                 maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelId),
+                automaticallySelectConcurrency: !config.engineV2MaxConcurrentIsExplicit
+                    && config.engineV2MaxConcurrentByModel[modelId] == nil,
                 kvBudget: kvBudget,
                 // Paged capacity decision carves the same serving-set reserve
                 // as the grants above (was the flat default).
@@ -1173,6 +1200,7 @@ public actor StandaloneServer {
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,
+                modelArtifactSHA256: modelArtifactSHA256,
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: prepared,
@@ -1638,9 +1666,10 @@ public actor StandaloneServer {
             nativeLoad = inspected
         } else { nativeLoad = nil }
         var mtpPreparation: SpecDecPreparation
-        if nativeLoad != nil {
+        if let nativeLoad {
             mtpPreparation = try MiMoV26ServingLoad.preparation(mode: config.mtpMode,
-                externalPath: config.mtpDrafterPath)
+                externalPath: config.mtpDrafterPath,
+                embeddedArtifactDeclared: nativeLoad.hasEmbeddedMTP)
         } else {
             mtpPreparation = await specDecPreparation(modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath)
         }
@@ -1759,8 +1788,10 @@ public actor StandaloneServer {
             try await v2TestHooks?.beforeWeightLoad?(modelId)
             let reusableSSDRequested = PrefixCachePolicy.requiresLoadHashBracket(
                 modelId: modelId, modelDirectory: modelPath)
-            let preLoadCacheHash = await computeStandaloneWeightHash(
-                modelPath: modelPath, modelId: modelId, required: reusableSSDRequested)
+            let artifactIdentityRequired = reusableSSDRequested
+                || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
+            let preLoadArtifactHash = await computeStandaloneWeightHash(
+                modelPath: modelPath, modelId: modelId, required: artifactIdentityRequired)
             // Hard-fail without Metal: CPU inference is not acceptable, and
             // with no legacy engine left this is a load failure, not a log
             // line (mirrors ProviderLoop.ensureModelLoaded).
@@ -1784,27 +1815,31 @@ public actor StandaloneServer {
             let newcomer = EngineV2NewcomerBox(
                 try await ModelContainerLoading.loadServingContainer(from: modelPath, modelID: modelId))
             try Task.checkCancellation()
-            let postLoadCacheHash = await computeStandaloneWeightHash(
-                modelPath: modelPath, modelId: modelId, required: reusableSSDRequested)
+            let postLoadArtifactHash = await computeStandaloneWeightHash(
+                modelPath: modelPath, modelId: modelId, required: artifactIdentityRequired)
+            let modelArtifactSHA256: String?
             let cacheEligibleWeightHash: String?
-            if reusableSSDRequested {
+            if artifactIdentityRequired {
                 switch ProviderLoop.reusableSSDWeightHashDecision(
-                    preLoadHash: preLoadCacheHash,
-                    postLoadHash: postLoadCacheHash
+                    preLoadHash: preLoadArtifactHash,
+                    postLoadHash: postLoadArtifactHash
                 ) {
                 case .eligible(let bracketed):
-                    cacheEligibleWeightHash = bracketed
+                    modelArtifactSHA256 = bracketed
+                    cacheEligibleWeightHash = reusableSSDRequested ? bracketed : nil
                 case .unavailable:
                     standaloneLogger.warning(
-                        "Reusable SSD cache disabled for \(modelId) on this load — cryptographic weight hash unavailable")
+                        "Artifact qualification and reusable SSD cache disabled for \(modelId) on this load — cryptographic weight hash unavailable")
+                    modelArtifactSHA256 = nil
                     cacheEligibleWeightHash = nil
                 case .changed:
                     await newcomer.releaseAfterExternalResources()
                     if nativeMiMoReclaimAllowed { MLX.Memory.clearCache() }
                     throw StandaloneServerError.capacityUnavailable(
-                        "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded")
+                        "Model '\(modelId)' changed while verifying its loaded artifact — unloaded")
                 }
             } else {
+                modelArtifactSHA256 = nil
                 cacheEligibleWeightHash = nil
             }
 
@@ -1876,6 +1911,7 @@ public actor StandaloneServer {
                     tokenizer: tokenizer,
                     targetSizing: targetSizing,
                     specDecPreparation: preparation,
+                    modelArtifactSHA256: modelArtifactSHA256,
                     cacheEligibleWeightHash: cacheEligibleWeightHash)
             }
             var slotBuild: SlotBuild
@@ -1972,6 +2008,7 @@ public actor StandaloneServer {
                 isVLM: slotIsVLM,
                 sizing: sizing,
                 lastUsedAt: .now,
+                modelArtifactSHA256: modelArtifactSHA256,
                 cacheEligibleWeightHash: cacheEligibleWeightHash)
             if let pendingLoad {
                 await kvBudget.finishPendingLoad(pendingLoad)

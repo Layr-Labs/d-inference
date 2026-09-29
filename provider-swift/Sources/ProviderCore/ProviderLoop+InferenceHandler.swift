@@ -182,8 +182,12 @@ extension ProviderLoop {
         firstContentDeadline: FirstContentDeadline? = nil,
         receivedAt: ContinuousClock.Instant = .now,
         profile requestProfile: RequestProfileBuilder? = nil,
+        serviceReservationID: String? = nil,
         send: SendHandle
     ) async {
+        let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
+            send.send(.serviceReservationReleased(serviceReservationID: id))
+        }
         // Profiler accumulator anchored at frame receipt (a fresh one for
         // direct/test callers). Registered so `handleCancellation` can stamp
         // cancel receipt; removed on every exit that does not hand it to the
@@ -235,6 +239,7 @@ extension ProviderLoop {
         defer {
             if !receiptTransferredToTask { acceptedLifecycleRequests.remove(requestId) }
             if !receiptTransferredToTask {
+                serviceReservation?.finishPipeline()
                 lookupReceiptFinalizer.finalize(failure: .policy)
                 inflightProfiles.removeValue(forKey: requestId)
             }
@@ -654,6 +659,9 @@ extension ProviderLoop {
         profile.mark(.taskSpawned)
         let task = Task.detached {
             defer {
+                // Stream construction awaited bridge admission before returning;
+                // remaining inner tasks consume events and cannot acquire anew.
+                serviceReservation?.finishPipeline()
                 lookupReceiptFinalizer.finalize(failure: .policy)
                 // Profiler cancel-abort latency: only meaningful when a cancel
                 // was received AND this task actually aborted (both stamps
@@ -827,6 +835,8 @@ extension ProviderLoop {
                 engineV2Usage: v2UsageSignal,
                 firstContentDeadline: firstContentDeadline,
                 profile: profile,
+                serviceReservationID: serviceReservationID,
+                serviceReservation: serviceReservation,
                 nativeConsumerLeaseProvider: { [weak me] modelID, entry in
                     guard let me else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID) }
                     return try await me.nativeMiMoConsumerLease(modelID: modelID, entry: entry)

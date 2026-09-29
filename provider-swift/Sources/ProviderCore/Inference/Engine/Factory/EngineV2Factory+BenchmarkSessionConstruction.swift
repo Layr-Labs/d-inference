@@ -149,7 +149,8 @@ extension EngineV2Factory {
             try nativeMiMoLoad.recheck()
             servingContainer = .nativeMiMo(container, nativeMiMoLoad)
             preparation = try MiMoV26ServingLoad.preparation(mode: mtpEnabled ? .on : .off,
-                externalPath: nil, environment: effectiveEnvironment)
+                externalPath: nil, environment: effectiveEnvironment,
+                embeddedArtifactDeclared: nativeMiMoLoad.hasEmbeddedMTP)
         } else {
             guard declaration.modelType != "mimo_v2", nativeMiMoBudget == nil,
                 nativeMiMoOperatorReserveBytes == nil else {
@@ -207,7 +208,8 @@ extension EngineV2Factory {
                 modelId: modelId, modelType: declaration.modelType, isVLM: isVLM,
                 modelDirectory: modelDirectory, container: servingContainer, tokenizer: tokenizer,
                 sizing: sizing, kvBytesCapacity: selectedGrant,
-                maxConcurrentRequests: maxConcurrentRequests, kvBudget: budget,
+                maxConcurrentRequests: maxConcurrentRequests, constructionPurpose: .benchmark,
+                kvBudget: budget,
                 activationReserveBytes: reserve, kvBackendConfig: kvBackendConfig,
                 weightHash: verifiedWeightHash, specDecPreparation: preparation,
                 preparedModel: prepared,
@@ -262,13 +264,16 @@ extension EngineV2Factory {
             }
             let backend = await bundle.bridge.kvBackendKind.rawValue
             let fallback = await bundle.bridge.kvBackendFallbackReason
+            let effectiveMaxConcurrentRequests = await bundle.bridge.maxConcurrentRequests
             let memoryEnabled = PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment)
             let finalHeadroom = postBuildHeadroom
             let assistantIdentity = benchmarkAssistantIdentity(preparation.artifact)
             return BenchmarkSessionCandidate { ownership in
                 EngineV2BenchmarkSession(
                     bundle: bundle, engine: engine,
-                    backend: backend, fallback: fallback, memoryEnabled: memoryEnabled,
+                    backend: backend, fallback: fallback,
+                    effectiveMaxConcurrentRequests: effectiveMaxConcurrentRequests,
+                    memoryEnabled: memoryEnabled,
                     activationReserveBytes: reserve, postLoadMaximumKVBytes: maximumKVBytes,
                     budget: budget, assistantIdentity: assistantIdentity,
                     productionGrant: productionGrant, postBuildHeadroomBytes: finalHeadroom,

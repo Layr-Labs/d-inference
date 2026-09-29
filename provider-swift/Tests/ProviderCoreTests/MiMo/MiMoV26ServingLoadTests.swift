@@ -311,7 +311,10 @@ final class MiMoV26ServingLoadTests: XCTestCase {
     func testExplicitOnOffAutoAndKillSwitchDoNotAddExternalWeights() throws {
         let on = try MiMoV26ServingLoad.preparation(mode: .on, externalPath: nil, environment: [:])
         XCTAssertTrue(on.status.configured); XCTAssertNil(on.status.reason); XCTAssertNil(on.artifact)
-        for mode in [MTPMode.auto, .off] {
+        let automatic = try MiMoV26ServingLoad.preparation(mode: .auto, externalPath: nil, environment: [:])
+        XCTAssertTrue(automatic.status.configured); XCTAssertNil(automatic.status.reason)
+        XCTAssertEqual(automatic.status.source, .inline); XCTAssertNil(automatic.artifact)
+        for mode in [MTPMode.off] {
             let value = try MiMoV26ServingLoad.preparation(mode: mode, externalPath: nil, environment: [:])
             XCTAssertFalse(value.status.configured); XCTAssertNil(value.artifact)
         }
@@ -319,6 +322,16 @@ final class MiMoV26ServingLoadTests: XCTestCase {
             environment: ["DARKBLOOM_CBV2_MTP": "0"])
         XCTAssertEqual(killed.status.reason, .killSwitchDisabled)
         XCTAssertThrowsError(try MiMoV26ServingLoad.preparation(mode: .on, externalPath: "external"))
+        let killedAuto = try MiMoV26ServingLoad.preparation(mode: .auto, externalPath: nil,
+            environment: ["DARKBLOOM_CBV2_MTP": "0"])
+        XCTAssertEqual(killedAuto.status.reason, .killSwitchDisabled)
+        let absentAuto = try MiMoV26ServingLoad.preparation(mode: .auto, externalPath: nil,
+            environment: [:], embeddedArtifactDeclared: false)
+        XCTAssertFalse(absentAuto.status.configured); XCTAssertNil(absentAuto.artifact)
+        let absentOn = try MiMoV26ServingLoad.preparation(mode: .on, externalPath: nil,
+            environment: [:], embeddedArtifactDeclared: false)
+        XCTAssertEqual(absentOn.status.reason, .metadataMissing)
+        XCTAssertTrue(try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: fixture())).hasEmbeddedMTP)
     }
 
     func testNativeBenchmarkPagedRefusesBeforeMetadataOrBudgetAllocation() async throws {

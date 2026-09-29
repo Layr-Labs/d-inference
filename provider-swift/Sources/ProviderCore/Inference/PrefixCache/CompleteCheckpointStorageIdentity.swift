@@ -55,9 +55,14 @@ struct CompleteCheckpointStorageIdentity: Sendable {
             case .recurrentFull:
                 backendLayout = CBv2CompleteCheckpointManifest.pagedLayout
             case .historicalAttention(let kinds):
-                guard let layers = try? CBv2CheckpointAttentionLayer.resolve(layerKinds: kinds, dtypes: layerDTypes)
+                let asymmetric = kinds.contains { $0.headDim != $0.valueHeadDim }
+                guard !asymmetric || pagedConfig.gatheredAttention?.admissionMode == .stepOwned(.pinnedMetal),
+                      let layers = try? (asymmetric
+                        ? CBv2CheckpointAttentionLayer.resolvePagedAsymmetric(layerKinds: kinds, dtypes: layerDTypes)
+                        : CBv2CheckpointAttentionLayer.resolve(layerKinds: kinds, dtypes: layerDTypes))
                 else { return nil }
-                backendLayout = CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                backendLayout = asymmetric ? CBv2CompleteCheckpointManifest.pagedAsymmetricLayout
+                    : CBv2CompleteCheckpointManifest.historicalAttentionLayout
                 for (index, layer) in layers.enumerated() {
                     let prefix = "storage.attention.\(index)."
                     fields[prefix + "modelLayer"] = String(layer.modelLayer)
@@ -65,9 +70,18 @@ struct CompleteCheckpointStorageIdentity: Sendable {
                     fields[prefix + "window"] = layer.window.map(String.init) ?? "full"
                     fields[prefix + "kvHeads"] = String(layer.kvHeads)
                     fields[prefix + "headDim"] = String(layer.headDim)
+                    if asymmetric { fields[prefix + "valueHeadDim"] = String(layer.valueHeadDim) }
                     fields[prefix + "queryHeads"] = String(layer.queryHeads)
                     fields[prefix + "sinks"] = String(layer.hasSinks)
                     fields[prefix + "dtype"] = layer.dtype.rawValue
+                }
+                if asymmetric, let limits = pagedConfig.gatheredAttention {
+                    fields["storage.nativeProfile"] = "mimo-native-gathered-pages-v1"
+                    fields["storage.maximumBatch"] = String(limits.maximumBatchSize)
+                    fields["storage.maximumQuery"] = String(limits.maximumQueryTokens)
+                    fields["storage.maximumContext"] = String(limits.maximumContextTokens)
+                    fields["storage.maximumPrefill"] = String(pagedConfig.maxPrefillChunk)
+                    fields["storage.inFlightGraphs"] = String(limits.maximumInFlightGraphs)
                 }
             }
             fields["storage.pageSize"] = String(pagedConfig.pageSize)

@@ -112,9 +112,12 @@ extension EngineV2SlotFactory {
     static func makeProductionBundle(
         modelId: String, modelType: String?, isVLM: Bool, modelDirectory: URL?,
         container: ProviderModelContainer, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
-        kvBytesCapacity: Int, maxConcurrentRequests: Int, kvBudget: GlobalKVCacheBudget?,
+        kvBytesCapacity: Int, maxConcurrentRequests: Int, automaticallySelectConcurrency: Bool = false,
+        constructionPurpose: EngineV2Factory.ConstructionPurpose = .serving,
+        kvBudget: GlobalKVCacheBudget?,
         activationReserveBytes: UInt64? = nil, kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:], prefillDeadlineMode: PrefillDeadlineMode? = nil,
+        modelArtifactSHA256: String? = nil,
         weightHash: String? = nil, specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2ServingPreparation? = nil,
         assemblyOverrides: AssemblyOverrides = AssemblyOverrides(),
@@ -146,19 +149,24 @@ extension EngineV2SlotFactory {
             }
             return try await makeNativeMiMoBundle(modelId: modelId, tokenizer: tokenizer, sizing: sizing,
                 prepared: prepared, kvBytesCapacity: kvBytesCapacity,
-                maxConcurrentRequests: maxConcurrentRequests, kvBudget: kvBudget,
+                maxConcurrentRequests: maxConcurrentRequests,
+                automaticallySelectConcurrency: automaticallySelectConcurrency,
+                constructionPurpose: constructionPurpose, kvBudget: kvBudget,
                 backend: kvBackendConfigByModel[modelId] ?? kvBackendConfig,
                 prefillDeadlineMode: prefillDeadlineMode, environment: environment,
-                modelDirectory: modelDirectory, weightHash: weightHash,
+                modelDirectory: modelDirectory, modelArtifactSHA256: modelArtifactSHA256, weightHash: weightHash,
                 persistentTestNamespace: persistentTestNamespace,
                 startServingTelemetry: startServingTelemetry, emitTelemetry: emitTelemetry)
         case .autoregressive(let target):
             return try await makeProductionBundle(
                 modelId: modelId, modelType: modelType, isVLM: isVLM, modelDirectory: modelDirectory,
                 container: target, tokenizer: tokenizer, sizing: sizing, kvBytesCapacity: kvBytesCapacity,
-                maxConcurrentRequests: maxConcurrentRequests, kvBudget: kvBudget,
+                maxConcurrentRequests: maxConcurrentRequests,
+                automaticallySelectConcurrency: automaticallySelectConcurrency,
+                constructionPurpose: constructionPurpose, kvBudget: kvBudget,
                 activationReserveBytes: activationReserveBytes, kvBackendConfig: kvBackendConfig,
                 kvBackendConfigByModel: kvBackendConfigByModel, prefillDeadlineMode: prefillDeadlineMode,
+                modelArtifactSHA256: modelArtifactSHA256,
                 weightHash: weightHash, specDecPreparation: specDecPreparation,
                 preparedModel: preparedModel?.autoregressive, assemblyOverrides: assemblyOverrides,
                 environment: environment, persistentTestNamespace: persistentTestNamespace,
@@ -180,7 +188,8 @@ extension EngineV2SlotFactory {
             let prepared: DiffusionGemmaProviderBridge.Prepared
             do { prepared = try await DiffusionGemmaProviderBridge.make(
                 container: target, modelID: modelId, kvBytesCapacity: kvBytesCapacity,
-                maxConcurrentRequests: maxConcurrentRequests, sharedBudget: kvBudget,
+                maxConcurrentRequests: ServingPerformanceProfiles.concurrency(
+                    configured: UInt64(max(1, maxConcurrentRequests))), sharedBudget: kvBudget,
                 prefixCache: prefix.snapshots, completePrefixCache: prefix.store,
                 retainMemoryPrefixes: prefix.retainMemory, prefillChunkSize: diffusionPrefillChunkSize,
                 prefixCacheStatus: .init(modelId: modelId, backend: pageBacked ? .paged : .contiguous,
@@ -220,16 +229,25 @@ extension EngineV2SlotFactory {
     private static func makeNativeMiMoBundle(
         modelId: String, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
         prepared: MiMoV26ServingPreparation, kvBytesCapacity: Int, maxConcurrentRequests: Int,
+        automaticallySelectConcurrency: Bool, constructionPurpose: EngineV2Factory.ConstructionPurpose,
         kvBudget: GlobalKVCacheBudget?, backend: String, prefillDeadlineMode: PrefillDeadlineMode?,
-        environment: [String: String], modelDirectory: URL?, weightHash: String?,
+        environment: [String: String], modelDirectory: URL?, modelArtifactSHA256: String?, weightHash: String?,
         persistentTestNamespace: SSDPersistentTestKeyNamespace?, startServingTelemetry: Bool,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
     ) async throws -> ProviderEngineBundle {
+        // These controls are process-latched by the actual SDK dispatchers.
+        // Reject contradictory injected values before routing/claiming any
+        // native slot; a width-only rollback would falsely promise disabled kernels.
+        try EngineV2Factory.validateNativeMiMoPrefillPolicy(environment: environment)
         if backend.lowercased() == "paged" {
             return try await makeNativeMiMoPagedTargetBundle(modelId: modelId, tokenizer: tokenizer,
                 sizing: sizing, prepared: prepared, kvBytesCapacity: kvBytesCapacity,
-                maxConcurrentRequests: maxConcurrentRequests, kvBudget: kvBudget,
+                maxConcurrentRequests: maxConcurrentRequests,
+                automaticallySelectConcurrency: automaticallySelectConcurrency,
+                constructionPurpose: constructionPurpose, kvBudget: kvBudget,
                 prefillDeadlineMode: prefillDeadlineMode, environment: environment,
+                modelDirectory: modelDirectory, modelArtifactSHA256: modelArtifactSHA256, weightHash: weightHash,
+                persistentTestNamespace: persistentTestNamespace,
                 startServingTelemetry: startServingTelemetry, emitTelemetry: emitTelemetry)
         }
         let transaction = prepared.transaction
@@ -355,8 +373,14 @@ extension EngineV2SlotFactory {
                             bytesCapacity: kvBytesCapacity, retaining: scope)
                         resources = (text.backend, text.cacheProvider, text.contract)
                     }
-                    var scheduler = EngineV2Factory.productionSchedulerConfig(
-                        maxConcurrentRequests: maxConcurrentRequests, model: model, environment: environment)
+                    let policy = EngineV2Factory.productionServingPolicy(
+                        model: model, modelID: modelId, modelArtifactSHA256: modelArtifactSHA256,
+                        constructionPurpose: constructionPurpose,
+                        automaticallySelectConcurrency: automaticallySelectConcurrency,
+                        performanceQualificationAllowed: !wantsMTP, backend: .contiguous,
+                        maxContextLength: config.maxPositionEmbeddings,
+                        maxConcurrentRequests: maxConcurrentRequests, environment: environment)
+                    var scheduler = policy.scheduler
                     scheduler.enablePrefixCache = prefix.store != nil
                     let engine = EngineV2(model: binding.adapter, layerKinds: binding.adapter.layerKinds,
                         backend: resources.backend, cacheProvider: resources.cacheProvider,
@@ -368,7 +392,9 @@ extension EngineV2SlotFactory {
                         completePrefixCache: prefix.store,
                         mtpDrafter: binding.assistant, mtpConfig: mtpConfig,
                         processMemoryOwner: prefix.resources?.processOwner,
-                        nativeCompletionTracking: true, nativeExecutionContract: resources.contract)
+                        nativeCompletionTracking: true, nativeExecutionContract: resources.contract,
+                        automaticMiMoPrefill: EngineV2Factory.nativeMiMoAutomaticPrefill(
+                            environment: environment))
                     // Register immediately; every subsequent validation may throw.
                     try transaction.registerEngine(engine, executionContract: resources.contract)
                     if case .unavailable(let reason)? = engine.resolvedMTPAdmission { throw reason }
@@ -390,7 +416,11 @@ extension EngineV2SlotFactory {
                         resolvedNonTargetFixedBytes: engine.resolvedFixedBytesPerRequest)
                     let bridge = try EngineV2Factory.makeBridge(modelId: modelId, tokenizer: tokenizer,
                         eosTokenIds: binding.stopTokenIDs, defaultMaxTokens: sizing.defaultMaxTokens,
-                        maxConcurrentRequests: maxConcurrentRequests, prefillDeadlineMode: prefillDeadlineMode,
+                        maxConcurrentRequests: scheduler.maxConcurrentRequests,
+                        performanceProfile: policy.performanceProfile,
+                        unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
+                            configured: UInt64(max(1, maxConcurrentRequests))),
+                        prefillDeadlineMode: prefillDeadlineMode,
                         advertisedContextTokens: config.maxPositionEmbeddings, runtimePolicyEnvironment: environment,
                         kvBytesPerToken: geometry.fullKVBytesPerToken, kvBudget: kvBudget,
                         ssdHybridCheckpointStore: prefix.store,
@@ -400,7 +430,8 @@ extension EngineV2SlotFactory {
                         emitTelemetry: emitTelemetry) {
                         .init(engine: engine, fixedRequestBytes: sharedFixed,
                             kvBackendKind: .contiguous, kvBackendFallbackReason: nil,
-                            mtpAdmissionResolution: engine.resolvedMTPAdmission)
+                            mtpAdmissionResolution: engine.resolvedMTPAdmission,
+                            effectiveMaxConcurrentRequests: scheduler.maxConcurrentRequests)
                     }
                     try transaction.registerBridge(bridge)
                     let status: MTPActivationStatus
@@ -443,23 +474,26 @@ extension EngineV2SlotFactory {
             throw failure
         }
     }
-    /// Real experimental target-only route. Unsupported loaded media/audio,
-    /// MTP and prefix combinations refuse rather than silently losing features.
+    /// Experimental owned text paging. Actual serial-head and complete-prefix
+    /// tuples may compose; rectangular and media remain explicit refusals.
     private static func makeNativeMiMoPagedTargetBundle(
         modelId: String, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
         prepared: MiMoV26ServingPreparation, kvBytesCapacity: Int, maxConcurrentRequests: Int,
+        automaticallySelectConcurrency: Bool, constructionPurpose: EngineV2Factory.ConstructionPurpose,
         kvBudget: GlobalKVCacheBudget?, prefillDeadlineMode: PrefillDeadlineMode?,
-        environment: [String: String], startServingTelemetry: Bool,
+        environment: [String: String], modelDirectory: URL?, modelArtifactSHA256: String?, weightHash: String?,
+        persistentTestNamespace: SSDPersistentTestKeyNamespace?, startServingTelemetry: Bool,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
     ) async throws -> ProviderEngineBundle {
         let transaction = prepared.transaction
         let intent = prepared.status.configured && prepared.status.reason == nil
             && !SpecDecArtifactFunnel.killSwitchEnabled(environment: environment)
             ? prepared.status.fallingBack(.killSwitchDisabled) : prepared.status
+        let wantsMTP = intent.configured && intent.reason == nil
+        let verificationMode = nativeMiMoVerificationMode(wantsMTP: wantsMTP, environment: environment)
         guard environment["DARKBLOOM_MIMO_NATIVE_PAGED_TARGET"] == "1",
               prepared.load.decodedMediaPolicy == nil, prepared.load.decodedAudioPolicy == nil,
-              !(intent.configured && intent.reason == nil),
-              nativeMiMoPrefixRefusal(modelId: modelId, environment: environment) != nil,
+              verificationMode == .serialTarget,
               kvBytesCapacity > 0, maxConcurrentRequests > 0, let kvBudget else {
             throw MiMoV26ServingLoadError.unsupportedBackend
         }
@@ -469,6 +503,8 @@ extension EngineV2SlotFactory {
         try transaction.validateContainerIdentity(prepared.container)
         try prepared.load.recheck()
         try transaction.claimSlotAssembly(prepared.container) // foreign/warm refusal never disposes live work
+        let mtpConfiguration = CBv2MTPConfig(enabled: wantsMTP, maxDraftTokens: 3,
+            maxSpeculativeBatch: 1, verificationMode: .serialTarget)
         do {
             return try await transaction.performSetup {
                 let paging = MiMoV26NativePagedResources(transactionID: transaction.id,
@@ -480,26 +516,84 @@ extension EngineV2SlotFactory {
                     try paging.retireUnusedOwner()
                     throw error
                 }
+                let prefix: MiMoNativePagedPrefixPreparation
+                if let refusal = nativeMiMoPrefixRefusal(modelId: modelId, environment: environment) {
+                    prefix = .disabled(refusal)
+                } else if PrefixCachePolicy.checkpointIdentityHash(weightHash) == nil {
+                    prefix = .disabled(.weightHashUnavailable)
+                } else {
+                    // Only this immutable scalar DTO crosses the store await.
+                    // The genuine first binding/probe stays with LoadedModel.
+                    let metadata = try await transaction.withNativeConstruction { model, scope in
+                        let binding = try model.makeCBv2Binding(enableMTP: wantsMTP, verificationMode: .serialTarget)
+                        _ = try binding.adapter.probeNativeKVTypes(retaining: scope)
+                        let scheduler = EngineV2Factory.productionServingPolicy(
+                            model: model, modelID: modelId, modelArtifactSHA256: modelArtifactSHA256,
+                            constructionPurpose: constructionPurpose,
+                            automaticallySelectConcurrency: automaticallySelectConcurrency,
+                            performanceQualificationAllowed: !wantsMTP, backend: .paged,
+                            maxContextLength: model.nativeConfiguration.maxPositionEmbeddings,
+                            maxConcurrentRequests: maxConcurrentRequests, environment: environment).scheduler
+                        let maximumQuery = max(scheduler.maxBatchedTokensPerStep,
+                            max(scheduler.prefillChunkSize, scheduler.soloPrefillStripeTokens ?? 0))
+                        let maximumPrefill = max(scheduler.prefillChunkSize, scheduler.soloPrefillStripeTokens ?? 0)
+                        return try model.nativePagedCompletePrefixMetadata(binding: binding,
+                            bytesCapacity: kvBytesCapacity, maximumConcurrentRequests: scheduler.maxConcurrentRequests,
+                            maximumQueryTokens: maximumQuery, maximumPrefillChunk: maximumPrefill, retaining: scope)
+                    }
+                    prefix = try await prepareNativeMiMoPagedPrefix(modelId: modelId,
+                        modelDirectory: modelDirectory, weightHash: weightHash, prepared: prepared,
+                        metadata: metadata, paging: paging, mtpConfig: mtpConfiguration,
+                        environment: environment, persistentTestNamespace: persistentTestNamespace)
+                }
                 let assembled = try await transaction.withNativeConstruction { model, scope in
                     guard model.loadReceipt.sessionID == prepared.load.request.sessionID,
                           model.loadReceipt.binding == prepared.load.request.binding else {
                         throw MiMoV26ServingLoadError.nativeOwnerMismatch
                     }
-                    let binding = try model.makeCBv2Binding(enableMTP: false)
+                    let binding = try model.makeCBv2Binding(enableMTP: wantsMTP, verificationMode: .serialTarget)
+                    guard (binding.assistant != nil) == wantsMTP else {
+                        throw MiMoV26ServingLoadError.nativeOwnerMismatch
+                    }
+                    let assistant = binding.assistant.map { ProviderMTPAssistantHandle(owner: $0, drafter: $0) }
+                    if let assistant {
+                        assistant.bind(sourceTarget: model, servingTarget: model)
+                        try transaction.registerAssistant(assistant)
+                    }
                     let probe = try binding.adapter.probeNativeKVTypes(retaining: scope)
                     let config = model.nativeConfiguration
                     let geometry = try MiMoV26AdmissionGeometry(layerKinds: binding.adapter.layerKinds,
                         probedDTypes: probe.layerDTypes, maximumContextTokens: config.maxPositionEmbeddings)
-                    var scheduler = EngineV2Factory.productionSchedulerConfig(
-                        maxConcurrentRequests: maxConcurrentRequests, model: model, environment: environment)
-                    scheduler.enablePrefixCache = false
+                    let policy = EngineV2Factory.productionServingPolicy(
+                        model: model, modelID: modelId, modelArtifactSHA256: modelArtifactSHA256,
+                        constructionPurpose: constructionPurpose,
+                        automaticallySelectConcurrency: automaticallySelectConcurrency,
+                        performanceQualificationAllowed: !wantsMTP, backend: .paged,
+                        maxContextLength: config.maxPositionEmbeddings,
+                        maxConcurrentRequests: maxConcurrentRequests, environment: environment)
+                    var scheduler = policy.scheduler
+                    scheduler.enablePrefixCache = prefix.metadata != nil && paging.store != nil
                     let maximumQuery = max(scheduler.maxBatchedTokensPerStep,
                         max(scheduler.prefillChunkSize, scheduler.soloPrefillStripeTokens ?? 0))
                     let maximumPrefill = max(scheduler.prefillChunkSize, scheduler.soloPrefillStripeTokens ?? 0)
-                    let resources = try model.makeNativePagedExecutionResources(binding: binding,
-                        bytesCapacity: kvBytesCapacity, maximumConcurrentRequests: scheduler.maxConcurrentRequests,
-                        maximumQueryTokens: maximumQuery, maximumPrefillChunk: maximumPrefill,
-                        processMemoryOwner: paging.processOwner, retaining: scope)
+                    let resources: MiMoV26CBv2NativePagedExecutionResources
+                    if let metadata = prefix.metadata, let store = paging.store {
+                        resources = try model.makeNativePagedCompletePrefixExecutionResources(binding: binding,
+                            bytesCapacity: kvBytesCapacity, maximumConcurrentRequests: scheduler.maxConcurrentRequests,
+                            maximumQueryTokens: maximumQuery, maximumPrefillChunk: maximumPrefill,
+                            expectedMetadata: metadata, completePrefixCache: store,
+                            processMemoryOwner: paging.processOwner, retaining: scope)
+                    } else if wantsMTP {
+                        resources = try model.makeNativePagedSerialMTPExecutionResources(binding: binding,
+                            bytesCapacity: kvBytesCapacity, maximumConcurrentRequests: scheduler.maxConcurrentRequests,
+                            maximumQueryTokens: maximumQuery, maximumPrefillChunk: maximumPrefill,
+                            processMemoryOwner: paging.processOwner, retaining: scope)
+                    } else {
+                        resources = try model.makeNativePagedExecutionResources(binding: binding,
+                            bytesCapacity: kvBytesCapacity, maximumConcurrentRequests: scheduler.maxConcurrentRequests,
+                            maximumQueryTokens: maximumQuery, maximumPrefillChunk: maximumPrefill,
+                            processMemoryOwner: paging.processOwner, retaining: scope)
+                    }
                     let engine = EngineV2(model: binding.adapter, layerKinds: binding.adapter.layerKinds,
                         backend: resources.backend, cacheProvider: resources.cacheProvider,
                         sampler: CBv2DefaultSampler(),
@@ -507,36 +601,68 @@ extension EngineV2SlotFactory {
                         schedulerConfig: scheduler,
                         loopConfig: .init(useLegacyRequestTimeout: EngineV2Factory.legacyRequestTimeoutEnabled()),
                         admissionConfig: geometry.internalAdmissionConfig,
+                        completePrefixCache: paging.store,
+                        mtpDrafter: binding.assistant,
+                        mtpConfig: mtpConfiguration,
                         processMemoryOwner: paging.processOwner,
                         nativeCompletionTracking: true, nativeExecutionContract: resources.contract)
                     try transaction.registerEngine(engine, executionContract: resources.contract)
-                    guard engine.nativeCompletionFault == nil, engine.pagedAttentionWorkInactiveReason == nil,
-                          engine.mtpMetricsSnapshot() == nil else {
+                    guard engine.nativeCompletionFault == nil, engine.pagedAttentionWorkInactiveReason == nil else {
                         throw MiMoV26ServingLoadError.nativeOwnerMismatch
+                    }
+                    if case .unavailable(let reason)? = engine.resolvedMTPAdmission { throw reason }
+                    if wantsMTP {
+                        guard resources.contract.supportsNativePagedSerialMTP,
+                              case .bounded? = engine.resolvedMTPAdmission,
+                              engine.mtpInactiveReason == nil,
+                              engine.mtpMetricsSnapshot()?.verificationMode == .serialTarget else {
+                            throw MiMoV26ServingLoadError.nativeOwnerMismatch
+                        }
+                    } else {
+                        guard !resources.contract.supportsNativePagedSerialMTP,
+                              engine.mtpMetricsSnapshot() == nil else {
+                            throw MiMoV26ServingLoadError.nativeOwnerMismatch
+                        }
                     }
                     try prepared.load.recheck()
                     let bridge = try EngineV2Factory.makeBridge(modelId: modelId, tokenizer: tokenizer,
                         eosTokenIds: binding.stopTokenIDs, defaultMaxTokens: sizing.defaultMaxTokens,
-                        maxConcurrentRequests: maxConcurrentRequests, prefillDeadlineMode: prefillDeadlineMode,
+                        maxConcurrentRequests: scheduler.maxConcurrentRequests,
+                        performanceProfile: policy.performanceProfile,
+                        unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
+                            configured: UInt64(max(1, maxConcurrentRequests))),
+                        prefillDeadlineMode: prefillDeadlineMode,
                         advertisedContextTokens: config.maxPositionEmbeddings,
                         runtimePolicyEnvironment: environment, kvBytesPerToken: geometry.fullKVBytesPerToken,
-                        kvBudget: kvBudget, ssdHybridCheckpointStore: nil,
+                        kvBudget: kvBudget, ssdHybridCheckpointStore: paging.store,
                         prefixCacheStatus: .init(modelId: modelId, backend: .paged,
-                            replayStrategy: .none, state: .disabled, reason: .unsupportedLayout),
+                            replayStrategy: paging.store == nil ? .none : .direct,
+                            state: prefix.status.state, reason: prefix.status.reason),
                         emitTelemetry: emitTelemetry) {
                         .init(engine: engine, fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
                             kvBackendKind: .paged, kvBackendFallbackReason: nil,
-                            mtpAdmissionResolution: engine.resolvedMTPAdmission)
+                            mtpAdmissionResolution: engine.resolvedMTPAdmission,
+                            effectiveMaxConcurrentRequests: scheduler.maxConcurrentRequests)
                     }
                     try transaction.registerBridge(bridge)
+                    let status: MTPActivationStatus
+                    if wantsMTP {
+                        let headBytes = UInt64(prepared.load.plan.bundlePlan.tensorBytes(for: .mtp))
+                        status = .init(configured: true, active: true, reason: nil, source: .inline,
+                            revision: prepared.load.request.binding.indexSHA256,
+                            sourceRevision: prepared.load.request.binding.sourceRevision,
+                            artifactBytes: headBytes, assistantBytes: headBytes)
+                    } else { status = intent }
                     return MiMoV26NativeSlotAssembly(engine: engine, bridge: bridge,
-                        assistant: nil, status: intent)
+                        assistant: assistant, status: status)
                 }
                 try await assembled.bridge.attachNativeTransaction(transaction)
                 await assembled.bridge.configureMTPStatus(assembled.status,
                     metricsInterval: startServingTelemetry ? .seconds(60) : .zero)
                 try prepared.load.recheck()
-                let bundle = ProviderEngineBundle(bridge: assembled.bridge, assistant: nil,
+                let bundle = ProviderEngineBundle(bridge: assembled.bridge, assistant: assembled.assistant,
+                    // The inline trained heads are already in the strict load's
+                    // weight charge, just as for the contiguous native bundle.
                     assistantBytes: 0, mtpArtifact: nil, mtpStatus: assembled.status)
                 try transaction.registerBundle(bundle)
                 return bundle

@@ -15,12 +15,18 @@ extension CoordinatorClient {
         sendTextFrame(json, on: connection, identifier: identifier)
     }
 
-    private func rejectInvalidInferenceRequest(requestId: String, profile: RequestProfileBuilder) {
+    private func rejectInvalidInferenceRequest(requestId: String, profile: RequestProfileBuilder,
+        serviceReservationID: String?) {
         let response = encodeInferenceError(
             requestId: requestId,
             failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
             profile: profile.wireObject())
         sendOnCurrentConnection(response, identifier: "inference_error")
+        // This frame never enters the provider request pipeline, so no later
+        // bridge submission can acquire service for its attempt.
+        if let id = ServiceReservationLifetime.normalizedID(serviceReservationID) {
+            outboundRouter.yield(.serviceReservationReleased(serviceReservationID: id))
+        }
     }
 
     internal func handleIncomingFrame(
@@ -63,7 +69,8 @@ extension CoordinatorClient {
 
             guard let encrypted = request.encryptedBody else {
                 logger.error("Rejecting plaintext inference request: \(requestId)")
-                rejectInvalidInferenceRequest(requestId: requestId, profile: profile)
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile,
+                    serviceReservationID: request.serviceReservationID)
                 return
             }
 
@@ -73,13 +80,15 @@ extension CoordinatorClient {
             // ephemeral pubkey (32 bytes).
             guard let cipherBytes = Data(base64Encoded: encrypted.ciphertext) else {
                 logger.error("Rejecting inference request \(requestId): ciphertext is not valid base64")
-                rejectInvalidInferenceRequest(requestId: requestId, profile: profile)
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile,
+                    serviceReservationID: request.serviceReservationID)
                 return
             }
             let senderKeyBytes = Data(base64Encoded: encrypted.ephemeralPublicKey)
             if senderKeyBytes == nil || senderKeyBytes?.count != 32 {
                 logger.error("Rejecting inference request \(requestId): invalid ephemeral public key")
-                rejectInvalidInferenceRequest(requestId: requestId, profile: profile)
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile,
+                    serviceReservationID: request.serviceReservationID)
                 return
             }
 
@@ -95,7 +104,8 @@ extension CoordinatorClient {
                 toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol,
                 firstContentDeadline: firstContentDeadline,
                 receivedAt: receivedAt,
-                profile: profile
+                profile: profile,
+                serviceReservationID: request.serviceReservationID
             ))
 
         case .cancel(let cancel):

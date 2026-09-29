@@ -19,6 +19,8 @@ extension ProviderLoop {
 
     internal func startCapacityRefreshMonitor() {
         capacityRefreshTask?.cancel()
+        startServiceAllowanceRefreshMonitor()
+        startPerformanceRefreshMonitor()
         let heartbeatInterval = max(1, loopConfig.config.coordinator.heartbeatIntervalSecs)
         let pollIntervalNs = UInt64(max(1, heartbeatInterval / 2)) * 1_000_000_000
         let me = self
@@ -231,8 +233,12 @@ extension ProviderLoop {
                 allSlots[index].state = "reloading"
             }
         }
+        let serviceSnapshot = kvBudget.serviceBudget.snapshot()
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
+            wholeMacServiceUsed: serviceSnapshot.usedFraction,
+            wholeMacServiceRetirementProtocol: 1,
+            wholeMacServiceReservations: serviceSnapshot.reservations,
             gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
             gpuMemoryPeakGb: Double(mlxPeakBytes) / gbDivisor,
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,

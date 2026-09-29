@@ -55,7 +55,7 @@ func (r *Registry) DisconnectDuplicatesByMachine(keep *Provider) {
 		p.mu.Lock()
 		// Fence selection and queued frames before releasing the membership
 		// lock; socket cleanup follows without holding any registry lock.
-		p.appAttestAuthorization = AppAttestServingAuthorization{}
+		p.clearAppAttestServingAuthorizationLocked()
 		p.appAttestSecurityDenied = true
 		p.mu.Unlock()
 		evict = append(evict, p)

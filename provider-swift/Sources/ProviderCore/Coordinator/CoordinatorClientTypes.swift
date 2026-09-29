@@ -115,7 +115,8 @@ public enum CoordinatorEvent: Sendable {
         receivedAt: ContinuousClock.Instant,
         /// Profiler accumulator anchored at frame receipt (created
         /// unconditionally, unlike the budget-derived deadline).
-        profile: RequestProfileBuilder
+        profile: RequestProfileBuilder,
+        serviceReservationID: String? = nil
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
@@ -229,6 +230,7 @@ public struct RuntimeHashes: Sendable {
 public enum OutboundMessage: Sendable {
     case drainBarrier(String)
     case inferenceAccepted(requestId: String)
+    case serviceReservationReleased(serviceReservationID: String)
     case inferenceChunk(requestId: String, data: String, encryptedData: EncryptedPayload?)
     /// `profile` rides the terminal as the live BUILDER, not the wire
     /// struct: `SendHandle.send` stamps the flush barrier and the send

@@ -84,30 +84,6 @@ extension EngineV2Bridge {
             conservativeDecodeTokensPerSecond: decodeRate)
     }
 
-    func isIsolatedPrefillSubmitBoundary(
-        currentProviderRequestID: String
-    ) -> Bool {
-        guard pendingEngineIDs.isEmpty else { return false }
-        guard pendingSubmissionIDs.allSatisfy({ $0 == currentProviderRequestID }) else {
-            return false
-        }
-        return active.isEmpty
-    }
-
-    /// A later arrival can share a step with an already-prefilling row. Mark
-    /// that older sample non-isolated before submitting the newcomer; rows
-    /// that already emitted their first token keep their completed prefill
-    /// observation.
-    func disqualifyOverlappedPrefillSamples() {
-        for id in Array(active.keys) {
-            guard var state = active[id], state.firstTokenAt == nil else {
-                continue
-            }
-            state.isolatedPrefillSampleEligible = false
-            active[id] = state
-        }
-    }
-
     /// Move post-commit cancellation cleanup out of the cancelling task. The
     /// retained IDs block provider- and engine-ID reuse while the background
     /// owner holds every pre-submit reservation through actual engine
@@ -119,6 +95,7 @@ extension EngineV2Bridge {
         engineID: CBv2RequestID,
         stream: AsyncStream<CBv2Event>,
         retirement: CBv2RequestRetirement,
+        prefillReceipt: EnginePrefillReceipt,
         sharedKVReserved: Bool,
         prefixCacheReceiptID: CBv2RequestID?,
         ssdStaged: Bool,
@@ -127,14 +104,21 @@ extension EngineV2Bridge {
         failure: PrefixCacheLookupFailureClass
     ) {
         guard transfer.claim() else { return }
+        prefillReceipt.retainUntilRetirement()
         let bridge = self
         let nativeTaskID = tracksNativeShutdown ? UUID() : nil
         let task = Task {
+            // Admission can commit and generate tokens before submit resumes.
+            // No active row or client pump exists on this path, so this owner
+            // reconciles work without publishing output or billable usage.
+            let completion = await Self.transferredGenerationWork(in: stream)
             await retirement.wait()
+            prefillReceipt.endAfterRetirement()
             withExtendedLifetime(stream) {}
             await bridge.completeTransferredPreSubmitRetirement(
                 requestID: requestID,
                 engineID: engineID,
+                completion: completion,
                 sharedKVReserved: sharedKVReserved,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 ssdStaged: ssdStaged,
@@ -156,6 +140,7 @@ extension EngineV2Bridge {
     private func completeTransferredPreSubmitRetirement(
         requestID: String,
         engineID: CBv2RequestID,
+        completion: Int,
         sharedKVReserved: Bool,
         prefixCacheReceiptID: CBv2RequestID?,
         ssdStaged: Bool,
@@ -163,6 +148,7 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal?,
         failure: PrefixCacheLookupFailureClass
     ) async {
+        recordGenerationWork(completion: completion)
         await releasePreSubmitResources(
             requestID: requestID,
             sharedKVReserved: sharedKVReserved,
@@ -171,6 +157,7 @@ extension EngineV2Bridge {
             readyReceiptRegistered: readyReceiptRegistered,
             usageSignal: usageSignal,
             failure: failure)
+        releaseServiceAllowance(requestID: requestID)
         pendingSubmissionIDs.remove(requestID)
         pendingCancellationIDs.remove(requestID)
         pendingProfiles.removeValue(forKey: requestID)

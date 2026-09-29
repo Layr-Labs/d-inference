@@ -298,8 +298,11 @@ extension StandaloneServer {
         let transactionID = load.transaction?.id
         try await observeNativeMiMoTestPhase(.beforeWeights, modelID: modelID, transactionID: transactionID)
         try checkNativeMiMoSetupOwner(modelID: modelID, load: load)
-        let hashRequired = PrefixCachePolicy.requiresLoadHashBracket(modelId: modelID, modelDirectory: directory)
-        let beforeHash = await computeStandaloneWeightHash(modelPath: directory, modelId: modelID, required: hashRequired)
+        let reusableSSD = PrefixCachePolicy.requiresLoadHashBracket(modelId: modelID, modelDirectory: directory)
+        let artifactIdentityRequired = reusableSSD
+            || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelID)
+        let beforeHash = await computeStandaloneWeightHash(modelPath: directory, modelId: modelID,
+                                                         required: artifactIdentityRequired)
         try checkNativeMiMoSetupOwner(modelID: modelID, load: load)
         _ = try GPUEnforcement.requireMetal()
         MLXMemoryGuard.configureOnce()
@@ -310,19 +313,27 @@ extension StandaloneServer {
             from: directory, modelID: modelID, nativeMiMoLoad: load)
         try checkNativeMiMoSetupOwner(modelID: modelID, load: load)
         try await observeNativeMiMoTestPhase(.afterContainer, modelID: modelID, transactionID: transactionID)
-        let afterHash = await computeStandaloneWeightHash(modelPath: directory, modelId: modelID, required: hashRequired)
+        let afterHash = await computeStandaloneWeightHash(modelPath: directory, modelId: modelID,
+                                                        required: artifactIdentityRequired)
         try checkNativeMiMoSetupOwner(modelID: modelID, load: load)
+        let modelArtifactSHA256: String?
         let cacheHash: String?
-        if hashRequired {
+        if artifactIdentityRequired {
             switch ProviderLoop.reusableSSDWeightHashDecision(preLoadHash: beforeHash, postLoadHash: afterHash) {
-            case .eligible(let hash): cacheHash = hash
+            case .eligible(let hash):
+                modelArtifactSHA256 = hash
+                cacheHash = reusableSSD ? hash : nil
             case .unavailable:
+                modelArtifactSHA256 = nil
                 cacheHash = nil
-                standaloneLogger.warning("Reusable SSD cache disabled: cryptographic weight hash unavailable")
+                standaloneLogger.warning("Artifact qualification and reusable SSD cache disabled: cryptographic weight hash unavailable")
             case .changed:
                 throw StandaloneServerError.capacityUnavailable("Model changed across the load hash bracket")
             }
-        } else { cacheHash = nil }
+        } else {
+            modelArtifactSHA256 = nil
+            cacheHash = nil
+        }
         let targetSizing = await container.sizing(modelPath: directory, defaultMaxTokens: Self.slotDefaultMaxTokens)
         let tokenizer = await container.tokenizerHandle(modelType: modelInfo.modelType, directory: directory)
         try checkNativeMiMoSetupOwner(modelID: modelID, load: load)
@@ -362,16 +373,19 @@ extension StandaloneServer {
             modelId: modelID, modelType: modelInfo.modelType, isVLM: false, modelDirectory: directory,
             container: container, tokenizer: tokenizer, sizing: sizing,
             kvBytesCapacity: targets[modelID] ?? 0, maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelID),
+            automaticallySelectConcurrency: !config.engineV2MaxConcurrentIsExplicit
+                && config.engineV2MaxConcurrentByModel[modelID] == nil,
             kvBudget: kvBudget, activationReserveBytes: resolvedActivationReserveBytes,
             kvBackendConfig: config.engineV2KVBackend, kvBackendConfigByModel: config.engineV2KVBackendByModel,
-            prefillDeadlineMode: config.prefillDeadlineMode, weightHash: cacheHash,
+            prefillDeadlineMode: config.prefillDeadlineMode,
+            modelArtifactSHA256: modelArtifactSHA256, weightHash: cacheHash,
             specDecPreparation: preparation, preparedModel: prepared,
             emitTelemetry: v2TestHooks?.emitTelemetry)
         // The corrected factory/transaction already owns this actual bundle.
         // Keep the actor's candidate before any later awaited veto as well.
         nativeMiMoLoads[modelID]?.candidate = CachedSlot(bundle: bundle, modelContainer: container,
             tokenizer: tokenizer, modelType: modelInfo.modelType, isVLM: false, sizing: sizing,
-            lastUsedAt: .now, cacheEligibleWeightHash: cacheHash)
+            lastUsedAt: .now, modelArtifactSHA256: modelArtifactSHA256, cacheEligibleWeightHash: cacheHash)
         nativeMiMoLoads[modelID]?.containerID = container.identity
         guard let actualEngine = await bundle.bridge.ownedEngine as? EngineV2,
               let actualContractID = actualEngine.nativeShutdownExecutionContractID else {

@@ -261,8 +261,8 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
         _ = try await retire(value)
     }
 
-    func testOffAndAutoUseOneTrackedTargetOnlyPipelineWithoutExtraWeightCharge() async throws {
-        for mode in [MTPMode.off, .auto] {
+    func testOffUsesOneTrackedTargetOnlyPipelineWithoutExtraWeightCharge() async throws {
+        for mode in [MTPMode.off] {
             let value = try await loaded()
             let (intent, prepared) = try await prepare(value, mode: mode)
             let epoch = value.transaction.snapshot().constructionEpoch
@@ -284,25 +284,28 @@ final class MiMoV26ManagedSlotTests: XCTestCase {
         }
     }
 
-    func testOnReportsOnlyTheActualEmbeddedHeadAndBoundedSerialDriver() async throws {
+    func testAutoAndOnReportOnlyTheActualEmbeddedHeadAndBoundedSerialDriver() async throws {
         XCTAssertTrue(CBv2MTPConfig.envEnabled, "ON cell requires the actual SDK MTP lane to be enabled")
-        let value = try await loaded()
-        let (intent, prepared) = try await prepare(value, mode: .on)
-        XCTAssertFalse(prepared.mtpStatus.active); XCTAssertNil(prepared.assistant)
-        let bundle = try await build(value, intent: intent, prepared: prepared)
-        let engine = try await engine(bundle)
-        XCTAssertTrue(bundle.mtpStatus.active); XCTAssertTrue(bundle.hasAssistant)
-        XCTAssertTrue(value.transaction.snapshot().hasAssistant)
-        XCTAssertEqual(bundle.assistantBytes, 0, "embedded head is already in the complete loaded weight tree")
-        XCTAssertGreaterThan(bundle.mtpStatus.assistantBytes, 0)
-        XCTAssertEqual(bundle.mtpStatus.source, .inline)
-        XCTAssertEqual(bundle.mtpStatus.sourceRevision, value.load.request.binding.sourceRevision)
-        XCTAssertEqual(engine.mtpMetricsSnapshot()?.verificationMode, .serialTarget)
-        XCTAssertNil(engine.mtpInactiveReason)
-        guard case .bounded? = engine.resolvedMTPAdmission else { return XCTFail("real head has no bounded admission") }
-        let status = await bundle.bridge.mtpStatusSnapshot()
-        XCTAssertTrue(status.active)
-        _ = try await retire(value)
+        for mode in [MTPMode.auto, .on] {
+            let value = try await loaded()
+            let (intent, prepared) = try await prepare(value, mode: mode)
+            XCTAssertFalse(prepared.mtpStatus.active); XCTAssertNil(prepared.assistant)
+            let bundle = try await build(value, intent: intent, prepared: prepared)
+            let engine = try await engine(bundle)
+            XCTAssertTrue(bundle.mtpStatus.active); XCTAssertTrue(bundle.hasAssistant)
+            XCTAssertTrue(value.transaction.snapshot().hasAssistant)
+            XCTAssertEqual(bundle.assistantBytes, 0, "embedded head is already in the complete loaded weight tree")
+            XCTAssertGreaterThan(bundle.mtpStatus.assistantBytes, 0)
+            XCTAssertEqual(bundle.mtpStatus.source, .inline)
+            XCTAssertEqual(bundle.mtpStatus.sourceRevision, value.load.request.binding.sourceRevision)
+            XCTAssertEqual(engine.mtpMetricsSnapshot()?.verificationMode, .serialTarget)
+            XCTAssertNil(engine.mtpInactiveReason)
+            guard case .bounded? = engine.resolvedMTPAdmission else { return XCTFail("real head has no bounded admission") }
+            let status = await bundle.bridge.mtpStatusSnapshot()
+            XCTAssertTrue(status.active)
+            _ = try await retire(value)
+            XCTAssertEqual(value.budget.processLedger.snapshot().chargedBytes, 0)
+        }
     }
 
     func testCurrentKillSwitchVetoesCachedOnIntentWithoutCreatingAnAssistant() async throws {

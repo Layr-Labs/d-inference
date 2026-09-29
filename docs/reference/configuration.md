@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-28 · commit `2afcb8a6f`
+> Last updated: 2026-09-29 · commit `c7c59ec87`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -404,6 +404,16 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 
 ### Startup model preload
 
+Serving concurrency is resolved after the model's KV backend and verified
+artifact are known. `BackendSettings.engineV2MaxConcurrentIsExplicit`
+distinguishes an absent `engine_v2_max_concurrent` key (automatic, legacy
+default `4` until an exact reviewed profile applies) from any existing literal
+operator cap. Serialization preserves that distinction; historical literal
+values are not silently raised. Per-model overrides remain explicit limits.
+Daemon and standalone engines use the same profile resolver and preserve
+narrower architecture and physical memory constraints. `darkbloom status` and
+`doctor` explain the selection. See [qualification](../developer/serving-performance-qualification.md).
+
 Startup loading is independent of the idle-unload policy. The default
 preloads selected models on coordinator-connected and standalone `--local`
 starts; an explicit list takes precedence. All loads retain the normal memory
@@ -506,6 +516,8 @@ provider or model command is running. Code:
 | `DARKBLOOM_CBV2_PAGED_KV` | `0` forces contiguous | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the `provider.toml` setting. The [owned Flash-Next candidate](qwen4-next-support.md#identity-and-serving-policy) joins the exact automatic policy; a default is not runtime qualification. |
 | `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | unset: observed native per-layer types | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` | Optional assertion for resolved paged storage; a nonempty value must match every measured native layer. Unsupported values or mismatches refuse explicit paged construction. |
 | `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | tokens | engine default | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Solo-prefill stripe size. |
+| `DARKBLOOM_CBV2_MIXED_PREFILL_CAP` | nonnegative tokens | reviewed profile cap; otherwise uncapped | `provider-swift/Sources/ProviderCore/Inference/Performance/MixedPrefillPolicy.swift` (`resolve`) | Caps prompt tokens in steps that also decode. Positive Gemma caps have a 128-token minimum; `0` defers prefill while decode is active. Does not change the pure-prefill stripe. Foreground/local only. |
+| `DARKBLOOM_CBV2_MIXED_PREFILL_CAP_BY_MODEL` | comma-separated `model-id=tokens` | unset | `provider-swift/Sources/ProviderCore/Inference/Performance/MixedPrefillPolicy.swift` (`resolve`) | Exact model-ID overrides take precedence over the global cap, then the reviewed profile. Same nonnegative parsing and Gemma minimum; malformed entries are ignored. Foreground/local only. |
 | `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | integer (`0` = unlimited) | `1` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Maximum concurrent partial prefills. |
 | `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` | affirmative | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Restores the legacy per-request timeout. |
 | `DARKBLOOM_CBV2_MTP` | negative disables | unset (beta flag decides) | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift`; `provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift` | Kill switch for MTP speculation; beats the `provider.toml` beta flag. See [`../provider/beta-features.md`](../provider/beta-features.md). |
@@ -529,14 +541,15 @@ process-scoped settings before first use and restart for latched kernel flags.
 
 | Control | Accepted enabling value | Default | Read in / effect |
 |---|---|---|---|
-| `backend.mtp_mode` for `mimo_v2` | `on`, subject to existing MTP kill switch | `auto` leaves MiMo MTP off | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.preparation` accepts embedded heads, not an external assistant path |
+| `backend.mtp_mode` for `mimo_v2` | `auto` or `on`, subject to genuine native head inspection and existing kill switch | `auto` requests embedded MTP by default; `off` disables it | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `MiMoV26ServingLoad.hasEmbeddedMTP` derives intent from the validated native inventory; actual native assembly proves activation. No external assistant download |
 | `DARKBLOOM_MIMO_RECTANGULAR_VERIFY` | exact `1` | off; serial target when MTP is enabled | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`); does not itself enable MTP and remains subject to exact greedy/state qualification |
 | `DARKBLOOM_MIMO_RECTANGULAR_SCALAR_DENSE` | exact `1` | off | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo/MiMoV26RectangularDense.swift` (`enabledByEnvironment`); separately charged scalar-shape projections only in genuine admitted rectangular verification; full target/head-state qualification remains required |
-| `DARKBLOOM_MIMO_NATIVE_PAGED_TARGET` | exact `1` with an explicit paged backend | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`; separately issued asymmetric target-only paging; MTP, complete prefix and managed media remain refused in this profile |
+| `DARKBLOOM_MIMO_NATIVE_PAGED_TARGET` | exact `1` with an explicit paged backend | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift`; separately issued asymmetric target-only or explicit serial-MTP paging, including authenticated complete-prefix composition; rectangular verification and managed media remain refused in this profile |
 | `DARKBLOOM_MIMO_PERSISTENT_WIRED_RESIDENCY` | exact `1` | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`isEnabled`, `Bounds`, `Policy`); shared-manager, owned-lifetime acceleration only, never load admission or physical-page coverage proof |
-| `DARKBLOOM_MIMO_COMPLETE_PREFIX` | exact `1` AND existing model-scoped prefix-cache policy enabled | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`nativeMiMoPrefixRefusal`); text-only contiguous COMPLETE checkpoints, exact store/process/loaded-owner binding; decoded-media profiles keep an honest prefix miss |
+| `DARKBLOOM_MIMO_COMPLETE_PREFIX` | exact `1` AND existing model-scoped prefix-cache policy enabled | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`nativeMiMoPrefixRefusal`); text-only contiguous or issued paged COMPLETE checkpoints, exact store/process/loaded-owner binding; media requests keep an honest prefix miss |
 
-All kernel controls below default off. A requested flag is not effective
+Only NAX attention and admitted block grouping below default on; the other
+kernel controls remain off. A requested flag is not effective
 dispatch: module ownership, actual device/stream, native dtype, shape,
 quantization, mask and admission checks still apply. Unsupported cases retain
 the existing implementation; required execution failures are not silently
@@ -556,17 +569,24 @@ converted into successful fallback.
 | `DARKBLOOM_MIMO_V26_NAX_GATE_UP` | same affirmative values | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26NAXGateUp.swift` (`requested`); dual-input projection without resident weight concatenation |
 | `DARKBLOOM_MIMO_V26_NAX_SWIGLU` | exact `1` | `MiMoV26NAXGateUp.activationRequested`; epilogue preserves the original native rounding stages |
 | `DARKBLOOM_MIMO_V26_NAX_ROW_MAP` | exact `1` | `MiMoV26NAXGateUp.rowMapRequested`; requires the eligible SwiGLU path, reuses sorted route/inverse without repeated input-row materialization |
-| `DARKBLOOM_MIMO_V26_NAX_ATTENTION` | trimmed, case-insensitive `1`, `true`, `yes`, `on` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26NAXAttention.swift` (`requested`); three score passes preserve native Q/score/probability rounding and existing q128 visibility |
-| `DARKBLOOM_MIMO_BLOCK_BATCH_PREFILL` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26BlockBatchAttention.swift` (`requested`); separately admitted grouping of existing exact query blocks; also requires the NAX attention path |
+| `DARKBLOOM_MIMO_V26_NAX_ATTENTION` | unset enables; trimmed, case-insensitive `1`, `true`, `yes`, `on`, `auto` enable; `0` disables | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26NAXAttention.swift` (`requested`); three score passes preserve native Q/score/probability rounding and existing q128 visibility |
+| `DARKBLOOM_MIMO_BLOCK_BATCH_PREFILL` | unset enables; same affirmative values; `0` disables | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26BlockBatchAttention.swift` (`requested`); separately admitted grouping of existing exact query blocks; also requires the NAX attention path |
 | `DARKBLOOM_MIMO_V26_SPLITKEY_QK` | exact `1` | `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26SplitKeyAttention.swift` (`requested`); isolated helper, not wired to managed attention |
 
 The ordered key-range helper
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26NAXAttentionKeyRanges.swift`
 requires the genuine native process owner, bound policy, actual per-step work
 and extra allocation reservation. Source presence or requested flags do not
-prove a benchmark took that path. Neither helper flag nor grouped
-prefill changes scheduler chunk defaults, precision, cache semantics or memory
-reserves. Port-specific eligibility and licenses are in the
+prove a benchmark took that path. The native factory requests an eligible
+default solo-text stripe of 4096, or 8192 only with matching oversized gather.
+Actual loaded geometry, NAX hardware and authenticated scratch installation
+decide whether it is accepted. Explicit stripe overrides remain authoritative;
+MTP is repriced for the selected width without reducing other charges or reserves.
+Controls are process-latched: a contradictory injected factory setting throws
+`MiMoV26PrefillPolicy.ProcessControlMismatch` before slot assembly. Restart with
+the desired process controls for actual rollback. See the
+[SDK fast-prefill policy](../../libs/mlx-swift-lm/docs/mimo-v26/FAST-PREFILL-POLICY.md)
+for eligibility, fallback and still-required qualification. Port-specific eligibility and licenses are in the
 [SDK port map](../../libs/mlx-swift-lm/docs/mimo-v26/implementation-references.md).
 
 ### Native Flash-Next candidate

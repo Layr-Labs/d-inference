@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-28 · commit `2afcb8a6f`
+> Last updated: 2026-09-28 · commit `d696ebb8d`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -153,6 +153,18 @@ out of whatever the cap leaves after weights and activations; a model that loads
 with less than `minimumLoadKVBytes` of KV headroom is unloaded again
 (`provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift`;
 [after the load](../architecture/hardware-support.md#after-the-load)).
+
+## Native MiMo loading quotation
+
+For validated exact `mimo_v2`, discovery prices the strict main and ordinary
+audio-sidecar full LOAD requests, not disk bytes times a generic multiplier or
+steady-state residency. It retains the same activation/minimum-KV headroom and
+all actual loading/post-load gates. The coordinator also keeps the raw catalog
+size floor. Unsupported or stale inventory retains conservative legacy pricing.
+See `provider-swift/Sources/ProviderCore/Models/MiMo/MiMoV26DiscoveryLoadFootprint.swift`
+(`estimate`) and `coordinator/registry/offloaded_weights.go`
+(`advertisedOffloadedMemoryGBLocked`). A corrected quotation does not prove
+hardware serviceability or full-context operation.
 
 ## Qwen4 learned-table offload
 

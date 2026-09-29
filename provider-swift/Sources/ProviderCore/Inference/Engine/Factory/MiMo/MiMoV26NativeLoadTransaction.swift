@@ -771,7 +771,11 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
                 lock.withLock {
                     published && !cancelled && !draining && retired == nil && faultCode == nil
                         && budget === expectedBudget && engine === expectedEngine && bridge === expectedBridge
-                        && (contract.map { nativePrefixResources?.matches(engine: expectedEngine, contract: $0) == true } == true)
+                        && (contract.map {
+                            $0.supportsNativeCompletePrefix
+                                && (nativePrefixResources?.matches(engine: expectedEngine, contract: $0) == true
+                                    || nativePagedResources?.matches(engine: expectedEngine, contract: $0) == true)
+                        } == true)
                 }
             }
         } catch { return false }
@@ -793,7 +797,7 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
                 // Capture first; even a rejected late prefix proof owns a real
                 // engine. Common's consumed ticket verifies this exact store,
                 // process owner, loaded validator, bank and optional assistant.
-                if executionContract.supportsNativeCompletePrefix {
+                if executionContract.supportsNativeCompletePrefix && !executionContract.supportsNativePagedTarget {
                     guard let owner = nativePrefixResources else {
                         throw MiMoV26NativeTransactionError.unsupportedExecutionContract
                     }
@@ -873,7 +877,11 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
     private static func supportsProfile(_ contract: CBv2NativeExecutionContract) -> Bool {
         contract.profile == "mimo_text_contiguous_default_and_cpu_v1"
             || (contract.supportsNativePagedTarget
-                && contract.profile == "mimo_text_native_gathered_paged_default_and_cpu_v1")
+                && (contract.profile == "mimo_text_native_gathered_paged_default_and_cpu_v1"
+                    || (contract.supportsNativeCompletePrefix
+                        && contract.profile == "mimo_complete_text_prefix_native_gathered_paged_v1")
+                    || (contract.supportsNativePagedSerialMTP
+                        && contract.mtpVerificationMode == .serialTarget)))
             || contract.supportsManagedDecodedMedia
             || (contract.supportsNativeCompletePrefix
                 && contract.profile == "mimo_complete_text_prefix_contiguous_default_and_cpu_v1")
@@ -1173,6 +1181,7 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
         // Closing actual host IO is cancellation, NOT native completion/credit.
         // Fault exits retain the store, process owner and all native roots.
         lock.withLock { nativePrefixResources }?.close()
+        lock.withLock { nativePagedResources }?.close()
         guard let registry else { return .pending(.registryUnavailable) }
         if work.snapshot.isRetainedFault {
             registry.retainFault(self, code: "construction_completion_failed")
@@ -1216,7 +1225,8 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
             }
             let outcome: CBv2NativeShutdownOutcome
             do {
-                if contract.supportsNativeCompletePrefix && !lock.withLock({ prefixAliasesDetached }) {
+                if contract.supportsNativeCompletePrefix && !contract.supportsNativePagedTarget
+                    && !lock.withLock({ prefixAliasesDetached }) {
                     guard let actualContainer = selected.3 else {
                         return .pending(.identityMismatch)
                     }
@@ -1324,6 +1334,9 @@ final class MiMoV26NativeLoadTransaction: @unchecked Sendable {
                 }
             }
             if let paging = lock.withLock({ nativePagedResources }) {
+                // Same host owner as paging, same process ledger. Join any
+                // real encrypted store after the actual SDK+bridge proof.
+                await paging.closeAndWait()
                 if selected.1?.supportsNativePagedTarget == true {
                     guard let receipt = nativeReceipt, let actualContainer = selected.3 else {
                         return .pending(.identityMismatch)

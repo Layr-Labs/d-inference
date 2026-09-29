@@ -133,6 +133,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Absolute provider-local deadline derived once when the coordinator frame
     /// was received. Nil for local HTTP and legacy coordinator requests.
     private let firstContentDeadline: FirstContentDeadline?
+    /// Coordinator reservation identity; unrelated to generated engine IDs.
+    /// Local requests have no coordinator reservation to acknowledge.
+    private let serviceReservationID: String?
+    private let serviceReservation: ServiceReservationLifetime?
     /// Profiler accumulator for the coordinator request this engine view
     /// serves (prompt-prep / tool-constraint / vision-prep stamps; handed on
     /// to the bridge). Nil for local HTTP and tests.
@@ -164,6 +168,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         engineV2Usage: EngineV2RequestUsageSignal? = nil,
         firstContentDeadline: FirstContentDeadline? = nil,
         profile: RequestProfileBuilder? = nil,
+        serviceReservationID: String? = nil,
+        serviceReservation: ServiceReservationLifetime? = nil,
         nativeConsumerLeaseProvider: (@Sendable (String, ModelRegistryEntry) async throws -> NativeLocalConsumerLease?)? = nil
     ) {
         self.profile = profile
@@ -184,6 +190,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Usage = engineV2Usage
         self.allowInternalToolSchemaMetadata = true
         self.firstContentDeadline = firstContentDeadline
+        self.serviceReservationID = serviceReservationID
+        self.serviceReservation = serviceReservation
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -241,6 +249,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Usage = nil
         self.allowInternalToolSchemaMetadata = false
         self.firstContentDeadline = nil
+        self.serviceReservationID = nil
+        self.serviceReservation = nil
         self.profile = nil
     }
 
@@ -643,7 +653,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         mediaKind: visionPrepared.mediaKind,
                         donationDemand: donationDemand,
                         firstContentDeadline: firstContentDeadline,
-                        profile: profile
+                        profile: profile,
+                        serviceReservationID: serviceReservationID,
+                        serviceReservation: serviceReservation
                     )
                     do {
                         try checkFirstContentDeadline()
@@ -859,7 +871,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     tokenConstraint: tokenConstraint,
                     donationDemand: donationDemand,
                     firstContentDeadline: firstContentDeadline,
-                    profile: profile
+                    profile: profile,
+                    serviceReservationID: serviceReservationID,
+                    serviceReservation: serviceReservation
                 )
                 do {
                     try checkFirstContentDeadline()

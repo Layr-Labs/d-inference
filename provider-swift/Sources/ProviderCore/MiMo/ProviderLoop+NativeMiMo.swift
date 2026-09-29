@@ -257,9 +257,11 @@ extension ProviderLoop {
         let started = ContinuousClock.now
         try requireNativeMiMoPublication(modelID: modelID, load: load)
         let reusableSSD = PrefixCachePolicy.isEnabled(modelId: modelID)
+        let artifactIdentityRequired = reusableSSD
+            || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelID)
         let before = try await captureWeightHash(modelId: modelID, modelPath: directory,
-                                                 requireFreshCryptographicHash: reusableSSD)
-        if !reusableSSD { await publishWeightHash(modelId: modelID, snapshot: before) }
+                                                 requireFreshCryptographicHash: artifactIdentityRequired)
+        if !artifactIdentityRequired { await publishWeightHash(modelId: modelID, snapshot: before) }
         if let beforeModelLoad { await beforeModelLoad(modelID) }
         try Task.checkCancellation()
         try requireNativeMiMoPublication(modelID: modelID, load: load)
@@ -272,21 +274,27 @@ extension ProviderLoop {
         let newcomer = EngineV2NewcomerBox(container)
         try Task.checkCancellation()
         try requireNativeMiMoPublication(modelID: modelID, load: load)
+        let modelArtifactSHA256: String?
         let cacheHash: String?
-        if reusableSSD {
+        if artifactIdentityRequired {
             let after = try await captureWeightHash(modelId: modelID, modelPath: directory,
                                                     requireFreshCryptographicHash: true)
             switch Self.reusableSSDWeightHashDecision(preLoadHash: before.hash, postLoadHash: after.hash) {
             case .eligible(let value):
-                await publishWeightHash(modelId: modelID, snapshot: after); cacheHash = value
+                await publishWeightHash(modelId: modelID, snapshot: after)
+                modelArtifactSHA256 = value
+                cacheHash = reusableSSD ? value : nil
             case .unavailable:
-                await markWeightHashUnavailable(modelId: modelID); cacheHash = nil
+                await markWeightHashUnavailable(modelId: modelID)
+                modelArtifactSHA256 = nil
+                cacheHash = nil
             case .changed:
                 throw InferenceError.modelLoadFailed("Native MiMo slot artifact changed during loading")
             }
         } else {
             // Same existing non-SSD fingerprint/hash policy; this detached task
             // is joined immediately and does no native/model construction.
+            var loadedArtifactHash = before.hash
             let fingerprint = await Task.detached(priority: .utility) {
                 WeightHasher.snapshotFingerprint(snapshotDir: directory)
             }.value
@@ -295,7 +303,9 @@ extension ProviderLoop {
                 let after = try await captureWeightHash(modelId: modelID, modelPath: directory,
                                                         requireFreshCryptographicHash: true)
                 await publishWeightHash(modelId: modelID, snapshot: after)
+                loadedArtifactHash = after.hash
             }
+            modelArtifactSHA256 = loadedArtifactHash
             cacheHash = nil
         }
         let sizing = await container.sizing(modelPath: directory, defaultMaxTokens: Self.schedulerDefaultMaxTokens)
@@ -313,7 +323,8 @@ extension ProviderLoop {
         let build = try await resliceAndBuildEngineV2Bundle(
             modelId: modelID, modelType: "mimo_v2", isVLM: false, modelDirectory: directory,
             newcomer: newcomer, tokenizer: tokenizer, targetSizing: sizing,
-            specDecPreparation: preparation, cacheEligibleWeightHash: cacheHash, registerInRuntime: false)
+            specDecPreparation: preparation, modelArtifactSHA256: modelArtifactSHA256,
+            cacheEligibleWeightHash: cacheHash, registerInRuntime: false)
         // Factory/core registerBundle must retain this exact owner before its
         // return, including an outer performSetup veto after this method returns.
         try await nativeMiMoBoundaryForTesting?("afterNativeConstruction")
@@ -341,7 +352,8 @@ extension ProviderLoop {
         // hidden model/slot alias after the external owner joins and drops it.
         nativeMiMoCandidates[modelID] = ModelSlot(
             engineBundle: build.bundle, modelContainer: container, tokenizer: tokenizer,
-            sizing: build.sizing, cacheEligibleWeightHash: cacheHash, isVLM: false,
+            sizing: build.sizing, modelArtifactSHA256: modelArtifactSHA256,
+            cacheEligibleWeightHash: cacheHash, isVLM: false,
             modelType: "mimo_v2", lastInferenceAt: .now)
     }
 

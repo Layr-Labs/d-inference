@@ -44,6 +44,7 @@ public actor EngineV2BenchmarkSession {
     /// cache-disabled diagnostic session. Submit ordinary requests through this
     /// session so checkpoint receipt and staging lifetimes remain paired.
     public nonisolated let rawEngine: EngineV2
+    public nonisolated let effectiveMaxConcurrentRequests: Int
     public nonisolated let backend: String
     public nonisolated let backendFallback: String?
     private let bundle: ProviderEngineBundle
@@ -64,7 +65,7 @@ public actor EngineV2BenchmarkSession {
 
     init(
         bundle: ProviderEngineBundle, engine: EngineV2,
-        backend: String, fallback: String?, memoryEnabled: Bool,
+        backend: String, fallback: String?, effectiveMaxConcurrentRequests: Int, memoryEnabled: Bool,
         activationReserveBytes: UInt64, postLoadMaximumKVBytes: UInt64,
         budget: GlobalKVCacheBudget, assistantIdentity: [String: String],
         productionGrant: EngineV2BenchmarkProductionGrant?, postBuildHeadroomBytes: UInt64?,
@@ -77,6 +78,7 @@ public actor EngineV2BenchmarkSession {
         self.postBuildHeadroomBytes = postBuildHeadroomBytes
         self.rawEngine = engine
         self.backend = backend
+        self.effectiveMaxConcurrentRequests = effectiveMaxConcurrentRequests
         self.backendFallback = fallback
         self.memoryEnabled = memoryEnabled
         self.activationReserveBytes = activationReserveBytes

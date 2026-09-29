@@ -132,3 +132,80 @@ extension EngineV2SlotFactory {
         return .init(metadata: metadata, resources: owner, status: .scanPending)
     }
 }
+
+extension EngineV2SlotFactory {
+    struct MiMoNativePagedPrefixPreparation: Sendable {
+        let metadata: MiMoV26NativePagedPrefixMetadata?
+        let status: PrefixCacheConstructionStatus
+        static func disabled(_ reason: PrefixCacheStatusReason) -> Self {
+            .init(metadata: nil, status: .init(state: .disabled, reason: reason))
+        }
+    }
+
+    /// Scalar first-scope facts only. The already registered PAGED host owner
+    /// receives the actual store; never create a second process ledger owner.
+    static func prepareNativeMiMoPagedPrefix(modelId: String, modelDirectory: URL?, weightHash: String?,
+        prepared: MiMoV26ServingPreparation, metadata: MiMoV26NativePagedPrefixMetadata,
+        paging: MiMoV26NativePagedResources, mtpConfig: CBv2MTPConfig, environment: [String: String],
+        persistentTestNamespace: SSDPersistentTestKeyNamespace?) async throws -> MiMoNativePagedPrefixPreparation {
+        try prepared.load.recheck()
+        let native = metadata.prefix, binding = prepared.load.request.binding
+        guard paging.transactionID == prepared.transaction.id, paging.sessionID == prepared.load.request.sessionID,
+              paging.budget === prepared.transaction.budget,
+              native.modelType == "mimo_v2", native.loadSessionID == prepared.load.request.sessionID,
+              native.loadBindingFingerprint == (try binding.fingerprint()),
+              native.verificationMode == .serialTarget, mtpConfig.verificationMode == .serialTarget,
+              (native.assistantCodecID != nil) == mtpConfig.enabled,
+              metadata.pagedConfiguration.layerDTypes == native.layerDTypes,
+              metadata.pagedConfiguration.gatheredAttention?.maximumContextTokens == native.maximumContextTokens,
+              native.backendLayout == (mtpConfig.enabled ? CBv2CompleteCheckpointManifest.pagedAsymmetricMTPLayout
+                : CBv2CompleteCheckpointManifest.pagedAsymmetricLayout),
+              let storage = CompleteCheckpointStorageIdentity(kind: .paged,
+                layerDTypes: native.layerDTypes, pagedConfig: metadata.pagedConfiguration,
+                target: .historicalAttention(native.layerKinds)) else {
+            throw MiMoV26ServingLoadError.nativeOwnerMismatch
+        }
+        guard PrefixCachePolicy.checkpointIdentityHash(weightHash) != nil else {
+            return .disabled(.weightHashUnavailable)
+        }
+        let root = URL(fileURLWithPath: binding.canonicalRoot, isDirectory: true)
+        guard modelDirectory == nil || modelDirectory?.standardizedFileURL == root.standardizedFileURL,
+              let prompt = try? PromptContractIdentity.compute(modelDirectory: root) else {
+            return .disabled(.runtimeIdentityUnavailable)
+        }
+        var numerics = nativeMiMoSourceNumerics(binding)
+        numerics["maximumContextTokens"] = String(native.maximumContextTokens)
+        numerics["completeLayout"] = native.backendLayout
+        guard let identity = PrefixCachePolicy.completeCheckpointIdentity(
+            modelAggregateHash: weightHash, promptContractID: prompt,
+            binaryHash: PrefixCachePolicy.checkpointBinaryHash, loadedMetallibHash: metallibHash(),
+            osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            mtpConfig: mtpConfig, assistantCodecID: native.assistantCodecID,
+            environment: environment, processEnvironment: ProcessInfo.processInfo.environment,
+            storage: storage, additionalNumerics: numerics, nativeModelType: "mimo_v2") else {
+            return .disabled(.runtimeIdentityUnavailable)
+        }
+        try prepared.load.recheck()
+        try prepared.transaction.recheckSetup()
+        try paging.preparePrefix(identity: identity, backendLayout: native.backendLayout)
+        let store = await SSDHybridCheckpointStoreFactory.make(modelId: modelId, identity: identity,
+            backendLayout: native.backendLayout, kvBudget: paging.budget,
+            environment: environment, persistentTestNamespace: persistentTestNamespace)
+        if let store {
+            do { try paging.installPrefix(store) }
+            catch {
+                let failure = error
+                await store.closeAndWait() // this newly created, unbound store only
+                throw failure
+            }
+        } else {
+            await paging.closeAndWait()
+            // The SAME zero-charge paging owner remains available for the
+            // honest uncached profile; do not retire/recreate a process owner.
+            return .init(metadata: nil, status: .init(state: .error, reason: .cacheInitFailed))
+        }
+        try prepared.load.recheck()
+        try prepared.transaction.recheckSetup()
+        return .init(metadata: metadata, status: .scanPending)
+    }
+}

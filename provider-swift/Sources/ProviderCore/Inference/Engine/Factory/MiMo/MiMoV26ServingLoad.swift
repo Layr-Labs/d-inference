@@ -91,6 +91,12 @@ final class MiMoV26ServingLoad: @unchecked Sendable {
     private var cancelled = false
     var transaction: MiMoV26NativeLoadTransaction? { lock.withLock { transactionStorage } }
     var estimatedWeightsGb: Double { Double(estimatedLoadBytes) / 1_073_741_824 }
+    /// Intent eligibility from the already validated closed native inventory.
+    /// Actual assistant creation still requires genuine loaded weights/owners.
+    var hasEmbeddedMTP: Bool {
+        plan.bundlePlan.configuration.numNextnPredictLayers > 0
+            && plan.bundlePlan.tensorBytes(for: .mtp) > 0
+    }
 
     static func inspect(directory: URL, decodedMediaPolicy: DecodedMediaPolicy? = nil,
                         decodedAudioPolicy: DecodedAudioPolicy? = nil) throws -> MiMoV26ServingLoad? {
@@ -441,12 +447,16 @@ final class MiMoV26ServingLoad: @unchecked Sendable {
     func snapshot() -> MiMoV26PendingLoadReservation.Snapshot? { transaction?.snapshot().permit }
 
     static func preparation(mode: MTPMode, externalPath: String?,
-                            environment: [String: String] = ProcessInfo.processInfo.environment) throws -> SpecDecPreparation {
+                            environment: [String: String] = ProcessInfo.processInfo.environment,
+                            embeddedArtifactDeclared: Bool = true) throws -> SpecDecPreparation {
         guard externalPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false else {
             throw MiMoV26ServingLoadError.externalAssistantUnsupported
         }
-        let enabled = mode.enablesMTP(forModelType: "mimo_v2", embeddedArtifactDeclared: true)
+        let enabled = mode.enablesMTP(forModelType: "mimo_v2", embeddedArtifactDeclared: embeddedArtifactDeclared)
         guard enabled else { return .init(artifact: nil, status: .disabled(.configDisabled, configured: false)) }
+        guard embeddedArtifactDeclared else {
+            return .init(artifact: nil, status: .disabled(.metadataMissing, configured: true))
+        }
         guard SpecDecArtifactFunnel.killSwitchEnabled(environment: environment) else {
             return .init(artifact: nil, status: .disabled(.killSwitchDisabled, configured: true))
         }

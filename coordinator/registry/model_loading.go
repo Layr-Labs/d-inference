@@ -37,8 +37,9 @@ const pendingModelLoadMemoryBackoff = 30 * time.Second
 const dispatchLoadCooldownTTL = 2 * time.Minute
 
 type modelLoadAction struct {
-	providerID string
-	modelID    string
+	providerID  string
+	modelID     string
+	reservation pendingModelLoadSendAttempt
 }
 
 // RecordDispatchLoadFailure puts a provider-model pair on a routing cool-down
@@ -106,6 +107,16 @@ func (g *gateState) dispatchLoadCooled(modelID string, now time.Time) bool {
 // Called after heartbeat processing and queue drain to catch demand that
 // can't be satisfied by warm providers alone.
 func (r *Registry) TriggerModelSwaps() {
+	// An active controller owns warming, including queue-triggered demand. A
+	// second planner would bypass its global budgets and dwell policy.
+	r.mu.RLock()
+	controller := r.warmPool
+	active := controller != nil && controller.config.activePlanner()
+	r.mu.RUnlock()
+	if active {
+		r.RequestWarmPoolTrigger()
+		return
+	}
 	queue := r.Queue()
 	if queue == nil {
 		return
@@ -256,6 +267,9 @@ func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, sele
 func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, now time.Time) (int, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if now.Before(p.modelLoadSendRetryAt) {
+		return 0, false
+	}
 
 	// Liveness/trust/privacy core + catalog membership + dedicated-box
 	// isolation, with NO owner relaxation: this is a public load_model target
@@ -286,7 +300,7 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		// so the warming planner can't send a load_model the provider then
 		// OOM-rejects, which would leave queued cold-dispatch requests sitting until
 		// they time out. Legacy providers (no report) fall through to the static gate.
-		if admit, reported := reportedFreeForLoadAdmitsWithOffload(entry.SizeGB, advertisedOffloadedMemoryGBLocked(p, model), backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
+		if admit, reported := reportedFreeForLoadAdmitsWithOffload(entry.SizeGB, advertisedOffloadedMemoryGBLocked(p, model, entry.SizeGB), backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
 			return 0, false
 		}
 	}
@@ -308,7 +322,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 	for _, action := range actions {
 		if p, ok := r.providers[action.providerID]; ok {
 			p.mu.Lock()
-			eligible := r.providerCanAcquireCatalogModelLocked(p, action.modelID)
+			eligible := !now.Before(p.modelLoadSendRetryAt) && r.providerCanAcquireCatalogModelLocked(p, action.modelID)
 			p.mu.Unlock()
 			if !eligible {
 				continue
@@ -323,6 +337,9 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 		key := modelLoadKey{ProviderID: action.providerID, ModelID: action.modelID}
 		r.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
 		r.pendingModelLoadStarted[key] = now
+		action.reservation = pendingModelLoadSendAttempt{
+			provider: r.providers[action.providerID], startedAt: now, expiresAt: r.pendingModelLoads[key],
+		}
 		reserved = append(reserved, action)
 	}
 	return reserved
@@ -330,13 +347,16 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 
 func (r *Registry) sendModelLoadActions(actions []modelLoadAction) {
 	for _, action := range actions {
+		if !r.modelLoadSendStillPending(action) {
+			continue
+		}
 		if err := r.SendLoadModel(action.providerID, action.modelID); err != nil {
 			r.logger.Warn("failed to trigger model swap",
 				"provider_id", action.providerID,
 				"model_id", action.modelID,
 				"error", err,
 			)
-			r.ClearPendingModelLoad(action.providerID, action.modelID)
+			r.failPendingModelLoadSend(action)
 		}
 	}
 }
@@ -358,13 +378,12 @@ func (r *Registry) providerHasPendingLoad(providerID string) bool {
 // stale protected loads cannot consume the global pending-load budget.
 func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	p, ok := r.providers[providerID]
 	if !ok {
+		r.mu.Unlock()
 		return 0
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	cleared := 0
 	for key := range r.pendingModelLoads {
@@ -378,12 +397,16 @@ func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 		delete(r.pendingModelLoadStarted, key)
 		cleared++
 	}
+	p.mu.Unlock()
+	r.mu.Unlock()
+	if cleared > 0 {
+		r.RequestWarmPoolTrigger()
+	}
 	return cleared
 }
 
-// MarkModelWarm adds a model to the provider's WarmModels list if not already
-// present. Called when load_model_status:succeeded arrives before the next
-// heartbeat, so the scheduler sees the provider as warm during queue drain.
+// MarkModelWarm records a successful placement and fills any warm state not yet
+// reported by heartbeat, so queue drain sees the loaded model immediately.
 func (r *Registry) MarkModelWarm(providerID, modelID string) {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
@@ -401,6 +424,10 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 		p.mu.Unlock()
 		r.mu.RUnlock()
 	}()
+	// A completion heartbeat can report the loaded slot before its succeeded
+	// status arrives. The successful placement still starts dwell in that order;
+	// the early return only avoids rewriting already-authoritative warm state.
+	p.lastWarmPlacementAt = time.Now()
 	for _, wm := range p.WarmModels {
 		if wm == modelID {
 			return // already warm
@@ -438,14 +465,19 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 }
 
 // ClearPendingModelLoad removes a pending model load entry after a terminal
-// load_model_status response.
+// load_model_status response. The active planner must observe
+// the freed global budget even if its earlier heartbeat trigger saw it full.
 func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Duration {
 	r.mu.Lock()
 	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
+	_, released := r.pendingModelLoads[key]
 	started := r.pendingModelLoadStarted[key]
 	delete(r.pendingModelLoads, key)
 	delete(r.pendingModelLoadStarted, key)
 	r.mu.Unlock()
+	if released {
+		r.RequestWarmPoolTrigger()
+	}
 	if started.IsZero() {
 		return 0
 	}

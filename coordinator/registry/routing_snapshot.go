@@ -19,7 +19,7 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	snap.prefillTPS = resolvedPrefillTPS(p)
 	snap.totalMemoryGB = float64(p.Hardware.MemoryGB)
 	snap.modelSizeGB = r.modelSizeGBForFitLocked(p, model)
-	snap.estimatedOffloadedMemoryGB = advertisedOffloadedMemoryGBLocked(p, model)
+	snap.estimatedOffloadedMemoryGB = advertisedOffloadedMemoryGBLocked(p, model, snap.modelSizeGB)
 	snap.minRAMGb = r.catalogMinRAMGbLocked(model)
 
 	fillSnapshotPendingAndPool(snap, p, model)
@@ -78,5 +78,6 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	// confirmed against p.gate like the gates above (gateView).
 	rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
 	snap.budgetClamped = r.budgetClampedFor(p, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
+	snap.performanceProfile = qualifiedPerformanceProfileLocked(p, model)
 	r.fillFirstContentSnapshot(snap, p, now)
 }

@@ -29,6 +29,15 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
 }
 
 extension EngineV2Factory {
+    /// Qualification must measure candidate widths before a reviewed profile
+    /// exists. Benchmark construction preserves the requested scheduler width;
+    /// native architecture limits and all backend/memory admission still apply.
+    /// Service entry points always use the default `.serving` policy.
+    public enum ConstructionPurpose: Sendable, Equatable {
+        case serving
+        case benchmark
+    }
+
     /// Build the same production engine used by serving and benchmark callers.
     /// Use `makeProductionBuild` when the resolved backend metadata is needed.
     public static func makeProductionEngine(
@@ -86,6 +95,9 @@ extension EngineV2Factory {
         /// The old assistant-only variable term supplied by the slot factory.
         /// A bounded result replaces this term; target charges remain intact.
         public let legacyMTPBytesPerToken: Int
+        /// Actual configured scheduler cap after serving and architecture policy.
+        /// Zero only for scripted/test builds without construction metadata.
+        public let effectiveMaxConcurrentRequests: Int
 
         /// Stable spelling consumed by benchmark artifact readers.
         public var resolvedKVBackendDescriptor: String {
@@ -101,7 +113,8 @@ extension EngineV2Factory {
             pagedPoolDType: String? = nil,
             usesProcessMemoryOwner: Bool = false,
             mtpAdmissionResolution: CBv2MTPAdmissionResolution? = nil,
-            legacyMTPBytesPerToken: Int = 0
+            legacyMTPBytesPerToken: Int = 0,
+            effectiveMaxConcurrentRequests: Int = 0
         ) {
             self.engine = engine
             self.fixedRequestBytes = fixedRequestBytes
@@ -111,6 +124,7 @@ extension EngineV2Factory {
             self.usesProcessMemoryOwner = usesProcessMemoryOwner
             self.mtpAdmissionResolution = mtpAdmissionResolution
             self.legacyMTPBytesPerToken = legacyMTPBytesPerToken
+            self.effectiveMaxConcurrentRequests = effectiveMaxConcurrentRequests
         }
     }
 
@@ -122,6 +136,7 @@ extension EngineV2Factory {
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
+        constructionPurpose: ConstructionPurpose = .serving,
         kvBudget: GlobalKVCacheBudget? = nil,
         activationReserveBytes: UInt64? = nil,
         prefixCache: (any CBv2PrefixCache)? = nil,
@@ -138,6 +153,7 @@ extension EngineV2Factory {
         let preparedBackend = try prepareProductionBackend(
             model: model,
             modelID: modelID,
+            constructionPurpose: constructionPurpose,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             kvBackend: kvBackend,
@@ -233,6 +249,7 @@ extension EngineV2Factory {
             pagedPoolDType: preparedBackend.pagedPoolDType,
             usesProcessMemoryOwner: processOwner != nil,
             mtpAdmissionResolution: engine.resolvedMTPAdmission,
-            legacyMTPBytesPerToken: mtpDrafter?.requestStateBytesPerToken ?? 0)
+            legacyMTPBytesPerToken: mtpDrafter?.requestStateBytesPerToken ?? 0,
+            effectiveMaxConcurrentRequests: preparedBackend.effectiveMaxConcurrentRequests)
     }
 }

@@ -153,7 +153,7 @@ func (r *Registry) SetReleasePolicyGeneration(
 		r.appAttestPolicyGeneration = generation
 		for _, p := range r.providers {
 			p.mu.Lock()
-			p.appAttestAuthorization = AppAttestServingAuthorization{}
+			p.clearAppAttestServingAuthorizationLocked()
 			p.mu.Unlock()
 		}
 	}
@@ -177,6 +177,9 @@ func (r *Registry) SetReleasePolicyGeneration(
 		if enforced {
 			provider.RuntimeCapabilities = nil
 		}
+		// First required-policy activation can remove eligibility even from
+		// providers that held no application evidence to invalidate.
+		r.pruneWarmPoolWorkBaselineLocked(provider, time.Now())
 		provider.mu.Unlock()
 		if required {
 			needChallenge = append(needChallenge, id)
@@ -213,7 +216,11 @@ func (r *Registry) providerHoldsCurrentApplicationEvidenceLocked(p *Provider) bo
 // evidence once any configured enforce-after delay has passed). Thread-safe.
 func (r *Registry) SetReleasePolicyEnforcement(enforced bool) {
 	r.mu.Lock()
+	wasRequired := r.releasePolicyRequired && r.releasePolicyEnforcedLocked()
 	r.releasePolicyEnforced = enforced
+	if !wasRequired && r.releasePolicyRequired && r.releasePolicyEnforcedLocked() {
+		r.pruneWarmPoolWorkBaselinesLocked()
+	}
 	r.mu.Unlock()
 }
 
@@ -223,7 +230,11 @@ func (r *Registry) SetReleasePolicyEnforcement(enforced bool) {
 // re-earned evidence. Thread-safe.
 func (r *Registry) SetReleasePolicyEnforceAfter(t time.Time) {
 	r.mu.Lock()
+	wasRequired := r.releasePolicyRequired && r.releasePolicyEnforcedLocked()
 	r.releasePolicyEnforceAfter = t
+	if !wasRequired && r.releasePolicyRequired && r.releasePolicyEnforcedLocked() {
+		r.pruneWarmPoolWorkBaselinesLocked()
+	}
 	r.mu.Unlock()
 }
 
@@ -371,6 +382,8 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 	} else if !recoverable {
 		p.untrustedRecoverable = false
 	}
+	// Never replay work across a transient distrust/recovery interval.
+	p.warmWorkCounters = nil
 	// Effective claims are connection security state, not durable inventory.
 	// A passing fully-signed challenge may restore them only through reconcile.
 	capabilitiesChanged := len(p.RuntimeCapabilities) > 0
@@ -382,7 +395,7 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 		seKey = p.AttestationResult.PublicKey
 	}
 	if !recoverable {
-		p.appAttestAuthorization = AppAttestServingAuthorization{}
+		p.clearAppAttestServingAuthorizationLocked()
 		if p.requireVerifiedMachineIdentity || p.appAttestCredentialID != "" {
 			p.appAttestSecurityDenied = true
 		}
@@ -433,6 +446,9 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 		return
 	}
 	p.mu.Lock()
+	if p.TrustLevel != level {
+		p.warmWorkCounters = nil
+	}
 	p.TrustLevel = level
 	if level != TrustHardware {
 		p.RuntimeCapabilities = nil
@@ -463,14 +479,20 @@ func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 
 	recovered := r.recoverIfTransientlyUntrusted(providerID, p)
 
+	r.mu.RLock()
 	p.mu.Lock()
-	p.LastChallengeVerified = time.Now()
+	now := time.Now()
+	if !r.providerChallengeFreshAtLocked(p, now) {
+		p.warmWorkCounters = nil
+	}
+	p.LastChallengeVerified = now
 	p.FailedChallenges = 0
 	if !p.ChallengeVerifiedSIP {
 		p.ChallengeVerifiedSIP = true
 	}
 	p.Reputation.RecordChallengePass()
 	p.mu.Unlock()
+	r.mu.RUnlock()
 
 	// Persist challenge state and reputation.
 	r.persistProviderNow(p)
@@ -560,7 +582,8 @@ func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool)
 
 	if !transientOnly {
 		// Security failure — clear routing eligibility immediately.
-		p.appAttestAuthorization = AppAttestServingAuthorization{}
+		p.warmWorkCounters = nil
+		p.clearAppAttestServingAuthorizationLocked()
 		if p.requireVerifiedMachineIdentity || p.appAttestCredentialID != "" {
 			p.appAttestSecurityDenied = true
 		}
@@ -568,6 +591,7 @@ func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool)
 		p.ChallengeVerifiedSIP = false
 	} else if count >= MaxFailedChallenges {
 		// Transient failures only clear after hitting the threshold.
+		p.warmWorkCounters = nil
 		p.LastChallengeVerified = time.Time{}
 		p.ChallengeVerifiedSIP = false
 	}

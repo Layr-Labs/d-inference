@@ -204,12 +204,13 @@ final class MiMoV26NormalEntrypointTests: XCTestCase {
             physicalBytes: 64 << 30, reserveBytes: 8 << 30, deviceLimits: device, ingest: overflow))
     }
 
-    func testMiMoMTPAutoStaysOffAndExplicitControlsAreNotPromoted() throws {
-        XCTAssertFalse(MTPMode.auto.enablesMTP(forModelType: "mimo_v2", embeddedArtifactDeclared: true))
+    func testMiMoMTPAutoSelectsEmbeddedHeadsAndExplicitOffRemainsAuthoritative() throws {
+        XCTAssertTrue(MTPMode.auto.enablesMTP(forModelType: "mimo_v2", embeddedArtifactDeclared: true))
+        XCTAssertFalse(MTPMode.auto.enablesMTP(forModelType: "mimo_v2", embeddedArtifactDeclared: false))
         XCTAssertFalse(MTPMode.off.enablesMTP(forModelType: "mimo_v2", embeddedArtifactDeclared: true))
         XCTAssertTrue(MTPMode.on.enablesMTP(forModelType: "mimo_v2", embeddedArtifactDeclared: true))
         let automatic = try MiMoV26ServingLoad.preparation(mode: .auto, externalPath: nil, environment: [:])
-        XCTAssertFalse(automatic.status.configured)
+        XCTAssertTrue(automatic.status.configured)
         XCTAssertFalse(automatic.status.active)
         XCTAssertThrowsError(try MiMoV26ServingLoad.preparation(mode: .on, externalPath: "/not-a-native-head"))
     }

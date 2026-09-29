@@ -141,6 +141,14 @@ func (c WarmPoolConfig) perTickCeiling() int {
 	return c.MaxLoadsPerTick
 }
 
+// activePlanner reports whether this configuration can issue model loads.
+// Zero budgets are effective observe-only mode, including a zero baseline
+// with a positive ramp ceiling. Temporary exhaustion of a positive global
+// budget does not transfer ownership to the legacy planner.
+func (c WarmPoolConfig) activePlanner() bool {
+	return c.Enabled && !c.ObserveOnly && c.perTickCeiling() > 0 && c.MaxGlobalPendingLoads > 0
+}
+
 // ReadConfig reads registry configuration from environment variables.
 func ReadConfig() Config {
 	artifacts, artifactsErr := readCacheRoutingArtifacts()

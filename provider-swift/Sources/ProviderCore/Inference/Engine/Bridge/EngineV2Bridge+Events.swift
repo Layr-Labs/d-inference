@@ -20,6 +20,8 @@ extension EngineV2Bridge {
         nativeRetirement: CBv2RequestRetirement? = nil
     ) {
         let bridge = self
+        let retirementReceipt = nativeRetirement == nil ? nil : active[id]?.prefillReceipt
+        retirementReceipt?.retainUntilRetirement()
         usageSignal?.beginTerminalObservation()
         let task = Task {
             await bridge.pump(
@@ -33,6 +35,7 @@ extension EngineV2Bridge {
                 profile: profile,
                 nativeRetirement: nativeRetirement
             )
+            retirementReceipt?.endAfterRetirement()
             await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
         }
         pumpTasks[id] = task
@@ -182,6 +185,7 @@ extension EngineV2Bridge {
             continuation.finish()
             await nativeRetirement.wait()
         }
+        releaseServiceAllowance(requestID: id)
         // Every exit releases only the resources owned by this submission.
         // Staging completion is an idempotent backstop for lookup misses.
         if holdsSharedReservation {
@@ -214,7 +218,7 @@ extension EngineV2Bridge {
         lastDeltaAt: SuspendingClock.Instant? = nil
     ) {
         let final = recordFinish(
-            id: id, usage: usage, success: reason == .stop || reason == .length,
+            id: id, usage: usage,
             lastDeltaAt: lastDeltaAt, finishReason: reason)
         switch reason {
         case .stop, .length:

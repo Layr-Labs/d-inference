@@ -121,11 +121,19 @@ type PendingRequest struct {
 	FirstContentPlanningHorizon time.Duration
 	Hedge                       bool
 	// Reservation metadata is owned by the provider pending set and read only
-	// under provider.mu. Removing the pending owner retires this work too.
-	reservedPrefillTokens    float64
-	reservedPrefillRestoreMs float64
-	reservedPrefillKnown     bool
-	reservedAt               time.Time
+	// under provider.mu. Removing the pending owner retires prompt reservations;
+	// a dispatched service charge survives in the provider retirement shadow
+	// until explicit producer proof confirms that its leases have retired.
+	reservedPrefillTokens      float64
+	reservedPrefillRestoreMs   float64
+	reservedPrefillKnown       bool
+	reservedAt                 time.Time
+	reservedServiceCharge      float64
+	serviceRetirementTracked   bool
+	serviceHandoffAuthorized   bool
+	serviceHandoffAborted      bool
+	serviceReservationReleased bool
+	serviceReservationID       atomic.Pointer[serviceReservationIdentity]
 	// RequiresVision is true when the request carries image/video input. Such a
 	// request must only be routed to a provider advertising a vision-capable
 	// (VLM) build for the resolved model; otherwise the provider would silently

@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-29 · commit `67b0e77ea`
+> Last updated: 2026-09-29 · commit `fa731637a`
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -232,7 +232,13 @@ representative trials; changing only an ID does not make a repeated prompt an
 independent workload. Explicit relaxed-confidence receipts remain evidence
 only and cannot produce a profile. Serving-policy receipts do not attach
 deadline calibration; only the separate deadline-only qualifier can certify
-that evidence, after reconstructing the raw measured requests.
+that evidence, after reconstructing the raw measured requests. Go and Swift
+independently recheck the one-sided 95% confidence criterion from each compiled
+cell's validation counts and tail target. Empirical coverage alone is
+insufficient, even when catalog and evidence-index hashes agree. Runtime
+validation accepts at most 10,000 total calibration and validation samples per
+cell and requires a tail target below 1; larger cohorts require a reviewed
+validator change.
 
 ### Verify prerequisite files
 
@@ -379,7 +385,11 @@ tool-result sizes and role/count domains are mandatory, including zero bounds
 for absent features. Held-out observations outside the training domain count
 as uncovered; they never expand the domain or disappear from the denominator.
 Only passing exact-artifact/template cells are candidates for reviewed fallback
-defaults. The exact runtime tokenizer planner remains the primary path.
+defaults. Numeric size bounds do not certify other rendering modes: the
+fallback parser requires the measured `reasoning: {"enabled": false}` setting
+and rejects unmeasured prompt-rendering controls. Omitted reasoning can select a
+different provider default and is not equivalent. The exact runtime
+tokenizer planner remains the primary path.
 
 ## Verify
 

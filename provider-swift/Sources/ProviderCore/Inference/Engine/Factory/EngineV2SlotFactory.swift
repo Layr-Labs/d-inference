@@ -44,6 +44,7 @@ enum EngineV2SlotFactory {
         var gemmaMTPVerification: EngineV2BenchmarkMTPVerification? = nil
         var promptContractID: String? = nil
         var deadlineProfiles: [DeadlinePerformanceProfile]? = nil
+        var deadlineHardware: HardwareInfo? = nil
         var completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil
         var pagedPreflight: (([CBv2LayerKind]) throws -> Void)? = nil
         var makePrefixCache:
@@ -464,7 +465,8 @@ enum EngineV2SlotFactory {
                 ? DeadlinePerformanceProfiles.resolve(modelID: modelId,
                     artifactSHA256: modelArtifactSHA256 ?? weightHash,
                     kvBackend: preparedBackend!.kind.rawValue, runtime: runtime,
-                    hardware: deadlineProfiles.isEmpty ? nil : DeadlinePerformanceProfiles.detectedHardware,
+                    hardware: deadlineProfiles.isEmpty ? nil
+                        : (assemblyOverrides.deadlineHardware ?? DeadlinePerformanceProfiles.detectedHardware),
                     environment: environment, mtp: mtpPerformanceConfiguration,
                     cacheIsolation: deadlineQualificationCacheIsolation, profiles: deadlineProfiles)
                 : nil

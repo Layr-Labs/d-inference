@@ -45,7 +45,7 @@ func projectPromptCountCorpusRecord(encoded []byte) (promptCountProjection, erro
 }
 
 func TestPromptCountProjectionBindsOriginalCorpusID(t *testing.T) {
-	body := []byte(`{ "messages": [{"role":"user","content":"original bytes"}] }`)
+	body := []byte(`{ "reasoning":{"enabled":false}, "messages": [{"role":"user","content":"original bytes"}] }`)
 	const id = "validation-tools0-band0-17"
 	input, err := json.Marshal(map[string]any{"id": id, "request": body})
 	if err != nil {

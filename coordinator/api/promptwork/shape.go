@@ -68,8 +68,8 @@ func (d *ShapeDomain) Contains(s Shape) bool {
 	return true
 }
 
-// ShapeFromBody supports ordinary text/tool chat requests. New or multimodal
-// content forms stay unqualified until their numeric domain is measured.
+// ShapeFromBody supports the measured text/tool rendering mode. New controls or
+// multimodal content stay unqualified; the exact tokenizer remains available.
 func ShapeFromBody(body []byte) (Shape, bool) {
 	if len(body) == 0 || len(body) > promptcontract.DefaultMaxRequestBytes {
 		return Shape{}, false
@@ -78,9 +78,7 @@ func ShapeFromBody(body []byte) (Shape, bool) {
 	if json.Unmarshal(body, &request) != nil || request == nil {
 		return Shape{}, false
 	}
-	// Deprecated function forms have distinct rendering semantics. Their exact
-	// tokenizer path remains available; this initial fallback has no domain.
-	if request["functions"] != nil || request["function_call"] != nil {
+	if !measuredRenderControls(request) {
 		return Shape{}, false
 	}
 	var messages []json.RawMessage
@@ -90,8 +88,17 @@ func ShapeFromBody(body []byte) (Shape, bool) {
 	s := Shape{BodyBytes: len(body), MessageCount: len(messages)}
 	for _, raw := range messages {
 		var message map[string]json.RawMessage
-		if json.Unmarshal(raw, &message) != nil || message == nil || message["function_call"] != nil {
+		if json.Unmarshal(raw, &message) != nil || message == nil {
 			return Shape{}, false
+		}
+		// name, reasoning_content and legacy function_call can change the
+		// rendered history. None occurred in the reviewed corpus.
+		for key := range message {
+			switch key {
+			case "role", "content", "tool_calls", "tool_call_id":
+			default:
+				return Shape{}, false
+			}
 		}
 		var role string
 		if json.Unmarshal(message["role"], &role) != nil {
@@ -124,7 +131,7 @@ func ShapeFromBody(body []byte) (Shape, bool) {
 				return Shape{}, false
 			}
 			for _, call := range values {
-				if !functionObject(call) {
+				if !measuredFunctionObject(call, true) {
 					return Shape{}, false
 				}
 				s.ToolCallCount++
@@ -138,7 +145,7 @@ func ShapeFromBody(body []byte) (Shape, bool) {
 			return Shape{}, false
 		}
 		for _, tool := range values {
-			if !functionObject(tool) {
+			if !measuredFunctionObject(tool, false) {
 				return Shape{}, false
 			}
 			s.ToolDefinitionCount++
@@ -146,12 +153,4 @@ func ShapeFromBody(body []byte) (Shape, bool) {
 		}
 	}
 	return s, true
-}
-
-func functionObject(raw []byte) bool {
-	var value struct {
-		Type     string                     `json:"type"`
-		Function map[string]json.RawMessage `json:"function"`
-	}
-	return json.Unmarshal(raw, &value) == nil && value.Type == "function" && value.Function != nil
 }

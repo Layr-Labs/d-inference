@@ -61,11 +61,15 @@ func (c Cell) Valid(contextLimit int) bool {
 		c.MaxPrefillWorkTokens < 0 || c.MaxDecodeWorkTokens < 1 || c.MaxActiveRequests < 1 || c.MaxActiveRequests > 64 ||
 		!positive(c.ErrorRatio) || c.ErrorRatio < 1 || !nonnegative(c.ErrorAdditiveMS) ||
 		c.CalibrationSampleCount < 20 || c.ValidationSampleCount < 20 || c.ValidationCoveredCount < 0 || c.ValidationCoveredCount > c.ValidationSampleCount ||
-		!positive(c.TailCoverage) || c.TailCoverage < .95 || c.TailCoverage > 1 ||
+		c.ValidationSampleCount > 10000 || c.CalibrationSampleCount > 10000-c.ValidationSampleCount ||
+		!positive(c.TailCoverage) || c.TailCoverage < .95 || c.TailCoverage >= 1 ||
 		float64(c.ValidationCoveredCount)/float64(c.ValidationSampleCount) < c.TailCoverage || !digest(c.ReportSHA256) ||
 		c.MaxOtherModelRequests < 0 || c.MaxOtherModelRequests >= c.MaxActiveRequests ||
 		!nonnegative(c.MaxOtherModelServiceFraction) || c.MaxOtherModelServiceFraction > 1 ||
 		!sortedIDs(c.CompetitorProfileIDs) {
+		return false
+	}
+	if !coverageConfidence(c.ValidationSampleCount, c.ValidationCoveredCount, c.TailCoverage) {
 		return false
 	}
 	switch c.Contention {

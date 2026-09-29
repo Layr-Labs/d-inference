@@ -20,7 +20,11 @@ Commit the canonical JSON and both generated source files together. Generation
 preserves values and array order, normalizes JSON object keys, and embeds exactly
 the same UTF-8 JSON in both binaries. The Python wrapper suite checks that neither
 source has drifted. Each runtime decodes its compiled constant once and disables
-the entire catalog on a malformed, invalid, or duplicate-ID record. No runtime
+the entire catalog on a malformed, invalid, or duplicate-ID record. Each runtime
+also checks that the stored validation counts meet the one-sided 95% binomial
+confidence criterion at the cell's tail target; empirical coverage alone cannot
+qualify a cell. The target must be below 1 and the combined calibration and
+validation count is bounded at 10,000 per cell. No runtime
 provider/operator file is read. A deadline record cannot change serving width,
 chunk policy, throughput curves, or memory admission.
 

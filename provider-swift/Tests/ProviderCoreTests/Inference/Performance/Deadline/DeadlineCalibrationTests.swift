@@ -13,7 +13,7 @@ private func calibrationCell() -> DeadlineCalibrationCell {
         maxDecodeWorkTokens: 1_024, maxActiveRequests: 1, competitorProfileIds: [],
         maxOtherModelRequests: 0, maxOtherModelServiceFraction: 0,
         errorRatio: 1.12, errorAdditiveMs: 150, calibrationSampleCount: 40,
-        validationSampleCount: 40, validationCoveredCount: 39, tailCoverage: 0.95,
+        validationSampleCount: 100, validationCoveredCount: 100, tailCoverage: 0.95,
         reportSha256: String(repeating: "c", count: 64))
 }
 

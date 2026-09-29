@@ -47,6 +47,12 @@ private struct QualificationCacheProcessor: UserInputProcessor {
     func prepare(input: UserInput) async throws -> LMInput { throw Unused() }
 }
 
+// CI's virtual Mac can report zero GPU cores. The profile and this injected
+// identity are synthetic; the factory still builds the real tiny engine.
+private let qualificationHardware = HardwareInfo(machineModel: "test", chipName: "Apple M5 Max",
+    chipFamily: .m5, chipTier: .max, memoryGb: 128, memoryAvailableGb: 100,
+    cpuCores: .init(total: 16, performance: 12, efficiency: 4), gpuCores: 40, memoryBandwidthGbs: 0)
+
 private func qualificationCacheBundle(environment: [String: String],
     isolation: DeadlineQualificationCacheIsolation?, profiles: [DeadlinePerformanceProfile]) async throws -> ProviderEngineBundle {
     let config = try JSONDecoder().decode(GPTOSSConfiguration.self, from: Data("""
@@ -65,7 +71,7 @@ private func qualificationCacheBundle(environment: [String: String],
         kvBytesCapacity: 8 << 20, maxConcurrentRequests: 4, kvBudget: nil, kvBackendConfig: "contiguous",
         modelArtifactSHA256: String(repeating: "a", count: 64),
         specDecPreparation: .init(artifact: nil, status: .disabled(.configDisabled, configured: false)),
-        preparedModel: prepared, assemblyOverrides: .init(deadlineProfiles: profiles),
+        preparedModel: prepared, assemblyOverrides: .init(deadlineProfiles: profiles, deadlineHardware: qualificationHardware),
         environment: environment, deadlineQualificationCacheIsolation: isolation, startServingTelemetry: false)
 }
 
@@ -77,7 +83,7 @@ private func qualificationCacheBundle(environment: [String: String],
     let baseline = try await qualificationCacheBundle(environment: environment, isolation: isolation, profiles: [])
     let runtime = try #require(baseline.bridge.deadlineRuntimeConfiguration)
     await baseline.bridge.shutdown()
-    let hardware = try #require(DeadlinePerformanceProfiles.detectedHardware)
+    let hardware = qualificationHardware
     var profile = deadlineCalibrationProfileFixture()
     profile.providerVersion = ProviderCore.version
     profile.kvBackend = "contiguous"

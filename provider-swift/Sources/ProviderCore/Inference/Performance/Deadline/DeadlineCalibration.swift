@@ -85,11 +85,14 @@ public struct DeadlineCalibrationCell: Codable, Sendable, Equatable {
             errorRatio.isFinite, errorRatio >= 1,
             errorAdditiveMs.isFinite, errorAdditiveMs >= 0,
             calibrationSampleCount >= 20, validationSampleCount >= 20,
+            validationSampleCount <= 10_000, calibrationSampleCount <= 10_000 - validationSampleCount,
             validationCoveredCount >= 0, validationCoveredCount <= validationSampleCount,
-            tailCoverage.isFinite, (0.95...1).contains(tailCoverage),
+            tailCoverage.isFinite, (0.95..<1).contains(tailCoverage),
             Double(validationCoveredCount) / Double(validationSampleCount) >= tailCoverage,
             ServingPerformanceProfiles.validDigest(reportSha256)
         else { return false }
+        guard DeadlineCoverageConfidence.supports(total: validationSampleCount,
+            covered: validationCoveredCount, target: tailCoverage) else { return false }
         if contention == "other_model" {
             return maxOtherModelRequests > 0 && maxOtherModelServiceFraction > 0
                 && !competitorProfileIds.isEmpty

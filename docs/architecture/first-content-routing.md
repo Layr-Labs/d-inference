@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-29 · commit `cc5d11360`
+> Last updated: 2026-09-29 · commit `fa731637a`
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -75,7 +75,9 @@ can establish the same pair through validated cache capabilities; missing or
 conflicting identity retains heuristic counts (`providerPromptWorkIdentityLocked`
 in `coordinator/registry/prompt_work_identity.go`). Calibrated template estimates
 also require a reviewed measured domain
-and independent held-out coverage. Unsupported shapes retain heuristic provenance
+and independent held-out coverage. Unmeasured prompt-rendering controls also
+withdraw fallback qualification; exact tokenizer planning remains available.
+Unsupported shapes retain heuristic provenance
 with unknown uncertainty. Billing and physical reservation inputs stay separate.
 The provider checks its actual tokenized count and verified factory identity;
 a mismatch withdraws calibrated prediction without extending the deadline.
@@ -126,7 +128,10 @@ estimate can still miss its deadline if subsequent execution slows down.
 
 Optional reviewed `deadline_calibration` cells supply measured prediction-error
 ratios and additive tail allowances only inside exact prompt/context, cache and
-contention envelopes. Fresh live evidence can make those rates slower; it cannot
+contention envelopes. Both compiled runtimes independently verify the stored
+validation counts meet a one-sided 95% binomial confidence test at the claimed
+tail target, even when the raw evidence archive is unavailable. Fresh live
+evidence can make those rates slower; it cannot
 make them faster than the reviewed values.
 
 `DeadlinePerformanceProfile` binds those cells to the exact constructed

@@ -33,7 +33,7 @@ func calibratedCandidateFixture(t *testing.T, now time.Time) (*Registry, *Provid
 		CacheState: "cold", Contention: "isolated", PrefillTPS: 2000, DecodeTPS: 100,
 		MaxPrefillWorkTokens: 65536, MaxDecodeWorkTokens: 4096, MaxActiveRequests: 1,
 		ErrorRatio: 1.1, ErrorAdditiveMS: 100, CalibrationSampleCount: 20,
-		ValidationSampleCount: 20, ValidationCoveredCount: 20, TailCoverage: .95, ReportSHA256: strings.Repeat("d", 64),
+		ValidationSampleCount: 100, ValidationCoveredCount: 100, TailCoverage: .95, ReportSHA256: strings.Repeat("d", 64),
 	}}}
 	cell := profile.DeadlineCalibration.Cells[0]
 	cell.Contention, cell.MaxActiveRequests = "same_model", 16

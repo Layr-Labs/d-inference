@@ -13,7 +13,7 @@ func fixture() (*Calibration, Work) {
 		CacheState: "cold", Contention: "isolated", PrefillTPS: 800, DecodeTPS: 80,
 		MaxPrefillWorkTokens: 16384, MaxDecodeWorkTokens: 33, MaxActiveRequests: 1,
 		ErrorRatio: 1.2, ErrorAdditiveMS: 100,
-		CalibrationSampleCount: 20, ValidationSampleCount: 20, ValidationCoveredCount: 20,
+		CalibrationSampleCount: 20, ValidationSampleCount: 100, ValidationCoveredCount: 100,
 		TailCoverage: .95, ReportSHA256: strings.Repeat("a", 64),
 	}}}
 	return c, Work{PromptTokens: 8000, ContextTokens: 8000, CacheState: "cold", Contention: "isolated",
@@ -92,7 +92,7 @@ func TestCalibrationRequiresIndependentTailCoverage(t *testing.T) {
 	if _, ok := c.Predict(w); ok {
 		t.Fatal("invalid evidence used by prediction")
 	}
-	c.Cells[0].ValidationCoveredCount = 20
+	c.Cells[0].ValidationCoveredCount = 100
 	c.Cells[0].CalibrationSampleCount = 19
 	if c.Valid(32768) {
 		t.Fatal("insufficient independent calibration evidence")

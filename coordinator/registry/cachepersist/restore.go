@@ -42,6 +42,25 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		}
 		p.mu.Lock()
 		p.counters.keyRotated = stored != ""
+		p.resetPending = false // the reset covered any overflowed backlog
+		p.ready = true
+		p.mu.Unlock()
+		return nil, nil
+	}
+	p.mu.Lock()
+	overflowed := p.resetPending
+	p.mu.Unlock()
+	if overflowed {
+		// The delete backlog outgrew its budget while the store was
+		// unreachable (MarkHolderDelete): loading now would park rows the
+		// released deletes condemned. Discard the durable copy instead, as
+		// a foreign key generation is; live evidence rewrites it.
+		if err := p.store.ResetCacheRoutingState(ctx, p.fingerprint); err != nil {
+			return nil, err
+		}
+		p.logger.Warn("cache routing persistence: the delete backlog outgrew its budget before the durable copy could be read; it was reset instead of restored")
+		p.mu.Lock()
+		p.resetPending = false
 		p.ready = true
 		p.mu.Unlock()
 		return nil, nil

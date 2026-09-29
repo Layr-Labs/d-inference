@@ -12,6 +12,7 @@ type counters struct {
 	rowsWritten     uint64
 	rowsDeleted     uint64
 	droppedDirty    uint64
+	overflowResets  uint64
 	staleUpserts    uint64
 	lastFlushMs     int64
 	lastFlushAt     time.Time
@@ -31,7 +32,14 @@ type Status struct {
 	FlushErrors     uint64 `json:"flush_errors"`
 	RowsWritten     uint64 `json:"rows_written"`
 	RowsDeleted     uint64 `json:"rows_deleted"`
-	DroppedDirty    uint64 `json:"dropped_dirty"`
+	// DroppedDirty counts upserts dropped at the dirty cap (the next receipt
+	// re-marks the row). Deletes are never dropped: see OverflowResets.
+	DroppedDirty uint64 `json:"dropped_dirty"`
+	// OverflowResets counts the times the delete backlog outgrew its budget
+	// during a store outage and the durable copy was discarded at the next
+	// flush (or by the restore) instead of a delete being dropped, so a
+	// restart never restores a row a miss or proof mismatch invalidated.
+	OverflowResets uint64 `json:"overflow_resets"`
 	// StaleUpserts counts receipts whose evidence predated a delete this run
 	// decided for the same row: they neither cancel the tombstone nor reach
 	// the store (the next receipt for the row does).
@@ -59,7 +67,8 @@ func (p *Persister) Status() Status {
 		Enabled: true, RestoredHolders: c.restoredHolders, RestoredDemand: c.restoredDemand,
 		PendingHolders: p.pendingCount, BoundHolders: c.boundHolders, DroppedPending: c.droppedPending,
 		Flushes: c.flushes, FlushErrors: c.flushErrors, RowsWritten: c.rowsWritten, RowsDeleted: c.rowsDeleted,
-		DroppedDirty: c.droppedDirty, StaleUpserts: c.staleUpserts, LastFlushMs: c.lastFlushMs, KeyRotated: c.keyRotated, Ready: p.ready,
+		DroppedDirty: c.droppedDirty, OverflowResets: c.overflowResets, StaleUpserts: c.staleUpserts,
+		LastFlushMs: c.lastFlushMs, KeyRotated: c.keyRotated, Ready: p.ready,
 	}
 	if !c.lastFlushAt.IsZero() {
 		s.LastFlushAt = c.lastFlushAt.UTC().Format(time.RFC3339)

@@ -118,6 +118,13 @@ type Persister struct {
 	// and marks stay dirty: rows written before the generation is recorded
 	// would be reset as foreign by the next boot.
 	ready bool
+	// resetPending is set when the delete backlog outgrew its budget during
+	// a store outage (MarkHolderDelete): rather than dropping a delete,
+	// whose durable row a restart would restore as evidence a miss or proof
+	// mismatch already invalidated, the whole durable copy is discarded at
+	// the next flush, or by the restore if none has succeeded yet, and
+	// rewritten from the evidence that flows afterwards.
+	resetPending bool
 }
 
 // Options shape a persister for the registry's current configuration.
@@ -205,13 +212,25 @@ func (p *Persister) MarkHolderDelete(k crs.HolderKey, decidedAt time.Time) {
 	}
 	p.mu.Lock()
 	delete(p.holderUpserts, k)
-	if _, present := p.holderDeletes[k]; present || len(p.holderDeletes) < p.dirtyCap {
-		// decidedAt comes from the tracker's clock, the same clock receipt
-		// times are sampled from, so Tombstoned compares like with like.
-		p.holderDeletes[k] = decidedAt
-	} else {
-		p.counters.droppedDirty++
+	if _, present := p.holderDeletes[k]; !present && len(p.holderDeletes) >= p.dirtyCap {
+		// The delete backlog is full: a store outage outlasted the budget.
+		// A delete is never dropped (its durable row would be restored
+		// after a restart as evidence a miss or proof mismatch already
+		// invalidated); instead the durable copy is discarded wholesale at
+		// the next flush, or by the restore if none has succeeded yet
+		// (resetIfPending), which subsumes every delete queued so far. The
+		// backlog is released with an O(1) swap and this decision starts
+		// the next one. The released decisions leave no tombstone (recording
+		// them would be a scan under the tracker lock): their parked copies
+		// were dropped when they were decided, and the residual is the
+		// retention bound's.
+		p.resetPending = true
+		p.counters.overflowResets++
+		p.holderDeletes = make(map[crs.HolderKey]time.Time)
 	}
+	// decidedAt comes from the tracker's clock, the same clock receipt
+	// times are sampled from, so Tombstoned compares like with like.
+	p.holderDeletes[k] = decidedAt
 	// A parked copy this decision outranks is dropped now rather than left
 	// for a bind-time check: the tombstone retention is bounded on its own,
 	// so a tombstone may be forgotten while the parked copy remains.
@@ -463,6 +482,9 @@ func (p *Persister) Flush(ctx context.Context) error {
 	if !p.Ready() {
 		return nil
 	}
+	if err := p.resetIfPending(ctx); err != nil {
+		return err
+	}
 	b := p.drain()
 	if len(b.upserts) == 0 && len(b.deletes) == 0 && len(b.demand) == 0 {
 		return nil
@@ -563,6 +585,36 @@ func (p *Persister) Prune(ctx context.Context, now time.Time, ttl time.Duration)
 	p.mu.Lock()
 	p.demandPersisted = make(map[string]time.Time)
 	p.mu.Unlock()
+}
+
+// resetIfPending discards the durable copy when the delete backlog
+// overflowed (MarkHolderDelete). Called with flushMu held once the key
+// generation is established; a failed reset is retried by the next flush,
+// and nothing is written before it succeeds, so no row a released delete
+// condemned outlives the decision. Deletes marked after the overflow stay
+// queued and are written afterwards (no-ops for rows the reset removed);
+// an overflow during the reset itself releases only decisions against rows
+// the reset removes or that were never written, so clearing the flag
+// afterwards is safe.
+func (p *Persister) resetIfPending(ctx context.Context) error {
+	p.mu.Lock()
+	pending := p.resetPending
+	p.mu.Unlock()
+	if !pending {
+		return nil
+	}
+	if err := p.store.ResetCacheRoutingState(ctx, p.fingerprint); err != nil {
+		p.logger.Warn("cache routing persistence: the durable copy could not be reset after the delete backlog overflowed; retrying", "error", err)
+		return err
+	}
+	p.logger.Warn("cache routing persistence: the delete backlog outgrew its budget during a store outage; the durable copy was reset and is rewritten from live evidence")
+	p.mu.Lock()
+	p.resetPending = false
+	// The reset removed the demand rows too; the dedupe map must not
+	// suppress their rewrite.
+	p.demandPersisted = make(map[string]time.Time)
+	p.mu.Unlock()
+	return nil
 }
 
 // dirtyEmpty is for tests.

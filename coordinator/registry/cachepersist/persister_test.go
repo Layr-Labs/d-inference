@@ -1016,6 +1016,71 @@ func TestPruneForgetsExpiredDecisionsInChunks(t *testing.T) {
 	}
 }
 
+// A delete is never dropped at the dirty cap: an overflowing backlog during
+// a store outage discards the whole durable copy at the next flush, so a
+// restart cannot restore a row a delete decided against, and a restore that
+// runs after an overflow resets instead of loading.
+func TestDeleteBacklogOverflowResetsDurableCopy(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	p := New(mem, nil, Options{MaxPending: 2}) // dirty cap 8
+	restoreForTest(t, p, now)
+	stale := rec("stale", "e", now, time.Minute)
+	p.MarkHolderUpsert(stale)
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The store goes away; deletes pile up past the budget, the row's own
+	// among them: released with the rest, never dropped.
+	p.MarkHolderDelete(stale.HolderKey(), now.Add(time.Second))
+	for i := 0; i < p.dirtyCap; i++ {
+		p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+	}
+	if s := p.Status(); s.OverflowResets != 1 || s.DroppedDirty != 0 {
+		t.Fatalf("an overflowing delete backlog must schedule a reset, not drop: %+v", s)
+	}
+	p.mu.Lock()
+	queued := len(p.holderDeletes)
+	p.mu.Unlock()
+	if queued != 1 {
+		t.Fatalf("the overflow must release the backlog and queue the new decision: queued=%d", queued)
+	}
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 {
+		t.Fatalf("the reset must remove the row the released delete condemned: %+v", rows)
+	}
+	fresh := rec("fresh", "e", now.Add(2*time.Second), time.Minute)
+	p.MarkHolderUpsert(fresh)
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 1 || rows[0].Key != "fresh" {
+		t.Fatalf("evidence after the reset must be written: %+v", rows)
+	}
+	// An overflow before any restore succeeded: the restore resets instead
+	// of loading the rows the released deletes condemned.
+	next := New(mem, nil, Options{MaxPending: 2})
+	for i := 0; i <= next.dirtyCap; i++ {
+		next.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("x%03d", i), CacheEpoch: "e"}, now.Add(3*time.Second))
+	}
+	restoreForTest(t, next, now)
+	if s := next.Status(); s.RestoredHolders != 0 || s.OverflowResets != 1 || !s.Ready {
+		t.Fatalf("a restore after an overflow must reset, not load: %+v", s)
+	}
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 {
+		t.Fatalf("the restore-time reset must empty the store: %+v", rows)
+	}
+	if err := next.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := next.Status(); s.OverflowResets != 1 || s.FlushErrors != 0 {
+		t.Fatalf("the restore-time reset must not be repeated by the flush: %+v", s)
+	}
+}
+
 // Timestamp ties go to the delete decision, whether pending or retained.
 func TestDeleteDecisionWinsTimestampTies(t *testing.T) {
 	mem := store.NewMemory(store.Config{})

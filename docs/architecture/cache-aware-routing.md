@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `de8249966`
+> Last updated: 2026-09-29 · commit `31a2014b7`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -758,8 +758,9 @@ back are operator procedures, kept in the runbook
    row whose provider returns under the same epoch and model but another
    artifact, contract, block-hash version or ready-boundary mode is deleted
    at bind, not reloaded on every boot. A
-   disconnect parks the holder instead of deleting its row; every other
-   removal reason deletes the row unless another live session of the same
+   disconnect parks the holder instead of deleting its row, and TTL expiry
+   leaves the row to the store prune (every load filters expired rows);
+   every other removal reason deletes the row unless another live session of the same
    machine (same key and epoch: two sessions overlap when the per-key holder
    cap evicts the old session's holder as the new session's receipt arrives)
    still holds the boundary, in which case the row is refreshed as that
@@ -802,7 +803,13 @@ back are operator procedures, kept in the runbook
    expiry under today's TTL, longest-lived first, and demand newest first),
    so a TTL reduction never fills the cap with rows the clamp then drops; the demand
    write granularity is bounded by the TTL so a short TTL never leaves the
-   durable timestamp stale. Rows are fenced by cache-key generation: the
+   durable timestamp stale. The dirty sets hold four times the holder cap;
+   past that an upsert is dropped (the next receipt re-marks the row), but a
+   delete never is: a delete backlog that outgrows the cap during a store
+   outage discards the whole durable copy at the next flush, or at the
+   restore if none has succeeded yet, so a restart never restores a row a
+   miss or proof mismatch already invalidated
+   (`lifecycle.persistence.overflow_resets`). Rows are fenced by cache-key generation: the
    store keeps a non-secret HMAC fingerprint of the master key and every
    key-derivation version (`cache_routing_meta`), and a boot under a
    different generation (a rotated key, or a release that changed a

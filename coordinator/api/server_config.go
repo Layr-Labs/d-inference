@@ -14,18 +14,19 @@ import (
 // ServerConfig holds coordinator HTTP server and URL configuration applied
 // when NewServer constructs an instance.
 type ServerConfig struct {
-	AnalyticsSnapshotPath string // Empty keeps the existing database-backed analytics path.
-	AppAttestShadow       AppAttestShadowConfig
-	Port                  string
-	ConsoleURL            string
-	CORSOrigin            string
-	BaseURL               string
-	R2CDNURL              string
-	MinProviderVersion    string
-	AdminKey              string
-	AdminEmails           []string
-	ReleaseKey            string
-	ServiceReservations   bool
+	AnalyticsSnapshotPath      string // Empty keeps the existing database-backed analytics path.
+	AnalyticsSnapshotStatePath string // Durable accepted-generation record; required with snapshot mode.
+	AppAttestShadow            AppAttestShadowConfig
+	Port                       string
+	ConsoleURL                 string
+	CORSOrigin                 string
+	BaseURL                    string
+	R2CDNURL                   string
+	MinProviderVersion         string
+	AdminKey                   string
+	AdminEmails                []string
+	ReleaseKey                 string
+	ServiceReservations        bool
 	// DurableTrustReuse enables the fsync-backed local hard-untrust journal.
 	// Production enables it when the coordinator uses its durable Postgres store.
 	DurableTrustReuse     bool
@@ -77,21 +78,22 @@ type BaseRewardsConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
-		AnalyticsSnapshotPath:   os.Getenv(env.EnvPrefix + "_ANALYTICS_SNAPSHOT_PATH"),
-		AppAttestShadow:         readAppAttestShadowConfig(),
-		Port:                    env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
-		ConsoleURL:              os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
-		CORSOrigin:              os.Getenv("CORS_ORIGIN"),
-		BaseURL:                 os.Getenv(env.EnvPrefix + "_BASE_URL"),
-		R2CDNURL:                os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
-		MinProviderVersion:      os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
-		AdminKey:                os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
-		AdminEmails:             ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
-		ReleaseKey:              os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
-		ServiceReservations:     env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
-		FirstContentSLAAccounts: ParseCommaList(os.Getenv(env.EnvPrefix + "_FIRST_CONTENT_SLA_ACCOUNTS")),
-		TrustReuseJournalPath:   resolveTrustReuseRevocationJournalPath(),
-		MDMScheduler:            readMDMSchedulerConfig(),
+		AnalyticsSnapshotPath:      os.Getenv(env.EnvPrefix + "_ANALYTICS_SNAPSHOT_PATH"),
+		AnalyticsSnapshotStatePath: os.Getenv(env.EnvPrefix + "_ANALYTICS_SNAPSHOT_STATE_PATH"),
+		AppAttestShadow:            readAppAttestShadowConfig(),
+		Port:                       env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
+		ConsoleURL:                 os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
+		CORSOrigin:                 os.Getenv("CORS_ORIGIN"),
+		BaseURL:                    os.Getenv(env.EnvPrefix + "_BASE_URL"),
+		R2CDNURL:                   os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
+		MinProviderVersion:         os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
+		AdminKey:                   os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
+		AdminEmails:                ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
+		ReleaseKey:                 os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
+		ServiceReservations:        env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
+		FirstContentSLAAccounts:    ParseCommaList(os.Getenv(env.EnvPrefix + "_FIRST_CONTENT_SLA_ACCOUNTS")),
+		TrustReuseJournalPath:      resolveTrustReuseRevocationJournalPath(),
+		MDMScheduler:               readMDMSchedulerConfig(),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),
 			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 0), // 0 = additive base income (full floor on top of earnings)
@@ -162,8 +164,18 @@ func ParseCommaList(raw string) []string {
 
 // CheckAnalyticsSnapshot validates the opt-in local snapshot path before startup.
 func (c ServerConfig) CheckAnalyticsSnapshot() error {
-	if c.AnalyticsSnapshotPath != "" && !filepath.IsAbs(c.AnalyticsSnapshotPath) {
+	if c.AnalyticsSnapshotPath == "" {
+		if c.AnalyticsSnapshotStatePath != "" {
+			return fmt.Errorf("EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH requires snapshot mode")
+		}
+		return nil
+	}
+	if !filepath.IsAbs(c.AnalyticsSnapshotPath) {
 		return fmt.Errorf("EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH must be absolute")
+	}
+	if !filepath.IsAbs(c.AnalyticsSnapshotStatePath) ||
+		filepath.Clean(c.AnalyticsSnapshotStatePath) == filepath.Clean(c.AnalyticsSnapshotPath) {
+		return fmt.Errorf("EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH must be a distinct absolute path")
 	}
 	return nil
 }

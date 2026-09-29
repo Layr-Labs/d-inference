@@ -27,6 +27,9 @@ catalogs are incomplete and cannot supply a qualified production snapshot.
 - A local sync worker running as the coordinator's operating-system user and
   using a read-only bucket identity. Do not give the coordinator a database
   export credential or public access to accounting objects.
+- A separate persistent, private writable directory for the coordinator's
+  accepted-generation record. Mount the synced snapshot directory read-only
+  and this state directory read-write; both survive container restarts.
 
 ## Steps
 
@@ -59,11 +62,24 @@ catalogs are incomplete and cannot supply a qualified production snapshot.
    verifies object generation/digest, refuses unqualified/oversized objects and
    atomically stages a mode 0600 file with fsync. Credential material stays in ADC
    or the environment. Its default workflow creates no recurring schedule.
-3. After explicit deployment approval, set
-   `EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH=/var/lib/darkbloom/analytics/current.json`.
+3. As the coordinator service user, initialize the accepted-generation record
+   **once**, before enabling the reader. This refuses to overwrite an existing
+   record:
+
+   ```sh
+   umask 077
+   install -d -m 0700 /var/lib/darkbloom/analytics-accepted
+   ( set -C; printf '{"version":1,"checksums":{}}\n' > /var/lib/darkbloom/analytics-accepted/state.json )
+   ```
+
+   If this file is missing or corrupt after activation, disable snapshot mode
+   and investigate; never recreate an empty record to bypass rollback checks.
+4. After explicit deployment approval, set
+   `EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH=/var/lib/darkbloom/analytics/current.json`
+   and `EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH=/var/lib/darkbloom/analytics-accepted/state.json`.
    Keep the producer's 5-minute cadence; sync at least every minute. The coordinator
    polls the local file every 30s, avoiding additional source queries.
-4. Check all leaderboard aliases, metrics and limits, and network totals windows.
+5. Check all leaderboard aliases, metrics and limits, and network totals windows.
    `updated_at` is the source `as_of`. Account IDs remain pseudonymized by the API.
 
 ## Verification
@@ -75,7 +91,10 @@ network job totals, nested nonnegative counts across windows, deterministic
 rank order and generation monotonicity. Every different generation must advance
 `as_of` or `source_complete_through`, and neither may regress. Publish corrections with the
 next qualified source cut.
-It retains checksums for every accepted generation during the process lifetime and
+It fsyncs the accepted source cutoffs and every generation checksum to the
+separate private state file before serving a new generation. Missing, corrupt
+or unwritable state prevents a new acceptance; a restarted coordinator has no
+cached success and returns 503. It
 rejects changed content even if an older generation ID reappears. An invalid
 refresh leaves the prior valid in-memory generation in place; every read checks
 freshness again. Source and as-of age must be at most 10 minutes, result age at

@@ -62,7 +62,7 @@ func validateWindow(w Window) error {
 func validateRanking(rows []store.LeaderboardRow, metric string, common map[string]store.LeaderboardRow) error {
 	seen := map[string]bool{}
 	for _, r := range rows {
-		if r.AccountID == "" || len(r.AccountID) > 512 || seen[r.AccountID] || r.Jobs < 0 || r.Tokens < 0 || !sumMatches(r.EarningsMicroUSD, r.WorkEarningsMicroUSD, r.RewardEarningsMicroUSD) {
+		if r.AccountID == "" || len(r.AccountID) > 512 || seen[r.AccountID] || r.Jobs < 0 || !sumMatches(r.EarningsMicroUSD, r.WorkEarningsMicroUSD, r.RewardEarningsMicroUSD) {
 			return errors.New("analytics ranking does not reconcile")
 		}
 		if prior, ok := common[r.AccountID]; ok && prior != r {
@@ -87,7 +87,7 @@ func sumMatches(total, a, b int64) bool {
 	return new(big.Int).Add(big.NewInt(a), big.NewInt(b)).Cmp(big.NewInt(total)) == 0
 }
 func validTotal(t store.NetworkTotalsRow) bool {
-	return t.Jobs >= 0 && t.Tokens >= 0 && t.ActiveAccounts >= 0 && sumMatches(t.EarningsMicroUSD, t.WorkEarningsMicroUSD, t.RewardEarningsMicroUSD)
+	return t.Jobs >= 0 && t.ActiveAccounts >= 0 && sumMatches(t.EarningsMicroUSD, t.WorkEarningsMicroUSD, t.RewardEarningsMicroUSD)
 }
 func rankValue(r store.LeaderboardRow, metric string) int64 {
 	switch metric {

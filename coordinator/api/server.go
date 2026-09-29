@@ -194,8 +194,9 @@ type Server struct {
 		mu      sync.Mutex
 		entries map[string]*cacheRefresher
 	}
-	analyticsSnapshotPath string
-	analyticsSnapshot     analyticssnapshot.Cache
+	analyticsSnapshotPath      string
+	analyticsSnapshotStatePath string
+	analyticsSnapshot          analyticssnapshot.Cache
 
 	appAttestRuntimeRefreshPending atomic.Bool
 	modelCatalogSyncMu             sync.Mutex // serialize catalog snapshots and desired-state publication
@@ -827,31 +828,32 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	}
 
 	s := &Server{
-		analyticsSnapshotPath:    cfg.AnalyticsSnapshotPath,
-		registry:                 reg,
-		store:                    st,
-		ledger:                   payments.NewLedger(st),
-		logger:                   logger,
-		mux:                      http.NewServeMux(),
-		knownRuntimeManifest:     &RuntimeManifest{},
-		metrics:                  NewMetrics(),
-		readCache:                newTTLCache(),
-		geoResolver:              newProviderGeoResolverFromEnv(logger),
-		apiKeyCache:              make(map[string]apiKeyCacheEntry),
-		codeAttestThrottle:       newCodeAttestThrottle(),
-		appAttestShadow:          cfg.AppAttestShadow,
-		trustReuseCache:          newTrustReuseCache(),
-		mdmSchedulerConfig:       cfg.MDMScheduler,
-		settlements:              newSettlementHolder(),
-		zombieCanceller:          newZombieStreamCanceller(),
-		hedgeGov:                 newHedgeGovernor(),
-		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
-		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
-		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
-		firstContentDeadlineBase: firstContentDeadlineBase,
-		firstContentSLAAccounts:  firstContentSLAAccounts,
-		firstContentSLAEmails:    firstContentSLAEmails,
-		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
+		analyticsSnapshotPath:      cfg.AnalyticsSnapshotPath,
+		analyticsSnapshotStatePath: cfg.AnalyticsSnapshotStatePath,
+		registry:                   reg,
+		store:                      st,
+		ledger:                     payments.NewLedger(st),
+		logger:                     logger,
+		mux:                        http.NewServeMux(),
+		knownRuntimeManifest:       &RuntimeManifest{},
+		metrics:                    NewMetrics(),
+		readCache:                  newTTLCache(),
+		geoResolver:                newProviderGeoResolverFromEnv(logger),
+		apiKeyCache:                make(map[string]apiKeyCacheEntry),
+		codeAttestThrottle:         newCodeAttestThrottle(),
+		appAttestShadow:            cfg.AppAttestShadow,
+		trustReuseCache:            newTrustReuseCache(),
+		mdmSchedulerConfig:         cfg.MDMScheduler,
+		settlements:                newSettlementHolder(),
+		zombieCanceller:            newZombieStreamCanceller(),
+		hedgeGov:                   newHedgeGovernor(),
+		serviceReservations:        newServiceReservationManager(st, cfg.ServiceReservations),
+		routeTelemetry:             newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		mediaResolver:              mediafetch.NewResolver(mediaFetchCfg, logger),
+		firstContentDeadlineBase:   firstContentDeadlineBase,
+		firstContentSLAAccounts:    firstContentSLAAccounts,
+		firstContentSLAEmails:      firstContentSLAEmails,
+		routingScanSem:             make(chan struct{}, DefaultRoutingConcurrency()),
 	}
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
 		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",

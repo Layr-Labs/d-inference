@@ -64,12 +64,41 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 	tracker.persister = persister
 	tracker.mu.Unlock()
 	tracker.demand.setOnTouched(persister.MarkDemand)
+	done := make(chan struct{})
 	r.mu.Lock()
 	r.cachePersister = persister
+	r.cachePersistDone = done
 	r.mu.Unlock()
 	restoreErr := r.restoreCacheRoutingState(ctx, persister, tracker)
-	go r.runCacheRoutingPersistence(ctx, persister)
+	go func() {
+		defer close(done)
+		r.runCacheRoutingPersistence(ctx, persister)
+	}()
 	return persister.Status(), restoreErr
+}
+
+// WaitCacheRoutingPersistence waits until the persistence loop started by
+// StartCacheRoutingPersistence has exited (its context cancelled) or ctx
+// expires. Shutdown joins the loop before the final flush, so a restore
+// retry in flight has either made the persister ready or been cancelled by
+// the time readiness is checked, and no flush of the loop's own can run
+// behind the final one. True when the loop has exited (or never ran).
+func (r *Registry) WaitCacheRoutingPersistence(ctx context.Context) bool {
+	if r == nil {
+		return true
+	}
+	r.mu.RLock()
+	done := r.cachePersistDone
+	r.mu.RUnlock()
+	if done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // restoreCacheRoutingState loads the durable copy into the tracker: the key
@@ -107,9 +136,16 @@ func (t *cacheRoutingTracker) bindRestoredHolders(provider *Provider, capabiliti
 	if !p.HasPending() {
 		return
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.bindPendingLocked(provider, capabilities, t.now())
+	// In chunks, releasing the tracker lock between them: a request that
+	// needs the lock waits for at most one chunk.
+	for {
+		t.mu.Lock()
+		remaining := t.bindPendingLocked(provider, capabilities, t.now())
+		t.mu.Unlock()
+		if !remaining {
+			return
+		}
+	}
 }
 
 // bindRegisteredProvider runs at the end of Register: registration carries

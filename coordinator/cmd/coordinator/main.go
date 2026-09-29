@@ -1025,6 +1025,16 @@ func main() {
 	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	joined := srv.CloseProviderConnections(closeCtx)
 	closeCancel()
+	// Stop the periodic loop and join it before deciding on the final flush:
+	// a restore retry in flight has then either made the persister ready
+	// (so the flush below writes everything) or been cancelled, and no flush
+	// of the loop's own can run behind the final one.
+	persistCancel()
+	loopCtx, loopCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if !reg.WaitCacheRoutingPersistence(loopCtx) {
+		logger.Warn("cache routing persistence loop still running at the shutdown deadline; the final flush proceeds")
+	}
+	loopCancel()
 	warnedNotReady := false
 	finalFlush := func() {
 		flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1042,8 +1052,7 @@ func main() {
 	if !joined {
 		// A handler still running can mark evidence behind that flush (a
 		// read-error close and the deferred teardown take seconds). Give the
-		// join the rest of the budget, then flush again; the periodic loop
-		// is still alive meanwhile.
+		// join the rest of the budget, then flush again.
 		joinCtx, joinCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		joined = srv.WaitProviderHandlers(joinCtx)
 		joinCancel()
@@ -1052,7 +1061,6 @@ func main() {
 			logger.Warn("provider socket handlers still running at exit; cache routing evidence they mark from here is lost")
 		}
 	}
-	persistCancel()
 
 	logger.Info("coordinator stopped")
 }

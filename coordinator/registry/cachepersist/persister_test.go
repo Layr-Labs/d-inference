@@ -119,14 +119,14 @@ func TestPendingParkTakeAndPrune(t *testing.T) {
 	if s := p.Status(); s.PendingHolders != 2 || s.DroppedPending != 1 || !p.HasPending() {
 		t.Fatalf("park accounting: %+v", s)
 	}
-	if rows := p.Take("e1", "other-model"); rows != nil {
+	if rows, _ := p.Take("e1", "other-model", 0); rows != nil {
 		t.Fatalf("another model must not take the rows: %+v", rows)
 	}
 	p.prunePending(now)
 	if s := p.Status(); s.PendingHolders != 1 || s.DroppedPending != 2 {
 		t.Fatalf("prune must drop the expired row: %+v", s)
 	}
-	rows := p.Take("e1", "model")
+	rows, _ := p.Take("e1", "model", 0)
 	if len(rows) != 1 || rows[0].Key != "a" || p.HasPending() {
 		t.Fatalf("take: %+v", rows)
 	}
@@ -134,7 +134,8 @@ func TestPendingParkTakeAndPrune(t *testing.T) {
 	// A capability that is gone: the registry takes the rows, settles each
 	// durable row (here: delete) and reports them dropped.
 	p.Park(rec("d", "e2", now, time.Minute))
-	for _, r := range p.Take("e2", "model") {
+	taken, _ := p.Take("e2", "model", 0)
+	for _, r := range taken {
 		p.MarkHolderDelete(r.HolderKey(), time.Now())
 		p.AddBound(0, 1)
 	}
@@ -170,7 +171,7 @@ func TestRestoreClampsToCurrentTTLAndKeepsLongestLived(t *testing.T) {
 	if s := p.Status(); s.RestoredHolders != 2 || s.DroppedPending != 0 {
 		t.Fatalf("stale row must not load, old row clamped: %+v", s)
 	}
-	rows := p.Take("e", "model")
+	rows, _ := p.Take("e", "model", 0)
 	for _, r := range rows {
 		if r.Key == "old" && !r.ExpiresAt.Equal(r.UpdatedAt.Add(29*time.Minute)) {
 			t.Fatalf("old row not clamped to the current TTL: %+v", r)
@@ -183,7 +184,7 @@ func TestRestoreClampsToCurrentTTLAndKeepsLongestLived(t *testing.T) {
 	if _, err := p2.Restore(ctx, now, 29*time.Minute, 1, 0); err != nil {
 		t.Fatal(err)
 	}
-	if rows := p2.Take("e", "model"); len(rows) != 1 || rows[0].Key != "fresh" {
+	if rows, _ := p2.Take("e", "model", 0); len(rows) != 1 || rows[0].Key != "fresh" {
 		t.Fatalf("capped restore must keep the row with the most life under the current TTL: %+v", rows)
 	}
 }
@@ -210,7 +211,7 @@ func TestRestoreCapAppliesCurrentTTLBeforeLimit(t *testing.T) {
 	if s := p.Status(); s.RestoredHolders != 1 || s.DroppedPending != 0 {
 		t.Fatalf("the cap must be filled with rows valid under the current TTL: %+v", s)
 	}
-	if got := p.Take("e", "model"); len(got) != 1 || got[0].Key != "valid" || !got[0].ExpiresAt.Equal(now.Add(24*time.Minute)) {
+	if got, _ := p.Take("e", "model", 0); len(got) != 1 || got[0].Key != "valid" || !got[0].ExpiresAt.Equal(now.Add(24*time.Minute)) {
 		t.Fatalf("capped restore hid the valid row behind clamped-away rows: %+v", got)
 	}
 }
@@ -415,7 +416,7 @@ func TestRestoreMergesIntoRowsParkedBeforeIt(t *testing.T) {
 	if s := p.Status(); s.PendingHolders != 2 || s.RestoredHolders != 2 || s.DroppedPending != 0 {
 		t.Fatalf("restore must merge into the parked rows: %+v", s)
 	}
-	rows := p.Take("e", "model")
+	rows, _ := p.Take("e", "model", 0)
 	byKey := map[string]crs.HolderRecord{}
 	for _, r := range rows {
 		byKey[r.Key] = r
@@ -452,7 +453,7 @@ func TestRestoreDropsExpiredParkedRowsBeforeTheCap(t *testing.T) {
 	if _, err := p.Restore(ctx, now, time.Minute, 2, 0); err != nil {
 		t.Fatal(err)
 	}
-	rows := p.Take("e", "model")
+	rows, _ := p.Take("e", "model", 0)
 	if len(rows) != 1 || rows[0].Key != "durable" {
 		t.Fatalf("the expired parked row must not take the cap from the durable row: %+v", rows)
 	}
@@ -523,7 +524,7 @@ func TestParkDedupesByHolderIdentity(t *testing.T) {
 	if s := p.Status(); s.PendingHolders != 2 || s.DroppedPending != 0 {
 		t.Fatalf("duplicates must not consume the cap: %+v", s)
 	}
-	rows := p.Take("e", "model")
+	rows, _ := p.Take("e", "model", 0)
 	byKey := map[string]crs.HolderRecord{}
 	for _, r := range rows {
 		byKey[r.Key] = r
@@ -730,5 +731,30 @@ func TestRequeueKeepsTheLaterDeleteDecision(t *testing.T) {
 	p.mu.Unlock()
 	if !at.Equal(second) {
 		t.Fatalf("requeue must keep the later of the two decisions: got %v want %v", at, second)
+	}
+}
+
+// A bounded take hands back at most limit rows and says whether more remain,
+// so a large bucket can be bound in chunks.
+func TestTakeInChunks(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	p := New(mem, nil, Options{MaxPending: 10})
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		p.Park(rec(string(rune('a'+i)), "e", now, time.Minute))
+	}
+	total := 0
+	for i := 0; i < 3; i++ {
+		rows, more := p.Take("e", "model", 2)
+		total += len(rows)
+		if i < 2 && (len(rows) != 2 || !more) {
+			t.Fatalf("chunk %d: rows=%d more=%v", i, len(rows), more)
+		}
+		if i == 2 && (len(rows) != 1 || more) {
+			t.Fatalf("last chunk: rows=%d more=%v", len(rows), more)
+		}
+	}
+	if total != 5 || p.HasPending() {
+		t.Fatalf("all rows must be taken exactly once: total=%d pending=%v", total, p.HasPending())
 	}
 }

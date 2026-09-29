@@ -1198,3 +1198,55 @@ func TestCacheRoutingPersistenceRetriedRestoreKeepsTombstones(t *testing.T) {
 		t.Fatalf("nothing may bind to %s: %+v", again.ID, s)
 	}
 }
+
+// A bucket larger than one bind chunk binds completely, across several
+// tracker-lock holds, at the provider's registration.
+func TestCacheRoutingPersistenceBindsLargeBucketInChunks(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r, st)
+	r.mu.RLock()
+	persister := r.cachePersister
+	r.mu.RUnlock()
+	now := time.Now()
+	const parked = 2*bindChunkRows + 5
+	for i := 0; i < parked; i++ {
+		persister.Park(crs.HolderRecord{
+			Key: fmt.Sprintf("k%05d", i), CacheEpoch: capability.CacheEpoch, Tier: "ssd", ModelID: "model",
+			ModelAggregateHash: capability.ModelAggregateHash, PromptContractID: capability.PromptContractID,
+			BlockHashVersion: capability.BlockHashVersion, ReadyBoundaryMode: capability.ReadyBoundaryMode,
+			AnchorTokenCount: 4096, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(time.Minute),
+		})
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != parked {
+		t.Fatalf("parked %d rows, status %+v", parked, s)
+	}
+	persistenceTestProvider(t, r, "machine-a", capability)
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 || s.BoundHolders != parked {
+		t.Fatalf("every parked row must bind at registration, in chunks: %+v", s)
+	}
+}
+
+// Shutdown joins the persistence loop after cancelling its context.
+func TestCacheRoutingPersistenceLoopJoinsOnCancel(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, _ := exactTestRegistry(t)
+	r.SetStore(st)
+	ctx, cancel := context.WithCancel(context.Background())
+	if _, err := r.StartCacheRoutingPersistence(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	if r.WaitCacheRoutingPersistence(waitCtx) {
+		t.Fatal("the loop must still be running before its context is cancelled")
+	}
+	waitCancel()
+	cancel()
+	joinCtx, joinCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer joinCancel()
+	if !r.WaitCacheRoutingPersistence(joinCtx) {
+		t.Fatal("the loop must exit once its context is cancelled")
+	}
+}

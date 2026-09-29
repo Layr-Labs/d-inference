@@ -40,27 +40,41 @@ func (p *Persister) Park(rec crs.HolderRecord) {
 	p.pendingCount++
 }
 
-// Take pops the rows parked under one (cache epoch, model). The caller binds
-// the ones that match its capability, or settles their durable rows when the
-// capability is gone, and reports the outcome with AddBound.
-func (p *Persister) Take(epoch, model string) []crs.HolderRecord {
+// Take pops up to limit rows parked under one (cache epoch, model) (limit
+// <= 0 takes them all) and reports whether any remain. The caller binds the
+// ones that match its capability, or settles their durable rows when the
+// capability is gone, and reports the outcome with AddBound. A bounded take
+// lets the registry bind a large bucket in chunks, releasing its tracker
+// lock in between.
+func (p *Persister) Take(epoch, model string, limit int) ([]crs.HolderRecord, bool) {
 	if p == nil {
-		return nil
+		return nil, false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	pk := pendingKey(epoch, model)
 	bucket := p.pending[pk]
 	if len(bucket) == 0 {
-		return nil
+		return nil, false
 	}
-	delete(p.pending, pk)
-	p.pendingCount -= len(bucket)
-	rows := make([]crs.HolderRecord, 0, len(bucket))
-	for _, rec := range bucket {
+	n := len(bucket)
+	if limit > 0 && limit < n {
+		n = limit
+	}
+	rows := make([]crs.HolderRecord, 0, n)
+	for hk, rec := range bucket {
+		if len(rows) == n {
+			break
+		}
 		rows = append(rows, rec)
+		delete(bucket, hk)
 	}
-	return rows
+	p.pendingCount -= len(rows)
+	if len(bucket) == 0 {
+		delete(p.pending, pk)
+		return rows, false
+	}
+	return rows, true
 }
 
 // HasPending reports whether any restored or parked rows await a provider.

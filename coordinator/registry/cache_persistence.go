@@ -84,7 +84,7 @@ func (t *cacheRoutingTracker) dropParkedForCapability(epoch, model string) {
 	if p == nil {
 		return
 	}
-	rows := p.Take(epoch, model)
+	rows, _ := p.Take(epoch, model, 0)
 	if len(rows) == 0 {
 		return
 	}
@@ -135,22 +135,34 @@ func (t *cacheRoutingTracker) persistRowAfterLossLocked(key, epoch, except strin
 // already produced, and a row this run already decided to delete is skipped.
 // The restoring flag keeps the upsert from re-marking a row the store already
 // has.
-func (t *cacheRoutingTracker) bindPendingLocked(provider *Provider, capabilities map[string]protocol.PrefixCacheV2Capability, now time.Time) {
+// bindChunkRows bounds the rows one tracker-lock hold binds: a large bucket
+// (one machine owning much of the restore) is bound across several holds so
+// cache-participating requests, which need the same lock, are not stalled
+// behind an O(n log n) rebuild.
+const bindChunkRows = 1_000
+
+// bindPendingLocked binds one chunk per capability and reports whether any
+// of them still has rows parked.
+func (t *cacheRoutingTracker) bindPendingLocked(provider *Provider, capabilities map[string]protocol.PrefixCacheV2Capability, now time.Time) (remaining bool) {
 	p := t.persister
 	if p == nil || provider == nil || len(capabilities) == 0 {
-		return
+		return false
 	}
 	for _, capability := range capabilities {
 		if capability.CacheEpoch == "" || capability.ModelID == "" {
 			continue
 		}
-		rows := p.Take(capability.CacheEpoch, capability.ModelID)
+		rows, more := p.Take(capability.CacheEpoch, capability.ModelID, bindChunkRows)
 		if len(rows) == 0 {
 			continue
 		}
 		bound := t.bindRowsLocked(provider, capability, rows, now)
 		p.AddBound(bound, uint64(len(rows))-bound)
+		if more {
+			remaining = true
+		}
 	}
+	return remaining
 }
 
 func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability protocol.PrefixCacheV2Capability, rows []crs.HolderRecord, now time.Time) (bound uint64) {

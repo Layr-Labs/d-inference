@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `1c9802eab`
+> Last updated: 2026-09-29 · commit `7e075f88b`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -743,7 +743,9 @@ back are operator procedures, kept in the runbook
    capabilities with that epoch, model, artifact, contract, block-hash
    version and ready-boundary mode
    (`bindPendingLocked`, run at the end of `Register` and on every capability
-   apply in `UpdatePrefixCacheSnapshot`, changed or not), so a bound
+   apply in `UpdatePrefixCacheSnapshot`, changed or not, in chunks of 1,000
+   rows per tracker-lock hold so requests never wait behind a large
+   rebuild), so a bound
    holder carries a live `*Provider` exactly like a fresh receipt. A parked
    row whose provider returns under the same epoch and model but another
    artifact, contract, block-hash version or ready-boundary mode is deleted
@@ -763,7 +765,9 @@ back are operator procedures, kept in the runbook
    the current clock are skipped the same way. At shutdown the final flush
    runs after the HTTP server has stopped and every hijacked provider
    socket, registered or not, has been closed and its handler joined
-   (`CloseProviderConnections`, over the server's own socket tracking), so
+   (`CloseProviderConnections`, over the server's own socket tracking) and
+   the periodic flush loop has been stopped and joined (a restore retry in
+   flight has then either succeeded or been cancelled), so
    no receipt arrives behind it (if the join times out, the flush repeats
    after a further bounded wait and any remaining loss is logged); a restore retried after a failed boot merges
    into rows parked meanwhile (a row this run already tombstoned is dropped by

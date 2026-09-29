@@ -221,10 +221,13 @@ type Registry struct {
 	// without New(). See capacity_quotes.go.
 	capacityQuotes quoteTracker
 
-	cacheRouting                 *cacheRoutingTracker
-	cacheActivation              *cacheActivationGate
-	cacheRoutingMode             string
-	cachePersister               *cachepersist.Persister
+	cacheRouting     *cacheRoutingTracker
+	cacheActivation  *cacheActivationGate
+	cacheRoutingMode string
+	cachePersister   *cachepersist.Persister
+	// cachePersistDone closes when the persistence loop has exited, so
+	// shutdown can join it before the final flush decides on readiness.
+	cachePersistDone             chan struct{}
 	cacheRoutingAllowedArtifacts cacheArtifactAllowlist
 	cacheRouteKeys               cacheRouteKeys
 	cacheRoutingMaxDiscountMs    *float64

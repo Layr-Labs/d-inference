@@ -363,8 +363,24 @@ extension ProviderLoop {
         }
     }
 
+    /// Use actual native ownership, not a model-name heuristic. The registry
+    /// quarantines its native owners; it does not own unrelated resident slots.
+    func hasNativeMiMoOwner(_ modelID: String) -> Bool {
+        nativeMiMoLoads[modelID] != nil
+            || nativeMiMoPendingRetirements[modelID] != nil
+            || nativeMiMoRetiring.contains(modelID)
+            || modelSlots[modelID].flatMap({ Self.nativeMiMoLoad(in: $0.modelContainer) }) != nil
+    }
+
     func nativeMiMoRefusesRequest(_ modelID: String) -> Bool {
+        if modelSlots[modelID] != nil, !hasNativeMiMoOwner(modelID) {
+            // Other families still pass their own retirement, engine-health,
+            // request and KV gates. Only the unrelated MiMo override is absent.
+            return false
+        }
         do {
+            // Keep this process-wide fence for EVERY cold load, including
+            // other families. Retained memory is never hypothetical free space.
             try requireNativeMiMoProcessWorkAllowed()
             try refuseClosingNativeMiMoOwner(modelID)
             try requireResidentNativeMiMoOwner(modelID)

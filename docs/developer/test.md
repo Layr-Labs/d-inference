@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `cce4e3d88`
+> Last updated: 2026-09-29 · commit `61de2e9a8`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -25,6 +25,16 @@ payload ceilings before real platform decoder entry. Normal provider
 `swift build --build-tests` does not compile a dependency's SDK test targets;
 compile and run the SDK package tests separately as CI does. Small selected
 native runners do not replace these whole-target compile checks.
+
+The retained-fence case in `ProviderLoopNativeMiMoLifetimeTests` also installs a
+weight-free non-native peer for routing-policy assertions. A real native fixture
+fault must leave that peer's capacity/admission intact while blocking the failed
+native owner, every cold load and reclamation. This is not peer-model generation
+evidence. Keep its existing fresh-process fault selector and native-lane guard;
+the deliberately retained native owner must live until that test process exits.
+The audiovisual ingress cancellation test returns `Void` from its child task:
+it still checks real decode cancellation and host-reservation settlement, without
+transferring an unused non-Sendable decoded-media result across `Task.value`.
 
 `MiMoV26DiscoveryLoadFootprintTests` checks metadata-only quote revalidation,
 including foreign-family, SSD-discount, underpricing and changed-inventory

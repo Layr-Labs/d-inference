@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-29 · commit `cce4e3d88`
+> Last updated: 2026-09-29 · commit `61de2e9a8`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -574,6 +574,15 @@ resolved scheduler width drives bridge admission and reported capacity; explicit
 operator caps, benchmark construction, and assistant-ineligible qualification
 remain distinct. This integration does not add a reviewed MiMo performance
 profile or change native load, ownership, paging or memory admission safeguards.
+
+A retained MiMo fault quarantines the registry's native owners; it does not
+overwrite unrelated resident slots' own health or routing states.
+`ProviderLoop.hasNativeMiMoOwner` follows actual containers and retained/retiring
+ownership, not model-name heuristics. `nativeMiMoRefusesRequest` leaves existing
+non-native residents subject to their normal retirement, request and KV gates.
+Cold loads and allocator reclamation remain process-fenced; aggregate capacity
+reports zero `freeForLoadGb` and `loadUsableGb` while that fence applies. No
+retained ownership or memory credit is released by this routing distinction.
 
 Typed media support does not grant encoded audiovisual/container support,
 speech output, coordinator audio routing or media-prefix reuse. Complete

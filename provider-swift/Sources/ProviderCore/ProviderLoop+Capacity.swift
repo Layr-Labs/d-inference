@@ -225,8 +225,11 @@ extension ProviderLoop {
         for index in allSlots.indices where mtpAdmissionDrains.contains(allSlots[index].model) {
             allSlots[index].state = "reloading"
         }
+        let nativeMiMoFaultRetained = nativeMiMoRegistry.hasRetainedFault
+            || MiMoV26NativeLoadRegistry.shared.hasRetainedFault
+        let nativeColdAdmissionBlocked = !nativeMiMoAllowsReclamation()
         for index in allSlots.indices {
-            if nativeMiMoRegistry.hasRetainedFault || MiMoV26NativeLoadRegistry.shared.hasRetainedFault {
+            if nativeMiMoFaultRetained && hasNativeMiMoOwner(allSlots[index].model) {
                 allSlots[index].state = "crashed"
             } else if nativeMiMoPendingRetirements[allSlots[index].model] != nil
                 || nativeMiMoRetiring.contains(allSlots[index].model) {
@@ -243,8 +246,10 @@ extension ProviderLoop {
             gpuMemoryPeakGb: Double(mlxPeakBytes) / gbDivisor,
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,
             totalMemoryGb: Double(totalMem) / gbDivisor,
-            freeForLoadGb: freeForLoadGb,
-            loadUsableGb: loadUsableGb,
+            // Existing resident peers stay serviceable, but the coordinator
+            // must not see cold-load credit that local admission will refuse.
+            freeForLoadGb: nativeColdAdmissionBlocked ? 0 : freeForLoadGb,
+            loadUsableGb: nativeColdAdmissionBlocked ? 0 : loadUsableGb,
             loadHeadroomGb: loadHeadroomGb,
             loadTransitionActive: isLoadingAny || !modelsLoading.isEmpty
                 || !startupPreloadPendingModels.isEmpty

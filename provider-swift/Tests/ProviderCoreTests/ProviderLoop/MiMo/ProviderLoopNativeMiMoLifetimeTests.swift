@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXNN
 import MLXLMServer
 import XCTest
 @testable import MLXLMCommon
@@ -34,6 +35,18 @@ private actor NativeLoopGate {
 
 private struct NativeLoopTestFailure: Error {}
 
+// Routing-only peer: never generates or stands in for a real-model smoke pass.
+// The MiMo failure below still uses the actual native fixture/owner/retirement.
+private final class NativeFaultPeerModel: Module, LanguageModel {
+    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+        .tokens(input.text)
+    }
+    func newCache(parameters: GenerateParameters?) -> [KVCache] { [] }
+}
+private struct NativeFaultPeerProcessor: UserInputProcessor {
+    func prepare(input: UserInput) async throws -> LMInput { throw NativeLoopTestFailure() }
+}
+
 private final class NativeLoopObservation: @unchecked Sendable {
     private let lock = NSLock()
     private var observed = false
@@ -53,6 +66,17 @@ private extension ProviderLoop {
         nativeMiMoBoundaryForTesting = body
     }
     func nativeLifetimeSlotCount() -> Int { modelSlots.count }
+    func nativeLifetimeInstallRoutingPeer(_ id: String, runtime: EngineV2Runtime) async {
+        let stub = makeInertStubBridge(modelId: id, kvBytesCapacity: 1 << 20)
+        let tokenizer = StubBridgeTokenizer()
+        let container = ModelContainer(context: ModelContext(
+            configuration: ModelConfiguration(id: id), model: NativeFaultPeerModel(),
+            processor: NativeFaultPeerProcessor(), tokenizer: tokenizer))
+        installModelSlotForTesting(modelId: id, container: container,
+            tokenizer: TokenizerHandle(tokenizer), engineV2: stub.bridge,
+            modelType: "non-native-routing-fixture")
+        await runtime.register(modelId: id, bridge: stub.bridge)
+    }
     func nativeLifetimeAttachUnstartedCoordinator() -> CoordinatorClient {
         let client = CoordinatorClient(config: .init(url: "ws://127.0.0.1:0/not-started",
             hardware: loopConfig.hardware, models: [], backendName: "mlx-swift"),
@@ -722,7 +746,8 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         try nativeLane(fault: "testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim")
         let registry = MiMoV26NativeLoadRegistry(), actualBudget = budget(native: true)
         let owner = try loop(registry: registry, budget: actualBudget)
-        await owner.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        let runtime = EngineV2Runtime()
+        await owner.setEngineV2RuntimeForTesting(runtime)
         defer { _ = Unmanaged.passRetained(registry) } // exact fault owner until process exit
         let directory = try fixture(), load = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: directory))
         await owner.nativeLifetimeBoundary { point in
@@ -751,6 +776,27 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         XCTAssertFalse(allowed)
         XCTAssertFalse(retired)
         XCTAssertEqual(slots, 0)
+        // Regression: a real retained native fault must not poison an unrelated
+        // resident slot's routing state. This checks ProviderLoop, not generation.
+        let peerID = "native-fault-routing-peer"
+        await owner.nativeLifetimeInstallRoutingPeer(peerID, runtime: runtime)
+        let peerRejected = await owner.fastAdmissionReject(modelId: peerID)
+        let nativeRejected = await owner.fastAdmissionReject(modelId: modelID)
+        let coldRejected = await owner.fastAdmissionReject(modelId: "cold-routing-peer")
+        XCTAssertFalse(peerRejected)
+        XCTAssertTrue(nativeRejected)
+        XCTAssertTrue(coldRejected, "new loads must remain fenced")
+        await owner.updateAggregateCapacity()
+        let capacity = await owner.backendCapacityForTesting()
+        XCTAssertEqual(capacity?.slots.first(where: { $0.model == peerID })?.state, "idle")
+        XCTAssertEqual(capacity?.freeForLoadGb, 0)
+        XCTAssertEqual(capacity?.loadUsableGb, 0)
+        let reclaimAfterPeer = await owner.nativeMiMoAllowsReclamation()
+        XCTAssertFalse(reclaimAfterPeer, "resident routing must not authorize reclamation")
+        XCTAssertTrue(registry.hasRetainedFault)
+        XCTAssertGreaterThan(actualBudget.processLedger.snapshot().chargedBytes, 0)
+        _ = await runtime.unregister(modelId: peerID)
+        await owner.removeModelSlotForTesting(modelId: peerID)
         // A failed native newcomer can be absent from modelSlots before
         // coordinator registration. The new startup cleanup must not treat
         // that empty slot map as permission to reclaim or report completion.

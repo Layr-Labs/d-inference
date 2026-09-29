@@ -2,6 +2,7 @@
 
 ## Unreleased — native MiMo V2.6 candidate (not qualified or deployed)
 
+- Keep unrelated resident model slots available when a MiMo owner is retained after a fault. Preserve the MiMo quarantine and process-wide new-load/reclamation fences, and report no cold-load credit while those fences apply.
 - Add native `mimo_v2` target and embedded three-head MTP integration with strict source-bound loading, actual native/bridge/consumer ownership and typed retirement. Retain required-fence failures; logical memory settlement is not physical release.
 - Add exact native MiMo ordinary dispatch with owned visual/audio policies and bounded encoded ingress. Required sidecars retain separate authenticated ownership. API/media qualification, unsupported formats, speech output and coordinator capability parity remain explicit gates.
 - Prepare opt-in text-only COMPLETE-prefix store/loaded-owner integration and bounded performance/residency candidates, preserving native precision, checkpoint topology, fallback paths and memory safeguards. Paging, media-prefix reuse and composed cache/lifecycle qualification remain separate gates.

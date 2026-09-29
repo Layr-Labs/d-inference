@@ -114,11 +114,13 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
     }
     func testCancelledHostDecodeReleasesOneRealReservation() async throws {
         let value = try plan(MiMoAVFixture.movie(),allowAudio:true)
-        let task = Task {
+        // Cancellation is the result under test. Do not transfer the decoded,
+        // non-Sendable media value through Task.value merely to discard it.
+        let task = Task<Void, Error> {
             withUnsafeCurrentTask { $0?.cancel() }
-            return try await Self.decode(value)
+            _ = try await Self.decode(value)
         }
-        do { _ = try await task.value; XCTFail("cancelled request produced AV") }
+        do { try await task.value; XCTFail("cancelled request produced AV") }
         catch { XCTAssertTrue(error is CancellationError) }
     }
 }

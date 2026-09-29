@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `99185c517`
+> Last updated: 2026-09-29 · commit `a36f6f01b`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -312,7 +312,8 @@ replacement, shutdown, and connection changes invalidate resident evidence.
 There is no targeted resident-eviction wire message in this extension.
 
 Attempts remain briefly after inference terminal state because encrypted SSD
-write-behind can finish later. Attempt and holder maps are memory-only. Each
+write-behind can finish later. Routing uses in-memory attempt and holder maps;
+SSD holders also have a [write-behind copy](#persistence-across-restarts). Each
 exact-content/tier bucket retains at most four machines by default, across all
 provider epochs ([`EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS`](../reference/configuration.md#routing-admission-and-ttft),
 `defaultCacheRoutingMaxHolders`). Holder entries also have a bounded lifetime
@@ -335,6 +336,90 @@ minutes is accepted and logged as a warning at startup, because providers keep
 their files for at most 30 minutes and the indexes are sized for that window. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
+
+### Persistence across restarts
+
+Routing reads stay in memory. With `EIGENINFERENCE_CACHE_ROUTING_PERSIST`
+enabled and a supporting store, the coordinator keeps a write-behind copy of
+SSD holders and observed demand. Attempts and memory-tier holders are never
+persisted (`coordinator/registry/cache_persistence_registry.go`,
+`StartCacheRoutingPersistence`; `coordinator/registry/cache_persistence.go`,
+`persistable`). The refactor changes no store schema, wire fields or controls.
+
+#### Restore and binding
+
+Boot establishes the cache-key generation before writing mutations. A failed
+restore leaves mutations pending and retries every flush tick. The generation
+fingerprint covers the master key, derivation versions and block contract;
+a mismatch resets the durable copy instead of restoring unreachable keys.
+Loads apply the current TTL before the index caps. Timestamps up to one minute
+ahead of the clock are clamped; later rows are excluded and pruned. A retry
+merges with already parked holders and live demand by evidence time; only
+accepted demand entries seed write deduplication
+(`coordinator/registry/cachepersist/restore.go`, `Restore`, `SeedDemandPersisted`).
+
+Restored and disconnected holders park by cache epoch and model. They bind only
+to a live provider with matching epoch, model, artifact, contract, block-hash
+version and ready-boundary mode. Binding rechecks session ownership and
+capabilities in chunks of 1,000 rows; changed identities or abandoned epochs
+settle their durable rows rather than reload forever. A surviving lookup-stage
+measurement keeps its own deadline. TTL expiry leaves durable rows to pruning
+(`bindPendingLocked`, `bindRowsLocked`, `settleParkedChunk` in
+`coordinator/registry/cache_persistence.go`; `bindChunksWhileOwned`,
+`dropParkedWhileStale` in `coordinator/registry/cache_persistence_registry.go`).
+
+A validated miss or shorter hit uses the attempt's epoch and boundary keys to
+invalidate durable evidence even before any live holder is restored
+(`invalidateBoundaryLocked`, `coordinator/registry/cache_receipts_v2_lookup.go`).
+Overlapping sessions can share one durable row. After losing evidence, only a
+strictly newer live survivor can retain that row. If only older or equal
+evidence survives, the coordinator deletes the durable copy rather than trying
+to replace newer stored evidence with a monotonic upsert of an older record.
+Those older live holders remain usable until expiry or ordinary invalidation
+(`persistRowAfterLossLocked`, `coordinator/registry/cache_persistence.go`).
+
+#### Pending mutations and overflow
+
+One serialized writer serves periodic and shutdown flushes. Holder upserts,
+deletes and demand marks carry revisions and remain pending until database
+acknowledgement. A bounded snapshot copies work without draining it; each
+successful store chunk clears only matching revisions, so an acknowledgement
+cannot erase a newer mutation. Failure simply leaves unwritten changes pending
+(`coordinator/registry/cachepersist/mutations.go`, `snapshot`,
+`acknowledgeHolders`, `acknowledgeDemand`; `coordinator/registry/cachepersist/flush.go`,
+`Flush`). Pending deletes fence older or equal evidence; acknowledged or
+superseded decisions remain fenced for one TTL, subject to the retention cap
+(`coordinator/registry/cachepersist/delete_fences.go`, `Tombstoned`).
+
+Each pending-write kind is capped at four times the holder budget. At the cap,
+new upsert or demand marks may be dropped. Delete overflow instead replaces the
+holder backlog in O(1), requests a durable reset and wakes the writer. It retains
+the latest invalidation timestamp at overflow as a conservative cutoff for the
+rest of the process, including after reset and pruning. Delayed receipt upserts,
+restored rows and parked rows at or before that cutoff cannot repopulate the
+durable copy or bind. A later overflow can only advance the cutoff
+(`coordinator/registry/cachepersist/reset.go`, `requireResetLocked`;
+`coordinator/registry/cachepersist/delete_fences.go`, `tombstonedLocked`).
+
+A pending reset blocks snapshots and interrupts the current batch before its
+next store call; an in-flight call may finish, then the reset removes its rows.
+The store writes an in-progress marker, clears both tables, and records the
+complete generation last. The reset clears demand-write deduplication, not
+new pending observations. The next boot completes an interrupted marked reset
+(`resetDurableCopy`, `coordinator/registry/cachepersist/reset.go`;
+`ResetCacheRoutingState`, `coordinator/store/cacheroutingstate_postgres.go`).
+A crash before the marker lands can still leave invalidated rows restorable.
+Serialization is process-local: concurrent coordinator writers can repopulate
+rows during a reset; no cross-process fencing is provided.
+
+Shutdown closes and joins provider sockets and the periodic persistence loop
+before the final bounded flush. If the socket join times out, a further bounded
+wait and flush retry run; remaining loss is logged. See
+`CloseProviderConnections` in `coordinator/api/provider.go` and
+`FlushCacheRoutingState` in `coordinator/registry/cache_persistence_registry.go`.
+The [status reference](../reference/api-contracts.md#exact-cache-status) defines
+the persistence counters; the [rollout runbook](../operations/cache-routing-rollout.md#persistence-during-restarts)
+covers restart and reset precautions.
 
 ### Prepared assistant replacement
 
@@ -735,105 +820,11 @@ back are operator procedures, kept in the runbook
 1. **Routing `off` runs none of the machinery, and applying `off` clears all
    in-memory evidence** — `ConfigureCacheRouting` installs a fresh, empty
    holder/attempt tracker on every application
-   (`coordinator/registry/cache_routing.go`). A process restart no longer
-   empties the index: with `EIGENINFERENCE_CACHE_ROUTING_PERSIST` on
-   (the default) and a store that can persist, SSD-tier holders and the
-   observed-demand index are written behind the tracker in 5-second batches
-   and reloaded at boot (`coordinator/registry/cachepersist/persister.go`,
-   `coordinator/store/cacheroutingstate/records.go`; the registry glue that
-   decides what is persistable and binds rows back is
-   `coordinator/registry/cache_persistence.go`). Restored holders are parked by
-   the provider's cache epoch and become live only when a provider applies
-   capabilities with that epoch, model, artifact, contract, block-hash
-   version and ready-boundary mode
-   (`bindPendingLocked`, run at the end of `Register` and on every capability
-   apply in `UpdatePrefixCacheSnapshot`, changed or not, in chunks of 1,000
-   rows per tracker-lock hold, with the registry read lock and the session's
-   ownership re-taken around each chunk at registration, on every
-   capability apply and after a retried restore, so a request waits for at
-   most one chunk on the tracker lock and a queued registration or
-   disconnect never waits behind a whole rebuild),
-   so a bound
-   holder carries a live `*Provider` exactly like a fresh receipt. A parked
-   row whose provider returns under the same epoch and model but another
-   artifact, contract, block-hash version or ready-boundary mode is deleted
-   at bind, not reloaded on every boot. A
-   disconnect parks the holder instead of deleting its row, and TTL expiry
-   leaves the row to the store prune (every load filters expired rows);
-   every other removal reason deletes the row unless another live session of the same
-   machine (same key and epoch: two sessions overlap when the per-key holder
-   cap evicts the old session's holder as the new session's receipt arrives)
-   still holds the boundary, in which case the row is refreshed as that
-   session's evidence; an SSD capability that disappears or moves to another
-   cache epoch settles the rows parked under the old epoch the same way, in
-   chunks that each re-check the session still owns its ID and still leaves
-   the epoch behind (a later heartbeat can republish it). A change that
-   keeps its epoch leaves them to the bind, which settles each row on its
-   own identity, and a resident-tier change leaves the SSD bucket untouched. A lookup's measured stage cost travels with
-   the row and is rebound at bind with its own deadline, so a restart inside
-   that window keeps routing on the measured value rather than the Ready
-   estimate. Demand and holder rows stamped up to one minute ahead of the
-   current clock (an earlier instance's slight skew) are restored with their
-   times clamped to the clock; rows further ahead are quarantined by the
-   loads and removed by the prune, so they can neither take the restore cap
-   nor outrank this run's receipts; and only the demand entries the index
-   accepts count as already persisted. At shutdown the final flush
-   runs after the HTTP server has stopped and every hijacked provider
-   socket, registered or not, has been closed and its handler joined
-   (`CloseProviderConnections`, over the server's own socket tracking) and
-   the periodic flush loop has been stopped and joined (a restore retry in
-   flight has then either succeeded or been cancelled), so
-   no receipt arrives behind it (if the join times out, the flush repeats
-   after a further bounded wait and any remaining loss is logged); a restore retried after a failed boot merges
-   into rows parked meanwhile, in bounded lock holds (a row this run already
-   tombstoned is dropped as the restore merges, before anything is written,
-   and a delete backlog that overflowed while the rows were loading turns
-   the restore into a reset; a tombstone outranks
-   older parked evidence from the moment it leaves the dirty set until one
-   TTL after the decision, bounded by the holder budget, and a receipt whose
-   evidence predates the decision is counted as stale rather than written;
-   providers bind under the registry lock, at registration and at a retried
-   restore, so a concurrent disconnect cannot strand rows on a dead
-   provider ID), and merges demand entries into the index by
-   seen time so a capped merge never evicts a fresher live observation for
-   an older durable one. Nothing is written before
-   the restore has recorded the key generation (a failed boot restore is
-   retried every flush tick, with marks held meanwhile), and the fingerprint
-   covers the master key, every key-derivation label and the block contract,
-   so a derivation bump without a key rotation resets the durable copy too. Restores are bounded by the index caps and clamped to
-   the current TTL before the cap applies (the store orders holders by their
-   expiry under today's TTL, longest-lived first, and demand newest first),
-   so a TTL reduction never fills the cap with rows the clamp then drops; the demand
-   write granularity is bounded by the TTL so a short TTL never leaves the
-   durable timestamp stale. The dirty sets hold four times the holder cap;
-   past that an upsert or demand mark is dropped (the next receipt or
-   observation re-marks it), but a delete never is, at a mark or a requeue:
-   a delete backlog that outgrows the cap during a store outage discards
-   the whole durable copy at the next flush, or at the restore if none has
-   succeeded yet, so a restart after the reset lands never restores a row a
-   miss or proof mismatch already invalidated
-   (`lifecycle.persistence.overflow_resets`; rows bound from the parked set
-   after the reset are rewritten only once re-proved). The reset records an
-   in-progress marker as the generation before it clears the tables, so a
-   reset a crash or a shutdown deadline interrupted is completed by the
-   next boot rather than read as complete, and upserts drained before an
-   overflow are not requeued after it. A drain never proceeds while a reset
-   is pending (the check and the drain share one lock hold), a flush that
-   sees an overflow after its drain stops before its next store call and
-   resets instead (the remainder is requeued, its upserts dropped), and an
-   overflow wakes the flush loop so the reset's marker lands at the next
-   flush rather than the next tick (after whatever flush or prune the loop
-   has in flight, once the store is reachable); a crash between the
-   overflow and that marker is the residual and leaves the condemned rows
-   restorable once.
-   Rows are fenced by cache-key generation: the
-   store keeps a non-secret HMAC fingerprint of the master key and every
-   key-derivation version (`cache_routing_meta`), and a boot under a
-   different generation (a rotated key, or a release that changed a
-   derivation version) resets the tables instead of parking rows that could
-   never match a request (`lifecycle.persistence.key_rotated`). Resident (memory-tier) holders are
-   never persisted. `lifecycle.persistence` on `GET /v1/cache/status`
-   reports the restored, parked and bound counts and the flush health.
+   (`coordinator/registry/cache_routing.go`). With routing and persistence
+   enabled, restarts can restore SSD holders and demand under the
+   [persistence rules](#persistence-across-restarts); attempts and resident-tier
+   holders are never restored (`StartCacheRoutingPersistence`,
+   `coordinator/registry/cache_persistence_registry.go`).
 2. **Cache routing never rejects, delays or otherwise changes ordinary
    inference.** The activation cohort and the plan-QPS bucket only decline
    participation (`cacheActivationGate`,
@@ -911,6 +902,12 @@ and `coordinator/api/cache_model_telemetry.go`.
 | Concern | File / symbol |
 |---|---|
 | Mode, TTL, holder cap, discount bounds, removal reasons | `coordinator/registry/cache_routing.go` — `CacheRoutingOff`, `CacheRoutingOn`, `newCacheRoutingTracker`, `CacheRoutingLifecycleStatus`; `coordinator/registry/cache_sweep.go` — bounded expiry; `coordinator/registry/cache_provider_index.go` — per-provider holder and attempt index; `coordinator/registry/cache_routing_sizing.go` — `warnCacheRoutingTTL` |
+| Persistence integration | `coordinator/registry/cache_persistence.go` (`persistRowAfterLossLocked`, `bindRowsLocked`); `coordinator/registry/cache_persistence_registry.go` (`StartCacheRoutingPersistence`, `FlushCacheRoutingState`); `coordinator/registry/cache_receipts_v2_lookup.go` (`invalidateBoundaryLocked`) |
+| Persister state and mutation intake | `coordinator/registry/cachepersist/persister.go` (`Persister`, `New`); `coordinator/registry/cachepersist/marks.go` (`MarkHolderUpsert`, `MarkHolderDelete`, `MarkDemand`) |
+| Snapshot, acknowledgement and serialized writes | `coordinator/registry/cachepersist/mutations.go` (`snapshot`, `acknowledgeHolders`, `acknowledgeDemand`); `coordinator/registry/cachepersist/flush.go` (`Flush`, `FlushAll`) |
+| Overflow reset and restore | `coordinator/registry/cachepersist/reset.go` (`requireResetLocked`, `resetDurableCopy`); `coordinator/registry/cachepersist/restore.go` (`Restore`) |
+| Parked rows, fences and bounded maintenance | `coordinator/registry/cachepersist/pending.go` (`Park`, `Take`); `coordinator/registry/cachepersist/delete_fences.go` (`Tombstoned`); `coordinator/registry/cachepersist/time_heap.go` (`keyedTimeHeap`); `coordinator/registry/cachepersist/maintenance.go` (`Prune`) |
+| Persistence counters | `coordinator/registry/cachepersist/status.go` (`Status`) |
 | Configuration and validation | `coordinator/registry/config.go` — `CacheRoutingConfig`, `Check`; `coordinator/registry/cache_routing.go` — `ConfigureCacheRouting` |
 | Optional artifact membership | `coordinator/registry/cache_artifact_allowlist.go` — exact tuple parsing, validation and immutable membership; unset unrestricted, `[]` denied |
 | Activation cohort and plan QPS | `coordinator/registry/cache_activation.go` — `cacheActivationGate`, `CacheRoutingActivationStatus` |

@@ -132,18 +132,6 @@ func (p *Persister) AddBound(bound, dropped uint64) {
 	p.mu.Unlock()
 }
 
-// prunePending drops parked rows past their own expiry: their provider never
-// came back in time.
-func (p *Persister) prunePending(now time.Time) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.prunePendingLocked(now)
-}
-
-func (p *Persister) prunePendingLocked(now time.Time) {
-	p.prunePendingBatchLocked(now, 0)
-}
-
 // pruneBatchRows bounds the rows one prune lock hold examines, parked rows
 // and retained decisions alike.
 const pruneBatchRows = 5_000

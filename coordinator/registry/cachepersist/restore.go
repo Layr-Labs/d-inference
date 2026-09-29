@@ -83,17 +83,9 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 	// restore runs while receipts are served, and a receipt holding the
 	// tracker lock waits on p.mu.
 	p.prunePendingChunked(now)
-	// The parked set holds nothing a pending delete condemns: a decision
-	// drops the parked copy it outranks when it is made (MarkHolderDelete)
-	// and Park refuses evidence a pending or retained decision outranks.
-	// The premise is that nothing drains before the copy is established
-	// (Flush gates on ready): no decision has left the pending set, so none
-	// could have been evicted from retention while its write was in
-	// flight; a flush before ready would break it. The loaded
-	// rows are checked against the pending decisions below, chunk by chunk.
-	// A backlog overflow meanwhile releases decisions no check can see any
-	// more, so every chunk starts by looking for one, and the copy is only
-	// established once the last chunk merged without one.
+	// Flush gates on ready, so invalidations remain pending throughout the
+	// load. Check each merge chunk against those fences and any overflow;
+	// mark the restore ready only after the final chunk passes both checks.
 	// Merge into whatever is already parked: a provider that disconnected
 	// before a retried restore parked this run's evidence here, and the
 	// store may not hold it yet. The newer record wins per (key, epoch).
@@ -115,7 +107,7 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 				continue
 			}
 			hk := rec.HolderKey()
-			if _, dead := p.holderDeletes[hk]; dead {
+			if p.tombstonedLocked(hk, rec.UpdatedAt) {
 				p.counters.droppedPending++
 				continue
 			}

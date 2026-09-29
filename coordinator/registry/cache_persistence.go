@@ -65,7 +65,7 @@ func (t *cacheRoutingTracker) persistHolderRemoval(key string, h cacheHolder, re
 	case cacheHolderRemovalTTL:
 		// Loads filter expired rows and the store prune removes them.
 	default:
-		t.persistRowAfterLossLocked(key, h.CacheEpoch, h.ProviderID)
+		t.persistRowAfterLossLocked(key, h.CacheEpoch, h.ProviderID, h.UpdatedAt)
 	}
 }
 
@@ -90,7 +90,7 @@ func (t *cacheRoutingTracker) settleParkedChunk(epoch, model string) (more bool)
 	}
 	rows, more := p.Take(epoch, model, bindChunkRows)
 	for _, rec := range rows {
-		t.persistRowAfterLossLocked(rec.Key, rec.CacheEpoch, "")
+		t.persistRowAfterLossLocked(rec.Key, rec.CacheEpoch, "", rec.UpdatedAt)
 	}
 	if len(rows) > 0 {
 		p.AddBound(0, uint64(len(rows)))
@@ -103,10 +103,11 @@ func (t *cacheRoutingTracker) settleParkedChunk(epoch, model string) (more bool)
 // can overlap: the per-key holder cap evicts the old session's holder as the
 // new session's receipt arrives (capacity_eviction), or a row parked for the
 // old session is taken by the new one and fails to match. If another live
-// session (any provider but except) still holds the boundary under the same
-// epoch, the row is its evidence now and is refreshed; otherwise it is
-// deleted. Called with t.mu held.
-func (t *cacheRoutingTracker) persistRowAfterLossLocked(key, epoch, except string) {
+// session (any provider but except) has newer evidence under the same epoch,
+// its upsert supersedes the lost row. An older survivor cannot replace the
+// store's newer-wins row, so delete the durable copy until a fresh receipt
+// proves it again; the survivor stays routable in memory. Called with t.mu held.
+func (t *cacheRoutingTracker) persistRowAfterLossLocked(key, epoch, except string, lostAt time.Time) {
 	// With more than two overlapping sessions the row must reflect the
 	// freshest surviving evidence, not whichever session the map yields.
 	var (
@@ -118,10 +119,7 @@ func (t *cacheRoutingTracker) persistRowAfterLossLocked(key, epoch, except strin
 		if providerID == except || other.CacheEpoch != epoch || !other.persistable() {
 			continue
 		}
-		if !other.ExpiresAt.After(now) {
-			// Expired but not yet swept: no longer evidence, and refreshing
-			// the row from it would keep the durable copy past any live
-			// session's ownership.
+		if !other.ExpiresAt.After(now) || !other.UpdatedAt.After(lostAt) {
 			continue
 		}
 		if !found || other.UpdatedAt.After(newest.UpdatedAt) {
@@ -209,7 +207,7 @@ func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability prot
 			// block-hash version, or the artifact or contract moved); the
 			// durable row would only be reloaded and rejected again on every
 			// boot, unless a live holder still owns it.
-			t.persistRowAfterLossLocked(rec.Key, rec.CacheEpoch, "")
+			t.persistRowAfterLossLocked(rec.Key, rec.CacheEpoch, "", rec.UpdatedAt)
 			continue
 		}
 		if live, ok := t.holders[rec.Key][provider.ID]; ok && !rec.UpdatedAt.After(live.UpdatedAt) {

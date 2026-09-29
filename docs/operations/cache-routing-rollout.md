@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-29 · commit `99185c517`
+> Last updated: 2026-09-29 · commit `a36f6f01b`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -169,36 +169,13 @@ the same request from the same account remains in or out of the cohort.
    `max_discount_ms` and `max_cost_fraction` (`coordinator/cmd/coordinator/main.go`);
    `null` means no optional clipping beyond avoidable prefill work. A rejected configuration logs `cache routing configuration rejected` and
    exits before listening. With `EIGENINFERENCE_CACHE_ROUTING_PERSIST` on (the
-   default) boot also logs `cache routing persistence restored` with the
-   parked holder and demand counts; the holder index refills as providers
-   reconnect and apply capabilities (`lifecycle.persistence.bound_holders` in
-   `GET /v1/cache/status`) instead of from scratch (a restore that fails at
-   boot, say behind a busy database, is retried every 5 s and nothing is
-   written until it succeeds: `lifecycle.persistence.ready`), and the final flush runs
-   after the HTTP server has shut down and the provider sockets have been
-   closed and joined (providers are disconnected by the old coordinator at the
-   end of a swap rather than by its exit, and reconnect as before), so a swap costs seconds of evidence rather than
-   the 10–20 minute rebuild it used to. Rotating
-   `EIGENINFERENCE_CACHE_MASTER_KEY`, or deploying a release that changes a
-   key-derivation version, empties the durable copy on the next boot
-   (`lifecycle.persistence.key_rotated: true`): persisted keys are derived from
-   the master key and those versions, so either is a full index rebuild, as
-   before persistence.
-   Both containers of a swap share the VM's clock, which the prune's
-   one-minute skew allowance assumes: of two instances whose clocks differ
-   by more than that, the one whose clock lags would prune the other's
-   freshest rows. Rotate the key, and deploy a release that changes a
-   key-derivation version, with a non-overlapping restart (stop the old
-   container before the new one boots): rows do not carry their generation,
-   so rows the old container still flushes after the reset would be stamped
-   into the new generation and restored on any boot inside their TTL, as
-   holders no request can reach. The same single-writer assumption covers a
-   reset the delete backlog forces (`lifecycle.persistence.overflow_resets`):
-   rows an old container still flushes between that reset's deletes and its
-   fingerprint stay under a complete generation until their TTL, as that
-   container's own evidence under the same keys; a row the new container's
-   released decisions condemned is among them and is restored at the next
-   boot (tombstones do not survive a restart).
+   default), boot also logs `cache routing persistence restored` with parked
+   holder and demand counts. Check `lifecycle.persistence.ready` and then
+   `bound_holders` in `GET /v1/cache/status` as providers reconnect and apply
+   matching capabilities. A failed boot restore is retried every 5 s; mutations
+   stay pending and holder/demand writes wait for success. Routing still reads
+   its in-memory index. See [persistence during restarts](#persistence-during-restarts)
+   for reset precautions.
 
    ```bash
    sudo docker logs coordinator 2>&1 | grep -E 'cache routing configuration rejected|provider-confirmed cache routing configured'
@@ -210,6 +187,37 @@ the same request from the same account remains in or out of the cohort.
    `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` — never both in one change —
    by repeating steps 3–4 with the new value, and observe again before the
    next step.
+
+### Persistence during restarts
+
+Inspect `GET /v1/cache/status` → `lifecycle.persistence` after a swap. Restored,
+parked and bound counts describe routing evidence, not confirmed cache hits.
+The final flush follows HTTP shutdown, provider-socket closure/join and the
+periodic writer's join; a bounded shutdown can still lose pending work.
+
+- If `flush_errors` grows, inspect store health. Failed writes remain pending;
+  successful chunks acknowledge only their matching revisions. `rows_deleted`
+  counts successfully submitted keys, including keys with no row, not rows
+  actually removed. Exact [counter semantics](../reference/api-contracts.md#exact-cache-status)
+  distinguish dropped work and stale-evidence rejection.
+- If `overflow_resets` grows, the delete backlog exceeded its budget. The writer
+  wakes to reset the durable copy; the counter records overflow, not completion.
+  The process keeps a timestamp cutoff that rejects older or equal evidence
+  even after reset. A durable in-progress marker makes an interrupted reset
+  recoverable on boot, but a crash before that marker can still restore
+  invalidated evidence. Verify recovery in the logs and `flush_errors`.
+- Rotate `EIGENINFERENCE_CACHE_MASTER_KEY`, or deploy changed key-derivation
+  versions, with an approved **non-overlapping restart**: stop the old container
+  before the new one boots. `key_rotated: true` indicates the resulting rebuild.
+  The writer is serialized only within one process. Another container can write
+  stale rows during a generation or overflow reset; neither the marker nor the
+  process-local cutoff coordinates multiple writers.
+- Keep coordinator clocks aligned. Beyond the store's one-minute skew
+  allowance, the lagging instance can prune the other's fresh rows.
+
+The [persistence mechanism](../architecture/cache-aware-routing.md#persistence-across-restarts)
+and its limits are unchanged at the store-schema, wire and configuration level
+by the refactor; no new rollout knob is required.
 
 ### Add Bonsai to an existing routing cohort
 

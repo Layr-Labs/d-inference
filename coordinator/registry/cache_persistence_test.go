@@ -252,6 +252,7 @@ func TestCacheRoutingPersistenceRemovalSemantics(t *testing.T) {
 	if len(storedHolders(t, st)) != 1 {
 		t.Fatal("holder not persisted")
 	}
+	deletesBefore := r.CacheRoutingPersistenceStatus().RowsDeleted
 	// A disconnect drops the live holder but keeps the durable row.
 	r.cacheRouting.disconnect(a.ID, cacheHolderRemovalDisconnect)
 	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
@@ -274,7 +275,7 @@ func TestCacheRoutingPersistenceRemovalSemantics(t *testing.T) {
 	if rows := storedHolders(t, st); len(rows) != 0 {
 		t.Fatalf("capability change must delete the durable row: %+v", rows)
 	}
-	if s := r.CacheRoutingPersistenceStatus(); s.RowsDeleted != 1 {
+	if s := r.CacheRoutingPersistenceStatus(); s.RowsDeleted != deletesBefore+1 {
 		t.Fatalf("delete counter wrong: %+v", s)
 	}
 }
@@ -598,6 +599,7 @@ func TestCacheRoutingPersistenceKeepsRowOwnedByOtherLiveSession(t *testing.T) {
 	if rows := storedHolders(t, st); len(rows) != 1 {
 		t.Fatalf("both sessions share one durable row: %+v", rows)
 	}
+	deletesBefore := r.CacheRoutingPersistenceStatus().RowsDeleted
 	// The older session's evidence is invalidated for a non-disconnect reason.
 	r.cacheRouting.invalidateProviderEvidence(first.ID, cacheHolderRemovalCapabilityChange, true)
 	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
@@ -606,8 +608,8 @@ func TestCacheRoutingPersistenceKeepsRowOwnedByOtherLiveSession(t *testing.T) {
 	if rows := storedHolders(t, st); len(rows) != 1 || rows[0].CacheEpoch != capability.CacheEpoch {
 		t.Fatalf("row owned by the live second session was deleted: %+v", rows)
 	}
-	if s := r.CacheRoutingPersistenceStatus(); s.RowsDeleted != 0 {
-		t.Fatalf("no delete should have been issued: %+v", s)
+	if s := r.CacheRoutingPersistenceStatus(); s.RowsDeleted != deletesBefore {
+		t.Fatalf("invalidating the older session must not issue another delete: %+v", s)
 	}
 	if hints := memoryTestHints(r, plan, time.Now()); len(hints) != 1 || hints[second.ID].Tier != "ssd" {
 		t.Fatalf("second session's holder lost: %+v", hints)
@@ -672,8 +674,8 @@ func TestCacheRoutingPersistenceMismatchAtBindKeepsLiveRow(t *testing.T) {
 }
 
 // A capability change drops the rows parked for the old capability, but a
-// parked row that a live session of the same machine still holds is that
-// session's evidence and must survive.
+// parked row with newer evidence on a live session of the same machine must
+// survive as that session's evidence.
 func TestCacheRoutingPersistenceCapabilityChangeKeepsRowOwnedByLiveSession(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
@@ -695,6 +697,18 @@ func TestCacheRoutingPersistenceCapabilityChangeKeepsRowOwnedByLiveSession(t *te
 		if !r.ApplyPrefixCacheReadyV2(p.ID, ready) {
 			t.Fatalf("receipt for %s rejected", p.ID)
 		}
+	}
+	// Refresh the surviving session with a hit, not a miss that would
+	// invalidate the other session's older, soon-to-be-parked evidence.
+	pr := &PendingRequest{RequestID: "live-refresh", Model: "model", CachePlan: plan}
+	if err := prepareBoundTestCacheAttempt(r, pr, live); err != nil {
+		t.Fatal(err)
+	}
+	lookup := testV2Lookup(preparedTestCacheMetadata(pr).CacheReceiptNonce, capability, floor, 3)
+	lookup.RequestID, lookup.Outcome = pr.RequestID, "hit"
+	lookup.MatchedAnchor, lookup.ExpectedPrefillTokensSaved = &checkpoint, checkpoint.TokenCount
+	if !r.ApplyPrefixCacheLookupV2(live.ID, lookup) {
+		t.Fatal("surviving session's hit rejected")
 	}
 	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
 		t.Fatal(err)
@@ -956,9 +970,10 @@ func TestCacheRoutingPersistenceKeepsNewestSurvivingHolder(t *testing.T) {
 		plan := boundTestCachePlan(r, exactTestPlan(checkpoint, floor))
 		var sessions []*Provider
 		for i := 0; i < 3; i++ {
-			clock = base.Add(time.Duration(i) * time.Second)
+			clock = base.Add(time.Duration(i)*time.Second - time.Millisecond)
 			p := persistenceTestProvider(t, r, fmt.Sprintf("session-%d", i), capability)
 			_, ready := checkpointTestAttempt(t, r, p, capability, fmt.Sprintf("donor-%d", i), plan, 1)
+			clock = base.Add(time.Duration(i) * time.Second)
 			ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
 			ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
 			ready.StageMs = float64(100 * (i + 1))

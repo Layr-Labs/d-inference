@@ -33,6 +33,7 @@ struct ServingQualificationLiveTests {
         }
         var trials: [ServingQualificationTrial] = []
         var cooldowns: [QualificationCooldownReceipt] = []
+        var preparationCooldowns: [QualificationCooldownReceipt] = []
         func write(complete: Bool) throws {
             let report = ServingQualificationRun(buildIdentity: buildIdentity, schemaVersion: 1, job: job,
                 providerVersion: ProviderCore.version, runtimeRevision: ServingPerformanceProfiles.runtimeRevision,
@@ -40,12 +41,22 @@ struct ServingQualificationLiveTests {
                 deadlineRuntimeConfiguration: fixture.bundle.bridge.deadlineRuntimeConfiguration,
                 configuredContextTokens: fixture.sizing.maxContextLength, chipName: hardware.chipName,
                 gpuCores: Int(hardware.gpuCores), memoryBytes: ProcessInfo.processInfo.physicalMemory,
-                mtp: fixture.mtp, trials: trials, complete: complete, qualified: false, cooldowns: cooldowns)
+                mtp: fixture.mtp, trials: trials, complete: complete, qualified: false, cooldowns: cooldowns, preparationCooldowns: preparationCooldowns)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             try encoder.encode(report).write(to: URL(fileURLWithPath: job.outputPath), options: .atomic)
         }
         do {
+            // A real qualified-rate warmup must begin within a known posture
+            // epoch. Empty-catalog collection reads raw timing independently.
+            let preparation = try await QualificationPostureGate.waitForNominal()
+            preparationCooldowns.append(preparation)
+            try write(complete: false)
+            guard preparation.passed else { throw QualificationPostureFailure.recoveryTimedOut }
+            if fixture.bundle.bridge.deadlineProfile != nil {
+                try #require(fixture.budget.serviceBudget.currentDeadlineRateEpoch() != nil,
+                    "qualified warmup must begin after the real posture monitor establishes an eligible epoch")
+            }
             // Exclude compilation/first-allocation warmup from measured trials.
             let (warmup, warmTokens) = try fixture.request(targetTokens: job.toolHistory ? 2048 : 256,
                                                          nonce: (job.corpusSeed ?? job.runID) + "-warmup")

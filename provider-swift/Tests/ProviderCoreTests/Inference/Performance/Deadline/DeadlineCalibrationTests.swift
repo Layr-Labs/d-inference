@@ -237,7 +237,8 @@ private extension EngineV2Bridge {
     func prepareDeadlineCalibrationTest(now: ContinuousClock.Instant) {
         for (name, rate) in [("isolated_prefill", 1_000.0), ("decode", 60.0)] {
             performanceMeasurements.observe(name, tps: rate, prompt: 8_828, context: 8_828,
-                cache: "cold", overlap: .init(), at: now)
+                cache: "cold", overlap: .init(), at: now,
+                deadlinePostureEpoch: serviceBudget?.currentDeadlineRateEpoch(at: now))
         }
         #expect(acquireServiceAllowance(requestID: "target", promptTokens: 8_828,
             maxOutputTokens: 4_096, allowExpansion: true))
@@ -330,7 +331,8 @@ private extension EngineV2Bridge {
     func prepareNarrowDeadlineCalibrationTest(now: ContinuousClock.Instant) {
         for (name, rate) in [("isolated_prefill", 1_000.0), ("decode", 60.0)] {
             performanceMeasurements.observe(name, tps: rate, prompt: 4000, context: 4000,
-                cache: "cold", overlap: .init(), at: now)
+                cache: "cold", overlap: .init(), at: now,
+                deadlinePostureEpoch: serviceBudget?.currentDeadlineRateEpoch(at: now))
         }
         #expect(acquireServiceAllowance(requestID: "target", promptTokens: 4000,
             maxOutputTokens: 32_768, allowExpansion: true))

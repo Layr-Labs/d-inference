@@ -1,5 +1,6 @@
 """Validate the fixed recovery policy and observed posture of measured trials."""
 import math
+from .posture_observations import ac_observations, finite_nonnegative, nominal_ac_snapshot, nominal_observations
 
 
 COOLED_DEADLINE_APPLICABILITY = {
@@ -25,13 +26,15 @@ def automatic_ac_run(provenance):
 
 
 def nominal_snapshot(value):
-    return (isinstance(value, dict) and type(value.get('thermalState')) is int
-            and value['thermalState'] == 0 and value.get('lowPowerMode') is False)
+    return nominal_ac_snapshot(value)
 
 
 def nominal_trial(value):
     posture = value.get('posture')
-    return (isinstance(posture, dict) and nominal_snapshot(posture.get('before'))
+    elapsed = [row.get('elapsedMs') for row in value.get('rows', [])]
+    return (bool(elapsed) and all(finite_nonnegative(v) for v in elapsed)
+            and nominal_observations(posture, max(elapsed))
+            and nominal_snapshot(posture.get('before'))
             and nominal_snapshot(posture.get('after'))
             and type(posture.get('worstThermalState')) is int and posture['worstThermalState'] == 0
             and posture.get('lowPowerObserved') is False
@@ -47,6 +50,18 @@ def valid_cooldown(value):
         if type(value.get(key)) is not int or value[key] != expected:
             return False
     waited, stable = value.get('waitedMilliseconds'), value.get('nominalStableMilliseconds')
+    observations = ac_observations(value)
+    if observations is None or observations[-1]['elapsedMilliseconds'] != waited:
+        return False
+    stable_start = None
+    for observation in observations:
+        if nominal_snapshot(observation['snapshot']):
+            if stable_start is None:
+                stable_start = observation['elapsedMilliseconds']
+        else:
+            stable_start = None
+    if stable_start is None or not finite_nonnegative(stable) or stable > waited - stable_start:
+        return False
     return (all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
                 for v in (waited, stable)) and 20000 <= waited <= 180000 and 5000 <= stable <= waited
             and nominal_snapshot(value.get('after')))

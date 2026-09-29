@@ -226,7 +226,7 @@ extension EngineV2Bridge {
                 id: $0.id, runtimeRevision: $0.runtimeRevision,
                 contextTokens: advertisedContextTokens ?? $0.contextTokensMax, mtp: $0.mtp) },
             deadlineProfile: currentDeadlineProfile.map { .init(profile: $0) },
-            performanceMeasurements: performanceMeasurements.snapshot(now: now),
+            performanceMeasurements: performanceMeasurementSnapshot(now: now),
             deadlineWork: serviceBudget?.deadlineWork(modelID: modelId, epoch: performanceMeasurements.epoch),
             // Per-slot KV-backend discriminator. This is the RESOLVED kind
             // the engine was built with (post-veto, post-fallback), not the

@@ -58,6 +58,9 @@ def assemble_deadline_receipt(runs, *, profile_id, prompt_min, prompt_max, check
         if identity is not None and (identity != current_identity or build != current_build or contract != report["promptContractID"]):
             raise ValueError("all calibration/heldout runs must use the same exact artifact/runtime/build/template")
         identity, build, contract = current_identity, current_build, report["promptContractID"]
+        preparation = report.get("preparationCooldowns")
+        if not isinstance(preparation, list) or len(preparation) != 1 or not valid_cooldown(preparation[0]):
+            raise ValueError("warmup requires observed AC/nominal preparation before measured rates")
         cooldowns = report.get("cooldowns", [])
         if len(cooldowns) != len(report["trials"]) or not all(valid_cooldown(c) for c in cooldowns):
             raise ValueError("every measured trial requires the predeclared cooldown and stable nominal recovery")

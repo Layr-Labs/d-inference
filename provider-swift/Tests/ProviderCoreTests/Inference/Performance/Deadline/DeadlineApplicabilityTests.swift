@@ -168,6 +168,25 @@ private func elapse(_ milliseconds: Int, posture: DeadlinePostureState, clock: D
     #expect(DeadlinePowerPolicyReader.parseModes("AC Power:\n powermode 0\n powermode 2\n") == nil)
 }
 
+@Test func deadlineCachedPowerObservationRetainsNonautomaticAndFairSamplesButRejectsStaleReads() throws {
+    let clock = DeadlineTestClock(), posture = DeadlinePostureState()
+    let readAt = clock.now
+    clock.advance(.milliseconds(500))
+    posture.observe(nominal: false, lowPower: false, automatic: true, source: "ac",
+        powerReadAt: readAt, at: clock.now)
+    let fair = try #require(posture.powerObservation(at: clock.now))
+    #expect(fair.source == "ac" && fair.automatic && fair.powerReadAgeMilliseconds == 500)
+    #expect(posture.rateEpoch(at: clock.now) == nil)
+    sample(posture, clock, automatic: false)
+    #expect(try #require(posture.powerObservation(at: clock.now)).automatic == false)
+    #expect(posture.powerObservation(at: clock.now.advanced(by: .seconds(1))) == nil)
+    posture.observe(nominal: false, lowPower: false, automatic: true, source: "ac",
+        powerReadAt: clock.now.advanced(by: .seconds(-3)), at: clock.now)
+    #expect(posture.powerObservation(at: clock.now) == nil)
+    sample(posture, clock, source: nil)
+    #expect(posture.powerObservation(at: clock.now) == nil)
+}
+
 private final class DeadlineSampleCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0

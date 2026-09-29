@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `ad42fb0ce`
+> Last updated: 2026-09-28 · commit `202cacd47`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -195,7 +195,11 @@ prefill estimate is available. Unsupported or stale qualification retains
 state, competing profile identities and work limits, phase rates, and a
 measured multiplicative/additive prediction-error envelope. Independent held-out
 samples must meet the profile's tail-coverage threshold; a faster live EWMA
-cannot raise a reviewed phase rate. The engine selects the largest applicable
+cannot raise a reviewed phase rate. Qualified phase observations also bind the
+posture epoch captured at engine submission and must remain in that same epoch
+through computation and receipt consumption. A power/thermal transition clears
+qualified freshness until new valid measurements arrive; generic EWMAs and
+monotonic work counters remain available to unqualified models. The engine selects the largest applicable
 bound after its memory-validated scheduler projection and actual prefix lookup,
 then compares it with the unchanged absolute deadline. Only existing work plus
 the incoming prompt and at most 33 early decode tokens enter this bound; the
@@ -209,12 +213,11 @@ qualification. Once a request is existing work, its full prompt/output bound
 must fit its deadline profile's measured context envelope or calibration falls
 back.
 
-The compiled deadline catalog contains a Qwen3.8 MTP cell for Apple M5 Max
-40-GPU/128-GiB hardware, cold isolated prompts of 4,096–12,288 tokens and its
-exact production scheduler configuration. The
-[qualification report](../reports/2026-09-28-calibrated-admission-qualification.md)
-binds its frozen training fit, independent validation and lifecycle evidence.
-Other cells and hardware retain the fallback.
+The deadline catalog remains disabled until continuously observed power
+qualification completes. The prior Qwen3.8 M5 Max candidate was withdrawn
+because its raw timing receipts sampled AC power only at run endpoints; see the
+[qualification report](../reports/2026-09-28-calibrated-admission-qualification.md).
+Unqualified cells and hardware retain the fallback.
 
 Cooled deadline profiles preserve the collection prerequisites: whole-Mac
 quiescence for 20 seconds after all request leases and unbounded GPU activity

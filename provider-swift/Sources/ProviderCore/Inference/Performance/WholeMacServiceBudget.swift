@@ -62,6 +62,14 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     deinit { if let postureObserver { posture.removeObserver(postureObserver) } }
 
+    func currentDeadlineRateEpoch(at now: ContinuousClock.Instant = .now) -> UUID? {
+        posture.rateEpoch(at: now)
+    }
+
+    func captureDeadlineRateEvidence(at now: ContinuousClock.Instant = .now) -> DeadlineRateEvidence? {
+        posture.captureRateEvidence(at: now)
+    }
+
     func deadlineEligibleForAdvertisement(_ requirement: DeadlineApplicability) -> Bool {
         lock.withLock {
             let now = clockNow()
@@ -214,6 +222,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     }
 
     struct CalibrationSnapshot: Sendable {
+        let postureEpoch: UUID?
         let postureValidUntil: ContinuousClock.Instant?
         let evidenceGuard: CBv2FirstContentEvidenceGuard
         let sameModelRequests: Int
@@ -232,6 +241,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
         lock.withLock {
             guard unboundedActivities.isEmpty,
                 charges[ownerID]?.work?.modelID == modelID else { return nil }
+            var postureEpoch: UUID?
             var postureValidUntil: ContinuousClock.Instant?
             if let applicability {
                 guard let proof = charges[ownerID]?.deadlineProof, proof.applicability == applicability,
@@ -241,6 +251,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
                 guard let observed = posture.snapshot(requirement: applicability, at: clockNow(),
                     registering: evidenceGuard), observed.epoch == proof.postureEpoch else { return nil }
                 postureValidUntil = observed.validUntil
+                postureEpoch = observed.epoch
             }
             var same = 0, other = 0
             var fraction = 0.0
@@ -278,7 +289,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
                     competitors.insert(actualProfile)
                 }
             }
-            return CalibrationSnapshot(postureValidUntil: postureValidUntil, evidenceGuard: evidenceGuard, sameModelRequests: same,
+            return CalibrationSnapshot(postureEpoch: postureEpoch, postureValidUntil: postureValidUntil, evidenceGuard: evidenceGuard, sameModelRequests: same,
                 otherModelRequests: other, otherModelServiceFraction: fraction,
                 competitorProfileIDs: competitors.sorted(), existingContextTokensMax: contextMax,
                 otherModelPrefillTokens: otherPrefill, otherModelDecodeTokens: otherDecode,

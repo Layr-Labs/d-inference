@@ -9,6 +9,7 @@ import uuid
 from .matrix import CHECKS
 from .qualification_build import encode_build_record
 from .test_qualification_build import fixture_build_record
+from .posture_fixtures import cooldown, trial_posture
 
 _TEMP = tempfile.TemporaryDirectory(prefix="qualification-check-fixtures-")
 atexit.register(_TEMP.cleanup)
@@ -50,10 +51,13 @@ def references(identity, candidate_build, root=ROOT):
                 "modelID": identity["model_id"], "artifactSHA256": identity["artifact_sha256"],
                 "providerVersion": identity["provider_version"], "runtimeRevision": identity["runtime_revision"],
                 "actualKVBackend": identity["kv_backend"], "mtp": identity.get("mtp"), "runtime": runtime,
+                "cooldowns": [cooldown() for _ in range(5)],
+                "controlPostures": [trial_posture() for _ in range(3)],
                 "buildIdentity": {"version": 1, "debugCompilationCondition": False,
                     "debugAssertionsEnabled": False, "binarySHA256": candidate_build["test_binary_sha256"]},
                 "passed": True, "checks": [{"phase": phase, "reached": True, "cancelled": True,
                     "engineFinishReason": "cancelled",
+                    "posture": trial_posture(),
                     "retired": True, "followupParity": True, "serviceFractionAtCancel": 1 / 24,
                     "confirmedTokens": 2, "generatedTokensAccounted": 2, "generationRetirements": 1}
                     for phase in ("prefill", "after_mtp_content" if identity.get("mtp") else "after_content")]}

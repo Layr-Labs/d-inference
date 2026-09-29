@@ -1,11 +1,11 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-28 · commit `ad42fb0ce`
+> Last updated: 2026-09-28 · commit `202cacd47`
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
-It never installs a profile or changes a running provider. The reviewed deadline
-catalog contains one cooled, isolated Qwen3.8 M5 Max cell; see its
-[evidence report](../reports/2026-09-28-calibrated-admission-qualification.md).
+It never installs a profile or changes a running provider. The deadline catalog is disabled while the
+Qwen3.8 M5 Max candidate is requalified with continuous power observations; see
+its [evidence report](../reports/2026-09-28-calibrated-admission-qualification.md).
 The separate concurrency/chunk catalogs remain empty, so M5 Max B8 and M5 Ultra
 B16 remain qualification targets. Six qualified prompt-count fallback records
 cover bounded Qwen3.8 text/tool shapes and grant no hardware scheduling authority.
@@ -21,8 +21,11 @@ cover bounded Qwen3.8 text/tool shapes and grant no hardware scheduling authorit
   mixed-prefill candidate may use only its exact global cap override described
   below; unrelated runtime overrides do not qualify.
 - Automatic power mode and nominal thermal posture. Current deadline-only
-  qualification additionally requires AC power before and after the run; the
-  runtime cannot reuse these bounds on Battery Automatic. High-power-only results do
+  qualification additionally requires Automatic AC power throughout preparation,
+  every cooldown and every measured trial; the runtime cannot reuse these bounds
+  on Battery Automatic. Archive the 500-ms observation stream with exact
+  endpoints, no drops or gaps above one second, and fresh cached power-policy
+  reads (under three seconds). Endpoint-only receipts cannot qualify. High-power-only results do
   not certify ordinary service. Keep production traffic off the test machine.
 
 ## Steps

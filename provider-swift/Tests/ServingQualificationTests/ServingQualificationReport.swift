@@ -82,4 +82,5 @@ struct ServingQualificationRun: Codable, Sendable {
     // per-step mixed-prefill tails, accounting correctness, or confidence.
     let qualified: Bool
     var cooldowns: [QualificationCooldownReceipt] = []
+    var preparationCooldowns: [QualificationCooldownReceipt] = []
 }

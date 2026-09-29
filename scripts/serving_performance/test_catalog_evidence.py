@@ -11,6 +11,13 @@ INDEX = Path("scripts/serving_performance/catalog/deadline_evidence.json")
 
 
 class ReviewedDeadlineEvidenceTests(unittest.TestCase):
+    def test_endpoint_only_historical_cohort_cannot_qualify(self):
+        root = ROOT / "docs/reports/evidence/2026-09-28-calibrated-admission"
+        raw = (root / "m5-deadline-qualification-receipt.json").read_bytes()
+        result = evaluate_deadline_profile(raw, evidence_root=root)
+        self.assertFalse(result["qualified"])
+        self.assertTrue(result["errors"])
+
     def evidence_path(self, root, relative):
         self.assertIsInstance(relative, str)
         path = (root / relative).resolve(strict=True)

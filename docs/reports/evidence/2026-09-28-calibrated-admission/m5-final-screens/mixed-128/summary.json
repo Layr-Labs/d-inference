@@ -1,0 +1,34 @@
+{
+  "qualified": false,
+  "complete": true,
+  "cells": [
+    {
+      "prompt_target": 4096,
+      "iteration": 0,
+      "actual_prompt_tokens": [
+        4096,
+        4096
+      ],
+      "delivered_decode_p10_tps": 25.28196818853257,
+      "engine_decode_p10_tps": 25.281893862918754,
+      "engine_token_gap_p95_ms": 39.990167,
+      "first_content_p50_ms": 4510.70875,
+      "first_content_p95_ms": 7331.8096669999995,
+      "content_frame_gap_p95_ms": 40.34458399999858,
+      "mixed_step_wall_p95_ms": 239.290208,
+      "mixed_step_count": 32,
+      "actual_forward_widths": [
+        1,
+        2
+      ],
+      "mtp_rounds": 67,
+      "failures": []
+    }
+  ],
+  "promotion_blockers": [
+    "collection is not the complete release matrix",
+    "independent calibration/validation receipts required"
+  ],
+  "receipt_sha256": "99bdcf9f194fd1010339826ff81a0e9e8383cb209b2c3d427efea6f764b4cef1",
+  "provenance_sha256": "4044e27c68044172b435ff339c6d0ad0f0acc6f203395ca55f126a61c9b14033"
+}

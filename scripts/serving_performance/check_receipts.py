@@ -6,7 +6,8 @@ from .build_identity import verified_build_identity
 from .evidence_files import evidence_file, read_evidence
 from .lifecycle_source import verify_lifecycle_source_equivalence
 from .matrix import CHECKS, digest, positive
-from .posture import automatic_ac_run
+from .posture import automatic_ac_run, valid_cooldown
+from .posture_observations import nominal_observations
 
 SDK_SCOPES = frozenset(("constraints", "isolation"))
 SDK_PASSED_MARKERS = {
@@ -109,12 +110,21 @@ def _live_check(raw, provenance, check, identity, build, reference, evidence_roo
     if not digest(build.get("metallib_sha256")) or not isinstance(metallibs, dict) or set(metallibs.values()) != {build["metallib_sha256"]}:
         raise ValueError("live prerequisite metallib differs from the candidate")
     records = raw.get("checks")
+    if "configured_context_tokens" in identity:
+        cooldowns, controls = raw.get("cooldowns"), raw.get("controlPostures")
+        if (not isinstance(cooldowns, list) or len(cooldowns) != 5
+                or not all(valid_cooldown(c) for c in cooldowns)
+                or not isinstance(controls, list) or len(controls) != 3
+                or not all(nominal_observations(c) for c in controls)):
+            raise ValueError("deadline lifecycle requires continuously observed AC cooldowns and controls")
     expected_phases = {"prefill", "after_mtp_content" if identity.get("mtp") is not None else "after_content"}
     if (raw.get("passed") is not True or not isinstance(records, list) or len(records) != len(expected_phases)
             or any(not isinstance(record, dict) for record in records)
             or {record.get("phase") for record in records} != expected_phases):
         raise ValueError("live prerequisite must retain every required real lifecycle phase")
     for record in records:
+        if "configured_context_tokens" in identity and not nominal_observations(record.get("posture")):
+            raise ValueError("deadline lifecycle phase requires continuously observed AC posture")
         if (record.get("reached") is not True or record.get("cancelled") is not True
                 or record.get("engineFinishReason") != "cancelled"
                 or record.get("retired") is not True or record.get("followupParity") is not True

@@ -1,24 +1,20 @@
 # Qwen3.8 calibrated admission qualification
 
-> Last updated: 2026-09-28 · commit `ad42fb0ce`
+> Last updated: 2026-09-28 · commit `202cacd47`
 
-The initial dedicated M5 Max screen completed real Qwen3.8 inference with active
-MTP. It is **screening evidence, not a qualified serving profile**: the initial
-host was in High Power mode, and independent deadline/lifecycle qualification
-had not completed. A fresh 9,000-body prompt-count corpus passed all six bounded
-fallback cells after the initial smaller corpus failed. A fresh cooled cohort
-completed all 40 training trials; its independently generated 100-trial
-validation cohort completed with all 100 observations covered by the frozen
-bound and no posture/runtime failures. The closest observation retained
-1,047.625 ms of coverage margin. Authoritative lifecycle checks passed on the isolated observer correction.
-Strict evaluation qualified the narrow cooled deadline profile. The final
-AC-restricted build accepted a new 8,828-token request under the original
-14,369-ms budget and delivered first content in 10,279.677 ms; its recorded
-legacy projection would have refused. No concurrency/chunk default is certified.
-This first deadline-policy revision is AC-only: both measured cohorts used AC
-Automatic, and Battery Automatic remains ineligible even while older AC rates
-are fresh. A regression verifies source changes invalidate captured atomic guards
-and that 30 seconds on battery cannot restore eligibility.
+The six prompt-count fallback records remain qualified. The earlier 40/100 M5
+timing cohort covered every held-out observation and the actual incident-shaped
+request completed in 10.280 seconds, but its deadline profile is **withdrawn**:
+AC power was sampled only at run endpoints, so the receipts cannot prove its
+AC-only conditions throughout cooldown and inference. The numeric observations
+and prior evaluator output are retained as historical evidence, not active
+qualification. The [scope correction](evidence/2026-09-28-calibrated-admission/m5-cooled-source-scope-status.json)
+records this distinction. A [fresh predeclared plan](evidence/2026-09-28-calibrated-admission/m5-continuous-ac-plan.json)
+uses 20 training and 60 independent validation requests, with unchanged 95%
+coverage and 95% confidence gates, continuously observed Automatic AC power,
+no old-sample reuse and no adaptive extension/refit. The compiled deadline
+catalog remains empty until the new cohort passes. No concurrency/chunk default
+is certified.
 
 ## Hardware and artifact
 
@@ -207,19 +203,20 @@ All five cooldowns and all control/request posture observations passed.
 The [assembled qualification receipt](evidence/2026-09-28-calibrated-admission/m5-deadline-qualification-receipt.json)
 references the unchanged raw 40/100 runs and scoped prerequisite files. Its
 SHA-256 is `6d3b6a5e48171689dff6b1a4053c5103464536d5f214764f61e86d19013603cb`.
-The [strict review result](evidence/2026-09-28-calibrated-admission/m5-deadline-qualification-review.json)
+The prior [strict review result](evidence/2026-09-28-calibrated-admission/m5-deadline-qualification-review.json)
 qualified the exact cooled, isolated, cold 4,096–12,288-token profile with no
 errors. Empirical coverage is 100/100; the one-sided 95%-confidence lower bound
 is 0.9704869503929601. Every fitted cell, runtime identity and measured-build
 field equals the training-only record frozen before validation. Actual context
 bounds include only the bounded 33 early decode tokens: 4,129–12,321.
 
-This profile certifies deadline prediction under its recorded prerequisites.
+That prior result is superseded by the continuous-power requirement; it no longer
+certifies a runtime profile.
 It does not change concurrency, chunk size or universal serving policy, and it
 does not certify reused/contended requests, prompts beyond the measured band,
 or a sustained hot workload.
 
-## Final admission integration proof
+## Admission integration proof before the power-evidence correction
 
 The signed AC-restricted candidate `8ba910256d8065aaab9573831d2ae2ffbc40b963`
 contains the real compiled catalog and merged SDK
@@ -360,8 +357,7 @@ fixture lifetime issue in its MoE test. Test-only
 [SDK PR 173](https://github.com/Layr-Labs/mlx-swift-lm/pull/173) adds a deterministic
 held-callback regression and waits for final callback owners before checking a
 zero total ledger. Immediate GPU/request retirement assertions remain intact.
-It merged as `71678411330e37cb76d1a10134411433dfa5c9a9`, which is now the final
-provider pin. Comparing with `748db5d` shows only its two test files changed;
+It merged as `71678411330e37cb76d1a10134411433dfa5c9a9`, which remains the provider dependency pin. Comparing with `748db5d` shows only its two test files changed;
 runtime libraries and package files are byte-identical. Historical timing
 receipts retain their actual `748db5d` revision; final-build proof uses the new pin.
 On merged `7167841`, local checkpoint suites pass all 15 XCTest cases, and

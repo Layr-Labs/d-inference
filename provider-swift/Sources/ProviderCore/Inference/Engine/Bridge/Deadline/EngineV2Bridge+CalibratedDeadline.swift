@@ -16,17 +16,18 @@ extension EngineV2Bridge {
             identity.promptContractID == profile.deadlineCalibration.promptContractId,
             identity.modelArtifactHash == profile.artifactSha256,
             promptWork?.reconciled(actualPromptTokens: promptTokens, identity: identity) != nil,
-            let decode = performanceMeasurements.freshRate("decode", now: now),
-            let decodeExpiration = performanceMeasurements.rateExpiration("decode"),
             let work = serviceBudget?.calibrationSnapshot(
                 ownerID: serviceOwnerPrefix + ":" + requestID,
-                modelID: modelId, profileID: profile.id, applicability: profile.applicability)
+                modelID: modelId, profileID: profile.id, applicability: profile.applicability),
+            let postureEpoch = work.postureEpoch,
+            let decode = performanceMeasurements.freshDeadlineRate("decode", postureEpoch: postureEpoch, now: now),
+            let decodeExpiration = performanceMeasurements.deadlineRateExpiration("decode", postureEpoch: postureEpoch)
         else { return nil }
         var validUntil = min(decodeExpiration, work.postureValidUntil ?? decodeExpiration)
         let cells = profile.deadlineCalibration.cells.compactMap { cell -> CBv2FirstContentCalibrationCell? in
             let phase = cell.contention == "isolated" ? "isolated_prefill" : "contended_prefill"
-            guard let prefill = performanceMeasurements.freshRate(phase, now: now),
-                let expiration = performanceMeasurements.rateExpiration(phase) else { return nil }
+            guard let prefill = performanceMeasurements.freshDeadlineRate(phase, postureEpoch: postureEpoch, now: now),
+                let expiration = performanceMeasurements.deadlineRateExpiration(phase, postureEpoch: postureEpoch) else { return nil }
             validUntil = min(validUntil, expiration)
             return cell.engineCell(prefillCeiling: prefill, decodeCeiling: decode)
         }

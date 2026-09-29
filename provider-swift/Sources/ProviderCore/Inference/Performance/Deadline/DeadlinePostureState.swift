@@ -10,6 +10,11 @@ final class DeadlinePostureState: @unchecked Sendable {
         let nominalSince: ContinuousClock.Instant
         let validUntil: ContinuousClock.Instant
     }
+    struct PowerObservation: Sendable {
+        let source: String
+        let automatic: Bool
+        let powerReadAgeMilliseconds: Double
+    }
     private final class WeakGuard {
         weak var value: CBv2FirstContentEvidenceGuard?
         init(_ value: CBv2FirstContentEvidenceGuard) { self.value = value }
@@ -20,6 +25,7 @@ final class DeadlinePostureState: @unchecked Sendable {
     private var observedAt: ContinuousClock.Instant?
     private var powerReadAt: ContinuousClock.Instant?
     private var powerSource: String?
+    private var automaticPowerMode = false
     private var guards: [WeakGuard] = []
     private var observers: [UUID: @Sendable () -> Void] = [:]
 
@@ -41,11 +47,27 @@ final class DeadlinePostureState: @unchecked Sendable {
             self.observedAt = now
             self.powerReadAt = powerReadAt
             self.powerSource = source
+            self.automaticPowerMode = automatic
             // The bounded capacity stream coalesces these ticks. It must also
             // notice elapsed stable/idle thresholds without a new request.
             return Array(observers.values)
         }
         callbacks.forEach { $0() }
+    }
+
+    /// Read the same bounded cached OS observations used by admission without
+    /// launching or awaiting IO. Thermal recovery can remain observable while
+    /// nominal eligibility is false; callers retain the actual mode verdict.
+    func powerObservation(at now: ContinuousClock.Instant = .now) -> PowerObservation? {
+        lock.withLock {
+            guard let observedAt, let powerReadAt, let powerSource,
+                powerSource == "ac" || powerSource == "battery",
+                now >= observedAt, now < observedAt.advanced(by: .seconds(1)),
+                now >= powerReadAt, now < powerReadAt.advanced(by: .seconds(3)) else { return nil }
+            let age = powerReadAt.duration(to: now).components
+            return PowerObservation(source: powerSource, automatic: automaticPowerMode,
+                powerReadAgeMilliseconds: Double(age.seconds) * 1_000 + Double(age.attoseconds) / 1e15)
+        }
     }
 
     func snapshot(requirement: DeadlineApplicability, at now: ContinuousClock.Instant,
@@ -62,6 +84,22 @@ final class DeadlinePostureState: @unchecked Sendable {
             return Snapshot(epoch: epoch, nominalSince: since,
                 validUntil: min(observedAt.advanced(by: .seconds(1)), powerReadAt.advanced(by: .seconds(3))))
         }
+    }
+
+    /// Sampling need not wait for the stability window, but must start and end
+    /// inside the same fresh AC/nominal epoch. Admission still enforces the
+    /// complete stability and whole-Mac quiescence requirements separately.
+    func rateEpoch(at now: ContinuousClock.Instant = .now) -> UUID? {
+        lock.withLock {
+            guard nominalSince != nil, let observedAt, let powerReadAt,
+                now >= observedAt, now < observedAt.advanced(by: .seconds(1)),
+                now >= powerReadAt, now < powerReadAt.advanced(by: .seconds(3)) else { return nil }
+            return epoch
+        }
+    }
+
+    func captureRateEvidence(at now: ContinuousClock.Instant = .now) -> DeadlineRateEvidence? {
+        rateEpoch(at: now).map { DeadlineRateEvidence(epoch: $0, posture: self) }
     }
 
     func observeChanges(_ callback: @escaping @Sendable () -> Void) -> UUID {

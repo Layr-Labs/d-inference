@@ -6,6 +6,7 @@ import unittest
 from .deadline_receipts import assemble_deadline_receipt
 from .qualification_build import encode_build_record
 from .posture import COOLED_DEADLINE_APPLICABILITY
+from .posture_fixtures import cooldown, trial_posture
 from .test_qualification_build import fixture_build_record
 
 
@@ -16,7 +17,7 @@ def run(partition, duration=1_000_000_000):
                "max_concurrent_partial_prefills": 1, "solo_prefill_stripe_tokens": 4096}
     row = {"requestID": partition, "workloadSHA256": ("a" if partition == "calibration" else "b") * 64,
         "promptTokens": 4096, "requestedOutputTokens": 128, "completionTokens": 2,
-        "firstContentMs": 1100., "contentArrivalMs": [1100., 1110.], "cachedTokens": 0,
+        "firstContentMs": 1100., "contentArrivalMs": [1100., 1110.], "elapsedMs": 1200., "cachedTokens": 0,
         "profile": {"running_at_admit": 0, "waiting_at_admit": 0,
                     "engine": {"prompt_computed_ns": duration + 1, "prefill_first_launch_ns": 1}}}
     report = {"buildIdentity": {"version": 1, "debugCompilationCondition": False,
@@ -31,12 +32,9 @@ def run(partition, duration=1_000_000_000):
                 "droppedTokenTimings": 0, "entries": [], "confirmedTokenTimings": [
                     {"rowOrdinal": 0, "tokenCount": 1, "relativeNanos": 0},
                     {"rowOrdinal": 0, "tokenCount": 1, "relativeNanos": 10_000_000}]}}]}
-    snapshot = {"thermalState": 0, "lowPowerMode": False}
-    report["trials"][0]["posture"] = {"before": snapshot.copy(), "after": snapshot.copy(),
-        "worstThermalState": 0, "lowPowerObserved": False}
-    report["cooldowns"] = [{"passed": True, "before": snapshot.copy(), "after": snapshot.copy(),
-        "waitedMilliseconds": 20000, "nominalStableMilliseconds": 20000,
-        "minimumMilliseconds": 20000, "stableMilliseconds": 5000, "recoveryLimitMilliseconds": 180000}]
+    report["trials"][0]["posture"] = trial_posture()
+    report["cooldowns"] = [cooldown()]
+    report["preparationCooldowns"] = [cooldown()]
     posture = {"source": "ac", "mode": "automatic", "raw_mode": 0}
     provenance = {"return_code": 0, "artifact_unchanged": True, "source_unchanged": True, "binary_unchanged": True,
         "power_posture_before": posture, "power_posture_after": copy.deepcopy(posture),

@@ -17,13 +17,16 @@ final class ServingQualificationFixture: @unchecked Sendable {
     let promptContractID: String
     let mtp: ServingMTPConfiguration?
     let budget: GlobalKVCacheBudget
+    private let postureLease: DeadlinePostureLease
 
     private init(job: ServingQualificationJob, bundle: ProviderEngineBundle,
                  container: ModelContainer, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
-                 promptContractID: String, mtp: ServingMTPConfiguration?, budget: GlobalKVCacheBudget) {
+                 promptContractID: String, mtp: ServingMTPConfiguration?, budget: GlobalKVCacheBudget,
+                 postureLease: DeadlinePostureLease) {
         self.job = job; self.bundle = bundle; self.container = container
         self.tokenizer = tokenizer; self.sizing = sizing
         self.promptContractID = promptContractID; self.mtp = mtp; self.budget = budget
+        self.postureLease = postureLease
     }
 
     static func load(
@@ -31,6 +34,9 @@ final class ServingQualificationFixture: @unchecked Sendable {
         kvGrantUpperBound: UInt64? = nil, activationReserveBytes: UInt64? = nil,
         requireInlineMTP: Bool = true
     ) async throws -> ServingQualificationFixture {
+        // Use the same bounded background power-policy reader as production,
+        // including when collecting fresh evidence with an empty catalog.
+        let postureLease = DeadlinePostureMonitor.shared.acquire()
         let executable = try #require(Bundle(for: QualificationBundleMarker.self).executableURL)
         try #require(FileManager.default.fileExists(atPath:
             executable.deletingLastPathComponent().appendingPathComponent("mlx.metallib").path),
@@ -103,7 +109,7 @@ final class ServingQualificationFixture: @unchecked Sendable {
             maxAutomaticRectangularTokens: verification.automaticRectangularTokens), artifact: prepared.mtpArtifact)
         return ServingQualificationFixture(job: job, bundle: bundle, container: container,
             tokenizer: tokenizer, sizing: sizing,
-            promptContractID: promptContractID, mtp: mtp, budget: budget)
+            promptContractID: promptContractID, mtp: mtp, budget: budget, postureLease: postureLease)
     }
 
     func service(profile: RequestProfileBuilder, usage: EngineV2RequestUsageSignal,
@@ -121,6 +127,7 @@ final class ServingQualificationFixture: @unchecked Sendable {
     }
 
     func retire() async {
+        defer { postureLease.finish() }
         await bundle.bridge.shutdown()
         bundle.releaseAssistant()
         MLX.Stream().synchronize()

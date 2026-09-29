@@ -61,6 +61,31 @@ func (t *cacheRoutingTracker) persistHolderRemoval(key string, h cacheHolder, re
 	}
 }
 
+// dropParkedForCapability discards the rows parked under (epoch, model)
+// because that capability no longer exists, settling each durable row
+// against the holders still live instead of deleting it outright: with
+// overlapping sessions of one machine, a row parked by a disconnected
+// session may still be a live session's evidence.
+func (t *cacheRoutingTracker) dropParkedForCapability(epoch, model string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p := t.persister
+	if p == nil {
+		return
+	}
+	rows := p.Take(epoch, model)
+	if len(rows) == 0 {
+		return
+	}
+	for _, rec := range rows {
+		t.persistRowAfterLossLocked(rec.Key, rec.CacheEpoch, "")
+	}
+	p.AddBound(0, uint64(len(rows)))
+}
+
 // persistRowAfterLossLocked settles the durable row (key, epoch) after one
 // holder for it is gone. Two sessions of one machine share that identity and
 // can overlap: the per-key holder cap evicts the old session's holder as the

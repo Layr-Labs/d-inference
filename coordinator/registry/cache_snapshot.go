@@ -147,11 +147,13 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 		}
 		tracker.reconcileFences(providerID, resultCapabilities, resultMemoryCapabilities)
 		// Evidence parked for a capability that just changed is as stale as
-		// the live evidence invalidated above; drop it and its durable rows
-		// rather than letting the bind below resurrect it.
+		// the live evidence invalidated above; drop it rather than letting
+		// the bind below resurrect it. Its durable rows are settled against
+		// the holders still live: a row another session of the same machine
+		// holds is that session's evidence, not this capability's.
 		for model := range changedModels {
 			if prev, ok := previousCapabilities[model]; ok {
-				tracker.persister.Drop(prev.CacheEpoch, model)
+				tracker.dropParkedForCapability(prev.CacheEpoch, model)
 			}
 		}
 	}

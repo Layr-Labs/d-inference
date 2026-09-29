@@ -90,7 +90,7 @@ func TestFlushWritesInBoundedChunksAndKeepsPartialProgress(t *testing.T) {
 	}
 }
 
-func TestPendingParkTakeDropAndPrune(t *testing.T) {
+func TestPendingParkTakeAndPrune(t *testing.T) {
 	mem := store.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 2})
 	now := time.Now()
@@ -112,13 +112,18 @@ func TestPendingParkTakeDropAndPrune(t *testing.T) {
 		t.Fatalf("take: %+v", rows)
 	}
 	p.AddBound(1, 0)
+	// A capability that is gone: the registry takes the rows, settles each
+	// durable row (here: delete) and reports them dropped.
 	p.Park(rec("d", "e2", now, time.Minute))
-	p.Drop("e2", "model")
+	for _, r := range p.Take("e2", "model") {
+		p.MarkHolderDelete(r.HolderKey())
+		p.AddBound(0, 1)
+	}
 	if err := p.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if s := p.Status(); s.BoundHolders != 1 || s.PendingHolders != 0 || s.RowsDeleted != 1 {
-		t.Fatalf("drop must delete the durable row: %+v", s)
+	if s := p.Status(); s.BoundHolders != 1 || s.PendingHolders != 0 || s.DroppedPending != 3 || s.RowsDeleted != 1 {
+		t.Fatalf("dropped rows must be deleted and counted: %+v", s)
 	}
 }
 

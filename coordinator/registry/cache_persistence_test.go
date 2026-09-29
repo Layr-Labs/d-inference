@@ -667,3 +667,70 @@ func TestCacheRoutingPersistenceMismatchAtBindKeepsLiveRow(t *testing.T) {
 		t.Fatalf("live holder lost: %+v", hints)
 	}
 }
+
+// A capability change drops the rows parked for the old capability, but a
+// parked row that a live session of the same machine still holds is that
+// session's evidence and must survive.
+func TestCacheRoutingPersistenceCapabilityChangeKeepsRowOwnedByLiveSession(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r, st)
+	checkpoint := exactTestAnchor(16, "c")
+	floor := exactTestAnchor(17, "d")
+	plan := boundTestCachePlan(r, exactTestPlan(checkpoint, floor))
+	// Three overlapping sessions of one machine (same epoch); the third has
+	// no evidence of its own.
+	live := persistenceTestProvider(t, r, "session-live", capability)
+	gone := persistenceTestProvider(t, r, "session-gone", capability)
+	changer := persistenceTestProvider(t, r, "session-changer", capability)
+	for i, p := range []*Provider{live, gone} {
+		_, ready := checkpointTestAttempt(t, r, p, capability, fmt.Sprintf("donor-%d", i), plan, 1)
+		ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+		ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+		if !r.ApplyPrefixCacheReadyV2(p.ID, ready) {
+			t.Fatalf("receipt for %s rejected", p.ID)
+		}
+	}
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 1 {
+		t.Fatalf("both sessions share one durable row: %+v", rows)
+	}
+	// One session disconnects: its row is parked while the other still holds
+	// the boundary live.
+	r.cacheRouting.disconnect(gone.ID, cacheHolderRemovalDisconnect)
+	removeTestProvider(r, gone.ID)
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 1 {
+		t.Fatalf("disconnect must park the row: %+v", s)
+	}
+	// The third session's contract changes: the parked row is dropped, but
+	// the durable row is still the live session's evidence.
+	changed := capability
+	changed.PromptContractID = strings.Repeat("e", 64)
+	if err := r.UpdatePrefixCacheCapabilities(changer.ID, 2, []protocol.PrefixCacheV2Capability{changed}); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 || s.DroppedPending != 1 {
+		t.Fatalf("parked row must be dropped: %+v", s)
+	}
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 1 || rows[0].CacheEpoch != capability.CacheEpoch {
+		t.Fatalf("row owned by the live session was deleted by the capability change: %+v", rows)
+	}
+	if hints := memoryTestHints(r, plan, time.Now()); len(hints) != 1 || hints[live.ID].Tier != "ssd" {
+		t.Fatalf("live session's holder lost: %+v", hints)
+	}
+	// With the live session gone too, the same change deletes the row.
+	r.cacheRouting.invalidateProviderEvidence(live.ID, cacheHolderRemovalCapabilityChange, true)
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 0 {
+		t.Fatalf("row must be deleted once no live session holds it: %+v", rows)
+	}
+}

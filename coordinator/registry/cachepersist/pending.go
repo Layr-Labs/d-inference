@@ -29,7 +29,8 @@ func (p *Persister) Park(rec crs.HolderRecord) {
 }
 
 // Take pops the rows parked under one (cache epoch, model). The caller binds
-// the ones that match its capability and reports the rest with AddBound.
+// the ones that match its capability, or settles their durable rows when the
+// capability is gone, and reports the outcome with AddBound.
 func (p *Persister) Take(epoch, model string) []crs.HolderRecord {
 	if p == nil {
 		return nil
@@ -44,34 +45,6 @@ func (p *Persister) Take(epoch, model string) []crs.HolderRecord {
 	delete(p.pending, pk)
 	p.pendingCount -= len(rows)
 	return rows
-}
-
-// Drop discards the rows parked under one (cache epoch, model) and schedules
-// their durable rows for deletion: the capability they described no longer
-// exists.
-func (p *Persister) Drop(epoch, model string) {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	pk := pendingKey(epoch, model)
-	rows := p.pending[pk]
-	if len(rows) == 0 {
-		return
-	}
-	delete(p.pending, pk)
-	p.pendingCount -= len(rows)
-	p.counters.droppedPending += uint64(len(rows))
-	for _, rec := range rows {
-		k := rec.HolderKey()
-		delete(p.holderUpserts, k)
-		if _, present := p.holderDeletes[k]; present || len(p.holderDeletes) < p.dirtyCap {
-			p.holderDeletes[k] = struct{}{}
-		} else {
-			p.counters.droppedDirty++
-		}
-	}
 }
 
 // HasPending reports whether any restored or parked rows await a provider.

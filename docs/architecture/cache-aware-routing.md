@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `4cd59d618`
+> Last updated: 2026-09-29 · commit `01ac365c4`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -751,7 +751,8 @@ back are operator procedures, kept in the runbook
    machine (same key and epoch: two sessions overlap when the per-key holder
    cap evicts the old session's holder as the new session's receipt arrives)
    still holds the boundary, in which case the row is refreshed as that
-   session's evidence. Restores are bounded by the index caps and clamped to
+   session's evidence; a capability change settles the rows parked for the
+   old capability the same way. Restores are bounded by the index caps and clamped to
    the current TTL before the cap applies (the store orders holders by their
    expiry under today's TTL, longest-lived first, and demand newest first),
    so a TTL reduction never fills the cap with rows the clamp then drops; the demand

@@ -21,7 +21,7 @@ func (s *Snapshot) validateRankings() error {
 			return err
 		}
 	}
-	return nil
+	return s.validateWindowNesting()
 }
 
 func validateWindow(w Window) error {

@@ -118,7 +118,7 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
         // non-Sendable media value through Task.value merely to discard it.
         let task = Task<Void, Error> {
             withUnsafeCurrentTask { $0?.cancel() }
-            _ = try await Self.decode(value)
+            _ = try await MiMoV26EncodedAudiovisualIngressTests.decode(value)
         }
         do { try await task.value; XCTFail("cancelled request produced AV") }
         catch { XCTAssertTrue(error is CancellationError) }

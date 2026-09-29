@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `cf6b60b2f`
+> Last updated: 2026-09-29 · commit `f4447e709`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -36,6 +36,10 @@ the deliberately retained native owner must live until that test process exits.
 The audiovisual ingress cancellation test returns `Void` from its child task:
 it still checks real decode cancellation and host-reservation settlement, without
 transferring an unused non-Sendable decoded-media result across `Task.value`.
+Inside that task, call the concrete test type rather than dynamic `Self`:
+Swift 6.3's region-based isolation checker can reject the latter form. Keep
+the same plan, cancellation order, real decode and reservation assertions;
+do not add unchecked sendability or suppress cancellation to compile the test.
 
 The complete-prefix methods in `MiMoV26NativeLoadTransactionTests` require a
 strict generated **asymmetric** tiny BF16 fixture with three synthetic MTP

@@ -11,8 +11,10 @@ completed all 40 training trials; its independently generated 100-trial
 validation cohort completed with all 100 observations covered by the frozen
 bound and no posture/runtime failures. The closest observation retained
 1,047.625 ms of coverage margin. Authoritative lifecycle checks passed on the isolated observer correction.
-Strict evaluation qualified the narrow cooled deadline profile; final-build
-admission proof remains outstanding, and no concurrency/chunk default is certified.
+Strict evaluation qualified the narrow cooled deadline profile. The final
+AC-restricted build accepted a new 8,828-token request under the original
+14,369-ms budget and delivered first content in 10,279.677 ms; its recorded
+legacy projection would have refused. No concurrency/chunk default is certified.
 This first deadline-policy revision is AC-only: both measured cohorts used AC
 Automatic, and Battery Automatic remains ineligible even while older AC rates
 are fresh. A regression verifies source changes invalidate captured atomic guards
@@ -215,8 +217,48 @@ bounds include only the bounded 33 early decode tokens: 4,129–12,321.
 This profile certifies deadline prediction under its recorded prerequisites.
 It does not change concurrency, chunk size or universal serving policy, and it
 does not certify reused/contended requests, prompts beyond the measured band,
-or a sustained hot workload. The final catalog-containing runtime still needs
-the original 8,828-token/14,369-ms admission proof.
+or a sustained hot workload.
+
+## Final admission integration proof
+
+The signed AC-restricted candidate `8ba910256d8065aaab9573831d2ae2ffbc40b963`
+contains the real compiled catalog and merged SDK
+`71678411330e37cb76d1a10134411433dfa5c9a9`. A new managed release
+[build receipt](evidence/2026-09-28-calibrated-admission/m5-final-build/build-receipt.json)
+and [build log](evidence/2026-09-28-calibrated-admission/m5-final-build/build.txt)
+bind source-tree SHA-256
+`c65bed9219066ae665d112c82c1830ebb14e272d1dab853c53f6a609a5e847bb`
+to executing image SHA-256
+`03b00b6b3e8d12fa826bbfebbe648aeb62d99ccfe534569f814a115953f35964`.
+The image identity test passed; release flags, actual MTP, hardware, scheduler
+configuration and Automatic AC power matched the declared profile.
+
+A fresh synthetic tool/history request used exactly 8,828 rendered tokens and
+128 requested output tokens, with the unchanged 14,369-ms first-content budget.
+The [actual receipt](evidence/2026-09-28-calibrated-admission/m5-final-admission-proof/receipt.json),
+[provenance](evidence/2026-09-28-calibrated-admission/m5-final-admission-proof/provenance.json)
+and [integration summary](evidence/2026-09-28-calibrated-admission/m5-final-admission-proof/summary.json)
+record the production atomic admission decision and observed content:
+
+| Measurement | Result |
+|---|---:|
+| Remaining budget at engine submission | 14,290.363 ms |
+| Legacy projected service | 19,017.248 ms; would refuse |
+| Actual calibrated projected service | 11,912.505 ms; accepted |
+| First nonempty content from request start | 10,279.677 ms |
+| Remaining original budget at first content | 4,089.323 ms |
+
+The selected profile ID and exact prompt-work contract were recorded. The
+calibrated-path, legacy-would-reject and within-original-budget assertions all
+passed; no deadline was extended, and no harness profile override was used.
+All observed posture states were nominal with Low Power disabled, and the
+request retired normally. This is a new matching-size integration request,
+not a replay of private historical content or a fleet-wide 429-rate result.
+
+An earlier `ad42fb0c` build also passed on AC before the activation guard was
+restricted to AC-only. Its [intermediate receipt](evidence/2026-09-28-calibrated-admission/m5-intermediate-admission-proof/receipt.json)
+and [intermediate build receipt](evidence/2026-09-28-calibrated-admission/m5-intermediate-admission-build/build-receipt.json)
+remain preserved separately; they are not relabeled as final-candidate runs.
 
 ## Initial rendered-count corpus
 
@@ -302,11 +344,12 @@ SDK. Its hosted full suite is not green: the
 [pre-172 baseline](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36487630997),
 [PR 172 run](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36503042824),
 [merged-172 run](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36505279055),
-and [PR 173 run](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36508355311)
+[PR 173 run](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36508355311),
+and [merged-173 run](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36509601729)
 report the same 112 issues in four DiffusionGemma suites, with identical
 per-test totals. The [numeric comparison](evidence/2026-09-28-calibrated-admission/sdk-ci-baseline-comparison.json)
-retains all four revisions, run links, log hashes, totals and separate XCTest
-failures. The merged-172 and PR 173 runs have no XCTest failures.
+retains all five revisions, run links, log hashes, totals and separate XCTest
+failures. The merged-172, PR 173 and merged-173 runs have no XCTest failures.
 These existing failures remain unresolved; they are not reported as passing
 SDK coverage or used as qualification prerequisites.
 

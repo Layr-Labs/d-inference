@@ -1,0 +1,13 @@
+{
+  "qualified": false,
+  "kind": "deadline_integration",
+  "passed": true,
+  "rows": 1,
+  "calibrated_rows_proven": 1,
+  "legacy_rejection_rows": 1,
+  "promotion_blockers": [
+    "deadline integration outcomes are not independent calibration or holdout samples"
+  ],
+  "receipt_sha256": "6b64395a630c646032349b53925ddd9c5ad2e7149352e5792dde3612ab173514",
+  "provenance_sha256": "4044e27c68044172b435ff339c6d0ad0f0acc6f203395ca55f126a61c9b14033"
+}

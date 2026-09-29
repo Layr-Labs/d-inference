@@ -281,6 +281,75 @@
         "2026-09-29T02:14:02.6262550Z \u2718 Test run with 1404 tests in 224 suites failed after 592.883 seconds with 112 issues."
       ],
       "xctest_failures": []
+    },
+    {
+      "failed_suite_summaries": [
+        {
+          "issues": 8,
+          "suite": "DiffusionGemma pinned block oracle"
+        },
+        {
+          "issues": 13,
+          "suite": "DiffusionGemma native factory"
+        },
+        {
+          "issues": 55,
+          "suite": "DiffusionGemma shared text oracle"
+        },
+        {
+          "issues": 36,
+          "suite": "DiffusionGemma pinned media oracle"
+        }
+      ],
+      "failed_test_summaries": [
+        {
+          "issues": 8,
+          "test": "encoderAndCanvasBlocksMatchFrozenReferenceExactly()"
+        },
+        {
+          "issues": 1,
+          "test": "nativeFactoryLoadsExactStateAndReleasesItsModel()"
+        },
+        {
+          "issues": 12,
+          "test": "chunkedSessionMatchesIndependentNativeReferenceAndCanCancelAfterPrefill()"
+        },
+        {
+          "issues": 33,
+          "test": "sharedWeightsConditioningAndCommittedCacheMatchReference()"
+        },
+        {
+          "issues": 21,
+          "test": "committedPrefixRestoreIsExactAfterDonorAppendAndRetirement()"
+        },
+        {
+          "issues": 1,
+          "test": "prefixIdentityTokensOwnerAndEmptyStateFailClosed()"
+        },
+        {
+          "issues": 8,
+          "test": "towerAndProjectionMatchReference(_:) with 2 test cases"
+        },
+        {
+          "issues": 24,
+          "test": "mediaEncoderStateAndCanvasLogitsMatchReference(_:) with 2 test cases"
+        },
+        {
+          "issues": 4,
+          "test": "existingGemmaVisionContractRemainsBitExact()"
+        },
+        {
+          "issues": 112,
+          "test": "run with 1404 tests in 224 suites"
+        }
+      ],
+      "head": "71678411330e37cb76d1a10134411433dfa5c9a9",
+      "run": "https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36509601729",
+      "source_log_sha256": "bdd1a83830bef8870bdfee7148d4907898e53fd9fc3a34ad809d214e0cdfdda2",
+      "summary": [
+        "2026-09-29T02:40:28.3882810Z \u2718 Test run with 1404 tests in 224 suites failed after 643.265 seconds with 112 issues."
+      ],
+      "xctest_failures": []
     }
   ],
   "schema_version": 1,

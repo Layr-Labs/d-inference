@@ -54,8 +54,8 @@ public struct DeadlineDecisionProfile: Codable, Sendable, Equatable {
     public var projectedServiceUs: Int64?
     public var projectedPrefillTokens: Int64?
     public var projectedDecodeTokens: Int64?
-    /// Exact conservative rates passed to the engine, after the existing
-    /// policy adjustment. Absent means unavailable, never a measured zero.
+    /// Exact observed phase rates passed to the engine. Absent means
+    /// unavailable, never a measured zero.
     public var prefillTps: Double?
     public var decodeTps: Double?
 

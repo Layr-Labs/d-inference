@@ -19,6 +19,8 @@ extension ProviderLoop {
 
     internal func startCapacityRefreshMonitor() {
         capacityRefreshTask?.cancel()
+        startServiceAllowanceRefreshMonitor()
+        startPerformanceRefreshMonitor()
         let heartbeatInterval = max(1, loopConfig.config.coordinator.heartbeatIntervalSecs)
         let pollIntervalNs = UInt64(max(1, heartbeatInterval / 2)) * 1_000_000_000
         let me = self
@@ -217,8 +219,18 @@ extension ProviderLoop {
         for index in allSlots.indices where mtpAdmissionDrains.contains(allSlots[index].model) {
             allSlots[index].state = "reloading"
         }
+        // Work totals and exact reservation IDs must describe one ledger
+        // epoch. Independent per-slot actor snapshots can otherwise pair old
+        // work with a new owner having the same service fraction.
+        let serviceSnapshot = kvBudget.serviceBudget.capacitySnapshot(slots: allSlots)
+        for index in allSlots.indices {
+            allSlots[index].deadlineWork = serviceSnapshot.deadlineWorkByModel[allSlots[index].model]
+        }
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
+            wholeMacServiceUsed: serviceSnapshot.usedFraction,
+            wholeMacServiceRetirementProtocol: 1,
+            wholeMacServiceReservations: serviceSnapshot.reservations,
             gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
             gpuMemoryPeakGb: Double(mlxPeakBytes) / gbDivisor,
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,

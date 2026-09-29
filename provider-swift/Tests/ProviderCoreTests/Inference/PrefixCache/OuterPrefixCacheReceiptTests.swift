@@ -37,6 +37,15 @@ struct OuterPrefixCacheReceiptTests {
             }
         }
 
+        var releasedReservations: [String] {
+            lock.withLock {
+                messages.compactMap {
+                    guard case .serviceReservationReleased(let id) = $0 else { return nil }
+                    return id
+                }
+            }
+        }
+
     }
 
     private func makeLoop() throws -> ProviderLoop {
@@ -66,16 +75,19 @@ struct OuterPrefixCacheReceiptTests {
     func malformedResponseKeyFinalizesPolicy() async throws {
         let loop = try makeLoop()
         let recorder = Recorder()
+        let reservationID = UUID().uuidString.lowercased()
         await loop.handleInferenceRequest(
             requestId: "outer-policy",
             ciphertext: Data(),
             senderPublicKey: nil,
             cacheReceiptNonce: "nonce-policy",
             authenticatedCacheScope: "scope-policy",
+            serviceReservationID: reservationID,
             send: SendHandle(recorder.append))
         #expect(recorder.lookups.count == 1)
         #expect(recorder.lookups.first?.outcome == .skippedPolicy)
         #expect(recorder.kinds == ["lookup", "error"])
+        #expect(recorder.releasedReservations == [reservationID])
     }
 
     @Test("pre-decrypt shutdown admission emits exactly one capacity receipt")
@@ -83,16 +95,37 @@ struct OuterPrefixCacheReceiptTests {
         let loop = try makeLoop()
         await loop.beginShutdownForTesting()
         let recorder = Recorder()
+        let reservationID = UUID().uuidString.lowercased()
         await loop.handleInferenceRequest(
             requestId: "outer-capacity",
             ciphertext: Data(),
             senderPublicKey: nil,
             cacheReceiptNonce: "nonce-capacity",
             authenticatedCacheScope: "scope-capacity",
+            serviceReservationID: reservationID,
             send: SendHandle(recorder.append))
         #expect(recorder.lookups.count == 1)
         #expect(recorder.lookups.first?.outcome == .skippedCapacity)
         #expect(recorder.kinds == ["lookup", "error"])
+        #expect(recorder.releasedReservations == [reservationID])
+    }
+
+    @Test("a valid encrypted request rejected during decode releases its never-acquired reservation")
+    func encryptedInvalidBodyReleasesServiceReservation() async throws {
+        let loop = try makeLoop()
+        let recorder = Recorder()
+        let sender = NodeKeyPair.generate()
+        let ciphertext = try sender.encryptPayload(
+            recipientPublicKey: await loop.keyPair.publicKeyBytes,
+            plaintext: Data("not a chat request".utf8))
+        let reservationID = UUID().uuidString.lowercased()
+        await loop.handleInferenceRequest(requestId: "invalid-encrypted-body",
+            ciphertext: try #require(Data(base64Encoded: ciphertext.ciphertext)),
+            senderPublicKey: sender.publicKeyBytes,
+            cacheReceiptNonce: nil, authenticatedCacheScope: nil,
+            serviceReservationID: reservationID, send: SendHandle(recorder.append))
+        #expect(recorder.kinds == ["error"])
+        #expect(recorder.releasedReservations == [reservationID])
     }
 
     @Test("bridge resolution wins over the outer policy backstop without duplication")

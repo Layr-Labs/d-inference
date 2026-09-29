@@ -113,6 +113,9 @@ type PendingRequest struct {
 	// Calibrated conservative prompt-work estimate; a trusted CachePlan
 	// supplies exact counts instead. Physical commitment estimates are separate.
 	FirstContentPromptTokens int
+	// Immutable request-local count evidence, rebound to each selected model.
+	// It never extends the first-content deadline or replaces billed usage.
+	PromptWork *protocol.PromptWork
 	// Request-local retry/hedge policy; no wire protocol change.
 	RequireFreshFeasible      bool
 	RequireFreshFeasibleAfter time.Time
@@ -121,11 +124,19 @@ type PendingRequest struct {
 	FirstContentPlanningHorizon time.Duration
 	Hedge                       bool
 	// Reservation metadata is owned by the provider pending set and read only
-	// under provider.mu. Removing the pending owner retires this work too.
-	reservedPrefillTokens    float64
-	reservedPrefillRestoreMs float64
-	reservedPrefillKnown     bool
-	reservedAt               time.Time
+	// under provider.mu. Removing the pending owner retires prompt reservations;
+	// a dispatched service charge survives in the provider retirement shadow
+	// until explicit producer proof confirms that its leases have retired.
+	reservedPrefillTokens      float64
+	reservedPrefillRestoreMs   float64
+	reservedPrefillKnown       bool
+	reservedAt                 time.Time
+	reservedServiceCharge      float64
+	serviceRetirementTracked   bool
+	serviceHandoffAuthorized   bool
+	serviceHandoffAborted      bool
+	serviceReservationReleased bool
+	serviceReservationID       atomic.Pointer[serviceReservationIdentity]
 	// RequiresVision is true when the request carries image/video input. Such a
 	// request must only be routed to a provider advertising a vision-capable
 	// (VLM) build for the resolved model; otherwise the provider would silently

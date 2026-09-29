@@ -137,6 +137,12 @@ extension EngineV2Bridge {
     /// can't keep a pump (and its KV reservation) alive past shutdown, then
     /// await the engine drain.
     public func shutdown() async {
+        defer {
+            deadlinePostureMonitoring?.finish()
+            deadlinePostureMonitoring = nil
+        }
+        let deviceActivity = serviceBudget?.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         let statsTask = prefixCacheStatsTask
         prefixCacheStatsTask = nil
         prefixCacheTelemetry.close()

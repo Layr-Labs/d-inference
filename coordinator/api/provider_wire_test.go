@@ -45,6 +45,37 @@ func TestProviderInferenceWireMessageCarriesPreparedV2Attempt(t *testing.T) {
 	}
 }
 
+func TestProviderInferenceFrameFreezesCommittedServiceReservation(t *testing.T) {
+	_, provider, pending := preparedCacheAttemptForTest(t)
+	provider.AddPending(pending)
+	firstID := pending.ServiceReservationID()
+	if firstID == "" || firstID == pending.RequestID {
+		t.Fatal("committed attempt lacks an independent service reservation")
+	}
+	builder := providerInferenceFrameBuilder("request", "ephemeral", "ciphertext", pending)
+	provider.RemovePending(pending.RequestID)
+	provider.AddPending(pending)
+	t.Cleanup(func() { provider.RemovePending(pending.RequestID) })
+	if pending.ServiceReservationID() == firstID {
+		t.Fatal("retry reused service reservation")
+	}
+	encoded, err := builder(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded protocol.InferenceRequestMessage
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ServiceReservationID != firstID {
+		t.Fatal("queued frame changed identity after a new reservation")
+	}
+	current := providerInferenceWireMessage("request", "ephemeral", "ciphertext", pending)
+	if current.ServiceReservationID != pending.ServiceReservationID() {
+		t.Fatal("retry frame lost its new service reservation")
+	}
+}
+
 func TestProviderInferenceWireMessageCarriesObservedRepeatDemand(t *testing.T) {
 	reg, provider, first := preparedCacheAttemptForTest(t)
 	capability := cacheEligibilityV2Capability("model")

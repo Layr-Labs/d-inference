@@ -99,7 +99,8 @@ func (v DeadlineProjectionReason) Fold() DeadlineProjectionReason {
 // routing or billing. ObservedUS uses the provider profile's suspending-clock
 // anchor; RemainingUS is measured on the continuous clock at that observation,
 // NOT at the engine's atomic decision. SubmitRemainingUS is measured before
-// submission. TPS fields are the effective inputs after any provider haircut.
+// submission. TPS fields are the phase-rate inputs passed to the engine;
+// current providers use observed rates directly, while older versions may halve them.
 // Missing numeric values remain unknown, including work for unbounded results.
 type DeadlineDecision struct {
 	Verdict                DeadlineVerdict          `json:"verdict,omitempty"`

@@ -1,12 +1,12 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `f6233910e`
+> Last updated: 2026-09-29 · commit `a8aa6bb33`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
 lint — and which CI workflow runs what. `make test` runs every unit suite plus
 the docs lint locally; CI runs a subset per pull request (see the CI workflow
-map: the benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
+map: the Gemma benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
@@ -252,6 +252,48 @@ routing only; signed Mac App Attest qualification is separate.
 Build qualification regressions run in `coordinator/store/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
 
 ## Provider lifecycle regression checks
+
+Serving measurements and profile admission have focused suites
+`EngineEarlyPerformanceTests`, `EngineV2PrefillSamplingTests`,
+`ServingPerformanceProfileTests` and the shared profiler-wire fixture. Run the
+ordinary provider test target as well as dependency tests for
+`CBv2RequestTimingTests`, `NativeBlockEngineTests` and
+`CBv2MixedStepPrefillQuotaTests` after changing the CBv2 pin. The Go registry
+suite covers accepted counter deltas, stale/replayed observations, shared
+service admission, warm-load ownership and transport freshness.
+
+`make benchmark-wrapper-test` also runs the offline serving-profile evaluator
+regressions. Release Integrity CI runs this same `serving_performance` suite,
+including evidence validation and generated-catalog consistency, without a GPU
+or model downloads. Its SQL fixtures additionally require local PostgreSQL
+binaries and a non-root user; unavailable prerequisites are reported as skips.
+The fixture discovers a complete installation through `PATH`, `pg_config`, or
+Debian's versioned binary directories. It uses `LC_ALL=C`, a private Unix socket
+and an available port. An installed cluster that fails to start fails the test
+with its startup log, rather than being reported as missing coverage.
+Promoted deadline records must also reproduce the archived raw training and
+validation runs and pass the current evaluator with actual prerequisite files;
+schema validity alone is insufficient.
+The evidence index binds every ordered catalog row's ID, qualification-report
+digest and full-profile digest even when the optional archive replay is skipped.
+The current deadline catalog is empty. Historical hardware reports and the
+prompt-count corpus are stored outside the repository; their three replay tests
+run only with `DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT` set. See
+[local evidence checks](serving-performance-qualification.md#verify-local-evidence).
+Ordinary CI still pins the reviewed prompt-count coefficients and checks
+runtime boundaries and synthetic posture failures without those archives.
+For real hardware coverage and required evidence, follow
+[serving performance qualification](serving-performance-qualification.md).
+Synthetic tests never certify M5 concurrency or a mixed-prefill default.
+Calibrated admission adds `DeadlineCalibrationTests`, `PromptWorkTests`, the
+shared calibrated-capacity fixture, and SDK `CBv2CalibratedFirstContentTests`.
+Go and Swift also consume the same synthetic deadline-decision fixture for
+cache reuse, existing-owner bounds, live-rate ceilings and the remaining clock;
+it tests arithmetic agreement and does not qualify hardware.
+`coordinator/api/promptwork` tests body/model memoization, original-clock planner
+bounds and measured shape restrictions. The optional API corpus projection
+uses the production heuristic and writes numeric data only; the qualification
+guide documents its environment variables and paired tokenizer run.
 
 Run `make provider-test` to build tests and install the source-matched Metal
 library beside the runner. Focused suites include `ProviderLifecycleTests`,
@@ -2437,8 +2479,8 @@ measurement.
 (`TestReserveProviderWithPlanPrimarySelectionUnchanged`) compares provider
 selection and routing decisions with and without retained alternatives. It
 uses a controlled clock and different fresh evidence ages, then normalizes
-wall-clock telemetry, including capacity/performance evidence ages on
-the decision and candidate summaries; selection, forecast values and reservations
+wall-clock telemetry, including known capacity/performance/transport evidence ages on
+the decision and candidate summaries; unknown-age sentinels, selection, forecast values and reservations
 remain subject to exact comparison. Repeat the focused test with
 `go test ./coordinator/registry -run '^TestReserveProviderWithPlanPrimarySelectionUnchanged$' -count=500`
 from the repository root to check for timing-dependent comparison failures.
@@ -2452,3 +2494,17 @@ against a mock WebSocket coordinator while accepted work is held open.
 `ProcessLifecycleTests` verifies that lock acquisition cannot kill a live PID owner.
 `TestRestartStatusReportsOwnerAuthorizationWithoutPublicGrant` checks explicit
 owner authorization while retaining runtime/security denials.
+
+## Advisory threat-model review checks
+
+Run `python3 .github/scripts/test-threat-model-review.py` for the review input,
+OpenRouter response validation, credential isolation, pagination, stale-head and
+comment lifecycle tests. The suite opens a temporary loopback HTTP server and
+uses no external service or real key. Also run
+`python3 .github/scripts/test-threat-full-scan.py` for full-source retrieval,
+batching beyond the former cutoffs, cross-file review, and explicit incomplete
+coverage. Run `python3 .github/scripts/test-threat-ensemble.py` for independent
+reviewer coverage, disagreement, attribution, partial failures and deadline
+retention. Release Integrity runs all three suites in normal CI.
+Model findings and live API failures remain non-blocking in the separate
+[advisory review workflow](threat-model-review.md).

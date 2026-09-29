@@ -122,6 +122,8 @@ extension ProviderLoop {
             pendingMTPUpgradeModels().contains(modelID)
         else { return nil }
         isLoadingAny = true
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         defer { isLoadingAny = false; releaseLoadGateWaiters() }
         let grant = Int(clamping: EngineV2KVSizing.minimumServiceableGrantBytes)
         guard let lease = await kvBudget.claimPendingLoad(
@@ -162,7 +164,8 @@ extension ProviderLoop {
                 modelId: modelID, modelType: original.modelType, isVLM: original.isVLM,
                 modelDirectory: directory, container: originalContainer, tokenizer: original.tokenizer,
                 sizing: sizing, kvBytesCapacity: grant, specDecPreparation: preparation,
-                preparedModel: prepared, cacheEligibleWeightHash: original.cacheEligibleWeightHash,
+                preparedModel: prepared, modelArtifactSHA256: original.modelArtifactSHA256,
+                cacheEligibleWeightHash: original.cacheEligibleWeightHash,
                 registerInRuntime: false)
             try Task.checkCancellation()
             let replacement = replacement!
@@ -190,6 +193,8 @@ extension ProviderLoop {
     }
 
     func commitMTPUpgradeIfIdle(_ staged: StagedProviderMTPUpgrade) async throws -> Bool {
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         let modelID = staged.modelID
         guard let original = staged.original, let originalContainer = original.container else { throw CancellationError() }
         try Task.checkCancellation()
@@ -220,6 +225,7 @@ extension ProviderLoop {
         modelSlots[modelID] = ModelSlot(
             engineBundle: staged.replacement, container: originalContainer,
             tokenizer: original.tokenizer, sizing: staged.sizing,
+            modelArtifactSHA256: original.modelArtifactSHA256,
             cacheEligibleWeightHash: original.cacheEligibleWeightHash,
             isVLM: original.isVLM, modelType: original.modelType,
             lastInferenceAt: original.lastInferenceAt)
@@ -241,6 +247,8 @@ extension ProviderLoop {
     }
 
     func discardMTPUpgrade(_ staged: StagedProviderMTPUpgrade) async {
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         await staged.replacement.bridge.shutdown()
         staged.replacement.releaseAssistant()
         staged.original = nil

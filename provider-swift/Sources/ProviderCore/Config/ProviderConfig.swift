@@ -154,16 +154,18 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// and collapses below it (B=3 is -7.5%, B=2 is -41%), while per-request
     /// decode is aggregate/B (`docs/reports/2026-07-25-paged-gate-results.md`).
     ///
-    /// Still clamped to [1, 8] at use, and the UPPER bound deliberately stays
-    /// 8: the engine's KV byte-ledger admission binds long before count does,
-    /// caps past 8 recreate the batch-collapse regime the one-engine release
-    /// exists to kill, and 8 remains the right operating point for a box that
-    /// asks for paged by name — where B=8 still pays 1.27x over B=4. The
-    /// coordinator sees the effective value in heartbeat `max_concurrency`.
-    public var engineV2MaxConcurrent: UInt64
+    /// Missing configuration selects the exact reviewed model/runtime/hardware
+    /// profile when one exists; unknown profiles retain default 4 and ceiling 8.
+    /// Explicit values remain upper bounds. Widths up to 16 require a reviewed
+    /// profile after backend resolution, physical fit and shared-Mac admission.
+    /// Heartbeats report the final effective cap, never the requested ceiling.
+    public var engineV2MaxConcurrent: UInt64 {
+        didSet { engineV2MaxConcurrentIsExplicit = true }
+    }
+    public private(set) var engineV2MaxConcurrentIsExplicit: Bool
     /// Optional per-model override map
     /// (`engine_v2_max_concurrent_by_model` under `[backend]`, TOML table
-    /// of model id → cap). Same [1, 8] clamp. Missing ids use
+    /// of model id → cap). The same qualification bounds apply. Missing ids use
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
@@ -276,7 +278,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60,
         maxModelSlots: UInt64 = 3,
-        engineV2MaxConcurrent: UInt64 = BackendSettings.defaultEngineV2MaxConcurrent,
+        engineV2MaxConcurrent: UInt64? = nil,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
@@ -295,7 +297,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.enabledModels = enabledModels
         self.idleTimeoutMins = idleTimeoutMins
         self.maxModelSlots = maxModelSlots
-        self.engineV2MaxConcurrent = engineV2MaxConcurrent
+        self.engineV2MaxConcurrent = engineV2MaxConcurrent ?? Self.defaultEngineV2MaxConcurrent
+        self.engineV2MaxConcurrentIsExplicit = engineV2MaxConcurrent != nil
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
@@ -352,6 +355,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
+        self.engineV2MaxConcurrentIsExplicit = container.contains(.engineV2MaxConcurrent)
         self.engineV2MaxConcurrent =
             try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent)
             ?? Self.defaultEngineV2MaxConcurrent
@@ -392,7 +396,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(enabledModels, forKey: .enabledModels)
         try container.encode(idleTimeoutMins, forKey: .idleTimeoutMins)
         try container.encode(maxModelSlots, forKey: .maxModelSlots)
-        try container.encode(engineV2MaxConcurrent, forKey: .engineV2MaxConcurrent)
+        if engineV2MaxConcurrentIsExplicit {
+            try container.encode(engineV2MaxConcurrent, forKey: .engineV2MaxConcurrent)
+        }
         try container.encode(engineV2MaxConcurrentByModel, forKey: .engineV2MaxConcurrentByModel)
         try container.encode(engineV2KVBackend, forKey: .engineV2KVBackend)
         try container.encode(engineV2KVBackendByModel, forKey: .engineV2KVBackendByModel)

@@ -28,8 +28,15 @@ jobs:
           ./scripts/test-prod-env-refresh.sh
       - name: Test startup observer against local stubs
         run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
+      - name: Test advisory threat review with local HTTP fixtures
+        run: |
+          python3 .github/scripts/test-threat-model-review.py
+          python3 .github/scripts/test-threat-full-scan.py
+          python3 .github/scripts/test-threat-ensemble.py
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
+      - name: Test serving qualification evidence and catalogs without a GPU
+        run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
 
   docs:
     name: Docs Lint

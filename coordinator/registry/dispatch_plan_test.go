@@ -167,19 +167,26 @@ func testReserveProviderWithPlanPrimarySelectionUnchanged(t *testing.T) {
 		t.Fatalf("fixture evidence ages differ from expected 1s/2s: ex=%+v plan=%+v", decA.FirstContent, decB.FirstContent)
 	}
 	// The profiler's wall-clock stamps (lock wait, scan, admit, heartbeat and
-	// evidence ages, on the decision AND inside the candidate summaries) can
-	// differ between equivalent reservations using fresh evidence. All other
-	// decision fields must match.
+	// first-content evidence ages, on the decision and candidate summaries) can differ
+	// between equivalent reservations using fresh evidence;
+	// unknown-age sentinels and every forecast/selection value must still match.
+	normalizeEvidenceAges := func(estimate *FirstContentEstimate) {
+		for _, age := range []*int32{&estimate.CapacityAgeMs, &estimate.PerformanceAgeMs, &estimate.TransportAgeMs} {
+			if *age >= 0 {
+				*age = 0
+			}
+		}
+	}
 	for _, d := range []*RoutingDecision{&decA, &decB} {
 		d.LockWaitUS, d.ScanUS, d.AdmitUS, d.SnapshotAgeMs = 0, 0, 0, 0
-		d.FirstContent.CapacityAgeMs, d.FirstContent.PerformanceAgeMs = 0, 0
+		normalizeEvidenceAges(&d.FirstContent)
 		for i := range d.Top {
 			d.Top[i].HBAgeMs = 0
-			d.Top[i].FirstContent.CapacityAgeMs, d.Top[i].FirstContent.PerformanceAgeMs = 0, 0
+			normalizeEvidenceAges(&d.Top[i].FirstContent)
 		}
 		d.RunnerUp.HBAgeMs, d.BestIdle.HBAgeMs = 0, 0
-		d.RunnerUp.FirstContent.CapacityAgeMs, d.RunnerUp.FirstContent.PerformanceAgeMs = 0, 0
-		d.BestIdle.FirstContent.CapacityAgeMs, d.BestIdle.FirstContent.PerformanceAgeMs = 0, 0
+		normalizeEvidenceAges(&d.RunnerUp.FirstContent)
+		normalizeEvidenceAges(&d.BestIdle.FirstContent)
 	}
 	if decA != decB {
 		t.Fatalf("decisions differ:\n ex:   %+v\n plan: %+v", decA, decB)

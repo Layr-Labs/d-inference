@@ -13,10 +13,11 @@ import (
 //	L = λ · E[S]                         (requests concurrently in the system)
 //	target_warm = ceil( L / quality_concurrency ) + burst_buffer
 //
-// where quality_concurrency is the largest per-provider batch that still keeps
-// every in-batch request decoding at or above a quality floor, derived from the
-// same rate(B) = solo / (1 + k·B) batch-degradation model the scheduler uses in
-// projectedPerRequestDecodeTPS (k = effectiveTPSLoadFactor).
+// where quality_concurrency comes from each provider's exact reviewed profile,
+// with the existing solo/(1+k*B) quality curve retained for unknown profiles.
+// Measured prompt work / prefill capacity + output work / aggregate decode
+// capacity supplies an independent floor without treating memory reservations
+// as generation demand or dividing serial prompt work by decode batch width.
 //
 // Everything here is pure so it can be unit-tested without a Registry, heartbeats,
 // or wall-clock timing.
@@ -108,10 +109,12 @@ type warmTargetInputs struct {
 	// model (EWMA, increases only). It is the demand-GROWTH rate the derived
 	// proactive headroom floor is sized from — distinct from SpillArrivalRate,
 	// which counts only demand the pool already failed to serve.
-	OccupancyRamp   float64
-	SoloDecodeTPS   float64 // representative solo (batch=0) decode tok/s
-	PrefillTPS      float64 // representative prefill tok/s
-	MaxProviderConc int     // representative per-provider concurrency cap (0 = unknown)
+	OccupancyRamp      float64
+	SoloDecodeTPS      float64 // representative solo (batch=0) decode tok/s
+	PrefillTPS         float64 // representative prefill tok/s
+	MaxProviderConc    int     // representative per-provider concurrency cap (0 = unknown)
+	QualityConcurrency int     // median of per-provider qualified/legacy policy, when available
+	WorkProviders      float64 // measured prompt work + aggregate generation work, in Macs
 	// DemandPressure is true when any pressure signal crossed its threshold this
 	// window. With no demand pressure the pool is left as-is (no growth).
 	DemandPressure bool
@@ -228,12 +231,18 @@ func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int 
 	if !p.HeadroomEnabledParams && !in.DemandPressure {
 		return in.Warm
 	}
-	qc := qualityConcurrency(in.SoloDecodeTPS, p.DecodeFloorTPS, p.LoadFactorK, in.MaxProviderConc, p.FallbackQualityConcurrency)
+	qc := in.QualityConcurrency
+	if qc <= 0 {
+		qc = qualityConcurrency(in.SoloDecodeTPS, p.DecodeFloorTPS, p.LoadFactorK, in.MaxProviderConc, p.FallbackQualityConcurrency)
+	}
 	if qc < 1 {
 		qc = 1
 	}
 	L := demandConcurrency(in, svc)
-	target := int(math.Ceil(L/float64(qc))) + p.BurstBuffer
+	needed := max(L/float64(qc), in.WorkProviders)
+	// Bound before converting provider-controlled work counters to int.
+	needed = min(needed, float64(max(0, in.Warm+in.EligibleCold)))
+	target := int(math.Ceil(needed)) + p.BurstBuffer
 	// Proactive headroom: hold spare serving capacity above current load even
 	// when nothing has failed yet.
 	if hd := headroomTarget(in, p, qc); hd > target {

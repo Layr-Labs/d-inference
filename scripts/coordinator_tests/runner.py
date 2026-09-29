@@ -50,6 +50,7 @@ class Processes:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
+                    # The child already exited, so its process group is gone.
                     pass
 
 

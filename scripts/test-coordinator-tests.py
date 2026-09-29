@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock
 
 from coordinator_tests.results import merge_coverage, partition, test_names, verify_events
 from coordinator_tests.runner import Processes, run_task
@@ -120,7 +120,7 @@ class CoordinatorRunnerTests(unittest.TestCase):
             processes.cancel()
             return child
 
-        with mock.patch("coordinator_tests.runner.subprocess.Popen", side_effect=interrupted_spawn):
+        with unittest.mock.patch("coordinator_tests.runner.subprocess.Popen", side_effect=interrupted_spawn):
             child = processes.start([sys.executable, "-c", "import time; time.sleep(60)"])
         try:
             self.assertNotEqual(child.wait(timeout=5), 0)

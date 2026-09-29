@@ -1,23 +1,17 @@
 package api
 
 import (
-	"bytes"
-
+	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
-// requestCachePlans shares exact planning between preflight and dispatch. A
-// fallback can rebuild the body even for an already visited model, so model ID
-// alone is not a sufficient key. Entries live only for this HTTP request.
+// Thin HTTP adapter; request-local accounting lives in api/promptwork.
 type requestCachePlans struct {
-	body    func(string) ([]byte, error)
-	plan    func(string, []byte) registry.CachePlan
-	entries map[string]requestCachePlan
-}
-
-type requestCachePlan struct {
-	body []byte
-	plan registry.CachePlan
+	body     func(string) ([]byte, error)
+	plan     func(string, []byte) registry.CachePlan
+	planWork func(string, []byte) promptwork.Result
+	memo     promptwork.Memo
 }
 
 func (m *requestCachePlans) forModel(model string) registry.CachePlan {
@@ -27,16 +21,19 @@ func (m *requestCachePlans) forModel(model string) registry.CachePlan {
 	}
 	return m.forBody(model, body)
 }
-
 func (m *requestCachePlans) forBody(model string, body []byte) registry.CachePlan {
-	if entry, ok := m.entries[model]; ok && bytes.Equal(entry.body, body) {
-		return entry.plan
+	return m.memo.Plan(model, body, func() promptwork.Result {
+		if m.planWork != nil {
+			return m.planWork(model, body)
+		}
+		return promptwork.Result{Cache: m.plan(model, body)}
+	}).Cache
+}
+func (m *requestCachePlans) workForModel(model string) *protocol.PromptWork {
+	body, err := m.body(model)
+	if err != nil {
+		return nil
 	}
-	plan := m.plan(model, body)
-	if m.entries == nil {
-		m.entries = make(map[string]requestCachePlan, 2)
-	}
-	// Provider bodies are replaced, never modified in place after serialization.
-	m.entries[model] = requestCachePlan{body: body, plan: plan}
-	return plan
+	m.forBody(model, body)
+	return m.memo.Lookup(model, body)
 }

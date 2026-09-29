@@ -1,10 +1,11 @@
 # First-content routing
 
-> Last updated: 2026-09-28 · commit `8ebde6185`
+> Last updated: 2026-09-28 · commit `d89ef42be`
 
 The coordinator selects providers by expected time to delivered content, with a
-separate conservative forecast for deadline feasibility. The policy applies by
-default across the catalog; it requires no provider upgrade or rollout mode.
+separate conservative forecast for deadline feasibility. The selection policy applies by
+default across the catalog. Qualified calibration additionally requires a
+compatible provider release, matching reviewed profiles and fresh evidence.
 The [design record](../design/first-content-performance.md) separates this
 coordinator delivery from subsequent provider and fleet qualification.
 
@@ -50,12 +51,30 @@ handoff, cold load when needed, queued/competing prompt work, cache restoration,
 uncached prompt work, and initial decode/delivery. `backlog_ms` remains a
 historical commitment diagnostic and is never an elapsed waiting term.
 
-Exact prompt-plan counts take precedence when the authenticated plan is still
-valid. Otherwise the conservative forecast uses the API's model-family prompt
-calibration (`calibratedContextPromptTokens`,
-`coordinator/api/prompt_calibration.go`). It is an estimate, not tokenizer proof
-or a learned template-specific bound. The expected and conservative handoff
-allowances are policy constants, not measured transport latency.
+`planPromptRoute` reuses the existing verified renderer/tokenizer contract for
+numeric prompt work, including tools and history. It shares a successful cache
+plan's count, including short prompts with no reusable boundaries. With cache
+routing disabled it can obtain a count without enabling cache reuse. Planning
+never waits for tokenizer preload, has bounded concurrency before serialization,
+and spends the original request deadline. `api/promptwork` memoizes by concrete
+model and complete provider body for this HTTP request only; rewritten fallback
+bodies cannot inherit another count.
+
+`prompt_work` carries the count, upper bound and artifact/template identity to
+preflight, selection and provider reconciliation. Exact counts require matching
+model bytes; calibrated template estimates require a reviewed measured domain
+and independent held-out coverage. Unsupported shapes retain heuristic provenance
+with unknown uncertainty. Billing and physical reservation inputs stay separate.
+The provider checks its actual tokenized count and verified factory identity;
+a mismatch withdraws calibrated prediction without extending the deadline.
+
+The reviewed fallback catalog contains six Qwen3.8 text/tool shape groups from
+9,000 actual template/tokenizer runs. Every record binds the exact artifact,
+template and training domain; gaps between measured size groups remain
+heuristic. See the [qualification evidence](../reports/2026-09-28-calibrated-admission-qualification.md#qualified-rendered-count-corpus).
+
+The expected and conservative handoff allowances are policy constants, not
+measured transport latency.
 
 Accepted capacity freshness comes from `CapacityAcceptedAt`; repeated/out-of-order
 frames and liveness-only heartbeats cannot renew it. Performance freshness is
@@ -77,10 +96,30 @@ diagnostics and fallback behavior (`coordinator/registry/heartbeat.go`,
 | `unknown` | Missing/stale measurement, unqualified competing or cold work, vision work, or no deadline | Nonzero expected forecast and bounded fallback |
 | `predicted_late` | Credible conservative forecast exceeds the remaining budget | Lower preference; existing explicit hard rejection policy can exclude it |
 
-Even a feasible forecast is advisory. Half-rate conservative pricing is not a
-mathematical guarantee. Busy schedules are not reconstructed from maximum output
-reservations. Overlapping reported queued-prefill work and local pending work
-are reconciled without summing the same request twice.
+Even a feasible forecast is advisory. Unqualified work retains the legacy
+half-rate fallback. Reviewed `deadline_calibration` cells replace that margin
+only inside exact prompt/context, cache and contention envelopes, with measured
+prediction-error ratio and additive tail allowance. Rates can be made slower by
+fresh live evidence; they cannot become faster than the reviewed values.
+
+`DeadlinePerformanceProfile` binds those cells to the exact constructed
+scheduler, model, template, MTP runtime and hardware. Its configured context is
+runtime identity, while each cell bounds measured request and competing-work
+contexts. The separate `deadline_profile` reference grants no authority over
+concurrency, whole-Mac charges or mixed-prefill caps. Those serving policy
+changes still require the complete `ServingPerformanceProfile` qualification
+matrix; narrow first-content evidence cannot certify them.
+
+Busy calibrated forecasts require fresh `deadline_work` envelopes correlated
+with the whole-Mac reservation snapshot. Existing owners retain conservative
+prompt/output bounds through pre-submit and retirement. Missing owners, changed
+epochs, unrepresented GPU work or unmatched competing profiles stay unknown.
+The provider takes the larger of actual scheduler work and existing same-model
+lease bounds, adds qualified competing work, then prices only the incoming work
+to first content. The cell's context bound includes the bounded incoming early
+decode allowance. Its requested full output remains a memory commitment and is
+not added to the incoming first-content projection. Overlapping scheduler and
+lease work is bounded with a maximum rather than counted twice.
 An unrelated `idle_shutdown` slot with no activity does not compete for work or
 require active-engine telemetry. Positive activity and local reservations still
 count; loading, crashed and unknown slot states remain conservative.
@@ -167,6 +206,10 @@ does not represent a random sample of all outcomes.
 | Concern | Source |
 |---|---|
 | Forecast types and classification | `coordinator/registry/first_content_forecast.go` — `FirstContentEstimate`, `estimateFirstContent` |
+| Prompt accounting and bounded planning | `coordinator/api/promptwork/` — `Memo`, `Plan`, `Calibration` |
+| Qualified prediction arithmetic | `coordinator/registry/firstcontent/` — `Calibration`, `Predict` |
+| Independent deadline profile identity | `coordinator/registry/deadline_profile.go` — `qualifiedDeadlineProfileLocked` |
+| Existing work ownership | `coordinator/registry/first_content_calibrated_work.go` — `fillCalibratedWorkSnapshot` |
 | Candidate selection | `coordinator/registry/candidate_selection.go` — `selectRoutingCandidateWithAffinity` |
 | Physical reservation | `coordinator/registry/scheduler.go` — `commitProviderReservation` |
 | Cache-aware preflight | `coordinator/registry/first_content_preflight.go` — `QuickFirstContentCapacityForRequest` |

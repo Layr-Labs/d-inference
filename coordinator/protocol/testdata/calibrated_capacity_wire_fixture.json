@@ -1,0 +1,78 @@
+{
+  "slots": [
+    {
+      "model": "test-model",
+      "state": "idle",
+      "num_running": 0,
+      "num_waiting": 0,
+      "active_tokens": 0,
+      "max_tokens_potential": 0,
+      "max_concurrency": 16,
+      "kv_backend": "paged",
+      "performance_profile": {
+        "id": "test-reviewed-profile",
+        "runtime_revision": "cbv2-first-content-v2",
+        "context_tokens": 32768,
+        "mtp": {
+          "enabled": true,
+          "artifact_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "max_draft_tokens": 4,
+          "fixed_draft_tokens": 0,
+          "max_speculative_batch": 2,
+          "verification_mode": "automatic",
+          "max_automatic_rectangular_tokens": 4096
+        }
+      },
+      "deadline_work": {
+        "version": 1,
+        "epoch": "fixture-engine-epoch",
+        "known": true,
+        "prefill_tokens": 8192,
+        "decode_tokens": 512,
+        "request_count": 2,
+        "context_tokens_max": 8704,
+        "service_fraction": 0.5
+      },
+      "performance_measurements": {
+        "epoch": "fixture-engine-epoch",
+        "workload_buckets": []
+      },
+      "deadline_profile": {
+        "id": "test-reviewed-deadline",
+        "runtime_revision": "cbv2-first-content-v2",
+        "configured_context_tokens": 262144,
+        "effective_max_concurrency": 16,
+        "prefill_chunk_size": 512,
+        "solo_prefill_stripe_tokens": 4096,
+        "max_concurrent_partial_prefills": 1,
+        "mixed_prefill_token_cap": 256,
+        "mtp": {
+          "enabled": true,
+          "artifact_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "max_draft_tokens": 4,
+          "fixed_draft_tokens": 0,
+          "max_speculative_batch": 2,
+          "verification_mode": "automatic",
+          "max_automatic_rectangular_tokens": 4096
+        }
+      }
+    }
+  ],
+  "gpu_memory_active_gb": 20,
+  "gpu_memory_peak_gb": 25,
+  "gpu_memory_cache_gb": 0,
+  "total_memory_gb": 192,
+  "free_for_load_gb": 100,
+  "whole_mac_service_used": 0.5,
+  "whole_mac_service_retirement_protocol": 1,
+  "whole_mac_service_reservations": [
+    {
+      "id": "6e1f61d1-e22c-4d24-a3a7-d347772a48cb",
+      "used_fraction": 0.0625
+    },
+    {
+      "id": "9b3f32a9-3d08-4a71-b70a-dd5a2b2f140f",
+      "used_fraction": 0.125
+    }
+  ]
+}

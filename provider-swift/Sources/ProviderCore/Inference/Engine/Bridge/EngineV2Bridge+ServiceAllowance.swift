@@ -9,6 +9,14 @@ extension EngineV2Bridge {
         allowExpansion ? performanceProfile : nil
     }
 
+    var currentDeadlineProfile: DeadlinePerformanceProfile? {
+        currentDeadlineProfile(allowQualifiedPosture: ServingPerformanceProfiles.postureAllowsExpansion)
+    }
+
+    func currentDeadlineProfile(allowQualifiedPosture: Bool) -> DeadlinePerformanceProfile? {
+        allowQualifiedPosture ? deadlineProfile : nil
+    }
+
     var effectiveServingConcurrency: Int {
         effectiveServingConcurrency(allowExpansion: ServingPerformanceProfiles.postureAllowsExpansion)
     }
@@ -20,9 +28,13 @@ extension EngineV2Bridge {
 
     func acquireServiceAllowance(requestID: String, serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
+        promptTokens: Int? = nil, maxOutputTokens: Int? = nil,
+        qualifiedTextWork: Bool = true,
         allowExpansion: Bool? = nil) -> Bool {
         let effectiveProfile = currentPerformanceProfile(
             allowExpansion: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
+        let effectiveDeadlineProfile = currentDeadlineProfile(
+            allowQualifiedPosture: allowExpansion ?? ServingPerformanceProfiles.postureAllowsExpansion)
         if performanceProfile != nil && effectiveProfile == nil,
             active.count + pendingSubmissionIDs.count >= unqualifiedMaxConcurrentRequests {
             return false
@@ -32,7 +44,25 @@ extension EngineV2Bridge {
             concurrency: effectiveProfile?.wholeMacConcurrency
                 ?? ServingPerformanceProfiles.legacyWholeMacConcurrency,
             serviceReservationID: serviceReservationID,
-            serviceReservation: serviceReservation) ?? true
+            serviceReservation: serviceReservation,
+            work: promptTokens.flatMap { prompt in maxOutputTokens.map { output in
+                // Ownership starts before asynchronous submission validation.
+                // Another model may observe this lease during that interval;
+                // only work within its own profile's full context envelope
+                // can provide qualified competing-work evidence. Subtraction
+                // also rejects overflowing prompt/output sums without adding.
+                let profileID: String?
+                if qualifiedTextWork, let profile = effectiveDeadlineProfile, prompt > 0, output >= 0,
+                    prompt <= profile.configuredContextTokens,
+                    output <= profile.configuredContextTokens - prompt {
+                    profileID = profile.id
+                } else {
+                    profileID = nil
+                }
+                return .init(modelID: modelId, profileID: profileID,
+                    promptTokens: prompt, maxOutputTokens: output,
+                    calibratedContextTokensMax: effectiveDeadlineProfile?.calibratedContextTokensMax ?? 0)
+            } }) ?? true
     }
 
     /// Call only at refused pre-submit cleanup or completed engine retirement.

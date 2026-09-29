@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `cbf98076b`
+> Last updated: 2026-09-28 · commit `d89ef42be`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -187,10 +187,52 @@ and checked at every pre-content boundary. `prefill_deadline_mode` ∈ {`off`,
 `enforce`}; when the config key is absent, `DARKBLOOM_PREFILL_DEADLINE_MODE`
 exactly `off` disables, anything else enforces
 (`provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`).
-Under `enforce` the bridge builds `CBv2FirstTokenDeadlineAdmission` only when
-`maxConcurrentPartialPrefills == 1`, the request is not multimodal, and the
-isolated cold-prefill EWMA is initialised; prefill and decode rates are haircut
-by `deadlineProjectionRateHaircut = 0.5`. `WedgeMonitor.suspectStallSeconds =
+Under `enforce` the bridge builds `CBv2FirstTokenDeadlineAdmission` when
+`maxConcurrentPartialPrefills == 1`, the request is not multimodal, and a
+prefill estimate is available. Unsupported or stale qualification retains
+`deadlineProjectionRateHaircut = 0.5`. An independent reviewed deadline profile carries
+`deadline_calibration`: prompt/context bands, actual cold/reused prefix
+state, competing profile identities and work limits, phase rates, and a
+measured multiplicative/additive prediction-error envelope. Independent held-out
+samples must meet the profile's tail-coverage threshold; a faster live EWMA
+cannot raise a reviewed phase rate. The engine selects the largest applicable
+bound after its memory-validated scheduler projection and actual prefix lookup,
+then compares it with the unchanged absolute deadline. Only existing work plus
+the incoming prompt and at most 33 early decode tokens enter this bound; the
+incoming request's full output limit remains a memory reservation, not a TTFT
+completion requirement. `deadline_profile` matches the configured context and
+actual scheduler width, prefill chunk, solo stripe, mixed cap and partial-prefill
+cap exactly. Its cells may cover only a measured 4k workload on a model configured
+for a larger context. It has no authority over serving concurrency, chunk policy,
+or throughput curves; those still require the separate full-context serving
+qualification. Once a request is existing work, its full prompt/output bound
+must fit its deadline profile's measured context envelope or calibration falls
+back.
+
+`prompt_work` must reconcile with actual tokenization and the factory's verified
+artifact/template identity before calibration applies. MTP profiles additionally
+match the verified assistant digest, draft depth, batch limit and verification
+configuration; plain-target evidence cannot certify an active assistant.
+Measurement expiry and a shared-ledger invalidation token are checked again on
+the engine queue, so queueing cannot refresh evidence. Whole-machine work and
+reservation IDs are captured under one ledger lock; full original work remains
+a safe upper bound until actual retirement, including cancellation and
+pre-submit ownership. The provider publishes that envelope as `deadline_work`.
+Model and assistant loading, recovery, vision preparation, device cache transfers,
+and GPU cache reclamation hold noncharging activity receipts while their device
+work cannot be bounded by request token counts. These receipts invalidate
+captured calibration guards and publish unknown work until the last overlapping
+operation finishes, including failure or cancellation cleanup. A successful
+multimodal preparation hands off to an unqualified service lease that remains
+unknown through actual retirement. Existing memory and service charges are
+unchanged. See
+`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/WholeMacUnboundedActivity.swift`.
+See `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/Deadline/EngineV2Bridge+CalibratedDeadline.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/DeadlineCalibration.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Performance/Profiles/ServingMTPConfiguration.swift`
+and `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/DeadlineAdmission/CalibratedFirstContentV2.swift`.
+
+`WedgeMonitor.suspectStallSeconds =
 10` flags a stalled slot
 (`provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`).
 

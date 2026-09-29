@@ -3,6 +3,7 @@ import hashlib
 import json
 
 from .matrix import CHECKS, IDENTITY_FIELDS, MIN_SAMPLES, cell_key, digest, identity_errors, positive, shapes, widths
+from .calibration import evaluate_calibration
 
 METRICS = ("decode_p10_tps", "aggregate_decode_tps", "prefill_tps",
            "first_content_p95_ms", "token_gap_p95_ms")
@@ -55,8 +56,12 @@ def measure(cell, identity, mixed_prefill_token_cap=None):
         allowed_overrides = [{}]
         if mixed_prefill_token_cap is not None:
             allowed_overrides.append({"DARKBLOOM_CBV2_MIXED_PREFILL_CAP": str(mixed_prefill_token_cap)})
-        if sample.get("mtp_active") is not False or sample.get("runtime_policy_overrides") not in allowed_overrides:
-            errors.append("initial runtime revision permits only the exact candidate mixed-prefill override")
+        mtp = identity.get("mtp")
+        if (sample.get("mtp_active") is not (mtp is not None) or
+                sample.get("mtp") != mtp or sample.get("runtime_policy_overrides") not in allowed_overrides):
+            errors.append("sample runtime/MTP configuration does not match the exact candidate")
+        if mtp is not None and (not positive(sample.get("mtp_rounds")) or not positive(sample.get("mtp_proposed_tokens"))):
+            errors.append("MTP configuration was declared but actual drafting was not observed")
         if sample.get("power_mode") != "automatic" or sample.get("thermal_state") != "nominal":
             errors.append("power/thermal posture missing or throttled")
         fields = ("activation_peak_bytes", "kv_peak_bytes", "resident_bytes",
@@ -89,8 +94,8 @@ def evaluate(raw):
     identity = report.get("identity", {})
     errors = identity_errors(identity)
     cap = report.get("mixed_prefill_token_cap")
-    if cap is not None and (type(cap) is not int or not 128 <= cap <= 512):
-        errors.append("mixed_prefill_token_cap must be an integer in 128...512")
+    if cap is not None and (type(cap) is not int or cap not in (128, 256, 512)):
+        errors.append("mixed_prefill_token_cap must be 128, 256, or 512")
     serving_sets = report.get("serving_sets", [])
     if (not isinstance(serving_sets, list) or [] not in serving_sets or
             not any(isinstance(s, list) and s for s in serving_sets) or
@@ -100,7 +105,7 @@ def evaluate(raw):
     if (isinstance(serving_sets, list) and
             any(isinstance(models, list) and identity.get("model_id") in models for models in serving_sets)):
         errors.append("serving_sets cannot use the target model as a competing model")
-    if report.get("schema_version") != 1:
+    if report.get("schema_version") not in (1, 2):
         errors.append("unsupported receipt schema_version")
     result = {"qualified": False, "receipt_sha256": hashlib.sha256(raw).hexdigest(),
               "errors": errors, "widths": [], "profile": None}
@@ -184,10 +189,21 @@ def evaluate(raw):
         # Identity cannot carry serving policy or qualification results. Copy
         # only the closed identity contract; derive every other field below.
         profile = {field: identity[field] for field in IDENTITY_FIELDS}
+        if identity.get("mtp") is not None:
+            profile["mtp"] = identity["mtp"]
         profile.update(max_concurrency=limit, whole_mac_concurrency=limit,
                        qualification_report_sha256=result["receipt_sha256"], batch_curve=selected)
         # B1 has no mixed steps and therefore cannot certify a chunk policy.
         if limit > 1 and report.get("mixed_prefill_token_cap") is not None:
             profile["mixed_prefill_token_cap"] = report["mixed_prefill_token_cap"]
         result.update(qualified=True, profile=profile)
+        if report.get("schema_version") == 2 or report.get("deadline_calibration") is not None:
+            calibration = evaluate_calibration(
+                report.get("deadline_calibration"), result["receipt_sha256"], identity["context_tokens_max"])
+            result["deadline_calibration"] = calibration
+            if calibration["qualified"]:
+                profile["deadline_calibration"] = calibration["calibration"]
+            else:
+                result.update(qualified=False, profile=None)
+                errors.extend(calibration["errors"])
     return result

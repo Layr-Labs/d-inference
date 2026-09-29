@@ -110,6 +110,7 @@ extension EngineV2Factory {
         constructionPurpose: ConstructionPurpose = .serving,
         automaticallySelectConcurrency: Bool = false,
         performanceQualificationAllowed: Bool = true,
+        mtpPerformanceConfiguration: ServingMTPConfiguration? = nil,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -187,7 +188,7 @@ extension EngineV2Factory {
                 modelID: modelID ?? "", artifactSHA256: modelArtifactSHA256,
                 kvBackend: kind.rawValue, contextTokens: maxContextLength,
                 hardware: ServingPerformanceProfiles.reviewed.isEmpty ? nil : Self.profileHardware,
-                environment: environment) : nil
+                environment: environment, mtp: mtpPerformanceConfiguration) : nil
             let concurrency = constructionPurpose == .benchmark ? max(1, maxConcurrentRequests)
                 : ServingPerformanceProfiles.concurrency(
                 configured: UInt64(max(1, automaticallySelectConcurrency

@@ -1,0 +1,4027 @@
+{
+  "actualKVBackend" : "paged",
+  "chipName" : "Apple M5 Max",
+  "complete" : true,
+  "configuredContextTokens" : 262144,
+  "gpuCores" : 40,
+  "job" : {
+    "artifactSHA256" : "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+    "iterations" : 3,
+    "kvBackend" : "auto",
+    "modelID" : "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    "modelPath" : "/Users/gaj/.cache/huggingface/hub/models--EigenLabs--Qwen3.8-27B-4bit-mtp/snapshots/local",
+    "outputPath" : "/Users/gaj/first-content-qualification-20260928/serving-qualification-gd58qcn_/receipt.json",
+    "outputTokens" : 128,
+    "partition" : "baseline",
+    "promptLengths" : [
+      4096,
+      16384,
+      32768
+    ],
+    "reused" : false,
+    "runID" : "c4a81079-0a99-4512-b262-fa789cbe2073",
+    "staggerMilliseconds" : 0,
+    "toolHistory" : false,
+    "width" : 1
+  },
+  "memoryBytes" : 137438953472,
+  "mtp" : {
+    "artifact_sha256" : "8bf770b4b22fa4cffe3000a16314c41ea52d7556ad1acafb2e7bb33d96fd4e23",
+    "enabled" : true,
+    "max_automatic_rectangular_tokens" : 0,
+    "max_draft_tokens" : 7,
+    "max_speculative_batch" : 8,
+    "verification_mode" : "rectangular"
+  },
+  "promptContractID" : "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
+  "providerVersion" : "0.9.12",
+  "qualified" : false,
+  "runtimeRevision" : "cbv2-first-content-v2",
+  "schemaVersion" : 1,
+  "trials" : [
+    {
+      "activeMemoryBytes" : 18572961969,
+      "forwardShapes" : {
+        "abandonedSteps" : 0,
+        "completedStepTimings" : [
+          {
+            "phase" : "prefill",
+            "wallNanos" : 4450059916
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 57946291
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 56599791
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46920167
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46900417
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47342250
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47362208
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46664250
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47263875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46640834
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46828000
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47196750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46681292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46925959
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47066875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46929292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46689917
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47129000
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46914291
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46979917
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46988750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46969417
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 54315583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46959709
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47210166
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46702583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46748500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 34106792
+          }
+        ],
+        "confirmedTokenTimings" : [
+          {
+            "relativeNanos" : 0,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 58052500,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 114765625,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 168143709,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 221697667,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 275628917,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 329666292,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 382916209,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 436817834,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 490152334,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 543507959,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 597389750,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 650557084,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 704144834,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 757697584,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 811272417,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 864476584,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 918236542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 971703250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1025291334,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1078766125,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1132393542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1193283375,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1246816084,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1300677375,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1353956250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1407377459,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1448083917,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          }
+        ],
+        "droppedCalls" : 0,
+        "droppedStepTimings" : 0,
+        "droppedTokenTimings" : 0,
+        "enabled" : true,
+        "entries" : [
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "decode",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 1
+            },
+            "completedCalls" : 2,
+            "submittedCalls" : 2
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "mtp_verification",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 5
+            },
+            "completedCalls" : 25,
+            "submittedCalls" : 25
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "prefill",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 4096
+            },
+            "completedCalls" : 1,
+            "submittedCalls" : 1
+          }
+        ],
+        "pendingSteps" : 0,
+        "schema" : 1,
+        "scope" : 1,
+        "unobservedDispatches" : 0
+      },
+      "iteration" : 0,
+      "lowPowerMode" : false,
+      "mtpAccepted" : 100,
+      "mtpActive" : true,
+      "mtpProposed" : 100,
+      "mtpRounds" : 25,
+      "peakMemoryBytes" : 25913862389,
+      "promptTarget" : 4096,
+      "retired" : true,
+      "rows" : [
+        {
+          "cachedTokens" : 0,
+          "completionTokens" : 128,
+          "contentArrivalMs" : [
+            4468.086667,
+            4526.0872500000005,
+            4589.180375,
+            4642.765084,
+            4696.2275,
+            4750.246792,
+            4804.191375,
+            4857.533042,
+            4911.469334,
+            4964.635584,
+            5018.161292,
+            5071.836667,
+            5125.159417,
+            5178.583209,
+            5232.300875,
+            5285.750625,
+            5339.056875,
+            5392.748167,
+            5446.268334,
+            5499.727334,
+            5553.379,
+            5606.92125,
+            5667.801792,
+            5721.411334,
+            5775.210875,
+            5828.576209,
+            5881.922459,
+            5916.08975
+          ],
+          "elapsedMs" : 5916.408625,
+          "firstContentMs" : 4468.086667,
+          "outputSHA256" : "ef5d7dd6bee907301e7cdb774195e953c37a82af6e8bde4afacc7b1ed065113b",
+          "profile" : {
+            "budget_remaining_at_admit_us" : 3599982364,
+            "deadline_decision" : {
+              "decode_tps" : 43.12109830455991,
+              "observed_us" : 17659,
+              "prefill_tps" : 259.67338277856715,
+              "projected_decode_tokens" : 0,
+              "projected_prefill_tokens" : 4096,
+              "projected_service_us" : 15773661,
+              "projection" : "bounded",
+              "remaining_us" : 3599982344,
+              "submit_remaining_us" : 3599982433,
+              "verdict" : "accepted"
+            },
+            "deadline_mode" : "projected",
+            "engine" : {
+              "admitted_ns" : 233084,
+              "batch_rows_max" : 1,
+              "batch_rows_min" : 1,
+              "batch_rows_sum" : 28,
+              "capacity_requeues" : 0,
+              "chained_decode_steps" : 0,
+              "decode_steps" : 27,
+              "detok_delay_first_ns" : 84084,
+              "finish_reason" : "length",
+              "finished_ns" : 5898376917,
+              "first_token_ns" : 4450293000,
+              "kv_allocated_ns" : 233084,
+              "mtp_accepted" : 100,
+              "mtp_proposed" : 100,
+              "mtp_rounds" : 25,
+              "packed_prefill_chunks" : 0,
+              "pause_count" : 0,
+              "paused_ns" : 0,
+              "preemptions" : 0,
+              "prefill_chunk_tokens_max" : 4096,
+              "prefill_chunks" : 1,
+              "prefill_first_launch_ns" : 233084,
+              "prompt_computed_ns" : 4450293000,
+              "readmissions" : 0,
+              "solo_stripe_chunks" : 1,
+              "step_latency_ns_max" : 4450059916,
+              "step_latency_ns_sum" : 5733042792,
+              "vision_chunks" : 0
+            },
+            "engine_admitted_us" : 17639,
+            "engine_submit_us" : 17569,
+            "first_delta_us" : 4467992,
+            "kv_bytes_capacity" : 101448498719,
+            "kv_bytes_in_use_at_admit" : 0,
+            "last_delta_us" : 5916037,
+            "mtp_active" : true,
+            "partial_prefill_cap" : 1,
+            "projected_decode_tokens" : 0,
+            "projected_prefill_tokens" : 4096,
+            "projected_service_us" : 15773661,
+            "prompt_prep_end_us" : 17536,
+            "prompt_prep_start_us" : 253,
+            "prompt_tokens" : 4096,
+            "queued_prefill_tokens_at_admit" : 0,
+            "running_at_admit" : 0,
+            "schema" : 1,
+            "slept_us" : 0,
+            "steps_at_finish" : 58,
+            "steps_at_submit" : 30,
+            "total_us" : 5917018,
+            "waiting_at_admit" : 0,
+            "wall_ms" : 1790640081219
+          },
+          "promptTokens" : 4096,
+          "requestID" : "c4a81079-0a99-4512-b262-fa789cbe2073-4096-0-0",
+          "requestedOutputTokens" : 128,
+          "workloadSHA256" : "14e51c9c82330befd9c57d60cc971e8f072f8e5b3612604b949ad2ee11cec37d"
+        }
+      ],
+      "thermalState" : 0
+    },
+    {
+      "activeMemoryBytes" : 18572961969,
+      "forwardShapes" : {
+        "abandonedSteps" : 0,
+        "completedStepTimings" : [
+          {
+            "phase" : "prefill",
+            "wallNanos" : 4712963500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60506292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 58599583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 49833875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 48498666
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47612500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47119792
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47475000
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47043542
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46824084
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46992875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47400875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46733625
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46982458
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47242167
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46909875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46850792
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47266750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46772958
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46854084
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47384417
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 64169083
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 46992167
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47331417
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47627708
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47702167
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47751292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 34102042
+          }
+        ],
+        "confirmedTokenTimings" : [
+          {
+            "relativeNanos" : 0,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 60589584,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 119265375,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 176200084,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 231719875,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 286195417,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 340022584,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 394020959,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 447644542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 500973709,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 554565000,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 608556542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 661957125,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 715616792,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 769506959,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 822945875,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 876349542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 930157000,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 983577792,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1037003709,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1090940917,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1161799292,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1215413917,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1269579542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1323825542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1378358667,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1432658167,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1473728709,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          }
+        ],
+        "droppedCalls" : 0,
+        "droppedStepTimings" : 0,
+        "droppedTokenTimings" : 0,
+        "enabled" : true,
+        "entries" : [
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "decode",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 1
+            },
+            "completedCalls" : 2,
+            "submittedCalls" : 2
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "mtp_verification",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 5
+            },
+            "completedCalls" : 25,
+            "submittedCalls" : 25
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "prefill",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 4096
+            },
+            "completedCalls" : 1,
+            "submittedCalls" : 1
+          }
+        ],
+        "pendingSteps" : 0,
+        "schema" : 1,
+        "scope" : 2,
+        "unobservedDispatches" : 0
+      },
+      "iteration" : 1,
+      "lowPowerMode" : false,
+      "mtpAccepted" : 100,
+      "mtpActive" : true,
+      "mtpProposed" : 100,
+      "mtpRounds" : 25,
+      "peakMemoryBytes" : 25913862389,
+      "promptTarget" : 4096,
+      "retired" : true,
+      "rows" : [
+        {
+          "cachedTokens" : 0,
+          "completionTokens" : 128,
+          "contentArrivalMs" : [
+            4731.721833,
+            4792.253958,
+            4857.991375,
+            4914.837042,
+            4970.190792,
+            5024.511042,
+            5078.172542,
+            5132.218208,
+            5185.77725,
+            5239.186792,
+            5292.77325,
+            5346.840417,
+            5400.247333,
+            5453.875,
+            5507.6473750000005,
+            5561.105958,
+            5614.513625,
+            5668.421833,
+            5721.761167,
+            5775.178042,
+            5829.23925,
+            5900.030375,
+            5953.855125,
+            6007.808625,
+            6062.260667,
+            6116.5255,
+            6171.232875,
+            6205.40375
+          ],
+          "elapsedMs" : 6205.704833,
+          "firstContentMs" : 4731.721833,
+          "outputSHA256" : "ef5d7dd6bee907301e7cdb774195e953c37a82af6e8bde4afacc7b1ed065113b",
+          "profile" : {
+            "budget_remaining_at_admit_us" : 3599981597,
+            "deadline_decision" : {
+              "decode_tps" : 43.34008376169709,
+              "observed_us" : 18422,
+              "prefill_tps" : 319.8369247234465,
+              "projected_decode_tokens" : 0,
+              "projected_prefill_tokens" : 4096,
+              "projected_service_us" : 12806526,
+              "projection" : "bounded",
+              "remaining_us" : 3599981582,
+              "submit_remaining_us" : 3599981643,
+              "verdict" : "accepted"
+            },
+            "deadline_mode" : "projected",
+            "engine" : {
+              "admitted_ns" : 214333,
+              "batch_rows_max" : 1,
+              "batch_rows_min" : 1,
+              "batch_rows_sum" : 28,
+              "capacity_requeues" : 0,
+              "chained_decode_steps" : 0,
+              "decode_steps" : 27,
+              "detok_delay_first_ns" : 75084,
+              "finish_reason" : "length",
+              "finished_ns" : 6186906542,
+              "first_token_ns" : 4713177833,
+              "kv_allocated_ns" : 214333,
+              "mtp_accepted" : 100,
+              "mtp_proposed" : 100,
+              "mtp_rounds" : 25,
+              "packed_prefill_chunks" : 0,
+              "pause_count" : 0,
+              "paused_ns" : 0,
+              "preemptions" : 0,
+              "prefill_chunk_tokens_max" : 4096,
+              "prefill_chunks" : 1,
+              "prefill_first_launch_ns" : 214333,
+              "prompt_computed_ns" : 4713177833,
+              "readmissions" : 0,
+              "solo_stripe_chunks" : 1,
+              "step_latency_ns_max" : 4712963500,
+              "step_latency_ns_sum" : 6019543586,
+              "vision_chunks" : 0
+            },
+            "engine_admitted_us" : 18407,
+            "engine_submit_us" : 18359,
+            "first_delta_us" : 4731650,
+            "kv_bytes_capacity" : 101448498719,
+            "kv_bytes_in_use_at_admit" : 0,
+            "last_delta_us" : 6205364,
+            "mtp_active" : true,
+            "partial_prefill_cap" : 1,
+            "projected_decode_tokens" : 0,
+            "projected_prefill_tokens" : 4096,
+            "projected_service_us" : 12806526,
+            "prompt_prep_end_us" : 18327,
+            "prompt_prep_start_us" : 253,
+            "prompt_tokens" : 4096,
+            "queued_prefill_tokens_at_admit" : 0,
+            "running_at_admit" : 0,
+            "schema" : 1,
+            "slept_us" : 0,
+            "steps_at_finish" : 86,
+            "steps_at_submit" : 58,
+            "total_us" : 6206361,
+            "waiting_at_admit" : 0,
+            "wall_ms" : 1790640087356
+          },
+          "promptTokens" : 4096,
+          "requestID" : "c4a81079-0a99-4512-b262-fa789cbe2073-4096-1-0",
+          "requestedOutputTokens" : 128,
+          "workloadSHA256" : "aa1eedbaa29d8530e07aa6cf2f2094118add8b4b97d2633cb3a77b1e2bf35f6c"
+        }
+      ],
+      "thermalState" : 0
+    },
+    {
+      "activeMemoryBytes" : 18572961969,
+      "forwardShapes" : {
+        "abandonedSteps" : 0,
+        "completedStepTimings" : [
+          {
+            "phase" : "prefill",
+            "wallNanos" : 4841212500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61223291
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 58998791
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 50398917
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 49753666
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 49375333
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47955166
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47605125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47725750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47227958
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47018666
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47366125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47163292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47270416
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47392625
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47494042
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47626291
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47504500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 47870583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 48059916
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 48978167
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 48321125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 50802958
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 49203250
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 49547000
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 49188083
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 49519958
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 36525292
+          }
+        ],
+        "confirmedTokenTimings" : [
+          {
+            "relativeNanos" : 0,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 61288958,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 120382583,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 178074042,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 235056708,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 291429208,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 346081333,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 400683750,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 455290917,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 509041750,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 562912583,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 616800750,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 670739250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 724737708,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 778830375,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 833100542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 887553583,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 941845917,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 996635250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1051532708,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1107392667,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1162565083,
+            "rowOrdinal" : 0,
+            "tokenCount" : 4
+          },
+          {
+            "relativeNanos" : 1220722833,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1276580417,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1333064083,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1389286625,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1445941875,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1489600292,
+            "rowOrdinal" : 0,
+            "tokenCount" : 2
+          }
+        ],
+        "droppedCalls" : 0,
+        "droppedStepTimings" : 0,
+        "droppedTokenTimings" : 0,
+        "enabled" : true,
+        "entries" : [
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "decode",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 1
+            },
+            "completedCalls" : 1,
+            "submittedCalls" : 1
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "mtp_verification",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 2
+            },
+            "completedCalls" : 1,
+            "submittedCalls" : 1
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "mtp_verification",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 5
+            },
+            "completedCalls" : 25,
+            "submittedCalls" : 25
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "prefill",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 4096
+            },
+            "completedCalls" : 1,
+            "submittedCalls" : 1
+          }
+        ],
+        "pendingSteps" : 0,
+        "schema" : 1,
+        "scope" : 3,
+        "unobservedDispatches" : 0
+      },
+      "iteration" : 2,
+      "lowPowerMode" : false,
+      "mtpAccepted" : 100,
+      "mtpActive" : true,
+      "mtpProposed" : 101,
+      "mtpRounds" : 26,
+      "peakMemoryBytes" : 25913862389,
+      "promptTarget" : 4096,
+      "retired" : true,
+      "rows" : [
+        {
+          "cachedTokens" : 0,
+          "completionTokens" : 128,
+          "contentArrivalMs" : [
+            4861.755916,
+            4923.038083,
+            4989.360458,
+            5046.992458,
+            5103.736208,
+            5159.800458,
+            5214.754083,
+            5269.23025,
+            5323.497125,
+            5377.55825,
+            5431.106833,
+            5485.239875,
+            5539.130375,
+            5593.099375,
+            5647.2682079999995,
+            5701.601291,
+            5756.008333,
+            5810.431541,
+            5865.140333,
+            5920.077,
+            5975.904208,
+            6031.599375,
+            6089.051416,
+            6145.186375,
+            6201.762208,
+            6258.086,
+            6314.760583,
+            6355.326458
+          ],
+          "elapsedMs" : 6355.629875,
+          "firstContentMs" : 4861.755916,
+          "outputSHA256" : "ef5d7dd6bee907301e7cdb774195e953c37a82af6e8bde4afacc7b1ed065113b",
+          "profile" : {
+            "budget_remaining_at_admit_us" : 3599981662,
+            "deadline_decision" : {
+              "decode_tps" : 43.264454029886444,
+              "observed_us" : 18359,
+              "prefill_tps" : 354.24968313921704,
+              "projected_decode_tokens" : 0,
+              "projected_prefill_tokens" : 4096,
+              "projected_service_us" : 11562466,
+              "projection" : "bounded",
+              "remaining_us" : 3599981644,
+              "submit_remaining_us" : 3599981707,
+              "verdict" : "accepted"
+            },
+            "deadline_mode" : "projected",
+            "engine" : {
+              "admitted_ns" : 2090833,
+              "batch_rows_max" : 1,
+              "batch_rows_min" : 1,
+              "batch_rows_sum" : 28,
+              "capacity_requeues" : 0,
+              "chained_decode_steps" : 0,
+              "decode_steps" : 27,
+              "detok_delay_first_ns" : 56292,
+              "finish_reason" : "length",
+              "finished_ns" : 6332903625,
+              "first_token_ns" : 4843303333,
+              "kv_allocated_ns" : 2090833,
+              "mtp_accepted" : 100,
+              "mtp_proposed" : 101,
+              "mtp_rounds" : 26,
+              "packed_prefill_chunks" : 0,
+              "pause_count" : 0,
+              "paused_ns" : 0,
+              "preemptions" : 0,
+              "prefill_chunk_tokens_max" : 4096,
+              "prefill_chunks" : 1,
+              "prefill_first_launch_ns" : 2090833,
+              "prompt_computed_ns" : 4843303333,
+              "readmissions" : 0,
+              "solo_stripe_chunks" : 1,
+              "step_latency_ns_max" : 4841212500,
+              "step_latency_ns_sum" : 6158328786,
+              "vision_chunks" : 0
+            },
+            "engine_admitted_us" : 18341,
+            "engine_submit_us" : 18295,
+            "first_delta_us" : 4861690,
+            "kv_bytes_capacity" : 101448498719,
+            "kv_bytes_in_use_at_admit" : 0,
+            "last_delta_us" : 6355287,
+            "mtp_active" : true,
+            "partial_prefill_cap" : 1,
+            "projected_decode_tokens" : 0,
+            "projected_prefill_tokens" : 4096,
+            "projected_service_us" : 11562466,
+            "prompt_prep_end_us" : 18263,
+            "prompt_prep_start_us" : 269,
+            "prompt_tokens" : 4096,
+            "queued_prefill_tokens_at_admit" : 0,
+            "running_at_admit" : 0,
+            "schema" : 1,
+            "slept_us" : 0,
+            "steps_at_finish" : 114,
+            "steps_at_submit" : 86,
+            "total_us" : 6356264,
+            "waiting_at_admit" : 0,
+            "wall_ms" : 1790640093781
+          },
+          "promptTokens" : 4096,
+          "requestID" : "c4a81079-0a99-4512-b262-fa789cbe2073-4096-2-0",
+          "requestedOutputTokens" : 128,
+          "workloadSHA256" : "49a415afda9c5cdac8aaa6f52ce6aff7d98ee8fc11631ac449c1c76e3fe0aa6a"
+        }
+      ],
+      "thermalState" : 0
+    },
+    {
+      "activeMemoryBytes" : 18572961969,
+      "forwardShapes" : {
+        "abandonedSteps" : 0,
+        "completedStepTimings" : [
+          {
+            "phase" : "prefill",
+            "wallNanos" : 4955896750
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5495037750
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5903552666
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6180491000
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 122852709
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 109361250
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59973084
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60023292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60985125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60411666
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60874667
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60709459
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60473750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 66143417
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61434208
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61276625
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61298625
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 62074583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61365292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61353500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61941542
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61788500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60197041
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60849583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61905583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61408875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61467833
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 62066834
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61458292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61741458
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 36338833
+          }
+        ],
+        "confirmedTokenTimings" : [
+          {
+            "relativeNanos" : 0,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 122971667,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 232438875,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 297700042,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 363174417,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 429689875,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 495678458,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 562212792,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 628492667,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 694507958,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 766233875,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 833301333,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 900218833,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 967078750,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1034748500,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1101721667,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1168749542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1236327917,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1303808708,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1369633083,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1436079375,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1503564000,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1570610083,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1637687375,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1705433167,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1772562500,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1840034250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1882119000,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          }
+        ],
+        "droppedCalls" : 0,
+        "droppedStepTimings" : 0,
+        "droppedTokenTimings" : 0,
+        "enabled" : true,
+        "entries" : [
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "decode",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 1
+            },
+            "completedCalls" : 2,
+            "submittedCalls" : 2
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "mtp_verification",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 5
+            },
+            "completedCalls" : 25,
+            "submittedCalls" : 25
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "prefill",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 4096
+            },
+            "completedCalls" : 4,
+            "submittedCalls" : 4
+          }
+        ],
+        "pendingSteps" : 0,
+        "schema" : 1,
+        "scope" : 4,
+        "unobservedDispatches" : 0
+      },
+      "iteration" : 0,
+      "lowPowerMode" : false,
+      "mtpAccepted" : 100,
+      "mtpActive" : true,
+      "mtpProposed" : 100,
+      "mtpRounds" : 25,
+      "peakMemoryBytes" : 31010007285,
+      "promptTarget" : 16384,
+      "retired" : true,
+      "rows" : [
+        {
+          "cachedTokens" : 0,
+          "completionTokens" : 128,
+          "contentArrivalMs" : [
+            22611.204375,
+            22734.211083,
+            22848.856625,
+            22914.299292,
+            22979.844542,
+            23046.38925,
+            23112.453125,
+            23178.891292,
+            23245.144292,
+            23311.199875,
+            23382.984167,
+            23450.05225,
+            23516.890958,
+            23583.779667,
+            23651.467958,
+            23718.500708,
+            23785.49125,
+            23853.160083,
+            23920.538667,
+            23986.325042,
+            24052.778708,
+            24120.331083,
+            24187.329542,
+            24254.496375,
+            24322.205583,
+            24389.41275,
+            24456.916292,
+            24493.29
+          ],
+          "elapsedMs" : 24494.100875,
+          "firstContentMs" : 22611.204375,
+          "outputSHA256" : "ef5d7dd6bee907301e7cdb774195e953c37a82af6e8bde4afacc7b1ed065113b",
+          "profile" : {
+            "budget_remaining_at_admit_us" : 3599925474,
+            "deadline_decision" : {
+              "decode_tps" : 43.07378341283085,
+              "observed_us" : 74562,
+              "prefill_tps" : 374.8851338160082,
+              "projected_decode_tokens" : 0,
+              "projected_prefill_tokens" : 16384,
+              "projected_service_us" : 43704053,
+              "projection" : "bounded",
+              "remaining_us" : 3599925448,
+              "submit_remaining_us" : 3599925544,
+              "verdict" : "accepted"
+            },
+            "deadline_mode" : "projected",
+            "engine" : {
+              "admitted_ns" : 1327708,
+              "batch_rows_max" : 1,
+              "batch_rows_min" : 1,
+              "batch_rows_sum" : 28,
+              "capacity_requeues" : 0,
+              "chained_decode_steps" : 0,
+              "decode_steps" : 27,
+              "detok_delay_first_ns" : 50917,
+              "finish_reason" : "length",
+              "finished_ns" : 24418676083,
+              "first_token_ns" : 22536557083,
+              "kv_allocated_ns" : 1327708,
+              "mtp_accepted" : 100,
+              "mtp_proposed" : 100,
+              "mtp_rounds" : 25,
+              "packed_prefill_chunks" : 0,
+              "pause_count" : 0,
+              "paused_ns" : 0,
+              "preemptions" : 0,
+              "prefill_chunk_tokens_max" : 4096,
+              "prefill_chunks" : 4,
+              "prefill_first_launch_ns" : 1327708,
+              "prompt_computed_ns" : 22536557083,
+              "readmissions" : 0,
+              "solo_stripe_chunks" : 4,
+              "step_latency_ns_max" : 6180491000,
+              "step_latency_ns_sum" : 7922266626,
+              "vision_chunks" : 0
+            },
+            "engine_admitted_us" : 74535,
+            "engine_submit_us" : 74465,
+            "first_delta_us" : 22611127,
+            "kv_bytes_capacity" : 101448498719,
+            "kv_bytes_in_use_at_admit" : 0,
+            "last_delta_us" : 24493245,
+            "mtp_active" : true,
+            "partial_prefill_cap" : 1,
+            "projected_decode_tokens" : 0,
+            "projected_prefill_tokens" : 16384,
+            "projected_service_us" : 43704053,
+            "prompt_prep_end_us" : 74418,
+            "prompt_prep_start_us" : 361,
+            "prompt_tokens" : 16384,
+            "queued_prefill_tokens_at_admit" : 0,
+            "running_at_admit" : 0,
+            "schema" : 1,
+            "slept_us" : 0,
+            "steps_at_finish" : 145,
+            "steps_at_submit" : 114,
+            "total_us" : 24496428,
+            "waiting_at_admit" : 0,
+            "wall_ms" : 1790640101175
+          },
+          "promptTokens" : 16384,
+          "requestID" : "c4a81079-0a99-4512-b262-fa789cbe2073-16384-0-0",
+          "requestedOutputTokens" : 128,
+          "workloadSHA256" : "33a54e7258c8a0ffb43762797cbc2015bf9fde5a95645a5c175835cd7c3f6765"
+        }
+      ],
+      "thermalState" : 0
+    },
+    {
+      "activeMemoryBytes" : 18572961969,
+      "forwardShapes" : {
+        "abandonedSteps" : 0,
+        "completedStepTimings" : [
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5225687291
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5480868042
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5732797625
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5990113291
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 74490916
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 110203292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 63944667
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 62919292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 62933083
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61702167
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61049958
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61133458
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60301459
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60101917
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60437042
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59365750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59462041
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60037333
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59423125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59526250
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60389250
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59431500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59639917
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59774875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60402458
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59449042
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59477625
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60238208
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59666875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59654750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 36232042
+          }
+        ],
+        "confirmedTokenTimings" : [
+          {
+            "relativeNanos" : 0,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 74611250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 184899917,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 254776459,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 323525334,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 392149375,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 459537334,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 526142500,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 592832125,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 658713584,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 724304709,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 790209709,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 854972625,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 919816000,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 985274917,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1050119000,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1114998292,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1180848250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1245741250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1310779834,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1376036542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1441816292,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1506670417,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1571592959,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1637257417,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1702363459,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1767393375,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1809022959,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          }
+        ],
+        "droppedCalls" : 0,
+        "droppedStepTimings" : 0,
+        "droppedTokenTimings" : 0,
+        "enabled" : true,
+        "entries" : [
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "decode",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 1
+            },
+            "completedCalls" : 2,
+            "submittedCalls" : 2
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "mtp_verification",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 5
+            },
+            "completedCalls" : 25,
+            "submittedCalls" : 25
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "prefill",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 4096
+            },
+            "completedCalls" : 4,
+            "submittedCalls" : 4
+          }
+        ],
+        "pendingSteps" : 0,
+        "schema" : 1,
+        "scope" : 5,
+        "unobservedDispatches" : 0
+      },
+      "iteration" : 1,
+      "lowPowerMode" : false,
+      "mtpAccepted" : 100,
+      "mtpActive" : true,
+      "mtpProposed" : 100,
+      "mtpRounds" : 25,
+      "peakMemoryBytes" : 31010007285,
+      "promptTarget" : 16384,
+      "retired" : true,
+      "rows" : [
+        {
+          "cachedTokens" : 0,
+          "completionTokens" : 128,
+          "contentArrivalMs" : [
+            22507.678834,
+            22582.27075,
+            22698.452834,
+            22768.210167,
+            22836.811084,
+            22905.432667,
+            22972.686542,
+            23039.29075,
+            23106.005084,
+            23171.79325,
+            23237.3615,
+            23303.198084,
+            23367.944209,
+            23432.82325,
+            23498.286167,
+            23563.101,
+            23628.051417,
+            23693.902209,
+            23758.733084,
+            23823.841417,
+            23889.004625,
+            23954.823042,
+            24019.732667,
+            24084.621792,
+            24150.315792,
+            24215.340875,
+            24280.38675,
+            24316.660917
+          ],
+          "elapsedMs" : 24317.51925,
+          "firstContentMs" : 22507.678834,
+          "outputSHA256" : "ef5d7dd6bee907301e7cdb774195e953c37a82af6e8bde4afacc7b1ed065113b",
+          "profile" : {
+            "budget_remaining_at_admit_us" : 3599922181,
+            "deadline_decision" : {
+              "decode_tps" : 40.27321881040553,
+              "observed_us" : 77841,
+              "prefill_tps" : 371.47550604307617,
+              "projected_decode_tokens" : 0,
+              "projected_prefill_tokens" : 16384,
+              "projected_service_us" : 44105195,
+              "projection" : "bounded",
+              "remaining_us" : 3599922163,
+              "submit_remaining_us" : 3599922222,
+              "verdict" : "accepted"
+            },
+            "deadline_mode" : "projected",
+            "engine" : {
+              "admitted_ns" : 52375,
+              "batch_rows_max" : 1,
+              "batch_rows_min" : 1,
+              "batch_rows_sum" : 28,
+              "capacity_requeues" : 0,
+              "chained_decode_steps" : 0,
+              "decode_steps" : 27,
+              "detok_delay_first_ns" : 47542,
+              "finish_reason" : "length",
+              "finished_ns" : 24238763625,
+              "first_token_ns" : 22429740666,
+              "kv_allocated_ns" : 52375,
+              "mtp_accepted" : 100,
+              "mtp_proposed" : 100,
+              "mtp_rounds" : 25,
+              "packed_prefill_chunks" : 0,
+              "pause_count" : 0,
+              "paused_ns" : 0,
+              "preemptions" : 0,
+              "prefill_chunk_tokens_max" : 4096,
+              "prefill_chunks" : 4,
+              "prefill_first_launch_ns" : 52375,
+              "prompt_computed_ns" : 22429740666,
+              "readmissions" : 0,
+              "solo_stripe_chunks" : 4,
+              "step_latency_ns_max" : 5990113291,
+              "step_latency_ns_sum" : 7661501583,
+              "vision_chunks" : 0
+            },
+            "engine_admitted_us" : 77824,
+            "engine_submit_us" : 77782,
+            "first_delta_us" : 22507604,
+            "kv_bytes_capacity" : 101448498719,
+            "kv_bytes_in_use_at_admit" : 0,
+            "last_delta_us" : 24316617,
+            "mtp_active" : true,
+            "partial_prefill_cap" : 1,
+            "projected_decode_tokens" : 0,
+            "projected_prefill_tokens" : 16384,
+            "projected_service_us" : 44105195,
+            "prompt_prep_end_us" : 77754,
+            "prompt_prep_start_us" : 342,
+            "prompt_tokens" : 16384,
+            "queued_prefill_tokens_at_admit" : 0,
+            "running_at_admit" : 0,
+            "schema" : 1,
+            "slept_us" : 0,
+            "steps_at_finish" : 176,
+            "steps_at_submit" : 145,
+            "total_us" : 24319957,
+            "waiting_at_admit" : 0,
+            "wall_ms" : 1790640126746
+          },
+          "promptTokens" : 16384,
+          "requestID" : "c4a81079-0a99-4512-b262-fa789cbe2073-16384-1-0",
+          "requestedOutputTokens" : 128,
+          "workloadSHA256" : "1531b1a03f52d3d1f72ecb04fa50d58159b8161be940ec87f41ae5ab9828f828"
+        }
+      ],
+      "thermalState" : 0
+    },
+    {
+      "activeMemoryBytes" : 18572961969,
+      "forwardShapes" : {
+        "abandonedSteps" : 0,
+        "completedStepTimings" : [
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5005678292
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5620256041
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5961220209
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6093503792
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 67475084
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 107166666
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 62109084
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61326959
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 61110542
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60469083
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59625750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60002291
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59271917
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59092542
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59932583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59237000
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59333084
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59756917
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59484834
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59147209
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 60026000
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59389125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59714667
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59310750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59963209
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59192125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59096541
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59742000
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59479791
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 59149291
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 36039833
+          }
+        ],
+        "confirmedTokenTimings" : [
+          {
+            "relativeNanos" : 0,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 67590750,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 174864416,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 242697000,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 309659375,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 376337458,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 442195458,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 507166041,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 572457791,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 637098458,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 701544250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 766838416,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 831368041,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 896035250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 961130708,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1025964750,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1090402125,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1155812041,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1220583583,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1285725083,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1350404791,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1415737500,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1480214333,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1544658666,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1609683000,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1674538666,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1739042041,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1780456208,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          }
+        ],
+        "droppedCalls" : 0,
+        "droppedStepTimings" : 0,
+        "droppedTokenTimings" : 0,
+        "enabled" : true,
+        "entries" : [
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "decode",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 1
+            },
+            "completedCalls" : 2,
+            "submittedCalls" : 2
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "mtp_verification",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 5
+            },
+            "completedCalls" : 25,
+            "submittedCalls" : 25
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "prefill",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 4096
+            },
+            "completedCalls" : 4,
+            "submittedCalls" : 4
+          }
+        ],
+        "pendingSteps" : 0,
+        "schema" : 1,
+        "scope" : 6,
+        "unobservedDispatches" : 0
+      },
+      "iteration" : 2,
+      "lowPowerMode" : false,
+      "mtpAccepted" : 100,
+      "mtpActive" : true,
+      "mtpProposed" : 100,
+      "mtpRounds" : 25,
+      "peakMemoryBytes" : 31010007285,
+      "promptTarget" : 16384,
+      "retired" : true,
+      "rows" : [
+        {
+          "cachedTokens" : 0,
+          "completionTokens" : 128,
+          "contentArrivalMs" : [
+            22758.947875,
+            22826.533583,
+            22939.48075,
+            23007.198041,
+            23074.085916,
+            23140.589208,
+            23206.409,
+            23271.316875,
+            23336.706,
+            23401.34125,
+            23465.77075,
+            23531.00475,
+            23595.573125,
+            23660.250375,
+            23725.343583,
+            23790.121416,
+            23854.652666,
+            23920.055625,
+            23984.875708,
+            24049.962416,
+            24114.636833,
+            24179.900125,
+            24244.425125,
+            24308.808666,
+            24373.92825,
+            24438.754916,
+            24503.280375,
+            24539.404083
+          ],
+          "elapsedMs" : 24540.217083,
+          "firstContentMs" : 22758.947875,
+          "outputSHA256" : "ef5d7dd6bee907301e7cdb774195e953c37a82af6e8bde4afacc7b1ed065113b",
+          "profile" : {
+            "budget_remaining_at_admit_us" : 3599922206,
+            "deadline_decision" : {
+              "decode_tps" : 38.72179945207538,
+              "observed_us" : 77814,
+              "prefill_tps" : 369.6019203765661,
+              "projected_decode_tokens" : 0,
+              "projected_prefill_tokens" : 16384,
+              "projected_service_us" : 44328774,
+              "projection" : "bounded",
+              "remaining_us" : 3599922190,
+              "submit_remaining_us" : 3599922249,
+              "verdict" : "accepted"
+            },
+            "deadline_mode" : "projected",
+            "engine" : {
+              "admitted_ns" : 115542,
+              "batch_rows_max" : 1,
+              "batch_rows_min" : 1,
+              "batch_rows_sum" : 28,
+              "capacity_requeues" : 0,
+              "chained_decode_steps" : 0,
+              "decode_steps" : 27,
+              "detok_delay_first_ns" : 47791,
+              "finish_reason" : "length",
+              "finished_ns" : 24461484917,
+              "first_token_ns" : 22681028709,
+              "kv_allocated_ns" : 115542,
+              "mtp_accepted" : 100,
+              "mtp_proposed" : 100,
+              "mtp_rounds" : 25,
+              "packed_prefill_chunks" : 0,
+              "pause_count" : 0,
+              "paused_ns" : 0,
+              "preemptions" : 0,
+              "prefill_chunk_tokens_max" : 4096,
+              "prefill_chunks" : 4,
+              "prefill_first_launch_ns" : 115542,
+              "prompt_computed_ns" : 22681028709,
+              "readmissions" : 0,
+              "solo_stripe_chunks" : 4,
+              "step_latency_ns_max" : 6093503792,
+              "step_latency_ns_sum" : 7739148669,
+              "vision_chunks" : 0
+            },
+            "engine_admitted_us" : 77799,
+            "engine_submit_us" : 77755,
+            "first_delta_us" : 22758868,
+            "kv_bytes_capacity" : 101448498719,
+            "kv_bytes_in_use_at_admit" : 0,
+            "last_delta_us" : 24539353,
+            "mtp_active" : true,
+            "partial_prefill_cap" : 1,
+            "projected_decode_tokens" : 0,
+            "projected_prefill_tokens" : 16384,
+            "projected_service_us" : 44328774,
+            "prompt_prep_end_us" : 77725,
+            "prompt_prep_start_us" : 255,
+            "prompt_tokens" : 16384,
+            "queued_prefill_tokens_at_admit" : 0,
+            "running_at_admit" : 0,
+            "schema" : 1,
+            "slept_us" : 0,
+            "steps_at_finish" : 207,
+            "steps_at_submit" : 176,
+            "total_us" : 24542541,
+            "waiting_at_admit" : 0,
+            "wall_ms" : 1790640152126
+          },
+          "promptTokens" : 16384,
+          "requestID" : "c4a81079-0a99-4512-b262-fa789cbe2073-16384-2-0",
+          "requestedOutputTokens" : 128,
+          "workloadSHA256" : "f32501c0180c48f816dd23cb6fb1567c10d695b95143a348db7dc85547d4998d"
+        }
+      ],
+      "thermalState" : 0
+    },
+    {
+      "activeMemoryBytes" : 18572961969,
+      "forwardShapes" : {
+        "abandonedSteps" : 0,
+        "completedStepTimings" : [
+          {
+            "phase" : "prefill",
+            "wallNanos" : 4605122708
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5133056000
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5860028959
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5948169625
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5880251292
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6547744292
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6265100833
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 7133997417
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 117877708
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 174290625
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77701000
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77294833
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 78355667
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77201959
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 76938583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77898417
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 76750291
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77125958
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 78166166
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77100208
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77128250
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 78572375
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77099583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77380667
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 78042500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77326500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77198417
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77209125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 78290167
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77132542
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77294083
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77953917
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77138750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 77182333
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 39651750
+          }
+        ],
+        "confirmedTokenTimings" : [
+          {
+            "relativeNanos" : 0,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 117997083,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 292402625,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 376623708,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 460402708,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 545251625,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 628945917,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 712349125,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 796723500,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 879949708,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 963554875,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1048204833,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1131765333,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1215304458,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1300329958,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1383923333,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1467742917,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1552210542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1635964708,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1719606042,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1803309792,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1888026750,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1971626792,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2055337333,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2139796167,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2223368292,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2307059708,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2353230667,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          }
+        ],
+        "droppedCalls" : 0,
+        "droppedStepTimings" : 0,
+        "droppedTokenTimings" : 0,
+        "enabled" : true,
+        "entries" : [
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "decode",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 1
+            },
+            "completedCalls" : 2,
+            "submittedCalls" : 2
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "mtp_verification",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 5
+            },
+            "completedCalls" : 25,
+            "submittedCalls" : 25
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "prefill",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 4096
+            },
+            "completedCalls" : 8,
+            "submittedCalls" : 8
+          }
+        ],
+        "pendingSteps" : 0,
+        "schema" : 1,
+        "scope" : 7,
+        "unobservedDispatches" : 0
+      },
+      "iteration" : 0,
+      "lowPowerMode" : false,
+      "mtpAccepted" : 100,
+      "mtpActive" : true,
+      "mtpProposed" : 100,
+      "mtpRounds" : 25,
+      "peakMemoryBytes" : 33512188205,
+      "promptTarget" : 32768,
+      "retired" : true,
+      "rows" : [
+        {
+          "cachedTokens" : 0,
+          "completionTokens" : 128,
+          "contentArrivalMs" : [
+            47520.110917,
+            47638.1315,
+            47818.974375,
+            47903.14,
+            47986.920292,
+            48071.761917,
+            48155.430167,
+            48238.839125,
+            48323.218625,
+            48406.476209,
+            48490.052292,
+            48574.69075,
+            48658.19475,
+            48741.8035,
+            48826.848334,
+            48910.382417,
+            48994.215375,
+            49078.669709,
+            49162.443292,
+            49246.124875,
+            49329.77025,
+            49414.51675,
+            49498.06575,
+            49581.861625,
+            49666.259917,
+            49749.897209,
+            49833.595959,
+            49873.30775
+          ],
+          "elapsedMs" : 49874.803292,
+          "firstContentMs" : 47520.110917,
+          "outputSHA256" : "ef5d7dd6bee907301e7cdb774195e953c37a82af6e8bde4afacc7b1ed065113b",
+          "profile" : {
+            "budget_remaining_at_admit_us" : 3599855806,
+            "deadline_decision" : {
+              "decode_tps" : 37.804764560412615,
+              "observed_us" : 144225,
+              "prefill_tps" : 367.07676989856276,
+              "projected_decode_tokens" : 0,
+              "projected_prefill_tokens" : 32768,
+              "projected_service_us" : 89267430,
+              "projection" : "bounded",
+              "remaining_us" : 3599855783,
+              "submit_remaining_us" : 3599855870,
+              "verdict" : "accepted"
+            },
+            "deadline_mode" : "projected",
+            "engine" : {
+              "admitted_ns" : 1671167,
+              "batch_rows_max" : 1,
+              "batch_rows_min" : 1,
+              "batch_rows_sum" : 28,
+              "capacity_requeues" : 0,
+              "chained_decode_steps" : 0,
+              "decode_steps" : 27,
+              "detok_delay_first_ns" : 51250,
+              "finish_reason" : "length",
+              "finished_ns" : 49729030459,
+              "first_token_ns" : 47375799792,
+              "kv_allocated_ns" : 1671167,
+              "mtp_accepted" : 100,
+              "mtp_proposed" : 100,
+              "mtp_rounds" : 25,
+              "packed_prefill_chunks" : 0,
+              "pause_count" : 0,
+              "paused_ns" : 0,
+              "preemptions" : 0,
+              "prefill_chunk_tokens_max" : 4096,
+              "prefill_chunks" : 8,
+              "prefill_first_launch_ns" : 1671167,
+              "prompt_computed_ns" : 47375799792,
+              "readmissions" : 0,
+              "solo_stripe_chunks" : 8,
+              "step_latency_ns_max" : 7133997417,
+              "step_latency_ns_sum" : 9325299791,
+              "vision_chunks" : 0
+            },
+            "engine_admitted_us" : 144203,
+            "engine_submit_us" : 144137,
+            "first_delta_us" : 47520034,
+            "kv_bytes_capacity" : 101448498719,
+            "kv_bytes_in_use_at_admit" : 0,
+            "last_delta_us" : 49873259,
+            "mtp_active" : true,
+            "partial_prefill_cap" : 1,
+            "projected_decode_tokens" : 0,
+            "projected_prefill_tokens" : 32768,
+            "projected_service_us" : 89267430,
+            "prompt_prep_end_us" : 144087,
+            "prompt_prep_start_us" : 349,
+            "prompt_tokens" : 32768,
+            "queued_prefill_tokens_at_admit" : 0,
+            "running_at_admit" : 0,
+            "schema" : 1,
+            "slept_us" : 0,
+            "steps_at_finish" : 242,
+            "steps_at_submit" : 207,
+            "total_us" : 49879424,
+            "waiting_at_admit" : 0,
+            "wall_ms" : 1790640178814
+          },
+          "promptTokens" : 32768,
+          "requestID" : "c4a81079-0a99-4512-b262-fa789cbe2073-32768-0-0",
+          "requestedOutputTokens" : 128,
+          "workloadSHA256" : "1f648ae8b70c03925a185d823fa8a2cd226277bd0790d45125a01ecf7ca5f309"
+        }
+      ],
+      "thermalState" : 0
+    },
+    {
+      "activeMemoryBytes" : 18572961969,
+      "forwardShapes" : {
+        "abandonedSteps" : 0,
+        "completedStepTimings" : [
+          {
+            "phase" : "prefill",
+            "wallNanos" : 4646530750
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5062650875
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5378533625
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5695238542
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6295451458
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6123603250
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6547226083
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6800892333
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 79279209
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 171784500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 83068875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 82076458
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 82661625
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80827292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 79945083
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80698375
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 78979583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 79765417
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80685334
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81134292
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80551458
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80596833
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81276375
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81095125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81317875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 82731125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81761875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81564666
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 83037541
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 82006416
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 82126917
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 83276625
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 83261375
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 82698417
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 82443375
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 41885417
+          }
+        ],
+        "confirmedTokenTimings" : [
+          {
+            "relativeNanos" : 0,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 79398334,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 251293209,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 341465584,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 430582042,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 520212125,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 607953292,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 694778167,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 782199792,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 867991542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 954399042,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1041789709,
+            "rowOrdinal" : 0,
+            "tokenCount" : 2
+          },
+          {
+            "relativeNanos" : 1130120459,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1216841125,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1304232625,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1392272959,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1480233000,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1568396084,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1657958959,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1746653459,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1835203500,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1925169500,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2014081250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2103249667,
+            "rowOrdinal" : 0,
+            "tokenCount" : 3
+          },
+          {
+            "relativeNanos" : 2193913792,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2283525334,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2373187834,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2462611084,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2511422459,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          }
+        ],
+        "droppedCalls" : 0,
+        "droppedStepTimings" : 0,
+        "droppedTokenTimings" : 0,
+        "enabled" : true,
+        "entries" : [
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "decode",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 1
+            },
+            "completedCalls" : 2,
+            "submittedCalls" : 2
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "mtp_verification",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 5
+            },
+            "completedCalls" : 26,
+            "submittedCalls" : 26
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "prefill",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 4096
+            },
+            "completedCalls" : 8,
+            "submittedCalls" : 8
+          }
+        ],
+        "pendingSteps" : 0,
+        "schema" : 1,
+        "scope" : 8,
+        "unobservedDispatches" : 0
+      },
+      "iteration" : 1,
+      "lowPowerMode" : false,
+      "mtpAccepted" : 99,
+      "mtpActive" : true,
+      "mtpProposed" : 104,
+      "mtpRounds" : 26,
+      "peakMemoryBytes" : 33512171821,
+      "promptTarget" : 32768,
+      "retired" : true,
+      "rows" : [
+        {
+          "cachedTokens" : 0,
+          "completionTokens" : 128,
+          "contentArrivalMs" : [
+            46697.395125,
+            46776.783458,
+            46955.736125,
+            47045.818583,
+            47134.882083,
+            47224.44375,
+            47312.1405,
+            47398.798875,
+            47486.310083,
+            47571.936833,
+            47658.403916,
+            47746.291083,
+            47833.59325,
+            47920.9345,
+            48008.32325,
+            48096.442708,
+            48184.379958,
+            48272.524666,
+            48362.188583,
+            48450.935458,
+            48539.426291,
+            48629.370375,
+            48718.423208,
+            48807.944375,
+            48897.560875,
+            48987.789708,
+            49077.460458,
+            49166.829416,
+            49208.782208
+          ],
+          "elapsedMs" : 49210.28975,
+          "firstContentMs" : 46697.395125,
+          "outputSHA256" : "ef5d7dd6bee907301e7cdb774195e953c37a82af6e8bde4afacc7b1ed065113b",
+          "profile" : {
+            "budget_remaining_at_admit_us" : 3599855102,
+            "deadline_decision" : {
+              "decode_tps" : 34.55858920505663,
+              "observed_us" : 144930,
+              "prefill_tps" : 360.7065707521882,
+              "projected_decode_tokens" : 0,
+              "projected_prefill_tokens" : 32768,
+              "projected_service_us" : 90843923,
+              "projection" : "bounded",
+              "remaining_us" : 3599855079,
+              "submit_remaining_us" : 3599855171,
+              "verdict" : "accepted"
+            },
+            "deadline_mode" : "projected",
+            "engine" : {
+              "admitted_ns" : 1552667,
+              "batch_rows_max" : 1,
+              "batch_rows_min" : 1,
+              "batch_rows_sum" : 29,
+              "capacity_requeues" : 0,
+              "chained_decode_steps" : 0,
+              "decode_steps" : 28,
+              "detok_delay_first_ns" : 52292,
+              "finish_reason" : "length",
+              "finished_ns" : 49063801959,
+              "first_token_ns" : 46552379500,
+              "kv_allocated_ns" : 1552667,
+              "mtp_accepted" : 99,
+              "mtp_proposed" : 104,
+              "mtp_rounds" : 26,
+              "packed_prefill_chunks" : 0,
+              "pause_count" : 0,
+              "paused_ns" : 0,
+              "preemptions" : 0,
+              "prefill_chunk_tokens_max" : 4096,
+              "prefill_chunks" : 8,
+              "prefill_first_launch_ns" : 1552667,
+              "prompt_computed_ns" : 46552379500,
+              "readmissions" : 0,
+              "solo_stripe_chunks" : 8,
+              "step_latency_ns_max" : 6800892333,
+              "step_latency_ns_sum" : 9133429791,
+              "vision_chunks" : 0
+            },
+            "engine_admitted_us" : 144908,
+            "engine_submit_us" : 144837,
+            "first_delta_us" : 46697321,
+            "kv_bytes_capacity" : 101448498719,
+            "kv_bytes_in_use_at_admit" : 0,
+            "last_delta_us" : 49208728,
+            "mtp_active" : true,
+            "partial_prefill_cap" : 1,
+            "projected_decode_tokens" : 0,
+            "projected_prefill_tokens" : 32768,
+            "projected_service_us" : 90843923,
+            "prompt_prep_end_us" : 144787,
+            "prompt_prep_start_us" : 341,
+            "prompt_tokens" : 32768,
+            "queued_prefill_tokens_at_admit" : 0,
+            "running_at_admit" : 0,
+            "schema" : 1,
+            "slept_us" : 0,
+            "steps_at_finish" : 278,
+            "steps_at_submit" : 242,
+            "total_us" : 49214866,
+            "waiting_at_admit" : 0,
+            "wall_ms" : 1790640230852
+          },
+          "promptTokens" : 32768,
+          "requestID" : "c4a81079-0a99-4512-b262-fa789cbe2073-32768-1-0",
+          "requestedOutputTokens" : 128,
+          "workloadSHA256" : "9e2bd423cff91891b1d7605e282789a93af5e1a71e38aeabc8873d0513312eb1"
+        }
+      ],
+      "thermalState" : 0
+    },
+    {
+      "activeMemoryBytes" : 18572961969,
+      "forwardShapes" : {
+        "abandonedSteps" : 0,
+        "completedStepTimings" : [
+          {
+            "phase" : "prefill",
+            "wallNanos" : 4650104083
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5060138417
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5445488375
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 5731809416
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6001969542
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6258985417
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6537847792
+          },
+          {
+            "phase" : "prefill",
+            "wallNanos" : 6810120750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 74143958
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 170665583
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81446334
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80903875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81924917
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 79603250
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 79407250
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80108750
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 78740375
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 79846417
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80745333
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 78873000
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 79806875
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81140000
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 79398667
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80095834
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81834459
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80191375
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80285958
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 80370042
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81795125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81156500
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81335250
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81836541
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81089083
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 81272125
+          },
+          {
+            "phase" : "decode",
+            "wallNanos" : 40742625
+          }
+        ],
+        "confirmedTokenTimings" : [
+          {
+            "relativeNanos" : 0,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 74289625,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          },
+          {
+            "relativeNanos" : 245053375,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 333415542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 421226250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 510166417,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 596501667,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 682651125,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 769480833,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 854970375,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 941410250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1028850625,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1114348083,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1200814958,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1288702417,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1374879500,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1461740167,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1550481542,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1637497500,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1724611458,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1811803000,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1900398125,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 1988465958,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2076860125,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2165586583,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2253627833,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2341813333,
+            "rowOrdinal" : 0,
+            "tokenCount" : 5
+          },
+          {
+            "relativeNanos" : 2389509250,
+            "rowOrdinal" : 0,
+            "tokenCount" : 1
+          }
+        ],
+        "droppedCalls" : 0,
+        "droppedStepTimings" : 0,
+        "droppedTokenTimings" : 0,
+        "enabled" : true,
+        "entries" : [
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "decode",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 1
+            },
+            "completedCalls" : 2,
+            "submittedCalls" : 2
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "mtp_verification",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 5
+            },
+            "completedCalls" : 25,
+            "submittedCalls" : 25
+          },
+          {
+            "axes" : {
+              "kind" : "target",
+              "liveBatchRows" : 1,
+              "phase" : "prefill",
+              "physicalBatchRows" : 1,
+              "sequenceWidth" : 4096
+            },
+            "completedCalls" : 8,
+            "submittedCalls" : 8
+          }
+        ],
+        "pendingSteps" : 0,
+        "schema" : 1,
+        "scope" : 9,
+        "unobservedDispatches" : 0
+      },
+      "iteration" : 2,
+      "lowPowerMode" : false,
+      "mtpAccepted" : 100,
+      "mtpActive" : true,
+      "mtpProposed" : 100,
+      "mtpRounds" : 25,
+      "peakMemoryBytes" : 33512171821,
+      "promptTarget" : 32768,
+      "retired" : true,
+      "rows" : [
+        {
+          "cachedTokens" : 0,
+          "completionTokens" : 128,
+          "contentArrivalMs" : [
+            46645.614834,
+            46719.855125,
+            46897.49325,
+            46985.832625,
+            47073.732584,
+            47162.389042,
+            47248.734167,
+            47334.856667,
+            47421.711625,
+            47507.079334,
+            47593.602625,
+            47680.96275,
+            47766.504625,
+            47853.058792,
+            47940.970709,
+            48027.156042,
+            48114.132209,
+            48202.79025,
+            48289.81375,
+            48376.917042,
+            48464.090417,
+            48552.795167,
+            48641.000709,
+            48729.233709,
+            48818.042459,
+            48906.021,
+            48994.251292,
+            49035.067375
+          ],
+          "elapsedMs" : 49036.572875,
+          "firstContentMs" : 46645.614834,
+          "outputSHA256" : "ef5d7dd6bee907301e7cdb774195e953c37a82af6e8bde4afacc7b1ed065113b",
+          "profile" : {
+            "budget_remaining_at_admit_us" : 3599852121,
+            "deadline_decision" : {
+              "decode_tps" : 31.77635513717205,
+              "observed_us" : 147913,
+              "prefill_tps" : 358.08241255578605,
+              "projected_decode_tokens" : 0,
+              "projected_prefill_tokens" : 32768,
+              "projected_service_us" : 91509660,
+              "projection" : "bounded",
+              "remaining_us" : 3599852098,
+              "submit_remaining_us" : 3599852187,
+              "verdict" : "accepted"
+            },
+            "deadline_mode" : "projected",
+            "engine" : {
+              "admitted_ns" : 400792,
+              "batch_rows_max" : 1,
+              "batch_rows_min" : 1,
+              "batch_rows_sum" : 28,
+              "capacity_requeues" : 0,
+              "chained_decode_steps" : 0,
+              "decode_steps" : 27,
+              "detok_delay_first_ns" : 80875,
+              "finish_reason" : "length",
+              "finished_ns" : 48887090750,
+              "first_token_ns" : 46497581500,
+              "kv_allocated_ns" : 400792,
+              "mtp_accepted" : 100,
+              "mtp_proposed" : 100,
+              "mtp_rounds" : 25,
+              "packed_prefill_chunks" : 0,
+              "pause_count" : 0,
+              "paused_ns" : 0,
+              "preemptions" : 0,
+              "prefill_chunk_tokens_max" : 4096,
+              "prefill_chunks" : 8,
+              "prefill_first_launch_ns" : 400792,
+              "prompt_computed_ns" : 46497581500,
+              "readmissions" : 0,
+              "solo_stripe_chunks" : 8,
+              "step_latency_ns_max" : 6810120750,
+              "step_latency_ns_sum" : 9028880251,
+              "vision_chunks" : 0
+            },
+            "engine_admitted_us" : 147890,
+            "engine_submit_us" : 147823,
+            "first_delta_us" : 46645536,
+            "kv_bytes_capacity" : 101448498719,
+            "kv_bytes_in_use_at_admit" : 0,
+            "last_delta_us" : 49035031,
+            "mtp_active" : true,
+            "partial_prefill_cap" : 1,
+            "projected_decode_tokens" : 0,
+            "projected_prefill_tokens" : 32768,
+            "projected_service_us" : 91509660,
+            "prompt_prep_end_us" : 147768,
+            "prompt_prep_start_us" : 383,
+            "prompt_tokens" : 32768,
+            "queued_prefill_tokens_at_admit" : 0,
+            "running_at_admit" : 0,
+            "schema" : 1,
+            "slept_us" : 0,
+            "steps_at_finish" : 313,
+            "steps_at_submit" : 278,
+            "total_us" : 49041325,
+            "waiting_at_admit" : 0,
+            "wall_ms" : 1790640282250
+          },
+          "promptTokens" : 32768,
+          "requestID" : "c4a81079-0a99-4512-b262-fa789cbe2073-32768-2-0",
+          "requestedOutputTokens" : 128,
+          "workloadSHA256" : "ca84e28318d38b28d68b7c55c3984bf0ba7f191f500f77514f61316bec8d13e4"
+        }
+      ],
+      "thermalState" : 0
+    }
+  ]
+}

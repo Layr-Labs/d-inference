@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-28 · commit `e1441c2e8`
+> Last updated: 2026-09-28 · commit `d89ef42be`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -58,7 +58,14 @@ provider. Initialize the recorded submodules before building, and retain
 source-matched Metal libraries for benchmarks. The
 [profile qualification procedure](serving-performance-qualification.md)
 records the exact model/runtime/backend/hardware identity; a successful build
-alone does not qualify a wider serving limit.
+alone does not qualify a wider serving limit. Build hardware qualification
+runners with `DARKBLOOM_SERVING_QUALIFICATION_BUILD=1 swift build -c release --build-tests -Xswiftc -enable-testing`;
+this selects the dedicated `ServingQualificationTests` target, retaining
+production optimization while allowing its tests to import internal APIs.
+The ordinary package graph still includes all unit tests. Stage the runner's
+Metal library with `scripts/stage-test-metallib.sh`
+before invoking `scripts/run-serving-qualification.py`. The runner records
+source, binary, model and runtime identity and does not install a provider.
 
 The release pipeline runs optimized products and SDK qualification on separate
 `xcode-27-xlarge` runners. Both call `.github/actions/provider-release-build/action.yml`;

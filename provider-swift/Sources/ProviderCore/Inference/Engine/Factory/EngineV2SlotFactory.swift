@@ -193,6 +193,8 @@ enum EngineV2SlotFactory {
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> ProviderEngineBundle {
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         try persistentTestNamespace?.validate(environment: environment)
         // Per-model selection wins. Apply multimodal vetoes before allocation;
         // prepareProductionBackend then resolves auto, the fleet kill switch,
@@ -256,6 +258,8 @@ enum EngineV2SlotFactory {
             mtpConfig = try verification.applying(
                 to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)
         }
+        let mtpPerformanceConfiguration = ServingMTPConfiguration.resolve(
+            config: mtpConfig, artifact: prepared.mtpArtifact)
         // Same model-specific EOS augmentation as always (GPT-OSS/Harmony
         // adds its generation-config action stops) — from the
         // scheduler-free policy home.
@@ -299,7 +303,9 @@ enum EngineV2SlotFactory {
                     automaticallySelectConcurrency: automaticallySelectConcurrency,
                     // Keep exact static qualification across transient power/
                     // thermal changes. The bridge gates admission dynamically.
-                    performanceQualificationAllowed: assistantHandle?.drafter == nil,
+                    performanceQualificationAllowed: !mtpConfig.effectiveEnabled
+                        || mtpPerformanceConfiguration != nil,
+                    mtpPerformanceConfiguration: mtpPerformanceConfiguration,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,
@@ -437,6 +443,27 @@ enum EngineV2SlotFactory {
                     + (resolvedPartialPrefillCap.map(String.init) ?? "unlimited"))
         }
 
+        // Capture the final scheduler after serving/backend policy; deadline
+        // evidence can never feed back into these construction decisions.
+        let deadlineRuntime = preparedBackend.map { backend in
+            DeadlineRuntimeConfiguration(
+                configuredContextTokens: sizing.maxContextLength,
+                effectiveMaxConcurrency: backend.schedulerConfig.maxConcurrentRequests,
+                prefillChunkSize: backend.schedulerConfig.prefillChunkSize,
+                maxConcurrentPartialPrefills: backend.schedulerConfig.maxConcurrentPartialPrefills ?? 0,
+                mixedPrefillTokenCap: backend.schedulerConfig.mixedStepPrefillTokenCap,
+                soloPrefillStripeTokens: backend.schedulerConfig.soloPrefillStripeTokens)
+        }
+        let deadlineProfile = deadlineRuntime.flatMap { runtime in
+            constructionPurpose == .serving && (!mtpConfig.effectiveEnabled || mtpPerformanceConfiguration != nil)
+                ? DeadlinePerformanceProfiles.resolve(modelID: modelId,
+                    artifactSHA256: modelArtifactSHA256 ?? weightHash,
+                    kvBackend: preparedBackend!.kind.rawValue, runtime: runtime,
+                    hardware: DeadlinePerformanceProfiles.reviewed.isEmpty ? nil : DeadlinePerformanceProfiles.detectedHardware,
+                    environment: environment, mtp: mtpPerformanceConfiguration)
+                : nil
+        }
+
         let residentEvidence = weightHash.flatMap { modelHash in
             promptContractID.flatMap { contract in
                 ResidentPrefixCacheEvidence(
@@ -451,13 +478,18 @@ enum EngineV2SlotFactory {
             defaultMaxTokens: sizing.defaultMaxTokens,
             maxConcurrentRequests: effectiveMaxConcurrentRequests,
             performanceProfile: preparedBackend?.performanceProfile,
+            deadlineProfile: deadlineProfile,
+            deadlineRuntimeConfiguration: deadlineRuntime,
+            promptWorkIdentity: (modelArtifactSHA256 ?? weightHash).flatMap { hash in
+                promptContractID.map { PromptWorkIdentity(modelArtifactHash: hash, promptContractID: $0) }
+            },
             unqualifiedMaxConcurrentRequests: ServingPerformanceProfiles.concurrency(
                 configured: UInt64(max(1, maxConcurrentRequests))),
             prefillDeadlineMode: prefillDeadlineMode,
             advertisedContextTokens: Qwen4SupportPolicy.contextLimit(
                 modelID: modelId, modelType: modelType,
                 nativeContextTokens: sizing.maxContextLength, environment: environment)
-                ?? (preparedBackend?.performanceProfile == nil ? nil : sizing.maxContextLength),
+                ?? (preparedBackend?.performanceProfile == nil && deadlineProfile == nil ? nil : sizing.maxContextLength),
             pagedPageSize: preparedBackend?.pagedPoolConfig?.pageSize,
             runtimePolicyEnvironment: environment,
             kvBytesPerToken: processKVBytesPerToken,

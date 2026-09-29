@@ -381,3 +381,25 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
     #expect(state.publishedCapacity?.slots.first?.state == "idle")
     #expect(!state.refusingNewWork(forModel: target))
 }
+
+@Test func deadlineQualificationChangesAreMaterialWithoutServingPolicyChanges() {
+    var initial = slot(state: "idle", numRunning: 0, used: 0)
+    initial.deadlineProfile = .init(profile: deadlineCalibrationProfileFixture())
+    let original = capacity([initial])
+    var changed = initial
+    changed.deadlineProfile = nil
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: original, current: capacity([changed])))
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: capacity([changed]), current: original))
+    let changes: [(inout DeadlinePerformanceProfileReference) -> Void] = [
+        { $0.configuredContextTokens += 1 }, { $0.effectiveMaxConcurrency += 1 },
+        { $0.prefillChunkSize += 1 }, { $0.maxConcurrentPartialPrefills += 1 },
+        { $0.mixedPrefillTokenCap = 128 }, { $0.soloPrefillStripeTokens = nil }
+    ]
+    for mutate in changes {
+        changed = initial
+        mutate(&changed.deadlineProfile!)
+        #expect(CapacityHeartbeatMateriality.isMaterial(previous: original, current: capacity([changed])))
+    }
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: original, current: original))
+    #expect(initial.performanceProfile == nil)
+}

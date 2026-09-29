@@ -132,6 +132,17 @@ struct EnginePerformanceMeasurements {
     private var buckets: [Key: Rate] = [:]
     static let maxBuckets = 32
 
+    func freshRate(_ name: String, now: ContinuousClock.Instant = .now,
+        maximumAge: Duration = .seconds(120)) -> Double? {
+        guard let rate = rates[name], now >= rate.at, now - rate.at <= maximumAge,
+            rate.value.isFinite, rate.value > 0 else { return nil }
+        return rate.value
+    }
+
+    func rateExpiration(_ name: String, maximumAge: Duration = .seconds(120)) -> ContinuousClock.Instant? {
+        rates[name]?.at.advanced(by: maximumAge)
+    }
+
     mutating func observe(
         _ name: String, tps: Double, prompt: Int, context: Int,
         cache: String, overlap: EngineMeasurementActivity.Overlap,

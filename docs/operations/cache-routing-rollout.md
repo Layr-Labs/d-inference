@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-29 · commit `e06fdb2b8`
+> Last updated: 2026-09-29 · commit `ec78a5f4b`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.

@@ -190,6 +190,42 @@ func (r *Registry) bindChunksWhileOwned(p *Provider) {
 	}
 }
 
+// dropParkedWhileStale settles the rows parked under d in chunks, re-taking
+// the registry read lock and the session's provider lock around each chunk
+// (the capability-apply order) and re-checking under them that the session
+// still owns its ID and that its current SSD capability for the model still
+// leaves the epoch behind. Two heartbeats applied back to back can move a
+// model from epoch A to B and back to A: the first apply records the drop
+// of A's bucket, the second republishes A and binds a chunk of it, and a
+// drop running after both would otherwise consume, and durably delete, the
+// rows the second apply made bindable again. A session that lost its ID
+// leaves the rows parked, for the next session with that epoch or the TTL
+// prune.
+func (r *Registry) dropParkedWhileStale(p *Provider, d parkedDrop) {
+	if p == nil {
+		return
+	}
+	for {
+		r.mu.RLock()
+		tracker := r.cacheRouting
+		owned := tracker != nil && r.providers[p.ID] == p
+		stale, more := false, false
+		if owned {
+			p.mu.Lock()
+			current, has := p.PrefixCacheV2Models[d.model]
+			stale = !has || current.CacheEpoch != d.epoch
+			if stale {
+				more = tracker.settleParkedChunk(d.epoch, d.model)
+			}
+			p.mu.Unlock()
+		}
+		r.mu.RUnlock()
+		if !owned || !stale || !more {
+			return
+		}
+	}
+}
+
 func (r *Registry) bindRestoredHoldersForConnectedProviders() {
 	// Held across each bind: disconnectProvider removes a provider under
 	// r.mu and runs the tracker cleanup that parks its holders afterwards,

@@ -144,8 +144,9 @@ func (p *Persister) prunePendingLocked(now time.Time) {
 	p.prunePendingBatchLocked(now, 0)
 }
 
-// pruneParkedBatchRows bounds the parked rows one prune lock hold examines.
-const pruneParkedBatchRows = 5_000
+// pruneBatchRows bounds the rows one prune lock hold examines, parked rows
+// and retained decisions alike.
+const pruneBatchRows = 5_000
 
 // prunePendingBatchLocked drops up to limit expired parked rows (limit <= 0:
 // no bound), soonest expiry first, and reports whether expired rows may
@@ -155,14 +156,21 @@ func (p *Persister) prunePendingBatchLocked(now time.Time, limit int) bool {
 	dropped := 0
 	for {
 		top, ok := p.parkedExpiry.soonest()
-		if !ok || top.expiry.After(now) {
+		if !ok || top.at.After(now) {
 			return false
 		}
 		if limit > 0 && dropped >= limit {
 			return true
 		}
 		dropped++
-		p.removeParkedLocked(p.parkedBucket[top.key], top.key)
+		pk, ok := p.parkedBucket[top.key]
+		if !ok {
+			// Unreachable while the one-entry-per-row invariant holds; an
+			// orphan entry is discarded rather than miscounting the set.
+			p.parkedExpiry.remove(top.key)
+			continue
+		}
+		p.removeParkedLocked(pk, top.key)
 		p.counters.droppedPending++
 	}
 }
@@ -173,7 +181,7 @@ func (p *Persister) prunePendingBatchLocked(now time.Time, limit int) bool {
 func (p *Persister) prunePendingChunked(now time.Time) {
 	for {
 		p.mu.Lock()
-		more := p.prunePendingBatchLocked(now, pruneParkedBatchRows)
+		more := p.prunePendingBatchLocked(now, pruneBatchRows)
 		p.mu.Unlock()
 		if !more {
 			return

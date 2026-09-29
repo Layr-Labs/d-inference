@@ -12,8 +12,9 @@ import (
 const restorePruneBudget = 10 * time.Second
 
 // Restore loads the durable copy. If the store's rows were written under a
-// different cache-key generation (the master key changed), both tables are
-// reset first: their HMAC-derived keys can never match a request. Demand
+// different cache-key generation (a rotated master key, or a release that
+// changed a key-derivation version), both tables are reset first: their
+// HMAC-derived keys can never match a request. Demand
 // entries within ttl (at most FutureSkew ahead of now, clamped to it) are
 // returned, newest first up to maxDemand, for the registry to seed its index directly; the registry then
 // reports the entries its index accepted with SeedDemandPersisted. Holder rows are loaded under the
@@ -37,7 +38,7 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		if stored == "" {
 			p.logger.Info("cache routing persistence: recorded the cache-key generation; the durable copy starts empty")
 		} else {
-			p.logger.Warn("cache routing persistence: the cache master key changed; the durable copy was reset instead of restored")
+			p.logger.Warn("cache routing persistence: the cache-key generation changed (a rotated master key or a bumped derivation version); the durable copy was reset instead of restored")
 		}
 		p.mu.Lock()
 		p.counters.keyRotated = stored != ""

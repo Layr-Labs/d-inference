@@ -625,11 +625,12 @@ func TestRecentDeletesBoundedByHolderBudget(t *testing.T) {
 		}
 	}
 	p.mu.Lock()
-	n, order := len(p.recentDeletes), len(p.recentOrder)
+	n, order := len(p.recentDeletes), p.recentOrder.Len()
 	p.mu.Unlock()
 	if n != 3 || order != 3 {
 		t.Fatalf("retention must stay within the holder budget: map=%d order=%d", n, order)
 	}
+	checkRetentionOrder(t, p)
 	before := now.Add(-time.Minute)
 	if p.Tombstoned(crs.HolderKey{Key: "a", CacheEpoch: "e"}, before) || !p.Tombstoned(crs.HolderKey{Key: "e", CacheEpoch: "e"}, before) {
 		t.Fatal("the oldest tombstones must go first")
@@ -648,13 +649,12 @@ func TestRecentDeletesBoundedByHolderBudget(t *testing.T) {
 		}
 	}
 	p.mu.Lock()
-	n = len(p.recentDeletes)
-	p.compactRecentOrderLocked()
-	order = len(p.recentOrder)
+	n, order = len(p.recentDeletes), p.recentOrder.Len()
 	p.mu.Unlock()
 	if n != 3 || order != 3 {
 		t.Fatalf("retention must stay within the holder budget after refreshes: map=%d order=%d", n, order)
 	}
+	checkRetentionOrder(t, p)
 	if !p.Tombstoned(crs.HolderKey{Key: "c", CacheEpoch: "e"}, before) || p.Tombstoned(crs.HolderKey{Key: "d", CacheEpoch: "e"}, before) {
 		t.Fatal("a refreshed decision must outlive older ones")
 	}
@@ -872,12 +872,13 @@ func TestDeleteDecisionDiscardsOutrankedParkedCopy(t *testing.T) {
 }
 
 // A prune pops only the expired parked rows off the expiry order, in
-// bounded chunks, skipping entries for rows taken or merged meanwhile.
+// bounded chunks; rows taken or merged meanwhile have left or moved their
+// entry already.
 func TestPrunePendingPopsOnlyExpiredRowsInChunks(t *testing.T) {
 	mem := store.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 100_000})
 	now := time.Now()
-	const expired, live = 2*pruneParkedBatchRows + 7, 100
+	const expired, live = 2*pruneBatchRows + 7, 100
 	for i := 0; i < expired; i++ {
 		p.Park(rec(fmt.Sprintf("x%05d", i), "e", now.Add(-2*time.Minute), time.Minute)) // expired
 	}
@@ -928,25 +929,85 @@ func TestPrunePendingPopsOnlyExpiredRowsInChunks(t *testing.T) {
 	}
 }
 
-// checkParkedExpiryIndex asserts the expiry order holds exactly one entry per
-// parked row, at the position its index records, with the row's current
-// expiry: the invariant that lets a take, a drop or a merge touch one entry
-// instead of leaving stale ones for a later scan.
+// checkKeyedTimeHeap asserts an order holds exactly one entry per key of
+// the set it indexes (count keys), each at the position its index records,
+// with the time the set currently holds for it: the invariant that lets a
+// take, a drop, a merge or a refresh touch one entry instead of leaving
+// stale ones for a later scan. Called with p.mu held.
+func checkKeyedTimeHeap(t *testing.T, name string, h *keyedTimeHeap, count int, timeOf func(crs.HolderKey) (time.Time, bool)) {
+	t.Helper()
+	if n := h.Len(); n != count || len(h.pos) != n {
+		t.Fatalf("%s out of step with its set: entries=%d indexed=%d keys=%d", name, n, len(h.pos), count)
+	}
+	for i, e := range h.entries {
+		if h.pos[e.key] != i {
+			t.Fatalf("%s: entry %d for %v indexed at %d", name, i, e.key, h.pos[e.key])
+		}
+		if at, ok := timeOf(e.key); !ok || !at.Equal(e.at) {
+			t.Fatalf("%s: entry for %v names a missing key or a stale time (present=%v entry=%v set=%v)", name, e.key, ok, e.at, at)
+		}
+	}
+}
+
+// checkParkedExpiryIndex asserts the expiry order matches the parked set.
 func checkParkedExpiryIndex(t *testing.T, p *Persister) {
 	t.Helper()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if n := p.parkedExpiry.Len(); n != p.pendingCount || len(p.parkedExpiry.pos) != n {
-		t.Fatalf("expiry order out of step with the parked set: entries=%d indexed=%d parked=%d", n, len(p.parkedExpiry.pos), p.pendingCount)
+	checkKeyedTimeHeap(t, "expiry order", &p.parkedExpiry, p.pendingCount, func(k crs.HolderKey) (time.Time, bool) {
+		row, ok := p.pending[p.parkedBucket[k]][k]
+		return row.ExpiresAt, ok
+	})
+}
+
+// checkRetentionOrder asserts the retention order matches the retained
+// decisions.
+func checkRetentionOrder(t *testing.T, p *Persister) {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	checkKeyedTimeHeap(t, "retention order", &p.recentOrder, len(p.recentDeletes), func(k crs.HolderKey) (time.Time, bool) {
+		at, ok := p.recentDeletes[k]
+		return at, ok
+	})
+}
+
+// A prune forgets only the decisions older than the TTL, oldest first, in
+// bounded chunks per lock hold; a refreshed decision moves in the order
+// instead of leaving a stale entry behind.
+func TestPruneForgetsExpiredDecisionsInChunks(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	p := New(mem, nil, Options{MaxPending: 100_000})
+	now := time.Now()
+	const old, fresh = 2*pruneBatchRows + 7, 100
+	p.mu.Lock()
+	for i := 0; i < old; i++ {
+		p.rememberDeleteLocked(crs.HolderKey{Key: fmt.Sprintf("o%05d", i), CacheEpoch: "e"}, now.Add(-2*time.Minute))
 	}
-	for i, e := range p.parkedExpiry.entries {
-		if p.parkedExpiry.pos[e.key] != i {
-			t.Fatalf("entry %d for %v indexed at %d", i, e.key, p.parkedExpiry.pos[e.key])
-		}
-		row, ok := p.pending[p.parkedBucket[e.key]][e.key]
-		if !ok || !row.ExpiresAt.Equal(e.expiry) {
-			t.Fatalf("entry for %v names a missing row or a stale expiry (parked=%v entry=%v row=%v)", e.key, ok, e.expiry, row.ExpiresAt)
-		}
+	for i := 0; i < fresh; i++ {
+		p.rememberDeleteLocked(crs.HolderKey{Key: fmt.Sprintf("f%05d", i), CacheEpoch: "e"}, now)
+	}
+	// Decided again, later: the entry moves to the fresh end.
+	p.rememberDeleteLocked(crs.HolderKey{Key: "o00000", CacheEpoch: "e"}, now)
+	p.mu.Unlock()
+	checkRetentionOrder(t, p)
+	// One lock hold forgets at most its chunk and reports the rest.
+	p.mu.Lock()
+	more := p.forgetDecisionsBatchLocked(now, time.Minute, 5)
+	kept := len(p.recentDeletes)
+	p.mu.Unlock()
+	if !more || kept != old+fresh-5 {
+		t.Fatalf("a bounded chunk must forget exactly its chunk and report more: more=%v kept=%d", more, kept)
+	}
+	checkRetentionOrder(t, p)
+	p.Prune(context.Background(), now, time.Minute) // not ready: in-process prunes only
+	checkRetentionOrder(t, p)
+	p.mu.Lock()
+	kept = len(p.recentDeletes)
+	_, refreshed := p.recentDeletes[crs.HolderKey{Key: "o00000", CacheEpoch: "e"}]
+	p.mu.Unlock()
+	if kept != fresh+1 || !refreshed {
+		t.Fatalf("a prune must forget exactly the expired decisions: kept=%d refreshed=%v", kept, refreshed)
 	}
 }
 

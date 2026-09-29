@@ -1395,7 +1395,9 @@ func TestCacheRoutingPersistenceCapabilityChangeSettlesLargeBucket(t *testing.T)
 // mode moves) leaves the bucket to the bind: rows an overlapping session
 // parked under the new capability bind, across more than one chunk, and rows
 // of the old capability are settled as mismatches at bind rather than swept
-// away with them.
+// away with them. Parked rows for keys the changing session itself held live
+// under the old capability are the exception: their invalidation is a delete
+// decision that outranks the older parked evidence, whatever its identity.
 func TestCacheRoutingPersistenceSameEpochChangeBindsNewCapabilityRows(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
@@ -1419,14 +1421,27 @@ func TestCacheRoutingPersistenceSameEpochChangeBindsNewCapabilityRows(t *testing
 			})
 		}
 	}
-	const fresh, stale = 2*bindChunkRows + 5, 3
+	const fresh, stale, overlap = 2*bindChunkRows + 5, 3, 4
 	park("n", fresh, changed.ReadyBoundaryMode)    // an overlapping session's evidence under the new capability
 	park("o", stale, capability.ReadyBoundaryMode) // evidence of the old capability
+	// This session holds the first overlap keys live under the old
+	// capability; the change invalidates them.
+	r.cacheRouting.mu.Lock()
+	for i := 0; i < overlap; i++ {
+		r.cacheRouting.upsertHolderLocked(fmt.Sprintf("n%05d", i), cacheHolder{
+			ProviderID: p.ID, Provider: p, ModelID: "model", CacheEpoch: capability.CacheEpoch, Tier: "ssd",
+			ModelAggregateHash: capability.ModelAggregateHash, PromptContractID: capability.PromptContractID,
+			BlockHashVersion: capability.BlockHashVersion, ReadyBoundaryMode: capability.ReadyBoundaryMode,
+			Anchor: protocol.PrefixCacheAnchor{TokenCount: 4096}, StageMs: 50,
+			UpdatedAt: now, ExpiresAt: now.Add(time.Minute),
+		})
+	}
+	r.cacheRouting.mu.Unlock()
 	if err := r.UpdatePrefixCacheCapabilities(p.ID, 2, []protocol.PrefixCacheV2Capability{changed}); err != nil {
 		t.Fatal(err)
 	}
-	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 || s.BoundHolders != fresh || s.DroppedPending != stale {
-		t.Fatalf("rows under the new capability must bind and the old capability's settle at bind: %+v", s)
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 || s.BoundHolders != fresh-overlap || s.DroppedPending != stale+overlap {
+		t.Fatalf("rows under the new capability must bind, the old capability's settle at bind, and the invalidated keys' parked copies drop: %+v", s)
 	}
 	r.cacheRouting.mu.Lock()
 	live := 0
@@ -1436,8 +1451,68 @@ func TestCacheRoutingPersistenceSameEpochChangeBindsNewCapabilityRows(t *testing
 		}
 	}
 	r.cacheRouting.mu.Unlock()
-	if live != fresh {
-		t.Fatalf("%d of %d rows parked under the new capability became live holders", live, fresh)
+	if live != fresh-overlap {
+		t.Fatalf("%d of %d rows parked under the new capability became live holders", live, fresh-overlap)
+	}
+}
+
+// A drop recorded by one apply yields to a later apply that republished the
+// epoch: two heartbeats move a model from epoch A to B and back to A, and
+// the first apply's drop, running after the second apply bound a chunk of
+// A's rows, must leave the rest for the bind rather than delete them. A
+// session that lost its ID leaves the rows parked.
+func TestCacheRoutingPersistenceStaleDropYieldsToRepublishedEpoch(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r, st)
+	p := persistenceTestProvider(t, r, "machine-a", capability)
+	r.mu.RLock()
+	persister := r.cachePersister
+	r.mu.RUnlock()
+	now := time.Now()
+	const parked = 2*bindChunkRows + 5
+	for i := 0; i < parked; i++ {
+		persister.Park(crs.HolderRecord{
+			Key: fmt.Sprintf("k%05d", i), CacheEpoch: capability.CacheEpoch, Tier: "ssd", ModelID: "model",
+			ModelAggregateHash: capability.ModelAggregateHash, PromptContractID: capability.PromptContractID,
+			BlockHashVersion: capability.BlockHashVersion, ReadyBoundaryMode: capability.ReadyBoundaryMode,
+			AnchorTokenCount: 4096, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(time.Minute),
+		})
+	}
+	other := capability
+	other.CacheEpoch = "33333333-3333-3333-3333-333333333333"
+	// The first heartbeat (A → B) records the drop of A's bucket; before it
+	// runs, the second (B → A) applies and binds its first chunk.
+	_, provider, _, drops, err := r.applyPrefixCacheSnapshot(p.ID, true, 2, []protocol.PrefixCacheV2Capability{other}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drops) != 1 || drops[0].epoch != capability.CacheEpoch || drops[0].model != "model" {
+		t.Fatalf("the epoch change must record the drop of the old epoch's bucket: %+v", drops)
+	}
+	if _, _, remaining, _, err := r.applyPrefixCacheSnapshot(p.ID, true, 2, []protocol.PrefixCacheV2Capability{capability}, nil, nil, nil); err != nil || !remaining {
+		t.Fatalf("the second apply must bind one chunk and report the rest: remaining=%v err=%v", remaining, err)
+	}
+	for _, d := range drops {
+		r.dropParkedWhileStale(provider, d)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.DroppedPending != 0 || s.PendingHolders != parked-bindChunkRows {
+		t.Fatalf("a drop for a republished epoch must leave the rows parked: %+v", s)
+	}
+	r.bindChunksWhileOwned(provider)
+	if s := r.CacheRoutingPersistenceStatus(); s.BoundHolders != parked || s.PendingHolders != 0 || s.DroppedPending != 0 {
+		t.Fatalf("every row must bind: %+v", s)
+	}
+	// A session that lost its ID stops settling: the rows its disconnect
+	// parks stay parked for the next session with that epoch.
+	removeTestProvider(r, p.ID)
+	r.cacheRouting.invalidateProviderEvidence(p.ID, cacheHolderRemovalDisconnect, true)
+	before := r.CacheRoutingPersistenceStatus()
+	r.dropParkedWhileStale(p, parkedDrop{epoch: capability.CacheEpoch, model: "model"})
+	if after := r.CacheRoutingPersistenceStatus(); after.PendingHolders != before.PendingHolders || after.DroppedPending != before.DroppedPending {
+		t.Fatalf("a replaced session must not settle parked rows: before=%+v after=%+v", before, after)
 	}
 }
 

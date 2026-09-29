@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `9b3c636e9`
+> Last updated: 2026-09-29 · commit `6c8bb3324`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -764,9 +764,11 @@ back are operator procedures, kept in the runbook
    cap evicts the old session's holder as the new session's receipt arrives)
    still holds the boundary, in which case the row is refreshed as that
    session's evidence; an SSD capability that disappears or moves to another
-   cache epoch settles the rows parked under the old epoch the same way (a
-   change that keeps its epoch, like a resident-tier change, leaves them to
-   the bind, which settles each row on its own identity). A lookup's measured stage cost travels with
+   cache epoch settles the rows parked under the old epoch the same way, in
+   chunks that each re-check the session still owns its ID and still leaves
+   the epoch behind (a later heartbeat can republish it). A change that
+   keeps its epoch leaves them to the bind, which settles each row on its
+   own identity, and a resident-tier change leaves the SSD bucket untouched. A lookup's measured stage cost travels with
    the row and is rebound at bind with its own deadline, so a restart inside
    that window keeps routing on the measured value rather than the Ready
    estimate. Demand and holder rows stamped up to one minute ahead of the

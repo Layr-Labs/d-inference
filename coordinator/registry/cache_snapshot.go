@@ -48,12 +48,12 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	changed, provider, remaining, drops, err := r.applyPrefixCacheSnapshot(providerID, replaceCapabilities, version, capabilities, memoryCapabilities, statuses, outcomes)
 	if err == nil && len(drops) > 0 {
 		// Rows parked under epochs the capability change left behind are
-		// settled here, outside the apply's locks and in chunks.
-		r.mu.RLock()
-		tracker := r.cacheRouting
-		r.mu.RUnlock()
+		// settled here, outside the apply's locks and in chunks, for as
+		// long as this session still owns its ID and its current capability
+		// still leaves them behind (a later heartbeat may have republished
+		// the epoch meanwhile).
 		for _, d := range drops {
-			tracker.dropParkedForCapability(d.epoch, d.model)
+			r.dropParkedWhileStale(provider, d)
 		}
 	}
 	if err == nil && remaining && provider != nil {
@@ -194,12 +194,15 @@ func (r *Registry) applyPrefixCacheSnapshot(
 		// never reach them. Each durable row is settled against the holders
 		// still live: a row another session of the same machine holds is
 		// that session's evidence, not this capability's. A change under the
-		// same epoch (the artifact, contract, block-hash version or
-		// ready-boundary mode moved) keeps its bucket: the bind takes it
-		// chunk by chunk and settles each row on its own identity, so rows
-		// an overlapping session parked under the new capability bind while
-		// rows of the old one are deleted as mismatches (bindRowsLocked);
-		// sweeping the bucket here would discard them unread. Only the SSD
+		// same epoch (the artifact, contract or ready-boundary mode moved)
+		// keeps its bucket: the bind takes it chunk by chunk and settles
+		// each row on its own identity, so rows an overlapping session
+		// parked under the new capability bind while rows of the old one
+		// are deleted as mismatches (bindRowsLocked); sweeping the bucket
+		// here would discard them unread. (A parked row for a key this
+		// session itself held live under the old capability is still
+		// dropped: the invalidation above is a delete decision that outranks
+		// the older parked evidence, whatever its identity.) Only the SSD
 		// capability counts: changedModels also names models whose
 		// resident-tier capability moved, and parked rows are SSD evidence
 		// under the SSD epoch (the live invalidation above stays per model

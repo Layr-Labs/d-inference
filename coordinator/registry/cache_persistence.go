@@ -69,37 +69,33 @@ func (t *cacheRoutingTracker) persistHolderRemoval(key string, h cacheHolder, re
 	}
 }
 
-// dropParkedForCapability discards the rows parked under (epoch, model)
-// because no bind will take them again (the model's SSD capability is gone or
-// moved to another cache epoch), settling each durable row
-// against the holders still live instead of deleting it outright: with
-// overlapping sessions of one machine, a row parked by a disconnected
-// session may still be a live session's evidence.
-func (t *cacheRoutingTracker) dropParkedForCapability(epoch, model string) {
+// settleParkedChunk discards one chunk of the rows parked under (epoch,
+// model) because no bind will take them again (the model's SSD capability is
+// gone or moved to another cache epoch), settling each durable row against
+// the holders still live instead of deleting it outright: with overlapping
+// sessions of one machine, a row parked by a disconnected session may still
+// be a live session's evidence. It reports whether rows remain; the registry
+// re-checks between chunks that the bucket is still one no bind will take
+// (dropParkedWhileStale), and a request that needs the tracker lock waits
+// for at most one chunk.
+func (t *cacheRoutingTracker) settleParkedChunk(epoch, model string) (more bool) {
 	if t == nil {
-		return
+		return false
 	}
-	// In chunks, releasing the tracker lock between them, as the bind does:
-	// a request that needs the lock waits for at most one chunk.
-	for {
-		t.mu.Lock()
-		p := t.persister
-		if p == nil {
-			t.mu.Unlock()
-			return
-		}
-		rows, more := p.Take(epoch, model, bindChunkRows)
-		for _, rec := range rows {
-			t.persistRowAfterLossLocked(rec.Key, rec.CacheEpoch, "")
-		}
-		if len(rows) > 0 {
-			p.AddBound(0, uint64(len(rows)))
-		}
-		t.mu.Unlock()
-		if !more {
-			return
-		}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p := t.persister
+	if p == nil {
+		return false
 	}
+	rows, more := p.Take(epoch, model, bindChunkRows)
+	for _, rec := range rows {
+		t.persistRowAfterLossLocked(rec.Key, rec.CacheEpoch, "")
+	}
+	if len(rows) > 0 {
+		p.AddBound(0, uint64(len(rows)))
+	}
+	return more
 }
 
 // persistRowAfterLossLocked settles the durable row (key, epoch) after one

@@ -82,12 +82,13 @@ type Persister struct {
 	// once the tombstone is no longer pending (Tombstoned).
 	holderDeletes map[crs.HolderKey]time.Time
 	recentDeletes map[crs.HolderKey]time.Time
-	// recentOrder is a min-heap of the recorded decisions by decision time,
-	// so the retention bound evicts the oldest decision first whatever order
-	// the flushes recorded them in. A key decided again is pushed again with
-	// its new time; the earlier entry is then stale (its time no longer
-	// matches the map) and is skipped when it surfaces.
-	recentOrder recentHeap
+	// recentOrder orders the recorded decisions by decision time, indexed by
+	// identity (one entry per decision), so the retention bound evicts the
+	// oldest decision first whatever order the flushes recorded them in, a
+	// key decided again moves to its new time, and the TTL prune forgets
+	// from the oldest end in bounded chunks (Prune) instead of scanning the
+	// whole set under p.mu.
+	recentOrder keyedTimeHeap
 	// retentionLimit bounds recentDeletes: the holder budget, but never
 	// below one flush batch, or the cap could evict a tombstone whose
 	// delete is still in flight.
@@ -109,7 +110,7 @@ type Persister struct {
 	// entries by identity and holds exactly one per parked row: a take or a
 	// drop removes the row's entry and a merge moves it, so no maintenance
 	// pass ever runs under the tracker lock.
-	parkedExpiry parkedHeap
+	parkedExpiry keyedTimeHeap
 	pendingCount int
 	counters     counters
 	// ready is set once Restore has established the key generation (and
@@ -151,11 +152,12 @@ func New(st crs.Store, logger *slog.Logger, opts Options) *Persister {
 		holderUpserts:   make(map[crs.HolderKey]crs.HolderRecord),
 		holderDeletes:   make(map[crs.HolderKey]time.Time),
 		recentDeletes:   make(map[crs.HolderKey]time.Time),
+		recentOrder:     keyedTimeHeap{pos: make(map[crs.HolderKey]int)},
 		demandTouched:   make(map[string]time.Time),
 		demandPersisted: make(map[string]time.Time),
 		pending:         make(map[string]map[crs.HolderKey]crs.HolderRecord),
 		parkedBucket:    make(map[crs.HolderKey]string),
-		parkedExpiry:    parkedHeap{pos: make(map[crs.HolderKey]int)},
+		parkedExpiry:    keyedTimeHeap{pos: make(map[crs.HolderKey]int)},
 	}
 }
 
@@ -280,92 +282,71 @@ func (p *Persister) MarkDemand(keys []string, now time.Time) {
 	p.mu.Unlock()
 }
 
-// recentDelete is one recorded delete decision in retention order.
-type recentDelete struct {
+// timedKey is one row identity with the time that orders it: a parked row's
+// expiry, or a delete decision's time.
+type timedKey struct {
 	key crs.HolderKey
 	at  time.Time
 }
 
-// parkedEntry is one parked row's place in the expiry order; the bucket is
-// resolved through parkedBucket when the entry surfaces.
-type parkedEntry struct {
-	key    crs.HolderKey
-	expiry time.Time
-}
-
-// parkedHeap orders parked rows by expiry, soonest first, and indexes the
-// entries by identity, so a row's entry moves when its expiry merges and
-// leaves when the row leaves the parked set, in O(log n) each. It holds
-// exactly one entry per parked row; nothing ever has to be compacted.
-type parkedHeap struct {
-	entries []parkedEntry
+// keyedTimeHeap orders identities by time, soonest first, and indexes the
+// entries by identity, so an entry moves when its time changes and leaves
+// when its row leaves the set, in O(log n) each. It holds exactly one entry
+// per key: nothing is ever stale, compacted or skipped, and a prune pops
+// from the soonest end in bounded chunks.
+type keyedTimeHeap struct {
+	entries []timedKey
 	pos     map[crs.HolderKey]int
 }
 
-func (h *parkedHeap) Len() int           { return len(h.entries) }
-func (h *parkedHeap) Less(i, j int) bool { return h.entries[i].expiry.Before(h.entries[j].expiry) }
-func (h *parkedHeap) Swap(i, j int) {
+func (h *keyedTimeHeap) Len() int           { return len(h.entries) }
+func (h *keyedTimeHeap) Less(i, j int) bool { return h.entries[i].at.Before(h.entries[j].at) }
+func (h *keyedTimeHeap) Swap(i, j int) {
 	h.entries[i], h.entries[j] = h.entries[j], h.entries[i]
 	h.pos[h.entries[i].key] = i
 	h.pos[h.entries[j].key] = j
 }
-func (h *parkedHeap) Push(x any) {
-	e := x.(parkedEntry)
+func (h *keyedTimeHeap) Push(x any) {
+	e := x.(timedKey)
 	h.pos[e.key] = len(h.entries)
 	h.entries = append(h.entries, e)
 }
-func (h *parkedHeap) Pop() any {
+func (h *keyedTimeHeap) Pop() any {
 	old := h.entries
 	n := len(old)
 	e := old[n-1]
-	old[n-1] = parkedEntry{}
+	old[n-1] = timedKey{}
 	h.entries = old[:n-1]
 	delete(h.pos, e.key)
 	return e
 }
 
-// set records a parked row's expiry, moving its entry when it has one.
-func (h *parkedHeap) set(key crs.HolderKey, expiry time.Time) {
+// set records a key's time, moving its entry when it has one.
+func (h *keyedTimeHeap) set(key crs.HolderKey, at time.Time) {
 	if h.pos == nil {
 		h.pos = make(map[crs.HolderKey]int)
 	}
 	if i, ok := h.pos[key]; ok {
-		h.entries[i].expiry = expiry
+		h.entries[i].at = at
 		heap.Fix(h, i)
 		return
 	}
-	heap.Push(h, parkedEntry{key: key, expiry: expiry})
+	heap.Push(h, timedKey{key: key, at: at})
 }
 
-// remove drops a parked row's entry, if it has one.
-func (h *parkedHeap) remove(key crs.HolderKey) {
+// remove drops a key's entry, if it has one.
+func (h *keyedTimeHeap) remove(key crs.HolderKey) {
 	if i, ok := h.pos[key]; ok {
 		heap.Remove(h, i)
 	}
 }
 
-// soonest returns the entry that expires first.
-func (h *parkedHeap) soonest() (parkedEntry, bool) {
+// soonest returns the entry with the earliest time.
+func (h *keyedTimeHeap) soonest() (timedKey, bool) {
 	if len(h.entries) == 0 {
-		return parkedEntry{}, false
+		return timedKey{}, false
 	}
 	return h.entries[0], true
-}
-
-// recentHeap orders recorded decisions by time, oldest first.
-type recentHeap []recentDelete
-
-func (h recentHeap) Len() int           { return len(h) }
-func (h recentHeap) Less(i, j int) bool { return h[i].at.Before(h[j].at) }
-func (h recentHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *recentHeap) Push(x any)        { *h = append(*h, x.(recentDelete)) }
-func (h *recentHeap) Pop() any {
-	old := *h
-	n := len(old)
-	e := old[n-1]
-	old[n-1] = recentDelete{}
-	*h = old[:n-1]
-	return e
 }
 
 type batch struct {
@@ -568,16 +549,11 @@ func (p *Persister) Prune(ctx context.Context, now time.Time, ttl time.Duration)
 	// Parked rows are in-process state and expire whether or not the store
 	// is reachable; dropping them never waits for the restore. A written
 	// tombstone outranks older parked evidence for one TTL, after which any
-	// such row has expired on its own.
+	// such row has expired on its own. Both run in bounded chunks: a receipt
+	// holding the tracker lock waits on p.mu, and requests on the tracker
+	// lock.
 	p.prunePendingChunked(now)
-	p.mu.Lock()
-	for k, at := range p.recentDeletes {
-		if now.Sub(at) >= ttl {
-			delete(p.recentDeletes, k)
-		}
-	}
-	p.compactRecentOrderLocked()
-	p.mu.Unlock()
+	p.forgetDecisionsChunked(now, ttl)
 	if !p.Ready() {
 		return
 	}
@@ -616,32 +592,52 @@ func (p *Persister) rememberDeleteLocked(k crs.HolderKey, at time.Time) {
 		return
 	}
 	p.recentDeletes[k] = at
-	heap.Push(&p.recentOrder, recentDelete{key: k, at: at})
-	limit := p.retentionLimit
-	for len(p.recentDeletes) > limit && p.recentOrder.Len() > 0 {
-		oldest := heap.Pop(&p.recentOrder).(recentDelete)
-		if cur, ok := p.recentDeletes[oldest.key]; ok && cur.Equal(oldest.at) {
-			delete(p.recentDeletes, oldest.key)
+	p.recentOrder.set(k, at)
+	for len(p.recentDeletes) > p.retentionLimit {
+		oldest, ok := p.recentOrder.soonest()
+		if !ok {
+			break
 		}
-	}
-	if p.recentOrder.Len() > 2*len(p.recentDeletes)+1024 {
-		p.compactRecentOrderLocked()
+		p.forgetDecisionLocked(oldest.key)
 	}
 }
 
-// compactRecentOrderLocked drops retention entries whose decision the map no
-// longer holds (expired, evicted, or superseded by a newer decision for the
-// same key) and restores the heap order. Called with p.mu held.
-func (p *Persister) compactRecentOrderLocked() {
-	kept := p.recentOrder[:0]
-	for _, e := range p.recentOrder {
-		if cur, ok := p.recentDeletes[e.key]; ok && cur.Equal(e.at) {
-			kept = append(kept, e)
+// forgetDecisionLocked removes one retained decision from the map and the
+// order. Called with p.mu held.
+func (p *Persister) forgetDecisionLocked(k crs.HolderKey) {
+	delete(p.recentDeletes, k)
+	p.recentOrder.remove(k)
+}
+
+// forgetDecisionsChunked forgets the delete decisions older than the TTL in
+// bounded chunks, releasing p.mu between them, so a receipt holding the
+// tracker lock (and behind it the request path) never waits behind a scan
+// of the whole retention set.
+func (p *Persister) forgetDecisionsChunked(now time.Time, ttl time.Duration) {
+	for {
+		p.mu.Lock()
+		more := p.forgetDecisionsBatchLocked(now, ttl, pruneBatchRows)
+		p.mu.Unlock()
+		if !more {
+			return
 		}
 	}
-	for i := len(kept); i < len(p.recentOrder); i++ {
-		p.recentOrder[i] = recentDelete{}
+}
+
+// forgetDecisionsBatchLocked forgets up to limit decisions older than the
+// TTL (limit <= 0: no bound), oldest first, and reports whether older ones
+// may remain. Called with p.mu held.
+func (p *Persister) forgetDecisionsBatchLocked(now time.Time, ttl time.Duration, limit int) bool {
+	forgotten := 0
+	for {
+		oldest, ok := p.recentOrder.soonest()
+		if !ok || now.Sub(oldest.at) < ttl {
+			return false
+		}
+		if limit > 0 && forgotten >= limit {
+			return true
+		}
+		forgotten++
+		p.forgetDecisionLocked(oldest.key)
 	}
-	p.recentOrder = kept
-	heap.Init(&p.recentOrder)
 }

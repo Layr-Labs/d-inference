@@ -72,6 +72,35 @@ and verified at `powermode 0`; original values were recorded for restoration.
 Final qualification needs a new signed-candidate run in that posture. Earlier
 measurements are not relabeled.
 
+## Automatic-mode sustained cohort
+
+A subsequent clean signed candidate `5e8fbcfc15292b8c83773609d76c7d341073c0b4`
+with SDK `5df381f4b27d5bb63c2905ddb6599e7f4bd62d28` completed all 40
+independently generated 4k–12k tool/history training requests. The executing
+release image reported `DEBUG=false`, debug assertions disabled, and SHA-256
+`aadbbcab068d403e90e82e587e3f69f3f9cc44deeeb58db351a13e4044b73046`.
+Actual source, artifact and executable hashes remained unchanged throughout.
+
+This cohort **failed qualification**: the first eight requests ended nominal,
+then all remaining 32 ended in fair thermal state. Automatic power policy
+remained enabled. First-content times ranged from 4.497 to 16.797 seconds;
+confirmed-token decode ranged from 48.79 to 86.36 tokens/s. There were no request,
+retirement or observation failures, but numerical completion does not satisfy
+the nominal-only posture gate. The complete [40-request receipt](evidence/2026-09-28-calibrated-admission/m5-automatic-sustained/receipt.json),
+[supervisor provenance](evidence/2026-09-28-calibrated-admission/m5-automatic-sustained/provenance.json),
+[derived measurements](evidence/2026-09-28-calibrated-admission/m5-automatic-sustained/summary.json)
+and [failed qualification status](evidence/2026-09-28-calibrated-admission/m5-automatic-sustained/qualification-status.json)
+retain every observation. No held-out cohort was run against this failing
+training cohort, and its hot observations are not removed to obtain a pass.
+
+Fresh training and validation will use a predeclared minimum 20-second cooldown
+before each measured request, followed by at least five continuous nominal,
+non-Low-Power seconds, with a 180-second recovery limit. Before/after posture
+and 500-ms observations during inference are retained; any observed fair state
+invalidates the cohort. This qualification applies only while the provider's
+existing nominal-only activation gate holds. It does not change fan policy or
+claim a sustained fair-temperature serving default.
+
 ## Initial rendered-count corpus
 
 The actual tokenizer/template rendered 504 synthetic chat bodies in 39.94
@@ -131,6 +160,14 @@ are linked by combined evidence SHA-256
 `73b526e3df76ee31f409e8a6e74a228c419a85342d67cdd9bbf4b1f3bbf12ad9`.
 These CPU-only exact-render receipts qualify prompt-count fallback bounds;
 they do not qualify engine timing or hardware scheduling policy.
+
+Exported confidence lower bounds are rounded downward to 12 decimal places.
+This conservative rounding avoids an amd64/arm64 last-bit difference at the
+strict binomial threshold; it changes no observations, fitted coefficients,
+shape domains or acceptance threshold. Raw counts and the evidence digest
+remain unchanged. The collector now verifies actual weight/configuration bytes
+before and after counting, and a fresh verification run is required before
+retaining these reviewed records on the final candidate.
 All six records are promoted unchanged in `coordinator/api/promptwork/catalog/`.
 Regression tests reproduce every held-out covered count and exercise all 6,000
 training shapes through the production estimator.

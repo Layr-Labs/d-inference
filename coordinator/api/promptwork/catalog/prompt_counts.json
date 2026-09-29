@@ -59,7 +59,7 @@
         "min": 0
       }
     },
-    "tail_coverage_lower_bound": 0.9874623945903273,
+    "tail_coverage_lower_bound": 0.98746239459,
     "training_samples": 1000,
     "upper_additive_tokens": 117.18661257606438,
     "upper_ratio": 3.498985801217039,
@@ -126,7 +126,7 @@
         "min": 0
       }
     },
-    "tail_coverage_lower_bound": 0.9874623945903273,
+    "tail_coverage_lower_bound": 0.98746239459,
     "training_samples": 1000,
     "upper_additive_tokens": 419.45460399227164,
     "upper_ratio": 3.5054732775273667,
@@ -193,7 +193,7 @@
         "min": 0
       }
     },
-    "tail_coverage_lower_bound": 0.9874623945903273,
+    "tail_coverage_lower_bound": 0.98746239459,
     "training_samples": 1000,
     "upper_additive_tokens": 559.7113624124905,
     "upper_ratio": 3.5150780829294566,
@@ -260,7 +260,7 @@
         "min": 1
       }
     },
-    "tail_coverage_lower_bound": 0.979089677057733,
+    "tail_coverage_lower_bound": 0.979089677057,
     "training_samples": 1000,
     "upper_additive_tokens": 737.503937007874,
     "upper_ratio": 3.492125984251969,
@@ -327,7 +327,7 @@
         "min": 1
       }
     },
-    "tail_coverage_lower_bound": 0.9738652881320744,
+    "tail_coverage_lower_bound": 0.973865288132,
     "training_samples": 1000,
     "upper_additive_tokens": 1442.2064180398959,
     "upper_ratio": 3.4791847354726806,
@@ -394,7 +394,7 @@
         "min": 1
       }
     },
-    "tail_coverage_lower_bound": 0.9738652881320744,
+    "tail_coverage_lower_bound": 0.973865288132,
     "training_samples": 1000,
     "upper_additive_tokens": 1622.4689688481014,
     "upper_ratio": 3.494325042260324,

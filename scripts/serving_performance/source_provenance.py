@@ -15,6 +15,7 @@ SOURCE_FILES = (
     "libs/mlx-swift-lm/Package.swift", "libs/mlx-swift-lm/Package.resolved",
     "libs/mlx-swift/Package.swift", "libs/mlx-swift/CMakeLists.txt",
     "scripts/run-serving-qualification.py", "scripts/assemble-deadline-receipts.py",
+    "scripts/build-serving-qualification.py",
     "scripts/qualify-deadline-performance.py", "scripts/qualify-prompt-counts.py",
     "scripts/generate-prompt-count-corpus.py", "scripts/stage-test-metallib.sh",
     "scripts/fetch-metallib.sh",

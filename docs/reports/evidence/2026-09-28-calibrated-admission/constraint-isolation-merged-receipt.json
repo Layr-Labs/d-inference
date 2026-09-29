@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "deterministic_regression",
+  "scopes": [
+    "constraints",
+    "isolation"
+  ],
+  "sdk_commit": "748db5d967350dfdf17036bec3615a312090fd1e",
+  "exit_code": 0,
+  "configuration": "debug",
+  "xctest_passed": 37,
+  "swift_testing_passed": 23,
+  "log_path": "constraint-isolation-merged-tests.txt",
+  "log_sha256": "5a6693541b350066ba97a61862e413b6ec81ec8d418ece74402ad8f37bad2e75",
+  "command": "swift test --skip-build --filter 'CBv2TokenConstraintSamplingTests|CBv2SchedulerLoopTests|Qwen35MTPDraftTrimTests|CBv2StepObserverTests'",
+  "purpose": "SDK constraints and request-isolation regression; no hardware timing authority"
+}

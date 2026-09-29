@@ -4,6 +4,7 @@ import json
 
 from .live_receipts import summarize
 from .build_identity import verified_build_identity
+from .posture import nominal_trial, valid_cooldown
 from .matrix import positive
 
 
@@ -59,12 +60,17 @@ def assemble_deadline_receipt(runs, *, profile_id, prompt_min, prompt_max, check
         if identity is not None and (identity != current_identity or build != current_build or contract != report["promptContractID"]):
             raise ValueError("all calibration/heldout runs must use the same exact artifact/runtime/build/template")
         identity, build, contract = current_identity, current_build, report["promptContractID"]
+        cooldowns = report.get("cooldowns", [])
+        if len(cooldowns) != len(report["trials"]) or not all(valid_cooldown(c) for c in cooldowns):
+            raise ValueError("every measured trial requires the predeclared cooldown and stable nominal recovery")
         summary = summarize(report)
         for trial, measured in zip(report["trials"], summary["cells"]):
             if trial.get("lowPowerMode") is not False:
                 raise ValueError("each measured trial must explicitly exclude Low Power mode")
             if measured["failures"]:
                 raise ValueError(f"failed observation remains ineligible: {measured['failures']}")
+            if not nominal_trial(trial):
+                raise ValueError("any observed nonnominal or low-power transition invalidates the cohort")
             row = trial["rows"][0]
             profile, timing = row["profile"], row["profile"]["engine"]
             if profile.get("running_at_admit", 0) or profile.get("waiting_at_admit", 0) or row.get("cachedTokens", 0):

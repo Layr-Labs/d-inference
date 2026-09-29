@@ -1,0 +1,103 @@
+{
+  "source": {
+    "head": "5e8fbcfc15292b8c83773609d76c7d341073c0b4",
+    "source_tree_sha256": "03ce64b1f2885130a65d4960710fbfb5626287ddf49359694883b6f265b7d50f",
+    "dirty": false,
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "dependency_head": "5df381f4b27d5bb63c2905ddb6599e7f4bd62d28",
+    "mlx_swift_head": "0f4fe403bef6899e8a72882bc6d4036a7a62ae31",
+    "mlx_head": "3fa8f25e6451174d7b06be372c3a24272b77d88e",
+    "mlx_c_head": "02cf6f4d099023e4e0c0357248b8b3f83110e29d"
+  },
+  "files": {
+    "chat_template.jinja": {
+      "bytes": 8952,
+      "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+    },
+    "config.json": {
+      "bytes": 4441,
+      "sha256": "4691da94a1b4ef415aad112ec46abebd33f8a41ad07380e486c0526eb945c1ff"
+    },
+    "generation_config.json": {
+      "bytes": 202,
+      "sha256": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e"
+    },
+    "model-00001-of-00003.safetensors": {
+      "bytes": 5343268662,
+      "sha256": "6cc1508e96fb5d0865dfd5753a79f4ec60651bf3e2a82844a7e8ae9c60528c0d"
+    },
+    "model-00002-of-00003.safetensors": {
+      "bytes": 5354185130,
+      "sha256": "83f2a20ca8058f486a3634a27faf99587f4cd3c156a83dee34fb99e6ac178670"
+    },
+    "model-00003-of-00003.safetensors": {
+      "bytes": 5357087557,
+      "sha256": "31b8c91ef899f79efaaa69e3d2c096f6e2ebeb2ff20e29222abbd9ebc79e560a"
+    },
+    "model.safetensors.index.json": {
+      "bytes": 211561,
+      "sha256": "8bf770b4b22fa4cffe3000a16314c41ea52d7556ad1acafb2e7bb33d96fd4e23"
+    },
+    "mtp-00001.safetensors": {
+      "bytes": 238934237,
+      "sha256": "384df9fc2018011aeb43f0c16f393125d5c97531dd076943389c2b36d081411c"
+    },
+    "preprocessor_config.json": {
+      "bytes": 390,
+      "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516"
+    },
+    "processor_config.json": {
+      "bytes": 991,
+      "sha256": "45fc17c8dd2474af6b493b52483c26c0584b0082d368c480f9fa611e73070040"
+    },
+    "tokenizer.json": {
+      "bytes": 19989325,
+      "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523"
+    },
+    "tokenizer_config.json": {
+      "bytes": 1165,
+      "sha256": "792fa3f0cb88b111e54ef3134c873531008c4df471d108da17903426e308aa7b"
+    },
+    "video_preprocessor_config.json": {
+      "bytes": 385,
+      "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13"
+    },
+    "vocab.json": {
+      "bytes": 6722759,
+      "sha256": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003"
+    }
+  },
+  "lease_sha256": "7c2bc07cbccc40fc4ec803cce1be36df4b9676c0af5511c6f485ca69e400a3b3",
+  "build_configuration": "release",
+  "qualification_test_graph": true,
+  "swift_enable_testing": true,
+  "power_posture_before": {
+    "source": "ac",
+    "mode": "automatic",
+    "raw_mode": 0
+  },
+  "test_binaries_sha256": {
+    "/Users/gaj/first-content-qualification-20260928/provider-swift/.build/arm64-apple-macosx/release/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests": "aadbbcab068d403e90e82e587e3f69f3f9cc44deeeb58db351a13e4044b73046",
+    "/Users/gaj/first-content-qualification-20260928/provider-swift/.build/release/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests": "aadbbcab068d403e90e82e587e3f69f3f9cc44deeeb58db351a13e4044b73046"
+  },
+  "metallibs_sha256": {
+    "/Users/gaj/first-content-qualification-20260928/provider-swift/.build/arm64-apple-macosx/release/DarkbloomProviderPackageTests.xctest/Contents/MacOS/mlx.metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb",
+    "/Users/gaj/first-content-qualification-20260928/provider-swift/.build/release/DarkbloomProviderPackageTests.xctest/Contents/MacOS/mlx.metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+  },
+  "return_code": 0,
+  "artifact_unchanged": true,
+  "source_unchanged": true,
+  "power_posture_after": {
+    "source": "ac",
+    "mode": "automatic",
+    "raw_mode": 0
+  },
+  "binary_unchanged": true,
+  "actual_build_identity": {
+    "binarySHA256": "aadbbcab068d403e90e82e587e3f69f3f9cc44deeeb58db351a13e4044b73046",
+    "debugAssertionsEnabled": false,
+    "debugCompilationCondition": false,
+    "version": 1
+  },
+  "debug_compilation_condition": false
+}

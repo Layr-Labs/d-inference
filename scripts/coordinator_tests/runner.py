@@ -78,7 +78,8 @@ def run_task(label, command, cwd, output, expected, processes, packages=None):
     with log.open("w") as stdout, errors.open("w") as stderr:
         process = processes.start(command, cwd=cwd, stdout=stdout, stderr=stderr)
         try:
-            code = process.wait(timeout=660)
+            # The aggregate retains Go's per-package timeout, not a suite cutoff.
+            code = process.wait(timeout=660 if expected is not None else None)
         except BaseException:
             processes.cancel()
             process.wait()

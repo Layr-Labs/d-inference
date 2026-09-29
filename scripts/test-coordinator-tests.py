@@ -97,6 +97,23 @@ class CoordinatorRunnerTests(unittest.TestCase):
                               self.root, ["TestA"], Processes())
             self.assertEqual(result["passed"], success)
 
+    def test_outer_timeout_applies_only_to_api_shards(self):
+        output = 'print(\'{"Package":"p","Action":"pass","Test":"TestA"}\'); print(\'{"Package":"p","Action":"pass"}\')'
+        real_wait = subprocess.Popen.wait
+        for expected, timeout in ((None, None), (["TestA"], 660)):
+            with self.subTest(expected=expected):
+                waits = []
+
+                def observed_wait(process, timeout=None):
+                    waits.append(timeout)
+                    return real_wait(process, timeout=timeout)
+
+                with unittest.mock.patch("coordinator_tests.runner.subprocess.Popen.wait", new=observed_wait):
+                    result = run_task("child", [sys.executable, "-c", output], self.root,
+                                      self.root, expected, Processes(), ["p"])
+                self.assertTrue(result["passed"])
+                self.assertEqual(waits, [timeout])
+
     def test_cancellation_reaps_owned_child_and_blocks_later_work(self):
         processes = Processes()
         child = processes.start([sys.executable, "-c", "import time; time.sleep(60)"])

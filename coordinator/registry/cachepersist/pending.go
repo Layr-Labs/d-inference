@@ -59,8 +59,9 @@ func (p *Persister) HasPending() bool {
 	return p.pendingCount > 0
 }
 
-// AddBound records the outcome of one bind: rows that became live holders and
-// rows the registry dropped as expired or mismatched.
+// AddBound records the outcome of a Take: rows that became live holders, and
+// rows the registry dropped as expired, mismatched, or parked for a
+// capability that no longer exists.
 func (p *Persister) AddBound(bound, dropped uint64) {
 	if p == nil {
 		return

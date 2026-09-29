@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-29 · commit `801e0de69`
+> Last updated: 2026-09-29 · commit `43525f0ae`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -180,8 +180,8 @@ the same request from the same account remains in or out of the cohort.
    the master key, so a rotation is a full index rebuild, as before persistence.
    Rotate the key with a non-overlapping restart (stop the old container
    before the new one boots): rows the old container still flushes after the
-   reset would be stamped into the new generation and restored once, as
-   holders no request can reach, until they expire.
+   reset would be stamped into the new generation and restored on any boot
+   inside their TTL, as holders no request can reach.
 
    ```bash
    sudo docker logs coordinator 2>&1 | grep -E 'cache routing configuration rejected|provider-confirmed cache routing configured'

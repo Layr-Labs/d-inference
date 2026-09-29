@@ -169,7 +169,22 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
         // Preserve bounded synthetic payloads until the owned test process
         // exits. A failing native gate can retain lazy Load roots, so generic
         // XCTest teardown must not unlink their backing files.
-        let config = try Data(contentsOf: root.appendingPathComponent("config.json"))
+        let configURL = root.appendingPathComponent("config.json")
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            Data(contentsOf: configURL)) as? [String: Any])
+        let vision = try XCTUnwrap(fields["vision_config"] as? [String: Any])
+        var processor = try XCTUnwrap(fields["processor_config"] as? [String: Any])
+        // The source tensors have a tiny tower, not the inherited full-size
+        // processor. Retain the ordinary media profile with matching metadata.
+        for (key, towerKey) in [("patch_size", "patch_size"),
+                                ("merge_size", "spatial_merge_size"),
+                                ("temporal_patch_size", "temporal_patch_size")] {
+            processor[key] = try XCTUnwrap(vision[towerKey] as? Int)
+        }
+        processor["video_start_token_id"] = 14; processor["video_end_token_id"] = 15
+        fields["processor_config"] = processor
+        try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]).write(to: configURL)
+        let config = try Data(contentsOf: configURL)
         let index = try XCTUnwrap(JSONSerialization.jsonObject(with:
             Data(contentsOf: root.appendingPathComponent("model.safetensors.index.json"))) as? [String: Any])
         let weights = try XCTUnwrap(index["weight_map"] as? [String: String])
@@ -192,7 +207,18 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
             .write(to: root.appendingPathComponent("conversion_manifest.json"))
         // Actual BPE implementation, finite vocab within the tiny model's128 IDs.
-        let vocab = ["<unk>": 0, "<|im_end|>": 1, "<|im_start|>": 9, "<think>": 10, "</think>": 11, "x": 12, "<stop>": 13]
+        let vocab = ["<unk>": 0, "<|im_end|>": 1, "<|image_pad|>": 2, "<|video_pad|>": 3,
+            "<|vision_start|>": 4, "<|vision_end|>": 5, "<|audio_pad|>": 6,
+            "<|mimo_audio_start|>": 7, "<|mimo_audio_end|>": 8,
+            "<|im_start|>": 9, "<think>": 10, "</think>": 11, "x": 12, "<stop>": 13,
+            "<|mimo_video_start|>": 14, "<|mimo_video_end|>": 15]
+        for (key, spelling) in ["image_token_id": "<|image_pad|>", "video_token_id": "<|video_pad|>",
+            "vision_start_token_id": "<|vision_start|>", "vision_end_token_id": "<|vision_end|>",
+            "audio_token_id": "<|audio_pad|>", "audio_start_token_id": "<|mimo_audio_start|>",
+            "audio_end_token_id": "<|mimo_audio_end|>", "video_start_token_id": "<|mimo_video_start|>",
+            "video_end_token_id": "<|mimo_video_end|>"] {
+            XCTAssertEqual(vocab[spelling], processor[key] as? Int)
+        }
         let added: [[String: Any]] = vocab.filter { $0.key != "x" }.map { token, id in
             ["id": id, "content": token, "single_word": false, "lstrip": false,
              "rstrip": false, "normalized": false, "special": true]

@@ -37,7 +37,7 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
         return try MiMoV26EncodedMediaIngress.plan(normalized:normalized,controls:controls,
             maximumOutputTokens:2,policy:policy(maximumClips:maximumClips),allowAudio:allowAudio)
     }
-    private func decode(_ plan: MiMoV26EncodedMediaIngress.Plan,
+    private static func decode(_ plan: MiMoV26EncodedMediaIngress.Plan,
                         cap: UInt64 = 64 << 20) async throws -> MiMoV26MultimodalInput {
         let ledger = ProcessMemoryLedger(policy:.init(epoch:1,capBytes:cap,reserveBytes:0),
             readUsage:{ .init(activeBytes:0,cacheBytes:0,systemAvailableBytes:128 << 20) })
@@ -55,7 +55,7 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
             sampling:.init(fps:1,minimumFrames:8,maximumFrames:3600),reservation:reservation)
     }
     func testGenuineAVTransportPreservesOneOrderedPartAndAllPCM() async throws {
-        let input = try await decode(plan(MiMoAVFixture.movie(),allowAudio:true))
+        let input = try await Self.decode(plan(MiMoAVFixture.movie(),allowAudio:true))
         XCTAssertEqual(input.messages.count,1)
         XCTAssertEqual(input.messages[0].content.count,3)
         guard case .text("before") = input.messages[0].content[0],
@@ -73,11 +73,11 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
         XCTAssertEqual(input.maximumOutputTokens,2)
     }
     func testNoAudioProfileStillRejectsActualSoundAndSilentVideoStillWorks() async throws {
-        do { _ = try await decode(plan(MiMoAVFixture.movie(),allowAudio:false)); XCTFail("sound bypass") }
+        do { _ = try await Self.decode(plan(MiMoAVFixture.movie(),allowAudio:false)); XCTFail("sound bypass") }
         catch { XCTAssertEqual(error as? MiMoV26EncodedVisualDecoder.Failure,
                                .audioTrackRequiresAudiovisualProfile) }
         let silent = try XCTUnwrap(Data(base64Encoded:MiMoAVFixture.videoBase64))
-        let input = try await decode(plan(silent,allowAudio:false))
+        let input = try await Self.decode(plan(silent,allowAudio:false))
         guard case .silentVideo(let video) = input.messages[0].content[1] else {
             return XCTFail("silent behavior changed")
         }
@@ -87,11 +87,11 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
         let value = try plan(MiMoAVFixture.movie(floatBits:[0x7fc00001]),allowAudio:true)
         // Initial ownership is genuinely admitted; actual decode phase growth
         // exceeds this ledger cap. If PCM decode ran first, this is a NaN error.
-        do { _ = try await decode(value,cap:value.initialBytes + 128); XCTFail("growth bypass") }
+        do { _ = try await Self.decode(value,cap:value.initialBytes + 128); XCTFail("growth bypass") }
         catch { XCTAssertEqual(error as? MiMoV26MultimodalError,.reservationRejected) }
     }
     func testAggregateAudioClipBoundCountsVideoBorneAudioAndDoesNotDropIt() async throws {
-        do { _ = try await decode(plan(MiMoAVFixture.movie(),allowAudio:true,count:2,maximumClips:1))
+        do { _ = try await Self.decode(plan(MiMoAVFixture.movie(),allowAudio:true,count:2,maximumClips:1))
             XCTFail("AV clips bypassed audio count") }
         catch { XCTAssertTrue(error is MultiModelBatchSchedulerEngineError) }
     }
@@ -100,7 +100,7 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
             (try MiMoAVFixture.movie(rate:22050),MiMoV26EncodedAudiovisualDecoder.Failure.unsupportedSampleRate),
             (try MiMoAVFixture.movie(channels:2),.unsupportedChannels),
             (try MiMoAVFixture.movie(floatBits:[0x7f800000]),.nonfiniteSamples)] {
-            do { _ = try await decode(plan(data,allowAudio:true)); XCTFail("unsupported sound accepted") }
+            do { _ = try await Self.decode(plan(data,allowAudio:true)); XCTFail("unsupported sound accepted") }
             catch { XCTAssertEqual(error as? MiMoV26EncodedAudiovisualDecoder.Failure,expected) }
         }
         let mapped = MiMoV26EncodedMediaIngress.outwardFailure(
@@ -116,7 +116,7 @@ final class MiMoV26EncodedAudiovisualIngressTests: XCTestCase {
         let value = try plan(MiMoAVFixture.movie(),allowAudio:true)
         let task = Task {
             withUnsafeCurrentTask { $0?.cancel() }
-            return try await self.decode(value)
+            return try await Self.decode(value)
         }
         do { _ = try await task.value; XCTFail("cancelled request produced AV") }
         catch { XCTAssertTrue(error is CancellationError) }

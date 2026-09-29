@@ -124,7 +124,7 @@ def evaluate_calibration(receipt, report_sha256, context_limit):
         errors.append("verified prompt_contract_id digest is required")
     if not isinstance(cells, list) or not 1 <= len(cells) <= 128:
         errors.append("requires 1...128 calibration cells")
-    if not positive(target) or not .95 <= target < 1 or not positive(confidence) or not .5 < confidence < 1:
+    if not positive(target) or not .95 <= target < 1 or not positive(confidence) or not .95 <= confidence < 1:
         errors.append("invalid tail coverage/confidence target")
     if type(require_confidence) is not bool:
         errors.append("require_confidence_bound must be boolean")

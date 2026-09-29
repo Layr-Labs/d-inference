@@ -29,6 +29,7 @@ type CatalogEntry struct {
 func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.pruneWarmPoolWorkBaselinesLocked()
 	if entries == nil {
 		r.modelCatalog = nil
 		return

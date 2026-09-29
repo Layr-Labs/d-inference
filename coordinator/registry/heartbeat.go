@@ -90,6 +90,7 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 	}
 	for i := range bc.Slots {
 		s := &bc.Slots[i]
+		clampPerformanceMeasurements(s.PerformanceMeasurements)
 		s.PrefixCache = clampPrefixCacheTelemetry(s.PrefixCache)
 		s.PagedStorage = clampPagedStorageTelemetry(s.PagedStorage)
 		if s.MaxTokensPotential < 0 || s.MaxTokensPotential > maxTokensPotential {
@@ -170,6 +171,9 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 			clampTelemetryCount(t.QueuedPrefillTokens)
 			clampTelemetryCount(t.PartialPrefillRows)
 			clampTelemetryCount(t.PrefillTokensTotal)
+			clampTelemetryCount(t.PrefillRequestsTotal)
+			clampTelemetryCount(t.GeneratedTokensTotal)
+			clampTelemetryCount(t.GenerationRequestsTotal)
 			clampTelemetryCount(t.PumpTasks)
 			clampTelemetryCount(t.MTPRoundsTotal)
 			clampTelemetryCount(t.MTPProposedTotal)
@@ -256,6 +260,11 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 			eligibleModels = append(eligibleModels, model)
 		}
 	}
+	warmController := r.warmPool
+	// Capture public work eligibility while the registry and provider locks
+	// protect the same routing-policy snapshot. Reconciliation below holds only
+	// p.mu, so it must not reacquire r.mu in the reverse order.
+	workModels := r.warmPoolWorkModelsLocked(p, eligibleModels, msg.Status, time.Now())
 	warmModels, currentModel, backendCapacity := canonicalHeartbeatModelState(
 		eligibleModels, msg.WarmModels, msg.ActiveModel, msg.BackendCapacity)
 	r.mu.RUnlock()
@@ -301,7 +310,8 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	clampBackendCapacity(r.logger, id, backendCapacity)
 	now := time.Now()
 	prevHB := p.LastHeartbeat
-	p.reconcileFirstContentMeasurementsLocked(backendCapacity)
+	p.reconcileFirstContentMeasurementsLocked(backendCapacity, now)
+	p.reconcileWarmPoolWorkLocked(backendCapacity, now, warmController, workModels)
 	p.reconcileCapacitySamplesLocked(backendCapacity, now)
 	p.LastHeartbeat = now
 	applyHeartbeatStatsDelta(&p.Stats, p.lastSessionStats, msg.Stats)
@@ -316,6 +326,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = backendCapacity
+	if backendCapacity != nil && backendCapacity.WholeMacServiceRetirementProtocol == 1 && backendCapacity.WholeMacServiceUsed != nil {
+		p.serviceRetirementProtocol = true
+	}
 	p.CapacityAcceptedAt = time.Time{}
 	if backendCapacity != nil {
 		p.CapacityAcceptedAt = now
@@ -632,6 +645,11 @@ func (p *Provider) BackendCapacitySnapshot() *protocol.BackendCapacity {
 func cloneBackendCapacityFields(capacity, in *protocol.BackendCapacity) {
 	*capacity = *in
 	capacity.Slots = nil
+	if in.WholeMacServiceUsed != nil {
+		used := *in.WholeMacServiceUsed
+		capacity.WholeMacServiceUsed = &used
+	}
+	cloneWholeMacServiceReservations(capacity, in)
 	if in.FreeForLoadGB != nil {
 		free := *in.FreeForLoadGB
 		capacity.FreeForLoadGB = &free
@@ -657,6 +675,10 @@ func cloneBackendCapacityFields(capacity, in *protocol.BackendCapacity) {
 
 func cloneBackendSlot(slot, in *protocol.BackendSlotCapacity) {
 	*slot = *in
+	if in.PerformanceProfile != nil {
+		profile := *in.PerformanceProfile
+		slot.PerformanceProfile = &profile
+	}
 	if slot.KVBackend != nil {
 		backend := *slot.KVBackend
 		slot.KVBackend = &backend
@@ -666,6 +688,7 @@ func cloneBackendSlot(slot, in *protocol.BackendSlotCapacity) {
 		slot.KVBackendFallbackReason = &reason
 	}
 	slot.Telemetry = slot.Telemetry.Clone()
+	slot.PerformanceMeasurements = slot.PerformanceMeasurements.Clone()
 	slot.PrefixCache = in.PrefixCache.Clone()
 	slot.PagedStorage = in.PagedStorage.Clone()
 }

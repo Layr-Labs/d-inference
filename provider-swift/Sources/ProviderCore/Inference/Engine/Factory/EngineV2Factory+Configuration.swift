@@ -68,6 +68,8 @@ extension EngineV2Factory {
     static func productionSchedulerConfig(
         maxConcurrentRequests: Int,
         model: (any LanguageModel)? = nil,
+        modelID: String? = nil,
+        performanceProfile: ServingPerformanceProfile? = nil,
         environment: [String: String]
     ) -> CBv2SchedulerConfig {
         var config = CBv2SchedulerConfig(
@@ -77,6 +79,9 @@ extension EngineV2Factory {
             abovePlainChunk: config.prefillChunkSize,
             model: model,
             environment: environment)
+        config.mixedStepPrefillTokenCap = MixedPrefillPolicy.resolve(
+            modelID: modelID, profile: performanceProfile, environment: environment,
+            requiresNarrowingFloor: model is Gemma4Model || model is Gemma4TextModel || model is MLXVLM.Gemma4)
         config.maxConcurrentPartialPrefills =
             Self.maxConcurrentPartialPrefills(environment: environment)
         return config

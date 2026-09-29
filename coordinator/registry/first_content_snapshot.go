@@ -8,6 +8,7 @@ import "time"
 // reconciled per model with max, so one request is not charged twice.
 func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now time.Time) {
 	s.capacityAcceptedAt, s.capacitySeq = p.CapacityAcceptedAt, p.capacitySeq
+	s.transportMs, s.conservativeTransportMs, s.transportAgeMs = transportForecast(p.transport, now)
 	s.capacityAgeMs, s.performanceAgeMs = -1, -1
 	if !p.CapacityAcceptedAt.IsZero() {
 		s.capacityAgeMs = heartbeatAgeMs(now, p.CapacityAcceptedAt)
@@ -54,6 +55,12 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 					s.isolatedPrefillTPS = *t.IsolatedPrefillTPS
 				}
 				s.isolatedPrefillInitialized = t.EWMAInitialized != nil && *t.EWMAInitialized
+				if measurements := slot.PerformanceMeasurements; measurements != nil {
+					s.isolatedPrefillInitialized = validPerformanceObservation(measurements.IsolatedPrefill)
+					if s.isolatedPrefillInitialized {
+						s.isolatedPrefillTPS = measurements.IsolatedPrefill.TokensPerSecond
+					}
+				}
 			}
 		}
 		// The ordinary snapshot already resolved registration/hardware defaults.

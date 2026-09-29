@@ -65,6 +65,45 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
     #expect(CapacityHeartbeatMateriality.isMaterial(previous: loading, current: settled))
 }
 
+@Test func wholeMacServiceOwnershipIsMaterialWithoutSlotOrTokenChanges() {
+    let legacy = capacity([slot(state: "idle", numRunning: 0, used: 0)])
+    var idle = legacy
+    idle.wholeMacServiceUsed = 0
+    var preSubmit = idle
+    preSubmit.wholeMacServiceUsed = 1.0 / 24.0
+    var retiring = idle
+    retiring.wholeMacServiceUsed = 1
+    var retired = retiring
+    retired.wholeMacServiceUsed = 23.0 / 24.0
+
+    for (before, after) in [(legacy, idle), (idle, preSubmit), (preSubmit, idle),
+                            (retiring, retired), (retired, legacy)] {
+        #expect(CapacityHeartbeatMateriality.isMaterial(previous: before, current: after))
+        // Publishing that ownership state collapses the delta; the heartbeat
+        // throttle remains the owner of coalescing repeated rebuilds.
+        #expect(!CapacityHeartbeatMateriality.isMaterial(previous: after, current: after))
+    }
+}
+
+@Test func wholeMacServiceAttemptReplacementIsMaterialAtTheSameTotal() {
+    var before = capacity([])
+    before.wholeMacServiceUsed = 1.0 / 16
+    before.wholeMacServiceReservations = [.init(id: UUID().uuidString, usedFraction: 1.0 / 16)]
+    var after = before
+    after.wholeMacServiceReservations = [.init(id: UUID().uuidString, usedFraction: 1.0 / 16)]
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: before, current: after))
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: after, current: after))
+}
+
+@Test func serviceRetirementProtocolSupportIsMaterialWithoutUsageChanges() {
+    let legacy = capacity([])
+    var current = legacy
+    current.wholeMacServiceRetirementProtocol = 1
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: legacy, current: current))
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: current, current: legacy))
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: current, current: current))
+}
+
 @Test func admissionCompletionAndHealthTransitionsAreMaterial() {
     let base = capacity([slot(numRunning: 1)])
     // Request admitted / completed: numRunning moved.
@@ -80,6 +119,47 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
         previous: base, current: capacity([slot(state: "crashed")])))
     #expect(CapacityHeartbeatMateriality.isMaterial(
         previous: base, current: capacity([slot(state: "reloading")])))
+}
+
+@Test func idleConcurrencyChangesAreMaterialWithoutTokenBudgetChanges() {
+    var fallbackSlot = slot(state: "idle", numRunning: 0, used: 0)
+    fallbackSlot.maxConcurrency = 16
+    var expandedSlot = fallbackSlot
+    expandedSlot.maxConcurrency = 48
+    let fallback = capacity([fallbackSlot])
+    let expanded = capacity([expandedSlot])
+
+    // Profile stays absent on both snapshots, so only the concurrency gate
+    // can trigger publication. Both withdrawal and restoration must publish.
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: expanded, current: fallback))
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: fallback, current: expanded))
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: fallback, current: fallback))
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: expanded, current: expanded))
+}
+
+@Test func profileQualificationChangesAreMaterialAtTheSameConcurrency() {
+    var qualifiedSlot = slot(state: "idle", numRunning: 0, used: 0)
+    qualifiedSlot.maxConcurrency = 16
+    qualifiedSlot.performanceProfile = .init(
+        id: "reviewed-a", runtimeRevision: "runtime-a", contextTokens: 32_768)
+    let qualified = capacity([qualifiedSlot])
+    let replacements: [ServingPerformanceProfileReference?] = [
+        nil,
+        .init(id: "reviewed-b", runtimeRevision: "runtime-a", contextTokens: 32_768),
+        .init(id: "reviewed-a", runtimeRevision: "runtime-b", contextTokens: 32_768),
+        .init(id: "reviewed-a", runtimeRevision: "runtime-a", contextTokens: 65_536),
+    ]
+    for reference in replacements {
+        var changedSlot = qualifiedSlot
+        changedSlot.performanceProfile = reference
+        let changed = capacity([changedSlot])
+        // Count, token budget and concurrency stay fixed. Presence and every
+        // reviewed-reference field affect coordinator admission qualification.
+        #expect(CapacityHeartbeatMateriality.isMaterial(previous: qualified, current: changed))
+        #expect(CapacityHeartbeatMateriality.isMaterial(previous: changed, current: qualified))
+        #expect(!CapacityHeartbeatMateriality.isMaterial(previous: changed, current: changed))
+    }
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: qualified, current: qualified))
 }
 
 @Test func tokenBudgetShiftsUseFloorAndFractionThresholds() {

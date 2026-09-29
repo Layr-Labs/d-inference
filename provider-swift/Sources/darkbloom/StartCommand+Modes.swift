@@ -93,7 +93,8 @@ extension Start {
                 maxCachedModels: Int(clamping: config.backend.maxModelSlots),
                 authToken: token,
                 runtimeCapabilities: runtimeCapabilities,
-                engineV2MaxConcurrent: config.backend.engineV2MaxConcurrent,
+                engineV2MaxConcurrent: config.backend.engineV2MaxConcurrentIsExplicit
+                    ? config.backend.engineV2MaxConcurrent : nil,
                 engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,
                 engineV2KVBackend: config.backend.engineV2KVBackend,
                 engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,

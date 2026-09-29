@@ -5,6 +5,8 @@ import MLX
 /// schedulers. MLX active/cache counters are global, so per-scheduler token
 /// budgets can otherwise admit requests against the same apparent headroom.
 public actor GlobalKVCacheBudget {
+    nonisolated let serviceBudget = WholeMacServiceBudget()
+
     /// The four memory figures an admission decision needs: physical total, MLX's
     /// own active + cache, and the OS's real free RAM (the cross-process view).
     public struct MemorySnapshot: Sendable {

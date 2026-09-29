@@ -57,7 +57,8 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
     ///   resolves CONTIGUOUS.
     /// 4 adds required effective config-projected Gemma settings.
     /// 5 adds per-row prompt lengths and raw host token-arrival times.
-    public static let currentSchemaVersion = 5
+    /// 6 records the actual built scheduler cap.
+    public static let currentSchemaVersion = 6
 
     public let schemaVersion: Int
     public let modelID: String
@@ -67,6 +68,7 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
     public let promptLengthsPerRequest: [Int]
     public let decodeTokensPerRequest: Int
     public let iterations: Int
+    public let effectiveMaxConcurrentRequests: Int
     /// Config-projected Gemma settings this subprocess actually benchmarked.
     public let gemmaOptimizations: BenchmarkGemmaOptimizations
     /// Bound enforced on every measured row's `arrivalErrorMs`. Samples that

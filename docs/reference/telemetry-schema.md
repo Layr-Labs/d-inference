@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-28 · commit `0bd16a9fa`
+> Last updated: 2026-09-28 · commit `914dc4e53`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, and the tests that keep the mirrors
@@ -68,6 +68,11 @@ be drained without claiming `coordinator_acknowledged = true`. The daemon state 
 
 
 ## Mirrors
+
+Serving-rate observations are heartbeat capacity fields, not events in this
+schema. Their optional age/count/epoch and workload-bucket contract is documented
+in [protocol messages](protocol-messages.md#slotsperformance_measurements) and mirrored by the
+Go/Swift profiler fixture. They do not add an event kind or a TS event field.
 
 | Mirror | File | Types | Role today |
 |---|---|---|---|

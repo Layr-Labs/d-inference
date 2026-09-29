@@ -1,8 +1,8 @@
 # First-content routing and provider performance plan
 
-> Last updated: 2026-09-28 · commit `ae4925180`
+> Last updated: 2026-09-28 · commit `4ea5c4e49`
 
-Status: **In progress** — 2026-09-28 — Delivery A implemented for review; provider qualification and fleet placement remain pending. See [coordinator first-content routing](../architecture/first-content-routing.md).
+Status: **In progress** — 2026-09-28 — Delivery A is merged in [PR #1230](https://github.com/Layr-Labs/d-inference/pull/1230). Delivery B/C is prepared for review against `master` with the merged [MLX dependency #170](https://github.com/Layr-Labs/mlx-swift-lm/pull/170). Hardware profile promotion remains qualification-gated; no M5 B8/B16 profile is certified. See [coordinator first-content routing](../architecture/first-content-routing.md) and [serving qualification](../developer/serving-performance-qualification.md).
 
 Apply one first-content-oriented routing policy across the model catalog, then
 improve provider measurements, chunk scheduling and qualified concurrency.

@@ -98,6 +98,9 @@ enum DoctorRunner {
         }
 
         // ---- Traffic readiness: does the assigned/configured model fit RAM? ----
+        out.append(Diagnostic(section: .traffic, name: "serving concurrency", level: .info,
+                              message: ServingPerformanceProfiles.summary(
+                                backend: snapshot.config.backend), fix: nil))
         if let hw = snapshot.hardware {
             let loadSnapshotFresh = stateFresh && (state?.ageSeconds(now: now) ?? .infinity)
                 <= KVBackendPosture.staleAfterSeconds(

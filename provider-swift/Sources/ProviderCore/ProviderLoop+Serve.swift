@@ -293,7 +293,7 @@ extension ProviderLoop {
                     let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
-                    let profile
+                    let profile, let serviceReservationID
                 ):
                     await handleInferenceRequest(
                         requestId: requestId,
@@ -308,6 +308,7 @@ extension ProviderLoop {
                         firstContentDeadline: firstContentDeadline,
                         receivedAt: receivedAt,
                         profile: profile,
+                        serviceReservationID: serviceReservationID,
                         send: send
                     )
 
@@ -372,6 +373,8 @@ extension ProviderLoop {
         pendingRetirementReconnect?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
+        await stopServiceAllowanceRefreshMonitor()
+        await stopPerformanceRefreshMonitor()
         trailingHeartbeatTask?.cancel()
         trailingHeartbeatTask = nil
         capacityRefreshTask = nil

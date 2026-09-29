@@ -583,6 +583,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					schedulerGeneration = s.mdmScheduler.Submit(loopCtx, providerID, provider, priority)
 				}
 			}
+			saferun.Go(s.logger, "providerTransportLoop", func() {
+				s.providerTransportLoop(loopCtx, provider)
+			})
 			// Start challenge loop after registration
 			saferun.Go(s.logger, "challengeLoop", func() {
 				s.challengeLoop(loopCtx, providerID, provider, tracker)
@@ -709,6 +712,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// with the probe state; the read loop only delivers. Synchronous
 			// like heartbeat ingest — no DB or lock-heavy work on this path.
 			s.registry.HandleCapacityQuote(providerID, quoteMsg)
+
+		case protocol.TypeServiceReservationReleased:
+			released := msg.Payload.(*protocol.ServiceReservationReleasedMessage)
+			s.registry.ReleaseServiceReservation(provider, released.ServiceReservationID)
 
 		case protocol.TypeInferenceAccepted:
 			acceptMsg := msg.Payload.(*protocol.InferenceAcceptedMessage)

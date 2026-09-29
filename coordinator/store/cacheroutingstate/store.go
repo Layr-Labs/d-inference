@@ -34,8 +34,9 @@ type Store interface {
 	// recorded.
 	CacheRoutingKeyFingerprint(ctx context.Context) (string, error)
 	// ResetCacheRoutingState deletes every holder and demand row, whatever
-	// their expiry, and then records fingerprint as the current key generation. Used when the master key
-	// changed: rows derived under the old key can never match a request.
+	// their expiry, and then records fingerprint as the current key
+	// generation. Used when the master key changed: rows derived under the
+	// old key can never match a request.
 	ResetCacheRoutingState(ctx context.Context, fingerprint string) error
 	// PruneCacheRoutingState deletes holders expired before now and demand
 	// entries seen before demandNotBefore, in bounded batches, and returns

@@ -35,6 +35,8 @@ const cacheRoutingHoldersDDL = `CREATE TABLE IF NOT EXISTS cache_routing_holders
  PRIMARY KEY (key, cache_epoch)
 )`
 
+// The expiry index serves the prune; a load under a TTL orders by the clamped
+// expression and scans the table once at boot instead.
 const cacheRoutingHoldersExpiryIndexDDL = `CREATE INDEX IF NOT EXISTS idx_cache_routing_holders_expires ON cache_routing_holders(expires_at)`
 
 const cacheRoutingDemandDDL = `CREATE TABLE IF NOT EXISTS cache_routing_demand (

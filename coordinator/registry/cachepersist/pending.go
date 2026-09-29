@@ -77,6 +77,10 @@ func (p *Persister) AddBound(bound, dropped uint64) {
 func (p *Persister) prunePending(now time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.prunePendingLocked(now)
+}
+
+func (p *Persister) prunePendingLocked(now time.Time) {
 	for pk, rows := range p.pending {
 		kept := rows[:0]
 		for _, rec := range rows {

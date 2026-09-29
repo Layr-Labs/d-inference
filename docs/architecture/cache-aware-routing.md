@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `0ac850408`
+> Last updated: 2026-09-29 · commit `084fdd27d`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -764,7 +764,8 @@ back are operator procedures, kept in the runbook
    runs after the HTTP server has stopped and every provider socket has been
    closed and its handler joined (`CloseProviderConnections`), so no
    receipt arrives behind it (a socket that registers after the close
-   began leaves on its own); a restore retried after a failed boot merges
+   began leaves on its own; if the join times out, the flush repeats after
+   a further bounded wait and any remaining loss is logged); a restore retried after a failed boot merges
    into rows parked meanwhile, and merges demand entries into the index by
    seen time so a capped merge never evicts a fresher live observation for
    an older durable one. Nothing is written before

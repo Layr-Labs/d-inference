@@ -417,3 +417,32 @@ func TestRestoreMergesIntoRowsParkedBeforeIt(t *testing.T) {
 		t.Fatalf("parked newer evidence must win over the store's older copy: %+v", rows)
 	}
 }
+
+// Rows parked while the restore was unavailable can expire before a retry
+// succeeds; they must not take the cap from rows the store still holds.
+func TestRestoreDropsExpiredParkedRowsBeforeTheCap(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	if err := mem.UpsertCacheHolders(ctx, []crs.HolderRecord{rec("durable", "e", now, time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	p := New(mem, nil, Options{MaxPending: 1})
+	// Not ready: the prune loop cannot reach the store, but parked rows
+	// still expire in process.
+	p.Park(rec("expired", "e", now.Add(-2*time.Minute), time.Minute))
+	p.Prune(ctx, now.Add(-90*time.Second), time.Minute) // still live then
+	if s := p.Status(); s.PendingHolders != 1 || s.Ready {
+		t.Fatalf("parked row must survive an early prune while not ready: %+v", s)
+	}
+	if _, err := p.Restore(ctx, now, time.Minute, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	rows := p.Take("e", "model")
+	if len(rows) != 1 || rows[0].Key != "durable" {
+		t.Fatalf("the expired parked row must not take the cap from the durable row: %+v", rows)
+	}
+	if s := p.Status(); s.RestoredHolders != 1 || s.DroppedPending != 1 {
+		t.Fatalf("expired parked row dropped, durable row restored: %+v", s)
+	}
+}

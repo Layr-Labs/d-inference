@@ -1023,15 +1023,31 @@ func main() {
 	// routing indexes with no producer left behind it. The periodic flush
 	// loop stays alive until here.
 	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	srv.CloseProviderConnections(closeCtx)
+	joined := srv.CloseProviderConnections(closeCtx)
 	closeCancel()
-	flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if s := reg.CacheRoutingPersistenceStatus(); s.Enabled && !s.Ready {
-		logger.Warn("cache routing persistence never established its key generation this run; the final flush writes nothing")
-	} else if err := reg.FlushCacheRoutingState(flushCtx); err != nil {
-		logger.Warn("final cache routing persistence flush failed", "error", err)
+	finalFlush := func() {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer flushCancel()
+		if s := reg.CacheRoutingPersistenceStatus(); s.Enabled && !s.Ready {
+			logger.Warn("cache routing persistence never established its key generation this run; the final flush writes nothing")
+		} else if err := reg.FlushCacheRoutingState(flushCtx); err != nil {
+			logger.Warn("final cache routing persistence flush failed", "error", err)
+		}
 	}
-	flushCancel()
+	finalFlush()
+	if !joined {
+		// A handler still running can mark evidence behind that flush (a
+		// read-error close and the deferred teardown take seconds). Give the
+		// join the rest of the budget, then flush again; the periodic loop
+		// is still alive meanwhile.
+		joinCtx, joinCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		joined = srv.WaitProviderHandlers(joinCtx)
+		joinCancel()
+		finalFlush()
+		if !joined {
+			logger.Warn("provider socket handlers still running at exit; cache routing evidence they mark from here is lost")
+		}
+	}
 	persistCancel()
 
 	logger.Info("coordinator stopped")

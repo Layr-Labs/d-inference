@@ -360,13 +360,18 @@ func (p *Persister) FlushAll(ctx context.Context) error {
 // forgets the persisted-demand dedupe map, which is only a write-rate
 // optimisation and may be reset freely.
 func (p *Persister) Prune(ctx context.Context, now time.Time, ttl time.Duration) {
-	if p == nil || !p.Ready() {
+	if p == nil {
+		return
+	}
+	// Parked rows are in-process state and expire whether or not the store
+	// is reachable; dropping them never waits for the restore.
+	p.prunePending(now)
+	if !p.Ready() {
 		return
 	}
 	if _, err := p.store.PruneCacheRoutingState(ctx, now, ttl, now.Add(-ttl)); err != nil {
 		p.logger.Warn("cache routing persistence prune failed", "error", err)
 	}
-	p.prunePending(now)
 	p.mu.Lock()
 	p.demandPersisted = make(map[string]time.Time)
 	p.mu.Unlock()

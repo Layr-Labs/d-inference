@@ -50,6 +50,10 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		return nil, err
 	}
 	p.mu.Lock()
+	// Rows parked while the restore was unavailable may have expired
+	// meanwhile; drop them first so they never take the cap from rows
+	// still valid.
+	p.prunePendingLocked(now)
 	// Merge into whatever is already parked: a provider that disconnected
 	// before a retried restore parked this run's evidence here, and the
 	// store may not hold it yet. The newer record wins per (key, epoch).

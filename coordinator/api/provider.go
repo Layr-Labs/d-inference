@@ -158,6 +158,20 @@ func (s *Server) CloseProviderConnections(ctx context.Context) bool {
 	s.providersClosing = true
 	s.providerAdmit.Unlock()
 	closed := s.registry.CloseAllProviderConnections()
+	if s.WaitProviderHandlers(ctx) {
+		s.logger.Info("provider sockets closed for shutdown", "closed", closed)
+		return true
+	}
+	s.logger.Warn("provider socket handlers still running at the shutdown deadline", "closed", closed)
+	return false
+}
+
+// WaitProviderHandlers waits until every admitted provider socket handler
+// has returned or ctx expires. It may be called again after
+// CloseProviderConnections reported a timeout: a handler can spend seconds
+// in its read-error close and its deferred teardown, and evidence it marks
+// meanwhile is only safe once a flush runs after it has returned.
+func (s *Server) WaitProviderHandlers(ctx context.Context) bool {
 	done := make(chan struct{})
 	go func() {
 		s.providerHandlers.Wait()
@@ -165,10 +179,8 @@ func (s *Server) CloseProviderConnections(ctx context.Context) bool {
 	}()
 	select {
 	case <-done:
-		s.logger.Info("provider sockets closed for shutdown", "closed", closed)
 		return true
 	case <-ctx.Done():
-		s.logger.Warn("provider socket handlers still running at the shutdown deadline", "closed", closed)
 		return false
 	}
 }

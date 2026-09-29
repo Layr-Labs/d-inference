@@ -14,6 +14,7 @@ struct ServingQualificationLifecycleTests {
         let path = try #require(ProcessInfo.processInfo.environment["DARKBLOOM_SERVING_QUALIFICATION_JOB"])
         let job = try JSONDecoder().decode(ServingQualificationJob.self,
             from: Data(contentsOf: URL(fileURLWithPath: path)))
+        let buildIdentity = try ServingQualificationBuildIdentity.capture()
         let fixture = try await ServingQualificationFixture.load(job)
         guard let engine = await fixture.bundle.bridge.ownedEngine as? EngineV2 else {
             await fixture.retire()
@@ -78,7 +79,7 @@ struct ServingQualificationLifecycleTests {
                     confirmedTokens: confirmed, generatedTokensAccounted: generated, generationRetirements: generations,
                     serviceFractionAtCancel: fractionBeforeCancel, retired: retired, followupParity: parity))
             }
-            let report = LifecycleReport(schemaVersion: 1, modelID: job.modelID, artifactSHA256: job.artifactSHA256,
+            let report = LifecycleReport(buildIdentity: buildIdentity, schemaVersion: 1, modelID: job.modelID, artifactSHA256: job.artifactSHA256,
                 runtimeRevision: ServingPerformanceProfiles.runtimeRevision, mtp: fixture.mtp,
                 runtime: fixture.bundle.bridge.deadlineRuntimeConfiguration, checks: receipts,
                 passed: receipts.count == 2 && receipts.allSatisfy { $0.reached && $0.cancelled && $0.retired
@@ -118,6 +119,7 @@ private struct LifecycleReceipt: Codable {
     let followupParity: Bool
 }
 private struct LifecycleReport: Encodable {
+    let buildIdentity: ServingQualificationBuildIdentity
     let schemaVersion: Int
     let modelID: String
     let artifactSHA256: String

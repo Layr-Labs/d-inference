@@ -18,6 +18,7 @@ def receipt():
         "prefill_chunk_size": 1024, "max_concurrent_partial_prefills": 1,
         "solo_prefill_stripe_tokens": 4096, "mixed_prefill_token_cap": None},
         "build": {"configuration": "release", "dirty": False, "debug_condition": False,
+                  "debug_assertions_enabled": False, "build_identity_version": 1,
                   "source_commit": "a" * 40, "sdk_commit": "b" * 40,
                   "source_tree_sha256": "c" * 64, "test_binary_sha256": "d" * 64,
                   "metallib_sha256": "e" * 64},

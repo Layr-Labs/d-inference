@@ -230,5 +230,5 @@ must not be served publicly.
 
 The [next-stage design](../../docs/design/archive-analytics-retention.md) and
 `retention-policy.proposed.json` record the approved 5-minute public refresh
-target and proposed disabled 14-day source-retention policy. The policy file is
+target and proposed disabled 30-day telemetry source-retention policy. The policy file is
 not runtime configuration. Existing receipts cannot enable deletion.

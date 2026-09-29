@@ -4,6 +4,8 @@
 
 - Add an opt-in validated local snapshot path for leaderboard/network totals/network series, with source freshness checks and clear 503 responses when unavailable. Default database mode shares coalesced leaderboard results across aliases and limits, propagates query failures as 503, and uses a 5-minute public analytics cadence.
 - Reject snapshot counts that decrease across wider windows, accept signed token corrections, and persist accepted source cutoffs and generation checksums across coordinator restarts in a separate private state file. Snapshot mode fails closed if the state file is missing or corrupt.
+- Record a disabled rolling 30-day telemetry retirement proposal. Exact financial detail remains outside the proposal pending separate scope and safeguards; no source deletion is enabled.
+
 ## Unreleased — automatic model artifact revisions
 
 - Reject cached or staged revisions with unmanifested integrity files, so an added template, tokenizer or weight file cannot be activated under the original approved hash.

@@ -246,7 +246,10 @@ func (p *Persister) requeue(b batch) {
 		if _, deleted := p.holderDeletes[k]; deleted {
 			continue
 		}
-		if _, newer := p.holderUpserts[k]; newer {
+		if queued, present := p.holderUpserts[k]; present {
+			// A mark made while the batch was in flight may be an older
+			// delayed receipt: keep the newer evidence either way.
+			p.holderUpserts[k] = crs.Later(queued, rec)
 			continue
 		}
 		if len(p.holderUpserts) >= p.dirtyCap {

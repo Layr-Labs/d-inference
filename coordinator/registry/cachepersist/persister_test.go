@@ -473,3 +473,55 @@ func TestMarkHolderUpsertKeepsTheNewerQueuedRecord(t *testing.T) {
 		t.Fatalf("queued upsert must keep the newer record and the later expiry: %+v", b.upserts)
 	}
 }
+
+// A batch that failed to write is requeued by merging with whatever was
+// marked meanwhile: a delayed older receipt must not displace the newer
+// drained record, nor the other way round.
+func TestRequeueMergesWithEvidenceQueuedMeanwhile(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	p := New(mem, nil, Options{MaxPending: 10})
+	now := time.Now()
+	newer := rec("a", "e", now, time.Minute)
+	newer.StageMs = 900
+	older := rec("a", "e", now.Add(-time.Second), time.Minute)
+	older.StageMs = 50
+	// The older receipt was marked while the newer one's batch was in flight.
+	p.MarkHolderUpsert(older)
+	p.requeue(batch{upserts: []crs.HolderRecord{newer}})
+	if b := p.drain(); len(b.upserts) != 1 || b.upserts[0].StageMs != 900 {
+		t.Fatalf("requeue must keep the newer drained record: %+v", b.upserts)
+	}
+	// And the newer mark wins over an older drained record.
+	p.MarkHolderUpsert(newer)
+	p.requeue(batch{upserts: []crs.HolderRecord{older}})
+	if b := p.drain(); len(b.upserts) != 1 || b.upserts[0].StageMs != 900 {
+		t.Fatalf("requeue must keep the newer queued record: %+v", b.upserts)
+	}
+}
+
+// Overlapping sessions park the same durable row more than once; one parked
+// copy per (key, epoch) keeps the newer evidence and takes one cap slot.
+func TestParkDedupesByHolderIdentity(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	p := New(mem, nil, Options{MaxPending: 2})
+	now := time.Now()
+	older := rec("a", "e", now.Add(-time.Second), time.Minute)
+	older.StageMs = 50
+	newer := rec("a", "e", now, time.Minute)
+	newer.StageMs = 900
+	p.Park(older)
+	p.Park(newer)
+	p.Park(older) // a late duplicate of the older session
+	p.Park(rec("b", "e", now, time.Minute))
+	if s := p.Status(); s.PendingHolders != 2 || s.DroppedPending != 0 {
+		t.Fatalf("duplicates must not consume the cap: %+v", s)
+	}
+	rows := p.Take("e", "model")
+	byKey := map[string]crs.HolderRecord{}
+	for _, r := range rows {
+		byKey[r.Key] = r
+	}
+	if len(rows) != 2 || byKey["a"].StageMs != 900 || byKey["b"].Key != "b" {
+		t.Fatalf("one parked copy per identity with the newer evidence: %+v", rows)
+	}
+}

@@ -18,14 +18,22 @@ func (p *Persister) Park(rec crs.HolderRecord) {
 		return
 	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	pk := pendingKey(rec.CacheEpoch, rec.ModelID)
+	// Overlapping sessions of one machine park the same durable row more
+	// than once; one parked copy per (key, epoch), the newer evidence.
+	for i, parked := range p.pending[pk] {
+		if parked.HolderKey() == rec.HolderKey() {
+			p.pending[pk][i] = crs.Later(parked, rec)
+			return
+		}
+	}
 	if p.pendingCount < p.maxPending {
-		pk := pendingKey(rec.CacheEpoch, rec.ModelID)
 		p.pending[pk] = append(p.pending[pk], rec)
 		p.pendingCount++
 	} else {
 		p.counters.droppedPending++
 	}
-	p.mu.Unlock()
 }
 
 // Take pops the rows parked under one (cache epoch, model). The caller binds

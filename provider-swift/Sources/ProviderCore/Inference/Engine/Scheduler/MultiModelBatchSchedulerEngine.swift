@@ -259,6 +259,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     public func streamChatCompletion(
         request: OpenAIChatCompletionRequest
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        try MediaIngest.rejectUnsupportedAudio(request)
         let templateControls = self.templateControls.resolvingPromptDate()
         // A local HTTP engine may be shared by concurrent Chat/Responses calls.
         // The fallback usage channel belongs to this request, never to the engine.

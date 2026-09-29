@@ -102,7 +102,24 @@ public enum MediaIngest {
 
     // MARK: - Routing
 
-    /// True when any message carries an image or video content part.
+    /// Reject audio before model acquisition, template rendering, or media decoding.
+    /// The SDK wire type accepts audio, but this provider has no audio serving path.
+    static func rejectUnsupportedAudio(_ request: OpenAIChatCompletionRequest) throws {
+        for message in request.messages {
+            guard case .parts(let parts) = message.content else { continue }
+            for part in parts {
+                if case .inputAudio = part { throw unsupportedAudioError }
+            }
+        }
+    }
+
+    private static var unsupportedAudioError: MultiModelBatchSchedulerEngineError {
+        .multimodalRejected("multimodal_rejected: input_audio is not supported")
+    }
+
+    /// True when any message carries an image, video, or audio content part.
+    /// Audio is recognized as media so it cannot fall through to text serving;
+    /// `rejectUnsupportedAudio` rejects it before any serving work.
     /// Used by the engine to decide between the batched (text) path and
     /// this non-batched vision path.
     public static func hasMedia(_ request: OpenAIChatCompletionRequest) -> Bool {
@@ -110,7 +127,7 @@ public enum MediaIngest {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {
                 switch part {
-                case .imageURL, .videoURL:
+                case .imageURL, .videoURL, .inputAudio:
                     return true
                 case .text, .unsupported:
                     continue
@@ -210,6 +227,9 @@ public enum MediaIngest {
                     case .text(let s): add(s.utf8.count / textCharsPerToken)
                     case .imageURL: add(visionTokensPerImage)
                     case .videoURL: add(visionTokensPerVideo)
+                    // No finite reservation exists for unsupported audio.
+                    // Serving rejects it before consulting this projection.
+                    case .inputAudio: return .max
                     case .unsupported: continue
                     }
                 }
@@ -241,6 +261,7 @@ public enum MediaIngest {
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
+        try rejectUnsupportedAudio(request)
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType, hasMedia: true)
         if preserveTemplateFields {
@@ -283,15 +304,16 @@ public enum MediaIngest {
             // Only symbolic placeholders enter the template; decoded media
             // remains owned by UserInput, never rendered as URLs/base64 text.
             let generator = Qwen3VLMessageGenerator()
-            let messages = zip(request.messages, chatMessages).map { original, decoded in
+            let messages = try zip(request.messages, chatMessages).map { original, decoded in
                 var message = generator.generate(messages: [decoded])[0]
                 if original.role == .user || (retainToolMedia && original.role == .tool),
                     case .parts(let parts) = original.content {
-                    message["content"] = parts.compactMap { part -> [String: String]? in
+                    message["content"] = try parts.compactMap { part -> [String: String]? in
                         switch part {
                         case .text(let text): return ["type": "text", "text": text]
                         case .imageURL: return ["type": "image"]
                         case .videoURL: return ["type": "video"]
+                        case .inputAudio: throw unsupportedAudioError
                         case .unsupported: return nil
                         }
                     }
@@ -415,6 +437,8 @@ public enum MediaIngest {
                                 + "\(maxRequestVideoFramePixels) px")
                     }
                     videos.append(decoded.video)
+                case .inputAudio:
+                    throw unsupportedAudioError
                 case .unsupported:
                     continue
                 }
@@ -592,6 +616,10 @@ public enum MediaIngest {
                     }
                 case .videoURL:
                     hasVideo = true
+                // Do not advertise a zero-cost decode for unsupported audio.
+                // Serving rejects it before consulting this projection.
+                case .inputAudio:
+                    return .max
                 case .text, .unsupported:
                     continue
                 }

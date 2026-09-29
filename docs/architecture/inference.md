@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `bf030c63b`
+> Last updated: 2026-09-29 · commit `4384eea46`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -96,6 +96,13 @@ The prefill-only stripe, one partial prefill, recurrent checkpoints and
 one-image-at-a-time vision execution keep their existing geometry.
 
 ### One request through the engine
+
+The provider rejects `input_audio` parts in every message role with HTTP 400
+before model acquisition, prompt rendering or media decoding. SDK parsing of
+the wire part does not enable provider audio inference.
+`MediaIngest.rejectUnsupportedAudio` in
+`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` is shared
+by scheduler ingress, prompt-contract tokenization and media preparation.
 
 ```mermaid
 sequenceDiagram

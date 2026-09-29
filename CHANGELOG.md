@@ -3,6 +3,7 @@
 ## Unreleased — deadline projection diagnostics
 
 - Report a closed reason for unbounded provider deadline projections in the existing per-attempt profile. Distinguish scheduler state, cache geometry, capacity guarantees, missing phase rates and invalid duration without changing admission or reconstructing causes for older records.
+- Reject SDK-recognized `input_audio` parts with HTTP 400 before model acquisition, prompt rendering or media decoding. The SDK update does not enable provider audio inference.
 
 ## Unreleased — prompt accounting and first-content admission
 

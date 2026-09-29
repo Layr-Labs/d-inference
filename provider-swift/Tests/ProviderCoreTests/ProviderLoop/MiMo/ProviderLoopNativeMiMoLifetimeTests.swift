@@ -834,6 +834,9 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         XCTAssertTrue(coldRejected, "new loads must remain fenced")
         let peerBridgeAllowed = await peer.bridge.canSubmitWithNativeOwner()
         let nativeBridge = try XCTUnwrap(transaction.registeredBridgeForRetirement())
+        let faultActivity = await nativeBridge.nativeShutdownActivity
+        XCTAssertNotNil(faultActivity, "a real failed fence retains its whole-Mac shutdown activity")
+        XCTAssertFalse(actualBudget.serviceBudget.deadlineWork(modelID: modelID, epoch: "test").known)
         let nativeBridgeAllowed = await nativeBridge.canSubmitWithNativeOwner()
         XCTAssertTrue(peerBridgeAllowed)
         XCTAssertFalse(nativeBridgeAllowed)
@@ -851,6 +854,12 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         XCTAssertTrue(registry.hasRetainedFault)
         XCTAssertGreaterThan(actualBudget.processLedger.snapshot().chargedBytes, 0)
         _ = await runtime.unregister(modelId: peerID)
+        let repeatedRetirement = await owner.retireNativeMiMoOwner(modelID: modelID)
+        XCTAssertFalse(repeatedRetirement)
+        let retainedActivity = await nativeBridge.nativeShutdownActivity
+        XCTAssertTrue(faultActivity === retainedActivity)
+        XCTAssertFalse(actualBudget.serviceBudget.deadlineWork(modelID: modelID, epoch: "test").known,
+            "peer drain and repeated teardown cannot refund a retained native fault")
         await owner.removeModelSlotForTesting(modelId: peerID)
         // A failed native newcomer can be absent from modelSlots before
         // coordinator registration. The new startup cleanup must not treat

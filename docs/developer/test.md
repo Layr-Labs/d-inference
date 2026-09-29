@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `47915a198`
+> Last updated: 2026-09-29 · commit `5f55a618c`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -36,6 +36,27 @@ the deliberately retained native owner must live until that test process exits.
 The audiovisual ingress cancellation test returns `Void` from its child task:
 it still checks real decode cancellation and host-reservation settlement, without
 transferring an unused non-Sendable decoded-media result across `Task.value`.
+
+The complete-prefix methods in `MiMoV26NativeLoadTransactionTests` require a
+strict generated **asymmetric** tiny BF16 fixture with three synthetic MTP
+heads and enough context for the unchanged 257-token prompt, eight output tokens
+and speculative padding (the qualified fixture declares 1,024). Set
+`MIMO_V26_SERIAL_LOAD_FIXTURES` to its parent, with the fixture at `tiny-bf16`,
+and `MIMO_V26_SERIAL_NATIVE_TESTS=1`; a symmetric or 128-context fixture does not
+exercise this contract. The default MTP case retains a 512-token prefill chunk
+and 2,048-token maximum work envelope. Its positive local arena is 64 MiB;
+a separate 16 MiB case must refuse without executing a native step, creating
+a duplicate bridge reservation or changing process ownership, then retire
+cleanly. The OFF and explicit 128-token interior-publication cases retain their
+16 MiB arenas. Tests assert one target KV/ring charge plus exactly one bounded
+assistant work envelope, not a second legacy per-token assistant charge.
+
+The same native suite holds an actual pre-submit caller while the SDK becomes
+quiescent: whole-Mac forecast invalidation must remain owned until that caller
+unwinds and the matching bridge drain succeeds. The retained-fence test keeps
+that activity across a repeated failed retirement and unrelated peer drain.
+Neither forecast invalidation nor these tiny-model tests certify full-checkpoint
+memory release, production cache composition or selected-model generation.
 
 `MiMoV26DiscoveryLoadFootprintTests` checks metadata-only quote revalidation,
 including foreign-family, SSD-discount, underpricing and changed-inventory

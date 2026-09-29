@@ -822,7 +822,14 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
     }
 
     func testNativeCompletePrefixONUsesExactOwnerAndRealRetirement() async throws {
-        try await nativeCompletePrefixOwner(mtp: true)
+        // Keep the default 512-token prefill chunk and 2048-token MTP work envelope.
+        // That envelope exceeds this fixture's old 16 MiB local arena.
+        // Fund this positive fixture; the underfunded case remains explicit below.
+        try await nativeCompletePrefixOwner(mtp: true, bytesCapacity: 64 << 20)
+    }
+
+    func testNativeCompletePrefixONRefusesUnderfundedArenaAndRetiresCleanly() async throws {
+        try await nativeCompletePrefixOwner(mtp: true, expectCapacityRefusal: true)
     }
 
     func testNativeCompletePrefixONPublishesAnActualInteriorBoundaryBeforeRetirement() async throws {
@@ -831,7 +838,9 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
 
     /// Real strict-loaded tiny target and actual optional assistant; constant
     /// fixture identity is NOT production artifact/prompt qualification.
-    private func nativeCompletePrefixOwner(mtp: Bool, requireInteriorPublication: Bool = false) async throws {
+    private func nativeCompletePrefixOwner(mtp: Bool, requireInteriorPublication: Bool = false,
+                                          bytesCapacity: Int = 16 << 20,
+                                          expectCapacityRefusal: Bool = false) async throws {
         try nativeLane()
         let registry = MiMoV26NativeLoadRegistry(), budget = budget(native: true)
         defer { retainFaultUntilProcessExit(registry) }
@@ -860,7 +869,7 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
                     try transaction.registerAssistant(handle)
                 }
                 let resources = try model.makeNativeCompletePrefixExecutionResources(binding: binding,
-                    bytesCapacity: 16 << 20, expectedMetadata: metadata, completePrefixCache: store,
+                    bytesCapacity: bytesCapacity, expectedMetadata: metadata, completePrefixCache: store,
                     processMemoryOwner: owner.processOwner, retaining: scope)
                 let geometry = try MiMoV26AdmissionGeometry(layerKinds: metadata.layerKinds,
                     probedDTypes: metadata.layerDTypes, maximumContextTokens: metadata.maximumContextTokens)
@@ -880,6 +889,20 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
                         maxDraftTokens: 3, maxSpeculativeBatch: 1, verificationMode: .serialTarget),
                     processMemoryOwner: owner.processOwner,
                     nativeCompletionTracking: true, nativeExecutionContract: resources.contract)
+                if mtp {
+                    guard case .bounded(let envelope)? = engine.resolvedMTPAdmission else {
+                        throw FixtureError.fixtureRequired
+                    }
+                    XCTAssertEqual(envelope.limits.maximumPrefillTokens,
+                        requireInteriorPublication ? 128 : 2048)
+                    XCTAssertEqual(engine.resolvedFixedBytesPerRequest, envelope.fixedBytesPerRequest,
+                        "the assistant work envelope must be charged exactly once")
+                    XCTAssertEqual(engine.admissionForTesting.auxiliaryBytesPerToken, 0,
+                        "bounded MTP replaces the legacy per-token assistant charge")
+                }
+                XCTAssertEqual(engine.admissionForTesting.allocatedBytes(forTokens: 265),
+                    try geometry.logicalTargetBytes(positiveTokens: 265) + engine.resolvedFixedBytesPerRequest,
+                    "one target KV/ring charge plus one assistant envelope")
                 try transaction.registerEngine(engine, executionContract: resources.contract)
                 return (engine, handle, geometry.fullKVBytesPerToken,
                         try geometry.sharedFixedRequestBytes(resolvedNonTargetFixedBytes: engine.resolvedFixedBytesPerRequest))
@@ -924,21 +947,46 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
         }
 
         let requestID = "mimo-prefix-owned-request"
+        let quote = actual.admissionForTesting.allocatedBytes(forTokens: 265)
+        let available = actual.admissionForTesting.admissibleBytesCapacity
+        print("MiMoPrefixQuote mtp=\(mtp) interior=\(requireInteriorPublication) arena=\(bytesCapacity) fixed=\(actual.resolvedFixedBytesPerRequest) needed=\(quote) available=\(available)")
+        if expectCapacityRefusal {
+            XCTAssertGreaterThan(quote, available)
+        } else {
+            XCTAssertLessThanOrEqual(quote, available)
+        }
+        let stepsBefore = actual.stepCount
+        let chargeBefore = owner.processOwner.snapshot()
         let events = await bundle.bridge.submitTokenized(promptTokens: Array(repeating: 12, count: 257),
             request: .init(model: "synthetic-native-mimo-prefix", messages: [], temperature: 0, max_tokens: 8),
             requestId: requestID, cacheScope: "synthetic-owner-tenant")
-        var terminals = 0
+        var terminals = 0, capacityRefusals = 0
         for await event in events {
             let ids = await budget.reservationIDsForTesting()
             XCTAssertFalse(ids.contains(requestID), "bridge duplicated the exact native Admission request owner")
             switch event {
-            case .error(let error): XCTFail(error)
+            case .error(let error):
+                if expectCapacityRefusal {
+                    XCTAssertEqual(error, "token_budget_exhausted: request requires \(quote) tokens but only \(available) available")
+                    capacityRefusals += 1
+                } else { XCTFail(error) }
             case .terminal: XCTFail("unexpected native failure")
             case .info(_, let count, _, _): XCTAssertGreaterThan(count, 0); terminals += 1
             default: break
             }
         }
-        XCTAssertEqual(terminals, 1)
+        if expectCapacityRefusal {
+            XCTAssertEqual(capacityRefusals, 1)
+            XCTAssertEqual(terminals, 0)
+            XCTAssertEqual(actual.stepCount, stepsBefore, "unfunded request must not execute native work")
+            XCTAssertEqual(actual.admissionForTesting.bytesReserved, 0)
+            XCTAssertEqual(owner.processOwner.snapshot(), chargeBefore)
+            let ids = await budget.reservationIDsForTesting()
+            XCTAssertFalse(ids.contains(requestID))
+        } else {
+            XCTAssertEqual(capacityRefusals, 0)
+            XCTAssertEqual(terminals, 1)
+        }
         if requireInteriorPublication {
             // The stream's token terminal alone is not publication completion.
             // Join the actual pump/transferred retirement tasks BEFORE shutdown
@@ -978,6 +1026,76 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
         try FileManager.default.removeItem(at: store.config.dedicatedRoot)
         // Passive local handles are not a claim about allocator/physical free.
         withExtendedLifetime(raw) {}; withExtendedLifetime(actual) {}; withExtendedLifetime(bundle) {}
+    }
+
+    func testNativeShutdownActivitySurvivesPendingHostUntilRealQuiescentDrain() async throws {
+        try nativeLane()
+        let registry = MiMoV26NativeLoadRegistry(), budget = budget(native: true)
+        defer { retainFaultUntilProcessExit(registry) }
+        let (load, transaction, _) = try install(registry, budget: budget)
+        var returned: ProviderModelContainer? = try await load.load()
+        let bridge = try await Self.buildBridge(load: load, transaction: transaction,
+            container: XCTUnwrap(returned?.autoregressive), budget: budget)
+        let actualValue = await bridge.ownedEngine as? EngineV2
+        let actual = try XCTUnwrap(actualValue)
+        let contract = try XCTUnwrap(actual.nativeShutdownExecutionContractID)
+        _ = try await load.sealConstructionForPublication()
+        _ = try load.commitPublication { transaction.id }
+        let service = budget.serviceBudget
+        XCTAssertTrue(service.deadlineWork(modelID: "synthetic-native-mimo", epoch: "test").known)
+        let initialActivity = await bridge.nativeShutdownActivity
+        XCTAssertNil(initialActivity)
+        let entered = expectation(description: "actual bridge submission is suspended before native admission")
+        let gate = MiMoHostOperationGate()
+        await bridge._testInstallPreSubmitGate { entered.fulfill(); await gate.hold() }
+        let submission = Task {
+            await bridge.submitTokenized(promptTokens: [9, 12],
+                request: .init(model: "synthetic-native-mimo", messages: [], temperature: 0, max_tokens: 1),
+                requestId: "held-native-shutdown")
+        }
+        await fulfillment(of: [entered], timeout: 10)
+        let pendingCount = await bridge._testPendingSubmissionCount()
+        XCTAssertEqual(pendingCount, 1)
+        do {
+            _ = try await bridge.shutdownNativeConstruction(expectedEngine: actual, executionContractID: contract)
+            XCTFail("suspended host submission cannot mint bridge completion")
+        } catch MiMoV26NativeBridgeShutdownError.pendingConsumers {
+            // Actual SDK quiescence is insufficient while this host caller is parked.
+        } catch {
+            XCTFail("unexpected shutdown error: \(error)")
+        }
+        let pending = await bridge.nativeRetirementTaskSnapshot()
+        XCTAssertEqual(pending.sdkQuiescence?.engineID, actual.nativeShutdownEngineID)
+        XCTAssertEqual(pending.sdkQuiescence?.executionContractID, contract)
+        let heldActivity = await bridge.nativeShutdownActivity
+        XCTAssertNotNil(heldActivity)
+        XCTAssertFalse(service.deadlineWork(modelID: "synthetic-native-mimo", epoch: "test").known)
+        await gate.release()
+        let events = await submission.value
+        var errors = 0
+        for await event in events {
+            if case .error = event { errors += 1 }
+            if case .info = event { XCTFail("closed pending submission executed") }
+        }
+        XCTAssertEqual(errors, 1)
+        let remaining = await bridge._testPendingSubmissionCount()
+        XCTAssertEqual(remaining, 0)
+        XCTAssertEqual(service.count, 0, "the actual request allowance has unwound")
+        let afterHostUnwind = await bridge.nativeShutdownActivity
+        XCTAssertTrue(heldActivity === afterHostUnwind)
+        XCTAssertFalse(service.deadlineWork(modelID: "synthetic-native-mimo", epoch: "test").known,
+            "host unwind alone must retain the independent native shutdown activity")
+        let outcome = try await bridge.shutdownNativeConstruction(expectedEngine: actual, executionContractID: contract)
+        guard case .quiescent(let receipt) = outcome else { return XCTFail("real SDK and host drain did not complete") }
+        XCTAssertEqual(receipt.engineID, actual.nativeShutdownEngineID)
+        XCTAssertEqual(receipt.executionContractID, contract)
+        let drainedActivity = await bridge.nativeShutdownActivity
+        XCTAssertNil(drainedActivity)
+        XCTAssertTrue(service.deadlineWork(modelID: "synthetic-native-mimo", epoch: "test").known)
+        returned = nil
+        guard case .retired = await load.finishFailureAfterUnwind() else { return XCTFail("actual native owner failed to retire") }
+        XCTAssertEqual(budget.processLedger.snapshot().chargedBytes, 0)
+        XCTAssertTrue(registry.retainedTransactionIDs.isEmpty)
     }
 
 }

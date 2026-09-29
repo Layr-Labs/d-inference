@@ -72,9 +72,15 @@ type Persister struct {
 	// dirty sets while that flush is about to requeue a failed batch.
 	flushMu sync.Mutex
 
-	mu              sync.Mutex
-	holderUpserts   map[crs.HolderKey]crs.HolderRecord
-	holderDeletes   map[crs.HolderKey]struct{}
+	mu            sync.Mutex
+	holderUpserts map[crs.HolderKey]crs.HolderRecord
+	// holderDeletes holds the time each pending delete was decided;
+	// recentDeletes keeps that time for one TTL after the delete was
+	// written, so a row parked before the decision (an older session of the
+	// same machine) still cannot bind once the tombstone has left the dirty
+	// set (Tombstoned).
+	holderDeletes   map[crs.HolderKey]time.Time
+	recentDeletes   map[crs.HolderKey]time.Time
 	demandTouched   map[string]time.Time
 	demandPersisted map[string]time.Time
 	pending         map[string][]crs.HolderRecord
@@ -116,7 +122,8 @@ func New(st crs.Store, logger *slog.Logger, opts Options) *Persister {
 		store: st, logger: logger, maxPending: maxPending, dirtyCap: 4 * maxPending,
 		demandGranularity: granularity, fingerprint: opts.Fingerprint,
 		holderUpserts:   make(map[crs.HolderKey]crs.HolderRecord),
-		holderDeletes:   make(map[crs.HolderKey]struct{}),
+		holderDeletes:   make(map[crs.HolderKey]time.Time),
+		recentDeletes:   make(map[crs.HolderKey]time.Time),
 		demandTouched:   make(map[string]time.Time),
 		demandPersisted: make(map[string]time.Time),
 		pending:         make(map[string][]crs.HolderRecord),
@@ -153,24 +160,29 @@ func (p *Persister) MarkHolderDelete(k crs.HolderKey) {
 	p.mu.Lock()
 	delete(p.holderUpserts, k)
 	if _, present := p.holderDeletes[k]; present || len(p.holderDeletes) < p.dirtyCap {
-		p.holderDeletes[k] = struct{}{}
+		p.holderDeletes[k] = time.Now()
 	} else {
 		p.counters.droppedDirty++
 	}
 	p.mu.Unlock()
 }
 
-// HasPendingDelete reports whether this run has decided to delete the row
-// and not written that yet. A row loaded from the store while such a
-// tombstone is queued is older than the decision and must not bind.
-func (p *Persister) HasPendingDelete(k crs.HolderKey) bool {
+// Tombstoned reports whether a row whose evidence dates from updatedAt is
+// outranked by a delete this run decided: one still pending, or one written
+// within the last TTL and decided after that evidence. Such a row (loaded by
+// a retried restore, or parked by an older session before the decision) must
+// not bind.
+func (p *Persister) Tombstoned(k crs.HolderKey, updatedAt time.Time) bool {
 	if p == nil {
 		return false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	_, pending := p.holderDeletes[k]
-	return pending
+	if _, pending := p.holderDeletes[k]; pending {
+		return true
+	}
+	decided, ok := p.recentDeletes[k]
+	return ok && decided.After(updatedAt)
 }
 
 // MarkDemand records keys the demand index just observed, skipping keys whose
@@ -199,18 +211,20 @@ func (p *Persister) MarkDemand(keys []string, now time.Time) {
 }
 
 type batch struct {
-	upserts []crs.HolderRecord
-	deletes []crs.HolderKey
-	demand  []crs.DemandRecord
+	upserts  []crs.HolderRecord
+	deletes  []crs.HolderKey
+	deleteAt map[crs.HolderKey]time.Time
+	demand   []crs.DemandRecord
 }
 
 func (p *Persister) drain() batch {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	b := batch{
-		upserts: make([]crs.HolderRecord, 0, min(len(p.holderUpserts), HolderFlushRows)),
-		deletes: make([]crs.HolderKey, 0, min(len(p.holderDeletes), HolderFlushRows)),
-		demand:  make([]crs.DemandRecord, 0, min(len(p.demandTouched), DemandFlushRows)),
+		upserts:  make([]crs.HolderRecord, 0, min(len(p.holderUpserts), HolderFlushRows)),
+		deletes:  make([]crs.HolderKey, 0, min(len(p.holderDeletes), HolderFlushRows)),
+		deleteAt: make(map[crs.HolderKey]time.Time, min(len(p.holderDeletes), HolderFlushRows)),
+		demand:   make([]crs.DemandRecord, 0, min(len(p.demandTouched), DemandFlushRows)),
 	}
 	for k, rec := range p.holderUpserts {
 		if len(b.upserts) >= HolderFlushRows {
@@ -219,11 +233,12 @@ func (p *Persister) drain() batch {
 		b.upserts = append(b.upserts, rec)
 		delete(p.holderUpserts, k)
 	}
-	for k := range p.holderDeletes {
+	for k, at := range p.holderDeletes {
 		if len(b.deletes) >= HolderFlushRows {
 			break
 		}
 		b.deletes = append(b.deletes, k)
+		b.deleteAt[k] = at
 		delete(p.holderDeletes, k)
 	}
 	for key, seen := range p.demandTouched {
@@ -266,7 +281,11 @@ func (p *Persister) requeue(b batch) {
 			p.counters.droppedDirty++
 			continue
 		}
-		p.holderDeletes[k] = struct{}{}
+		at, ok := b.deleteAt[k]
+		if !ok {
+			at = time.Now()
+		}
+		p.holderDeletes[k] = at
 	}
 	for _, rec := range b.demand {
 		if prev, ok := p.demandTouched[rec.Key]; ok && !rec.SeenAt.After(prev) {
@@ -327,6 +346,9 @@ func (p *Persister) Flush(ctx context.Context) error {
 	}
 	p.counters.rowsWritten += uint64(wrote + demand)
 	p.counters.rowsDeleted += uint64(deleted)
+	for _, k := range b.deletes[:deleted] {
+		p.recentDeletes[k] = b.deleteAt[k]
+	}
 	for _, rec := range b.demand[:demand] {
 		p.demandPersisted[rec.Key] = rec.SeenAt
 	}
@@ -375,8 +397,17 @@ func (p *Persister) Prune(ctx context.Context, now time.Time, ttl time.Duration)
 		return
 	}
 	// Parked rows are in-process state and expire whether or not the store
-	// is reachable; dropping them never waits for the restore.
+	// is reachable; dropping them never waits for the restore. A written
+	// tombstone outranks older parked evidence for one TTL, after which any
+	// such row has expired on its own.
 	p.prunePending(now)
+	p.mu.Lock()
+	for k, at := range p.recentDeletes {
+		if now.Sub(at) >= ttl {
+			delete(p.recentDeletes, k)
+		}
+	}
+	p.mu.Unlock()
 	if !p.Ready() {
 		return
 	}

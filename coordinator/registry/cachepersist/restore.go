@@ -55,10 +55,11 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 	// still valid.
 	p.prunePendingLocked(now)
 	// Rows this run already decided to delete (tombstones queued while the
-	// store was unreachable; nothing has been written yet, so every one of
-	// them is still pending here) are older than that decision: neither a
-	// parked copy nor the loaded copy may enter the pending set, or the
-	// flush that drains the tombstone would let a later reconnect bind it.
+	// store was unreachable; nothing has been written yet, so every one not
+	// dropped at the dirty cap is still pending here) are older than that
+	// decision: neither a parked copy nor the loaded copy may enter the
+	// pending set, or the flush that drains the tombstone would let a later
+	// reconnect bind it.
 	if len(p.holderDeletes) > 0 {
 		for pk, rows := range p.pending {
 			kept := rows[:0]

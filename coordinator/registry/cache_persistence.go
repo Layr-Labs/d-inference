@@ -161,11 +161,11 @@ func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability prot
 		if !ok {
 			continue
 		}
-		if t.persister.HasPendingDelete(rec.HolderKey()) {
+		if t.persister.Tombstoned(rec.HolderKey(), rec.UpdatedAt) {
 			// This run already invalidated the holder (a miss, a proof
-			// mismatch, an eviction) while the store was unreachable; the
-			// row a retried restore loaded is older than that decision and
-			// the queued delete still applies.
+			// mismatch, an eviction) after this row's evidence was
+			// produced: a retried restore loaded it while the delete was
+			// queued, or an older session parked it before the decision.
 			continue
 		}
 		if rec.ModelID != capability.ModelID ||

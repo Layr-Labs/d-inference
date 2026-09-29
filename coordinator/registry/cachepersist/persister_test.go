@@ -525,3 +525,36 @@ func TestParkDedupesByHolderIdentity(t *testing.T) {
 		t.Fatalf("one parked copy per identity with the newer evidence: %+v", rows)
 	}
 }
+
+// A tombstone outranks older parked evidence for one TTL after it was
+// written: a row an older session parked before the decision must not bind
+// once the flush has drained the tombstone.
+func TestTombstoneOutlivesItsFlushForOneTTL(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	p := New(mem, nil, Options{MaxPending: 10})
+	restoreForTest(t, p, now)
+	k := crs.HolderKey{Key: "a", CacheEpoch: "e"}
+	before := now.Add(-time.Second)
+	p.MarkHolderDelete(k) // decided now
+	if !p.Tombstoned(k, before) {
+		t.Fatal("a pending delete outranks any row")
+	}
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !p.Tombstoned(k, before) {
+		t.Fatal("a written delete must still outrank evidence from before it")
+	}
+	if p.Tombstoned(k, time.Now().Add(time.Second)) {
+		t.Fatal("evidence produced after the decision is not tombstoned")
+	}
+	if p.Tombstoned(crs.HolderKey{Key: "a", CacheEpoch: "other"}, before) {
+		t.Fatal("another epoch's row is not tombstoned")
+	}
+	p.Prune(ctx, now.Add(2*time.Minute), time.Minute)
+	if p.Tombstoned(k, before) {
+		t.Fatal("a tombstone lapses after one TTL")
+	}
+}

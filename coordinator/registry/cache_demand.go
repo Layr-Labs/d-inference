@@ -3,7 +3,7 @@ package registry
 import (
 	"container/list"
 	"slices"
-	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -138,9 +138,6 @@ func (d *cacheDemandTracker) observeLocked(boundaries []cacheDemandBoundary, now
 	return longest, affinity, touched, d.onTouched
 }
 
-// restore seeds the index from durable rows, oldest first so the eviction
-// order matches the seen order. Rows past the TTL are skipped; the entry cap
-// keeps the newest.
 // restore seeds the index from the durable copy and returns the entries it
 // accepted (within the TTL, not in the future) and still holds afterwards;
 // the caller treats those as already persisted. The live list may be out of
@@ -169,11 +166,11 @@ func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) 
 	for key, seen := range merged {
 		all = append(all, cacheDemandEntry{key, seen})
 	}
-	sort.Slice(all, func(i, j int) bool {
-		if !all[i].seen.Equal(all[j].seen) {
-			return all[i].seen.Before(all[j].seen)
+	slices.SortFunc(all, func(a, b cacheDemandEntry) int {
+		if c := a.seen.Compare(b.seen); c != 0 {
+			return c
 		}
-		return all[i].key < all[j].key
+		return strings.Compare(a.key, b.key)
 	})
 	if d.limit > 0 && len(all) > d.limit {
 		all = all[len(all)-d.limit:]

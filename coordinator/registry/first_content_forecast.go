@@ -49,6 +49,7 @@ type firstContentSnapshot struct {
 	capacityAcceptedAt         time.Time
 	capacitySeq                uint64
 	performanceAgeMs           int32
+	evidenceGapAgeMs           int32
 	isolatedPrefillTPS         float64
 	isolatedPrefillInitialized bool
 	wholeMacBusy               bool
@@ -173,11 +174,16 @@ func firstContentCandidateAllowed(c *routingCandidate, pr *PendingRequest) bool 
 	return pr.MaxTTFTMs <= 0 || c.firstContent.Status != FirstContentPredictedLate
 }
 
+// preferFirstContentCandidates ranks qualified evidence first. Candidates
+// whose only gap is evidence they have been idle too long to renew stay beside
+// feasible peers (first_content_exploration.go); without feasible candidates
+// the unknown fallback is unchanged.
 func preferFirstContentCandidates(pool []*routingCandidate) []*routingCandidate {
-	pool = preferRoutingCandidates(pool, func(c *routingCandidate) bool { return c.firstContent.Status == FirstContentFeasible })
 	for _, c := range pool {
 		if c.firstContent.Status == FirstContentFeasible {
-			return pool
+			return preferRoutingCandidates(pool, func(c *routingCandidate) bool {
+				return c.firstContent.Status == FirstContentFeasible || firstContentEvidenceExplorable(c)
+			})
 		}
 	}
 	return preferRoutingCandidates(pool, func(c *routingCandidate) bool { return c.firstContent.Status == FirstContentUnknown })

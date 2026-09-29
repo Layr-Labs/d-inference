@@ -16,6 +16,7 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 	if sample, ok := p.firstContentMeasurements[s.model]; ok && !sample.observedAfter.IsZero() && !sample.decodeObservedAfter.IsZero() {
 		s.performanceAgeMs = max(heartbeatAgeMs(now, sample.observedAfter), heartbeatAgeMs(now, sample.decodeObservedAfter))
 	}
+	s.evidenceGapAgeMs = firstContentEvidenceGapAgeMs(s, p.registeredAt, now)
 	capacity := p.BackendCapacity
 	if capacity == nil {
 		return

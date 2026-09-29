@@ -74,8 +74,18 @@ diagnostics and fallback behavior (`coordinator/registry/heartbeat.go`,
 | Forecast class | Interpretation | Selection |
 |---|---|---|
 | `feasible` | Fresh, sufficiently matched conservative evidence fits the original remaining budget | Preferred pool |
-| `unknown` | Missing/stale measurement, unqualified competing or cold work, vision work, or no deadline | Nonzero expected forecast and bounded fallback |
+| `unknown` | Missing/stale measurement, unqualified competing or cold work, vision work, or no deadline | Nonzero expected forecast and bounded fallback; an idle provider whose only gap is performance evidence joins the preferred pool after the exploration bound |
 | `predicted_late` | Credible conservative forecast exceeds the remaining budget | Lower preference; existing explicit hard rejection policy can exclude it |
+
+Performance evidence is renewed only by serving, so preferring qualified evidence
+without exception excludes an idle provider indefinitely: every freshly connected
+session has none, and any provider idle past the 2-minute freshness horizon has
+lost it. After `firstContentEvidenceExplorationAfter` (5 minutes) without usable
+evidence, a loaded provider with no competing or pending work, whose forecast is
+unknown only for `performance_missing` or `performance_age_unknown_or_stale`,
+competes beside feasible peers on ordinary ranking. Its class stays `unknown`,
+so hedge and fresh-feasible requests still exclude it, and one served request
+restores measured evidence (`coordinator/registry/first_content_exploration.go`).
 
 Even a feasible forecast is advisory. Half-rate conservative pricing is not a
 mathematical guarantee. Busy schedules are not reconstructed from maximum output

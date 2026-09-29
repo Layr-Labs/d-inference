@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — first-content evidence exploration
+
+- Let an idle, loaded provider compete beside feasible peers once it has lacked usable performance evidence for 5 minutes. Evidence is renewed only by serving, so qualified-evidence-first previously excluded freshly connected and long-idle providers indefinitely. Hedge and fresh-feasible requests still require feasible evidence.
+
 ## Unreleased — SSD cache write budget
 
 - Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.

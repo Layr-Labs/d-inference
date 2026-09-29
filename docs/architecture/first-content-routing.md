@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-28 · commit `202cacd47`
+> Last updated: 2026-09-28 · commit `fc8353fde`
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -71,7 +71,9 @@ a mismatch withdraws calibrated prediction without extending the deadline.
 The reviewed fallback catalog contains six Qwen3.8 text/tool shape groups from
 9,000 actual template/tokenizer runs. Every record binds the exact artifact,
 template and training domain; gaps between measured size groups remain
-heuristic. See the [qualification evidence](../reports/2026-09-28-calibrated-admission-qualification.md#qualified-rendered-count-corpus).
+heuristic. Raw corpus receipts are archived separately; the
+[qualification procedure](../developer/serving-performance-qualification.md#verify-local-evidence)
+describes their optional replay checks.
 
 The expected and conservative handoff allowances are policy constants, not
 measured transport latency.
@@ -108,9 +110,10 @@ runtime identity, while each cell bounds measured request and competing-work
 contexts. The separate `deadline_profile` reference grants no authority over
 concurrency, whole-Mac charges or mixed-prefill caps. Those serving policy
 changes still require the complete `ServingPerformanceProfile` qualification
-matrix; narrow first-content evidence cannot certify them. The prior M5 candidate is withdrawn pending continuously sampled power
-evidence; its [evidence report](../reports/2026-09-28-calibrated-admission-qualification.md)
-records the validation gap. Serving defaults remain unchanged.
+matrix; narrow first-content evidence cannot certify them. The deadline catalog
+is currently empty, so the calibrated timing path remains disabled. Enabling it
+requires independently qualified evidence with continuous power observations.
+Serving defaults remain unchanged.
 
 A cooled profile additionally requires its measured whole-Mac idle interval,
 stable nominal posture and Automatic power mode on AC. This deadline-policy

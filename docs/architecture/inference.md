@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `202cacd47`
+> Last updated: 2026-09-28 · commit `fc8353fde`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -213,11 +213,10 @@ qualification. Once a request is existing work, its full prompt/output bound
 must fit its deadline profile's measured context envelope or calibration falls
 back.
 
-The deadline catalog remains disabled until continuously observed power
-qualification completes. The prior Qwen3.8 M5 Max candidate was withdrawn
-because its raw timing receipts sampled AC power only at run endpoints; see the
-[qualification report](../reports/2026-09-28-calibrated-admission-qualification.md).
-Unqualified cells and hardware retain the fallback.
+The deadline catalog is currently empty. Enabling a timing profile requires
+independent qualification with continuous power observations, following the
+[qualification procedure](../developer/serving-performance-qualification.md).
+All hardware retains the conservative timing fallback in this release.
 
 Cooled deadline profiles preserve the collection prerequisites: whole-Mac
 quiescence for 20 seconds after all request leases and unbounded GPU activity

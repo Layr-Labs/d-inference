@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `973e14b7f`
+> Last updated: 2026-09-28 · commit `fc8353fde`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -270,6 +270,12 @@ binaries and a non-root user; unavailable prerequisites are reported as skips.
 Promoted deadline records must also reproduce the archived raw training and
 validation runs and pass the current evaluator with actual prerequisite files;
 schema validity alone is insufficient.
+The current deadline catalog is empty. Historical hardware reports and the
+prompt-count corpus are stored outside the repository; their three replay tests
+run only with `DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT` set. See
+[local evidence checks](serving-performance-qualification.md#verify-local-evidence).
+Ordinary CI still pins the reviewed prompt-count coefficients and checks
+runtime boundaries and synthetic posture failures without those archives.
 For real hardware coverage and required evidence, follow
 [serving performance qualification](serving-performance-qualification.md).
 Synthetic tests never certify M5 concurrency or a mixed-prefill default.

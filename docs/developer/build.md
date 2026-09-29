@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-28 · commit `973e14b7f`
+> Last updated: 2026-09-28 · commit `fc8353fde`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -69,6 +69,8 @@ the runner verifies the source, binary and metallib binding before collecting
 model/runtime evidence. Neither command installs a provider. Release Integrity
 CI runs the offline `scripts/serving_performance/` tests without building Swift
 or downloading weights; hardware qualification still requires the managed build.
+Archived raw-corpus replay is opt-in; see the
+[local evidence checks](serving-performance-qualification.md#verify-local-evidence).
 
 The release pipeline runs optimized products and SDK qualification on separate
 `xcode-27-xlarge` runners. Both call `.github/actions/provider-release-build/action.yml`;

@@ -1,14 +1,36 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-28 · commit `202cacd47`
+> Last updated: 2026-09-28 · commit `fc8353fde`
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
-It never installs a profile or changes a running provider. The deadline catalog is disabled while the
-Qwen3.8 M5 Max candidate is requalified with continuous power observations; see
-its [evidence report](../reports/2026-09-28-calibrated-admission-qualification.md).
+It never installs a profile or changes a running provider. The deadline catalog
+is empty; enabling a profile requires independent qualification with continuous
+power observations. Historical reports and raw runs are kept in a local archive.
 The separate concurrency/chunk catalogs remain empty, so M5 Max B8 and M5 Ultra
 B16 remain qualification targets. Six qualified prompt-count fallback records
 cover bounded Qwen3.8 text/tool shapes and grant no hardware scheduling authority.
+
+## Verify local evidence
+
+Normal CI checks the committed prompt-count coefficients, runtime guards,
+synthetic qualification regressions, and Go/Swift deadline catalog agreement.
+It does not replay the separately archived 9,000-body prompt-count corpus or
+the withdrawn historical hardware cohort. To run those additional checks,
+point the test-only environment variable at the archive directory containing
+the original receipt, projection and review files:
+
+```bash
+export DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT=/absolute/path/to/evidence
+go test ./coordinator/api/promptwork -run TestReviewedPromptCatalog -count=1
+python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
+```
+
+Without that variable, only the three archive replay tests skip. A missing
+top-level receipt or mismatched prompt-corpus digest fails instead of skipping.
+Corpus replay still checks the original receipt/projection digest, fitted coefficients,
+independent populations and actual coverage. The historical timing check
+confirms that endpoint-only power evidence remains ineligible. Neither test
+collects new GPU measurements or changes runtime behavior.
 
 ## Prerequisites
 

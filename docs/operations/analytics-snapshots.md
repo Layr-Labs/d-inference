@@ -1,6 +1,6 @@
 # Serve public analytics from verified snapshots
 
-> Last updated: 2026-09-29 · commit `150c0b55f`
+> Last updated: 2026-09-29 · commit `64840fdb5`
 
 Use the opt-in coordinator reader to serve leaderboard, network totals and network usage charts from a
 small local snapshot, removing history scans from those request paths. This

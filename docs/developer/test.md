@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `60230b143`
+> Last updated: 2026-09-29 · commit `0d2954090`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -25,6 +25,13 @@ payload ceilings before real platform decoder entry. Normal provider
 `swift build --build-tests` does not compile a dependency's SDK test targets;
 compile and run the SDK package tests separately as CI does. Small selected
 native runners do not replace these whole-target compile checks.
+
+`MiMoV26DiscoveryLoadFootprintTests` checks metadata-only quote revalidation,
+including foreign-family, SSD-discount, underpricing and changed-inventory
+refusals. The native `MiMoV26StandaloneLifecycleTests` scanner-quoted regression
+uses real `ModelScanner.parseModelInfo` output with a positive transient allowance
+and no SSD discount through ordinary loading, publication and retirement; a
+handwritten `ModelInfo` without that field does not cover this boundary.
 
 `TestReserveProviderWithPlanPrimarySelectionUnchanged` compares selection and
 costs exactly while normalizing only wall-clock profiling ages, including

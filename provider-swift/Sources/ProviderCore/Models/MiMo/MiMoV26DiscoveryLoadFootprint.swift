@@ -23,6 +23,24 @@ enum MiMoV26DiscoveryLoadFootprint {
         return try? inspect(snapshotDir: snapshotDir, sizeBytes: sizeBytes)
     }
 
+    /// Revalidate a declared MiMo full-LOAD quote after hashing/setup awaits.
+    /// Unlike Qwen's quote, MiMo has no SSD-excluded payload. Legacy nil keeps
+    /// its existing behavior only in the dedicated native caller: that caller
+    /// admits/claims the fresh main+sidecar requests and rechecks their held
+    /// descriptors/permits independently of these scanner fields.
+    static func isCurrent(_ info: ModelInfo, directory: URL) -> Bool {
+        guard info.modelType == "mimo_v2", (info.ssdOffloadedWeightBytes ?? 0) == 0,
+              info.sizeBytes > 0, info.estimatedMemoryGb.isFinite, info.estimatedMemoryGb > 0
+        else { return false }
+        guard let declared = info.nativeLoadTransientBytes else { return true }
+        guard let current = estimate(snapshotDir: directory, modelType: info.modelType,
+                                     sizeBytes: info.sizeBytes),
+              declared >= current.transientBytes,
+              info.estimatedMemoryGb >= Double(current.totalBytes) / 1_073_741_824
+        else { return false }
+        return true
+    }
+
     private static func inspect(snapshotDir: URL, sizeBytes: UInt64) throws -> Estimate {
         try Task.checkCancellation()
         let root = snapshotDir.resolvingSymlinksInPath().standardizedFileURL

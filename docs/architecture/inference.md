@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-29 · commit `c7c59ec87`
+> Last updated: 2026-09-29 · commit `0d2954090`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -515,6 +515,14 @@ audio-sidecar request through
 tensors or authenticating weight payloads. It preserves legacy scanner pricing
 when the native inventory cannot be validated; it never replaces actual load
 reservations, native source authentication or post-load KV checks.
+Before Standalone native allocation, `MiMoV26DiscoveryLoadFootprint.isCurrent`
+revalidates a declared quote against the same main-plus-sidecar inventory without
+requiring Qwen's SSD-offload field. Foreign families, positive SSD discounts and
+underpriced or incomplete declared inventories refuse. A legacy nil declaration
+is not allocation authority: the native caller still admits, claims and rechecks
+the actual fresh load requests (`StandaloneServer.prepareAndPublishNativeMiMo`
+and `buildNativeMiMoCandidate` in
+`provider-swift/Sources/ProviderCore/Server/MiMo/StandaloneServer+NativeMiMo.swift`).
 `MiMoV26NativeLoadTransaction` retains actual construction tasks, container,
 engine, bridge and consumer leases before publication. A stopped generation
 cannot publish a late load. Retirement joins real SDK/native, bridge and

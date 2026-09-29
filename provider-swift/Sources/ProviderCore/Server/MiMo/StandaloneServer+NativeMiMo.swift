@@ -306,7 +306,7 @@ extension StandaloneServer {
         try checkNativeMiMoSetupOwner(modelID: modelID, load: load)
         _ = try GPUEnforcement.requireMetal()
         MLXMemoryGuard.configureOnce()
-        guard Qwen4ExpLoadFootprint.isCurrent(modelInfo, directory: directory) else {
+        guard MiMoV26DiscoveryLoadFootprint.isCurrent(modelInfo, directory: directory) else {
             throw StandaloneServerError.capacityUnavailable("Model loading footprint changed; rescan the model")
         }
         let container = try await ModelContainerLoading.loadServingContainer(

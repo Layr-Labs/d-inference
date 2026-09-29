@@ -112,6 +112,75 @@ final class MiMoV26DiscoveryLoadFootprintTests: XCTestCase {
         XCTAssertGreaterThan(info.estimatedMemoryGb, Double(size) / MiMoDiscoveryFixture.GiB * 1.2)
     }
 
+    func testCurrentScannerQuoteRevalidatesWithoutSSDDiscount() throws {
+        let root = try MiMoDiscoveryFixture.copyTiny()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var info = try MiMoDiscoveryFixture.scan(root)
+        XCTAssertGreaterThan(try XCTUnwrap(info.nativeLoadTransientBytes), 0)
+        XCTAssertNil(info.ssdOffloadedWeightBytes)
+        XCTAssertTrue(MiMoV26DiscoveryLoadFootprint.isCurrent(info, directory: root))
+        info.ssdOffloadedWeightBytes = 0
+        info.nativeLoadTransientBytes = try XCTUnwrap(info.nativeLoadTransientBytes) + 1
+        info.estimatedMemoryGb += 1
+        XCTAssertTrue(MiMoV26DiscoveryLoadFootprint.isCurrent(info, directory: root),
+                      "a conservative larger quote does not invent an SSD discount")
+    }
+
+    func testRevalidationRefusesForeignDiscountedAndUnderpricedDeclarations() throws {
+        let root = try MiMoDiscoveryFixture.copyTiny()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let info = try MiMoDiscoveryFixture.scan(root)
+        let transient = try XCTUnwrap(info.nativeLoadTransientBytes)
+        func refuse(_ change: (inout ModelInfo) -> Void) {
+            var value = info; change(&value)
+            XCTAssertFalse(MiMoV26DiscoveryLoadFootprint.isCurrent(value, directory: root))
+        }
+        for type in [nil, "mimo", "MIMO_V2", " mimo_v2 ", "qwen4_exp", "gemma4"] as [String?] {
+            refuse { $0.modelType = type }
+        }
+        refuse { $0.ssdOffloadedWeightBytes = 1 }
+        refuse { $0.sizeBytes += 1 }
+        refuse { $0.sizeBytes = 0 }
+        refuse { $0.nativeLoadTransientBytes = transient - 1 }
+        for value in [Double.nan, .infinity, -.infinity, 0, info.estimatedMemoryGb.nextDown] {
+            refuse { $0.estimatedMemoryGb = value }
+        }
+    }
+
+    func testRevalidationRefusesChangedAndIncompletePayloadInventory() throws {
+        let root = try MiMoDiscoveryFixture.copyTiny()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let info = try MiMoDiscoveryFixture.scan(root)
+        let extra = root.appendingPathComponent(".extra.safetensors")
+        try Data([1]).write(to: extra)
+        XCTAssertFalse(MiMoV26DiscoveryLoadFootprint.isCurrent(info, directory: root))
+        try FileManager.default.removeItem(at: extra)
+        XCTAssertTrue(MiMoV26DiscoveryLoadFootprint.isCurrent(info, directory: root))
+        let shard = root.appendingPathComponent("target.safetensors")
+        let held = root.appendingPathComponent("target.held")
+        try FileManager.default.moveItem(at: shard, to: held)
+        XCTAssertFalse(MiMoV26DiscoveryLoadFootprint.isCurrent(info, directory: root))
+        try FileManager.default.moveItem(at: held, to: shard)
+        XCTAssertTrue(MiMoV26DiscoveryLoadFootprint.isCurrent(info, directory: root))
+        try Data("{}".utf8).write(to: root.appendingPathComponent("conversion_manifest.json"))
+        XCTAssertFalse(MiMoV26DiscoveryLoadFootprint.isCurrent(info, directory: root))
+    }
+
+    func testLegacyNilQuoteDoesNotReplaceTheActualNativeLoadRequest() throws {
+        let root = try MiMoDiscoveryFixture.copyTiny()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var info = try MiMoDiscoveryFixture.scan(root)
+        info.nativeLoadTransientBytes = nil
+        info.estimatedMemoryGb = Double(info.sizeBytes) / MiMoDiscoveryFixture.GiB * 1.2
+        XCTAssertTrue(MiMoV26DiscoveryLoadFootprint.isCurrent(info, directory: root))
+        let actual = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: root))
+        XCTAssertNil(actual.transaction, "revalidation is not an allocation permit")
+        XCTAssertEqual(actual.estimatedWeightsGb,
+                       Double(actual.request.requiredLoadBytes) / MiMoDiscoveryFixture.GiB)
+        XCTAssertGreaterThan(actual.estimatedWeightsGb, info.estimatedMemoryGb,
+                             "the dedicated caller still prices/claims the actual full request")
+    }
+
     func testChangedIncompleteUnknownAndForeignInventoryCannotIssueNativeQuote() throws {
         let root = try MiMoDiscoveryFixture.copyTiny()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -182,6 +251,8 @@ final class MiMoV26DiscoveryLoadFootprintTests: XCTestCase {
         XCTAssertEqual(audio.requiredLoadBytes, MiMoDiscoveryFixture.selectedSidecarLoadBytes)
         XCTAssertEqual(quote.totalBytes, MiMoDiscoveryFixture.selectedTotalLoadBytes)
         XCTAssertEqual(quote.storedBytes, MiMoDiscoveryFixture.selectedStoredBytes)
+        let info = try MiMoDiscoveryFixture.scan(root)
+        XCTAssertTrue(MiMoV26DiscoveryLoadFootprint.isCurrent(info, directory: root))
         XCTAssertEqual(budget.processLedger.snapshot().ownerCount, 0, "quotation created a reservation")
     }
 }

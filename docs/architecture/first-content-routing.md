@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-28 · commit `973e14b7f`
+> Last updated: 2026-09-28 · commit `21d762c4a`
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -108,7 +108,10 @@ runtime identity, while each cell bounds measured request and competing-work
 contexts. The separate `deadline_profile` reference grants no authority over
 concurrency, whole-Mac charges or mixed-prefill caps. Those serving policy
 changes still require the complete `ServingPerformanceProfile` qualification
-matrix; narrow first-content evidence cannot certify them.
+matrix; narrow first-content evidence cannot certify them. The first compiled
+cell covers cold isolated Qwen3.8 MTP prompts on the exact measured M5 Max
+hardware; its [evidence report](../reports/2026-09-28-calibrated-admission-qualification.md)
+records the qualified domain and unchanged serving defaults.
 
 A cooled profile additionally requires its measured whole-Mac idle interval,
 stable nominal posture and Automatic power mode. The provider advertises the

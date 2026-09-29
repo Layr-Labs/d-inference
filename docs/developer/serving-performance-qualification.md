@@ -1,12 +1,14 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-28 · commit `973e14b7f`
+> Last updated: 2026-09-28 · commit `21d762c4a`
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
-It never installs a profile or changes a running provider. The initial reviewed
-hardware catalogs are empty: M5 Max B8 and M5 Ultra B16 remain qualification
-targets. Six separately qualified prompt-count fallback records cover bounded
-Qwen3.8 text/tool shapes; they grant no hardware scheduling authority.
+It never installs a profile or changes a running provider. The reviewed deadline
+catalog contains one cooled, isolated Qwen3.8 M5 Max cell; see its
+[evidence report](../reports/2026-09-28-calibrated-admission-qualification.md).
+The separate concurrency/chunk catalogs remain empty, so M5 Max B8 and M5 Ultra
+B16 remain qualification targets. Six qualified prompt-count fallback records
+cover bounded Qwen3.8 text/tool shapes and grant no hardware scheduling authority.
 
 ## Prerequisites
 

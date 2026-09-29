@@ -1,0 +1,201 @@
+{
+  "actualKVBackend" : "paged",
+  "artifactSHA256" : "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+  "buildIdentity" : {
+    "binarySHA256" : "b8276aad27accb191adcfe6e02c7a1c5fdf71424e7b55971afd5a118bbc9eef2",
+    "debugAssertionsEnabled" : false,
+    "debugCompilationCondition" : false,
+    "version" : 1
+  },
+  "checks" : [
+    {
+      "cancelled" : true,
+      "confirmedTokens" : 0,
+      "engineFinishReason" : "cancelled",
+      "followupParity" : true,
+      "generatedTokensAccounted" : 0,
+      "generationRetirements" : 1,
+      "phase" : "prefill",
+      "posture" : {
+        "after" : {
+          "lowPowerMode" : false,
+          "thermalState" : 0
+        },
+        "before" : {
+          "lowPowerMode" : false,
+          "thermalState" : 0
+        },
+        "lowPowerObserved" : false,
+        "worstThermalState" : 0
+      },
+      "reached" : true,
+      "retired" : true,
+      "serviceFractionAtCancel" : 0.041666666666666664
+    },
+    {
+      "cancelled" : true,
+      "confirmedTokens" : 7,
+      "engineFinishReason" : "cancelled",
+      "followupParity" : true,
+      "generatedTokensAccounted" : 7,
+      "generationRetirements" : 1,
+      "phase" : "after_mtp_content",
+      "posture" : {
+        "after" : {
+          "lowPowerMode" : false,
+          "thermalState" : 0
+        },
+        "before" : {
+          "lowPowerMode" : false,
+          "thermalState" : 0
+        },
+        "lowPowerObserved" : false,
+        "worstThermalState" : 0
+      },
+      "reached" : true,
+      "retired" : true,
+      "serviceFractionAtCancel" : 0.041666666666666664
+    }
+  ],
+  "controlPostures" : [
+    {
+      "after" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "before" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "lowPowerObserved" : false,
+      "worstThermalState" : 0
+    },
+    {
+      "after" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "before" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "lowPowerObserved" : false,
+      "worstThermalState" : 0
+    },
+    {
+      "after" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "before" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "lowPowerObserved" : false,
+      "worstThermalState" : 0
+    }
+  ],
+  "cooldowns" : [
+    {
+      "after" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "before" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "minimumMilliseconds" : 20000,
+      "nominalStableMilliseconds" : 20041.717916999998,
+      "passed" : true,
+      "recoveryLimitMilliseconds" : 180000,
+      "stableMilliseconds" : 5000,
+      "waitedMilliseconds" : 20041.84725
+    },
+    {
+      "after" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "before" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "minimumMilliseconds" : 20000,
+      "nominalStableMilliseconds" : 20043.893667,
+      "passed" : true,
+      "recoveryLimitMilliseconds" : 180000,
+      "stableMilliseconds" : 5000,
+      "waitedMilliseconds" : 20043.896959
+    },
+    {
+      "after" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "before" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "minimumMilliseconds" : 20000,
+      "nominalStableMilliseconds" : 20045.117834,
+      "passed" : true,
+      "recoveryLimitMilliseconds" : 180000,
+      "stableMilliseconds" : 5000,
+      "waitedMilliseconds" : 20045.1185
+    },
+    {
+      "after" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "before" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "minimumMilliseconds" : 20000,
+      "nominalStableMilliseconds" : 20041.423082999998,
+      "passed" : true,
+      "recoveryLimitMilliseconds" : 180000,
+      "stableMilliseconds" : 5000,
+      "waitedMilliseconds" : 20041.42675
+    },
+    {
+      "after" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "before" : {
+        "lowPowerMode" : false,
+        "thermalState" : 0
+      },
+      "minimumMilliseconds" : 20000,
+      "nominalStableMilliseconds" : 20040.468042,
+      "passed" : true,
+      "recoveryLimitMilliseconds" : 180000,
+      "stableMilliseconds" : 5000,
+      "waitedMilliseconds" : 20040.468375
+    }
+  ],
+  "kind" : "serving_lifecycle",
+  "modelID" : "EigenLabs/Qwen3.8-27B-4bit-mtp",
+  "mtp" : {
+    "artifact_sha256" : "8bf770b4b22fa4cffe3000a16314c41ea52d7556ad1acafb2e7bb33d96fd4e23",
+    "enabled" : true,
+    "max_automatic_rectangular_tokens" : 0,
+    "max_draft_tokens" : 7,
+    "max_speculative_batch" : 8,
+    "verification_mode" : "rectangular"
+  },
+  "passed" : true,
+  "providerVersion" : "0.9.12",
+  "runtime" : {
+    "configured_context_tokens" : 262144,
+    "effective_max_concurrency" : 4,
+    "max_concurrent_partial_prefills" : 1,
+    "prefill_chunk_size" : 512,
+    "solo_prefill_stripe_tokens" : 4096
+  },
+  "runtimeRevision" : "cbv2-first-content-v2",
+  "schemaVersion" : 1
+}

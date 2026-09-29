@@ -4,7 +4,7 @@ import json
 
 from .live_receipts import summarize
 from .build_identity import verified_build_identity
-from .posture import COOLED_DEADLINE_APPLICABILITY, nominal_trial, valid_cooldown
+from .posture import COOLED_DEADLINE_APPLICABILITY, automatic_ac_run, nominal_trial, valid_cooldown
 from .matrix import positive
 
 
@@ -30,10 +30,8 @@ def assemble_deadline_receipt(runs, *, profile_id, prompt_min, prompt_max, check
                 not all(provenance.get(key) is True for key in
                         ("artifact_unchanged", "source_unchanged", "binary_unchanged"))):
             raise ValueError("incomplete, failed or changed run cannot certify a deadline")
-        if provenance.get("power_posture_before") != provenance.get("power_posture_after") or any(
-                provenance.get(key, {}).get("mode") != "automatic"
-                for key in ("power_posture_before", "power_posture_after")):
-            raise ValueError("Automatic stable power policy is required")
+        if not automatic_ac_run(provenance):
+            raise ValueError("Automatic stable AC power is required by this deadline-policy revision")
         job = report["job"]
         if job["width"] != 1 or job["reused"] or not job.get("servingPolicy"):
             raise ValueError("this collector only certifies isolated cold ordinary serving configuration")

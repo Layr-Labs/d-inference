@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-28 · commit `21d762c4a`
+> Last updated: 2026-09-28 · commit `ad42fb0ce`
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The reviewed deadline
@@ -20,7 +20,9 @@ cover bounded Qwen3.8 text/tool shapes and grant no hardware scheduling authorit
   draft/verification setting. Plain-target evidence never certifies MTP. A
   mixed-prefill candidate may use only its exact global cap override described
   below; unrelated runtime overrides do not qualify.
-- Automatic power mode and nominal thermal posture. High-power-only results do
+- Automatic power mode and nominal thermal posture. Current deadline-only
+  qualification additionally requires AC power before and after the run; the
+  runtime cannot reuse these bounds on Battery Automatic. High-power-only results do
   not certify ordinary service. Keep production traffic off the test machine.
 
 ## Steps

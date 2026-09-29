@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `21d762c4a`
+> Last updated: 2026-09-28 · commit `ad42fb0ce`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -218,7 +218,10 @@ Other cells and hardware retain the fallback.
 
 Cooled deadline profiles preserve the collection prerequisites: whole-Mac
 quiescence for 20 seconds after all request leases and unbounded GPU activity
-retire, plus five seconds of observed nominal, non-Low-Power, Automatic posture.
+retire, plus five seconds of observed nominal, non-Low-Power, Automatic posture
+on AC power. This deadline-policy revision always rejects Battery Automatic
+even when earlier AC phase rates remain fresh; battery evidence would require
+a separate reviewed policy extension.
 `WholeMacServiceBudget` captures the prior idle interval when acquiring the
 incoming lease; only that lease may be excluded from its final atomic check.
 Any intervening owned work or observed posture change invalidates the captured

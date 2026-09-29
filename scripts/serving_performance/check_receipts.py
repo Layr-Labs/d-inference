@@ -6,6 +6,7 @@ from .build_identity import verified_build_identity
 from .evidence_files import evidence_file, read_evidence
 from .lifecycle_source import verify_lifecycle_source_equivalence
 from .matrix import CHECKS, digest, positive
+from .posture import automatic_ac_run
 
 SDK_SCOPES = frozenset(("constraints", "isolation"))
 SDK_PASSED_MARKERS = {
@@ -59,6 +60,8 @@ def _sdk_check(raw, check, build, evidence_root, cache):
 def _live_check(raw, provenance, check, identity, build, reference, evidence_root):
     if check not in LIVE_SCOPES or raw.get("kind") != "serving_lifecycle" or (type(raw.get("schemaVersion")) is not int or raw["schemaVersion"] != 1):
         raise ValueError("live prerequisite requires an explicit serving_lifecycle receipt")
+    if "configured_context_tokens" in identity and not automatic_ac_run(provenance):
+        raise ValueError("deadline lifecycle evidence requires stable Automatic AC power")
     expected = {"modelID": identity.get("model_id"), "artifactSHA256": identity.get("artifact_sha256"),
                 "providerVersion": identity.get("provider_version"), "runtimeRevision": identity.get("runtime_revision"),
                 "actualKVBackend": identity.get("kv_backend")}

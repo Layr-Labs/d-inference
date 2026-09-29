@@ -28,7 +28,10 @@ final class DeadlinePostureState: @unchecked Sendable {
         let callbacks = lock.withLock { () -> [@Sendable () -> Void] in
             let continuous = observedAt.map { now >= $0 && now < $0.advanced(by: .seconds(1)) } ?? false
             let freshPower = powerReadAt.map { now >= $0 && now < $0.advanced(by: .seconds(3)) } ?? false
-            let eligible = nominal && !lowPower && automatic && source != nil && freshPower
+            // This deadline-policy revision is qualified on AC Automatic only.
+            // Battery Automatic cannot reuse those rates after its stability
+            // window; battery qualification requires an explicit extension.
+            let eligible = nominal && !lowPower && automatic && source == "ac" && freshPower
             if !eligible || !continuous || self.powerSource != source {
                 invalidateLocked()
                 nominalSince = eligible ? now : nil

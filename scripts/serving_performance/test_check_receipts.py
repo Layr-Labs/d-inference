@@ -43,6 +43,16 @@ class CheckReceiptTests(unittest.TestCase):
         self.replace_raw("constraints", lambda raw: raw.update(root_commit="f" * 40, model_id="unit-fixture"))
         self.assertEqual(self.errors(), [])
 
+    def test_deadline_lifecycle_cannot_transfer_to_battery_or_unknown_power(self):
+        for source in ("battery", "unknown", None):
+            self.checks = references(self.identity, self.build, self.root)
+            def change(provenance):
+                for key in ("power_posture_before", "power_posture_after"):
+                    provenance[key]["source"] = source
+            self.replace_raw("cancellation", change, provenance=True)
+            with self.subTest(source=source):
+                self.assertTrue(self.errors())
+
     def test_shaped_digest_passing_flag_and_missing_file_cannot_pass(self):
         self.checks["constraints"] = {"passed": True, "receipt_sha256": "f" * 64}
         self.assertTrue(self.errors())

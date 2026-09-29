@@ -61,6 +61,8 @@ def references(identity, candidate_build, root=ROOT):
                       "source_tree_sha256": candidate_build["source_tree_sha256"], "dirty": False},
                   "return_code": 0, "build_configuration": "release", "artifact_unchanged": True,
                   "source_unchanged": True, "binary_unchanged": True,
+                  "power_posture_before": {"source": "ac", "mode": "automatic", "raw_mode": 0},
+                  "power_posture_after": {"source": "ac", "mode": "automatic", "raw_mode": 0},
                   "test_binaries_sha256": {"fixture.xctest": candidate_build["test_binary_sha256"]},
                   "metallibs_sha256": {"mlx.metallib": candidate_build["metallib_sha256"]}}
     provenance["build_record"] = fixture_build_record(provenance["source"], "release",

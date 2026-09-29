@@ -98,6 +98,14 @@ class DeadlineReceiptTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 assemble((report, provenance))
 
+    def test_battery_or_unknown_automatic_power_cannot_certify_ac_deadlines(self):
+        for source in ("battery", "unknown", None):
+            report, provenance = run("calibration")
+            for key in ("power_posture_before", "power_posture_after"):
+                provenance[key]["source"] = source
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, "AC power"):
+                assemble((report, provenance))
+
     def test_mismatched_configuration_or_observation_accounting_rejects(self):
         training, validation = run("calibration"), run("validation")
         validation[0]["deadlineRuntimeConfiguration"]["effective_max_concurrency"] = 8

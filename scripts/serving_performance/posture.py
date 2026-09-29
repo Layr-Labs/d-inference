@@ -16,6 +16,14 @@ def cooled_deadline_applicability(value):
                     ("minimum_whole_mac_quiescence_ms", "minimum_nominal_stability_ms")))
 
 
+def automatic_ac_run(provenance):
+    """The current deadline-policy revision has AC-only measured authority."""
+    before = provenance.get("power_posture_before")
+    after = provenance.get("power_posture_after")
+    return (isinstance(before, dict) and before == after
+            and before.get("source") == "ac" and before.get("mode") == "automatic")
+
+
 def nominal_snapshot(value):
     return (isinstance(value, dict) and type(value.get('thermalState')) is int
             and value['thermalState'] == 0 and value.get('lowPowerMode') is False)

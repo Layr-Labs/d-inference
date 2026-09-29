@@ -32,5 +32,5 @@ provenance files by archive-relative paths and actual content digests.
 The offline test reassembles every observation, verifies the real prerequisite
 files, reruns the independent coverage evaluator, and requires exact equality
 with the compiled catalog. Cooled evidence retains its measured whole-Mac
-quiescence, stable nominal and Automatic-mode requirements in the runtime
+quiescence, stable nominal and Automatic-on-AC requirements in the runtime
 profile; it cannot certify arbitrary nominal-start requests.

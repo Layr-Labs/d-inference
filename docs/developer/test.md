@@ -845,10 +845,10 @@ fatal assertions, preventing leaked background allocations from contaminating
 index invariants and allocation ceiling are unchanged.
 
 ```bash
-make coordinator-test                      # cd coordinator && go test ./...
+make coordinator-test                      # runner guards + complete coordinator suite
 # what CI runs (repo root, race detector, Postgres-backed store tests included):
 DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable' \
-  go test -race -coverprofile=coverage.out -covermode=atomic \
+  python3 scripts/run-coordinator-tests.py --race --coverprofile coverage.out \
     $(go list ./... | grep -vx 'github.com/eigeninference/d-inference/e2e')
 go tool cover -func=coverage.out | tail -n 1   # total statement coverage
 gofmt -l .                                 # must print nothing
@@ -858,6 +858,38 @@ golangci-lint run                          # .golangci.yml
 CI writes the total statement coverage to the job summary and keeps
 `coverage.out` for 14 days as the `coordinator-coverage` artifact. The number
 is for information only. A low number does not fail the job.
+
+The runner compiles `coordinator/api` once and discovers its tests, examples,
+and fuzz seed tests from that binary. It partitions the complete list across
+eight process-isolated shards with four workers by default. The other selected
+packages run through ordinary `go test` alongside those shards. No API test
+allowlist, test-result cache, shortened production timeout, or disabled race
+detector is used. Shared environment and package-global fixtures remain isolated
+between shards; tests within each shard keep Go's normal parallelism.
+
+Use `--jobs 1` for one unsharded API process, or use ordinary focused Go commands
+such as `go test -race ./coordinator/api -run '^TestRequestOutcome' -count=1`.
+Keep an unsharded race/shuffle run when changing shared fixtures or the runner;
+shards do not preserve cross-test process state. `GOMAXPROCS` is inherited rather
+than forced to one. Store tests are never partitioned within their package.
+
+`--output-dir <directory>` retains a unique run directory containing the exact
+API membership, per-task JSON events, stderr, timings, and optional coverage.
+Every API test must produce exactly one terminal result; a missing, duplicate,
+unexpected, or failing result fails the run. Coverage merges atomic counters by
+source block, retaining zero-hit blocks and counting their statements once.
+Malformed or missing coverage fails the run rather than publishing a partial
+success. CI uploads test evidence as `coordinator-test-timings` for 14 days.
+The separate uninstrumented adversarial-number parser check still runs in CI.
+
+Fixture speedups must retain the event being tested. Synchronous request-outcome
+tests drain the real sink before asserting; `TestRequestOutcomeSinkPeriodicFlush`
+separately checks the unchanged 100ms flush using virtual time.
+`TestStreamingChatMissingCompletionUsesBoundedFallback` similarly preserves the
+two-second missing-usage fallback without delaying ordinary signature tests. Failover providers
+wait for the registration's `desired_models` frame rather than sleeping. The
+crash fixture observes active streams and queued work before disconnecting, then
+requires server-side error/queue-timeout completion, not a client timeout.
 
 `TestProfile_RequestProfilesRecorded` checks that the stored transport estimate
 matches the difference of coordinator and provider spans. Negative values remain
@@ -2318,8 +2350,13 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
+<<<<<<< HEAD
 | [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build, matched Metal, serial/fresh-process provider tests and installer checks · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — requires all three provider lanes to succeed · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in and repeat demand) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
+=======
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API shards, runner self-tests, `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, merged `coverage.out` and test timing artifacts kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm test` (vitest run), `npm run build` |
+| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
+>>>>>>> fabd3da5e (test: reduce coordinator runtime with isolated API shards)
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |

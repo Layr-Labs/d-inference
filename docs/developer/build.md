@@ -785,7 +785,7 @@ local stub servers; its default observation mode sends only public GETs.
 | Target | What it runs |
 |---|---|
 | `help` | List targets (default goal) |
-| `coordinator-test` | `cd coordinator && go test ./...` |
+| `coordinator-test` | Runner self-tests, then `python3 scripts/run-coordinator-tests.py` (complete coordinator suite; process-isolated API shards, see [test](test.md)) |
 | `coordinator-build` | `go build ./cmd/coordinator` → `./coordinator/coordinator` |
 | `coordinator-build-linux` | `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator` |
 | `coordinator` | `coordinator-test` + `coordinator-build` |

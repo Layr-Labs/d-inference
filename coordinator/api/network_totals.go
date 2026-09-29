@@ -24,7 +24,7 @@ func (s *Server) handleNetworkTotals(w http.ResponseWriter, r *http.Request) {
 		writeCachedJSON(w, cached)
 		return
 	}
-	body, ok := s.getCachedEntry(s.networkTotalsEntry(window), networkTotalsCacheKey(window), func() ([]byte, error) { return s.computeNetworkTotals(window) })
+	body, ok := s.getCachedEntry(s.networkTotalsEntry(window), networkTotalsCacheKey(window), func() ([]byte, error) { return s.computeNetworkTotals(window, false) })
 	if !ok {
 		// Nothing cached and the aggregate failed (typically the store
 		// timeout): say so rather than serve a zero row as if it were data.
@@ -73,15 +73,25 @@ func (s *Server) networkTotalsEntry(window string) *cacheRefresher {
 // all-zero row on its 10 s timeout, which the handler then cached and served.
 func (s *Server) refreshNetworkTotals(window string) ([]byte, bool) {
 	return s.refreshCachedEntry(s.networkTotalsEntry(window), networkTotalsCacheKey(window), func() ([]byte, error) {
-		return s.computeNetworkTotals(window)
+		return s.computeNetworkTotals(window, true)
 	})
 }
 
-func (s *Server) computeNetworkTotals(window string) ([]byte, error) {
-	// Cold fills for distinct windows share the background loop's one-query
-	// concurrency bound; each transaction raises work_mem for several scans.
-	s.networkTotalsRefresh.queryMu.Lock()
-	defer s.networkTotalsRefresh.queryMu.Unlock()
+// computeNetworkTotals runs one window's aggregate under the shared query
+// bound (each transaction raises work_mem for several scans, so windows never
+// overlap). The background refresher waits for the bound; a request-path cold
+// fill does not: if the refresher already holds it, the request gets
+// errComputeBusy and answers from the cache at once. Queueing there turned one
+// 10 s store timeout into 20–40 s of client latency and a second scan of
+// provider_earnings for every poll during an outage.
+func (s *Server) computeNetworkTotals(window string, waitForQuery bool) ([]byte, error) {
+	queryMu := &s.networkTotalsRefresh.queryMu
+	if waitForQuery {
+		queryMu.Lock()
+	} else if !queryMu.TryLock() {
+		return nil, errComputeBusy
+	}
+	defer queryMu.Unlock()
 	since, ok := parseLeaderboardWindow(window)
 	if !ok {
 		return nil, fmt.Errorf("invalid network totals window: %s", window)

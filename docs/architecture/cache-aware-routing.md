@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `e5cc2229f`
+> Last updated: 2026-09-29 · commit `b16873a0c`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -757,7 +757,12 @@ back are operator procedures, kept in the runbook
    that window keeps routing on the measured value rather than the Ready
    estimate. Demand rows are restored only up to the current clock (a
    previous instance's fast clock cannot take the cap), and only the entries
-   the index accepts count as already persisted. Restores are bounded by the index caps and clamped to
+   the index accepts count as already persisted; holder rows updated after
+   the current clock are skipped the same way. Nothing is written before
+   the restore has recorded the key generation (a failed boot restore is
+   retried every flush tick, with marks held meanwhile), and the fingerprint
+   covers the master key, every key-derivation label and the block contract,
+   so a derivation bump without a key rotation resets the durable copy too. Restores are bounded by the index caps and clamped to
    the current TTL before the cap applies (the store orders holders by their
    expiry under today's TTL, longest-lived first, and demand newest first),
    so a TTL reduction never fills the cap with rows the clamp then drops; the demand

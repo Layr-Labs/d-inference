@@ -102,11 +102,23 @@ func (t *cacheRoutingTracker) dropParkedForCapability(epoch, model string) {
 // epoch, the row is its evidence now and is refreshed; otherwise it is
 // deleted. Called with t.mu held.
 func (t *cacheRoutingTracker) persistRowAfterLossLocked(key, epoch, except string) {
+	// With more than two overlapping sessions the row must reflect the
+	// freshest surviving evidence, not whichever session the map yields.
+	var (
+		newest cacheHolder
+		found  bool
+	)
 	for providerID, other := range t.holders[key] {
-		if providerID != except && other.CacheEpoch == epoch && other.persistable() {
-			t.persister.MarkHolderUpsert(holderRecordFor(key, other))
-			return
+		if providerID == except || other.CacheEpoch != epoch || !other.persistable() {
+			continue
 		}
+		if !found || other.UpdatedAt.After(newest.UpdatedAt) {
+			newest, found = other, true
+		}
+	}
+	if found {
+		t.persister.MarkHolderUpsert(holderRecordFor(key, newest))
+		return
 	}
 	t.persister.MarkHolderDelete(crs.HolderKey{Key: key, CacheEpoch: epoch})
 }

@@ -32,8 +32,9 @@ func (r *Registry) cacheRoutingStateStore() (crs.Store, bool) {
 // tracker and starts the flush and prune loops. It is a no-op when cache
 // routing is off, when the store cannot persist, or when it already started.
 // Call it after ConfigureCacheRouting and SetStore. A failed restore is
-// reported but still leaves write-behind on, so the next boot has something
-// to restore.
+// reported; the flush loop retries it every tick and writes nothing until it
+// succeeds, since rows written before the key generation is recorded would
+// be reset as foreign by the next boot.
 func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRoutingPersistenceStatus, error) {
 	if r == nil {
 		return CacheRoutingPersistenceStatus{}, nil
@@ -59,13 +60,6 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 	persister := cachepersist.New(st, r.logger, cachepersist.Options{
 		MaxPending: tracker.maxEntries, DemandTTL: tracker.ttl, Fingerprint: fingerprint,
 	})
-	now := tracker.now()
-	restoreCtx, cancel := context.WithTimeout(ctx, cacheRoutingRestoreTimeout)
-	demand, restoreErr := persister.Restore(restoreCtx, now, tracker.ttl, tracker.maxEntries, tracker.demand.limit)
-	cancel()
-	if restoreErr == nil {
-		persister.SeedDemandPersisted(tracker.demand.restore(demand, now))
-	}
 	tracker.mu.Lock()
 	tracker.persister = persister
 	tracker.mu.Unlock()
@@ -73,11 +67,27 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 	r.mu.Lock()
 	r.cachePersister = persister
 	r.mu.Unlock()
-	// Providers that registered before the restore (none at boot, but tests
-	// and reconfigures may) bind now.
-	r.bindRestoredHoldersForConnectedProviders()
+	restoreErr := r.restoreCacheRoutingState(ctx, persister, tracker)
 	go r.runCacheRoutingPersistence(ctx, persister)
 	return persister.Status(), restoreErr
+}
+
+// restoreCacheRoutingState loads the durable copy into the tracker: the key
+// generation is established (or the tables reset), demand entries seed the
+// index and are reported back as persisted, holders park, and providers that
+// are already connected (none at boot; tests, reconfigures and a retried
+// restore) bind their parked rows.
+func (r *Registry) restoreCacheRoutingState(ctx context.Context, persister *cachepersist.Persister, tracker *cacheRoutingTracker) error {
+	now := tracker.now()
+	restoreCtx, cancel := context.WithTimeout(ctx, cacheRoutingRestoreTimeout)
+	demand, err := persister.Restore(restoreCtx, now, tracker.ttl, tracker.maxEntries, tracker.demand.limit)
+	cancel()
+	if err != nil {
+		return err
+	}
+	persister.SeedDemandPersisted(tracker.demand.restore(demand, now))
+	r.bindRestoredHoldersForConnectedProviders()
+	return nil
 }
 
 // bindRestoredHolders binds parked rows for one provider's capabilities in
@@ -144,11 +154,34 @@ func (r *Registry) runCacheRoutingPersistence(ctx context.Context, p *cachepersi
 	prune := time.NewTicker(cachepersist.PruneInterval)
 	defer flush.Stop()
 	defer prune.Stop()
+	attempts := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-flush.C:
+			if !p.Ready() {
+				// The boot restore failed before the key generation was
+				// established; retry it here, and write nothing until it
+				// succeeds.
+				r.mu.RLock()
+				tracker := r.cacheRouting
+				r.mu.RUnlock()
+				if tracker == nil {
+					continue
+				}
+				attempts++
+				if err := r.restoreCacheRoutingState(ctx, p, tracker); err != nil {
+					if attempts == 1 || attempts%12 == 0 {
+						r.logger.Warn("cache routing persistence restore retry failed; nothing is written until it succeeds",
+							"error", err, "attempts", attempts)
+					}
+					continue
+				}
+				s := p.Status()
+				r.logger.Info("cache routing persistence restored after retry", "attempts", attempts,
+					"holders_pending", s.PendingHolders, "demand_entries", s.RestoredDemand, "key_rotated", s.KeyRotated)
+			}
 			flushCtx, cancel := context.WithTimeout(context.Background(), cachepersist.FlushInterval*2)
 			_ = p.Flush(flushCtx)
 			cancel()

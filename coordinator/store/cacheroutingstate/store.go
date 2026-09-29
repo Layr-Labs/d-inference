@@ -16,7 +16,8 @@ type Store interface {
 	// DeleteCacheHolders removes rows; missing rows are not an error.
 	DeleteCacheHolders(context.Context, []HolderKey) error
 	// LoadCacheHolders returns up to limit rows that are live at now under the
-	// current routing ttl. A row's effective expiry is the earlier of its
+	// current routing ttl and were not updated after now (a previous
+	// instance's fast clock). A row's effective expiry is the earlier of its
 	// stored ExpiresAt and UpdatedAt+ttl (ttl <= 0 applies no clamp); rows
 	// past it are skipped, ExpiresAt in the result carries the effective
 	// value, and rows are ordered longest-lived first by that value. The

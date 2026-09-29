@@ -144,8 +144,10 @@ func (s *PostgresStore) DeleteCacheHolders(ctx context.Context, keys []crs.Holde
 func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl time.Duration, limit int) ([]crs.HolderRecord, error) {
 	// The effective expiry applies the current TTL before the filter, the
 	// order and the limit, so a capped load after a TTL reduction is over
-	// rows that are still valid. Longest-lived first; a limit of 0 or less
-	// loads everything.
+	// rows that are still valid. Rows updated after now (a previous
+	// instance's clock ran ahead) are skipped: they would sort first and be
+	// routed as fresh past the TTL. Longest-lived first; a limit of 0 or
+	// less loads everything.
 	expiry := "expires_at"
 	args := []any{now.UTC()}
 	if ttl > 0 {
@@ -156,7 +158,7 @@ func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl
  block_hash_version, anchor_chain_hash, anchor_token_count, required_recompute_tokens, stage_ms,
  measured_stage_ms, measured_expires_at, updated_at, effective_expires_at
  FROM (SELECT *, %s AS effective_expires_at FROM cache_routing_holders) h
- WHERE effective_expires_at > $1 ORDER BY effective_expires_at DESC, key, cache_epoch`, expiry)
+ WHERE effective_expires_at > $1 AND updated_at <= $1 ORDER BY effective_expires_at DESC, key, cache_epoch`, expiry)
 	if limit > 0 {
 		query += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
 		args = append(args, limit)

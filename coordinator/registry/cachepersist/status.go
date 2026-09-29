@@ -33,6 +33,9 @@ type Status struct {
 	DroppedDirty    uint64 `json:"dropped_dirty"`
 	LastFlushMs     int64  `json:"last_flush_ms"`
 	LastFlushAt     string `json:"last_flush_at,omitempty"`
+	// Ready is false until the restore has established the key generation;
+	// nothing is written before that (the registry retries every flush tick).
+	Ready bool `json:"ready"`
 	// KeyRotated is true when this boot found a recorded cache-key generation
 	// that differs from its own and reset the tables instead of restoring
 	// them; a first boot with nothing recorded does not count.
@@ -51,7 +54,7 @@ func (p *Persister) Status() Status {
 		Enabled: true, RestoredHolders: c.restoredHolders, RestoredDemand: c.restoredDemand,
 		PendingHolders: p.pendingCount, BoundHolders: c.boundHolders, DroppedPending: c.droppedPending,
 		Flushes: c.flushes, FlushErrors: c.flushErrors, RowsWritten: c.rowsWritten, RowsDeleted: c.rowsDeleted,
-		DroppedDirty: c.droppedDirty, LastFlushMs: c.lastFlushMs, KeyRotated: c.keyRotated,
+		DroppedDirty: c.droppedDirty, LastFlushMs: c.lastFlushMs, KeyRotated: c.keyRotated, Ready: p.ready,
 	}
 	if !c.lastFlushAt.IsZero() {
 		s.LastFlushAt = c.lastFlushAt.UTC().Format(time.RFC3339)

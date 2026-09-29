@@ -30,6 +30,15 @@ func (f *flakyStore) UpsertCacheDemand(ctx context.Context, r []crs.DemandRecord
 	return f.Store.UpsertCacheDemand(ctx, r)
 }
 
+// restoreForTest records the key generation so writes are unblocked, as the
+// boot restore does in production.
+func restoreForTest(t *testing.T, p *Persister, now time.Time) {
+	t.Helper()
+	if _, err := p.Restore(context.Background(), now, time.Minute, 1000, 0); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+}
+
 func rec(key, epoch string, now time.Time, ttl time.Duration) crs.HolderRecord {
 	return crs.HolderRecord{Key: key, CacheEpoch: epoch, Tier: "ssd", ModelID: "model",
 		AnchorChainHash: "h", AnchorTokenCount: 1024, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(ttl)}
@@ -40,6 +49,7 @@ func TestFlushRetriesUnwrittenRemainderAndDedupesDemand(t *testing.T) {
 	flaky := &flakyStore{Store: mem, broken: true}
 	p := New(flaky, nil, Options{MaxPending: 1000})
 	now := time.Now()
+	restoreForTest(t, p, now)
 	p.MarkHolderUpsert(rec("key-1", "e", now, time.Minute))
 	p.MarkDemand([]string{"d-1", "d-2"}, now)
 	if err := p.Flush(context.Background()); err == nil {
@@ -73,6 +83,7 @@ func TestFlushWritesInBoundedChunksAndKeepsPartialProgress(t *testing.T) {
 	mem := store.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 100_000})
 	now := time.Now()
+	restoreForTest(t, p, now)
 	for i := 0; i < HolderFlushRows+300; i++ {
 		p.MarkHolderUpsert(rec("k"+time.Duration(i).String(), "e", now, time.Minute))
 	}
@@ -94,6 +105,7 @@ func TestPendingParkTakeAndPrune(t *testing.T) {
 	mem := store.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 2})
 	now := time.Now()
+	restoreForTest(t, p, now)
 	p.Park(rec("a", "e1", now, time.Minute))
 	p.Park(rec("b", "e1", now, -time.Second)) // already expired
 	p.Park(rec("c", "e1", now, time.Minute))  // over the cap of 2
@@ -260,6 +272,7 @@ func TestDemandGranularityFollowsShortTTLAndRestoreIsCapped(t *testing.T) {
 	if p.demandGranularity != 7500*time.Millisecond {
 		t.Fatalf("granularity not bounded by the TTL: %v", p.demandGranularity)
 	}
+	restoreForTest(t, p, now)
 	p.MarkDemand([]string{"k"}, now)
 	if err := p.Flush(ctx); err != nil {
 		t.Fatal(err)
@@ -332,5 +345,43 @@ func TestRestoreBoundsDemandToNowAndSeedsOnlyAcceptedKeys(t *testing.T) {
 	}
 	if keys["fresh"] || !keys["edge"] || !keys["future"] {
 		t.Fatalf("seeded key suppressed, others written: %+v", b.demand)
+	}
+}
+
+// Nothing is written before Restore has established the key generation:
+// the next boot would treat such rows as foreign and reset them.
+func TestFlushWaitsForRestore(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	p := New(mem, nil, Options{MaxPending: 10, Fingerprint: "gen-1"})
+	p.MarkHolderUpsert(rec("a", "e", now, time.Minute))
+	p.MarkDemand([]string{"d"}, now)
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.FlushAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := p.Status(); s.Ready || s.Flushes != 0 || s.RowsWritten != 0 || p.dirtyEmpty() {
+		t.Fatalf("flush must be a no-op that keeps the marks while not ready: %+v", s)
+	}
+	if rows, _ := mem.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 0 {
+		t.Fatalf("rows written before the generation was recorded: %+v", rows)
+	}
+	if _, err := p.Restore(ctx, now, time.Minute, 10, 10); err != nil {
+		t.Fatal(err)
+	}
+	if !p.Ready() {
+		t.Fatal("restore must mark the persister ready")
+	}
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := p.Status(); s.RowsWritten != 2 || !p.dirtyEmpty() {
+		t.Fatalf("marks made before the restore must be written after it: %+v", s)
+	}
+	if fp, _ := mem.CacheRoutingKeyFingerprint(ctx); fp != "gen-1" {
+		t.Fatalf("generation not recorded: %q", fp)
 	}
 }

@@ -91,7 +91,9 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 			if err := s.UpsertCacheHolders(ctx, []crs.HolderRecord{newer, older}); err != nil {
 				t.Fatalf("merge upsert: %v", err)
 			}
-			got, _ = s.LoadCacheHolders(ctx, now, 0, 0)
+			// k005 is updated a minute from now; a load skips rows updated in
+			// the future, so read a minute later.
+			got, _ = s.LoadCacheHolders(ctx, now.Add(time.Minute), 0, 0)
 			byKey = map[crs.HolderKey]crs.HolderRecord{}
 			for _, r := range got {
 				byKey[r.HolderKey()] = r
@@ -115,7 +117,7 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 			// 5-minute TTL k006 (updated at now, extended to 44 min) has 5 min
 			// left while k005 (updated a minute later) has 6, and the result
 			// carries the clamped expiry.
-			top, err = s.LoadCacheHolders(ctx, now, 5*time.Minute, 1)
+			top, err = s.LoadCacheHolders(ctx, now.Add(time.Minute), 5*time.Minute, 1)
 			if err != nil || len(top) != 1 || top[0].Key != "k005" || !top[0].ExpiresAt.Equal(now.Add(6*time.Minute)) {
 				t.Fatalf("capped load under a shorter TTL must order by the clamped expiry: %+v %v", top, err)
 			}
@@ -195,6 +197,18 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			removed, err := s.PruneCacheRoutingState(ctx, now, now.Add(-600*time.Second))
 			if err != nil || removed != 499 {
 				t.Fatalf("prune removed %d (err %v), want 499", removed, err)
+			}
+			// A row updated after the load's clock (a previous instance ran
+			// ahead) is skipped until the clock catches up with it.
+			skew := holderRecord(900, "epoch-skew", now.Add(time.Hour), 29*time.Minute)
+			if err := s.UpsertCacheHolders(ctx, []crs.HolderRecord{skew}); err != nil {
+				t.Fatalf("upsert skewed row: %v", err)
+			}
+			if rows, _ := s.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 0 {
+				t.Fatalf("a row updated in the future must not load: %+v", rows)
+			}
+			if rows, _ := s.LoadCacheHolders(ctx, now.Add(61*time.Minute), 0, 0); len(rows) != 1 || rows[0].Key != "k900" {
+				t.Fatalf("the skewed row loads once the clock has passed its update: %+v", rows)
 			}
 			// Key rotation: reset empties both tables, whatever the rows' expiry
 			// (a TTL above 1,000 hours is a legal configuration), and records

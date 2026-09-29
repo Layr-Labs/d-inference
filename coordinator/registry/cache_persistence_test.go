@@ -2,10 +2,12 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -826,5 +828,143 @@ func TestCacheDemandRestoreReportsAcceptedEntries(t *testing.T) {
 	entries, _ := tracker.demand.stats()
 	if entries != 1 {
 		t.Fatalf("index holds %d entries, want 1", entries)
+	}
+}
+
+// fingerprintFlakyStore fails the key-generation read while fail is set, the
+// way a busy database at boot does.
+type fingerprintFlakyStore struct {
+	*store.MemoryStore
+	fail atomic.Bool
+}
+
+func (f *fingerprintFlakyStore) CacheRoutingKeyFingerprint(ctx context.Context) (string, error) {
+	if f.fail.Load() {
+		return "", errors.New("store down")
+	}
+	return f.MemoryStore.CacheRoutingKeyFingerprint(ctx)
+}
+
+// A boot whose restore fails before the key generation is recorded writes
+// nothing (the next boot would reset such rows as foreign) until a retried
+// restore succeeds; then the run's evidence is flushed under the generation.
+func TestCacheRoutingPersistenceRetriesRestoreBeforeWriting(t *testing.T) {
+	st := &fingerprintFlakyStore{MemoryStore: store.NewMemory(store.Config{})}
+	st.fail.Store(true)
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	r.SetStore(st)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	status, err := r.StartCacheRoutingPersistence(ctx)
+	if err == nil || !status.Enabled || status.Ready {
+		t.Fatalf("boot restore must fail and leave the persister not ready: err=%v %+v", err, status)
+	}
+	a := persistenceTestProvider(t, r, "machine-a", capability)
+	checkpoint := exactTestAnchor(16, "c")
+	floor := exactTestAnchor(17, "d")
+	plan := boundTestCachePlan(r, exactTestPlan(checkpoint, floor))
+	_, ready := checkpointTestAttempt(t, r, a, capability, "donor", plan, 1)
+	ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+	ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+	if !r.ApplyPrefixCacheReadyV2(a.ID, ready) {
+		t.Fatal("ready receipt rejected")
+	}
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 0 {
+		t.Fatalf("nothing may be written before the key generation is recorded: %+v", rows)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.RowsWritten != 0 || s.Flushes != 0 {
+		t.Fatalf("flush must be a no-op while not ready: %+v", s)
+	}
+	// The store recovers; the loop's retry (driven directly here) restores,
+	// records the generation and unblocks writes.
+	st.fail.Store(false)
+	r.mu.RLock()
+	tracker, persister := r.cacheRouting, r.cachePersister
+	r.mu.RUnlock()
+	if err := r.restoreCacheRoutingState(ctx, persister, tracker); err != nil {
+		t.Fatalf("retried restore: %v", err)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); !s.Ready || s.KeyRotated {
+		t.Fatalf("retried restore must mark the persister ready: %+v", s)
+	}
+	r.mu.RLock()
+	want := r.cacheRouteKeys.persistFingerprint
+	r.mu.RUnlock()
+	if fp, _ := st.CacheRoutingKeyFingerprint(context.Background()); fp != want {
+		t.Fatalf("generation not recorded: %q want %q", fp, want)
+	}
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 1 {
+		t.Fatalf("evidence gathered before the retry must be written after it: %+v", rows)
+	}
+	if hints := memoryTestHints(r, plan, time.Now()); len(hints) != 1 || hints[a.ID].Tier != "ssd" {
+		t.Fatalf("live holder lost across the retry: %+v", hints)
+	}
+}
+
+// With three overlapping sessions sharing a row, losing one must leave the
+// row reflecting the newest surviving evidence, not an arbitrary survivor.
+// Repeated because map order is random.
+func TestCacheRoutingPersistenceKeepsNewestSurvivingHolder(t *testing.T) {
+	for round := 0; round < 6; round++ {
+		st := store.NewMemory(store.Config{})
+		r, _, capability := exactTestRegistry(t)
+		removeTestProvider(r, "provider-a")
+		capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+		// In the past: a load skips rows updated after its clock.
+		base := time.Now().Add(-10 * time.Second).Truncate(time.Second)
+		clock := base
+		r.SetCacheRoutingClockForTest(func() time.Time { return clock })
+		startPersistence(t, r, st)
+		checkpoint := exactTestAnchor(16, "c")
+		floor := exactTestAnchor(17, "d")
+		plan := boundTestCachePlan(r, exactTestPlan(checkpoint, floor))
+		var sessions []*Provider
+		for i := 0; i < 3; i++ {
+			clock = base.Add(time.Duration(i) * time.Second)
+			p := persistenceTestProvider(t, r, fmt.Sprintf("session-%d", i), capability)
+			_, ready := checkpointTestAttempt(t, r, p, capability, fmt.Sprintf("donor-%d", i), plan, 1)
+			ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+			ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+			ready.StageMs = float64(100 * (i + 1))
+			if !r.ApplyPrefixCacheReadyV2(p.ID, ready) {
+				t.Fatalf("receipt %d rejected", i)
+			}
+			sessions = append(sessions, p)
+		}
+		if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		// The oldest session's evidence goes; two survive with different ages.
+		r.cacheRouting.invalidateProviderEvidence(sessions[0].ID, cacheHolderRemovalCapabilityChange, true)
+		if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		rows := storedHolders(t, st)
+		if len(rows) != 1 || !rows[0].UpdatedAt.Equal(base.Add(2*time.Second)) || rows[0].StageMs != 300 {
+			t.Fatalf("round %d: row must carry the newest survivor's evidence: %+v", round, rows)
+		}
+	}
+}
+
+// The persistence fingerprint pins the master key together with every key
+// derivation label and the block contract. If this golden value changes, the
+// next deploy resets the durable copy: expected when a derivation changes,
+// and this test makes that a deliberate step rather than a surprise.
+func TestPersistFingerprintPinsDerivationInputs(t *testing.T) {
+	keys := deriveCacheKeys([]byte("0123456789abcdef0123456789abcdef"))
+	const want = "0293c846684bd74755e82740"
+	if keys.persistFingerprint != want {
+		t.Fatalf("persistence fingerprint changed: got %s want %s (a derivation label, the block contract or the persistence generation moved; the durable copy resets on deploy)", keys.persistFingerprint, want)
+	}
+	if other := deriveCacheKeys([]byte("fedcba9876543210fedcba9876543210")); other.persistFingerprint == keys.persistFingerprint {
+		t.Fatal("fingerprint must depend on the master key")
 	}
 }

@@ -80,6 +80,11 @@ type Persister struct {
 	pending         map[string][]crs.HolderRecord
 	pendingCount    int
 	counters        counters
+	// ready is set once Restore has established the key generation (and
+	// loaded the durable copy). Until then flushes and prunes are no-ops
+	// and marks stay dirty: rows written before the generation is recorded
+	// would be reset as foreign by the next boot.
+	ready bool
 }
 
 // Options shape a persister for the registry's current configuration.
@@ -272,6 +277,9 @@ func (p *Persister) Flush(ctx context.Context) error {
 	}
 	p.flushMu.Lock()
 	defer p.flushMu.Unlock()
+	if !p.Ready() {
+		return nil
+	}
 	b := p.drain()
 	if len(b.upserts) == 0 && len(b.deletes) == 0 && len(b.demand) == 0 {
 		return nil
@@ -348,7 +356,7 @@ func (p *Persister) FlushAll(ctx context.Context) error {
 // forgets the persisted-demand dedupe map, which is only a write-rate
 // optimisation and may be reset freely.
 func (p *Persister) Prune(ctx context.Context, now time.Time, demandTTL time.Duration) {
-	if p == nil {
+	if p == nil || !p.Ready() {
 		return
 	}
 	if _, err := p.store.PruneCacheRoutingState(ctx, now, now.Add(-demandTTL)); err != nil {
@@ -365,4 +373,15 @@ func (p *Persister) dirtyEmpty() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.holderUpserts) == 0 && len(p.holderDeletes) == 0 && len(p.demandTouched) == 0
+}
+
+// Ready reports whether Restore has established the key generation, which
+// gates every write; the registry retries the restore until it has.
+func (p *Persister) Ready() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ready
 }

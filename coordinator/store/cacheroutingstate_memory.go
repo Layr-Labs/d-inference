@@ -71,7 +71,7 @@ func (s *MemoryStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl t
 				r.ExpiresAt = clamp
 			}
 		}
-		if r.ExpiresAt.After(now) {
+		if r.ExpiresAt.After(now) && !r.UpdatedAt.After(now) {
 			out = append(out, r)
 		}
 	}

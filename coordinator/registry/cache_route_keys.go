@@ -36,17 +36,36 @@ func decodeCacheMasterKey(raw string) ([]byte, error) {
 	return nil, errors.New("key must encode exactly 32 bytes as base64url, base64, or hex")
 }
 
+// Derivation labels. Every persisted holder and demand key is a function of
+// the master key and of these versions, so all of them feed the persistence
+// fingerprint below: bumping any one resets the durable copy on the next boot
+// instead of restoring keys no request can derive.
+const (
+	cacheRouteKeyLabel         = "darkbloom/cache-routing/route/v3"
+	cacheScopeKeyLabel         = "darkbloom/cache-routing/scope/v3"
+	cacheActivationKeyLabel    = "darkbloom/cache-routing/activation/v1"
+	cacheScopeSerialization    = "scope-v3"
+	cacheBoundarySerialization = "prefix-v4"
+	// cachePersistenceGeneration names the persisted row schema and the key
+	// serialization as a whole; bump it with any change to either that the
+	// labels above do not already capture.
+	cachePersistenceGeneration = "persist/v1"
+)
+
 func deriveCacheKeys(master []byte) cacheRouteKeys {
 	return cacheRouteKeys{
-		route:      hmacBytes(master, []byte("darkbloom/cache-routing/route/v3")),
-		scope:      hmacBytes(master, []byte("darkbloom/cache-routing/scope/v3")),
-		activation: hmacBytes(master, []byte("darkbloom/cache-routing/activation/v1")),
-		// A non-secret marker of this key generation: persisted holder and
-		// demand keys are HMAC-derived from the master key, so rows written
-		// under another key can never match a request and are reset instead
-		// of restored (cachepersist.Restore).
-		persistFingerprint: hex.EncodeToString(
-			hmacBytes(master, []byte("darkbloom/cache-routing/persistence-fingerprint/v1")))[:24],
+		route:      hmacBytes(master, []byte(cacheRouteKeyLabel)),
+		scope:      hmacBytes(master, []byte(cacheScopeKeyLabel)),
+		activation: hmacBytes(master, []byte(cacheActivationKeyLabel)),
+		// A non-secret marker of this key generation (cachepersist.Restore):
+		// the master key plus every derivation version and the block
+		// contract the keys are serialized under.
+		persistFingerprint: hex.EncodeToString(hmacBytes(master,
+			[]byte("darkbloom/cache-routing/persistence-fingerprint/v1"),
+			[]byte(cacheRouteKeyLabel), []byte(cacheScopeKeyLabel), []byte(cacheActivationKeyLabel),
+			[]byte(cacheScopeSerialization), []byte(cacheBoundarySerialization),
+			[]byte(promptcontract.BlockHashVersion), []byte(strconv.FormatUint(uint64(promptcontract.BlockSize), 10)),
+			[]byte(cachePersistenceGeneration)))[:24],
 	}
 }
 
@@ -261,7 +280,7 @@ func providerCacheScope(
 	}
 	return opaqueHMAC(
 		scopeKey,
-		"scope-v3",
+		cacheScopeSerialization,
 		account,
 		model,
 		strings.ToLower(aggregateHash),
@@ -285,7 +304,7 @@ func cacheBoundaryKey(
 	}
 	return opaqueHMAC(
 		routeKey,
-		"prefix-v4",
+		cacheBoundarySerialization,
 		plan.CacheScope,
 		plan.ModelAggregateHash,
 		plan.PromptContractID,

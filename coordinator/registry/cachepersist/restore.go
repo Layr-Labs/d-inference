@@ -37,6 +37,7 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		}
 		p.mu.Lock()
 		p.counters.keyRotated = stored != ""
+		p.ready = true
 		p.mu.Unlock()
 		return nil, nil
 	}
@@ -66,6 +67,7 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		p.pendingCount++
 	}
 	p.counters.restoredHolders = p.pendingCount
+	p.ready = true
 	p.mu.Unlock()
 	return demand, nil
 }

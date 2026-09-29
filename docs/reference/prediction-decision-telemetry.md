@@ -1,6 +1,6 @@
 # Prediction decision telemetry
 
-> Last updated: 2026-09-29 · commit `a8aa6bb33`
+> Last updated: 2026-09-29 · commit `f8215f8c7`
 
 Optional attempt records compare what the coordinator selected with what the
 provider decided. They explain decisions; they do not establish whether a

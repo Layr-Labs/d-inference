@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-29 · commit `a8aa6bb33`
+> Last updated: 2026-09-29 · commit `f8215f8c7`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It

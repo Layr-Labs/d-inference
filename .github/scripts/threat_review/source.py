@@ -62,6 +62,11 @@ class Sources:
             raw = base64.b64decode(blob["content"], validate=False)
             if len(raw) != blob["size"] or b"\0" in raw:
                 raise ReviewUnavailable("Binary or incomplete source")
+            if raw.split(b"\n", 1)[0].rstrip(b"\r") in (
+                    b"version https://git-lfs.github.com/spec/v1",
+                    b"version https://hawser.github.com/spec/v1",
+                    b"version http://git-media.io/v/2"):
+                raise ReviewUnavailable("Git LFS object requires a separate review")
             self.reserve_source(len(raw))
             try:
                 self.blobs[sha] = (raw.decode("utf-8"), len(raw))

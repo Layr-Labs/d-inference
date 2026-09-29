@@ -229,9 +229,9 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(github.posts[0][0], existing)
         self.assertIn("No actionable findings", github.posts[0][1])
 
-    def prior_report(self, head=HEAD):
+    def prior_report(self, head=HEAD, diff_base=BASE):
         _, evidence, _ = prepare(THREAT, FILES)
-        return {"id": 17, "body": render("example/repo", head, BASE, "prior/model", [FINDING], evidence, [])}
+        return {"id": 17, "body": render("example/repo", head, BASE, "prior/model", [FINDING], evidence, [], diff_base=diff_base)}
 
     def test_failed_same_head_retry_retains_findings_and_is_idempotent(self):
         existing = self.prior_report()
@@ -245,6 +245,34 @@ class RunnerTests(unittest.TestCase):
         github = FakeGitHub({"id": 17, "body": body})
         run(EVENT, self.root, env, github)
         self.assertEqual(github.posts[0][1], body)
+
+    def test_incomplete_retry_requires_matching_verified_diff(self):
+        for old_base, current_base in ((BASE, BASE), ("e" * 40, BASE), (None, BASE), (BASE, None)):
+            with self.subTest(old_base=old_base, current_base=current_base):
+                github = FakeGitHub(self.prior_report(diff_base=old_base))
+                def comparison(base, head):
+                    if current_base is None:
+                        raise ReviewUnavailable("comparison unavailable")
+                    return current_base
+                github.comparison_base = comparison
+                run(EVENT, self.root, {"GH_TOKEN": "token"}, github)
+                body = github.posts[0][1]
+                self.assertEqual(FINDING["title"] in body, old_base == current_base == BASE)
+                self.assertNotIn("No actionable findings", body)
+
+    def test_target_tip_change_with_same_diff_retains_prior_findings(self):
+        event = copy.deepcopy(EVENT)
+        event["pull_request"]["base"]["sha"] = "d" * 40
+        github = FakeGitHub(self.prior_report())
+        pull = github.pull
+        def current():
+            value = pull()
+            value["base"]["sha"] = "d" * 40
+            return value
+        github.pull = current
+        run(event, self.root, {"GH_TOKEN": "token"}, github)
+        self.assertIn(FINDING["title"], github.posts[0][1])
+        self.assertIn("Retry incomplete", github.posts[0][1])
 
     def test_source_failure_retains_same_head_findings(self):
         github = FakeGitHub(self.prior_report())
@@ -296,7 +324,7 @@ class RunnerTests(unittest.TestCase):
             return self.reviewer([dict(FINDING, title="New partial finding")])(threat, files, key, model)
         result = run(EVENT, self.root, dict(self.env, THREAT_REVIEW_MODELS="good/model,bad/model"), github, reviewer)
         self.assertEqual(github.posts, [])
-        self.assertIn("earlier same-head findings remain", result)
+        self.assertIn("earlier same-diff findings remain", result)
         self.assertIn("New partial finding", result)
 
     def test_legacy_bot_comment_is_migrated_in_place(self):
@@ -478,7 +506,7 @@ class RunnerTests(unittest.TestCase):
                 github.pull, github.comparison_base = advancing, comparison
                 result = run(EVENT, self.root, self.env, github, self.reviewer([]))
                 self.assertIn("Scan incomplete", result)
-                self.assertIn(FINDING["title"], github.posts[0][1])
+                self.assertNotIn(FINDING["title"], github.posts[0][1])
                 self.assertNotIn("No actionable findings", github.posts[0][1])
                 self.assertNotIn("private-test-key", result + github.posts[0][1])
 
@@ -501,7 +529,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertIn("before scanning", result)
                 self.assertIn("Scan incomplete", github.posts[0][1])
 
-    def test_merge_base_change_after_scan_discards_new_but_retains_prior_findings(self):
+    def test_merge_base_change_after_scan_discards_new_and_supersedes_prior_findings(self):
         for partial in (False, True):
             for unavailable in (False, True):
                 with self.subTest(partial=partial, unavailable=unavailable):
@@ -527,7 +555,7 @@ class RunnerTests(unittest.TestCase):
                     result = run(EVENT, self.root, env, github, reviewer)
                     self.assertIn("new findings were discarded", result)
                     body = github.posts[0][1]
-                    self.assertIn(FINDING["title"], body)
+                    self.assertNotIn(FINDING["title"], body)
                     self.assertNotIn("Untrusted mixed snapshot", body)
                     self.assertNotIn("private-test-key", result + body)
 

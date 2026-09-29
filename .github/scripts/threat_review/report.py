@@ -8,8 +8,8 @@ LEGACY_MARKER = "<!-- threat-model-review -->"
 COMMENT_LIMIT = 60000
 
 
-def retain_same_head_findings(existing, repository, head, body):
-    """Append an incomplete retry without erasing earlier same-head evidence.
+def retain_same_diff_findings(existing, repository, head, diff_base, body):
+    """Append an incomplete retry only for the same verified diff snapshot.
 
     Only the canonical report header identifies the revision: a finding may
     itself cite another commit. The caller has verified the comment's bot author.
@@ -18,11 +18,15 @@ def retain_same_head_findings(existing, repository, head, body):
     previous = (existing or {}).get("body", "")
     header = (f"{MARKER}\n## Threat model review — advisory\n\n"
               f"Reviewed head [`{head[:12]}`](https://github.com/{repository}/commit/{head}) against base `")
-    if not previous.startswith(header) or not re.search(r"^### (HIGH|MEDIUM|LOW): ", previous, re.M):
+    snapshot = f"<!-- threat-model-review:diff-base:{diff_base} -->"
+    if (not diff_base or previous.splitlines()[4:5] != [snapshot]
+            or not previous.startswith(header)):
+        return body
+    if not re.search(r"^### (HIGH|MEDIUM|LOW): ", previous, re.M):
         return body
     retry = body.split("\n", 2)[2].replace(
         "**Review not completed for this head.** Previous findings are superseded, not confirmed resolved.",
-        "**Retry incomplete.** Earlier findings for this head remain unconfirmed and are retained above.")
+        "**Retry incomplete.** Earlier findings for this diff remain unconfirmed and are retained above.")
     addition = "\n\n---\n\n## Incomplete retry — earlier findings retained\n" + retry
     if addition in previous:
         return previous
@@ -39,7 +43,8 @@ def plain(value):
 def render(repository, head, base, model, findings, evidence, limits, error=None, diff_base=None, outcomes=()):
     root = f"https://github.com/{repository}"
     lines = [MARKER, "## Threat model review — advisory", "",
-             f"Reviewed head [`{head[:12]}`]({root}/commit/{head}) against base `{base[:12]}`.", ""]
+             f"Reviewed head [`{head[:12]}`]({root}/commit/{head}) against base `{base[:12]}`.",
+             f"<!-- threat-model-review:diff-base:{diff_base or 'unverified'} -->", ""]
     if error:
         lines += ["**Review not completed for this head.** Previous findings are superseded, not confirmed resolved.",
                   plain(error)]
@@ -66,7 +71,7 @@ def render(repository, head, base, model, findings, evidence, limits, error=None
     elif not error and not limits:
         lines += ["No actionable findings in the reviewed text. This is not a security approval."]
     if limits:
-        lines += ["", f"**Scan incomplete:** {len(limits)} file(s) could not be fully read as text. Binary/submodule changes require manual review."]
+        lines += ["", f"**Scan incomplete:** {len(limits)} file(s) could not be fully read as text. Binary, Git LFS and submodule changes require manual review."]
         lines += ["Affected files: " + ", ".join(plain(path) for path in limits)]
     elif not error:
         lines += ["", f"Coverage: {len(evidence)} changed file(s), complete before/after text, and a cross-file threat-model review."]

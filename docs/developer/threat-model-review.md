@@ -66,9 +66,9 @@ After activation, inspect **Actions → Threat Model Review (advisory)** and the
 | Complete clean follow-up | Existing comment updated to clear old findings. |
 | Incomplete scan | Public comment explicitly says the scan is incomplete; it never presents missing coverage as clean. |
 | One model fails | Findings from the completed reviewer remain visible; the comment names the incomplete reviewer. A clean surviving review does not clear the incomplete status. |
-| Incomplete retry of the same head | Earlier findings remain visible, followed by the incomplete retry report and any new partial findings. Identical retry reports do not accumulate. If both reports exceed the comment budget, the existing comment is preserved and the retry report appears in the Actions summary. A complete rerun can replace earlier findings. |
+| Incomplete retry of the same head and diff merge base | Earlier findings for that verified comparison remain visible, followed by the incomplete retry report and any new partial findings. Identical retry reports do not accumulate. If both reports exceed the comment budget, the existing comment is preserved and the retry report appears in the Actions summary. A complete rerun can replace earlier findings. |
 | PR head changed, target branch changed, or PR closed during scan | Stale output is suppressed. |
-| Target branch tip advances, with the same PR head and merge base | The review still publishes against its recorded immutable base snapshot; unrelated merges do not silently discard feedback. The merge base is checked before and after live file enumeration and before publication. A changed or unverifiable comparison produces incomplete coverage; new findings from that scan are discarded, while prior same-head findings remain visible. |
+| Target branch tip advances, with the same PR head and merge base | The review still publishes against its recorded immutable base snapshot; unrelated merges do not silently discard feedback. The merge base is checked before and after live file enumeration and before publication. A changed or unverifiable comparison produces incomplete coverage; new findings from that scan are discarded, and findings from an older or unverified comparison are superseded. Retention requires both the full head SHA and a matching verified diff merge base; unrelated target-tip changes can still retain findings. |
 
 Legacy comments from the previous reviewer are updated in place. If several bot
 reports exist, the newest canonical report is preferred and updated first;
@@ -131,7 +131,7 @@ incomplete result asking the author to split the PR; no partial scan is called c
 Source
 units contain up to 32,000 characters split at whole lines; a single longer line
 requires manual review. Batches have an 80,000-character encoded-unit budget.
-Non-UTF-8/binary files and submodule contents require manual review and are named
+Non-UTF-8/binary files, Git LFS objects and submodule contents require manual review and are named
 in the comment. A request permits 16,384 output tokens; incomplete responses or a
 full 32-finding response are treated as incomplete. A report exceeding the single
 comment's 60,000-character budget asks the author to split the PR. The process has

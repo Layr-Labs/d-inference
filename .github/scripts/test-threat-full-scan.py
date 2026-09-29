@@ -91,6 +91,27 @@ class SourceTests(unittest.TestCase):
             self.assertFalse(files[0]["source_complete"])
             self.assertEqual(prepare(fixtures.THREAT, files)[2], ["coordinator/auth.go"])
 
+    def test_lfs_pointers_on_either_side_require_manual_review(self):
+        for version in ("https://git-lfs.github.com/spec/v1", "https://hawser.github.com/spec/v1",
+                        "http://git-media.io/v/2"):
+            for status, blob_sha in (("added", "6" * 40), ("removed", "5" * 40),
+                                     ("modified", "5" * 40), ("modified", "6" * 40)):
+                with self.subTest(version=version, status=status, blob_sha=blob_sha):
+                    raw = f"version {version}\noid sha256:{'a' * 64}\nsize 4096\n".encode()
+                    github = fixtures.FakeGitHub()
+                    def call(path):
+                        if path.endswith("/blobs/" + blob_sha):
+                            return {"encoding": "base64", "content": base64.b64encode(raw).decode(), "size": len(raw)}
+                        return fixtures.source_response(path)
+                    github.call = call
+                    files = complete_files(github, [dict(fixtures.FILES[0], status=status)], fixtures.BASE, fixtures.HEAD)
+                    self.assertFalse(files[0]["source_complete"])
+                    _, evidence, limits = prepare(fixtures.THREAT, files)
+                    body = render("example/repo", fixtures.HEAD, fixtures.BASE, "model", [], evidence, limits)
+                    self.assertIn("Git LFS", body)
+                    self.assertIn("coordinator/auth", body)
+                    self.assertNotIn("No actionable findings", body)
+
     def test_sources_never_follow_symlinks_and_reject_truncated_trees(self):
         github = fixtures.FakeGitHub()
         def call(path):

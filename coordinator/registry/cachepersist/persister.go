@@ -79,8 +79,12 @@ type Persister struct {
 	// dirty set (in flight or written) for one TTL, so a row parked before
 	// the decision (an older session of the same machine) still cannot bind
 	// once the tombstone is no longer pending (Tombstoned).
-	holderDeletes   map[crs.HolderKey]time.Time
-	recentDeletes   map[crs.HolderKey]time.Time
+	holderDeletes map[crs.HolderKey]time.Time
+	recentDeletes map[crs.HolderKey]time.Time
+	// recentOrder is recentDeletes in insertion order, so the retention can
+	// be bounded by the holder budget as well as by the TTL: under sustained
+	// churn with a long TTL the oldest tombstones go first.
+	recentOrder     []crs.HolderKey
 	demandTouched   map[string]time.Time
 	demandPersisted map[string]time.Time
 	pending         map[string][]crs.HolderRecord
@@ -138,6 +142,17 @@ func (p *Persister) MarkHolderUpsert(rec crs.HolderRecord) {
 	}
 	k := rec.HolderKey()
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Receipt times are sampled before the tracker lock: a receipt older
+	// than a delete this run decided (pending, or written within the TTL)
+	// is stale evidence and must neither cancel the tombstone nor reach the
+	// store. A newer receipt re-proves the row and cancels the tombstone.
+	if at, pending := p.holderDeletes[k]; pending && at.After(rec.UpdatedAt) {
+		return
+	}
+	if at, ok := p.recentDeletes[k]; ok && at.After(rec.UpdatedAt) {
+		return
+	}
 	delete(p.holderDeletes, k)
 	if existing, present := p.holderUpserts[k]; present {
 		// Receipt times are sampled before the tracker lock, so a delayed
@@ -149,7 +164,6 @@ func (p *Persister) MarkHolderUpsert(rec crs.HolderRecord) {
 	} else {
 		p.counters.droppedDirty++
 	}
-	p.mu.Unlock()
 }
 
 // MarkHolderDelete schedules a row delete. Nil-safe.
@@ -244,7 +258,7 @@ func (p *Persister) drain() batch {
 		// dirty set, so a bind during the write's round trip cannot take a
 		// parked copy the decision outranks; a failed write requeues the
 		// delete and this entry stays.
-		p.recentDeletes[k] = at
+		p.rememberDeleteLocked(k, at)
 	}
 	for key, seen := range p.demandTouched {
 		if len(b.demand) >= DemandFlushRows {
@@ -404,11 +418,19 @@ func (p *Persister) Prune(ctx context.Context, now time.Time, ttl time.Duration)
 	// such row has expired on its own.
 	p.prunePending(now)
 	p.mu.Lock()
-	for k, at := range p.recentDeletes {
+	kept := p.recentOrder[:0]
+	for _, k := range p.recentOrder {
+		at, ok := p.recentDeletes[k]
+		if !ok {
+			continue
+		}
 		if now.Sub(at) >= ttl {
 			delete(p.recentDeletes, k)
+			continue
 		}
+		kept = append(kept, k)
 	}
+	p.recentOrder = kept
 	p.mu.Unlock()
 	if !p.Ready() {
 		return
@@ -437,4 +459,19 @@ func (p *Persister) Ready() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.ready
+}
+
+// rememberDeleteLocked records a delete decision for Tombstoned, bounded by
+// the holder budget: beyond maxPending entries the oldest tombstones are
+// forgotten first (the TTL bound is applied by Prune). Called with p.mu held.
+func (p *Persister) rememberDeleteLocked(k crs.HolderKey, at time.Time) {
+	if _, present := p.recentDeletes[k]; !present {
+		p.recentOrder = append(p.recentOrder, k)
+	}
+	p.recentDeletes[k] = at
+	for len(p.recentDeletes) > p.maxPending && len(p.recentOrder) > 0 {
+		oldest := p.recentOrder[0]
+		p.recentOrder = p.recentOrder[1:]
+		delete(p.recentDeletes, oldest)
+	}
 }

@@ -567,3 +567,72 @@ func TestTombstoneOutlivesItsFlushForOneTTL(t *testing.T) {
 		t.Fatal("a tombstone lapses after one TTL")
 	}
 }
+
+// A receipt sampled before an invalidation of the same durable row but
+// applied after it must not cancel the tombstone or reach the store; a
+// receipt newer than the decision re-proves the row and cancels it.
+func TestDelayedOlderReceiptCannotCancelANewerTombstone(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	now := time.Now()
+	p := New(mem, nil, Options{MaxPending: 10})
+	restoreForTest(t, p, now)
+	stale := rec("a", "e", now.Add(-time.Second), time.Minute)
+	p.MarkHolderDelete(stale.HolderKey()) // decided now, after the stale receipt's time
+	p.MarkHolderUpsert(stale)
+	if b := p.drain(); len(b.deletes) != 1 || len(b.upserts) != 0 {
+		t.Fatalf("stale receipt must neither cancel the tombstone nor queue: %+v %+v", b.deletes, b.upserts)
+	}
+	// The tombstone is in flight (drained, not yet written): still stale.
+	p.MarkHolderUpsert(stale)
+	if !p.dirtyEmpty() {
+		t.Fatal("stale receipt queued while the tombstone is in flight")
+	}
+	fresh := rec("a", "e", time.Now().Add(time.Second), time.Minute)
+	p.MarkHolderUpsert(fresh)
+	if b := p.drain(); len(b.upserts) != 1 || !b.upserts[0].UpdatedAt.Equal(fresh.UpdatedAt) {
+		t.Fatalf("a receipt newer than the decision re-proves the row: %+v", b.upserts)
+	}
+	// And a pending tombstone is cancelled only by a newer receipt.
+	p.MarkHolderDelete(stale.HolderKey())
+	p.MarkHolderUpsert(rec("a", "e", time.Now().Add(2*time.Second), time.Minute))
+	if b := p.drain(); len(b.deletes) != 0 || len(b.upserts) != 1 {
+		t.Fatalf("newer receipt must cancel the pending tombstone: %+v %+v", b.deletes, b.upserts)
+	}
+}
+
+// Tombstone retention is bounded by the holder budget as well as the TTL:
+// under churn the oldest tombstones are forgotten first.
+func TestRecentDeletesBoundedByHolderBudget(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	p := New(mem, nil, Options{MaxPending: 3})
+	restoreForTest(t, p, now)
+	for i := 0; i < 5; i++ {
+		p.MarkHolderDelete(crs.HolderKey{Key: string(rune('a' + i)), CacheEpoch: "e"})
+		if err := p.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.mu.Lock()
+	n, order := len(p.recentDeletes), len(p.recentOrder)
+	p.mu.Unlock()
+	if n != 3 || order != 3 {
+		t.Fatalf("retention must stay within the holder budget: map=%d order=%d", n, order)
+	}
+	before := now.Add(-time.Minute)
+	if p.Tombstoned(crs.HolderKey{Key: "a", CacheEpoch: "e"}, before) || !p.Tombstoned(crs.HolderKey{Key: "e", CacheEpoch: "e"}, before) {
+		t.Fatal("the oldest tombstones must go first")
+	}
+	// A key re-tombstoned keeps one slot and its newest time.
+	p.MarkHolderDelete(crs.HolderKey{Key: "e", CacheEpoch: "e"})
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	n, order = len(p.recentDeletes), len(p.recentOrder)
+	p.mu.Unlock()
+	if n != 3 || order != 3 {
+		t.Fatalf("a re-tombstoned key must not take a second slot: map=%d order=%d", n, order)
+	}
+}

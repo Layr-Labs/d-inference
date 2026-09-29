@@ -1,0 +1,914 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/first-content-qualification-20260928/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/first-content-qualification-20260928/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/first-content-qualification-20260928/provider-swift->/users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/first-content-qualification-20260928/provider-swift->/users/gaj/first-content-qualification-20260928/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+warning: 'provider-swift': dependency 'hummingbird-websocket' is not used by any target
+[0/6] Write sources
+[3/6] Write swift-version--58304C5D6DBC2206.txt
+[5/7] Compiling ArgumentParserToolInfo ToolInfo.swift
+[6/8] Compiling ArgumentParser BashCompletionsGenerator.swift
+[7/9] Compiling encuda encuda-compile.swift
+[7/9] Write Objects.LinkFileList
+[8/9] Linking encuda-tool
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for production...
+[2/328] /Users/gaj/first-content-qualification-20260928/provider-swift/.build/arm64-apple-macosx/release/DarkbloomProviderPackageTests.derived/runner.swift
+[3/328] Write sources
+[3/328] Copying libsodium.a
+[3/328] Write sources
+[19/328] Copying t5_tokenizer_config.json
+[19/328] Write sources
+[35/328] Copying PrivacyInfo.xcprivacy
+[35/328] Write sources
+[37/328] Copying gpt2_tokenizer_config.json
+[37/328] Write sources
+[37/328] Copying PrivacyInfo.xcprivacy
+[37/328] Write sources
+[38/328] Copying pagedattention.metal
+[41/328] Write sources
+[85/328] Copying Qwen4Metal
+[86/328] Write sources
+[100/328] Compiling _NumericsShims _NumericsShims.c
+[101/328] Compiling version.cpp
+[102/328] Write swift-version--58304C5D6DBC2206.txt
+[103/328] Compiling _AtomicsShims.c
+[104/329] Compiling ProviderMetallibControl ProviderMetallibControl.cpp
+[105/329] Compiling _SwiftSyntaxCShims PlatformMutex.c
+[107/331] Compiling SwiftSyntax603 Empty.swift
+[108/332] Compiling SwiftSyntax602 Empty.swift
+[109/333] Compiling SwiftSyntax601 Empty.swift
+[109/333] Compiling no_gguf.cpp
+[111/335] Compiling SwiftSyntax600 Empty.swift
+[112/335] Compiling SwiftSyntax510 Empty.swift
+[113/335] Compiling _NIOBase64 Base64.swift
+[113/335] Compiling stream.cpp
+[115/337] Compiling SwiftSyntax509 Empty.swift
+[115/340] Compiling utils.cpp
+[116/340] Compiling scheduler.cpp
+[118/342] Compiling ServiceContextModule ServiceContext.swift
+[118/342] Compiling graph_utils.cpp
+[120/342] Compiling RealModule AlgebraicField.swift
+[121/342] Compiling _NIODataStructures Heap.swift
+[121/346] Compiling load.cpp
+[122/346] Compiling fft.cpp
+[124/346] Compiling Instrumentation Instrument.swift
+[124/349] Compiling random.cpp
+[126/349] Compiling InternalCollectionsUtilities Debugging.swift
+[127/349] Compiling DarkbloomFanProtocol FanIPC.swift
+[127/351] Compiling linalg.cpp
+[129/353] Compiling ContainersPreview OutputSpan+Extras.swift
+[130/354] Compiling ConcurrencyHelpers Lock.swift
+[131/355] Compiling Logging Locks.swift
+[131/355] Compiling fast.cpp
+[133/357] Compiling CoreMetrics Locks.swift
+[134/357] Compiling Tracing InstrumentationSystem+Tracing.swift
+[134/358] Compiling safetensors.cpp
+[136/358] Compiling ComplexModule Complex+AdditiveArithmetic.swift
+[137/358] Compiling Crypto AES-GCM.swift
+[138/358] Compiling UnixSignals UnixSignal.swift
+[139/358] Compiling Metrics Metrics.swift
+[140/359] Compiling Numerics Numerics.swift
+[140/359] Compiling transforms.cpp
+[142/359] Compiling Sodium Aead.swift
+[142/359] Compiling dtype_utils.cpp
+[143/359] Compiling dtype.cpp
+[145/359] Compiling EventSource AsyncEventsSequence.swift
+[145/359] Compiling yyjson.c
+[146/360] Compiling utils.cpp
+[147/360] Compiling no_ring.cpp
+[149/360] Compiling OrderedCollections _HashTable+Bucket.swift
+[149/360] Compiling device.cpp
+[150/360] Compiling no_nccl.cpp
+[151/361] Compiling no_mpi.cpp
+[152/361] Compiling primitives.cpp
+[154/361] Compiling HTTPTypes HTTPField.swift
+[154/361] Compiling distributed.cpp
+[155/361] Compiling ops.cpp
+[157/361] Compiling DequeModule Deque+Codable.swift
+[158/361] Compiling ProviderAppAttest AppAttestAppleError.swift
+[158/361] Compiling utils.cpp
+[160/361] Compiling DarkbloomFanCore FanController.swift
+[160/361] Compiling unary.cpp
+[161/361] Compiling softmax.cpp
+[162/362] Compiling einsum.cpp
+[163/362] Compiling ternary.cpp
+[164/362] Compiling scan.cpp
+[165/362] Compiling slicing.cpp
+[166/362] Compiling sort.cpp
+[167/362] Compiling rope.cpp
+[168/362] Compiling resident.cpp
+[169/362] Compiling scaled_dot_product_attention.cpp
+[170/362] Compiling primitives.cpp
+[171/362] Compiling compile.cpp
+[173/362] Compiling DarkbloomFanService FanDurableFile.swift
+[173/362] Compiling reduce.cpp
+[174/362] Compiling metal.cpp
+[175/363] Compiling primitives.cpp
+[176/363] Compiling logsumexp.cpp
+[177/363] Compiling normalization.cpp
+[178/363] Compiling event.cpp
+[179/363] Compiling fence.cpp
+[180/363] Compiling quantized.cpp
+[181/363] Compiling hadamard.cpp
+[183/363] Compiling DarkbloomFanHelper FanDaemon.swift
+[183/363] Compiling distributed.cpp
+[183/363] Write Objects.LinkFileList
+[185/363] Compiling device_info.cpp
+[186/363] Compiling eval.cpp
+[187/363] Compiling indexing.cpp
+[188/363] Linking darkbloom-fan-helper
+[189/363] Compiling ops.cpp
+[190/363] Compiling matmul.cpp
+[191/363] Compiling jit_kernels.cpp
+[192/363] Compiling slicing.cpp
+[193/363] Compiling threefry.cpp
+[194/363] Compiling copy.cpp
+[195/363] Compiling primitives.cpp
+[196/363] Compiling allocator.cpp
+[197/363] Compiling copy.cpp
+[198/363] Compiling custom_kernel.cpp
+[199/363] Compiling no_cuda.cpp
+[200/363] Compiling binary.cpp
+[201/363] Compiling dirs.cpp
+[202/363] Compiling compiled.cpp
+[203/363] Compiling device.cpp
+[204/363] Compiling conv.cpp
+[205/363] Compiling softmax.cpp
+[206/363] Compiling svd.cpp
+[207/363] Compiling qrf.cpp
+[208/363] Compiling select.cpp
+[209/363] Compiling primitives.cpp
+[210/363] Compiling fft.cpp
+[211/363] Compiling jit_compiler.cpp
+[212/363] Compiling export.cpp
+[213/363] Compiling luf.cpp
+[214/363] Compiling matmul.cpp
+[215/363] Compiling logsumexp.cpp
+[216/363] Compiling masked_mm.cpp
+[217/363] Compiling hadamard.cpp
+[218/363] Compiling cblas.cpp
+[219/363] Compiling inverse.cpp
+[220/363] Compiling encoder.cpp
+[221/363] Compiling device_info.cpp
+[222/363] Compiling eval.cpp
+[223/363] Compiling bnns.cpp
+[224/363] Compiling distributed.cpp
+[225/363] Compiling eigh.cpp
+[226/363] Compiling eig.cpp
+[227/363] Compiling unary.cpp
+[228/363] Compiling utils.cpp
+[229/363] Compiling quantized.cpp
+[230/363] Compiling cholesky.cpp
+[231/363] Compiling slicing.cpp
+[232/363] Compiling reduce.cpp
+[233/363] Compiling load.cpp
+[234/363] Compiling utils.cpp
+[235/363] Compiling arg_reduce.cpp
+[236/363] Compiling unary_ops.cpp
+[237/363] Compiling unary.cpp
+[238/363] Compiling ternary_ops.cpp
+[239/363] Compiling ternary.cpp
+[240/363] Compiling steel_gemm_splitk_nax.cpp
+[241/363] Compiling steel_gemm_splitk.cpp
+[242/363] Compiling steel_gemm_segmented_nax.cpp
+[243/363] Compiling steel_gemm_masked.cpp
+[244/363] Compiling steel_gemm_segmented.cpp
+[245/363] Compiling steel_gemm_gather_nax.cpp
+[246/363] Compiling steel_gemm_gather.cpp
+[247/363] Compiling steel_gemm_fused_nax.cpp
+[248/363] Compiling steel_gemm_fused.cpp
+[249/363] Compiling broadcasting.cpp
+[250/363] Compiling steel_conv_3d.cpp
+[251/363] Compiling steel_conv_general.cpp
+[252/363] Compiling steel_conv.cpp
+[253/363] Compiling steel_attention.cpp
+[253/363] Compiling steel_attention_nax.cpp
+[255/363] Compiling sort.cpp
+[256/363] Compiling searchsorted.cpp
+[257/363] Compiling softmax.cpp
+[258/363] Compiling scatter_axis.cpp
+[259/363] Compiling scatter.cpp
+[259/363] Compiling scan.cpp
+[261/363] Compiling quantized_utils.cpp
+[261/363] Compiling reduce_utils.cpp
+[263/363] Compiling reduce.cpp
+[264/363] Compiling quantized_nax.cpp
+[265/363] Compiling quantized.cpp
+[266/363] Compiling masked_scatter.cpp
+[267/363] Compiling hadamard.cpp
+[268/363] Compiling logsumexp.cpp
+[269/363] Compiling gemv_masked.cpp
+[270/363] Compiling gemv.cpp
+[271/363] Compiling gemm_nax.cpp
+[272/363] Compiling gemm.cpp
+[273/363] Compiling gather_front.cpp
+[274/363] Compiling gather_axis.cpp
+[275/363] Compiling gather.cpp
+[276/363] Compiling fp_quantized_nax.cpp
+[277/363] Compiling fp_quantized.cpp
+[278/363] Compiling fft.cpp
+[279/363] Compiling compiled.cpp
+[280/363] Compiling copy.cpp
+[280/363] Compiling compiled_preamble.cpp
+[280/363] Compiling conv.cpp
+[283/363] Compiling binary_two.cpp
+[284/363] Compiling arange.cpp
+[285/363] Compiling binary.cpp
+[285/363] Compiling binary_ops.cpp
+[287/363] Compiling common.cpp
+[288/363] Compiling metal_kernel.cpp
+[289/363] Compiling fft.cpp
+[290/363] Compiling jaccl_conditional.cpp
+[291/363] Compiling array.cpp
+[292/363] Compiling version.cpp
+[293/363] Compiling transforms_impl.cpp
+[294/363] Compiling transforms.cpp
+[295/363] Compiling conv.cpp
+[296/363] Compiling vector.cpp
+[297/363] Compiling scan.cpp
+[298/363] Compiling compiled_conditional.cpp
+[299/363] Compiling string.cpp
+[300/363] Compiling reduce.cpp
+[301/363] Compiling stream.cpp
+[302/363] Compiling metal.cpp
+[303/363] Compiling memory.cpp
+[304/363] Compiling sort.cpp
+[305/363] Compiling random.cpp
+[306/363] Compiling map.cpp
+[307/363] Compiling linalg.cpp
+[308/363] Compiling error.cpp
+[309/363] Compiling graph_utils.cpp
+[310/363] Compiling io_types.cpp
+[312/363] Compiling Jinja AST.swift
+[312/363] Compiling fft.cpp
+[313/363] Compiling io.cpp
+[314/364] Compiling fast.cpp
+[315/364] Compiling distributed_group.cpp
+[316/364] Compiling export.cpp
+[317/364] Compiling ops.cpp
+[318/364] Compiling distributed.cpp
+[319/364] Compiling cuda.cpp
+[320/364] Compiling CSystem shims.c
+[321/364] Compiling CNIOWindows shim.c
+[322/364] Compiling compile.cpp
+[323/365] Compiling CNIOWindows WSAStartup.c
+[324/365] Compiling CNIOWASI CNIOWASI.c
+[325/365] Compiling device.cpp
+[326/365] Compiling CNIOOpenBSD shim.c
+[327/365] Compiling CNIOLinux shim.c
+[328/365] Compiling CNIOLinux liburing_shims.c
+[329/365] Compiling CNIOPosix event_loop_id.c
+[330/365] Compiling CNIOLLHTTP c_nio_http.c
+[331/365] Compiling Cmlx.m
+[332/365] Compiling CNIOLLHTTP c_nio_api.c
+[333/365] Compiling closure.cpp
+[334/365] Compiling CNIODarwin shim.c
+[335/365] Compiling Date&Time&DateTime.cpp
+[336/365] Write sources
+[340/365] Compiling HuggingFace AccessRequest.swift
+[340/365] Compiling Conversion.cpp
+[341/367] Compiling Node.cpp
+[342/369] Compiling CNIOLLHTTP c_nio_llhttp.c
+[343/369] Compiling c-nioatomics.c
+[344/369] Compiling format.cc
+[345/369] Compiling Array.cpp
+[347/369] Compiling ArgumentParserToolInfo ToolInfo.swift
+[347/369] Compiling c-atomics.c
+[348/371] Compiling Table.cpp
+[349/371] Compiling array.cpp
+[351/372] Compiling NIOConcurrencyHelpers NIOAtomic.swift
+[352/372] Compiling Atomics OptionalRawRepresentable.swift
+[353/373] Compiling ProviderCoreFoundation HarmonySanitization.swift
+[354/373] Compiling SystemPackage Errno.swift
+[355/374] Compiling AsyncAlgorithms AsyncAdjacentPairsSequence.swift
+[356/375] Compiling TOMLKit InternalTOMLDecoder.swift
+[357/375] Compiling ServiceLifecycle AsyncCancelOnGracefulShutdownSequence.swift
+[358/375] Compiling Hub BinaryDistinct.swift
+[358/376] Compiling copy.cpp
+[360/376] Compiling ArgumentParser BashCompletionsGenerator.swift
+[361/377] Compiling darkbloom_publish DarkbloomPublish.swift
+[361/377] Write Objects.LinkFileList
+[362/377] Linking darkbloom-publish
+[364/377] Compiling Configuration AccessReporter.swift
+[365/377] Compiling NIOCore AddressedEnvelope.swift
+[366/381] Compiling NIOHTTPTypes NIOHTTPTypes.swift
+[367/381] Compiling NIOFoundationEssentialsCompat ByteBuffer-foundation.swift
+[368/381] Compiling Tokenizers BPETokenizer.swift
+[369/382] Compiling NIOEmbedded AsyncTestingChannel.swift
+[370/382] Compiling Generation Decoders.swift
+[371/383] Compiling Models LanguageModel.swift
+[371/383] Compiling indexing.cpp
+[373/383] Compiling NIOPosix BSDSocketAPICommon.swift
+[374/384] Compiling NIO Exports.swift
+[375/387] Compiling NIOFoundationCompat Exports.swift
+[376/387] Compiling NIOTLS ApplicationProtocolNegotiationHandler.swift
+[377/388] Compiling NIOHTTP1 ByteCollectionUtils.swift
+[378/388] Compiling NIOTransportServices AcceptHandler.swift
+[379/390] Compiling NIOHTTPTypesHTTP1 HTTP1ToHTTPCodec.swift
+[379/390] Compiling binary.cpp
+[381/391] Compiling NIOExtras DebugInboundEventsHandler.swift
+[382/392] Compiling HummingbirdCore Deprecations.swift
+[383/393] Compiling MLX AllocationFootprint.swift
+[384/396] Compiling MLXFast MLXFast.swift
+[385/396] Compiling MLXRandom Random.swift
+[386/396] Compiling Hummingbird Application+ConfigReader.swift
+[387/396] Compiling MLXNN Activations.swift
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift/Source/MLXNN/Module.swift:1411:34: warning: conditional downcast from 'T?' to 'T' does nothing
+1409 |             // note: this gives a warning but it does in fact do something
+1410 |             // in the case where this is e.g. ParameterInfo<MLXArray?>
+1411 |             if let value = value as? T {
+     |                                  `- warning: conditional downcast from 'T?' to 'T' does nothing
+1412 |                 return value
+1413 |             } else {
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift/Source/MLXNN/Module.swift:1524:36: warning: conditional downcast from 'T?' to 'T' does nothing
+1522 |             // note: this gives a warning but it does in fact do something
+1523 |             // in the case where this is e.g. ModuleInfo<Linear?>
+1524 |             if let module = module as? T {
+     |                                    `- warning: conditional downcast from 'T?' to 'T' does nothing
+1525 |                 return module
+1526 |             } else {
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift/Source/MLXNN/Module.swift:293:13: warning: default will never be executed
+ 291 |                 return isAllNone ? .none : .array(result)
+ 292 | 
+ 293 |             default:
+     |             `- warning: default will never be executed
+ 294 |                 fatalError("Unexpected leaf \(vk) = \(v)")
+ 295 |             }
+[388/397] Compiling MLXOptimizers Optimizers.swift
+[389/398] Compiling SwiftSyntax AbsolutePosition.swift
+[390/401] Compiling SwiftBasicFormat BasicFormat.swift
+[391/401] Compiling SwiftDiagnostics Convenience.swift
+[392/401] Compiling MLXLMCommon DoRA+Layers.swift
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2AttentionMetadata.swift:37:42: warning: 'strides' is deprecated: Do not use -- see asData(access:) [#DeprecatedDeclaration]
+35 |         dtype = String(describing: array.dtype)
+36 |         shape = array.shape
+37 |         graphConstructionStrides = array.strides
+   |                                          `- warning: 'strides' is deprecated: Do not use -- see asData(access:) [#DeprecatedDeclaration]
+38 |     }
+39 | }
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:3687:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+     :
+3685 |                     firstEmissionArmedNanos: firstToken ? readbackDoneNanos : 0)
+3686 |                 detokQueue.async {
+3687 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+3688 |                     stream?.emit(
+3689 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:3975:36: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+     :
+3973 |             if usesAsyncDetokenization {
+3974 |                 terminalQueue.async {
+3975 |                     let trailing = detokenizer?.flush() ?? ""
+     |                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+3976 |                     if !trailing.isEmpty {
+3977 |                         stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:282:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+280 |                 let allTokens = kept
+281 |                 detokQueue.async {
+282 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+283 |                     stream?.emit(
+284 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:220:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[393/403] Compiling MLXEmbedders EmbedderModelContainer.swift
+[394/403] Compiling SwiftParser Attributes.swift
+[395/405] Compiling SwiftOperators Operator.swift
+[396/405] Compiling SwiftParserDiagnostics DiagnosticExtensions.swift
+[397/406] Compiling MLXLLM LLMModel.swift
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift:758:27: warning: immutable value 'D' was never used; consider replacing with '_' or removing it [#no-usage]
+ 756 | 
+ 757 |     func callAsFunction(_ x: MLXArray, poolCache: PoolingCache?, offset: Int) -> MLXArray {
+ 758 |         let B = x.dim(0), D = x.dim(2)
+     |                           `- warning: immutable value 'D' was never used; consider replacing with '_' or removing it [#no-usage]
+ 759 |         let kv = wkv(x)    // [B, S, out_dim]
+ 760 |         let gate = wgate(x) // [B, S, out_dim]
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift:1401:9: warning: switch must be exhaustive
+1399 |         // Local scores: [B, H, L, localLen]
+1400 |         let localScores: MLXArray
+1401 |         switch localMask {
+     |         |- warning: switch must be exhaustive
+     |         `- note: add missing case: '.arrays(_)'
+1402 |         case .none, .causal:
+1403 |             localScores = qScaled.matmul(localKV.transposed(0, 1, 3, 2))
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift:1513:13: warning: variable 'h' was never mutated; consider changing to 'let' constant
+1511 |         }
+1512 | 
+1513 |         var h = hcPost(x: attnOut, residual: residual, post: postAttn, comb: combAttn)
+     |             `- warning: variable 'h' was never mutated; consider changing to 'let' constant
+1514 | 
+1515 |         // FFN sub-block
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4Exp.swift:727:13: warning: variable 'values' was never mutated; consider changing to 'let' constant
+ 725 |         let gate = qSplit[1].reshaped(B, L, -1)
+ 726 |         var keys = kNorm(qwen4Linear(kProj, x).reshaped(B, L, kvHeads, -1)).transposed(0, 2, 1, 3)
+ 727 |         var values = qwen4Linear(vProj, x).reshaped(B, L, kvHeads, -1).transposed(0, 2, 1, 3)
+     |             `- warning: variable 'values' was never mutated; consider changing to 'let' constant
+ 728 |         queries = applyRotaryPosition(rope, to: queries, cache: cache)
+ 729 |         keys = applyRotaryPosition(rope, to: keys, cache: cache)
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4Exp.swift:1387:20: warning: 'createAttentionMask(h:cache:returnArray:)' is deprecated: Use createAttentionMask(h:cache:windowSize:returnArray:) with a single cache instead [#DeprecatedDeclaration]
+1385 |         }
+1386 |         let attentionCaches = cache.map { Array($0.prefix(layers.count)) }
+1387 |         let mask = createAttentionMask(h: hidden, cache: attentionCaches)
+     |                    `- warning: 'createAttentionMask(h:cache:returnArray:)' is deprecated: Use createAttentionMask(h:cache:windowSize:returnArray:) with a single cache instead [#DeprecatedDeclaration]
+1388 |         var pleCacheIndex = layers.count
+1389 |         for (index, layer) in layers.enumerated() {
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpPLE.swift:899:46: warning: capture of 'packedBase' with non-Sendable type 'UnsafeMutablePointer<UInt32>' in a '@Sendable' closure [#SendableClosureCaptures]
+ 897 |                                 destRows: work.destRows,
+ 898 |                                 destinationRowCount: unique.count,
+ 899 |                                 destination: packedBase)
+     |                                              `- warning: capture of 'packedBase' with non-Sendable type 'UnsafeMutablePointer<UInt32>' in a '@Sendable' closure [#SendableClosureCaptures]
+ 900 |                             try work.file.copyIndexedRows(
+ 901 |                                 key: work.scales,
+
+Swift.UnsafeMutablePointer:1:23: note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+1 | @frozen public struct UnsafeMutablePointer<Pointee> : Copyable where Pointee : ~Copyable {
+  |                       `- note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+2 |     public let _rawValue: Builtin.RawPointer
+3 |     public init(_ _rawValue: Builtin.RawPointer)
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpPLE.swift:905:46: warning: capture of 'scaleBase' with non-Sendable type 'UnsafeMutablePointer<UInt16>' in a '@Sendable' closure [#SendableClosureCaptures]
+ 903 |                                 destRows: work.destRows,
+ 904 |                                 destinationRowCount: unique.count,
+ 905 |                                 destination: scaleBase)
+     |                                              `- warning: capture of 'scaleBase' with non-Sendable type 'UnsafeMutablePointer<UInt16>' in a '@Sendable' closure [#SendableClosureCaptures]
+ 906 |                             try work.file.copyIndexedRows(
+ 907 |                                 key: work.biases,
+
+Swift.UnsafeMutablePointer:1:23: note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+1 | @frozen public struct UnsafeMutablePointer<Pointee> : Copyable where Pointee : ~Copyable {
+  |                       `- note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+2 |     public let _rawValue: Builtin.RawPointer
+3 |     public init(_ _rawValue: Builtin.RawPointer)
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpPLE.swift:911:46: warning: capture of 'biasBase' with non-Sendable type 'UnsafeMutablePointer<UInt16>' in a '@Sendable' closure [#SendableClosureCaptures]
+ 909 |                                 destRows: work.destRows,
+ 910 |                                 destinationRowCount: unique.count,
+ 911 |                                 destination: biasBase)
+     |                                              `- warning: capture of 'biasBase' with non-Sendable type 'UnsafeMutablePointer<UInt16>' in a '@Sendable' closure [#SendableClosureCaptures]
+ 912 |                         } catch {
+ 913 |                             failure.lock()
+
+Swift.UnsafeMutablePointer:1:23: note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+1 | @frozen public struct UnsafeMutablePointer<Pointee> : Copyable where Pointee : ~Copyable {
+  |                       `- note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+2 |     public let _rawValue: Builtin.RawPointer
+3 |     public init(_ _rawValue: Builtin.RawPointer)
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpPLE.swift:892:36: warning: reference to captured var 'copies' in concurrently-executing code [#SendableClosureCaptures]
+ 890 |                     else { return }
+ 891 |                     DispatchQueue.concurrentPerform(iterations: copies.count) { index in
+ 892 |                         let work = copies[index]
+     |                                    `- warning: reference to captured var 'copies' in concurrently-executing code [#SendableClosureCaptures]
+ 893 |                         do {
+ 894 |                             try work.file.copyIndexedRows(
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpPLE.swift:1167:79: warning: capture of 'slot' with non-Sendable type 'Qwen4ExpNGramEmbedding.DeferredSlot' in a '@Sendable' closure [#SendableClosureCaptures]
+ 970 |     /// the step's dequant reads. Materialized once; the host rewrites the
+ 971 |     /// bytes in place before every submit that uses the slot.
+ 972 |     final class DeferredSlot {
+     |                 `- note: class 'DeferredSlot' does not conform to the 'Sendable' protocol
+ 973 |         let rows: Int
+ 974 |         let geometry: MmapGeometry
+     :
+1165 |                             try work.file.copyIndexedRows(
+1166 |                                 key: work.weight, sourceRows: work.sourceRows,
+1167 |                                 destRows: work.destRows, destinationRowCount: slot.rows,
+     |                                                                               `- warning: capture of 'slot' with non-Sendable type 'Qwen4ExpNGramEmbedding.DeferredSlot' in a '@Sendable' closure [#SendableClosureCaptures]
+1168 |                                 destination: packedDest)
+1169 |                             try work.file.copyIndexedRows(
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpPLE.swift:1168:46: warning: capture of 'packedDest' with non-Sendable type 'UnsafeMutablePointer<UInt32>' in a '@Sendable' closure [#SendableClosureCaptures]
+1166 |                                 key: work.weight, sourceRows: work.sourceRows,
+1167 |                                 destRows: work.destRows, destinationRowCount: slot.rows,
+1168 |                                 destination: packedDest)
+     |                                              `- warning: capture of 'packedDest' with non-Sendable type 'UnsafeMutablePointer<UInt32>' in a '@Sendable' closure [#SendableClosureCaptures]
+1169 |                             try work.file.copyIndexedRows(
+1170 |                                 key: work.scales, sourceRows: work.sourceRows,
+
+Swift.UnsafeMutablePointer:1:23: note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+1 | @frozen public struct UnsafeMutablePointer<Pointee> : Copyable where Pointee : ~Copyable {
+  |                       `- note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+2 |     public let _rawValue: Builtin.RawPointer
+3 |     public init(_ _rawValue: Builtin.RawPointer)
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpPLE.swift:1172:46: warning: capture of 'scaleDest' with non-Sendable type 'UnsafeMutablePointer<UInt16>' in a '@Sendable' closure [#SendableClosureCaptures]
+1170 |                                 key: work.scales, sourceRows: work.sourceRows,
+1171 |                                 destRows: work.destRows, destinationRowCount: slot.rows,
+1172 |                                 destination: scaleDest)
+     |                                              `- warning: capture of 'scaleDest' with non-Sendable type 'UnsafeMutablePointer<UInt16>' in a '@Sendable' closure [#SendableClosureCaptures]
+1173 |                             try work.file.copyIndexedRows(
+1174 |                                 key: work.biases, sourceRows: work.sourceRows,
+
+Swift.UnsafeMutablePointer:1:23: note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+1 | @frozen public struct UnsafeMutablePointer<Pointee> : Copyable where Pointee : ~Copyable {
+  |                       `- note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+2 |     public let _rawValue: Builtin.RawPointer
+3 |     public init(_ _rawValue: Builtin.RawPointer)
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpPLE.swift:1176:46: warning: capture of 'biasDest' with non-Sendable type 'UnsafeMutablePointer<UInt16>' in a '@Sendable' closure [#SendableClosureCaptures]
+1174 |                                 key: work.biases, sourceRows: work.sourceRows,
+1175 |                                 destRows: work.destRows, destinationRowCount: slot.rows,
+1176 |                                 destination: biasDest)
+     |                                              `- warning: capture of 'biasDest' with non-Sendable type 'UnsafeMutablePointer<UInt16>' in a '@Sendable' closure [#SendableClosureCaptures]
+1177 |                         } catch {
+1178 |                             failure.lock()
+
+Swift.UnsafeMutablePointer:1:23: note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+1 | @frozen public struct UnsafeMutablePointer<Pointee> : Copyable where Pointee : ~Copyable {
+  |                       `- note: generic struct 'UnsafeMutablePointer' does not conform to the 'Sendable' protocol
+2 |     public let _rawValue: Builtin.RawPointer
+3 |     public init(_ _rawValue: Builtin.RawPointer)
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpPLE.swift:1163:36: warning: reference to captured var 'copies' in concurrently-executing code [#SendableClosureCaptures]
+1161 |                     let biasDest = biasBase.assumingMemoryBound(to: UInt16.self)
+1162 |                     DispatchQueue.concurrentPerform(iterations: copies.count) { index in
+1163 |                         let work = copies[index]
+     |                                    `- warning: reference to captured var 'copies' in concurrently-executing code [#SendableClosureCaptures]
+1164 |                         do {
+1165 |                             try work.file.copyIndexedRows(
+
+/Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpPLE.swift:1228:13: warning: variable 'result' was never mutated; consider changing to 'let' constant
+1226 |         _ chunks: [MLXArray], positions: [Int32], count: Int
+1227 |     ) -> MLXArray {
+1228 |         var result = MLXArray.zeros([count, tables.headEmbedDim], dtype: .bfloat16)
+     |             `- warning: variable 'result' was never mutated; consider changing to 'let' constant
+1229 |         guard !chunks.isEmpty else { return result }
+1230 |         result[MLXArray(positions)] = concatenated(chunks, axis: 0)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[398/407] Compiling SwiftSyntaxBuilder ConvenienceInitializers.swift
+[399/408] Compiling SwiftIfConfig ActiveClauseEvaluator.swift
+[400/409] Compiling SwiftSyntaxMacros AbstractSourceLocation.swift
+[401/410] Compiling SwiftSyntaxMacroExpansion BasicMacroExpansionContext.swift
+[402/411] Compiling SwiftCompilerPluginMessageHandling CompilerPluginMessageHandler.swift
+[403/412] Compiling SwiftCompilerPlugin CompilerPlugin.swift
+[404/413] Compiling MLXHuggingFaceMacros HuggingFaceIntegrationMacros.swift
+[404/413] Write Objects.LinkFileList
+[405/413] Linking MLXHuggingFaceMacros-tool
+[407/414] Compiling MLXHuggingFace Macros.swift
+[408/414] Compiling MLXVLM DiffusionGemmaBicubicRGB.swift
+[409/415] Compiling MLXLMServer MLXServerRunner.swift
+macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+`- /Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXEmbeddingServerEngine.swift:78:49: note: expanded code originates here
+76 |         try await EmbedderModelFactory.shared.loadContainer(
+77 |             from: #hubDownloader(),
+78 |             using: #huggingFaceTokenizerLoader(),
+   |                    `- note: in expansion of macro 'huggingFaceTokenizerLoader' here
+   +--- macro expansion #huggingFaceTokenizerLoader --------------------
+   |17 |                 upstream = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+   |18 |             }
+   |19 |             return #adaptHuggingFaceTokenizer(upstream)
+   |   |                    `- note: in expansion of macro 'adaptHuggingFaceTokenizer' here
+   |   +--- macro expansion #adaptHuggingFaceTokenizer -----------------
+   |   | 6 |     struct TokenizerBridge: MLXLMCommon.Tokenizer {
+   |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
+   |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
+   |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+   |   | 9 | 
+   |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
+   |   +----------------------------------------------------------------
+   |20 |         }
+   |21 |     }
+   +--------------------------------------------------------------------
+79 |             configuration: configuration
+80 |         )
+
+macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+`- /Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXModelContainerEngine.swift:237:79: note: expanded code originates here
+235 |         configuration: ModelConfiguration
+236 |     ) async throws -> ModelContainer {
+237 |         try await #huggingFaceLoadModelContainer(configuration: configuration)
+    |                   `- note: in expansion of macro 'huggingFaceLoadModelContainer' here
+    +--- macro expansion #huggingFaceLoadModelContainer ----------------
+    |1 | loadModelContainer(
+    |2 |     from: #hubDownloader(),
+    |3 |     using: #huggingFaceTokenizerLoader(),
+    |  |            `- note: in expansion of macro 'huggingFaceTokenizerLoader' here
+    |  +--- macro expansion #huggingFaceTokenizerLoader ----------------
+    |  |17 |                 upstream = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+    |  |18 |             }
+    |  |19 |             return #adaptHuggingFaceTokenizer(upstream)
+    |  |   |                    `- note: in expansion of macro 'adaptHuggingFaceTokenizer' here
+    |  |   +--- macro expansion #adaptHuggingFaceTokenizer -------------
+    |  |   | 6 |     struct TokenizerBridge: MLXLMCommon.Tokenizer {
+    |  |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
+    |  |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
+    |  |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+    |  |   | 9 | 
+    |  |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
+    |  |   +------------------------------------------------------------
+    |  |20 |         }
+    |  |21 |     }
+    |  +----------------------------------------------------------------
+    |4 |     configuration: configuration,
+    |5 |     progressHandler: { _ in
+    +-------------------------------------------------------------------
+238 |     }
+239 | 
+
+macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+`- /Users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXModelContainerEngine.swift:246:70: note: expanded code originates here
+244 |         configuration: ModelConfiguration
+245 |     ) async throws -> sending ModelContext {
+246 |         try await #huggingFaceLoadModel(configuration: configuration)
+    |                   `- note: in expansion of macro 'huggingFaceLoadModel' here
+    +--- macro expansion #huggingFaceLoadModel -------------------------
+    |1 | loadModel(
+    |2 |     from: #hubDownloader(),
+    |3 |     using: #huggingFaceTokenizerLoader(),
+    |  |            `- note: in expansion of macro 'huggingFaceTokenizerLoader' here
+    |  +--- macro expansion #huggingFaceTokenizerLoader ----------------
+    |  |17 |                 upstream = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+    |  |18 |             }
+    |  |19 |             return #adaptHuggingFaceTokenizer(upstream)
+    |  |   |                    `- note: in expansion of macro 'adaptHuggingFaceTokenizer' here
+    |  |   +--- macro expansion #adaptHuggingFaceTokenizer -------------
+    |  |   | 6 |     struct TokenizerBridge: MLXLMCommon.Tokenizer {
+    |  |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
+    |  |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
+    |  |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+    |  |   | 9 | 
+    |  |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
+    |  |   +------------------------------------------------------------
+    |  |20 |         }
+    |  |21 |     }
+    |  +----------------------------------------------------------------
+    |4 |     configuration: configuration,
+    |5 |     progressHandler: { _ in
+    +-------------------------------------------------------------------
+247 |     }
+248 | }
+[410/416] Compiling ProviderCore APNsBridge.swift
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift:77:12: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+ 75 |         throw HardwareError.sysctlFailed(key)
+ 76 |     }
+ 77 |     return String(cString: buffer)
+    |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+ 78 | }
+ 79 | 
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkSession.swift:110:9: warning: no 'async' operations occur within 'await' expression
+108 |     /// slot factory. Raw fixed-budget probes may still explicitly override it.
+109 |     public func stopTokenIDs() async -> Set<Int> {
+110 |         await bundle.bridge.stopTokenIds
+    |         `- warning: no 'async' operations occur within 'await' expression
+111 |     }
+112 | 
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkSessionConstruction.swift:178:28: warning: no 'async' operations occur within 'await' expression
+176 |                 let sample = budget.memoryHeadroomSnapshot()
+177 |                 postBuildHeadroom = sample.runtimeRemainingBytes
+178 |                 let kind = await bundle.bridge.kvBackendKind
+    |                            `- warning: no 'async' operations occur within 'await' expression
+179 |                 let ceiling = await bundle.bridge.kvBackendPoolBytes()
+180 |                 guard KVHeadroomProbe.postBuildServeable(kvBackendKind: kind, pagedPoolBytes: ceiling,
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkSessionConstruction.swift:187:27: warning: no 'async' operations occur within 'await' expression
+185 |                 }
+186 |             }
+187 |             let backend = await bundle.bridge.kvBackendKind.rawValue
+    |                           `- warning: no 'async' operations occur within 'await' expression
+188 |             let fallback = await bundle.bridge.kvBackendFallbackReason
+189 |             return EngineV2BenchmarkSession(
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkSessionConstruction.swift:188:28: warning: no 'async' operations occur within 'await' expression
+186 |             }
+187 |             let backend = await bundle.bridge.kvBackendKind.rawValue
+188 |             let fallback = await bundle.bridge.kvBackendFallbackReason
+    |                            `- warning: no 'async' operations occur within 'await' expression
+189 |             return EngineV2BenchmarkSession(
+190 |                 bundle: bundle, engine: engine,
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkSessionConstruction.swift:192:49: warning: no 'async' operations occur within 'await' expression
+190 |                 bundle: bundle, engine: engine,
+191 |                 backend: backend, fallback: fallback,
+192 |                 effectiveMaxConcurrentRequests: await bundle.bridge.maxConcurrentRequests,
+    |                                                 `- warning: no 'async' operations occur within 'await' expression
+193 |                 memoryEnabled: PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
+194 |                 activationReserveBytes: reserve, postLoadMaximumKVBytes: maximumKVBytes,
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+DiffusionBenchmark.swift:137:24: warning: no 'async' operations occur within 'await' expression
+135 |             Memory.clearCache()
+136 |             let headroom = budget.memoryHeadroomSnapshot()
+137 |             let kind = await bundle.bridge.kvBackendKind
+    |                        `- warning: no 'async' operations occur within 'await' expression
+138 |             let pool = await bundle.bridge.kvBackendPoolBytes()
+139 |             guard KVHeadroomProbe.postBuildServeable(kvBackendKind: kind, pagedPoolBytes: pool,
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+DiffusionBenchmark.swift:148:29: warning: no 'async' operations occur within 'await' expression
+146 |                 container: native, engine: engine, budget: budget, modelID: modelID,
+147 |                 prompt: prompt, iterations: iterations, maxTokens: maxTokens,
+148 |                 stopTokens: await bundle.bridge.stopTokenIds)
+    |                             `- warning: no 'async' operations occur within 'await' expression
+149 |             await bundle.bridge.shutdown()
+150 |             return .init(iterations: results, weightHash: hash, backend: kind.rawValue,
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift:55:39: warning: no calls to throwing functions occur within 'try' expression
+53 |                 layerKinds = prism.cbv2LayerKinds
+54 |                 modelCapabilities = prism.cbv2Capabilities
+55 |                 newCaches = { make in try prism.newCacheV2(makeLayerCache: make) }
+   |                                       `- warning: no calls to throwing functions occur within 'try' expression
+56 |             case let qwen as MLXVLM.Qwen3VL:
+57 |                 layerKinds = qwen.cbv2LayerKinds
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift:85:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+83 |         // any code path that might have called `Device.setDefault(.cpu)`
+84 |         // earlier in the process (e.g. a stray test fixture).
+85 |         Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+86 |         if Device.defaultDevice().deviceType != .gpu {
+87 |             throw Error.mlxDefaultIsCPU
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift:505:24: warning: no 'async' operations occur within 'await' expression
+ 503 |                         mediaPrefixIdentity = try visionPrepared.hybridPrefixIdentity()
+ 504 |                     } else if nativeMediaTools, Qwen4SupportPolicy.isOwnedModelID(modelId), cacheEnabled,
+ 505 |                        await bridge.ssdHybridCheckpointStore != nil {
+     |                        `- warning: no 'async' operations occur within 'await' expression
+ 506 |                         mediaPrefixIdentity = try visionPrepared.hybridPrefixIdentity(
+ 507 |                             canonicalQwen4TextTail: true)
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift:30:45: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+28 |         activationReserveBytes: UInt64? = nil
+29 |     ) -> UInt64 {
+30 |         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+   |                                             |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+   |                                             `- note: use 'Memory.activeMemory' instead
+31 |         return UnifiedMemoryCap.liveKVHeadroomBytes(
+32 |             mlxUsedBytes: mlxUsed,
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift:30:84: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+28 |         activationReserveBytes: UInt64? = nil
+29 |     ) -> UInt64 {
+30 |         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+   |                                                                                    |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+   |                                                                                    `- note: use 'Memory.cacheMemory' instead
+31 |         return UnifiedMemoryCap.liveKVHeadroomBytes(
+32 |             mlxUsedBytes: mlxUsed,
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift:78:12: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+76 |     var bytes=[CChar](repeating:0,count:size)
+77 |     guard sysctlbyname("kern.osversion",&bytes,&size,nil,0)==0 else { return "" }
+78 |     return String(cString:bytes)
+   |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+79 | }
+80 | 
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift:147:50: warning: 'peakMemory' is deprecated: renamed to 'Memory.peakMemory' [#DeprecatedDeclaration]
+145 |         // targets also prevent reclaim credit, even when all slots are idle.
+146 |         let mlxActiveBytes = processMemory.activeBytes
+147 |         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
+    |                                                  |- warning: 'peakMemory' is deprecated: renamed to 'Memory.peakMemory' [#DeprecatedDeclaration]
+    |                                                  `- note: use 'Memory.peakMemory' instead
+148 |         let mlxCacheBytes = processMemory.cacheBytes
+149 |         let (sumUsed, usedOverflow) = mlxActiveBytes.addingReportingOverflow(mlxCacheBytes)
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:1050:35: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+1048 |         slots.reduce(0.0) {
+1049 |             $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+1050 |         } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+     |                                   |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+     |                                   `- note: use 'Memory.cacheMemory' instead
+1051 |     }
+1052 | 
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift:374:12: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+372 |     var model = [CChar](repeating: 0, count: size)
+373 |     sysctlbyname("hw.model", &model, &size, nil, 0)
+374 |     return String(cString: model)
+    |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+375 | }
+376 | 
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift:231:25: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+229 |         throw RuntimeMetallibBindingError.snapshotCreateFailed
+230 |     }
+231 |     let temporaryPath = String(cString: template)
+    |                         `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+232 |     guard unlink(temporaryPath) == 0 else {
+233 |         Darwin.close(descriptor)
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift:320:16: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+318 |     // Resolve symlinks
+319 |     guard let resolved = realpath(buffer, nil) else {
+320 |         return String(cString: buffer)
+    |                `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+321 |     }
+322 |     defer { free(resolved) }
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Security/SecurityFoundation.swift:197:41: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+195 |         }
+196 |         guard let resolved = realpath(buffer, nil) else {
+197 |             return URL(fileURLWithPath: String(cString: buffer))
+    |                                         `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+198 |         }
+199 |         defer { free(resolved) }
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Server/ModelPrefetchCoordinator.swift:273:24: warning: no 'async' operations occur within 'await' expression
+271 | 
+272 |     private func runPrefetch(modelId: String, taskId: UUID) async {
+273 |         defer { Task { await self.removeTask(modelId: modelId, taskId: taskId) } }
+    |                        `- warning: no 'async' operations occur within 'await' expression
+274 | 
+275 |         // Short-circuit if already available (loaded or on-disk-and-valid).
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderCore/Service/LaunchctlControl.swift:89:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+87 |                 return String(cString: resolved)
+88 |             }
+89 |             return String(cString: buffer)
+   |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+90 |         }
+91 |         return FileManager.default.homeDirectoryForCurrentUser
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[411/419] Compiling DarkbloomEnclaveCLI EnclaveCLI.swift
+[411/419] Write Objects.LinkFileList
+[412/419] Linking darkbloom-enclave
+[414/419] Compiling ServingQualificationTests ServingPromptCountArtifactTests.swift
+[415/420] Compiling DarkbloomProviderPackageTests runner.swift
+[415/420] Write Objects.LinkFileList
+[417/420] Compiling ProviderBenchmark ArrivalInvarianceBenchmark.swift
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderBenchmark/ModelBenchmark.swift:202:27: warning: no calls to throwing functions occur within 'try' expression
+200 |         )
+201 | 
+202 |         let rawMessages = try messages.map { msg -> MLXLMCommon.Message in
+    |                           `- warning: no calls to throwing functions occur within 'try' expression
+203 |             ["role": msg.role, "content": msg.content] as MLXLMCommon.Message
+204 |         }
+
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift:104:21: warning: no calls to throwing functions occur within 'try' expression
+102 |         }
+103 | 
+104 |         let facts = try await container.perform { ctx -> ModelFacts in
+    |                     `- warning: no calls to throwing functions occur within 'try' expression
+105 |             eval(ctx.model.parameters().flattened().map { $0.1 })
+106 |             let params = ctx.model.parameters().flattened()
+[417/421] Linking DarkbloomProviderPackageTests
+[419/421] Compiling darkbloom AutoUpdateCommand.swift
+/Users/gaj/first-content-qualification-20260928/provider-swift/Sources/darkbloom/ProviderAppKitHost.swift:71:35: warning: sending 'cmd' risks causing data races [#SendingRisksDataRace]
+ 67 |             do {
+ 68 |                 let command = try Darkbloom.parseAsRoot(args)
+ 69 |                 if let asyncCommand = command as? AsyncParsableCommand {
+    |                                               `- note: isolated conformance to protocol 'AsyncParsableCommand' can be introduced here
+ 70 |                     var cmd = asyncCommand
+ 71 |                     try await cmd.run()
+    |                                   |- warning: sending 'cmd' risks causing data races [#SendingRisksDataRace]
+    |                                   `- note: sending main actor-isolated 'cmd' to nonisolated instance method 'run()' risks causing data races between nonisolated and main actor-isolated uses
+ 72 |                 } else {
+ 73 |                     var cmd = command
+
+[#SendingRisksDataRace]: <https://docs.swift.org/compiler/documentation/diagnostics/sending-risks-data-race>
+[419/421] Write Objects.LinkFileList
+[420/421] Linking darkbloom
+Build complete! (237.27s)
+→ mlx source is not a git checkout; keying metallib on file contents (f1eba37e59c1)
+→ Using cached metallib mlx-nogit-wf1eba37e59c1-tcd63862cc28de6841-dt26.2-jitoff-ca27ca72e8720
+✓ wrote /Users/gaj/first-content-qualification-20260928/provider-swift/.build/arm64-apple-macosx/release/mlx.metallib  (20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb)
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/first-content-qualification-20260928/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/first-content-qualification-20260928/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/first-content-qualification-20260928/provider-swift->/users/gaj/first-content-qualification-20260928/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/first-content-qualification-20260928/provider-swift->/users/gaj/first-content-qualification-20260928/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+warning: 'provider-swift': dependency 'hummingbird-websocket' is not used by any target
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-09-28 18:05:19.910.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-09-28 18:05:19.911.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-09-28 18:05:19.911.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-28 18:05:19.911.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Test qualificationBuildIdentityMatchesExecutingImage() started.
+✔ Test qualificationBuildIdentityMatchesExecutingImage() passed after 0.095 seconds.
+✔ Test run with 1 test in 0 suites passed after 0.095 seconds.

@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "target": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+  "artifact_sha256": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+  "hardware": "Apple M5 Max / 40 GPU / 128 GiB",
+  "posture": {
+    "power_mode": "automatic",
+    "minimum_cooldown_ms": 20000,
+    "nominal_stable_ms": 5000,
+    "recovery_limit_ms": 180000,
+    "nominal_before_during_after": true,
+    "failure_policy": "preserve all measured trials; fail entire cohort; do not drop or reuse samples"
+  },
+  "deadline_calibration": {
+    "prompt_band": [
+      4096,
+      12288
+    ],
+    "output_tokens": 128,
+    "early_decode_context_tokens": 33,
+    "tools_history": true,
+    "cache_state": "cold",
+    "contention": "isolated",
+    "scheduler_width": 4,
+    "submitted_width": 1,
+    "training_trials": 40,
+    "independent_heldout_trials": 100,
+    "body_nonce": "separate fresh supervisor UUID for each partition, endpoints plus deterministic run-seeded uniform integer counts",
+    "start_heldout_only_if_all_training_trials_valid": true,
+    "existing_failed_cohorts_reused": false
+  },
+  "supplemental_screens": [
+    {
+      "kind": "lifecycle",
+      "phases": [
+        "prefill",
+        "after_mtp_content"
+      ],
+      "checks": [
+        "actual cancellation",
+        "partial output accounting",
+        "native KV retirement",
+        "whole-Mac service retirement",
+        "subsequent greedy parity"
+      ]
+    },
+    {
+      "kind": "context_and_cache",
+      "prompt_tokens": [
+        4096,
+        16384,
+        32768,
+        262016
+      ],
+      "output_tokens": 128,
+      "width": 1,
+      "cache_states": [
+        "cold",
+        "reused"
+      ],
+      "tools_history": true,
+      "boundary_timeout_seconds": 240,
+      "timeout_policy": "retain censored failed receipt, never certify context"
+    },
+    {
+      "kind": "concurrency",
+      "prompt_tokens": 4096,
+      "output_tokens": 128,
+      "widths": [
+        1,
+        2,
+        4,
+        6,
+        8
+      ],
+      "tools_history": true,
+      "policy": "benchmark exact actual width; no universal promotion from a screen"
+    },
+    {
+      "kind": "mixed_prefill",
+      "prompt_tokens": 4096,
+      "output_tokens": 1024,
+      "width": 2,
+      "stagger_ms": 4500,
+      "mixed_caps": [
+        null,
+        128,
+        256,
+        512
+      ],
+      "paired_rendered_corpus": true,
+      "checks": [
+        "actual mixed steps exist",
+        "confirmed token gaps",
+        "mixed engine step duration",
+        "TTFT",
+        "aggregate decode"
+      ]
+    },
+    {
+      "kind": "competing_model",
+      "prompt_tokens": [
+        4096,
+        16384,
+        32768
+      ],
+      "output_tokens": 128,
+      "competitor": "mlx-community/Qwen3.5-0.8B-MLX-4bit",
+      "competitor_artifact_sha256": "b7d7ddfffdccc434836dd05bc13c5ed21cde87812f627fa6ba7b0098b2be8d7d",
+      "competitor_prompt_tokens": 2048,
+      "competitor_output_tokens": 16384,
+      "checks": [
+        "real competitor progress during target prompt work",
+        "shared service and KV ownership",
+        "exact serving-set memory guards"
+      ]
+    }
+  ],
+  "promotion_policy": "Narrow deadline cells require all exact build, identity, posture, independent confidence and lifecycle gates. Universal serving/chunk profiles require the complete existing matrix and unchanged thresholds; supplemental screens alone never promote."
+}

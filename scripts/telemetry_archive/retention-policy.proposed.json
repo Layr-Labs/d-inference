@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "status": "proposed_not_runtime_configuration",
+  "deletion_enabled": false,
+  "public_analytics_refresh_seconds": 300,
+  "public_analytics_max_source_age_seconds": 600,
+  "public_analytics_max_result_age_seconds": 900,
+  "retirement": {
+    "target_hot_detail_days": 30,
+    "table_allowlist": [
+      "request_profiles", "request_outcomes", "fleet_snapshots",
+      "inference_routes", "request_rejections"
+    ],
+    "excluded_pending_separate_financial_decision": [
+      "usage", "provider_earnings", "ledger_entries", "provider_floor_draws"
+    ],
+    "required_gates": [
+      "historical_plan_summaries_and_catalogs_reconciled",
+      "durable_incremental_capture_with_commit_boundary",
+      "all_inserts_updates_and_late_commits_through_retirement_boundary_archived",
+      "source_row_versions_match_verified_archive_under_delete_transaction",
+      "financial_idempotency_survives_removal_of_detail",
+      "all_serving_readers_migrated_or_bounded",
+      "rollups_shadow_compared_and_history_queries_restore_tested",
+      "unresolved_workflows_excluded",
+      "specific_production_enablement_approval"
+    ],
+    "permanent_hot_state": [
+      "current_balances", "withdrawable_balances", "active_payment_workflows",
+      "settlement_and_refund_idempotency", "earnings_and_usage_totals"
+    ],
+    "archive_expiration": null
+  }
+}

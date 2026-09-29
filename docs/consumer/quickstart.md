@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-29 · commit `0f6171c0a`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -175,3 +175,9 @@ Direct accounts do not have the upstream first-content SLA. Allow enough time fo
 - Verifying which machine answered and checking its signature: [`verification.md`](verification.md).
 - What the coordinator does with your prompt: [`privacy-expectations.md`](privacy-expectations.md).
 - Error codes and `Retry-After` behaviour: [`../reference/api-contracts.md`](../reference/api-contracts.md).
+
+## Public analytics freshness
+
+When the coordinator uses archived analytics snapshots, leaderboard, network totals and network usage charts report the source snapshot time in `updated_at`. Missing or expired results return 503; they are not reported as an empty leaderboard. See the [API contracts](../reference/api-contracts.md).
+
+Public analytics normally refresh on a 5-minute cadence. A failed leaderboard query returns503 rather than an empty ranking.

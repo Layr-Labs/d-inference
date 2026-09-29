@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-27 · commit `12b6b7901`
+> Last updated: 2026-09-29 · commit `150c0b55f`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -482,3 +482,7 @@ reference copy; editing it changes nothing on the host.
 `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS` selects exact authenticated account IDs or stored emails; an empty value disables the SLA for everyone. Provision the selector privately in the runtime environment and verify it against the stored user before rollout. The checked-in template contains only a commented placeholder. Prefer a verified account ID. This is independent of the service role and cannot be selected by a User-Agent/header. Set model exceptions in `EIGENINFERENCE_MODEL_FIRST_CONTENT_SLAS`, for example `ternary-bonsai-2-27b=10000:5` (10-second upstream base, 9-second coordinator base, 5 ms/input token). The code change and template do not mutate the running environment.
 
 During the authorized rollout, verify that an OpenRouter request carries a positive provider first-content budget with its configured slope, while a direct request has no budget and can pass the old cutoff. Verify both API keys on the same selected account inherit the policy. Preserve and restore the prior immutable image and environment for rollback. Policy implementation: `coordinator/api/first_content_accounts.go` (`requestFirstContentDeadline`); configuration details: [configuration](../reference/configuration.md#routing-admission-and-ttft).
+
+## Optional archived analytics mode
+
+`EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH` is unset by default. Enable it only in a specifically approved deployment after the [snapshot pipeline](analytics-snapshots.md) has qualified complete, fresh results and its separate `EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH` has been initialized on a persistent writable mount. It replaces leaderboard/network-totals/network-series reads with a validated local snapshot and disables their database fallback. Cold/missing/expired data or missing accepted state on startup returns 503. Other stats and billing readers continue using PostgreSQL; this setting does not enable source deletion.

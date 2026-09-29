@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-09-29 · commit `302cb40a4`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2423,3 +2423,21 @@ against a mock WebSocket coordinator while accepted work is held open.
 `ProcessLifecycleTests` verifies that lock acquisition cannot kill a live PID owner.
 `TestRestartStatusReportsOwnerAuthorizationWithoutPublicGrant` checks explicit
 owner authorization while retaining runtime/security denials.
+
+## Telemetry archive validation
+
+In `scripts/telemetry_archive`, run `uv run ruff check src tests`, `uv run ruff format --check src tests`, and `uv run pytest -q`. Set `TEST_ARCHIVE_DATABASE_URL` only to a disposable local database named `archive_test` for PostgreSQL restoration, snapshot-isolation, and nested-outcome tests. Accounting tests cover signed micro-USD values, sums beyond INT64, backdated timestamps, sparse IDs, late commits, destination separation, and exact restoration of all four accounting tables. The tests reject remote databases. Production copy/BigQuery verification is a separate gate in [telemetry history](../operations/telemetry-history.md) and [accounting history](../operations/accounting-history.md).
+
+Analytics preview tests reject mixed datasets, injected catalog identifiers,
+missing coverage, unbounded series and excessive scan budgets. Optional
+SELECT-only BigQuery semantics tests use synthetic CTE fixtures, creating no
+cloud datasets or tables: set `TEST_ARCHIVE_BIGQUERY_PROJECT` explicitly and
+run `uv run pytest -q tests/test_analytics_bigquery.py`. They exercise provider
+versus reward-only cohorts, anonymous network earnings, signed corrections,
+base-reward exclusion from tokens/jobs, ties/limits, empty windows, exact time
+boundaries and sums beyond INT64. CI skips these credentialed tests; their live
+results must be recorded separately from the local suite.
+
+Archived snapshot validation and no-scan HTTP tests live in `coordinator/analyticssnapshot` and `coordinator/api/analytics_snapshot_test.go`; run with the race detector. Python `test_snapshot_sync.py` tests generation/hash/scope validation and atomic file replacement. See [snapshot operations](../operations/analytics-snapshots.md).
+
+Leaderboard cache tests cover concurrent callers with different limits and aliases sharing one top-200 query, and failed queries remaining uncached. Store tests cover closed pools and scan overflow after a valid first row returning an error with no partial ranking; the latter uses session-local PostgreSQL tables only.

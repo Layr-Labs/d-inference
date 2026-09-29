@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -64,13 +63,32 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		limit = l
 	}
 
-	cacheKey := fmt.Sprintf("leaderboard:%s:%s:%d", metric, windowParam, limit)
-	if cached, ok := s.readCache.Get(cacheKey); ok {
-		writeCachedJSON(w, cached)
-		return
+	var updatedAt time.Time
+	var rows []store.LeaderboardRow
+	archived := s.analyticsSnapshotPath != ""
+	if archived {
+		snapshot, ready := s.analyticsSnapshot.Get(time.Now())
+		if !ready {
+			analyticsUnavailable(w)
+			return
+		}
+		rows = snapshot.Windows[networkTotalsWindow(windowParam)].Leaderboards[metricParam]
+		if len(rows) > limit {
+			rows = rows[:limit]
+		}
+		updatedAt = snapshot.AsOf
+	} else {
+		result, ready := s.cachedLeaderboard(metric, windowParam, since)
+		if !ready {
+			analyticsUnavailable(w)
+			return
+		}
+		rows = result.Rows
+		if len(rows) > limit {
+			rows = rows[:limit]
+		}
+		updatedAt = result.UpdatedAt
 	}
-
-	rows := s.store.Leaderboard(metric, since, limit)
 
 	type entry struct {
 		Rank                   int    `json:"rank"`
@@ -98,14 +116,13 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		"metric":     metricParam,
 		"window":     windowParamOrDefault(windowParam),
 		"entries":    entries,
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
+		"updated_at": updatedAt.UTC().Format(time.RFC3339),
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode response"))
 		return
 	}
-	s.readCache.Set(cacheKey, body, 5*time.Minute)
 	writeCachedJSON(w, body)
 }
 

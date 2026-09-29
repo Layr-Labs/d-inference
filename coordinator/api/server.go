@@ -36,6 +36,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/analyticssnapshot"
 	"github.com/eigeninference/d-inference/coordinator/apns"
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/auth"
@@ -189,6 +190,14 @@ type releaseTrustPolicySnapshot struct {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
+	leaderboardRefresh struct {
+		mu      sync.Mutex
+		entries map[string]*cacheRefresher
+	}
+	analyticsSnapshotPath      string
+	analyticsSnapshotStatePath string
+	analyticsSnapshot          analyticssnapshot.Cache
+
 	appAttestRuntimeRefreshPending atomic.Bool
 	modelCatalogSyncMu             sync.Mutex // serialize catalog snapshots and desired-state publication
 
@@ -819,30 +828,32 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	}
 
 	s := &Server{
-		registry:                 reg,
-		store:                    st,
-		ledger:                   payments.NewLedger(st),
-		logger:                   logger,
-		mux:                      http.NewServeMux(),
-		knownRuntimeManifest:     &RuntimeManifest{},
-		metrics:                  NewMetrics(),
-		readCache:                newTTLCache(),
-		geoResolver:              newProviderGeoResolverFromEnv(logger),
-		apiKeyCache:              make(map[string]apiKeyCacheEntry),
-		codeAttestThrottle:       newCodeAttestThrottle(),
-		appAttestShadow:          cfg.AppAttestShadow,
-		trustReuseCache:          newTrustReuseCache(),
-		mdmSchedulerConfig:       cfg.MDMScheduler,
-		settlements:              newSettlementHolder(),
-		zombieCanceller:          newZombieStreamCanceller(),
-		hedgeGov:                 newHedgeGovernor(),
-		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
-		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
-		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
-		firstContentDeadlineBase: firstContentDeadlineBase,
-		firstContentSLAAccounts:  firstContentSLAAccounts,
-		firstContentSLAEmails:    firstContentSLAEmails,
-		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
+		analyticsSnapshotPath:      cfg.AnalyticsSnapshotPath,
+		analyticsSnapshotStatePath: cfg.AnalyticsSnapshotStatePath,
+		registry:                   reg,
+		store:                      st,
+		ledger:                     payments.NewLedger(st),
+		logger:                     logger,
+		mux:                        http.NewServeMux(),
+		knownRuntimeManifest:       &RuntimeManifest{},
+		metrics:                    NewMetrics(),
+		readCache:                  newTTLCache(),
+		geoResolver:                newProviderGeoResolverFromEnv(logger),
+		apiKeyCache:                make(map[string]apiKeyCacheEntry),
+		codeAttestThrottle:         newCodeAttestThrottle(),
+		appAttestShadow:            cfg.AppAttestShadow,
+		trustReuseCache:            newTrustReuseCache(),
+		mdmSchedulerConfig:         cfg.MDMScheduler,
+		settlements:                newSettlementHolder(),
+		zombieCanceller:            newZombieStreamCanceller(),
+		hedgeGov:                   newHedgeGovernor(),
+		serviceReservations:        newServiceReservationManager(st, cfg.ServiceReservations),
+		routeTelemetry:             newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		mediaResolver:              mediafetch.NewResolver(mediaFetchCfg, logger),
+		firstContentDeadlineBase:   firstContentDeadlineBase,
+		firstContentSLAAccounts:    firstContentSLAAccounts,
+		firstContentSLAEmails:      firstContentSLAEmails,
+		routingScanSem:             make(chan struct{}, DefaultRoutingConcurrency()),
 	}
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
 		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",

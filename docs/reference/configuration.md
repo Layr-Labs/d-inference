@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-09-29 · commit `150c0b55f`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -738,3 +738,10 @@ These library controls apply to foreground processes and benchmark runs; they ar
 | `MLX_GPTOSS_MXFP4_DECODE_FAST_TAIL` | `1` enables, other explicit values disable | enabled only on physical `applegpu_g16s` | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/quantized.cpp` (`gather_qmv`): width-2880 MXFP4 gathered matrix-vector path with a masked 320-element tail. Exact shape/dtype gates retain the general fallback. |
 | `MLX_GPTOSS_MXFP4_PREFILL_TILE` | `m32n32k32`; other values use legacy | legacy | `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/gptoss_mxfp4_policy.h` (`gptoss_mxfp4_prefill_tile`): optional 32-row tile for matching sorted expert prefill shapes. Small workstation gains do not establish a universal default. |
 | `DARKBLOOM_GPTOSS_COMPILED_EXPERTS` | `1` enables | disabled | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/GPTOSS+CompiledExperts.swift` (`GPTOSSCompiledExpertsPolicy`): compile single-token B=1/2/4 expert graphs for exact 20B shapes. The global `MLX_COMPILED_DECODE=0` rollback still disables this path. Batch-dependent timing is mixed; weights remain live through weak updatable state. |
+
+## Archived public analytics
+
+| Variable | Type | Default | Owner | Effect |
+|---|---|---|---|---|
+| `EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH` | absolute local path | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `CheckAnalyticsSnapshot`) | Enables validated snapshot reads for leaderboard, network totals and network series; missing/stale snapshots return 503 and never trigger database fallback. See [snapshot operations](../operations/analytics-snapshots.md). |
+| `EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH` | distinct absolute local path | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `CheckAnalyticsSnapshot`); `coordinator/analyticssnapshot` (`LoadPersistent`) | Required when snapshot mode is enabled. Points to the operator-initialized, private accepted-generation record on a persistent writable mount; missing or corrupt state fails closed across restarts. See [snapshot operations](../operations/analytics-snapshots.md). |

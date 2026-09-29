@@ -20,6 +20,10 @@ func (s *Server) handleNetworkTotals(w http.ResponseWriter, r *http.Request) {
 	}
 
 	window := networkTotalsWindow(windowParam)
+	if s.analyticsSnapshotPath != "" {
+		s.archivedNetworkTotals(w, window)
+		return
+	}
 	if cached, ok := s.readCache.Get(networkTotalsCacheKey(window)); ok {
 		writeCachedJSON(w, cached)
 		return
@@ -61,7 +65,7 @@ func (s *Server) networkTotalsEntry(window string) *cacheRefresher {
 	}
 	entry := r.entries[window]
 	if entry == nil {
-		entry = &cacheRefresher{}
+		entry = &cacheRefresher{ttl: 15 * time.Minute}
 		r.entries[window] = entry
 	}
 	return entry

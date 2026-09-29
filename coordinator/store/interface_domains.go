@@ -124,9 +124,10 @@ type UsageStore interface {
 	// Query and iteration failures return an error, never partial buckets.
 	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) ([]UsageFlowBucket, error)
 
-	// Leaderboard returns the top N accounts ranked by the given metric
+	// Leaderboard returns a complete ranking or an error, never a partial result.
+	// It returns the top N accounts ranked by the given metric
 	// over the given time window. Zero `since` means all-time.
-	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
+	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) ([]LeaderboardRow, error)
 
 	// NetworkTotals returns aggregated metrics across the network for the
 	// given window. Zero `since` means all-time. It returns an error (never a

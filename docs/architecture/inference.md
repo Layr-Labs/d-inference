@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-29 · commit `5d33cad52`
+> Last updated: 2026-09-29 · commit `cce4e3d88`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -535,6 +535,13 @@ A required-completion fault retains actual owners and prevents new work or
 speculative reclamation; a timeout, zero counter or logical settlement is not
 physical release. The optional shared-manager residency ticket follows that
 same lifetime and is not memory admission authority.
+
+Ordinary serving installs the selected audio-tokenizer sidecar before publishing
+the model, even when the first request is text-only. Its indexed downsampling
+stage is registered as a one-element module array so the checkpoint's `.0.weight`
+path installs through strict SDK loading. The target-only benchmark does not
+install this sidecar; its success alone cannot validate ordinary multimodal
+startup (`MiMoV26OrdinaryServingPolicy` and `makeNativeMiMoBundle`).
 
 ```mermaid
 flowchart LR

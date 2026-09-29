@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `5d33cad52`
+> Last updated: 2026-09-29 · commit `cce4e3d88`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -34,6 +34,11 @@ and no SSD discount through ordinary loading, publication and retirement; a
 handwritten `ModelInfo` without that field does not cover this boundary.
 The same suite exercises actual preload → listener bind → same-owner stop, and
 refuses listener startup while a real native preload is held before publication.
+
+The nested SDK's `MiMoV26AudioTokenizerEncoderTests` also exercises real strict
+checkpoint installation into the indexed downsampling module array, exact
+transpose values, and missing/extra/shape/dtype refusals. Run these tests in the
+SDK package; a sidecar header audit or a provider test build does not run them.
 
 `TestReserveProviderWithPlanPrimarySelectionUnchanged` compares selection and
 costs exactly while normalizing only wall-clock profiling ages, including

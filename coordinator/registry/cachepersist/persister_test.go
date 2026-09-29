@@ -816,8 +816,9 @@ func TestRestoreRemovesFutureDatedRows(t *testing.T) {
 }
 
 // A delete decision discards the parked copy it outranks at once, and a row
-// parked after the decision with older evidence is refused, so a parked
-// copy never depends on the bounded tombstone retention to stay unbound.
+// parked after the decision with older evidence is refused while the
+// decision is pending or retained, so a copy parked before the decision
+// never depends on the bounded tombstone retention to stay unbound.
 func TestDeleteDecisionDiscardsOutrankedParkedCopy(t *testing.T) {
 	mem := store.NewMemory(store.Config{})
 	p := New(mem, nil, Options{MaxPending: 10})
@@ -843,17 +844,28 @@ func TestDeleteDecisionDiscardsOutrankedParkedCopy(t *testing.T) {
 	if s := p.Status(); s.PendingHolders != 1 {
 		t.Fatalf("newer evidence parks: %+v", s)
 	}
-	// Even once the retention forgets the decision, nothing stale is parked.
-	p.retentionLimit = 1
-	p.mu.Lock()
-	p.rememberDeleteLocked(crs.HolderKey{Key: "b", CacheEpoch: "e"}, now.Add(2*time.Second))
-	p.rememberDeleteLocked(crs.HolderKey{Key: "c", CacheEpoch: "e"}, now.Add(3*time.Second))
-	p.mu.Unlock()
 	rows, _ := p.Take("e", "model", 0)
 	if len(rows) != 1 || !rows[0].UpdatedAt.Equal(newer.UpdatedAt) {
 		t.Fatalf("only the newer copy remains parked: %+v", rows)
 	}
 	if p.HasPending() {
 		t.Fatal("take must clear the identity index too")
+	}
+	// The accepted residual: once a written decision has been evicted from
+	// the count-bounded retention, evidence older than it can park again
+	// (it can only exist through a receipt sampled before the decision and
+	// never re-proved since); the resulting hint self-heals on the next
+	// miss. Documented here so the bound is not mistaken for a guarantee.
+	if err := p.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p.retentionLimit = 1
+	p.mu.Lock()
+	p.rememberDeleteLocked(crs.HolderKey{Key: "b", CacheEpoch: "e"}, now.Add(2*time.Second))
+	p.rememberDeleteLocked(crs.HolderKey{Key: "c", CacheEpoch: "e"}, now.Add(3*time.Second))
+	p.mu.Unlock()
+	p.Park(older)
+	if s := p.Status(); s.PendingHolders != 1 {
+		t.Fatalf("residual: a forgotten decision no longer refuses older evidence: %+v", s)
 	}
 }

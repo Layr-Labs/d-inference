@@ -160,17 +160,20 @@ func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl
 	// instance's clock ran ahead) are skipped: they would sort first and be
 	// routed as fresh past the TTL. Longest-lived first; a limit of 0 or
 	// less loads everything.
+	// Rows the prune tolerates (updated at most FutureSkew ahead of now, a
+	// previous instance's slight skew) load with their update time clamped
+	// to now; rows further ahead are the prune's to remove and stay out.
 	expiry := "expires_at"
-	args := []any{now.UTC()}
+	args := []any{now.UTC(), now.Add(crs.FutureSkew).UTC()}
 	if ttl > 0 {
-		expiry = "LEAST(expires_at, updated_at + $2::bigint * interval '1 microsecond')"
+		expiry = "LEAST(expires_at, updated_at + $3::bigint * interval '1 microsecond')"
 		args = append(args, ttl.Microseconds())
 	}
 	query := fmt.Sprintf(`SELECT key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id,
  block_hash_version, ready_boundary_mode, anchor_token_count, required_recompute_tokens, stage_ms,
  measured_stage_ms, measured_expires_at, updated_at, effective_expires_at
  FROM (SELECT *, %s AS effective_expires_at FROM cache_routing_holders) h
- WHERE effective_expires_at > $1 AND updated_at <= $1 ORDER BY effective_expires_at DESC, key, cache_epoch`, expiry)
+ WHERE effective_expires_at > $1 AND updated_at <= $2 ORDER BY effective_expires_at DESC, key, cache_epoch`, expiry)
 	if limit > 0 {
 		query += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
 		args = append(args, limit)
@@ -193,6 +196,9 @@ func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl
 		}
 		if measuredExpires != nil {
 			r.MeasuredExpiresAt = *measuredExpires
+		}
+		if r.UpdatedAt.After(now) {
+			r.UpdatedAt = now
 		}
 		out = append(out, r)
 	}
@@ -229,8 +235,10 @@ func (s *PostgresStore) LoadCacheDemand(ctx context.Context, notBefore, notAfter
 	// Newest first so a capped restore keeps the freshest keys; rows stamped
 	// after notAfter (a previous instance's clock ran ahead) are skipped so
 	// they cannot take the cap; a limit of 0 or less loads everything.
+	// Rows within the skew tolerance past notAfter load with their seen
+	// time clamped to notAfter, as the holder load does.
 	query := `SELECT key, seen_at FROM cache_routing_demand WHERE seen_at >= $1 AND seen_at <= $2 ORDER BY seen_at DESC, key`
-	args := []any{notBefore.UTC(), notAfter.UTC()}
+	args := []any{notBefore.UTC(), notAfter.Add(crs.FutureSkew).UTC()}
 	if limit > 0 {
 		query += ` LIMIT $3`
 		args = append(args, limit)
@@ -245,6 +253,9 @@ func (s *PostgresStore) LoadCacheDemand(ctx context.Context, notBefore, notAfter
 		var r crs.DemandRecord
 		if err := rows.Scan(&r.Key, &r.SeenAt); err != nil {
 			return nil, fmt.Errorf("scan cache demand: %w", err)
+		}
+		if r.SeenAt.After(notAfter) {
+			r.SeenAt = notAfter
 		}
 		out = append(out, r)
 	}

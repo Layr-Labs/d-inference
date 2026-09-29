@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `07fc62236`
+> Last updated: 2026-09-29 · commit `eff9561cf`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -130,8 +130,12 @@ Coordinator route keys are separate domain-separated HMACs over the opaque scope
 aggregate hash, prompt contract, boundary token count, and provider-confirmed
 chain hash. Provider epochs remain mandatory holder metadata, rather than part
 of the content key: independent machines holding the same exact prefix share
-one bounded bucket per tier. Route keys, account identifiers, raw boundaries,
-and prompts are not persisted or attached to telemetry.
+one bounded bucket per tier. Route and scope keys (the HMAC key material
+derived from the master key), account identifiers, raw boundaries, and
+prompts are not persisted or attached to telemetry; the durable cache
+routing copy stores the keyed boundary and demand identifiers (HMAC outputs
+under those keys, meaningful only to a coordinator holding the same master
+key) with token counts and costs.
 
 ### Configuration and dispatch ownership
 
@@ -824,12 +828,14 @@ back are operator procedures, kept in the runbook
    (`rejectCapability`, `capabilityRejected`,
    `coordinator/registry/cache_proof_fence.go`; `acceptV2SequenceLocked`,
    `coordinator/registry/cache_receipts_v2.go`).
-7. **Route keys, account identifiers, raw boundaries and prompts are never
-   persisted or attached to telemetry**; the durable cache routing copy keeps
-   that: a holder row names its boundary by the keyed identifier and token
-   count only, never by the provider-confirmed chain hash
-   (`holderRecordFor`), and a restored holder matches its plan boundary
-   through the key (`anchorMatches`); `GET /v1/cache/status` and the
+7. **Route and scope keys (the HMAC key material), account identifiers, raw
+   boundaries and prompts are never persisted or attached to telemetry**;
+   what the durable cache routing copy stores is the keyed boundary and
+   demand identifiers, the HMAC outputs under those keys, which name a
+   boundary only to a coordinator holding the same master key: a holder row
+   carries that identifier and the token count, never the provider-confirmed
+   chain hash (`holderRecordFor`), and a restored holder matches its plan
+   boundary through the identifier (`anchorMatches`); `GET /v1/cache/status` and the
    terminal tags carry bounded categorical values only
    (`handleExactCacheStatus`, `coordinator/api/exact_cache_status.go`;
    `cacheSelectionTerminalTags`, `coordinator/api/provider.go`).

@@ -176,8 +176,13 @@ func (r *Registry) applyPrefixCacheSnapshot(
 		// the bind below resurrect it. Its durable rows are settled against
 		// the holders still live: a row another session of the same machine
 		// holds is that session's evidence, not this capability's.
+		// Only for a change of the SSD capability itself: changedModels also
+		// names models whose resident-tier capability moved, and parked rows
+		// are SSD evidence under the SSD epoch.
 		for model := range changedModels {
-			if prev, ok := previousCapabilities[model]; ok {
+			prev, had := previousCapabilities[model]
+			next, has := resultCapabilities[model]
+			if had && (!has || prev != next) {
 				tracker.dropParkedForCapability(prev.CacheEpoch, model)
 			}
 		}

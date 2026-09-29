@@ -7,6 +7,10 @@ import (
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
 
+// restorePruneBudget bounds the prune Restore runs before loading, inside the
+// registry's restore timeout.
+const restorePruneBudget = 10 * time.Second
+
 // Restore loads the durable copy. If the store's rows were written under a
 // different cache-key generation (the master key changed), both tables are
 // reset first: their HMAC-derived keys can never match a request. Demand
@@ -18,10 +22,6 @@ import (
 // today's setting nor crowds a valid row out of the cap), longest-lived first
 // up to maxHolders, and parked until the registry binds them to a provider
 // whose capabilities match.
-// restorePruneBudget bounds the prune Restore runs before loading, inside the
-// registry's restore timeout.
-const restorePruneBudget = 10 * time.Second
-
 func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duration, maxHolders, maxDemand int) ([]crs.DemandRecord, error) {
 	if p == nil {
 		return nil, nil

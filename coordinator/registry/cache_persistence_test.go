@@ -1322,3 +1322,39 @@ func TestCacheRoutingPersistenceHeartbeatBindsLargeBucketCompletely(t *testing.T
 		t.Fatalf("a heartbeat must bind the whole bucket, in chunks: %+v", s)
 	}
 }
+
+// A heartbeat that changes only the resident-tier capability of a model
+// leaves the rows parked for its unchanged SSD capability alone: they bind
+// on that same apply instead of being settled as stale.
+func TestCacheRoutingPersistenceMemoryOnlyChangeKeepsParkedRows(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r, st)
+	p := persistenceTestProvider(t, r, "machine-a", capability)
+	r.mu.RLock()
+	persister := r.cachePersister
+	r.mu.RUnlock()
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		persister.Park(crs.HolderRecord{
+			Key: fmt.Sprintf("k%03d", i), CacheEpoch: capability.CacheEpoch, Tier: "ssd", ModelID: "model",
+			ModelAggregateHash: capability.ModelAggregateHash, PromptContractID: capability.PromptContractID,
+			BlockHashVersion: capability.BlockHashVersion, ReadyBoundaryMode: capability.ReadyBoundaryMode,
+			AnchorTokenCount: 4096, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(time.Minute),
+		})
+	}
+	// The resident slot for the model moves to another epoch; the SSD
+	// capability is untouched.
+	resident := capability
+	resident.CacheEpoch = "22222222-2222-2222-2222-222222222222"
+	resident.ReadyBoundaryMode = ""
+	memory := []protocol.PrefixCacheV2Capability{resident}
+	if _, err := r.UpdatePrefixCacheSnapshot(p.ID, false, 0, nil, &memory, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.DroppedPending != 0 || s.BoundHolders != 3 || s.PendingHolders != 0 {
+		t.Fatalf("a resident-only change must not settle parked SSD rows: %+v", s)
+	}
+}

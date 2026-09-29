@@ -179,6 +179,21 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			if rows, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), now, 1); err != nil || len(rows) != 1 || rows[0].Key == "future" {
 				t.Fatalf("future row must not take the cap: %+v %v", rows, err)
 			}
+			// Inside the skew tolerance a row loads, clamped to the bound.
+			if err := s.UpsertCacheDemand(ctx, []crs.DemandRecord{{Key: "slight", SeenAt: now.Add(30 * time.Second)}}); err != nil {
+				t.Fatal(err)
+			}
+			within, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), now, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clamped := map[string]time.Time{}
+			for _, r := range within {
+				clamped[r.Key] = r.SeenAt
+			}
+			if !clamped["slight"].Equal(now) || !clamped["d0001"].Equal(now) {
+				t.Fatalf("rows within the skew tolerance must load with their seen time clamped: %+v", clamped)
+			}
 			// The prune removes it so a current observation is not outranked.
 			if removed, err := s.PruneCacheRoutingState(ctx, now, 0, now.Add(-2*time.Hour)); err != nil || removed != 1 {
 				t.Fatalf("prune must remove the future-dated demand row: removed=%d err=%v", removed, err)
@@ -200,8 +215,8 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load: %v", err)
 			}
-			if len(got) != 602 { // 601 + the "future" key re-observed at now
-				t.Fatalf("loaded %d rows within the window, want 602", len(got))
+			if len(got) != 603 { // 601 + the "future" key re-observed at now + "slight"
+				t.Fatalf("loaded %d rows within the window, want 603", len(got))
 			}
 			sort.Slice(got, func(i, j int) bool { return got[i].Key < got[j].Key })
 			if !got[0].SeenAt.Equal(now) || !got[1].SeenAt.Equal(now.Add(time.Minute)) {
@@ -209,7 +224,7 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			}
 			// A capped load keeps the newest keys.
 			top, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), now.Add(time.Hour), 2)
-			if err != nil || len(top) != 2 || top[0].Key != "d0001" || top[1].Key != "d0000" {
+			if err != nil || len(top) != 2 || top[0].Key != "d0001" || top[1].Key != "slight" {
 				t.Fatalf("capped demand load must return the newest keys first: %+v %v", top, err)
 			}
 			removed, err := s.PruneCacheRoutingState(ctx, now, 0, now.Add(-600*time.Second))
@@ -224,6 +239,17 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			}
 			if rows, _ := s.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 0 {
 				t.Fatalf("a row updated in the future must not load: %+v", rows)
+			}
+			// Inside the skew tolerance it loads, clamped to the load's clock.
+			slight := holderRecord(901, "epoch-slight", now.Add(30*time.Second), 29*time.Minute)
+			if err := s.UpsertCacheHolders(ctx, []crs.HolderRecord{slight}); err != nil {
+				t.Fatal(err)
+			}
+			if rows, _ := s.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 1 || rows[0].Key != "k901" || !rows[0].UpdatedAt.Equal(now) {
+				t.Fatalf("a row within the skew tolerance must load with its update time clamped: %+v", rows)
+			}
+			if err := s.DeleteCacheHolders(ctx, []crs.HolderKey{slight.HolderKey()}); err != nil {
+				t.Fatal(err)
 			}
 			if rows, _ := s.LoadCacheHolders(ctx, now.Add(61*time.Minute), 0, 0); len(rows) != 1 || rows[0].Key != "k900" {
 				t.Fatalf("the skewed row loads once the clock has passed its update: %+v", rows)

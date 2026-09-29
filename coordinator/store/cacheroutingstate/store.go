@@ -16,8 +16,9 @@ type Store interface {
 	// DeleteCacheHolders removes rows; missing rows are not an error.
 	DeleteCacheHolders(context.Context, []HolderKey) error
 	// LoadCacheHolders returns up to limit rows that are live at now under the
-	// current routing ttl and were not updated after now (a previous
-	// instance's fast clock). A row's effective expiry is the earlier of its
+	// current routing ttl and were not updated more than FutureSkew after now
+	// (a previous instance's fast clock); a row inside that tolerance loads
+	// with UpdatedAt clamped to now. A row's effective expiry is the earlier of its
 	// stored ExpiresAt and UpdatedAt+ttl (ttl <= 0 applies no clamp); rows
 	// past it are skipped, ExpiresAt in the result carries the effective
 	// value, and rows are ordered longest-lived first by that value. The
@@ -28,9 +29,10 @@ type Store interface {
 	// UpsertCacheDemand inserts or refreshes rows, keeping the later SeenAt.
 	UpsertCacheDemand(context.Context, []DemandRecord) error
 	// LoadCacheDemand returns up to limit rows whose SeenAt is at or after
-	// notBefore and at or before notAfter, newest first. The upper bound
-	// keeps rows stamped by a previous instance's fast clock from taking the
-	// cap ahead of valid rows. A limit of 0 or less means no limit.
+	// notBefore and at most FutureSkew after notAfter, newest first, with a
+	// SeenAt past notAfter clamped to it. The upper bound keeps rows stamped
+	// well ahead by a previous instance's fast clock from taking the cap
+	// ahead of valid rows. A limit of 0 or less means no limit.
 	LoadCacheDemand(ctx context.Context, notBefore, notAfter time.Time, limit int) ([]DemandRecord, error)
 	// CacheRoutingKeyFingerprint returns the fingerprint of the derived cache
 	// key generation the stored rows were written under, or "" when none was

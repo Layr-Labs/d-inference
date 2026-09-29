@@ -71,7 +71,10 @@ func (s *MemoryStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl t
 				r.ExpiresAt = clamp
 			}
 		}
-		if r.ExpiresAt.After(now) && !r.UpdatedAt.After(now) {
+		if r.ExpiresAt.After(now) && !r.UpdatedAt.After(now.Add(crs.FutureSkew)) {
+			if r.UpdatedAt.After(now) {
+				r.UpdatedAt = now
+			}
 			out = append(out, r)
 		}
 	}
@@ -120,7 +123,7 @@ func (s *MemoryStore) LoadCacheDemand(ctx context.Context, notBefore, notAfter t
 	defer s.mu.RUnlock()
 	out := make([]crs.DemandRecord, 0, len(s.cacheDemand))
 	for key, seen := range s.cacheDemand {
-		if !seen.Before(notBefore) && !seen.After(notAfter) {
+		if !seen.Before(notBefore) && !seen.After(notAfter.Add(crs.FutureSkew)) {
 			out = append(out, crs.DemandRecord{Key: key, SeenAt: seen})
 		}
 	}
@@ -133,6 +136,12 @@ func (s *MemoryStore) LoadCacheDemand(ctx context.Context, notBefore, notAfter t
 	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
+	}
+	// Ordered by the stored time, as Postgres does; clamped on output.
+	for i := range out {
+		if out[i].SeenAt.After(notAfter) {
+			out[i].SeenAt = notAfter
+		}
 	}
 	return out, nil
 }

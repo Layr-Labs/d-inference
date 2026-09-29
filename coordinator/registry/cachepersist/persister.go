@@ -547,7 +547,9 @@ func (p *Persister) Flush(ctx context.Context) error {
 	if !p.Ready() {
 		return nil
 	}
+	started := time.Now()
 	if err := p.resetIfPending(ctx); err != nil {
+		p.countFailedFlush(started)
 		return err
 	}
 	if p.beforeDrain != nil {
@@ -559,6 +561,7 @@ func (p *Persister) Flush(ctx context.Context) error {
 		// drain. Overflowed once more between that reset's clear and this
 		// drain, the next flush resets again.
 		if err := p.resetIfPending(ctx); err != nil {
+			p.countFailedFlush(started)
 			return err
 		}
 		if b, pending = p.drainUnlessReset(); pending {
@@ -568,33 +571,38 @@ func (p *Persister) Flush(ctx context.Context) error {
 	if len(b.upserts) == 0 && len(b.deletes) == 0 && len(b.demand) == 0 {
 		return nil
 	}
-	started := time.Now()
 	var (
 		err                    error
 		wrote, deleted, demand int
 	)
-	for wrote < len(b.upserts) && err == nil {
+	// Before every store call: an overflow since the drain released
+	// decisions that may condemn the upserts not yet written, and the reset
+	// must land before anything else is written, so the flush stops at its
+	// next chunk, whatever kind, and requeues and resets below (deletes and
+	// demand are safe writes, but the sooner the reset's marker lands the
+	// shorter the window in which a crash leaves the condemned rows
+	// restorable). The window between the check and the store call is the
+	// same residual as between an overflow and the marker.
+	overflowed := func() bool {
 		if p.overflowedSince(b.overflowSeq) {
-			// Released decisions may condemn the upserts not yet written,
-			// and the reset must land before they could be: stop here, and
-			// requeue and reset below. The window between this check and
-			// the store call is the same residual as between an overflow
-			// and the reset's marker.
 			err = errOverflowedMidFlush
-			break
+			return true
 		}
+		return false
+	}
+	for wrote < len(b.upserts) && err == nil && !overflowed() {
 		end := min(wrote+crs.BatchRows, len(b.upserts))
 		if err = p.store.UpsertCacheHolders(ctx, b.upserts[wrote:end]); err == nil {
 			wrote = end
 		}
 	}
-	for deleted < len(b.deletes) && err == nil {
+	for deleted < len(b.deletes) && err == nil && !overflowed() {
 		end := min(deleted+crs.BatchRows, len(b.deletes))
 		if err = p.store.DeleteCacheHolders(ctx, b.deletes[deleted:end]); err == nil {
 			deleted = end
 		}
 	}
-	for demand < len(b.demand) && err == nil {
+	for demand < len(b.demand) && err == nil && !overflowed() {
 		end := min(demand+crs.BatchRows, len(b.demand))
 		if err = p.store.UpsertCacheDemand(ctx, b.demand[demand:end]); err == nil {
 			demand = end
@@ -617,9 +625,17 @@ func (p *Persister) Flush(ctx context.Context) error {
 		// Not a store failure: the remainder is requeued (the fence drops
 		// its upserts as evidence drained before the overflow; deletes and
 		// demand are kept) and the reset runs now, so the marker lands in
-		// this flush rather than the one the wake-up brings.
+		// this flush rather than the one the wake-up brings. A reset that
+		// fails here is counted against this flush, already counted above,
+		// and retried by the next.
 		p.requeue(batch{upserts: b.upserts[wrote:], deletes: b.deletes[deleted:], deleteAt: b.deleteAt, demand: b.demand[demand:], overflowSeq: b.overflowSeq})
-		return p.resetIfPending(ctx)
+		if err := p.resetIfPending(ctx); err != nil {
+			p.mu.Lock()
+			p.counters.flushErrors++
+			p.mu.Unlock()
+			return err
+		}
+		return nil
 	}
 	if err != nil {
 		p.requeue(batch{upserts: b.upserts[wrote:], deletes: b.deletes[deleted:], deleteAt: b.deleteAt, demand: b.demand[demand:], overflowSeq: b.overflowSeq})
@@ -628,6 +644,17 @@ func (p *Persister) Flush(ctx context.Context) error {
 			"demand_left", len(b.demand)-demand)
 	}
 	return err
+}
+
+// countFailedFlush records a flush that failed before it drained anything: a
+// reset that could not land.
+func (p *Persister) countFailedFlush(started time.Time) {
+	p.mu.Lock()
+	p.counters.flushes++
+	p.counters.flushErrors++
+	p.counters.lastFlushMs = time.Since(started).Milliseconds()
+	p.counters.lastFlushAt = time.Now()
+	p.mu.Unlock()
 }
 
 // errOverflowedMidFlush marks a flush that stopped writing because the delete
@@ -711,15 +738,8 @@ func (p *Persister) resetIfPending(ctx context.Context) error {
 	if !pending {
 		return nil
 	}
-	started := time.Now()
 	if err := p.store.ResetCacheRoutingState(ctx, p.fingerprint); err != nil {
-		// A failed flush attempt, for the health counters.
-		p.mu.Lock()
-		p.counters.flushes++
-		p.counters.flushErrors++
-		p.counters.lastFlushMs = time.Since(started).Milliseconds()
-		p.counters.lastFlushAt = time.Now()
-		p.mu.Unlock()
+		// The caller counts the failed attempt against its flush.
 		p.logger.Warn("cache routing persistence: the durable copy could not be reset after the delete backlog overflowed; retrying", "error", err)
 		return err
 	}

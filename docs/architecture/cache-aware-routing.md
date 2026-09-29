@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `22ef0ce28`
+> Last updated: 2026-09-29 · commit `756909f2c`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -819,8 +819,8 @@ back are operator procedures, kept in the runbook
    next boot rather than read as complete, and upserts drained before an
    overflow are not requeued after it. A drain never proceeds while a reset
    is pending (the check and the drain share one lock hold), a flush that
-   sees an overflow after its drain stops writing upserts and resets
-   instead (the remainder is requeued, its upserts dropped), and an
+   sees an overflow after its drain stops before its next store call and
+   resets instead (the remainder is requeued, its upserts dropped), and an
    overflow wakes the flush loop so the reset's marker lands at the next
    flush rather than the next tick (after whatever flush or prune the loop
    has in flight, once the store is reachable); a crash between the

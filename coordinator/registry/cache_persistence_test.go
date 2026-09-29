@@ -1415,12 +1415,12 @@ func TestCacheRoutingPersistenceOverflowWakesTheLoop(t *testing.T) {
 	if rows := storedHolders(t, st); len(rows) != 1 {
 		t.Fatalf("the row must be stored before the overflow: %+v", rows)
 	}
-	// The fillers fill the backlog; the row's own decision overflows it and
-	// is released with the rest, so only the reset removes the row.
-	for i := 0; i < 32; i++ {
+	// The row's decision is queued first and released by the overflow the
+	// fillers cause, so only the reset removes the row.
+	persister.MarkHolderDelete(condemned.HolderKey(), now.Add(time.Second))
+	for i := 0; i < 32; i++ { // the last one overflows
 		persister.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
 	}
-	persister.MarkHolderDelete(condemned.HolderKey(), now.Add(time.Second))
 	deadline := time.Now().Add(3 * time.Second) // the flush tick is 5 s
 	for time.Now().Before(deadline) && len(storedHolders(t, st)) != 0 {
 		time.Sleep(20 * time.Millisecond)

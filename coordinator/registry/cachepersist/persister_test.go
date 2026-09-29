@@ -1019,11 +1019,16 @@ func TestPruneForgetsExpiredDecisionsInChunks(t *testing.T) {
 // resetCountingStore counts the durable-copy resets a persister asks for.
 type resetCountingStore struct {
 	crs.Store
-	resets int
+	resets   int // attempts, failed ones included
+	failNext int // resets to fail before letting one through
 }
 
 func (s *resetCountingStore) ResetCacheRoutingState(ctx context.Context, fingerprint string) error {
 	s.resets++
+	if s.failNext > 0 {
+		s.failNext--
+		return fmt.Errorf("store unavailable")
+	}
 	return s.Store.ResetCacheRoutingState(ctx, fingerprint)
 }
 
@@ -1033,13 +1038,16 @@ func (s *resetCountingStore) ResetCacheRoutingState(ctx context.Context, fingerp
 type deleteHookStore struct {
 	crs.Store
 	onFirstDelete func()
+	passThrough   bool
 }
 
 func (s *deleteHookStore) DeleteCacheHolders(ctx context.Context, keys []crs.HolderKey) error {
 	if hook := s.onFirstDelete; hook != nil {
 		s.onFirstDelete = nil
 		hook()
-		return fmt.Errorf("store unavailable")
+		if !s.passThrough {
+			return fmt.Errorf("store unavailable")
+		}
 	}
 	return s.Store.DeleteCacheHolders(ctx, keys)
 }
@@ -1381,8 +1389,9 @@ func TestFlushResetsWhenTheBacklogOverflowsAfterTheCheck(t *testing.T) {
 	st := &resetCountingStore{Store: mem}
 	ctx := context.Background()
 	now := time.Now()
-	p := New(st, nil, Options{MaxPending: 2}) // dirty cap 8
-	restoreForTest(t, p, now)
+	p := New(st, nil, Options{MaxPending: 2, Fingerprint: "fp"}) // dirty cap 8
+	restoreForTest(t, p, now)                                    // records the generation: one reset
+	base := st.resets
 	condemned := rec("condemned", "e", now, time.Minute)
 	p.MarkHolderUpsert(condemned)
 	if err := p.Flush(ctx); err != nil {
@@ -1402,11 +1411,93 @@ func TestFlushResetsWhenTheBacklogOverflowsAfterTheCheck(t *testing.T) {
 	p.mu.Lock()
 	pending := p.resetPending
 	p.mu.Unlock()
-	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 || st.resets != 1 || pending {
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 || st.resets != base+1 || pending {
 		t.Fatalf("an overflow after the check must be reset by the same flush: rows=%+v resets=%d pending=%v", rows, st.resets, pending)
 	}
-	if fp, _ := mem.CacheRoutingKeyFingerprint(ctx); fp != "" {
+	if fp, _ := mem.CacheRoutingKeyFingerprint(ctx); fp != "fp" {
 		t.Fatalf("the reset must have recorded the generation: %q", fp)
+	}
+}
+
+// The fence runs before every store call, not only before upsert chunks: a
+// delete-only batch stops at its next chunk when the backlog overflowed
+// since the drain, the remainder is requeued and the reset lands in that
+// same flush.
+func TestFlushStopsWritingDeletesWhenTheBacklogOverflowsAfterTheDrain(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	hook := &deleteHookStore{Store: mem, passThrough: true}
+	st := &resetCountingStore{Store: hook}
+	ctx := context.Background()
+	now := time.Now()
+	p := New(st, nil, Options{MaxPending: 200}) // dirty cap 800: room for two chunks of deletes
+	restoreForTest(t, p, now)
+	const n = crs.BatchRows + 1 // two chunks
+	for i := 0; i < n; i++ {
+		p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("g%04d", i), CacheEpoch: "e"}, now)
+	}
+	hook.onFirstDelete = func() {
+		// During the first chunk's write: fresh decisions overflow the
+		// backlog the drain had just emptied.
+		for i := 0; i <= p.dirtyCap; i++ {
+			p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+		}
+	}
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	pending, queued := p.resetPending, len(p.holderDeletes)
+	p.mu.Unlock()
+	if s := p.Status(); st.resets != 1 || pending || s.RowsDeleted != crs.BatchRows || queued != 2 || s.FlushErrors != 0 {
+		t.Fatalf("an overflow during a delete-only batch must stop at the next chunk, requeue it and reset in the same flush: resets=%d pending=%v queued=%d %+v", st.resets, pending, queued, s)
+	}
+}
+
+// A reset that fails on the mid-flush path is counted once against that
+// flush and retried by the next, which then writes the requeued deletes.
+func TestFlushRetriesAFailedResetAfterAMidFlushOverflow(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	hook := &upsertHookStore{Store: mem, passThrough: true}
+	st := &resetCountingStore{Store: hook}
+	ctx := context.Background()
+	now := time.Now()
+	p := New(st, nil, Options{MaxPending: 200}) // dirty cap 800
+	restoreForTest(t, p, now)
+	gone := rec("gone", "e", now, time.Minute)
+	p.MarkHolderUpsert(gone)
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.MarkHolderDelete(gone.HolderKey(), now.Add(time.Second))
+	const n = crs.BatchRows + 1 // two chunks of upserts ahead of the delete
+	for i := 0; i < n; i++ {
+		p.MarkHolderUpsert(rec(fmt.Sprintf("u%04d", i), "e", now.Add(time.Second), time.Minute))
+	}
+	hook.onFirstUpsert = func() {
+		for i := 0; i <= p.dirtyCap; i++ {
+			p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(2*time.Second))
+		}
+		st.failNext = 1 // the reset this flush attempts fails
+	}
+	if err := p.Flush(ctx); err == nil {
+		t.Fatal("a failed reset must fail the flush")
+	}
+	p.mu.Lock()
+	pending := p.resetPending
+	_, requeued := p.holderDeletes[gone.HolderKey()]
+	p.mu.Unlock()
+	if s := p.Status(); st.resets != 1 || !pending || !requeued || s.Flushes != 2 || s.FlushErrors != 1 {
+		t.Fatalf("a failed mid-flush reset must be counted once and leave the reset pending with the delete requeued: resets=%d pending=%v requeued=%v %+v", st.resets, pending, requeued, s)
+	}
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	pending = p.resetPending
+	p.mu.Unlock()
+	rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0)
+	if s := p.Status(); st.resets != 2 || pending || len(rows) != 0 || s.RowsDeleted == 0 || s.FlushErrors != 1 {
+		t.Fatalf("the next flush must reset and write the requeued deletes: resets=%d pending=%v rows=%d %+v", st.resets, pending, len(rows), s)
 	}
 }
 

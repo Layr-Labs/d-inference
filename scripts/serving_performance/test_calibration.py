@@ -64,6 +64,14 @@ class CalibrationTests(unittest.TestCase):
         self.assertFalse(result["qualified"])
         self.assertIsNone(result["calibration"])
 
+    def test_relaxed_confidence_cannot_certify_twenty_perfect_trials(self):
+        value = receipt(validation_count=20)
+        value["coverage_confidence"] = .6
+        result = self.evaluate(value)
+        self.assertFalse(result["qualified"])
+        self.assertIsNone(result["calibration"])
+        self.assertIn("invalid tail coverage/confidence target", result["errors"])
+
     def test_repeated_prompt_or_run_cannot_inflate_coverage(self):
         for field in ("run_id", "workload_sha256"):
             with self.subTest(field=field):

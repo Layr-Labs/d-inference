@@ -17,7 +17,7 @@ def evidence(validation_count=59):
                 work = hashlib.sha256(identity.encode()).hexdigest()
                 observed.append(dict(id=identity, partition=partition, family="code", workloadSHA256=work,
                                      actualPromptTokens=1100 if partition == "calibration" else 1050))
-                projected.append(dict(workload_sha256=work, estimated_tokens=1024, shape_known=True,
+                projected.append(dict(corpus_id=identity, workload_sha256=work, estimated_tokens=1024, shape_known=True,
                                       shape={**dict.fromkeys(SHAPE_FIELDS, 0), "body_bytes": 4096,
                                              "message_count": 2, "message_bytes": 4000}))
     return dict(modelID="fixture", artifactSHA256="a" * 64, promptContractID="b" * 64,
@@ -73,6 +73,30 @@ class PromptCountCalibrationTests(unittest.TestCase):
         report = evaluate(provider, coordinator)
         self.assertFalse(report["qualified"])
         self.assertTrue(any("predeclared corpus ID" in error for error in report["errors"]))
+
+    def test_complete_cohort_identity_cannot_be_reassigned_after_counting(self):
+        # Preserve all populations and partitions while exchanging complete
+        # IDs across tools, size bands or individual rows of the same cell.
+        for other_id in ("validation-tools1-band0-0", "validation-tools0-band1-0",
+                         "validation-tools0-band0-1"):
+            provider, coordinator = evidence()
+            first = next(o for o in provider["observations"] if o["id"] == "validation-tools0-band0-0")
+            second = next(o for o in provider["observations"] if o["id"] == other_id)
+            first["id"], second["id"] = second["id"], first["id"]
+            report = evaluate(provider, coordinator)
+            with self.subTest(other_id=other_id):
+                self.assertFalse(report["qualified"])
+                self.assertTrue(any("canonical workload projection" in error for error in report["errors"]))
+
+    def test_projection_requires_unique_original_corpus_ids(self):
+        for mutation in ("missing", "duplicate"):
+            provider, coordinator = evidence()
+            if mutation == "missing":
+                coordinator[0].pop("corpus_id")
+            else:
+                coordinator[1]["corpus_id"] = coordinator[0]["corpus_id"]
+            with self.subTest(mutation=mutation):
+                self.assertFalse(evaluate(provider, coordinator)["qualified"])
 
     def test_validation_domain_is_not_expanded_or_dropped(self):
         provider, coordinator = evidence()

@@ -92,7 +92,7 @@ class ReleaseComparisonTests(unittest.TestCase):
         self.assertNotIn("REQUEST_SENTINEL", output)
         return json.loads(output)
 
-    def test_logical_denominators_distinguish_timeouts_predictive_refusal_and_hedges(self):
+    def test_logical_denominators_distinguish_coordinator_timeouts_deadline_refusal_and_hedges(self):
         self.outcome("REQUEST_SENTINEL-success", attempts_total=3,
                      attempts=[dict(raw_reason="first_chunk_timeout", final_status="timeout"),
                                dict(backup_of="hidden-primary"), {}])
@@ -107,7 +107,7 @@ class ReleaseComparisonTests(unittest.TestCase):
         self.assertEqual(outcomes["logical_requests"], 4)
         self.assertEqual(outcomes["http_429_requests"], 2)
         self.assertEqual(outcomes["final_actual_first_content_timeouts"], 1)
-        self.assertEqual(outcomes["predictive_deadline_rejections"], 1)
+        self.assertEqual(outcomes["deadline_unreachable_rejections"], 1)
         self.assertEqual(outcomes["requests_with_recorded_timeout_attempt"], 1)
         self.assertEqual(outcomes["retry_denominator_requests"], 3)
         self.assertEqual(outcomes["additional_attempts"], 2)
@@ -115,6 +115,28 @@ class ReleaseComparisonTests(unittest.TestCase):
         self.assertAlmostEqual(outcomes["additional_attempts_per_request"], 2 / 3)
         self.assertAlmostEqual(outcomes["additional_non_hedge_attempts_per_request"], 1 / 3)
         self.assertEqual(result["successful_first_content"][0]["successful_requests"], 1)
+
+    def test_shared_deadline_reason_includes_provider_expiry_without_claiming_prediction(self):
+        # These distinct provider decisions produce the same logical raw reason.
+        # Even with diagnostic profiles present, this aggregate does not claim
+        # a complete predictive/elapsed split from sampled provider evidence.
+        for identifier, decision in [
+            ("predicted-refusal", dict(verdict="deadline_unreachable", projection="bounded",
+                                       remaining_us=1000, projected_service_us=2000)),
+            ("provider-expired", dict(verdict="expired_before_submit", remaining_us=0)),
+        ]:
+            self.outcome(identifier, http_status=429, termination="rejected", raw_reason="deadline_unreachable")
+            self.profile(identifier, winning=False, final_status="error", first_content_us=None,
+                         provider_profile=json.dumps(dict(deadline_decision=decision)))
+        self.outcome("coordinator-expired", http_status=429, termination="rejected",
+                     normalized_code="ext_first_content_timeout")
+        result = self.compare()
+        outcomes = result["logical_outcomes"][0]
+        self.assertEqual(outcomes["deadline_unreachable_rejections"], 2)
+        self.assertEqual(outcomes["final_actual_first_content_timeouts"], 1)
+        self.assertEqual(outcomes["http_429_requests"], 3)
+        self.assertNotIn("predictive_deadline_rejections", outcomes)
+        self.assertEqual(result["successful_first_content"], [])
 
     def test_reconstructs_fnv_sample_and_excludes_enriched_slow_successes(self):
         identifiers = [f"REQUEST_SENTINEL-{i}" for i in range(10000)]

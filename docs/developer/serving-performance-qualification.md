@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-28 · commit `fc8353fde`
+> Last updated: 2026-09-28 · commit `bf030c63b`
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -9,6 +9,9 @@ power observations. Historical reports and raw runs are kept in a local archive.
 The separate concurrency/chunk catalogs remain empty, so M5 Max B8 and M5 Ultra
 B16 remain qualification targets. Six qualified prompt-count fallback records
 cover bounded Qwen3.8 text/tool shapes and grant no hardware scheduling authority.
+The ordinary admission path uses its resolved rates without the former fixed
+50% reduction; this change needs no timing-catalog entry. Profile qualification
+is separate work required to introduce a measured prediction-error envelope.
 
 ## Verify local evidence
 
@@ -34,6 +37,12 @@ collects new GPU measurements or changes runtime behavior.
 
 ## Prerequisites
 
+- Before promoting a deadline profile, qualify the actual execution environment
+  and its resolver identity together. The current strict runtime guard also
+  rejects CLI-projected MLX controls and the qualification fixture's isolated
+  prefix-cache environment keys. Fresh measurement collection remains available,
+  but a future calibrated-admission proof requires reviewed handling of those
+  settings; adding a catalog record alone does not activate that path.
 - A dedicated test Mac, verified model artifact, source-matched provider build
   and Metal libraries; follow [build](build.md) and [test](test.md).
 - Record the provider version, `cbv2-first-content-v2` runtime revision, resolved
@@ -325,8 +334,9 @@ the resulting profile must exactly equal the compiled entry.
 
 Generate independent synthetic text/tool/history bodies with
 `scripts/generate-prompt-count-corpus.py`. The JSON input carries temporary
-base64 bodies; do not commit those inputs. Project the exact original JSON
-bytes through the coordinator's real estimator and shape extractor:
+base64 bodies; do not commit those inputs. Its `--body-output` file contains
+JSONL corpus entries retaining each original ID and base64 request together.
+Project that file through the coordinator's real estimator and shape extractor:
 
 ```bash
 cd coordinator
@@ -347,6 +357,13 @@ Then join the numeric receipts:
 python3 scripts/qualify-prompt-counts.py /tmp/provider-counts.json \
   /tmp/corpus-shapes.jsonl --output /tmp/prompt-count-review.json
 ```
+
+The canonical projection binds each complete corpus ID (partition, tools group,
+size band and row index) to the hash of its original decoded request bytes.
+The evaluator rejects missing/duplicate IDs and any provider observation whose
+ID-to-hash mapping differs; changing a label after counting cannot move a
+request into another group. Preserve the canonical input before collecting
+counts, rather than reconstructing labels from a provider receipt.
 
 The evaluator freezes grouping before collection, fits the median and upper
 count bound using training observations, and measures held-out coverage with

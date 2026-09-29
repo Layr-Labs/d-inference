@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-28 · commit `fc8353fde`
+> Last updated: 2026-09-28 · commit `bf030c63b`
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -61,8 +61,14 @@ model and complete provider body for this HTTP request only; rewritten fallback
 bodies cannot inherit another count.
 
 `prompt_work` carries the count, upper bound and artifact/template identity to
-preflight, selection and provider reconciliation. Exact counts require matching
-model bytes; calibrated template estimates require a reviewed measured domain
+preflight, selection and provider reconciliation. Exact and calibrated counts
+require the candidate's advertised `prompt_work_identity` artifact and renderer
+contract, including when an exact cache plan supplies the count. Loaded engines
+publish this identity independently of prefix-cache enablement. Older providers
+can establish the same pair through validated cache capabilities; missing or
+conflicting identity retains heuristic counts (`providerPromptWorkIdentityLocked`
+in `coordinator/registry/prompt_work_identity.go`). Calibrated template estimates
+also require a reviewed measured domain
 and independent held-out coverage. Unsupported shapes retain heuristic provenance
 with unknown uncertainty. Billing and physical reservation inputs stay separate.
 The provider checks its actual tokenized count and verified factory identity;
@@ -98,11 +104,17 @@ diagnostics and fallback behavior (`coordinator/registry/heartbeat.go`,
 | `unknown` | Missing/stale measurement, unqualified competing or cold work, vision work, or no deadline | Nonzero expected forecast and bounded fallback |
 | `predicted_late` | Credible conservative forecast exceeds the remaining budget | Lower preference; existing explicit hard rejection policy can exclude it |
 
-Even a feasible forecast is advisory. Unqualified work retains the legacy
-half-rate fallback. Reviewed `deadline_calibration` cells replace that margin
-only inside exact prompt/context, cache and contention envelopes, with measured
-prediction-error ratio and additive tail allowance. Rates can be made slower by
-fresh live evidence; they cannot become faster than the reviewed values.
+Even a feasible forecast is advisory. The ordinary forecast uses resolved
+prefill and decode rates directly: it no longer multiplies either rate by 0.5.
+The conservative prefill rate is still capped by a valid isolated-prefill
+observation, while prompt-count upper bounds, queued work, cache restoration,
+cross-model contention and delivery allowances remain explicit. A rate-based
+estimate can still miss its deadline if subsequent execution slows down.
+
+Optional reviewed `deadline_calibration` cells supply measured prediction-error
+ratios and additive tail allowances only inside exact prompt/context, cache and
+contention envelopes. Fresh live evidence can make those rates slower; it cannot
+make them faster than the reviewed values.
 
 `DeadlinePerformanceProfile` binds those cells to the exact constructed
 scheduler, model, template, MTP runtime and hardware. Its configured context is
@@ -111,9 +123,11 @@ contexts. The separate `deadline_profile` reference grants no authority over
 concurrency, whole-Mac charges or mixed-prefill caps. Those serving policy
 changes still require the complete `ServingPerformanceProfile` qualification
 matrix; narrow first-content evidence cannot certify them. The deadline catalog
-is currently empty, so the calibrated timing path remains disabled. Enabling it
-requires independently qualified evidence with continuous power observations.
-Serving defaults remain unchanged.
+is currently empty, so that optional timing path remains disabled. The ordinary
+forecast's removal of the fixed rate reduction is active without a catalog
+entry. Enabling reviewed timing profiles requires independently qualified
+evidence with continuous power observations. Concurrency, chunk and memory
+defaults remain unchanged.
 
 A cooled profile additionally requires its measured whole-Mac idle interval,
 stable nominal posture and Automatic power mode on AC. This deadline-policy

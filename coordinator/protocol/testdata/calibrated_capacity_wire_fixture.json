@@ -58,6 +58,10 @@
           "verification_mode": "automatic",
           "max_automatic_rectangular_tokens": 4096
         }
+      },
+      "prompt_work_identity": {
+        "model_artifact_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "prompt_contract_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       }
     }
   ],

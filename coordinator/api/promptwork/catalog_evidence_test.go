@@ -71,6 +71,7 @@ func TestReviewedPromptCatalogAppliesToRealTrainingShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	type projection struct {
+		CorpusID string `json:"corpus_id"`
 		Hash     string `json:"workload_sha256"`
 		Estimate int    `json:"estimated_tokens"`
 		Known    bool   `json:"shape_known"`
@@ -104,8 +105,8 @@ func TestReviewedPromptCatalogAppliesToRealTrainingShapes(t *testing.T) {
 					continue
 				}
 				p, exists := projections[observed.Hash]
-				if !exists || !p.Known {
-					t.Fatal("observed workload lacks its canonical shape")
+				if !exists || !p.Known || p.CorpusID != observed.ID {
+					t.Fatal("observed workload lacks its canonical corpus ID and shape")
 				}
 				work := c.Estimate(c.ModelID, c.ModelArtifactHash, c.PromptContractID, p.Estimate, c.HasTools, p.Shape)
 				if observed.Partition == "validation" {

@@ -70,9 +70,14 @@ public struct PromptWork: Codable, Sendable, Equatable {
 
 /// Factory-owned identity computed from verified model artifacts regardless
 /// of whether prefix-cache storage is enabled.
-public struct PromptWorkIdentity: Sendable, Equatable {
+public struct PromptWorkIdentity: Codable, Sendable, Equatable {
     public let modelArtifactHash: String
     public let promptContractID: String
+
+    enum CodingKeys: String, CodingKey {
+        case modelArtifactHash = "model_artifact_hash"
+        case promptContractID = "prompt_contract_id"
+    }
 
     public init(modelArtifactHash: String, promptContractID: String) {
         self.modelArtifactHash = modelArtifactHash

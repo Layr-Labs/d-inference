@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased — calibrated first-content admission
+## Unreleased — prompt accounting and first-content admission
 
-- Share verified model/template prompt counts across preflight, retries and provider reconciliation while preserving the original deadline, completion limits and billing usage. Keep unsupported counts explicitly uncertain.
-- Add workload-bounded measured deadline calibration with exact MTP identity and conservative fallback for stale, unmatched or incomplete evidence. Preserve measured idle/thermal/power prerequisites and posture-bound rate freshness without delaying requests. Correlate whole-Mac work through pre-submit and retirement before pricing contention.
+- Share verified model/template prompt counts across preflight, retries and provider reconciliation while preserving the original deadline, completion limits and billing usage. Match count and cache evidence to the candidate provider's advertised template contract; keep unsupported counts explicitly uncertain.
+- Remove the fixed 50% prefill and decode throughput reduction from coordinator feasibility and provider deadline admission. Use the resolved processing rates directly, preserving original deadline expiry, queued/cache work, count bounds, contention and memory gates. This avoids refusals caused solely by doubling predicted processing time; observed rates remain estimates and do not guarantee on-time delivery.
+- Add optional workload-bounded measured deadline calibration with exact MTP identity and ordinary rate fallback for stale, unmatched or incomplete evidence and unqualified runtime overrides. The timing catalog remains empty; removing the fixed rate reduction is active without it. Preserve measured idle/thermal/power prerequisites and posture-bound rate freshness without delaying requests. Correlate whole-Mac work through pre-submit and retirement before pricing contention.
 - Add production-path qualification receipts with actual MTP and individual mixed-prefill step timings; profile promotion remains tied to reviewed hardware and held-out prediction evidence.
 
 ## Unreleased — SSD cache write budget

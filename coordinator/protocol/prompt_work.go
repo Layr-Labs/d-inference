@@ -22,8 +22,27 @@ type PromptWork struct {
 	CalibrationID     string `json:"calibration_id,omitempty"`
 }
 
+// PromptWorkIdentity describes the artifact and renderer contract actually used
+// by one loaded engine. It is independent of prefix-cache enablement.
+type PromptWorkIdentity struct {
+	ModelArtifactHash string `json:"model_artifact_hash"`
+	PromptContractID  string `json:"prompt_contract_id"`
+}
+
+func (p *PromptWorkIdentity) IsValid() bool {
+	return p != nil && promptWorkDigest(p.ModelArtifactHash) && promptWorkDigest(p.PromptContractID)
+}
+
+func (p *PromptWorkIdentity) Clone() *PromptWorkIdentity {
+	if p == nil {
+		return nil
+	}
+	copy := *p
+	return &copy
+}
+
 // IsQualifiedFor binds the count to the same artifact and rendered-template
-// contract used by the serving profile. Unknown versions and provenance fail
+// contract advertised by the candidate provider. Unknown versions and provenance fail
 // closed to ordinary estimation; they never make inference itself unavailable.
 func (p *PromptWork) IsQualifiedFor(modelArtifactHash, promptContractID string) bool {
 	if p == nil || p.Version != PromptWorkVersion || p.PromptTokens <= 0 ||

@@ -516,6 +516,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var modelLoadTimeMs: Int64
     public var performanceProfile: ServingPerformanceProfileReference?
     public var deadlineProfile: DeadlinePerformanceProfileReference?
+    public var promptWorkIdentity: PromptWorkIdentity?
     /// Transient routing observations; excluded from persisted numeric telemetry.
     public var performanceMeasurements: PerformanceMeasurements?
     public var deadlineWork: DeadlineWork?
@@ -629,6 +630,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case modelLoadTimeMs = "model_load_time_ms"
         case performanceProfile = "performance_profile"
         case deadlineProfile = "deadline_profile"
+        case promptWorkIdentity = "prompt_work_identity"
         case performanceMeasurements = "performance_measurements"
         case deadlineWork = "deadline_work"
         case kvBackend = "kv_backend"
@@ -663,6 +665,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         modelLoadTimeMs: Int64 = 0,
         performanceProfile: ServingPerformanceProfileReference? = nil,
         deadlineProfile: DeadlinePerformanceProfileReference? = nil,
+        promptWorkIdentity: PromptWorkIdentity? = nil,
         performanceMeasurements: PerformanceMeasurements? = nil,
         deadlineWork: DeadlineWork? = nil,
         kvBackend: String? = nil,
@@ -695,6 +698,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.modelLoadTimeMs = modelLoadTimeMs
         self.performanceProfile = performanceProfile
         self.deadlineProfile = deadlineProfile
+        self.promptWorkIdentity = promptWorkIdentity
         self.performanceMeasurements = performanceMeasurements
         self.deadlineWork = deadlineWork
         self.kvBackend = kvBackend
@@ -730,6 +734,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         modelLoadTimeMs = try container.decodeIfPresent(Int64.self, forKey: .modelLoadTimeMs) ?? 0
         performanceProfile = try container.decodeIfPresent(ServingPerformanceProfileReference.self, forKey: .performanceProfile)
         deadlineProfile = try container.decodeIfPresent(DeadlinePerformanceProfileReference.self, forKey: .deadlineProfile)
+        promptWorkIdentity = try container.decodeIfPresent(PromptWorkIdentity.self, forKey: .promptWorkIdentity)
         performanceMeasurements = try container.decodeIfPresent(PerformanceMeasurements.self, forKey: .performanceMeasurements)
         deadlineWork = try container.decodeIfPresent(DeadlineWork.self, forKey: .deadlineWork)
         // No `?? ""` fallback: absent must stay absent, or the coordinator
@@ -760,6 +765,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         try container.encode(model, forKey: .model)
         try container.encodeIfPresent(performanceProfile, forKey: .performanceProfile)
         try container.encodeIfPresent(deadlineProfile, forKey: .deadlineProfile)
+        try container.encodeIfPresent(promptWorkIdentity, forKey: .promptWorkIdentity)
         try container.encodeIfPresent(performanceMeasurements, forKey: .performanceMeasurements)
         try container.encodeIfPresent(deadlineWork, forKey: .deadlineWork)
         try container.encode(state, forKey: .state)

@@ -31,6 +31,7 @@ import Testing
     let slots = try #require(object["slots"] as? [[String: Any]])
     #expect(slots[0]["performance_profile"] == nil)
     #expect(slots[0]["deadline_profile"] == nil)
+    #expect(slots[0]["prompt_work_identity"] == nil)
 }
 
 @Test func calibratedPerformanceCapacityWireSymmetry() throws {
@@ -39,6 +40,9 @@ import Testing
     let fixture = root.appendingPathComponent("coordinator/protocol/testdata/calibrated_capacity_wire_fixture.json")
     let capacity = try JSONDecoder().decode(BackendCapacity.self, from: Data(contentsOf: fixture))
     let slot = try #require(capacity.slots.first)
+    let identity = try #require(slot.promptWorkIdentity)
+    #expect(identity.modelArtifactHash == String(repeating: "a", count: 64))
+    #expect(identity.promptContractID == String(repeating: "b", count: 64))
     let profile = try #require(slot.performanceProfile)
     #expect(profile.runtimeRevision == ServingPerformanceProfiles.runtimeRevision)
     #expect(profile.mtp?.artifactSha256 == String(repeating: "e", count: 64))

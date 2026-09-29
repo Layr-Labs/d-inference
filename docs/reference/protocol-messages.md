@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `973e14b7f`
+> Last updated: 2026-09-28 · commit `bf030c63b`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -336,6 +336,7 @@ routing on them.
 | `num_running`, `num_waiting` | `int` | `UInt32` | req | |
 | `max_concurrency` | `int` | `UInt32` | opt | |
 | `performance_profile` | `*ServingPerformanceProfileReference` | `ServingPerformanceProfileReference?` | opt | Reviewed profile identity; omitted when no exact qualified profile applies |
+| `prompt_work_identity` | `*PromptWorkIdentity` | `PromptWorkIdentity?` | opt | Loaded engine artifact and prompt renderer identity, independent of prefix-cache enablement; missing evidence keeps heuristic count admission |
 | `deadline_profile` | `*DeadlinePerformanceProfileReference` | `DeadlinePerformanceProfileReference?` | opt | Exact scheduler identity for measured first-content cells; grants no concurrency or chunk-policy change |
 | `deadline_work` | `*DeadlineWork` | `DeadlineWork?` | opt | Coherent existing-owner work bounds; [schema below](#slotsdeadline_work) |
 | `performance_measurements` | `*PerformanceMeasurements` | `PerformanceMeasurements?` | opt | Transient routing observations; [schema below](#slotsperformance_measurements) |
@@ -496,6 +497,22 @@ Go/Swift shape; these are transient capacity fields, not persisted profiler
 telemetry or telemetry-event fields. Numeric work counters remain in
 `slots[].telemetry`; the epoch and bucket list are excluded from persisted
 numeric-only provider telemetry.
+
+#### `slots[].prompt_work_identity`
+
+`PromptWorkIdentity` in `coordinator/protocol/prompt_work.go` mirrors
+`provider-swift/Sources/ProviderCore/Protocol/PromptWork.swift`. The optional
+object contains lowercase SHA-256 `model_artifact_hash` and `prompt_contract_id`
+strings from the loaded engine's verified factory identity. It contains no
+prompt content and does not enable prefix caching. Identity changes are material
+capacity changes (`CapacityHeartbeatMateriality`).
+
+The coordinator requires both values to match before using request count
+provenance or an exact cache-plan count. A malformed or mismatched explicit
+identity stays unqualified; it cannot borrow an older cache capability. Providers
+without this field can establish the same pair through their existing validated
+SSD or memory cache capability. Otherwise counts remain heuristic. These rules
+do not change physical reservations, consumer usage or billing.
 
 #### `slots[].deadline_profile`
 

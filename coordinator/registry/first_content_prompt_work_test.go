@@ -14,12 +14,12 @@ func TestFirstContentUsesExactPromptWithoutQualifiedProfile(t *testing.T) {
 	p.BackendCapacity.Slots[0].PerformanceProfile = nil
 	pr.EstimatedPromptTokens, pr.FirstContentPromptTokens = 3000, 3500
 	got := calibratedForecast(r, p, pr, now).firstContent
-	if got.PromptTokens != 4000 || got.PredictionSource != "" || got.ConservativeMs != 5660 {
-		t.Fatalf("legacy predictor ignored exact count or changed margin: %+v", got)
+	if got.PromptTokens != 4000 || got.PredictionSource != "" || got.ConservativeMs != 3330 {
+		t.Fatalf("observed-rate predictor ignored exact count or delivery allowance: %+v", got)
 	}
 	pr.PromptWork.ModelArtifactHash = strings.Repeat("e", 64)
 	got = calibratedForecast(r, p, pr, now).firstContent
-	if got.PromptTokens != 3000 || got.ConservativeMs != 5160 {
+	if got.PromptTokens != 3000 || got.ConservativeMs != 3080 {
 		t.Fatalf("foreign artifact prompt count trusted: %+v", got)
 	}
 }

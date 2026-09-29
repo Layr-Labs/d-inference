@@ -695,6 +695,7 @@ func cloneBackendSlot(slot, in *protocol.BackendSlotCapacity) {
 	slot.PerformanceMeasurements = slot.PerformanceMeasurements.Clone()
 	slot.DeadlineWork = slot.DeadlineWork.Clone()
 	slot.DeadlineProfile = slot.DeadlineProfile.Clone()
+	slot.PromptWorkIdentity = slot.PromptWorkIdentity.Clone()
 	slot.PrefixCache = in.PrefixCache.Clone()
 	slot.PagedStorage = in.PagedStorage.Clone()
 }

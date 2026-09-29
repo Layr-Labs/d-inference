@@ -403,3 +403,17 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
     #expect(!CapacityHeartbeatMateriality.isMaterial(previous: original, current: original))
     #expect(initial.performanceProfile == nil)
 }
+
+@Test func promptWorkContractChangesAreMaterialAtUnchangedCapacity() {
+    let legacy = capacity([slot(state: "idle", numRunning: 0, used: 0)])
+    var original = legacy
+    original.slots[0].promptWorkIdentity = .init(modelArtifactHash: String(repeating: "a", count: 64),
+        promptContractID: String(repeating: "b", count: 64))
+    var revised = original
+    revised.slots[0].promptWorkIdentity = .init(modelArtifactHash: String(repeating: "a", count: 64),
+        promptContractID: String(repeating: "c", count: 64))
+    for (before, after) in [(legacy, original), (original, revised), (revised, legacy)] {
+        #expect(CapacityHeartbeatMateriality.isMaterial(previous: before, current: after))
+        #expect(!CapacityHeartbeatMateriality.isMaterial(previous: after, current: after))
+    }
+}

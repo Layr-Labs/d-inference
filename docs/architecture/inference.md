@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `fc8353fde`
+> Last updated: 2026-09-28 · commit `bf030c63b`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -189,8 +189,12 @@ exactly `off` disables, anything else enforces
 (`provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`).
 Under `enforce` the bridge builds `CBv2FirstTokenDeadlineAdmission` when
 `maxConcurrentPartialPrefills == 1`, the request is not multimodal, and a
-prefill estimate is available. Unsupported or stale qualification retains
-`deadlineProjectionRateHaircut = 0.5`. An independent reviewed deadline profile carries
+prefill estimate is available. The ordinary admission path uses valid measured
+isolated-prefill and decode EWMAs directly, without a fixed 0.5 rate multiplier.
+This removes the previous doubling of projected processing time; an EWMA is a
+point estimate and does not guarantee the next request's speed. Actual elapsed
+deadline expiry, queue/cache projection and physical admission still apply.
+An independent reviewed deadline profile carries
 `deadline_calibration`: prompt/context bands, actual cold/reused prefix
 state, competing profile identities and work limits, phase rates, and a
 measured multiplicative/additive prediction-error envelope. Independent held-out
@@ -216,7 +220,15 @@ back.
 The deadline catalog is currently empty. Enabling a timing profile requires
 independent qualification with continuous power observations, following the
 [qualification procedure](../developer/serving-performance-qualification.md).
-All hardware retains the conservative timing fallback in this release.
+All hardware uses the ordinary observed-rate fallback in this release. Removing
+the fixed rate reduction takes effect without a timing-profile entry.
+
+`DeadlineRuntimeEnvironment.permitsQualification` rejects `MLX_*`, `MTPLX_*`,
+`QWEN_*`, and unrecognized or performance-affecting `DARKBLOOM_*` settings.
+Only exact credential, local-state and update-control keys are exempt.
+CLI-projected MLX settings also retain the timing fallback until that execution
+environment is covered by reviewed evidence. This deadline-only guard does not
+change universal serving-profile admission.
 
 Cooled deadline profiles preserve the collection prerequisites: whole-Mac
 quiescence for 20 seconds after all request leases and unbounded GPU activity

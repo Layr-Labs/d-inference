@@ -94,7 +94,7 @@ public enum DeadlinePerformanceProfiles {
         providerVersion: String = ProviderCore.version,
         profiles: [DeadlinePerformanceProfile] = reviewed
     ) -> DeadlinePerformanceProfile? {
-        guard ServingPerformanceProfiles.runtimeOverridesAreAbsent(environment),
+        guard DeadlineRuntimeEnvironment.permitsQualification(environment),
             let hash = artifactSHA256, let hardware, runtime.isValid else { return nil }
         return profiles.first {
             $0.isValid && $0.modelId == modelID && $0.artifactSha256 == hash

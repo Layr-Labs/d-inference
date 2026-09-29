@@ -278,11 +278,6 @@ public actor EngineV2Bridge {
     /// hidden inside this prefill denominator.
     var isolatedPrefillTpsEwma: Double = 0
     var isolatedPrefillEwmaInitialized = false
-    /// Observed EWMAs are point estimates, not hard lower bounds. Deadline
-    /// Unqualified or stale deadline evidence retains the fixed 2x service-
-    /// time envelope. Exact reviewed cells use measured prediction-error
-    /// bounds only after final atomic workload and freshness checks.
-    static let deadlineProjectionRateHaircut = 0.5
     /// Cold-start model load time (ms) for this slot, recorded by
     /// `ProviderLoop.ensureModelLoaded` once the load completes (the
     /// bridge exists before the load finishes, so this arrives post-init).

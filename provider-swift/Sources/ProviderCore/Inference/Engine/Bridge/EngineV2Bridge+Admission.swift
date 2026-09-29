@@ -42,14 +42,15 @@ extension EngineV2Bridge {
             return nil
         }
 
-        let prefillCandidate = isolatedPrefillTpsEwma * Self.deadlineProjectionRateHaircut
-        let prefillRate = isolatedPrefillEwmaInitialized && prefillCandidate.isFinite && prefillCandidate > 0
-            ? prefillCandidate : nil
-        let decodeCandidate =
-            observedDecodeTpsEwma * Self.deadlineProjectionRateHaircut
+        // Use observed phase rates directly. The engine still prices its
+        // actual queue/cache work against the original absolute deadline;
+        // optional reviewed calibration supplies only measured error bounds.
+        let prefillRate = isolatedPrefillEwmaInitialized
+            && isolatedPrefillTpsEwma.isFinite && isolatedPrefillTpsEwma > 0
+            ? isolatedPrefillTpsEwma : nil
         let decodeRate =
-            ewmaInitialized && decodeCandidate.isFinite && decodeCandidate > 0
-            ? decodeCandidate
+            ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
+            ? observedDecodeTpsEwma
             : nil
         let calibration = requestID.flatMap {
             calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)

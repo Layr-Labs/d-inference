@@ -67,6 +67,7 @@ type firstContentSnapshot struct {
 	contendedPerformanceAgeMs   int32
 	contendedPrefillTPS         float64
 	calibratedDecodeTPS         float64
+	promptWorkContractID        string
 	promptWorkArtifactHash      string
 	calibratedForecastQualified bool
 }
@@ -79,15 +80,17 @@ func (r *Registry) estimateFirstContent(c *routingCandidate, pr *PendingRequest,
 		PerformanceAgeMs: s.performanceAgeMs, ServiceMs: s.wholeMacServiceMs, TransportMs: s.transportMs, TransportAgeMs: s.transportAgeMs}
 	prompt := max(0, pr.EstimatedPromptTokens)
 	conservativePrompt := max(prompt, pr.FirstContentPromptTokens)
-	if pr.PromptWork != nil && pr.PromptWork.IsQualifiedFor(s.promptWorkArtifactHash, pr.PromptWork.PromptContractID) {
+	if pr.PromptWork != nil && pr.PromptWork.IsQualifiedFor(s.promptWorkArtifactHash, s.promptWorkContractID) {
 		prompt, conservativePrompt = pr.PromptWork.PromptTokens, pr.PromptWork.UpperBoundTokens
 	}
-	if r.cacheRouting != nil && pr.CachePlan.generation != nil &&
+	cacheContractMatches := s.promptWorkContractID != "" &&
+		pr.CachePlan.ModelAggregateHash == s.promptWorkArtifactHash && pr.CachePlan.PromptContractID == s.promptWorkContractID
+	if cacheContractMatches && r.cacheRouting != nil && pr.CachePlan.generation != nil &&
 		pr.CachePlan.generation == r.cacheRouting.generation && !pr.CachePlan.generation.revoked.Load() && pr.CachePlan.present() {
 		prompt, conservativePrompt = pr.CachePlan.PromptTokenCount, pr.CachePlan.PromptTokenCount
 	}
 	e.PromptTokens = prompt
-	if !c.firstContentCacheExpiresAt.IsZero() && now.Before(c.firstContentCacheExpiresAt) {
+	if (!pr.CachePlan.present() || cacheContractMatches) && !c.firstContentCacheExpiresAt.IsZero() && now.Before(c.firstContentCacheExpiresAt) {
 		e.CachedTokens = min(float64(prompt), c.firstContentCachedTokens) * c.firstContentCacheWeight
 		e.RestoreMs = c.firstContentRestoreMs
 	}
@@ -117,9 +120,11 @@ func (r *Registry) estimateFirstContent(c *routingCandidate, pr *PendingRequest,
 	if pr.RequestedMaxTokens > 0 {
 		decodeTokens = min(decodeTokens, pr.RequestedMaxTokens)
 	}
+	// Uncertainty is represented by input/work bounds and explicit delivery
+	// allowances. Apply observed throughput directly; do not halve every rate.
 	e.ConservativeMs = firstContentConservativeHandoffMs + s.conservativeTransportMs + load + e.RestoreMs + s.pendingPrefillRestoreMs +
-		(ahead+max(0, float64(conservativePrompt)-e.CachedTokens))/(conservativeRate*0.5)*1000*competition +
-		float64(decodeTokens)/(decode*0.5)*1000
+		(ahead+max(0, float64(conservativePrompt)-e.CachedTokens))/conservativeRate*1000*competition +
+		float64(decodeTokens)/decode*1000
 	e.ConservativeMs = max(e.ConservativeMs, e.ExpectedMs)
 	s.calibratedForecastQualified = false
 	if prediction, age, ok := calibratedFirstContentPrediction(s, pr, conservativePrompt, e.CachedTokens); ok {

@@ -55,8 +55,13 @@ func TestDeadlineApplicabilityRequiresExplicitReviewedPosture(t *testing.T) {
 				t.Fatalf("baseline: %+v", got)
 			}
 			tc.change(p, profile)
-			if got := calibratedForecast(r, p, pr, now).firstContent; got.PredictionSource != "" || got.ConservativeMs < 5500 {
-				t.Fatalf("posture borrowed optimistic evidence: %+v", got)
+			got := calibratedForecast(r, p, pr, now).firstContent
+			// Missing posture cannot borrow the reviewed error envelope. The
+			// ordinary observed-rate forecast remains independently available.
+			p.BackendCapacity.Slots[0].DeadlineProfile = nil
+			fallback := calibratedForecast(r, p, pr, now).firstContent
+			if got.PredictionSource != "" || got != fallback {
+				t.Fatalf("posture borrowed reviewed evidence: %+v; fallback: %+v", got, fallback)
 			}
 		})
 	}

@@ -321,6 +321,7 @@ type HeartbeatMessage struct {
 // BackendSlotCapacity describes the capacity state of a single backend slot
 // (one MLX-Swift in-process model serving one model).
 type BackendSlotCapacity struct {
+	PromptWorkIdentity *PromptWorkIdentity                  `json:"prompt_work_identity,omitempty"`
 	PerformanceProfile *ServingPerformanceProfileReference  `json:"performance_profile,omitempty"`
 	DeadlineProfile    *DeadlinePerformanceProfileReference `json:"deadline_profile,omitempty"`
 	DeadlineWork       *DeadlineWork                        `json:"deadline_work,omitempty"`

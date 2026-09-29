@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -17,6 +18,9 @@ func TestCalibratedCapacityWireSymmetryAndClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	slot := capacity.Slots[0]
+	if slot.PromptWorkIdentity == nil || !slot.PromptWorkIdentity.IsValid() || slot.PromptWorkIdentity.ModelArtifactHash != strings.Repeat("a", 64) || slot.PromptWorkIdentity.PromptContractID != strings.Repeat("b", 64) {
+		t.Fatal("loaded prompt contract identity lost")
+	}
 	if slot.DeadlineWork == nil || slot.DeadlineWork.Version != 1 || !slot.DeadlineWork.Known || slot.DeadlineWork.Epoch != slot.PerformanceMeasurements.Epoch || slot.DeadlineWork.PrefillTokens != 8192 || slot.DeadlineWork.DecodeTokens != 512 || slot.DeadlineWork.RequestCount != 2 || slot.DeadlineWork.ContextTokensMax != 8704 || slot.DeadlineWork.ServiceFraction != .5 {
 		t.Fatalf("work envelope lost: %+v", slot.DeadlineWork)
 	}
@@ -71,7 +75,7 @@ func TestCalibratedCapacityWireSymmetryAndClone(t *testing.T) {
 	if err = json.Unmarshal(legacy, &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"deadline_work", "deadline_profile"} {
+	for _, field := range []string{"deadline_work", "deadline_profile", "prompt_work_identity"} {
 		if _, ok := raw[field]; ok {
 			t.Fatalf("legacy omission changed for %s", field)
 		}

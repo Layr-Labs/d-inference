@@ -50,8 +50,10 @@ outcomes AS (
     count(*) FILTER (WHERE NOT attempts_complete OR attempts_complete IS NULL) AS incomplete_attempt_records,
     count(*) FILTER (WHERE record->>'handler_finished_at' IS NULL) AS unfinished_handlers,
     count(*) FILTER (WHERE NOT conflict AND record->>'normalized_code' = 'ext_first_content_timeout') AS final_actual_first_content_timeouts,
+    -- This raw reason covers both predictive refusal and provider-side elapsed
+    -- expiry. It cannot establish which mechanism caused the rejection.
     count(*) FILTER (WHERE NOT conflict AND record->>'termination' = 'rejected'
-      AND record->>'raw_reason' = 'deadline_unreachable') AS predictive_deadline_rejections,
+      AND record->>'raw_reason' = 'deadline_unreachable') AS deadline_unreachable_rejections,
     count(*) FILTER (WHERE NOT conflict AND timeout_attempts > 0) AS requests_with_recorded_timeout_attempt,
     sum(timeout_attempts) FILTER (WHERE NOT conflict) AS recorded_timeout_attempts,
     count(*) FILTER (WHERE attempts_complete AND NOT conflict) AS retry_denominator_requests,

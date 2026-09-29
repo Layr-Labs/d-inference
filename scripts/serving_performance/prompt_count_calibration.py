@@ -26,6 +26,11 @@ def evaluate_prompt_counts(provider_raw, coordinator_raw):
             result["errors"].append(f"missing exact {field}")
     if len(by_hash) != len(projections):
         result["errors"].append("duplicate projected workload hash")
+    corpus_ids = [row.get("corpus_id") for row in projections]
+    if any(not isinstance(identity, str) or not identity for identity in corpus_ids):
+        result["errors"].append("projection lacks original corpus ID")
+    elif len(set(corpus_ids)) != len(corpus_ids):
+        result["errors"].append("duplicate projected corpus ID")
     observations = provider.get("observations", [])
     groups, seen = {}, set()
     for observed in observations:
@@ -36,6 +41,9 @@ def evaluate_prompt_counts(provider_raw, coordinator_raw):
         projection = by_hash.get(work_hash)
         if projection is None:
             result["errors"].append("provider observation lacks canonical Go projection")
+            continue
+        if observed.get("id") != projection.get("corpus_id"):
+            result["errors"].append("observation corpus ID differs from its canonical workload projection")
             continue
         # Corpus IDs freeze the tools/estimate-band groups before collection.
         parts = observed.get("id", "").split("-")

@@ -44,6 +44,7 @@ func calibratedCandidateFixture(t *testing.T, now time.Time) (*Registry, *Provid
 	p.BackendCapacity.Telemetry = &protocol.CapacityTelemetry{LowPowerMode: new(bool)}
 	p.BackendCapacity.WholeMacServiceUsed = new(float64)
 	slot := &p.BackendCapacity.Slots[0]
+	slot.PromptWorkIdentity = &protocol.PromptWorkIdentity{ModelArtifactHash: profile.ArtifactSHA256, PromptContractID: profile.DeadlineCalibration.PromptContractID}
 	slot.DeadlineProfile = &protocol.DeadlinePerformanceProfileReference{
 		MinimumWholeMacQuiescenceMS: &quiescence, MinimumNominalStabilityMS: &stability, PowerMode: "automatic",
 		ID: profile.ID, RuntimeRevision: profile.RuntimeRevision, ConfiguredContextTokens: profile.ConfiguredContextTokens,
@@ -89,7 +90,7 @@ func TestCalibratedFirstContentUsesQualifiedBoundWithoutIncomingCompletion(t *te
 	}
 }
 
-func TestCalibratedFirstContentFallbackKeepsLegacyMargin(t *testing.T) {
+func TestCalibratedFirstContentFallbackPreservesEvidenceRequirements(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		change func(*Provider, *PendingRequest)
@@ -113,8 +114,8 @@ func TestCalibratedFirstContentFallbackKeepsLegacyMargin(t *testing.T) {
 			r, p, _, pr := calibratedCandidateFixture(t, now)
 			tc.change(p, pr)
 			got := calibratedForecast(r, p, pr, now).firstContent
-			if got.PredictionSource != "" || got.ConservativeMs < 5500 {
-				t.Fatalf("unqualified evidence reduced margin: %+v", got)
+			if got.PredictionSource != "" || got.ConservativeMs < 3330 {
+				t.Fatalf("unqualified evidence bypassed observed-rate work or delivery costs: %+v", got)
 			}
 		})
 	}
@@ -188,7 +189,8 @@ func TestCalibratedFirstContentFallsBackUntilModelLoadTransitionEnds(t *testing.
 	p.BackendCapacity.LoadTransitionActive = &loading
 	during := calibratedForecast(r, p, pr, now)
 	if during.snapshot.calibratedWorkKnown || during.firstContent.PredictionSource != "" ||
-		during.firstContent.Status != FirstContentPredictedLate || during.firstContent.ConservativeMs < 5500 ||
+		!during.snapshot.wholeMacBusy || during.firstContent.Status != FirstContentUnknown ||
+		during.firstContent.Reason != "competing_work_unknown" || during.firstContent.ConservativeMs < 3330 ||
 		during.firstContent.BudgetMs != before.firstContent.BudgetMs {
 		t.Fatalf("load transition borrowed idle calibration or changed deadline: %+v", during.firstContent)
 	}

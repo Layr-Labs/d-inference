@@ -12,7 +12,7 @@ import (
 // are not present in a checkout. Reproduce changed coefficients with the
 // opt-in evidence tests before deliberately updating this digest.
 func TestReviewedPromptCatalogReleaseData(t *testing.T) {
-	const expectedSHA256 = "a87d576773192ee9b43ef06d84a9b6bcd74eeb77b1afc5524be60329566d34d3"
+	const expectedSHA256 = "bdb8a03c59b1282c0a2d776226e35bf482f8c3a8d5d3b32ca59f1e26bb1b3fee"
 	digest := sha256.Sum256(reviewedCatalog)
 	if hex.EncodeToString(digest[:]) != expectedSHA256 {
 		t.Fatal("reviewed prompt coefficients changed; verify the raw archive before updating the release digest")

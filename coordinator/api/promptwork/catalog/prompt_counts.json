@@ -1,14 +1,14 @@
 [
   {
     "has_tools": false,
-    "id": "prompt-count-73b526e3df76ee31-tools0-band0",
+    "id": "prompt-count-82e0b0ee58d05d7c-tools0-band0",
     "max_estimated_tokens": 4192,
     "median_ratio": 2.229813664596273,
     "min_estimated_tokens": 3327,
     "model_artifact_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
     "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
     "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
-    "report_sha256": "73b526e3df76ee31f409e8a6e74a228c419a85342d67cdd9bbf4b1f3bbf12ad9",
+    "report_sha256": "82e0b0ee58d05d7cdbb3aaf4485478feaf562dd2ea75bd2a4eec395acf1dbbca",
     "shape_domain": {
       "assistant_message_count": {
         "max": 1,
@@ -68,14 +68,14 @@
   },
   {
     "has_tools": false,
-    "id": "prompt-count-73b526e3df76ee31-tools0-band1",
+    "id": "prompt-count-82e0b0ee58d05d7c-tools0-band1",
     "max_estimated_tokens": 16461,
     "median_ratio": 2.2270227328281593,
     "min_estimated_tokens": 13173,
     "model_artifact_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
     "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
     "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
-    "report_sha256": "73b526e3df76ee31f409e8a6e74a228c419a85342d67cdd9bbf4b1f3bbf12ad9",
+    "report_sha256": "82e0b0ee58d05d7cdbb3aaf4485478feaf562dd2ea75bd2a4eec395acf1dbbca",
     "shape_domain": {
       "assistant_message_count": {
         "max": 1,
@@ -135,14 +135,14 @@
   },
   {
     "has_tools": false,
-    "id": "prompt-count-73b526e3df76ee31-tools0-band2",
+    "id": "prompt-count-82e0b0ee58d05d7c-tools0-band2",
     "max_estimated_tokens": 32839,
     "median_ratio": 2.226093113825456,
     "min_estimated_tokens": 26276,
     "model_artifact_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
     "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
     "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
-    "report_sha256": "73b526e3df76ee31f409e8a6e74a228c419a85342d67cdd9bbf4b1f3bbf12ad9",
+    "report_sha256": "82e0b0ee58d05d7cdbb3aaf4485478feaf562dd2ea75bd2a4eec395acf1dbbca",
     "shape_domain": {
       "assistant_message_count": {
         "max": 1,
@@ -202,14 +202,14 @@
   },
   {
     "has_tools": true,
-    "id": "prompt-count-73b526e3df76ee31-tools1-band0",
+    "id": "prompt-count-82e0b0ee58d05d7c-tools1-band0",
     "max_estimated_tokens": 4203,
     "median_ratio": 2.406774836322232,
     "min_estimated_tokens": 3341,
     "model_artifact_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
     "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
     "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
-    "report_sha256": "73b526e3df76ee31f409e8a6e74a228c419a85342d67cdd9bbf4b1f3bbf12ad9",
+    "report_sha256": "82e0b0ee58d05d7cdbb3aaf4485478feaf562dd2ea75bd2a4eec395acf1dbbca",
     "shape_domain": {
       "assistant_message_count": {
         "max": 1,
@@ -269,14 +269,14 @@
   },
   {
     "has_tools": true,
-    "id": "prompt-count-73b526e3df76ee31-tools1-band1",
+    "id": "prompt-count-82e0b0ee58d05d7c-tools1-band1",
     "max_estimated_tokens": 16485,
     "median_ratio": 2.2702409377034947,
     "min_estimated_tokens": 13172,
     "model_artifact_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
     "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
     "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
-    "report_sha256": "73b526e3df76ee31f409e8a6e74a228c419a85342d67cdd9bbf4b1f3bbf12ad9",
+    "report_sha256": "82e0b0ee58d05d7cdbb3aaf4485478feaf562dd2ea75bd2a4eec395acf1dbbca",
     "shape_domain": {
       "assistant_message_count": {
         "max": 1,
@@ -336,14 +336,14 @@
   },
   {
     "has_tools": true,
-    "id": "prompt-count-73b526e3df76ee31-tools1-band2",
+    "id": "prompt-count-82e0b0ee58d05d7c-tools1-band2",
     "max_estimated_tokens": 32876,
     "median_ratio": 2.246083081788127,
     "min_estimated_tokens": 26285,
     "model_artifact_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
     "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
     "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
-    "report_sha256": "73b526e3df76ee31f409e8a6e74a228c419a85342d67cdd9bbf4b1f3bbf12ad9",
+    "report_sha256": "82e0b0ee58d05d7cdbb3aaf4485478feaf562dd2ea75bd2a4eec395acf1dbbca",
     "shape_domain": {
       "assistant_message_count": {
         "max": 1,

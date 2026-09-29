@@ -6,7 +6,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry/firstcontent"
 )
 
-// calibratedFirstContentPrediction replaces the legacy rate margin only inside
+// calibratedFirstContentPrediction applies measured prediction error only inside
 // an exact reviewed envelope. The snapshot owns all existing work; this adds
 // just the incoming prompt and a bounded first-content decode allowance.
 func calibratedFirstContentPrediction(s *routingSnapshot, pr *PendingRequest, prompt int, cached float64) (firstcontent.Prediction, int32, bool) {
@@ -14,6 +14,7 @@ func calibratedFirstContentPrediction(s *routingSnapshot, pr *PendingRequest, pr
 	if profile == nil || profile.DeadlineCalibration == nil || !s.calibratedWorkKnown ||
 		!s.hasBackendCapacity || s.capacityAgeMs < 0 || time.Duration(s.capacityAgeMs)*time.Millisecond > firstContentFreshness ||
 		!s.modelLoaded || pr.RequiresVision ||
+		!pr.PromptWork.IsQualifiedFor(s.promptWorkArtifactHash, s.promptWorkContractID) ||
 		!pr.PromptWork.IsQualifiedFor(profile.ArtifactSHA256, profile.DeadlineCalibration.PromptContractID) ||
 		prompt != pr.PromptWork.UpperBoundTokens {
 		return firstcontent.Prediction{}, -1, false

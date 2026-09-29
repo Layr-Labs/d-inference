@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-29 · commit `c7c59ec87`
+> Last updated: 2026-09-29 · commit `daf09f6ec`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -1252,6 +1252,9 @@ cache setting enables it (`coordinator/registry/config.go`, `ReadConfig`). Resid
 routing also requires the separate live capability described in
 [`cache-aware-routing.md`](../architecture/cache-aware-routing.md). Effects and defaults are specified
 once in [`reference/configuration.md`](../reference/configuration.md).
+
+`DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` overrides the compiled SSD
+write budget in foreground/local processes; see the [SSD cache limits](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
 `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` and `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`
 control the explicitly opted-in recurrent checkpoint bank in foreground/local processes; they are

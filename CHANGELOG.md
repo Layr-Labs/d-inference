@@ -11,6 +11,10 @@
 - Integrate current upstream cache ownership and add separately issued target-only native paging, joint contiguous text-prefix/media ownership, and admitted scalar-shape verification candidates. A selected 114-method component cohort passes; full-model/API, complete MTP state, paging composition and production defaults remain unqualified.
 - Resolve linked snapshot directories through the normal scanner without copying weights or changing cache selection order; preserve rejection of invalid and non-directory entries. Explicit revision selections use the same canonical filesystem identity as legacy discovery.
 
+## Unreleased — SSD cache write budget
+
+- Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.
+
 ## Unreleased — automatic model artifact revisions
 
 - Reject cached or staged revisions with unmanifested integrity files, so an added template, tokenizer or weight file cannot be activated under the original approved hash.

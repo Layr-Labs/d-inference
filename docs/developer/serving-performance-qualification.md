@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-28 · commit `bf030c63b`
+> Last updated: 2026-09-29 · commit `cc5d11360`
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -43,6 +43,11 @@ collects new GPU measurements or changes runtime behavior.
   prefix-cache environment keys. Fresh measurement collection remains available,
   but a future calibrated-admission proof requires reviewed handling of those
   settings; adding a catalog record alone does not activate that path.
+- Include SSD prefix staging in any future cooled-profile qualification. A
+  request's own staging advances the whole-Mac activity epoch and invalidates
+  its earlier quiescence proof; current admission then uses ordinary rates.
+  Retain this invalidation until reviewed evidence and ownership rules cover
+  the staging interval.
 - A dedicated test Mac, verified model artifact, source-matched provider build
   and Metal libraries; follow [build](build.md) and [test](test.md).
 - Record the provider version, `cbv2-first-content-v2` runtime revision, resolved

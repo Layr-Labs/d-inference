@@ -5,6 +5,7 @@ from pathlib import Path
 import unittest
 
 from .catalog_codegen import ROOT, SOURCE
+from .catalog_evidence import replay_catalog_evidence, validate_evidence_index
 from .deadline_profile import evaluate_deadline_profile
 
 
@@ -22,29 +23,15 @@ class ReviewedDeadlineEvidenceTests(unittest.TestCase):
         self.assertFalse(result["qualified"])
         self.assertTrue(result["errors"])
 
-    def evidence_path(self, root, relative):
-        self.assertIsInstance(relative, str)
-        path = (root / relative).resolve(strict=True)
-        self.assertTrue(path.is_relative_to(root.resolve()), "evidence must stay inside its archive")
-        return path
-
     def test_catalog_reproduces_the_qualified_raw_hardware_receipts(self):
         reviewed = json.loads((ROOT / SOURCE).read_bytes())
         index = json.loads((ROOT / INDEX).read_bytes())
-        self.assertIsInstance(index, list)
-        candidates = []
-        for entry in index:
-            root = self.evidence_path(ROOT, entry["evidence_root"])
-            raw = self.evidence_path(root, entry["receipt"]).read_bytes()
-            receipt = json.loads(raw)
-            with self.subTest(profile=receipt["identity"]["id"]):
-                # Qualification itself reconstructs every sample from bounded,
-                # hash-checked source runs and verifies actual prerequisites.
-                result = evaluate_deadline_profile(raw, evidence_root=root)
-                self.assertTrue(result["qualified"], result["errors"])
-                candidates.append(result["profile"])
-        self.assertEqual(reviewed, candidates,
-                         "every compiled record must exactly match its qualified real evidence")
+        # Catalog/index omissions remain failures even without local archives.
+        validate_evidence_index(reviewed, index)
+        archive = os.environ.get("DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT")
+        if index and not archive:
+            self.skipTest("promoted receipts are archived locally; set DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT to verify them")
+        self.assertEqual(reviewed, replay_catalog_evidence(reviewed, index, archive))
 
 
 if __name__ == "__main__":

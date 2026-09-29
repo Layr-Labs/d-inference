@@ -2,11 +2,9 @@
 import json
 import os
 from pathlib import Path
-import shutil
-import subprocess
-import tempfile
 import unittest
 
+from .local_postgres import LocalPostgres, discover_postgres_binaries
 
 QUERY = Path(__file__).with_name("release_comparison.sql")
 
@@ -19,30 +17,20 @@ def sampled(identifier, rate):
     return identifier == "" or value / 2**32 < rate
 
 
-@unittest.skipUnless(all(shutil.which(x) for x in ("initdb", "pg_ctl", "psql"))
-                     and os.geteuid() != 0, "local PostgreSQL binaries and non-root user required")
 class ReleaseComparisonTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temp = tempfile.TemporaryDirectory(prefix="fc-monitor-", dir="/tmp")
-        cls.data = Path(cls.temp.name) / "data"
-        subprocess.run(["initdb", "-D", str(cls.data), "-A", "trust", "-U", "postgres",
-                        "--no-locale", "--encoding=UTF8"], check=True, capture_output=True)
-        subprocess.run(["pg_ctl", "-D", str(cls.data), "-l", str(Path(cls.temp.name) / "server.log"),
-                        "-o", f"-F -h '' -k {cls.temp.name} -p 55432", "-w", "start"],
-                       check=True, capture_output=True)
-        cls.client = ["psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-h", cls.temp.name,
-                      "-p", "55432", "-U", "postgres", "-d", "postgres"]
-
-    @classmethod
-    def tearDownClass(cls):
-        subprocess.run(["pg_ctl", "-D", str(cls.data), "-m", "immediate", "-w", "stop"],
-                       check=True, capture_output=True)
-        cls.temp.cleanup()
+        if os.geteuid() == 0:
+            raise unittest.SkipTest("disposable PostgreSQL requires a non-root user")
+        binaries = discover_postgres_binaries()
+        if binaries is None:
+            raise unittest.SkipTest("PostgreSQL server/client tools missing from PATH, pg_config and Debian version dirs")
+        cls.postgres = LocalPostgres(binaries)
+        cls.addClassCleanup(cls.postgres.close)
+        cls.postgres.start()
 
     def execute(self, sql, *args):
-        return subprocess.run(self.client + list(args), input=sql, text=True,
-                              check=True, capture_output=True).stdout
+        return self.postgres.execute(sql, *args)
 
     def setUp(self):
         self.execute("""
@@ -212,6 +200,16 @@ class ReleaseComparisonTests(unittest.TestCase):
             result = self.compare(**invalid)
             self.assertFalse(result["parameters_valid"])
             self.assertEqual(result["logical_outcomes"], [])
+
+    def test_disposable_clusters_can_coexist_without_sharing_tables(self):
+        other = LocalPostgres(self.postgres.binaries)
+        self.addCleanup(other.close)
+        other.start()
+        self.assertNotEqual(self.postgres.execute("SHOW data_directory"), other.execute("SHOW data_directory"))
+        self.assertEqual(other.execute("SELECT to_regclass('request_outcomes') IS NULL").strip(), "t")
+        for server in (self.postgres, other):
+            self.assertEqual(server.execute("SHOW listen_addresses").strip(), "")
+            self.assertEqual(server.execute("SHOW port").strip(), server.port)
 
 
 if __name__ == "__main__":

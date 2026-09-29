@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-29 · commit `3c12f9025`
+> Last updated: 2026-09-29 · commit `cc5d11360`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -263,6 +263,12 @@ they tune is explained in
 | `EIGENINFERENCE_WARM_POOL_MAX_GLOBAL_PENDING_LOADS` | integer ≥ 0 | `16` | `coordinator/registry/config.go` | Fleet-wide cap on in-flight loads. |
 
 Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md)). `refresh-env.sh` seeds absent keys from `deploy/gcp/prod/release-env-defaults` — production ships `MODE=off`, `PERCENT=1`, `MAX_PLAN_QPS=1` — and never overwrites a value an operator has set:
+
+These controls govern cache participation. A sampling or QPS denial is also
+honored by prompt accounting, without a second sidecar call. With cache routing
+off, prompt accounting can still make count-only calls under its separate
+16-call concurrency and one-second deadline bounds; `MODE=off` does not disable
+the tokenizer transport (`coordinator/api/promptwork/planner.go`, `Plan`).
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|

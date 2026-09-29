@@ -28,7 +28,10 @@ func Plan(ctx context.Context, client Tokenizer, input registry.CachePlanInput,
 		result.Work = planned.PromptWork
 		return result
 	}
-	if planned.SidecarCalled || ctx.Err() != nil {
+	// A missing sidecar call can be an explicit rollout denial, not permission
+	// to bypass the same tokenizer throttle through count-only accounting.
+	if planned.SidecarCalled || planned.Outcome == registry.CachePlanSampledOut ||
+		planned.Outcome == registry.CachePlanThrottled || ctx.Err() != nil {
 		return result
 	}
 	plan, err := client.Plan(ctx, promptcontract.PlanInput{

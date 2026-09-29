@@ -78,6 +78,36 @@ private func elapse(_ milliseconds: Int, posture: DeadlinePostureState, clock: D
     #expect(budget.deadlineEligibleForAdvertisement(cooledRequirement))
 }
 
+@Test func deadlineOwnSSDStagingCannotRevivePreStagingCoolingProof() throws {
+    let clock = DeadlineTestClock(), posture = DeadlinePostureState()
+    let budget = WholeMacServiceBudget(clockNow: { clock.now }, posture: posture)
+    sample(posture, clock)
+    elapse(20_000, posture: posture, clock: clock)
+    let work = WholeMacServiceBudget.Work(modelID: "model", profileID: "reviewed",
+        promptTokens: 4_096, maxOutputTokens: 128)
+    #expect(budget.acquire(ownerID: "incoming", concurrency: 24, work: work,
+        deadlineApplicability: cooledRequirement))
+    let before = try #require(budget.calibrationSnapshot(ownerID: "incoming", modelID: "model",
+        profileID: "reviewed", applicability: cooledRequirement))
+    // SSD stage/read and background donation/write use this same scope. Even
+    // an incoming request's own transfer is outside cooled token-work evidence.
+    let staging = budget.beginUnboundedActivity()
+    #expect(!before.evidenceGuard.isValid)
+    staging.finish()
+    #expect(budget.deadlineWork(modelID: "model", epoch: "epoch").known)
+    elapse(20_000, posture: posture, clock: clock)
+    #expect(budget.calibrationSnapshot(ownerID: "incoming", modelID: "model",
+        profileID: "reviewed", applicability: cooledRequirement) == nil)
+    #expect(!before.evidenceGuard.isValid)
+    budget.release(ownerID: "incoming")
+    elapse(20_000, posture: posture, clock: clock)
+    #expect(budget.acquire(ownerID: "next", concurrency: 24, work: work,
+        deadlineApplicability: cooledRequirement))
+    #expect(budget.calibrationSnapshot(ownerID: "next", modelID: "model",
+        profileID: "reviewed", applicability: cooledRequirement) != nil)
+    budget.release(ownerID: "next")
+}
+
 @Test func deadlinePostureChangesInvalidateCapturedAtomicProofAndDoNotReviveIt() throws {
     let clock = DeadlineTestClock(), posture = DeadlinePostureState()
     let budget = WholeMacServiceBudget(clockNow: { clock.now }, posture: posture)

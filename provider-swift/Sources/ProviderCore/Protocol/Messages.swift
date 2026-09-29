@@ -1909,7 +1909,10 @@ extension CoordinatorMessage: Codable {
                     Int.self, forKey: .toolSchemaMetadataProtocol),
                 serviceReservationID: try container.decodeIfPresent(
                     String.self, forKey: .serviceReservationID),
-                promptWork: try container.decodeIfPresent(PromptWork.self, forKey: .promptWork)
+                // Advisory evidence must never discard the request itself.
+                // Missing/malformed evidence keeps actual tokenization and
+                // ordinary observed-rate deadline admission authoritative.
+                promptWork: try? container.decodeIfPresent(PromptWork.self, forKey: .promptWork)
             ))
 
         case .cancel:

@@ -219,16 +219,10 @@ extension ProviderLoop {
         for index in allSlots.indices where mtpAdmissionDrains.contains(allSlots[index].model) {
             allSlots[index].state = "reloading"
         }
-        let slotEpochs = Dictionary(allSlots.compactMap { slot in
-            slot.performanceMeasurements.map { (slot.model, $0.epoch) }
-        }, uniquingKeysWith: { _, latest in latest })
-        let profileIDs = Dictionary(allSlots.compactMap { slot in
-            slot.deadlineProfile.map { (slot.model, $0.id) }
-        }, uniquingKeysWith: { _, latest in latest })
         // Work totals and exact reservation IDs must describe one ledger
         // epoch. Independent per-slot actor snapshots can otherwise pair old
         // work with a new owner having the same service fraction.
-        let serviceSnapshot = kvBudget.serviceBudget.snapshot(slotEpochs: slotEpochs, profileIDs: profileIDs)
+        let serviceSnapshot = kvBudget.serviceBudget.capacitySnapshot(slots: allSlots)
         for index in allSlots.indices {
             allSlots[index].deadlineWork = serviceSnapshot.deadlineWorkByModel[allSlots[index].model]
         }

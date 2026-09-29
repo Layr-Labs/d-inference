@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `fc8353fde`
+> Last updated: 2026-09-29 · commit `cc5d11360`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -267,6 +267,10 @@ regressions. Release Integrity CI runs this same `serving_performance` suite,
 including evidence validation and generated-catalog consistency, without a GPU
 or model downloads. Its SQL fixtures additionally require local PostgreSQL
 binaries and a non-root user; unavailable prerequisites are reported as skips.
+The fixture discovers a complete installation through `PATH`, `pg_config`, or
+Debian's versioned binary directories. It uses `LC_ALL=C`, a private Unix socket
+and an available port. An installed cluster that fails to start fails the test
+with its startup log, rather than being reported as missing coverage.
 Promoted deadline records must also reproduce the archived raw training and
 validation runs and pass the current evaluator with actual prerequisite files;
 schema validity alone is insufficient.

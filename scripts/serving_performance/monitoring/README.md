@@ -106,6 +106,11 @@ python3 -m unittest serving_performance.monitoring.test_release_comparison -v
 
 Tests launch an isolated local PostgreSQL cluster on a temporary Unix socket,
 run the actual query in a read-only transaction, and remove the cluster. They
+discover a complete binary installation through `PATH`, `pg_config`, or
+Debian's versioned binary directories, set `LC_ALL=C`, and select an available
+port instead of reserving a fixed port. Startup failures include the server log
+and fail the test; they are not treated as missing PostgreSQL.
+The fixtures
 cover sampling enrichment, logical/attempt denominators, coordinator timeout
 versus the shared provider deadline-refusal code (including elapsed expiry),
 prompt-band matching, percentile arithmetic, missing/ambiguous

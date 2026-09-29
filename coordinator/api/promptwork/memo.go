@@ -14,6 +14,9 @@ import (
 type Result struct {
 	Cache registry.CachePlan
 	Work  *protocol.PromptWork
+	// retryPlanning distinguishes a temporary accounting-permit miss from a
+	// completed plan. It remains local to this request and is never serialized.
+	retryPlanning bool
 }
 
 type entry struct {
@@ -38,6 +41,9 @@ func (m *Memo) Plan(model string, body []byte, plan func() Result) Result {
 		return clone(e.result)
 	}
 	result := plan()
+	if result.retryPlanning {
+		return result
+	}
 	if m.entries == nil {
 		m.entries = make(map[string]entry, 2)
 	}

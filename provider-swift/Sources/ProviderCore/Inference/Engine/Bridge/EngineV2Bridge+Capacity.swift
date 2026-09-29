@@ -228,7 +228,11 @@ extension EngineV2Bridge {
             deadlineProfile: currentDeadlineProfile.map { .init(profile: $0) },
             promptWorkIdentity: promptWorkIdentity,
             performanceMeasurements: performanceMeasurementSnapshot(now: now),
-            deadlineWork: serviceBudget?.deadlineWork(modelID: modelId, epoch: performanceMeasurements.epoch),
+            // A resolved profile retains work evidence through temporary
+            // posture withdrawal. Unprofiled slots need no timing-only wire
+            // changes unless aggregate capacity includes a profiled peer.
+            deadlineWork: deadlineProfile == nil ? nil
+                : serviceBudget?.deadlineWork(modelID: modelId, epoch: performanceMeasurements.epoch),
             // Per-slot KV-backend discriminator. This is the RESOLVED kind
             // the engine was built with (post-veto, post-fallback), not the
             // operator's request, and it is reported on EVERY heartbeat —

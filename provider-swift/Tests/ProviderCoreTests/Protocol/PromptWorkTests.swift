@@ -46,3 +46,33 @@ private let promptWorkIdentity = PromptWorkIdentity(
     let unknown = PromptWork(source: "heuristic", promptTokens: 4_096, upperBoundTokens: 0)
     #expect(unknown.reconciled(actualPromptTokens: 4_096, identity: promptWorkIdentity) == nil)
 }
+
+@Test func malformedAdvisoryPromptWorkKeepsTheInferenceFrame() throws {
+    for malformed in [
+        "null", "true", "42", #""unexpected""#, "[]", "{}",
+        #"{"version":1,"source":"exact_contract","prompt_tokens":"4096","upper_bound_tokens":4096}"#,
+        #"{"version":1,"source":"exact_contract","prompt_tokens":4096.5,"upper_bound_tokens":4096}"#,
+        #"{"version":1,"source":"exact_contract","prompt_tokens":4096,"upper_bound_tokens":1e100}"#,
+    ] {
+        let data = Data("""
+            {"type":"inference_request","request_id":"preserved", \
+             "first_content_budget_ms":500,"cache_scope":"scope","prompt_work":\(malformed)}
+            """.utf8)
+        let decoded = try JSONDecoder().decode(CoordinatorMessage.self, from: data)
+        guard case .inferenceRequest(let request) = decoded else { Issue.record("wrong frame"); continue }
+        #expect(request.requestId == "preserved")
+        #expect(request.firstContentBudgetMs == 500 && request.cacheScope == "scope")
+        #expect(request.promptWork == nil)
+    }
+    // Required identity and the original deadline retain their strict codec;
+    // tolerating an advisory field cannot make a malformed request executable.
+    for frame in [
+        #"{"type":"inference_request","prompt_work":{}}"#,
+        #"{"type":"inference_request","request_id":42,"prompt_work":{}}"#,
+        #"{"type":"inference_request","request_id":"bad","first_content_budget_ms":"500","prompt_work":{}}"#,
+    ] {
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode(CoordinatorMessage.self, from: Data(frame.utf8))
+        }
+    }
+}

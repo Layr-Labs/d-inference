@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `bf030c63b`
+> Last updated: 2026-09-29 · commit `cc5d11360`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -559,6 +559,10 @@ The provider snapshots these fields with aggregate service use and reservation
 IDs under one lock. The coordinator validates freshness, counts and correlated
 ownership before using a qualified contended cell. This optional object cannot
 certify a profile, reduce memory reservations or change the request clock.
+Providers omit it when no resident engine has a resolved deadline profile.
+When any engine has such a profile, all slots retain work evidence, including
+while the profile is temporarily ineligible, so competing work and recovery
+remain observable.
 
 #### `backend_capacity.telemetry`
 
@@ -947,6 +951,8 @@ The fields contain no content, token IDs, cache keys or consumer identity.
 An exact count must equal the provider's actual tokenization; a calibrated
 count must bound it. Invalid identity, unknown source or an exceeded bound
 withdraws calibrated admission and preserves the conservative fallback.
+The provider ignores a malformed optional `prompt_work` object and decodes the
+rest of the inference request normally; required request fields remain strict.
 
 ### `cancel`
 

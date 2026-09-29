@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-28 · commit `bf030c63b`
+> Last updated: 2026-09-29 · commit `cc5d11360`
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -60,6 +60,12 @@ and spends the original request deadline. `api/promptwork` memoizes by concrete
 model and complete provider body for this HTTP request only; rewritten fallback
 bodies cannot inherit another count.
 
+A cache-planning sampling or QPS denial also prevents a second count-only
+sidecar call. Cache routing off still permits independently bounded count-only
+work. A temporary miss of the planning concurrency gate is not memoized, so a
+later attempt can recover exact counts and cache planning within the original
+deadline (`api/promptwork/planner.go`, `Plan`; `api/promptwork/planning.go`).
+
 `prompt_work` carries the count, upper bound and artifact/template identity to
 preflight, selection and provider reconciliation. Exact and calibrated counts
 require the candidate's advertised `prompt_work_identity` artifact and renderer
@@ -80,6 +86,13 @@ template and training domain; gaps between measured size groups remain
 heuristic. Raw corpus receipts are archived separately; the
 [qualification procedure](../developer/serving-performance-qualification.md#verify-local-evidence)
 describes their optional replay checks.
+
+Qualified prompt-count bounds also apply to ordinary rate forecasts when no
+timing profile exists. An in-domain upper bound can exceed the historical
+heuristic and classify a previously admitted tight-budget request as
+`predicted_late`; `MaxTTFTMs` or `RequireFreshFeasible` can then exclude that
+candidate. Exact tokenizer counts take precedence when available. Removing the
+fixed throughput reduction does not remove these measured prompt-work bounds.
 
 The expected and conservative handoff allowances are policy constants, not
 measured transport latency.

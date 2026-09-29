@@ -8,7 +8,7 @@ Status: In progress · 2026-09-26. Archive copying, SQL previews, private snapsh
 
 Preserve full records in private compressed Cloud Storage. Use BigQuery for historical analysis and asynchronous analytics computation. Serve leaderboard and public totals from small, durable snapshots cached in the API, refreshed every **5 minutes**. Keep authoritative balances, settlement/refund identities and active workflows in PostgreSQL.
 
-The draft [retention policy](../../scripts/telemetry_archive/retention-policy.proposed.json) records a **14-day target** for the nine archived detail tables, with deletion disabled. It is a design artifact, not runtime configuration. Every existing archive receipt still has `retention_eligible=false`. A completed snapshot plan alone cannot enable deletion.
+The draft [retention policy](../../scripts/telemetry_archive/retention-policy.proposed.json) records the requested **rolling 30-day target** for five telemetry detail tables, with deletion disabled. The four exact accounting tables are separately archived but excluded from this retirement proposal until their scope and financial safeguards are settled. This file is a design artifact, not runtime configuration. Every existing archive receipt still has `retention_eligible=false`. A completed snapshot plan alone cannot enable deletion.
 
 ```mermaid
 flowchart TB
@@ -73,7 +73,7 @@ Existing open PRs overlap: [#1140](https://github.com/Layr-Labs/d-inference/pull
 3. Preserve source financial idempotency **before** deletion. `CreditProviderAccount` in `postgres_provider_credit.go` relies on `provider_earnings(job_id)`; `CreditWithdrawableOnce` in `postgres.go` relies on ledger account/type/reference; floor settlement in `postgres_machine_floor_settlement.go` relies on provider/epoch and canonical machine identities. TTL-expiring these fences would permit duplicate money movement.
 4. Replace/bound every reader above, including migrations/recovery paths, and reconcile compact summaries. Active payments, withdrawals, unsettled refunds and current balances stay durable.
 5. Replace the existing profiler sweeper with archive-aware eligibility as part of the coordinator change. Today `StartProfilerLoops` / `PruneTelemetry` prune profiles/outcomes at 14 days and fleet at 30 days without archive receipts; routes/rejections have no equivalent sweep. Model demand's 31-day projection cleanup is a separate policy.
-6. Start dry-run only. Later enable one bounded deleter with progress checkpoints, statement/lock/runtime/row/WAL budgets, replica/load pause thresholds and resumable retries. Never execute `DELETE WHERE created_at < now()-14days` against these tables merely because an archive job succeeded.
+6. Start dry-run only. Later enable one bounded deleter with progress checkpoints, statement/lock/runtime/row/WAL budgets, replica/load pause thresholds and resumable retries. Never execute `DELETE WHERE created_at < now()-30days` against these tables merely because an archive job succeeded.
 
 ## Verification before cutover
 

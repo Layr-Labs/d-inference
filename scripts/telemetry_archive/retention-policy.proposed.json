@@ -6,10 +6,12 @@
   "public_analytics_max_source_age_seconds": 600,
   "public_analytics_max_result_age_seconds": 900,
   "retirement": {
-    "target_hot_detail_days": 14,
+    "target_hot_detail_days": 30,
     "table_allowlist": [
       "request_profiles", "request_outcomes", "fleet_snapshots",
-      "inference_routes", "request_rejections",
+      "inference_routes", "request_rejections"
+    ],
+    "excluded_pending_separate_financial_decision": [
       "usage", "provider_earnings", "ledger_entries", "provider_floor_draws"
     ],
     "required_gates": [

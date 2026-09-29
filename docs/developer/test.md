@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `0d2954090`
+> Last updated: 2026-09-29 · commit `569343f51`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -32,6 +32,8 @@ refusals. The native `MiMoV26StandaloneLifecycleTests` scanner-quoted regression
 uses real `ModelScanner.parseModelInfo` output with a positive transient allowance
 and no SSD discount through ordinary loading, publication and retirement; a
 handwritten `ModelInfo` without that field does not cover this boundary.
+The same suite exercises actual preload → listener bind → same-owner stop, and
+refuses listener startup while a real native preload is held before publication.
 
 `TestReserveProviderWithPlanPrimarySelectionUnchanged` compares selection and
 costs exactly while normalizing only wall-clock profiling ages, including

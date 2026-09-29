@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-29 · commit `0d2954090`
+> Last updated: 2026-09-29 · commit `569343f51`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -527,6 +527,10 @@ and `buildNativeMiMoCandidate` in
 engine, bridge and consumer leases before publication. A stopped generation
 cannot publish a late load. Retirement joins real SDK/native, bridge and
 consumer completion before detaching aliases and settling the existing permit.
+Standalone CLI preloading precedes listener startup. Starting the listener keeps
+healthy published owners in their existing open generation; incomplete or closing
+loads refuse. A closed generation still requires all prior owners to retire before
+the registry can reopen it (`reopenNativeMiMoLifecycleForStart` in the same file).
 A required-completion fault retains actual owners and prevents new work or
 speculative reclamation; a timeout, zero counter or logical settlement is not
 physical release. The optional shared-manager residency ticket follows that

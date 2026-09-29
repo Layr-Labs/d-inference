@@ -148,10 +148,28 @@ extension StandaloneServer {
     /// Only an explicit server start can reopen an already closed owner.
     func reopenNativeMiMoLifecycleForStart() throws {
         try requireNativeMiMoNewWorkAllowed()
-        guard nativeMiMoLoads.isEmpty else {
-            throw StandaloneServerError.capacityUnavailable("Prior native owner has not retired")
-        }
-        if case .closed(let token) = nativeMiMoLifecycle {
+        switch nativeMiMoLifecycle {
+        case .unopened:
+            guard nativeMiMoLoads.isEmpty else {
+                throw StandaloneServerError.capacityUnavailable("Prior native owner has not retired")
+            }
+        case .open(let token):
+            // CLI startup preloads before binding HTTP. Keep those actual
+            // published owners and their generation; do not reopen them.
+            guard nativeMiMoLoads.values.allSatisfy({ state in
+                guard state.phase == .published, state.controlTask == nil,
+                      state.setupTask == nil, state.candidate == nil,
+                      slots[state.modelID] != nil, let transaction = state.transaction,
+                      transaction.lifecycle == token else { return false }
+                let snapshot = transaction.snapshot()
+                return snapshot.phase == .published && !snapshot.constructionFailed
+            }) else {
+                throw StandaloneServerError.capacityUnavailable("Native preload has not completed publication")
+            }
+        case .closed(let token):
+            guard nativeMiMoLoads.isEmpty else {
+                throw StandaloneServerError.capacityUnavailable("Prior native owner has not retired")
+            }
             let opened = try token.map { try nativeMiMoRegistry.reopenLifecycle($0) }
                 ?? nativeMiMoRegistry.openLifecycle()
             nativeMiMoLifecycle = .open(opened)

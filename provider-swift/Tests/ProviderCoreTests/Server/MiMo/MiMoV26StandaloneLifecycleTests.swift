@@ -309,6 +309,66 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
         witness.dropTransaction()
     }
 
+    func testActualScannerPreloadStartsListenerWithSameNativeOwner() async throws {
+        let witness = NativeStandaloneWitness()
+        let (server, id, registry) = try await makeServer(witness: witness, scannerQuoted: true)
+        let summary = await server.preloadSelectedModels(configuredModelIDs: [id])
+        XCTAssertEqual(summary.loaded, [id]); XCTAssertTrue(summary.failed.isEmpty)
+        XCTAssertTrue(summary.skippedInsufficientMemory.isEmpty)
+        await server.watchNative(id, witness: witness)
+        let preloaded = await server.nativeView(id)
+        let transactionID = try XCTUnwrap(preloaded.transactionID)
+        let lifecycle = try await server.nativeMiMoLifecycleForLoad()
+        XCTAssertEqual(preloaded.transactionPhase, .published)
+        XCTAssertTrue(preloaded.resident); XCTAssertFalse(preloaded.controlActive)
+        XCTAssertFalse(preloaded.setupActive)
+        try await server.start()
+        let bound = await server.waitUntilBound(timeoutSeconds: 10)
+        XCTAssertTrue(bound, "the actual start-created listener must bind after preload")
+        let serving = await server.nativeView(id)
+        let servingLifecycle = try await server.nativeMiMoLifecycleForLoad()
+        XCTAssertEqual(serving.transactionID, transactionID)
+        XCTAssertEqual(servingLifecycle, lifecycle, "start must not replace the open generation")
+        XCTAssertTrue(serving.resident); XCTAssertTrue(serving.hasBundle)
+        XCTAssertEqual(serving.transactionPhase, .published)
+        await server.stop()
+        let stopped = await server.nativeView(id)
+        XCTAssertTrue(stopped.stopped); XCTAssertFalse(stopped.resident)
+        XCTAssertEqual(stopped.charge, 0); XCTAssertTrue(registry.retainedTransactionIDs.isEmpty)
+        let receipt = try await actualReceipt(witness)
+        XCTAssertEqual(receipt.transactionID, transactionID)
+        XCTAssertEqual(receipt.lifecycle, lifecycle); XCTAssertNotNil(receipt.engine)
+        witness.dropTransaction()
+        XCTAssertFalse(witness.bundleAlive); XCTAssertFalse(witness.modelAlive)
+    }
+
+    func testStartRefusesActualUnpublishedPreloadWithoutReplacingOwner() async throws {
+        let gate = NativeStandaloneGate()
+        let (server, id, registry) = try await makeServer(scannerQuoted: true, observe: { phase, _ in
+            if phase == .beforeWeights { await gate.hold() }
+        })
+        let loader = Task { try await server.ensureModelLoaded(id) }
+        await gate.waitForEntry()
+        let held = await server.nativeView(id)
+        let lifecycle = try await server.nativeMiMoLifecycleForLoad()
+        let transactionID = try XCTUnwrap(held.transactionID)
+        XCTAssertTrue(held.loading); XCTAssertTrue(held.controlActive)
+        XCTAssertGreaterThan(held.charge, 0); XCTAssertNotEqual(held.transactionPhase, .published)
+        do { try await server.start(); XCTFail("listener start accepted an incomplete native preload") }
+        catch { XCTAssertTrue(error is StandaloneServerError) }
+        let refused = await server.nativeView(id)
+        let sameLifecycle = try await server.nativeMiMoLifecycleForLoad()
+        XCTAssertTrue(refused.stopped); XCTAssertTrue(refused.loading)
+        XCTAssertEqual(refused.transactionID, transactionID)
+        XCTAssertEqual(sameLifecycle, lifecycle); XCTAssertEqual(refused.charge, held.charge)
+        await gate.release()
+        try await loader.value
+        await server.stop()
+        let stopped = await server.nativeView(id)
+        XCTAssertTrue(stopped.stopped); XCTAssertFalse(stopped.resident)
+        XCTAssertEqual(stopped.charge, 0); XCTAssertTrue(registry.retainedTransactionIDs.isEmpty)
+    }
+
     func testActualOnCallerUsesBuiltEmbeddedHeadAndRetiresWithoutWarmRebuild() async throws {
         XCTAssertTrue(CBv2MTPConfig.envEnabled)
         let (server, id, registry) = try await makeServer(mtp: .on)

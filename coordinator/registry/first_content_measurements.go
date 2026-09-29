@@ -7,16 +7,19 @@ import (
 )
 
 type firstContentMeasurement struct {
-	epoch        string
-	prefillCount int64
-	decodeCount  int64
-	rate         float64
-	decodeRate   float64
+	epoch          string
+	prefillCount   int64
+	decodeCount    int64
+	rate           float64
+	decodeRate     float64
+	contendedCount int64
+	contendedRate  float64
 	// The previous report is a lower bound on when a changed EWMA could have
 	// been sampled. Using the new heartbeat time would incorrectly rejuvenate
 	// a measurement after a long gap in capacity reports.
-	observedAfter       time.Time
-	decodeObservedAfter time.Time
+	observedAfter          time.Time
+	decodeObservedAfter    time.Time
+	contendedObservedAfter time.Time
 }
 
 // reconcileFirstContentMeasurementsLocked uses explicit age/count/epoch metadata
@@ -48,11 +51,16 @@ func (p *Provider) reconcileFirstContentMeasurementsLocked(capacity *protocol.Ba
 					explicit.IsolatedPrefill, old.prefillCount, old.rate, old.observedAfter, now, sameEpoch)
 				measurement.decodeObservedAfter, measurement.decodeCount = explicitMeasurementTime(
 					explicit.Decode, old.decodeCount, old.decodeRate, old.decodeObservedAfter, now, sameEpoch)
+				measurement.contendedObservedAfter, measurement.contendedCount = explicitMeasurementTime(
+					explicit.ContendedPrefill, old.contendedCount, old.contendedRate, old.contendedObservedAfter, now, sameEpoch)
 				if explicit.IsolatedPrefill != nil {
 					measurement.rate = explicit.IsolatedPrefill.TokensPerSecond
 				}
 				if explicit.Decode != nil {
 					measurement.decodeRate = explicit.Decode.TokensPerSecond
+				}
+				if explicit.ContendedPrefill != nil {
+					measurement.contendedRate = explicit.ContendedPrefill.TokensPerSecond
 				}
 			}
 			next[slot.Model] = measurement

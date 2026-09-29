@@ -654,7 +654,7 @@ struct DeadlineDecisionBridgeTests {
         #expect(decision.projectedDecodeTokens == (bounded ? 8 : nil))
         #expect(decision.projectedServiceUs == (bounded ? 7_000_000 : nil))
         #expect(decision.projectionReason == nil)
-        #expect(decision.prefillTps == 500)
+        #expect(decision.prefillTps == 1_000)
         #expect(decision.decodeTps == nil)
         #expect(try #require(decision.submitRemainingUs) >= #require(decision.remainingUs))
         #expect(try #require(decision.observedUs) >= #require(wire.engineSubmitUs))

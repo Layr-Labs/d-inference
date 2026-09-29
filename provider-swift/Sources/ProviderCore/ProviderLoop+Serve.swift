@@ -305,7 +305,7 @@ extension ProviderLoop {
                     let cacheReceiptBoundaryMode, let cacheRepeatedPrefixTokens,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
-                    let profile, let serviceReservationID
+                    let profile, let serviceReservationID, let promptWork
                 ):
                     await handleInferenceRequest(
                         requestId: requestId,
@@ -321,6 +321,7 @@ extension ProviderLoop {
                         receivedAt: receivedAt,
                         profile: profile,
                         serviceReservationID: serviceReservationID,
+                        promptWork: promptWork,
                         send: send
                     )
 

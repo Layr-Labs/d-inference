@@ -1,12 +1,12 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `61de2e9a8`
+> Last updated: 2026-09-29 · commit `47915a198`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
 lint — and which CI workflow runs what. `make test` runs every unit suite plus
 the docs lint locally; CI runs a subset per pull request (see the CI workflow
-map: the benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
+map: the Gemma benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
@@ -27,10 +27,11 @@ compile and run the SDK package tests separately as CI does. Small selected
 native runners do not replace these whole-target compile checks.
 
 The retained-fence case in `ProviderLoopNativeMiMoLifetimeTests` also installs a
-weight-free non-native peer for routing-policy assertions. A real native fixture
-fault must leave that peer's capacity/admission intact while blocking the failed
-native owner, every cold load and reclamation. This is not peer-model generation
-evidence. Keep its existing fresh-process fault selector and native-lane guard;
+weight-free non-native peer with a counted engine. A real native fixture fault
+in the shared registry must leave that peer's capacity/admission intact and
+permit its real bridge submission before and after the fault, while blocking
+the native owner, every cold load and reclamation. This is bridge-admission
+evidence, not peer-model generation. Keep its fresh-process selector and lane guard;
 the deliberately retained native owner must live until that test process exits.
 The audiovisual ingress cancellation test returns `Void` from its child task:
 it still checks real decode cancellation and host-reservation settlement, without
@@ -307,9 +308,37 @@ suite covers accepted counter deltas, stale/replayed observations, shared
 service admission, warm-load ownership and transport freshness.
 
 `make benchmark-wrapper-test` also runs the offline serving-profile evaluator
-regressions. For real hardware coverage and required evidence, follow
+regressions. Release Integrity CI runs this same `serving_performance` suite,
+including evidence validation and generated-catalog consistency, without a GPU
+or model downloads. Its SQL fixtures additionally require local PostgreSQL
+binaries and a non-root user; unavailable prerequisites are reported as skips.
+The fixture discovers a complete installation through `PATH`, `pg_config`, or
+Debian's versioned binary directories. It uses `LC_ALL=C`, a private Unix socket
+and an available port. An installed cluster that fails to start fails the test
+with its startup log, rather than being reported as missing coverage.
+Promoted deadline records must also reproduce the archived raw training and
+validation runs and pass the current evaluator with actual prerequisite files;
+schema validity alone is insufficient.
+The evidence index binds every ordered catalog row's ID, qualification-report
+digest and full-profile digest even when the optional archive replay is skipped.
+The current deadline catalog is empty. Historical hardware reports and the
+prompt-count corpus are stored outside the repository; their three replay tests
+run only with `DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT` set. See
+[local evidence checks](serving-performance-qualification.md#verify-local-evidence).
+Ordinary CI still pins the reviewed prompt-count coefficients and checks
+runtime boundaries and synthetic posture failures without those archives.
+For real hardware coverage and required evidence, follow
 [serving performance qualification](serving-performance-qualification.md).
 Synthetic tests never certify M5 concurrency or a mixed-prefill default.
+Calibrated admission adds `DeadlineCalibrationTests`, `PromptWorkTests`, the
+shared calibrated-capacity fixture, and SDK `CBv2CalibratedFirstContentTests`.
+Go and Swift also consume the same synthetic deadline-decision fixture for
+cache reuse, existing-owner bounds, live-rate ceilings and the remaining clock;
+it tests arithmetic agreement and does not qualify hardware.
+`coordinator/api/promptwork` tests body/model memoization, original-clock planner
+bounds and measured shape restrictions. The optional API corpus projection
+uses the production heuristic and writes numeric data only; the qualification
+guide documents its environment variables and paired tokenizer run.
 
 Run `make provider-test` to build tests and install the source-matched Metal
 library beside the runner. Focused suites include `ProviderLifecycleTests`,
@@ -2474,6 +2503,49 @@ go test -race ./api ./modelpolicy \
 
 `coordinator/api/first_content_accounts_test.go` covers exact account/email selection, unrelated service accounts, header spoofing, public-model override precedence, disabled clocks and identity-store failures. `coordinator/api/first_content_accounts_integration_test.go` runs streaming and non-streaming requests through chat, Responses, completions and messages past the old deadline with hard TTFT rejection enabled; exempt requests omit their wire budget and scheduler ceiling, while the configured OpenRouter email still times out. The existing deadline/queue/retry/provider-wire suites explicitly opt their fixture account into the SLA. `coordinator/api/media_resolve_test.go` verifies a pinned exemption cannot be recomputed during media fetch.
 
+### Adversarial numeric parsing
+
+`coordinator/api/tool_constraints_test.go`
+(`TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals`) checks exact
+integer results and rejects fractional, negative, huge-exponent and multi-megabyte
+inputs. The original 250 ms per-call budget remains enforced by normal tests
+and a separate uninstrumented step in the Coordinator Tests CI job. Covered
+runs use a five-second catastrophic-stall ceiling to allow for race and
+atomic-coverage overhead. The benchmark below supplements that enforced CI gate;
+it does not replace it. Neither wall-clock budget proves linear complexity.
+No production parser limit or acceptance rule changes.
+
+Run the enforced performance gate with
+`go test -race=false -cover=false ./coordinator/api -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1`.
+The following full CI suite still runs with race detection and atomic coverage.
+
+Measure size scaling separately with
+`coordinator/api/tool_constraint_numbers_bench_test.go`
+(`BenchmarkConstrainedExactNonnegativeIntAdversarialLiterals`):
+
+```sh
+go test ./coordinator/api -run '^$' \
+  -bench '^BenchmarkConstrainedExactNonnegativeIntAdversarialLiterals$' -benchmem
+```
+
+Run this benchmark without race or coverage instrumentation. Fixtures are built
+outside the timed loop; bytes/second and allocations are reported for digit and
+fractional literals from 1,000 to 4,000,000 digits. Compare growth across sizes
+and revisions on the same machine; shared-runner wall time is not a complexity
+measurement.
+
+### Routing plan equivalence
+
+`coordinator/registry/dispatch_plan_test.go`
+(`TestReserveProviderWithPlanPrimarySelectionUnchanged`) compares provider
+selection and routing decisions with and without retained alternatives. It
+uses a controlled clock and different fresh evidence ages, then normalizes
+wall-clock telemetry, including known capacity/performance/transport evidence ages on
+the decision and candidate summaries; unknown-age sentinels, selection, forecast values and reservations
+remain subject to exact comparison. Repeat the focused test with
+`go test ./coordinator/registry -run '^TestReserveProviderWithPlanPrimarySelectionUnchanged$' -count=500`
+from the repository root to check for timing-dependent comparison failures.
+
 ### Replacement and reconnect coverage
 
 `PlannedProviderDisconnectTests` exercises late-APNs and inventory reconnects
@@ -2483,3 +2555,17 @@ against a mock WebSocket coordinator while accepted work is held open.
 `ProcessLifecycleTests` verifies that lock acquisition cannot kill a live PID owner.
 `TestRestartStatusReportsOwnerAuthorizationWithoutPublicGrant` checks explicit
 owner authorization while retaining runtime/security denials.
+
+## Advisory threat-model review checks
+
+Run `python3 .github/scripts/test-threat-model-review.py` for the review input,
+OpenRouter response validation, credential isolation, pagination, stale-head and
+comment lifecycle tests. The suite opens a temporary loopback HTTP server and
+uses no external service or real key. Also run
+`python3 .github/scripts/test-threat-full-scan.py` for full-source retrieval,
+batching beyond the former cutoffs, cross-file review, and explicit incomplete
+coverage. Run `python3 .github/scripts/test-threat-ensemble.py` for independent
+reviewer coverage, disagreement, attribution, partial failures and deadline
+retention. Release Integrity runs all three suites in normal CI.
+Model findings and live API failures remain non-blocking in the separate
+[advisory review workflow](threat-model-review.md).

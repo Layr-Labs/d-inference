@@ -11,14 +11,15 @@ extension EngineV2Factory {
         model: (any LanguageModel)?, modelID: String?, modelArtifactSHA256: String?,
         constructionPurpose: ConstructionPurpose, automaticallySelectConcurrency: Bool,
         performanceQualificationAllowed: Bool, backend: EngineV2KVBackendKind,
-        maxContextLength: Int?, maxConcurrentRequests: Int, environment: [String: String]
+        maxContextLength: Int?, maxConcurrentRequests: Int, environment: [String: String],
+        mtpPerformanceConfiguration: ServingMTPConfiguration? = nil
     ) -> (scheduler: CBv2SchedulerConfig, performanceProfile: ServingPerformanceProfile?) {
         let profile = constructionPurpose == .serving && performanceQualificationAllowed
             ? ServingPerformanceProfiles.resolve(
                 modelID: modelID ?? "", artifactSHA256: modelArtifactSHA256,
                 kvBackend: backend.rawValue, contextTokens: maxContextLength,
                 hardware: ServingPerformanceProfiles.reviewed.isEmpty ? nil : Self.profileHardware,
-                environment: environment) : nil
+                environment: environment, mtp: mtpPerformanceConfiguration) : nil
         let concurrency = constructionPurpose == .benchmark ? max(1, maxConcurrentRequests)
             : ServingPerformanceProfiles.concurrency(
                 configured: UInt64(max(1, automaticallySelectConcurrency

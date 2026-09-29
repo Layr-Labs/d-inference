@@ -129,6 +129,8 @@ extension EngineV2SlotFactory {
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> ProviderEngineBundle {
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         switch container {
         case .nativeMiMo(let target, let load):
             guard modelType == "mimo_v2", !isVLM, specDecPreparation.artifact == nil,

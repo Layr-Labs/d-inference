@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-29 · commit `60230b143`
+> Last updated: 2026-09-29 · commit `47915a198`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -764,3 +764,11 @@ completion signals the dispatcher immediately. Due-row pages start at
 `min(limit, verificationDuePageHint)` with `verificationDuePageHint = 256`
 and grow to the requested limit (`coordinator/store/postgres.go`,
 `ListDueVerificationJobsPage`); the initial allocation does not truncate a page.
+
+Qualified first-content prediction is separate from physical scheduling limits.
+The numeric `deadline_work` snapshot retains pre-submit and retiring owners,
+correlates them with whole-Mac reservations, and requires fresh matching
+measurements before pricing contention. The provider's final atomic check uses
+actual queue/cache state and the original deadline. See
+[first-content routing](first-content-routing.md) for the measured-cell gate and
+fallback behavior; this does not relax activation, KV or context safeguards.

@@ -124,6 +124,8 @@ extension ProviderLoop {
             pendingMTPUpgradeModels().contains(modelID)
         else { return nil }
         isLoadingAny = true
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         defer { isLoadingAny = false; releaseLoadGateWaiters() }
         let grant = Int(clamping: EngineV2KVSizing.minimumServiceableGrantBytes)
         guard let lease = await kvBudget.claimPendingLoad(
@@ -193,6 +195,8 @@ extension ProviderLoop {
     }
 
     func commitMTPUpgradeIfIdle(_ staged: StagedProviderMTPUpgrade) async throws -> Bool {
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         let modelID = staged.modelID
         guard let original = staged.original, let originalContainer = original.container else { throw CancellationError() }
         try Task.checkCancellation()
@@ -245,6 +249,8 @@ extension ProviderLoop {
     }
 
     func discardMTPUpgrade(_ staged: StagedProviderMTPUpgrade) async {
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         await staged.replacement.bridge.shutdown()
         staged.replacement.releaseAssistant()
         staged.original = nil

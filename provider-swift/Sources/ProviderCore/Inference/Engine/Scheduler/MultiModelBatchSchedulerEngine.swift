@@ -133,6 +133,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Absolute provider-local deadline derived once when the coordinator frame
     /// was received. Nil for local HTTP and legacy coordinator requests.
     private let firstContentDeadline: FirstContentDeadline?
+    private let promptWork: PromptWork?
     /// Coordinator reservation identity; unrelated to generated engine IDs.
     /// Local requests have no coordinator reservation to acknowledge.
     private let serviceReservationID: String?
@@ -170,7 +171,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         profile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
         serviceReservation: ServiceReservationLifetime? = nil,
-        nativeConsumerLeaseProvider: (@Sendable (String, ModelRegistryEntry) async throws -> NativeLocalConsumerLease?)? = nil
+        nativeConsumerLeaseProvider: (@Sendable (String, ModelRegistryEntry) async throws -> NativeLocalConsumerLease?)? = nil,
+        promptWork: PromptWork? = nil
     ) {
         self.profile = profile
         self.registryProvider = registryProvider
@@ -190,6 +192,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Usage = engineV2Usage
         self.allowInternalToolSchemaMetadata = true
         self.firstContentDeadline = firstContentDeadline
+        self.promptWork = promptWork
         self.serviceReservationID = serviceReservationID
         self.serviceReservation = serviceReservation
         self.acquire = nil
@@ -249,6 +252,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Usage = nil
         self.allowInternalToolSchemaMetadata = false
         self.firstContentDeadline = nil
+        self.promptWork = nil
         self.serviceReservationID = nil
         self.serviceReservation = nil
         self.profile = nil
@@ -571,6 +575,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // this shape on every equivalent provider).
             if let bridge = engineV2Bridge {
                 let plumbing = engineV2Vision ?? .production
+                // Vision eval precedes bridge admission and has no text-token
+                // work bound. Keep this marker through the handoff: the
+                // multimodal lease then stays unqualified until retirement.
+                let preparationActivity = bridge.serviceBudget?.beginUnboundedActivity()
+                defer { preparationActivity?.finish() }
                 do {
                     try checkFirstContentDeadline()
                     profile?.mark(.promptPrepStart)
@@ -655,7 +664,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         firstContentDeadline: firstContentDeadline,
                         profile: profile,
                         serviceReservationID: serviceReservationID,
-                        serviceReservation: serviceReservation
+                        serviceReservation: serviceReservation,
+                        promptWork: promptWork
                     )
                     do {
                         try checkFirstContentDeadline()
@@ -873,7 +883,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     firstContentDeadline: firstContentDeadline,
                     profile: profile,
                     serviceReservationID: serviceReservationID,
-                    serviceReservation: serviceReservation
+                    serviceReservation: serviceReservation,
+                    promptWork: promptWork
                 )
                 do {
                     try checkFirstContentDeadline()

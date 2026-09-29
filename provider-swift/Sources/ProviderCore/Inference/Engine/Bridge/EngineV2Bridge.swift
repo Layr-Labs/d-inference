@@ -36,6 +36,9 @@ public actor EngineV2Bridge {
     // and consumers; a missing engine is never used as a fake drain receipt.
     var nativeShutdownClosed = false
     var nativeShutdownInProgress = false
+    // Forecast invalidation follows real native teardown, including retained
+    // faults/pending host consumers; it is never a memory-release receipt.
+    var nativeShutdownActivity: WholeMacUnboundedActivity?
     var nativeShutdownIdentity: NativeShutdownIdentity?
     var nativeShutdownResult: CBv2NativeShutdownOutcome?
     // The validated SDK proof can arrive before host consumers finish. Keep
@@ -98,6 +101,10 @@ public actor EngineV2Bridge {
     let defaultMaxTokens: Int
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
+    nonisolated let deadlineProfile: DeadlinePerformanceProfile?
+    var deadlinePostureMonitoring: DeadlinePostureLease?
+    public nonisolated let deadlineRuntimeConfiguration: DeadlineRuntimeConfiguration?
+    nonisolated let promptWorkIdentity: PromptWorkIdentity?
     let unqualifiedMaxConcurrentRequests: Int
     nonisolated let serviceBudget: WholeMacServiceBudget?
     let serviceOwnerPrefix = UUID().uuidString
@@ -297,11 +304,6 @@ public actor EngineV2Bridge {
     /// hidden inside this prefill denominator.
     var isolatedPrefillTpsEwma: Double = 0
     var isolatedPrefillEwmaInitialized = false
-    /// Observed EWMAs are point estimates, not hard lower bounds. Deadline
-    /// projection halves each available phase rate, providing a fixed 2x
-    /// service-time envelope without letting one pathological minimum poison
-    /// the bridge forever.
-    static let deadlineProjectionRateHaircut = 0.5
     /// Cold-start model load time (ms) for this slot, recorded by
     /// `ProviderLoop.ensureModelLoaded` once the load completes (the
     /// bridge exists before the load finishes, so this arrives post-init).
@@ -335,6 +337,9 @@ public actor EngineV2Bridge {
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         performanceProfile: ServingPerformanceProfile? = nil,
+        deadlineProfile: DeadlinePerformanceProfile? = nil,
+        deadlineRuntimeConfiguration: DeadlineRuntimeConfiguration? = nil,
+        promptWorkIdentity: PromptWorkIdentity? = nil,
         unqualifiedMaxConcurrentRequests: Int? = nil,
         prefillDeadlineMode: PrefillDeadlineMode = PrefillDeadlineMode.resolve(),
         prefillDeadlineProjectionEnabled: Bool = true,
@@ -366,6 +371,7 @@ public actor EngineV2Bridge {
             Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
             ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)
             ?? performanceProfile?.contextTokensMax
+            ?? deadlineProfile?.configuredContextTokens
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(
@@ -377,6 +383,9 @@ public actor EngineV2Bridge {
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests
         self.performanceProfile = performanceProfile
+        self.deadlineProfile = deadlineProfile
+        self.deadlineRuntimeConfiguration = deadlineRuntimeConfiguration ?? deadlineProfile?.runtimeConfiguration
+        self.promptWorkIdentity = promptWorkIdentity
         self.unqualifiedMaxConcurrentRequests = min(maxConcurrentRequests,
             max(1, unqualifiedMaxConcurrentRequests ?? min(maxConcurrentRequests, 8)))
         self.serviceBudget = kvBudget?.serviceBudget

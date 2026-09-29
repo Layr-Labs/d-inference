@@ -58,7 +58,8 @@ extension EngineV2Bridge {
         hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
-        donationDemand: SSDCheckpointDonationDemand? = nil
+        donationDemand: SSDCheckpointDonationDemand? = nil,
+        promptWork: PromptWork? = nil
     ) async -> AsyncStream<GenerationEvent> {
         do {
             return try await submitTokenized(
@@ -75,7 +76,7 @@ extension EngineV2Bridge {
                 mediaKind: mediaKind,
                 tokenConstraint: tokenConstraint,
                 donationDemand: donationDemand,
-                firstContentDeadline: nil)
+                firstContentDeadline: nil, promptWork: promptWork)
         } catch MultiModelBatchSchedulerEngineError.advertisedContextExceeded {
             // Preserve the typed client rejection across the nonthrowing stream
             // API using only its fixed, content-free scheduler marker.
@@ -118,7 +119,8 @@ extension EngineV2Bridge {
         firstContentDeadline: FirstContentDeadline?,
         profile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
-        serviceReservation: ServiceReservationLifetime? = nil
+        serviceReservation: ServiceReservationLifetime? = nil,
+        promptWork: PromptWork? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
@@ -149,7 +151,9 @@ extension EngineV2Bridge {
         }
         let retirementTransfer = EngineV2RetirementTransfer()
         guard acquireServiceAllowance(requestID: id, serviceReservationID: serviceReservationID,
-            serviceReservation: serviceReservation) else {
+            serviceReservation: serviceReservation, promptTokens: promptTokens.count,
+            maxOutputTokens: max(0, request.max_tokens ?? defaultMaxTokens),
+            qualifiedTextWork: multimodal == nil && mediaKind == nil) else {
             usageSignal?.finalizeLookup(failure: .capacity, fallbackTier: prefixCacheFallbackTier)
             continuation.yield(.error("token_budget_exhausted: whole-Mac service allowance exhausted"))
             continuation.finish()
@@ -516,7 +520,8 @@ extension EngineV2Bridge {
         let cbv2Id = mintEngineRequestId(
             seed: cbv2Request.sampling.seed, promptTokens: promptTokens)
         cbv2Request.id = cbv2Id
-        let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId)
+        let prefillReceipt = EnginePrefillReceipt(activity: measurementActivity, model: modelId,
+            deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence())
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in
             prefillReceipt.complete(usage)
             Task { await self?.consumePrefillReceipt(id: id, receipt: prefillReceipt) }
@@ -544,7 +549,8 @@ extension EngineV2Bridge {
         let deadlineAdmission: CBv2FirstTokenDeadlineAdmission?
         do {
             deadlineAdmission = try firstTokenDeadlineAdmission(
-                deadline: firstContentDeadline, multimodal: multimodal)
+                deadline: firstContentDeadline, multimodal: multimodal,
+                requestID: id, promptTokens: promptTokens.count, promptWork: promptWork)
         } catch {
             // The capability check is after shared-KV/prefix preparation.
             // Preserve the existing cold-refusal unwind before returning.

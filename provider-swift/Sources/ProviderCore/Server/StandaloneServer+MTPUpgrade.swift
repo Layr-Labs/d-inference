@@ -123,6 +123,8 @@ extension StandaloneServer {
         else { return nil }
         try requireNativeMiMoNewWorkAllowed()
         isLoadingAny = true
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         let grant = Int(clamping: EngineV2KVSizing.minimumServiceableGrantBytes)
         guard let lease = await kvBudget.claimPendingLoad(
             requestID: "mtp-upgrade:\(modelID):\(UUID().uuidString)",
@@ -212,6 +214,8 @@ extension StandaloneServer {
     }
 
     func commitMTPUpgradeIfIdle(_ staged: StagedStandaloneMTPUpgrade) async throws -> Bool {
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         let modelID = staged.modelID
         guard let original = staged.original, let originalContainer = original.container else { throw CancellationError() }
         try Task.checkCancellation()
@@ -261,6 +265,8 @@ extension StandaloneServer {
     }
 
     func discardMTPUpgrade(_ staged: StagedStandaloneMTPUpgrade) async {
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         await staged.replacement.bridge.shutdown()
         staged.replacement.releaseAssistant()
         staged.original = nil

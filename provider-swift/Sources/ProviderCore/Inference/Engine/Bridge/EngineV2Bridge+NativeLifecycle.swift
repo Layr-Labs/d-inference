@@ -42,14 +42,15 @@ extension EngineV2Bridge {
     }
 
     /// Request admission only; not native completion or reclamation proof.
-    /// The process-level fault fence applies to other model bridges too. A
-    /// managed bridge cannot fall back to legacy admission after losing its
+    /// The process fault fence applies to native-managed bridges. Other
+    /// resident bridges still pass their ordinary engine and admission gates.
+    /// A managed bridge cannot fall back to legacy admission after losing its
     /// weak owner or before actual lifecycle-gated publication.
     func canSubmitWithNativeOwner() -> Bool {
         guard !nativeShutdownClosed else { return false }
         do {
-            try MiMoV26NativeLoadRegistry.shared.requireNewNativeWorkAllowed()
             if tracksNativeShutdown || nativeTransactionID != nil || nativeShutdownIdentity != nil {
+                try MiMoV26NativeLoadRegistry.shared.requireNewNativeWorkAllowed()
                 guard let transaction = nativeTransaction,
                     nativeTransactionID == transaction.id else { return false }
                 try transaction.requireServingWorkAllowed()
@@ -81,6 +82,7 @@ extension EngineV2Bridge {
             throw MiMoV26NativeBridgeShutdownError.pendingConsumers
         }
         if !nativeShutdownClosed {
+            nativeShutdownActivity = serviceBudget?.beginUnboundedActivity()
             nativeShutdownIdentity = identity
             nativeShutdownClosed = true
             nativeShutdownTasks.append(contentsOf: pumpTasks.values)
@@ -144,6 +146,10 @@ extension EngineV2Bridge {
         slotPostureTask = nil
         nativeShutdownTasks.removeAll()
         ownedEngine = nil
+        nativeShutdownActivity?.finish()
+        nativeShutdownActivity = nil
+        deadlinePostureMonitoring?.finish()
+        deadlinePostureMonitoring = nil
         nativeShutdownResult = outcome
         return outcome
     }

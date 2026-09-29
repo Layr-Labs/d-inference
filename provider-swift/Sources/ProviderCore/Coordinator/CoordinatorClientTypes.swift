@@ -116,7 +116,8 @@ public enum CoordinatorEvent: Sendable {
         /// Profiler accumulator anchored at frame receipt (created
         /// unconditionally, unlike the budget-derived deadline).
         profile: RequestProfileBuilder,
-        serviceReservationID: String? = nil
+        serviceReservationID: String? = nil,
+        promptWork: PromptWork? = nil
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)

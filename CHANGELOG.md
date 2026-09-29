@@ -13,6 +13,21 @@
 - Integrate current upstream cache ownership and add separately issued target-only native paging, joint contiguous text-prefix/media ownership, and admitted scalar-shape verification candidates. A selected 114-method component cohort passes; full-model/API, complete MTP state, paging composition and production defaults remain unqualified.
 - Resolve linked snapshot directories through the normal scanner without copying weights or changing cache selection order; preserve rejection of invalid and non-directory entries. Explicit revision selections use the same canonical filesystem identity as legacy discovery.
 
+## Unreleased — prompt accounting and first-content admission
+
+- Share verified model/template prompt counts across preflight, retries and provider reconciliation while preserving the original deadline, completion limits and billing usage. Match count and cache evidence to the candidate provider's advertised template contract; keep unsupported counts explicitly uncertain.
+- Apply qualified prompt-count upper bounds to ordinary deadline forecasts even without a timing profile. These bounds can exceed the previous heuristic, so a tight-budget request previously considered feasible can now be classified as predicted late. Exact tokenizer counts take precedence when available.
+- Keep unmeasured prompt-rendering modes outside calibrated fallback estimates, and independently recheck deadline-profile confidence, qualified scheduler limits and cooled applicability in both runtimes before accepting catalog cells. Treat nonempty work reports without original prompt work as unknown.
+- Respect cache-planning sampling and throttle denials during count-only fallback, and let retries recover cache/count planning after temporary planning-capacity exhaustion. Ignore malformed advisory prompt-work metadata without dropping an otherwise valid inference request.
+- Remove the fixed 50% prefill and decode throughput reduction from coordinator feasibility and provider deadline admission. Use the resolved processing rates directly, preserving original deadline expiry, queued/cache work, count bounds, contention and memory gates. This avoids refusals caused solely by doubling predicted processing time; observed rates remain estimates and do not guarantee on-time delivery.
+- Add optional workload-bounded measured deadline calibration with exact MTP identity and ordinary rate fallback for stale, unmatched or incomplete evidence and unqualified runtime overrides. The timing catalog remains empty; removing the fixed rate reduction is active without it. Preserve measured idle/thermal/power prerequisites and posture-bound rate freshness without delaying requests. Correlate whole-Mac work through pre-submit and retirement before pricing contention.
+- Add production-path qualification receipts with actual MTP and individual mixed-prefill step timings; profile promotion remains tied to reviewed hardware and held-out prediction evidence.
+
+## Unreleased — advisory threat-model review
+
+- Restore PR threat-model review through OpenRouter. Scan every changed file with complete before/after text and a cross-file pass against the full threat model. Findings update one advisory comment; incomplete coverage is explicit, clean first scans stay quiet, and model/service failures do not block merging. The workflow executes only the trusted base revision.
+- Combine independent Opus 5.5 and GPT-6 Astra full scans through the same OpenRouter key. Attribute findings to their reviewers, preserve differing advice, and retain completed feedback if the other model fails.
+
 ## Unreleased — SSD cache write budget
 
 - Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.

@@ -381,3 +381,39 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
     #expect(state.publishedCapacity?.slots.first?.state == "idle")
     #expect(!state.refusingNewWork(forModel: target))
 }
+
+@Test func deadlineQualificationChangesAreMaterialWithoutServingPolicyChanges() {
+    var initial = slot(state: "idle", numRunning: 0, used: 0)
+    initial.deadlineProfile = .init(profile: deadlineCalibrationProfileFixture())
+    let original = capacity([initial])
+    var changed = initial
+    changed.deadlineProfile = nil
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: original, current: capacity([changed])))
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: capacity([changed]), current: original))
+    let changes: [(inout DeadlinePerformanceProfileReference) -> Void] = [
+        { $0.configuredContextTokens += 1 }, { $0.effectiveMaxConcurrency += 1 },
+        { $0.prefillChunkSize += 1 }, { $0.maxConcurrentPartialPrefills += 1 },
+        { $0.mixedPrefillTokenCap = 128 }, { $0.soloPrefillStripeTokens = nil }
+    ]
+    for mutate in changes {
+        changed = initial
+        mutate(&changed.deadlineProfile!)
+        #expect(CapacityHeartbeatMateriality.isMaterial(previous: original, current: capacity([changed])))
+    }
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: original, current: original))
+    #expect(initial.performanceProfile == nil)
+}
+
+@Test func promptWorkContractChangesAreMaterialAtUnchangedCapacity() {
+    let legacy = capacity([slot(state: "idle", numRunning: 0, used: 0)])
+    var original = legacy
+    original.slots[0].promptWorkIdentity = .init(modelArtifactHash: String(repeating: "a", count: 64),
+        promptContractID: String(repeating: "b", count: 64))
+    var revised = original
+    revised.slots[0].promptWorkIdentity = .init(modelArtifactHash: String(repeating: "a", count: 64),
+        promptContractID: String(repeating: "c", count: 64))
+    for (before, after) in [(legacy, original), (original, revised), (revised, legacy)] {
+        #expect(CapacityHeartbeatMateriality.isMaterial(previous: before, current: after))
+        #expect(!CapacityHeartbeatMateriality.isMaterial(previous: after, current: after))
+    }
+}

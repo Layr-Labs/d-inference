@@ -79,5 +79,9 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
 	snap.budgetClamped = r.budgetClampedFor(p, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
 	snap.performanceProfile = qualifiedPerformanceProfileLocked(p, model)
+	snap.deadlineProfile = qualifiedDeadlineProfileLocked(p, model)
+	if !r.deadlineProfileApplicableLocked(p, snap.deadlineProfile, now) {
+		snap.deadlineProfile = nil
+	}
 	r.fillFirstContentSnapshot(snap, p, now)
 }

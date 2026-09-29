@@ -1,6 +1,7 @@
 // swift-tools-version: 6.1
 
 import PackageDescription
+import Foundation
 
 let package = Package(
     name: "DarkbloomProvider",
@@ -228,6 +229,17 @@ let package = Package(
         // Swift runtime wire contracts.
         // ----------------------------------------------------------------
         .testTarget(
+            name: "ServingQualificationTests",
+            dependencies: [
+                "ProviderCore", "ProviderCoreFoundation",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXLMServer", package: "mlx-swift-lm"),
+            ],
+            path: "Tests/ServingQualificationTests"
+        ),
+
+        .testTarget(
             name: "GPTOSSOptimizationTests",
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
@@ -325,3 +337,10 @@ let package = Package(
     ],
     cxxLanguageStandard: .cxx17
 )
+
+// Existing correctness suites intentionally exercise DEBUG-only seams. This
+// explicit release qualification graph leaves production targets/settings
+// unchanged and links only the supervised, opt-in hardware receipt harness.
+if ProcessInfo.processInfo.environment["DARKBLOOM_SERVING_QUALIFICATION_BUILD"] == "1" {
+    package.targets.removeAll { $0.type == .test && $0.name != "ServingQualificationTests" }
+}

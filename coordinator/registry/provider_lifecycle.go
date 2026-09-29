@@ -420,6 +420,8 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 	p.pendingReqs = make(map[string]*PendingRequest)
 	p.serviceRetirementShadows = nil
 	p.serviceRetirementProtocol = false
+	p.deadlineActivityAt = time.Time{}
+	p.deadlinePostureInvalidAt = time.Time{}
 	p.settleDrainPendingLocked()
 	p.mu.Unlock()
 	for _, pr := range pending {

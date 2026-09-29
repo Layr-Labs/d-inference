@@ -56,6 +56,7 @@ func (c *warmPoolController) reserveActions(actions []modelLoadAction, now time.
 			if r.pendingModelLoadStarted == nil {
 				r.pendingModelLoadStarted = make(map[modelLoadKey]time.Time)
 			}
+			p.recordDeadlineActivityLocked(now)
 			r.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
 			r.pendingModelLoadStarted[key] = now
 			action.reservation = pendingModelLoadSendAttempt{

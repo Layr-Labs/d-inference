@@ -31,10 +31,13 @@ extension EngineV2Bridge {
     /// unchanged; only the engine queue reads "now" for the final verdict.
     func firstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
-        isMultimodal: Bool
+        isMultimodal: Bool,
+        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
     ) -> CBv2FirstTokenDeadlineAdmission? {
         guard !isMultimodal else { return nil }
-        return targetFirstTokenDeadlineAdmission(deadline: deadline)
+        return targetFirstTokenDeadlineAdmission(
+            deadline: deadline, requestID: requestID,
+            promptTokens: promptTokens, promptWork: promptWork)
     }
 
     /// Only the opaque SDK seal plus this bridge's real published native
@@ -43,9 +46,12 @@ extension EngineV2Bridge {
     /// revalidates the seal's exact engine, generation, owner and one-shot use.
     func firstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
-        multimodal: CBv2MultimodalInput?
+        multimodal: CBv2MultimodalInput?,
+        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
     ) throws -> CBv2FirstTokenDeadlineAdmission? {
-        guard let admission = targetFirstTokenDeadlineAdmission(deadline: deadline) else { return nil }
+        guard let admission = targetFirstTokenDeadlineAdmission(
+            deadline: deadline, requestID: requestID,
+            promptTokens: promptTokens, promptWork: promptWork) else { return nil }
         guard let multimodal else { return admission }
         guard multimodal.nativeMediaToken != nil, multimodal.attention == .causal,
               multimodal.positionState == nil, multimodal.deepstackEmbeddings == nil else { return nil }
@@ -56,32 +62,36 @@ extension EngineV2Bridge {
     }
 
     private func targetFirstTokenDeadlineAdmission(
-        deadline: FirstContentDeadline?
+        deadline: FirstContentDeadline?,
+        requestID: String?, promptTokens: Int, promptWork: PromptWork?
     ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
             prefillDeadlineProjectionEnabled,
-            let deadline,
-            isolatedPrefillEwmaInitialized
+            let deadline
         else {
             return nil
         }
 
-        let prefillRate =
-            isolatedPrefillTpsEwma * Self.deadlineProjectionRateHaircut
-        let decodeCandidate =
-            observedDecodeTpsEwma * Self.deadlineProjectionRateHaircut
+        // Use observed phase rates directly. The engine still prices its
+        // actual queue/cache work against the original absolute deadline;
+        // optional reviewed calibration supplies only measured error bounds.
+        let prefillRate = isolatedPrefillEwmaInitialized
+            && isolatedPrefillTpsEwma.isFinite && isolatedPrefillTpsEwma > 0
+            ? isolatedPrefillTpsEwma : nil
         let decodeRate =
-            ewmaInitialized && decodeCandidate.isFinite && decodeCandidate > 0
-            ? decodeCandidate
+            ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
+            ? observedDecodeTpsEwma
             : nil
-        guard prefillRate.isFinite, prefillRate > 0 else {
-            return nil
+        let calibration = requestID.flatMap {
+            calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
+        guard prefillRate != nil || calibration != nil else { return nil }
 
         return CBv2FirstTokenDeadlineAdmission(
             deadline: deadline.instant,
             conservativePrefillTokensPerSecond: prefillRate,
-            conservativeDecodeTokensPerSecond: decodeRate)
+            conservativeDecodeTokensPerSecond: decodeRate,
+            calibration: calibration)
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

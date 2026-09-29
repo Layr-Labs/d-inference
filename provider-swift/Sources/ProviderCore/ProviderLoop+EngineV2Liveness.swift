@@ -169,6 +169,8 @@ extension ProviderLoop {
 
         // Heartbeats report "reloading" from here until the swap (the old
         // bridge stays registered in the runtime for exactly that reason).
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         await bridge.beginRecoveryReload()
 
         // An unchanged posture keeps the slot's CURRENT TOTAL grant

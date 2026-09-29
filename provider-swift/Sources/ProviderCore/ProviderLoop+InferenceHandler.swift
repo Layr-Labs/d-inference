@@ -183,6 +183,7 @@ extension ProviderLoop {
         receivedAt: ContinuousClock.Instant = .now,
         profile requestProfile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
+        promptWork: PromptWork? = nil,
         send: SendHandle
     ) async {
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
@@ -840,7 +841,8 @@ extension ProviderLoop {
                 nativeConsumerLeaseProvider: { [weak me] modelID, entry in
                     guard let me else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID) }
                     return try await me.nativeMiMoConsumerLease(modelID: modelID, entry: entry)
-                }
+                },
+                promptWork: promptWork
             )
 
             // Force-stream so we get SSE frames even if the original request

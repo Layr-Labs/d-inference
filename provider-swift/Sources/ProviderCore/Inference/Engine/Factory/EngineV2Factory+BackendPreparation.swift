@@ -108,6 +108,7 @@ extension EngineV2Factory {
         constructionPurpose: ConstructionPurpose = .serving,
         automaticallySelectConcurrency: Bool = false,
         performanceQualificationAllowed: Bool = true,
+        mtpPerformanceConfiguration: ServingMTPConfiguration? = nil,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -187,7 +188,7 @@ extension EngineV2Factory {
                 automaticallySelectConcurrency: automaticallySelectConcurrency,
                 performanceQualificationAllowed: performanceQualificationAllowed, backend: kind,
                 maxContextLength: maxContextLength, maxConcurrentRequests: maxConcurrentRequests,
-                environment: environment)
+                environment: environment, mtpPerformanceConfiguration: mtpPerformanceConfiguration)
         }
 
         func contiguousPreparation() throws -> ProductionBackendPreparation {

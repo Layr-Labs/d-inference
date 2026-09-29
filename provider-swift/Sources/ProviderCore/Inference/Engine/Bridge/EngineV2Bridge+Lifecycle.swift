@@ -147,6 +147,12 @@ extension EngineV2Bridge {
                 expectedEngine: native, executionContractID: contractID)
             return
         }
+        defer {
+            deadlinePostureMonitoring?.finish()
+            deadlinePostureMonitoring = nil
+        }
+        let deviceActivity = serviceBudget?.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         let statsTask = prefixCacheStatsTask
         prefixCacheStatsTask = nil
         prefixCacheTelemetry.close()

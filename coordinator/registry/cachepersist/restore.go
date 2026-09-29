@@ -10,8 +10,9 @@ import (
 // Restore loads the durable copy. If the store's rows were written under a
 // different cache-key generation (the master key changed), both tables are
 // reset first: their HMAC-derived keys can never match a request. Demand
-// entries within ttl are returned, newest first up to maxDemand, for the
-// registry to seed its index directly. Holder rows are loaded under the
+// entries within ttl and not after now are returned, newest first up to
+// maxDemand, for the registry to seed its index directly; the registry then
+// reports the entries its index accepted with SeedDemandPersisted. Holder rows are loaded under the
 // current ttl (the store clamps each row's expiry to UpdatedAt+ttl before it
 // orders and caps, so a row written under a longer TTL neither outlives
 // today's setting nor crowds a valid row out of the cap), longest-lived first
@@ -39,7 +40,7 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		p.mu.Unlock()
 		return nil, nil
 	}
-	demand, err := p.store.LoadCacheDemand(ctx, now.Add(-ttl), maxDemand)
+	demand, err := p.store.LoadCacheDemand(ctx, now.Add(-ttl), now, maxDemand)
 	if err != nil {
 		return nil, err
 	}
@@ -65,12 +66,25 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		p.pendingCount++
 	}
 	p.counters.restoredHolders = p.pendingCount
-	p.counters.restoredDemand = len(demand)
-	for _, rec := range demand {
-		p.demandPersisted[rec.Key] = rec.SeenAt
-	}
 	p.mu.Unlock()
 	return demand, nil
+}
+
+// SeedDemandPersisted records the restored demand entries the registry's
+// index accepted as already persisted, so the next observation of each key
+// is not written again inside the granularity. Entries the index rejected
+// (outside its window, or evicted) are not seeded: a later observation of
+// such a key must reach the store.
+func (p *Persister) SeedDemandPersisted(accepted []crs.DemandRecord) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, rec := range accepted {
+		p.demandPersisted[rec.Key] = rec.SeenAt
+	}
+	p.counters.restoredDemand = len(accepted)
 }
 
 // ClampToTTL applies the current routing TTL to a restored or parked row: the

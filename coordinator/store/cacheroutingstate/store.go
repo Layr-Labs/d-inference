@@ -27,8 +27,10 @@ type Store interface {
 	// UpsertCacheDemand inserts or refreshes rows, keeping the later SeenAt.
 	UpsertCacheDemand(context.Context, []DemandRecord) error
 	// LoadCacheDemand returns up to limit rows whose SeenAt is at or after
-	// notBefore, newest first. A limit of 0 or less means no limit.
-	LoadCacheDemand(ctx context.Context, notBefore time.Time, limit int) ([]DemandRecord, error)
+	// notBefore and at or before notAfter, newest first. The upper bound
+	// keeps rows stamped by a previous instance's fast clock from taking the
+	// cap ahead of valid rows. A limit of 0 or less means no limit.
+	LoadCacheDemand(ctx context.Context, notBefore, notAfter time.Time, limit int) ([]DemandRecord, error)
 	// CacheRoutingKeyFingerprint returns the fingerprint of the derived cache
 	// key generation the stored rows were written under, or "" when none was
 	// recorded.

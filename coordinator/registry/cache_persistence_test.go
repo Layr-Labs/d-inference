@@ -151,7 +151,7 @@ func testCacheRoutingPersistenceSurvivesRestart(t *testing.T, st store.Store) {
 		rows[0].AnchorTokenCount != checkpoint.TokenCount || rows[0].ModelID != "model" {
 		t.Fatalf("durable holder row wrong: %+v", rows)
 	}
-	demand, _ := cacheStore.LoadCacheDemand(context.Background(), time.Now().Add(-time.Minute), 0)
+	demand, _ := cacheStore.LoadCacheDemand(context.Background(), time.Now().Add(-time.Minute), time.Now(), 0)
 	if len(demand) == 0 {
 		t.Fatal("demand keys were not persisted")
 	}
@@ -732,5 +732,99 @@ func TestCacheRoutingPersistenceCapabilityChangeKeepsRowOwnedByLiveSession(t *te
 	}
 	if rows := storedHolders(t, st); len(rows) != 0 {
 		t.Fatalf("row must be deleted once no live session holds it: %+v", rows)
+	}
+}
+
+// A lookup's measured stage cost outranks the Ready fallback until its own
+// deadline. The durable row carries it, so a restart inside that window keeps
+// routing on the measured value instead of flipping to the estimate.
+func TestCacheRoutingPersistenceRestoresMeasuredStage(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r1, _, capability := exactTestRegistry(t)
+	removeTestProvider(r1, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r1, st)
+	a := persistenceTestProvider(t, r1, "machine-a", capability)
+	checkpoint := exactTestAnchor(16, "c")
+	plan := boundTestCachePlan(r1, exactTestPlan(checkpoint))
+	now := time.Now()
+	const measured, estimate = 900.0, 50.0
+	// A measured SSD hit, then a Ready refresh with a different fallback.
+	pr := &PendingRequest{RequestID: "reader", Model: "model", CachePlan: plan}
+	if err := prepareBoundTestCacheAttempt(r1, pr, a); err != nil {
+		t.Fatal(err)
+	}
+	nonce := preparedTestCacheMetadata(pr).CacheReceiptNonce
+	lookup := testV2Lookup(nonce, capability, plan.Boundaries[len(plan.Boundaries)-1], 1)
+	lookup.RequestID, lookup.Outcome, lookup.StageMs = "reader", "hit", measured
+	lookup.MatchedAnchor = &checkpoint
+	lookup.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+	if accepted, mismatch := r1.cacheRouting.applyLookupV2Result(a.ID, a, capability, lookup, r1.cacheRouteKeys.route, now); !accepted || mismatch {
+		t.Fatalf("lookup accepted=%v mismatch=%v", accepted, mismatch)
+	}
+	ready := testV2Ready(nonce, capability, checkpoint, 2)
+	ready.RequestID, ready.StageMs = "reader", estimate
+	if accepted, mismatch := r1.cacheRouting.applyReadyV2Result(a.ID, a, capability, ready, r1.cacheRouteKeys.route, now); !accepted || mismatch {
+		t.Fatalf("ready accepted=%v mismatch=%v", accepted, mismatch)
+	}
+	if hints := memoryTestHints(r1, plan, now); len(hints) != 1 || hints[a.ID].StageMs != measured {
+		t.Fatalf("measured stage must outrank the Ready fallback before the restart: %+v", hints)
+	}
+	if err := r1.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rows := storedHolders(t, st)
+	if len(rows) != 1 || rows[0].StageMs != estimate || rows[0].MeasuredStageMs != measured || !rows[0].MeasuredExpiresAt.After(now) {
+		t.Fatalf("row must carry both the fallback and the measurement: %+v", rows)
+	}
+
+	r2, _, _ := exactTestRegistry(t)
+	removeTestProvider(r2, "provider-a")
+	startPersistence(t, r2, st)
+	back := persistenceTestProvider(t, r2, "machine-a-back", capability)
+	plan2 := boundTestCachePlan(r2, exactTestPlan(checkpoint))
+	hints := memoryTestHints(r2, plan2, now)
+	if len(hints) != 1 || hints[back.ID].StageMs != measured {
+		t.Fatalf("restart flipped routing back to the Ready estimate: %+v", hints)
+	}
+	// The measurement is bound to the capability the row bound to and keeps
+	// its own deadline: past it, the fallback applies again.
+	r2.cacheRouting.mu.Lock()
+	var bound cacheHolder
+	for _, h := range r2.cacheRouting.holders[cacheTierBoundaryKey(r2.cacheRouteKeys.route, plan2, checkpoint, "ssd")] {
+		bound = h
+	}
+	r2.cacheRouting.mu.Unlock()
+	if bound.stageMeasurement == nil || bound.stageMeasurement.capability != hints[back.ID].Capability ||
+		bound.stageMeasurement.expiresAt.After(bound.ExpiresAt) {
+		t.Fatalf("restored measurement not bound to the live capability within the holder's life: %+v", bound.stageMeasurement)
+	}
+	if got := bound.stageCostAt(bound.stageMeasurement.expiresAt); got != estimate {
+		t.Fatalf("fallback must apply once the measurement expires: got %v", got)
+	}
+}
+
+// The demand index reports which restored entries it accepted; only those
+// count as already persisted, so a key the index rejected (at the TTL edge
+// here) is written again on its next observation.
+func TestCacheDemandRestoreReportsAcceptedEntries(t *testing.T) {
+	r, _, _ := exactTestRegistry(t)
+	r.mu.RLock()
+	tracker := r.cacheRouting
+	r.mu.RUnlock()
+	now := time.Now()
+	ttl := tracker.demand.ttl
+	accepted := tracker.demand.restore([]crs.DemandRecord{
+		{Key: "fresh", SeenAt: now.Add(-time.Second)},
+		{Key: "edge", SeenAt: now.Add(-ttl)},
+		{Key: "future", SeenAt: now.Add(time.Second)},
+		{Key: "", SeenAt: now},
+	}, now)
+	if len(accepted) != 1 || accepted[0].Key != "fresh" {
+		t.Fatalf("only the entry inside the window is accepted: %+v", accepted)
+	}
+	entries, _ := tracker.demand.stats()
+	if entries != 1 {
+		t.Fatalf("index holds %d entries, want 1", entries)
 	}
 }

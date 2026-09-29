@@ -42,8 +42,13 @@ type HolderRecord struct {
 	AnchorTokenCount        int
 	RequiredRecomputeTokens int
 	StageMs                 float64
-	UpdatedAt               time.Time
-	ExpiresAt               time.Time
+	// MeasuredStageMs and MeasuredExpiresAt carry a lookup's measured stage
+	// cost, which routing prefers over the Ready fallback (StageMs) until it
+	// expires; zero when the holder has no live measurement.
+	MeasuredStageMs   float64
+	MeasuredExpiresAt time.Time
+	UpdatedAt         time.Time
+	ExpiresAt         time.Time
 }
 
 // HolderKey returns the row identity of the record.

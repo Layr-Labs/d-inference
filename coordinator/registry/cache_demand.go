@@ -141,15 +141,19 @@ func (d *cacheDemandTracker) observeLocked(boundaries []cacheDemandBoundary, now
 // restore seeds the index from durable rows, oldest first so the eviction
 // order matches the seen order. Rows past the TTL are skipped; the entry cap
 // keeps the newest.
-func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) int {
+// restore seeds the index from the durable copy and returns the entries it
+// accepted (within the TTL, not in the future); the caller treats those as
+// already persisted.
+func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) []crs.DemandRecord {
 	sort.Slice(records, func(i, j int) bool { return records[i].SeenAt.Before(records[j].SeenAt) })
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	restored := 0
+	accepted := make([]crs.DemandRecord, 0, len(records))
 	for _, rec := range records {
 		if rec.Key == "" || now.Sub(rec.SeenAt) >= d.ttl || rec.SeenAt.After(now) {
 			continue
 		}
+		accepted = append(accepted, rec)
 		if entry := d.entries[rec.Key]; entry != nil {
 			if rec.SeenAt.After(entry.Value.(cacheDemandEntry).seen) {
 				entry.Value = cacheDemandEntry{rec.Key, rec.SeenAt}
@@ -158,14 +162,13 @@ func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) 
 			continue
 		}
 		d.entries[rec.Key] = d.order.PushBack(cacheDemandEntry{rec.Key, rec.SeenAt})
-		restored++
 		for len(d.entries) > d.limit {
 			first := d.order.Front()
 			delete(d.entries, first.Value.(cacheDemandEntry).key)
 			d.order.Remove(first)
 		}
 	}
-	return restored
+	return accepted
 }
 
 // stats reports the entries held, including expired ones the bounded sweep

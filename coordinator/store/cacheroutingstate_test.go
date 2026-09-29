@@ -81,8 +81,11 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 				t.Fatalf("older duplicate overwrote the newer row: %+v", k1)
 			}
 			// A newer receipt refreshes the row; an older one only extends expiry.
+			// The newer one carries a measured stage cost, the older none.
 			newer := holderRecord(5, "epoch-a", now.Add(time.Minute), 29*time.Minute)
 			newer.StageMs = 80
+			newer.MeasuredStageMs = 640
+			newer.MeasuredExpiresAt = now.Add(20 * time.Minute)
 			older := holderRecord(6, "epoch-a", now.Add(-time.Minute), 45*time.Minute)
 			older.StageMs = 999
 			if err := s.UpsertCacheHolders(ctx, []crs.HolderRecord{newer, older}); err != nil {
@@ -93,8 +96,12 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 			for _, r := range got {
 				byKey[r.HolderKey()] = r
 			}
-			if r := byKey[crs.HolderKey{Key: "k005", CacheEpoch: "epoch-a"}]; r.StageMs != 80 || !r.UpdatedAt.Equal(now.Add(time.Minute)) {
-				t.Fatalf("newer receipt did not win: %+v", r)
+			if r := byKey[crs.HolderKey{Key: "k005", CacheEpoch: "epoch-a"}]; r.StageMs != 80 || !r.UpdatedAt.Equal(now.Add(time.Minute)) ||
+				r.MeasuredStageMs != 640 || !r.MeasuredExpiresAt.Equal(now.Add(20*time.Minute)) {
+				t.Fatalf("newer receipt (with its measurement) did not win: %+v", r)
+			}
+			if r := byKey[crs.HolderKey{Key: "k006", CacheEpoch: "epoch-a"}]; r.MeasuredStageMs != 0 || !r.MeasuredExpiresAt.IsZero() {
+				t.Fatalf("a row without a measurement must read back zero values: %+v", r)
 			}
 			if r := byKey[crs.HolderKey{Key: "k006", CacheEpoch: "epoch-a"}]; r.StageMs != 120 || !r.ExpiresAt.Equal(now.Add(-time.Minute).Add(45*time.Minute)) {
 				t.Fatalf("older receipt must keep descriptive columns but extend expiry: %+v", r)
@@ -161,7 +168,15 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("merge: %v", err)
 			}
-			got, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), 0)
+			// A row stamped after the load's upper bound (a previous instance's
+			// fast clock) is invisible to a bounded load.
+			if err := s.UpsertCacheDemand(ctx, []crs.DemandRecord{{Key: "future", SeenAt: now.Add(2 * time.Hour)}}); err != nil {
+				t.Fatalf("upsert future row: %v", err)
+			}
+			if rows, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), now, 1); err != nil || len(rows) != 1 || rows[0].Key == "future" {
+				t.Fatalf("future row must not take the cap: %+v %v", rows, err)
+			}
+			got, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), now.Add(time.Hour), 0)
 			if err != nil {
 				t.Fatalf("load: %v", err)
 			}
@@ -173,7 +188,7 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 				t.Fatalf("merge semantics wrong: %v %v", got[0].SeenAt, got[1].SeenAt)
 			}
 			// A capped load keeps the newest keys.
-			top, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), 2)
+			top, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), now.Add(time.Hour), 2)
 			if err != nil || len(top) != 2 || top[0].Key != "d0001" || top[1].Key != "d0000" {
 				t.Fatalf("capped demand load must return the newest keys first: %+v %v", top, err)
 			}
@@ -200,7 +215,7 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			if fp, _ := s.CacheRoutingKeyFingerprint(ctx); fp != "gen-2" {
 				t.Fatalf("fingerprint after reset: %q", fp)
 			}
-			if rest, _ := s.LoadCacheDemand(ctx, now.Add(-time.Hour), 0); len(rest) != 0 {
+			if rest, _ := s.LoadCacheDemand(ctx, now.Add(-time.Hour), now.Add(time.Hour), 0); len(rest) != 0 {
 				t.Fatalf("reset must empty the demand table: %d rows", len(rest))
 			}
 		})

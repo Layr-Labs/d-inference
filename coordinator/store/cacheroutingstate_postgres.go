@@ -30,10 +30,17 @@ const cacheRoutingHoldersDDL = `CREATE TABLE IF NOT EXISTS cache_routing_holders
  anchor_token_count INTEGER NOT NULL DEFAULT 0,
  required_recompute_tokens INTEGER NOT NULL DEFAULT 0,
  stage_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+ measured_stage_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+ measured_expires_at TIMESTAMPTZ,
  updated_at TIMESTAMPTZ NOT NULL,
  expires_at TIMESTAMPTZ NOT NULL,
  PRIMARY KEY (key, cache_epoch)
 )`
+
+// Tables created before the measured-stage columns existed pick them up here.
+const cacheRoutingHoldersMeasuredStageDDL = `ALTER TABLE cache_routing_holders
+ ADD COLUMN IF NOT EXISTS measured_stage_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+ ADD COLUMN IF NOT EXISTS measured_expires_at TIMESTAMPTZ`
 
 // The expiry index serves the prune; a load under a TTL orders by the clamped
 // expression and scans the table once at boot instead.
@@ -57,7 +64,7 @@ const cacheRoutingMetaDDL = `CREATE TABLE IF NOT EXISTS cache_routing_meta (
 
 const cacheRoutingKeyFingerprintName = "key_fingerprint"
 
-const cacheHolderInsertColumns = 13
+const cacheHolderInsertColumns = 15
 
 func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.HolderRecord) error {
 	for _, r := range records {
@@ -70,7 +77,7 @@ func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.Ho
 		end := min(start+crs.BatchRows, len(records))
 		chunk := records[start:end]
 		var sb strings.Builder
-		sb.WriteString(`INSERT INTO cache_routing_holders (key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id, block_hash_version, anchor_chain_hash, anchor_token_count, required_recompute_tokens, stage_ms, updated_at, expires_at) VALUES `)
+		sb.WriteString(`INSERT INTO cache_routing_holders (key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id, block_hash_version, anchor_chain_hash, anchor_token_count, required_recompute_tokens, stage_ms, measured_stage_ms, measured_expires_at, updated_at, expires_at) VALUES `)
 		args := make([]any, 0, len(chunk)*cacheHolderInsertColumns)
 		for i, r := range chunk {
 			if i > 0 {
@@ -87,7 +94,7 @@ func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.Ho
 			sb.WriteString(")")
 			args = append(args, r.Key, r.CacheEpoch, r.Tier, r.ModelID, r.ModelAggregateHash, r.PromptContractID,
 				r.BlockHashVersion, r.AnchorChainHash, r.AnchorTokenCount, r.RequiredRecomputeTokens, r.StageMs,
-				r.UpdatedAt.UTC(), r.ExpiresAt.UTC())
+				r.MeasuredStageMs, nullableTime(r.MeasuredExpiresAt), r.UpdatedAt.UTC(), r.ExpiresAt.UTC())
 		}
 		// The newer receipt wins every descriptive column; expiry never moves
 		// backwards, so a replayed or reordered batch is idempotent.
@@ -101,6 +108,8 @@ func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.Ho
  anchor_token_count = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.anchor_token_count ELSE cache_routing_holders.anchor_token_count END,
  required_recompute_tokens = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.required_recompute_tokens ELSE cache_routing_holders.required_recompute_tokens END,
  stage_ms = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.stage_ms ELSE cache_routing_holders.stage_ms END,
+ measured_stage_ms = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.measured_stage_ms ELSE cache_routing_holders.measured_stage_ms END,
+ measured_expires_at = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.measured_expires_at ELSE cache_routing_holders.measured_expires_at END,
  updated_at = GREATEST(EXCLUDED.updated_at, cache_routing_holders.updated_at),
  expires_at = GREATEST(EXCLUDED.expires_at, cache_routing_holders.expires_at)`)
 		if _, err := s.pool.Exec(ctx, sb.String(), args...); err != nil {
@@ -144,7 +153,8 @@ func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl
 		args = append(args, ttl.Microseconds())
 	}
 	query := fmt.Sprintf(`SELECT key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id,
- block_hash_version, anchor_chain_hash, anchor_token_count, required_recompute_tokens, stage_ms, updated_at, effective_expires_at
+ block_hash_version, anchor_chain_hash, anchor_token_count, required_recompute_tokens, stage_ms,
+ measured_stage_ms, measured_expires_at, updated_at, effective_expires_at
  FROM (SELECT *, %s AS effective_expires_at FROM cache_routing_holders) h
  WHERE effective_expires_at > $1 ORDER BY effective_expires_at DESC, key, cache_epoch`, expiry)
 	if limit > 0 {
@@ -158,11 +168,17 @@ func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl
 	defer rows.Close()
 	out := []crs.HolderRecord{}
 	for rows.Next() {
-		var r crs.HolderRecord
+		var (
+			r               crs.HolderRecord
+			measuredExpires *time.Time
+		)
 		if err := rows.Scan(&r.Key, &r.CacheEpoch, &r.Tier, &r.ModelID, &r.ModelAggregateHash, &r.PromptContractID,
 			&r.BlockHashVersion, &r.AnchorChainHash, &r.AnchorTokenCount, &r.RequiredRecomputeTokens, &r.StageMs,
-			&r.UpdatedAt, &r.ExpiresAt); err != nil {
+			&r.MeasuredStageMs, &measuredExpires, &r.UpdatedAt, &r.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("scan cache holder: %w", err)
+		}
+		if measuredExpires != nil {
+			r.MeasuredExpiresAt = *measuredExpires
 		}
 		out = append(out, r)
 	}
@@ -195,13 +211,14 @@ func (s *PostgresStore) UpsertCacheDemand(ctx context.Context, records []crs.Dem
 	return nil
 }
 
-func (s *PostgresStore) LoadCacheDemand(ctx context.Context, notBefore time.Time, limit int) ([]crs.DemandRecord, error) {
-	// Newest first so a capped restore keeps the freshest keys; a limit of 0
-	// or less loads everything.
-	query := `SELECT key, seen_at FROM cache_routing_demand WHERE seen_at >= $1 ORDER BY seen_at DESC, key`
-	args := []any{notBefore.UTC()}
+func (s *PostgresStore) LoadCacheDemand(ctx context.Context, notBefore, notAfter time.Time, limit int) ([]crs.DemandRecord, error) {
+	// Newest first so a capped restore keeps the freshest keys; rows stamped
+	// after notAfter (a previous instance's clock ran ahead) are skipped so
+	// they cannot take the cap; a limit of 0 or less loads everything.
+	query := `SELECT key, seen_at FROM cache_routing_demand WHERE seen_at >= $1 AND seen_at <= $2 ORDER BY seen_at DESC, key`
+	args := []any{notBefore.UTC(), notAfter.UTC()}
 	if limit > 0 {
-		query += ` LIMIT $2`
+		query += ` LIMIT $3`
 		args = append(args, limit)
 	}
 	rows, err := s.pool.Query(ctx, query, args...)
@@ -285,4 +302,12 @@ func (s *PostgresStore) PruneCacheRoutingState(ctx context.Context, now, demandN
 		}
 	}
 	return total, nil
+}
+
+// nullableTime maps the zero time to SQL NULL.
+func nullableTime(v time.Time) any {
+	if v.IsZero() {
+		return nil
+	}
+	return v.UTC()
 }

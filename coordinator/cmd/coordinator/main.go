@@ -1007,14 +1007,6 @@ func main() {
 			"grace", grace.String(), "inflight", srv.Inflight())
 	}
 	graceCancel()
-	// Final write-behind of the cache routing indexes so the next boot restores
-	// evidence gathered since the last periodic flush.
-	persistCancel()
-	flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := reg.FlushCacheRoutingState(flushCtx); err != nil {
-		logger.Warn("final cache routing persistence flush failed", "error", err)
-	}
-	flushCancel()
 
 	// Hard backstop: even after the grace wait, give Shutdown a bounded deadline so
 	// a stuck connection can't block process exit forever.
@@ -1023,6 +1015,19 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}
+
+	// Final write-behind of the cache routing indexes, after Shutdown so no new
+	// provider connection or request can produce evidence behind it; the
+	// periodic flush loop stays alive until here because provider sockets
+	// (hijacked, so not waited on by Shutdown) keep producing receipts and
+	// heartbeats through the drain. The flush repeats until the dirty sets
+	// are empty, so anything a still-open socket marks meanwhile is written.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := reg.FlushCacheRoutingState(flushCtx); err != nil {
+		logger.Warn("final cache routing persistence flush failed", "error", err)
+	}
+	flushCancel()
+	persistCancel()
 
 	logger.Info("coordinator stopped")
 }

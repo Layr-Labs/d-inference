@@ -112,7 +112,7 @@ func (s *MemoryStore) UpsertCacheDemand(ctx context.Context, records []crs.Deman
 	return nil
 }
 
-func (s *MemoryStore) LoadCacheDemand(ctx context.Context, notBefore time.Time, limit int) ([]crs.DemandRecord, error) {
+func (s *MemoryStore) LoadCacheDemand(ctx context.Context, notBefore, notAfter time.Time, limit int) ([]crs.DemandRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -120,7 +120,7 @@ func (s *MemoryStore) LoadCacheDemand(ctx context.Context, notBefore time.Time, 
 	defer s.mu.RUnlock()
 	out := make([]crs.DemandRecord, 0, len(s.cacheDemand))
 	for key, seen := range s.cacheDemand {
-		if !seen.Before(notBefore) {
+		if !seen.Before(notBefore) && !seen.After(notAfter) {
 			out = append(out, crs.DemandRecord{Key: key, SeenAt: seen})
 		}
 	}

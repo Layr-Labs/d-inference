@@ -55,7 +55,7 @@ func TestFlushRetriesUnwrittenRemainderAndDedupesDemand(t *testing.T) {
 	if rows, _ := mem.LoadCacheHolders(context.Background(), now, 0, 0); len(rows) != 1 {
 		t.Fatalf("requeued holder not written: %d", len(rows))
 	}
-	if d, _ := mem.LoadCacheDemand(context.Background(), now.Add(-time.Minute), 0); len(d) != 2 {
+	if d, _ := mem.LoadCacheDemand(context.Background(), now.Add(-time.Minute), now.Add(time.Minute), 0); len(d) != 2 {
 		t.Fatalf("requeued demand not written: %d", len(d))
 	}
 	// Within the granularity window the same key is not written again.
@@ -231,7 +231,7 @@ func TestRestoreResetsRowsFromAnotherKeyGeneration(t *testing.T) {
 	if rows, _ := mem.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 0 {
 		t.Fatalf("old-generation holder rows survived the reset: %d", len(rows))
 	}
-	if rows, _ := mem.LoadCacheDemand(ctx, now.Add(-time.Minute), 0); len(rows) != 0 {
+	if rows, _ := mem.LoadCacheDemand(ctx, now.Add(-time.Minute), now.Add(time.Minute), 0); len(rows) != 0 {
 		t.Fatalf("old-generation demand rows survived the reset: %d", len(rows))
 	}
 	// The next boot under the new generation restores what it wrote.
@@ -293,5 +293,44 @@ func TestDemandGranularityFollowsShortTTLAndRestoreIsCapped(t *testing.T) {
 	demand, err = New(mem, nil, Options{MaxPending: 10}).Restore(ctx, now.Add(10*time.Second), time.Minute, 10, 0)
 	if err != nil || len(demand) != 5 {
 		t.Fatalf("uncapped restore must drop only the expired key: %+v %v", demand, err)
+	}
+}
+
+// Demand rows stamped after now by a previous instance's fast clock are not
+// restored, and only the entries the registry's index accepted are treated as
+// already persisted.
+func TestRestoreBoundsDemandToNowAndSeedsOnlyAcceptedKeys(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	if err := mem.UpsertCacheDemand(ctx, []crs.DemandRecord{
+		{Key: "future", SeenAt: now.Add(time.Hour)},
+		{Key: "fresh", SeenAt: now.Add(-time.Second)},
+		{Key: "edge", SeenAt: now.Add(-time.Minute)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := New(mem, nil, Options{MaxPending: 10, DemandTTL: time.Minute})
+	demand, err := p.Restore(ctx, now, time.Minute, 10, 1)
+	if err != nil || len(demand) != 1 || demand[0].Key != "fresh" {
+		t.Fatalf("the future row must not take the cap: %+v %v", demand, err)
+	}
+	if s := p.Status(); s.RestoredDemand != 0 {
+		t.Fatalf("nothing counts as restored before the index accepts it: %+v", s)
+	}
+	// The registry accepted "fresh" only; "edge" (rejected by the index) is
+	// not seeded, so its next observation is written.
+	p.SeedDemandPersisted([]crs.DemandRecord{{Key: "fresh", SeenAt: now.Add(-time.Second)}})
+	if s := p.Status(); s.RestoredDemand != 1 {
+		t.Fatalf("restored demand counts accepted entries: %+v", s)
+	}
+	p.MarkDemand([]string{"fresh", "edge", "future"}, now)
+	b := p.drain()
+	keys := map[string]bool{}
+	for _, d := range b.demand {
+		keys[d.Key] = true
+	}
+	if keys["fresh"] || !keys["edge"] || !keys["future"] {
+		t.Fatalf("seeded key suppressed, others written: %+v", b.demand)
 	}
 }

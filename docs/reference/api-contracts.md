@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-29 · commit `2fea54f1c`
+> Last updated: 2026-09-29 · commit `e5cc2229f`
 
 The complete public HTTP surface of the coordinator, derived from the 115 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -437,7 +437,7 @@ are advertised provider/model pairs, not unique models or guaranteed cache hits.
 | `lifecycle.fences_applied` | Proof-fence windows opened or escalated | `coordinator/registry/cache_routing.go` (`CacheRoutingLifecycleStatus`); `coordinator/registry/cache_proof_fence.go` (`rejectCapability`) |
 | `lifecycle.fences_expired` | Windows that lifted by time, each counted once | Same; `coordinator/registry/cache_proof_fence.go` (`countLapseLocked`) |
 | `lifecycle.persistence.enabled` | Whether the holder and demand indexes are being written to the store across restarts | `coordinator/registry/cachepersist/status.go` (`Status`) |
-| `lifecycle.persistence.restored_holders` / `.restored_demand` | Rows loaded at boot: holders parked by cache epoch, demand entries seeded directly | `coordinator/registry/cachepersist/restore.go` (`Restore`) |
+| `lifecycle.persistence.restored_holders` / `.restored_demand` | Rows loaded at boot: holders parked by cache epoch, demand entries the index accepted (within the TTL, not after the clock) | `coordinator/registry/cachepersist/restore.go` (`Restore`) |
 | `lifecycle.persistence.pending_holders` / `.bound_holders` / `.dropped_pending` | Parked rows still waiting for their provider, rows bound to a reconnected provider, rows dropped as expired, mismatched (the durable row is deleted so it is not reloaded on every boot), or belonging to a capability that changed | `coordinator/registry/cache_persistence.go` (`bindPendingLocked`, `bindRowsLocked`); `coordinator/registry/cachepersist/pending.go` (`Take`, `Drop`) |
 | `lifecycle.persistence.key_rotated` | `true` when this boot found rows written under another cache master key and reset the tables instead of restoring them | `coordinator/registry/cachepersist/restore.go` (`Restore`); `coordinator/store/cacheroutingstate_postgres.go` (`CacheRoutingKeyFingerprint`, `ResetCacheRoutingState`) |
 | `lifecycle.persistence.flushes` / `.flush_errors` / `.rows_written` / `.rows_deleted` / `.dropped_dirty` / `.last_flush_ms` / `.last_flush_at` | Write-behind health: 5-second flush count, failures (the batch is retried), rows written and deleted, dirty entries dropped at the cap, last flush duration and time | `coordinator/registry/cachepersist/persister.go` (`Flush`) |

@@ -64,7 +64,7 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 	demand, restoreErr := persister.Restore(restoreCtx, now, tracker.ttl, tracker.maxEntries, tracker.demand.limit)
 	cancel()
 	if restoreErr == nil {
-		tracker.demand.restore(demand, now)
+		persister.SeedDemandPersisted(tracker.demand.restore(demand, now))
 	}
 	tracker.mu.Lock()
 	tracker.persister = persister

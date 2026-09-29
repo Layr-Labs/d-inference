@@ -21,13 +21,20 @@ import (
 // at boot.
 
 func holderRecordFor(key string, h cacheHolder) crs.HolderRecord {
-	return crs.HolderRecord{
+	rec := crs.HolderRecord{
 		Key: key, CacheEpoch: h.CacheEpoch, Tier: h.Tier, ModelID: h.ModelID,
 		ModelAggregateHash: h.ModelAggregateHash, PromptContractID: h.PromptContractID,
 		BlockHashVersion: h.BlockHashVersion, AnchorChainHash: h.Anchor.ChainHash,
 		AnchorTokenCount: h.Anchor.TokenCount, RequiredRecomputeTokens: h.RequiredRecomputeTokens,
 		StageMs: h.StageMs, UpdatedAt: h.UpdatedAt, ExpiresAt: h.ExpiresAt,
 	}
+	// A lookup's measured stage cost outranks the Ready fallback until its
+	// own deadline (cache_stage_measurement.go); it travels with the row so a
+	// restart inside that window does not flip routing back to the estimate.
+	if m := h.stageMeasurement; m != nil {
+		rec.MeasuredStageMs, rec.MeasuredExpiresAt = m.milliseconds, m.expiresAt
+	}
+	return rec
 }
 
 // persistable reports whether a holder belongs in the durable copy: SSD tier
@@ -165,6 +172,19 @@ func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability prot
 			Anchor:                  protocol.PrefixCacheAnchor{ChainHash: rec.AnchorChainHash, TokenCount: rec.AnchorTokenCount},
 			RequiredRecomputeTokens: rec.RequiredRecomputeTokens, StageMs: rec.StageMs,
 			UpdatedAt: rec.UpdatedAt, ExpiresAt: rec.ExpiresAt,
+		}
+		if rec.MeasuredStageMs > 0 && rec.MeasuredExpiresAt.After(now) {
+			// The measurement binds to the capability the row bound to; the
+			// same identity fields matched, and any other change would have
+			// invalidated the holder in memory as well. It never outlives the
+			// holder's (clamped) expiry.
+			expires := rec.MeasuredExpiresAt
+			if rec.ExpiresAt.Before(expires) {
+				expires = rec.ExpiresAt
+			}
+			holder.stageMeasurement = &cacheStageMeasurement{
+				milliseconds: rec.MeasuredStageMs, expiresAt: expires, capability: capability,
+			}
 		}
 		t.upsertHolderLocked(rec.Key, holder)
 		if _, present := t.holders[rec.Key][provider.ID]; present {

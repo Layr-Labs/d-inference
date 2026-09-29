@@ -50,6 +50,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// way to find a tokenizer for the utility endpoints (since
     /// `registryProvider` is nil in that mode).
     private let tokenizerProvider: (@Sendable (String?) async throws -> TokenizerResolution)?
+    /// Read-only provider catalog/resident metadata; never loads a model or
+    /// infers architecture from the caller's requested name. The acquired
+    /// model and its actual native audio binding are revalidated afterward.
+    private let modelTypeProvider: (@Sendable (String) async -> String?)?
     /// Listing closure used by `availableModels()` when the engine was
     /// constructed via the atomic-`acquire` init. Returns the set of
     /// model IDs that should appear in `/v1/models`.
@@ -197,6 +201,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.serviceReservation = serviceReservation
         self.acquire = nil
         self.tokenizerProvider = nil
+        self.modelTypeProvider = nil
         self.availableModelsOverride = nil
     }
 
@@ -218,10 +223,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         availableModels: @escaping @Sendable () async -> [String],
         defaultMaxTokens: Int = 4096,
         templateControls: ChatTemplateControls = .init(),
-        nativeLocalCacheScope: String? = nil
+        nativeLocalCacheScope: String? = nil,
+        modelTypeProvider: (@Sendable (String) async -> String?)? = nil
     ) {
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
+        self.modelTypeProvider = modelTypeProvider
         self.availableModelsOverride = availableModels
         self.registryProvider = nil
         self.ensureLoaded = { _ in }
@@ -286,6 +293,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // The fallback usage channel belongs to this request, never to the engine.
         let requestUsage = engineV2Usage ?? EngineV2RequestUsageSignal()
         try checkFirstContentDeadline()
+        if MediaIngest.hasAudio(request) {
+            let knownType: String?
+            if let modelTypeProvider {
+                knownType = await modelTypeProvider(request.model)
+            } else {
+                let resident = await (registryProvider?() ?? [:])
+                knownType = resident[request.model]?.modelType
+            }
+            try checkFirstContentDeadline()
+            try MediaIngest.rejectUnsupportedAudio(request, modelType: knownType)
+        }
         // Only invalid native-control evidence warrants this extra read-only
         // resident lookup. It must never load/provision, infer type from the
         // requested name, or convert cancellation into a cold-model fallback.
@@ -410,9 +428,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         do {
             try checkFirstContentDeadline()
             try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
-            guard !MediaIngest.hasAudio(request) || modelType == "mimo_v2" else {
-                throw MultiModelBatchSchedulerEngineError.multimodalRejected("encoded audio requires a native audio profile")
-            }
+            try MediaIngest.rejectUnsupportedAudio(request, modelType: modelType)
             if modelType == "mimo_v2" {
                 try MiMoV26TemplateFix.validateRequest(request)
                 nativeMiMoThinkingEnabled = try MiMoV26TemplateFix.effectiveThinkingEnabled(

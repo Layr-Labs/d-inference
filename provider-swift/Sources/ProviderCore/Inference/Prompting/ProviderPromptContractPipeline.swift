@@ -57,6 +57,8 @@ enum ProviderPromptContractPipeline {
         preserveMiMoMediaParts: Bool = false
     ) throws -> NormalizedInput {
         try validateNativeControls(templateControls, modelType: modelType)
+        try MediaIngest.rejectUnsupportedAudio(request,
+            modelType: preserveMiMoMediaParts ? modelType : nil)
         try DiffusionGemmaReasoningControl.validate(
             request: request, controls: templateControls, modelType: modelType)
         let isMiMo = MiMoV26TemplateFix.applies(to: .init(modelType: modelType))

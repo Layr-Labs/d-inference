@@ -56,6 +56,9 @@ extension ProviderLoop {
             responseTracker: localResponseTracker,
             onServerRunning: { [weak self] _ in
                 await self?.onLocalEndpointBound(cfg)
+            },
+            modelTypeProvider: { [weak self] modelId in
+                await self?.localModelTypeForAudioAdmission(modelId)
             }
         )
         let log = logger
@@ -71,6 +74,11 @@ extension ProviderLoop {
                 log.error("Local OpenAI endpoint did NOT bind on \(cfg.host):\(cfg.port) (port already in use?): \(error.localizedDescription). Coordinator serving is unaffected; restart with a free --port to enable the local endpoint.")
             }
         }
+    }
+
+    /// Resident identity wins during a catalog/slot transition; no load occurs.
+    func localModelTypeForAudioAdmission(_ modelId: String) -> String? {
+        modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType
     }
 
     /// Invoked by Hummingbird once the local endpoint socket is bound and

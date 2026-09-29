@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `5f55a618c`
+> Last updated: 2026-09-29 · commit `cf6b60b2f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -57,6 +57,15 @@ unwinds and the matching bridge drain succeeds. The retained-fence test keeps
 that activity across a repeated failed retirement and unrelated peer drain.
 Neither forecast invalidation nor these tiny-model tests certify full-checkpoint
 memory release, production cache composition or selected-model generation.
+
+`AudioInputRejectionTests` preserves early no-acquisition/no-decode refusals for
+generic or unknown models, and checks that a MiMo-looking request name grants
+nothing. A metadata-only native dispatch probe may enter normal cold acquisition;
+an actual acquired generic model must still refuse and release its lease.
+`MiMoV26ManagedAudioProviderTests` also routes typed Chat and Responses WAV input
+through the normal scheduler with a genuinely published synthetic target and
+owned audio sidecar, checking native work, host joins and retirement. Direct
+decoder or `submitDecodedAudioMedia` tests alone do not cover these ingress guards.
 
 `MiMoV26DiscoveryLoadFootprintTests` checks metadata-only quote revalidation,
 including foreign-family, SSD-discount, underpricing and changed-inventory

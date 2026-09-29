@@ -354,6 +354,24 @@ extension ProviderLoop {
         }
         profile.mark(.parsed)
 
+        // Reject unknown/non-native audio before acceptance or cold loading.
+        // Only provider-owned architecture metadata selects MiMo dispatch;
+        // actual loaded slot/profile validation remains mandatory below.
+        // This handler still owns lookup and service-reservation settlement.
+        do {
+            try MediaIngest.rejectUnsupportedAudio(chatRequest,
+                modelType: localModelTypeForAudioAdmission(chatRequest.model))
+        } catch {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: Self.sanitizedInferenceFailure(from: error, phase: .request),
+                    profile: profile),
+                fallbackFailure: .policy,
+                send: send)
+            return
+        }
+
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
             requestId: requestId,

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-29 · commit `47915a198`
+> Last updated: 2026-09-29 · commit `cf6b60b2f`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -96,6 +96,19 @@ The prefill-only stripe, one partial prefill, recurrent checkpoints and
 one-image-at-a-time vision execution keep their existing geometry.
 
 ### One request through the engine
+
+The provider rejects `input_audio` parts for unknown or unsupported architectures
+in every message role with HTTP 400 before model acquisition, prompt rendering
+or media decoding. Local and encrypted ingress consult provider-owned resident
+or advertised model metadata, never a request-name heuristic or a cold tokenizer
+load. Exact `mimo_v2` metadata may select ordinary native acquisition; the acquired
+architecture and the bridge's actual issued audio profile must still validate.
+Generic vision preparation and text-only tokenization reject audio unconditionally;
+native MiMo uses its separately owned preparation path and exact media accounting.
+`MediaIngest.rejectUnsupportedAudio` in
+`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` is shared
+by scheduler ingress, prompt-contract tokenization and media preparation. SDK
+parsing of the wire part alone does not authorize an audio decoder or model load.
 
 ```mermaid
 sequenceDiagram

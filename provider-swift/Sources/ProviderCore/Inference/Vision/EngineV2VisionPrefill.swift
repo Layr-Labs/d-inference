@@ -317,6 +317,7 @@ public enum EngineV2VisionPrefill {
         request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls = .init()
     ) async throws -> PreparedSubmission {
+        try MediaIngest.rejectUnsupportedAudio(request)
         // Same decode path as the legacy stream (same caps, same MediaError
         // surface). Inline video bytes stay in the UserInput's owned
         // memory-backed asset while processor preparation samples and
@@ -846,7 +847,9 @@ public enum EngineV2VisionPrefill {
                 switch part {
                 case .imageURL: hasImage = true
                 case .videoURL: hasVideo = true
-                case .text, .unsupported, .inputAudio: continue // audio never uses this generic vision producer
+                // This classifies only supported image/video work. Audio is
+                // rejected before preparation and has no vision media kind.
+                case .text, .inputAudio, .unsupported: continue
                 }
             }
         }

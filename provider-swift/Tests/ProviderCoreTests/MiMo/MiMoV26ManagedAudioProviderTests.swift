@@ -186,6 +186,79 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
     }
 
     #if DEBUG
+    func testChatAndResponsesRouteEncodedAudioThroughActualNativeScheduler() async throws {
+        let (value, bundle, actual) = try await published()
+        let audio = try await bundle.bridge.nativeMiMoDecodedAudioBinding()
+        XCTAssertTrue(audio.load === value.load)
+        XCTAssertEqual(audio.receipt.request, value.load.audioLoadRequest)
+        let engineID = actual.nativeShutdownEngineID
+        let epoch = value.transaction.snapshot().constructionEpoch
+        let sidecarBytes = try XCTUnwrap(value.load.audioLoadRequest).requiredLoadBytes
+        func u16(_ x: UInt16) -> [UInt8] {
+            [UInt8(truncatingIfNeeded: x), UInt8(truncatingIfNeeded: x >> 8)]
+        }
+        func u32(_ x: UInt32) -> [UInt8] {
+            [UInt8(truncatingIfNeeded: x), UInt8(truncatingIfNeeded: x >> 8),
+             UInt8(truncatingIfNeeded: x >> 16), UInt8(truncatingIfNeeded: x >> 24)]
+        }
+        let pcm = (0..<2400).flatMap { index in u16(UInt16(truncatingIfNeeded: index % 32)) }
+        let fmt = u16(1) + u16(1) + u32(24000) + u32(48000) + u16(2) + u16(16)
+        let waveBody = Array("WAVEfmt ".utf8) + u32(16) + fmt
+            + Array("data".utf8) + u32(UInt32(pcm.count)) + pcm
+        let wave = Data(Array("RIFF".utf8) + u32(UInt32(waveBody.count)) + waveBody)
+        for responses in [false, true] {
+            let messages: [[String: Any]] = [["role": "user", "content": [
+                ["type": "input_audio", "input_audio": ["format": "wav", "data": wave.base64EncodedString()]],
+                ["type": responses ? "input_text" : "text", "text": "describe"],
+            ]]]
+            let body = try JSONSerialization.data(withJSONObject: [
+                "model": "audio-fixture", "enable_thinking": false, "temperature": 0,
+                responses ? "max_output_tokens" : "max_tokens": 2,
+                responses ? "input" : "messages": messages,
+            ])
+            let request: OpenAIChatCompletionRequest
+            let controls: ChatTemplateControls
+            if responses {
+                let decoded = try JSONDecoder().decode(LocalResponseRequest.self, from: body)
+                request = decoded.request.chatCompletionRequest
+                controls = decoded.templateControls
+            } else {
+                request = try ProviderLoop.decodeOpenAIRequest(body)
+                controls = ProviderLoop.extractChatTemplateControls(from: body)
+            }
+            XCTAssertTrue(MediaIngest.hasAudio(request))
+            let (acquired, lease) = acquisition(value, bundle)
+            let scheduler = MultiModelBatchSchedulerEngine(acquire: { _ in acquired },
+                tokenizerProvider: { _ in .init(tokenizer: value.tokenizer, modelType: "mimo_v2") },
+                availableModels: { ["audio-fixture"] }, defaultMaxTokens: 2,
+                templateControls: controls, modelTypeProvider: { _ in "mimo_v2" })
+            let before = actual.stepCount
+            let stream = try await scheduler.streamChatCompletion(request: request)
+            var infos = 0
+            for try await event in stream {
+                if case .info(let info) = event {
+                    infos += 1
+                    XCTAssertGreaterThan(info.promptTokens, 0)
+                    XCTAssertGreaterThan(info.completionTokens, 0)
+                }
+            }
+            await lease.joinFromOutside()
+            XCTAssertEqual(infos, 1)
+            XCTAssertGreaterThan(actual.stepCount, before, "normal encoded-audio route must execute the real native engine")
+            XCTAssertEqual(lease.snapshot().phase, .completed)
+            XCTAssertEqual(actual.nativeShutdownEngineID, engineID)
+            XCTAssertNil(actual.nativeCompletionFault)
+            XCTAssertEqual(value.transaction.snapshot().constructionEpoch, epoch)
+            XCTAssertEqual(value.transaction.snapshot().audioChargedBytes, sidecarBytes)
+            XCTAssertEqual(value.transaction.managedMediaReservationCountForTesting, 0)
+        }
+        let receipt = try await retire(value)
+        XCTAssertEqual(receipt.engine?.engineID, engineID)
+        XCTAssertEqual(receipt.audioSessionID, audio.receipt.request.sessionID)
+        XCTAssertEqual(value.budget.processLedger.snapshot().chargedBytes, 0)
+        XCTAssertTrue(value.registry.retainedTransactionIDs.isEmpty)
+    }
+
     func testActualPCMDeadlineAndHostTailUseSameLeaseAndKeepSidecarUntilJoined() async throws {
         let (value,bundle,actual) = try await published()
         let audio = try await bundle.bridge.nativeMiMoDecodedAudioBinding()

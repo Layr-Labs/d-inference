@@ -13,6 +13,11 @@
 - Integrate current upstream cache ownership and add separately issued target-only native paging, joint contiguous text-prefix/media ownership, and admitted scalar-shape verification candidates. A selected 114-method component cohort passes; full-model/API, complete MTP state, paging composition and production defaults remain unqualified.
 - Resolve linked snapshot directories through the normal scanner without copying weights or changing cache selection order; preserve rejection of invalid and non-directory entries. Explicit revision selections use the same canonical filesystem identity as legacy discovery.
 
+## Unreleased — deadline projection diagnostics
+
+- Report a closed reason for unbounded provider deadline projections in the existing per-attempt profile. Distinguish scheduler state, cache geometry, capacity guarantees, missing phase rates and invalid duration without changing admission or reconstructing causes for older records.
+- Reject SDK-recognized `input_audio` parts for unsupported or unknown architectures with HTTP 400 before model acquisition, prompt rendering or media decoding. Native MiMo dispatch uses provider-owned model metadata and still requires its actual loaded audio profile; generic text/vision paths do not gain audio support.
+
 ## Unreleased — prompt accounting and first-content admission
 
 - Share verified model/template prompt counts across preflight, retries and provider reconciliation while preserving the original deadline, completion limits and billing usage. Match count and cache evidence to the candidate provider's advertised template contract; keep unsupported counts explicitly uncertain.

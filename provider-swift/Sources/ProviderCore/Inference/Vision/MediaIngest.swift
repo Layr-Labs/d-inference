@@ -102,6 +102,27 @@ public enum MediaIngest {
 
     // MARK: - Routing
 
+    /// Reject audio before model acquisition, template rendering, or media decoding.
+    /// Only provider-owned architecture metadata can select native MiMo dispatch;
+    /// this is not a loaded-profile or media admission proof. Generic callers
+    /// omit the type and always refuse audio. The native bridge checks its real
+    /// issued audio binding again after acquisition.
+    static func rejectUnsupportedAudio(
+        _ request: OpenAIChatCompletionRequest, modelType: String? = nil
+    ) throws {
+        if modelType == "mimo_v2" { return }
+        for message in request.messages {
+            guard case .parts(let parts) = message.content else { continue }
+            for part in parts {
+                if case .inputAudio = part { throw unsupportedAudioError }
+            }
+        }
+    }
+
+    private static var unsupportedAudioError: MultiModelBatchSchedulerEngineError {
+        .multimodalRejected("multimodal_rejected: input_audio is not supported")
+    }
+
     /// True when any message carries image, video or audio. Audio uses only
     /// the separately issued native path, never this generic visual producer.
     /// Used by the engine to decide between the batched (text) path and
@@ -220,7 +241,10 @@ public enum MediaIngest {
                     case .text(let s): add(s.utf8.count / textCharsPerToken)
                     case .imageURL: add(visionTokensPerImage)
                     case .videoURL: add(visionTokensPerVideo)
-                    case .unsupported, .inputAudio: continue // native audio uses its actual sealed token count
+                    // No finite reservation exists for unsupported audio.
+                    // Native MiMo uses its separately sealed plan, not this projection.
+                    case .inputAudio: return .max
+                    case .unsupported: continue
                     }
                 }
             case .null:
@@ -251,9 +275,7 @@ public enum MediaIngest {
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
-        guard !hasAudio(request) else {
-            throw MultiModelBatchSchedulerEngineError.multimodalRejected("encoded audio requires a native audio profile")
-        }
+        try rejectUnsupportedAudio(request)
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
             for: request, controls: templateControls, modelType: modelType, hasMedia: true)
         if preserveTemplateFields {
@@ -296,16 +318,17 @@ public enum MediaIngest {
             // Only symbolic placeholders enter the template; decoded media
             // remains owned by UserInput, never rendered as URLs/base64 text.
             let generator = Qwen3VLMessageGenerator()
-            let messages = zip(request.messages, chatMessages).map { original, decoded in
+            let messages = try zip(request.messages, chatMessages).map { original, decoded in
                 var message = generator.generate(messages: [decoded])[0]
                 if original.role == .user || (retainToolMedia && original.role == .tool),
                     case .parts(let parts) = original.content {
-                    message["content"] = parts.compactMap { part -> [String: String]? in
+                    message["content"] = try parts.compactMap { part -> [String: String]? in
                         switch part {
                         case .text(let text): return ["type": "text", "text": text]
                         case .imageURL: return ["type": "image"]
                         case .videoURL: return ["type": "video"]
-                        case .unsupported, .inputAudio: return nil // rejected before this generic producer
+                        case .inputAudio: throw unsupportedAudioError
+                        case .unsupported: return nil
                         }
                     }
                 }
@@ -429,7 +452,7 @@ public enum MediaIngest {
                     }
                     videos.append(decoded.video)
                 case .inputAudio:
-                    throw MultiModelBatchSchedulerEngineError.multimodalRejected("encoded audio requires a native audio profile")
+                    throw unsupportedAudioError
                 case .unsupported:
                     continue
                 }
@@ -607,7 +630,11 @@ public enum MediaIngest {
                     }
                 case .videoURL:
                     hasVideo = true
-                case .text, .unsupported, .inputAudio:
+                // Do not advertise a zero-cost decode for unsupported audio.
+                // Native MiMo uses its separately admitted decode policy.
+                case .inputAudio:
+                    return .max
+                case .text, .unsupported:
                     continue
                 }
             }

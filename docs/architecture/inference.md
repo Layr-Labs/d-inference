@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `d89ef42be`
+> Last updated: 2026-09-28 · commit `973e14b7f`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -208,6 +208,25 @@ or throughput curves; those still require the separate full-context serving
 qualification. Once a request is existing work, its full prompt/output bound
 must fit its deadline profile's measured context envelope or calibration falls
 back.
+
+Cooled deadline profiles preserve the collection prerequisites: whole-Mac
+quiescence for 20 seconds after all request leases and unbounded GPU activity
+retire, plus five seconds of observed nominal, non-Low-Power, Automatic posture.
+`WholeMacServiceBudget` captures the prior idle interval when acquiring the
+incoming lease; only that lease may be excluded from its final atomic check.
+Any intervening owned work or observed posture change invalidates the captured
+guard permanently. The runtime falls back immediately when ineligible; it does
+not sleep to make a request qualify.
+
+`DeadlinePostureMonitor` observes thermal state every 500 ms and reads cached
+Automatic policy through a bounded background `pmset -g custom` process every
+two seconds, using public IOPS APIs for the active power source. Thermal
+observations expire after one second, power-policy reads after three seconds;
+unknown, stale or changed source/policy resets stability. The monitor exists
+only while a loaded reviewed bridge owns a lease, and capacity notifications
+occur on eligibility transitions. These are sampled OS observations, not a
+guarantee against changes between observations. See
+`provider-swift/Sources/ProviderCore/Inference/Performance/Deadline/`.
 
 `prompt_work` must reconcile with actual tokenization and the factory's verified
 artifact/template identity before calibration applies. MTP profiles additionally

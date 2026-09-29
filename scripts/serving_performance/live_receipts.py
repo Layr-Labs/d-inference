@@ -36,8 +36,11 @@ def summarize(report):
             failures.append("incomplete_step_observation")
         if not trial["retired"]:
             failures.append("retirement_not_confirmed")
-        if not trial["mtpActive"] or trial["mtpRounds"] <= 0 or trial["mtpProposed"] <= 0:
-            failures.append("actual_mtp_not_observed")
+        if report.get("mtp") is not None:
+            if trial["mtpActive"] is not True or trial["mtpRounds"] <= 0 or trial["mtpProposed"] <= 0:
+                failures.append("actual_mtp_not_observed")
+        elif trial["mtpActive"] is not False or trial["mtpRounds"] != 0 or trial["mtpProposed"] != 0:
+            failures.append("unexpected_mtp_activity")
         cells.append({"prompt_target": trial["promptTarget"], "iteration": trial["iteration"],
                       "actual_prompt_tokens": [r["promptTokens"] for r in trial["rows"]],
                       "delivered_decode_p10_tps": percentile(rates, .1) if rates else None,

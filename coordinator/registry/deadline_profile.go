@@ -26,6 +26,9 @@ type deadlinePerformanceProfile struct {
 	SoloPrefillStripeTokens      *int                         `json:"solo_prefill_stripe_tokens,omitempty"`
 	MaxConcurrentPartialPrefills int                          `json:"max_concurrent_partial_prefills"`
 	MixedPrefillTokenCap         *int                         `json:"mixed_prefill_token_cap,omitempty"`
+	MinimumWholeMacQuiescenceMS  *int                         `json:"minimum_whole_mac_quiescence_ms"`
+	MinimumNominalStabilityMS    *int                         `json:"minimum_nominal_stability_ms"`
+	PowerMode                    string                       `json:"power_mode"`
 	QualificationReportSHA256    string                       `json:"qualification_report_sha256"`
 	DeadlineCalibration          *firstcontent.Calibration    `json:"deadline_calibration"`
 }
@@ -45,6 +48,7 @@ func (p *deadlinePerformanceProfile) valid() bool {
 		(p.SoloPrefillStripeTokens == nil || (*p.SoloPrefillStripeTokens > 0 && *p.SoloPrefillStripeTokens <= 1<<20)) &&
 		p.MaxConcurrentPartialPrefills > 0 && p.MaxConcurrentPartialPrefills <= 16 &&
 		(p.MixedPrefillTokenCap == nil || (*p.MixedPrefillTokenCap > 0 && *p.MixedPrefillTokenCap <= 1<<20)) &&
+		validDeadlineApplicability(p.MinimumWholeMacQuiescenceMS, p.MinimumNominalStabilityMS, p.PowerMode) &&
 		p.DeadlineCalibration.Valid(p.ConfiguredContextTokens)
 }
 
@@ -61,7 +65,7 @@ func (p *deadlinePerformanceProfile) measuredContextTokensMax() int {
 // Caller holds p.mu. A reference identifies immutable release evidence; live
 // telemetry cannot create its own calibration or borrow another scheduler.
 func qualifiedDeadlineProfileLocked(p *Provider, model string) *deadlinePerformanceProfile {
-	if p.BackendCapacity == nil || (p.SystemMetrics.ThermalState != "" && p.SystemMetrics.ThermalState != "nominal") {
+	if !deadlineNominalPosture(p.BackendCapacity, p.SystemMetrics) {
 		return nil
 	}
 	for _, slot := range p.BackendCapacity.Slots {
@@ -76,7 +80,9 @@ func qualifiedDeadlineProfileLocked(p *Provider, model string) *deadlinePerforma
 			profile.MemoryGB != uint64(p.Hardware.MemoryGB) || profile.ConfiguredContextTokens != ref.ConfiguredContextTokens ||
 			profile.EffectiveMaxConcurrency != ref.EffectiveMaxConcurrency || profile.PrefillChunkSize != ref.PrefillChunkSize ||
 			!sameOptionalInt(profile.SoloPrefillStripeTokens, ref.SoloPrefillStripeTokens) ||
-			profile.MaxConcurrentPartialPrefills != ref.MaxConcurrentPartialPrefills || !sameOptionalInt(profile.MixedPrefillTokenCap, ref.MixedPrefillTokenCap) {
+			profile.MaxConcurrentPartialPrefills != ref.MaxConcurrentPartialPrefills || !sameOptionalInt(profile.MixedPrefillTokenCap, ref.MixedPrefillTokenCap) ||
+			!sameOptionalInt(profile.MinimumWholeMacQuiescenceMS, ref.MinimumWholeMacQuiescenceMS) ||
+			!sameOptionalInt(profile.MinimumNominalStabilityMS, ref.MinimumNominalStabilityMS) || profile.PowerMode != ref.PowerMode {
 			return nil
 		}
 		for _, info := range p.Models {

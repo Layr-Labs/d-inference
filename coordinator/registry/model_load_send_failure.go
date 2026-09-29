@@ -40,7 +40,9 @@ func (r *Registry) failPendingModelLoadSend(action modelLoadAction) {
 	}
 	if p := action.reservation.provider; p != nil {
 		p.mu.Lock()
-		p.modelLoadSendRetryAt = time.Now().Add(pendingModelLoadMemoryBackoff)
+		now := time.Now()
+		p.recordDeadlineActivityLocked(now)
+		p.modelLoadSendRetryAt = now.Add(pendingModelLoadMemoryBackoff)
 		p.mu.Unlock()
 	}
 	delete(r.pendingModelLoads, key)

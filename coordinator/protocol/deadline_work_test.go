@@ -26,6 +26,8 @@ func TestCalibratedCapacityWireSymmetryAndClone(t *testing.T) {
 	}
 	deadline := slot.DeadlineProfile
 	if deadline == nil || deadline.ID != "test-reviewed-deadline" || deadline.ConfiguredContextTokens != 262144 ||
+		deadline.MinimumWholeMacQuiescenceMS == nil || *deadline.MinimumWholeMacQuiescenceMS != 20000 ||
+		deadline.MinimumNominalStabilityMS == nil || *deadline.MinimumNominalStabilityMS != 5000 || deadline.PowerMode != "automatic" ||
 		deadline.EffectiveMaxConcurrency != 16 || deadline.PrefillChunkSize != 512 || deadline.MaxConcurrentPartialPrefills != 1 ||
 		deadline.MixedPrefillTokenCap == nil || *deadline.MixedPrefillTokenCap != 256 ||
 		deadline.SoloPrefillStripeTokens == nil || *deadline.SoloPrefillStripeTokens != 4096 || !deadline.MTP.Equal(mtp) {
@@ -48,10 +50,12 @@ func TestCalibratedCapacityWireSymmetryAndClone(t *testing.T) {
 		t.Fatal("MTP identity clone shared mutable configuration")
 	}
 	clonedDeadline := deadline.Clone()
+	*clonedDeadline.MinimumWholeMacQuiescenceMS = 0
+	*clonedDeadline.MinimumNominalStabilityMS = 10000
 	*clonedDeadline.MixedPrefillTokenCap = 1
 	*clonedDeadline.SoloPrefillStripeTokens = 1
 	*clonedDeadline.MTP.FixedDraftTokens = 1
-	if *deadline.MixedPrefillTokenCap != 256 || *deadline.SoloPrefillStripeTokens != 4096 || *deadline.MTP.FixedDraftTokens != 0 {
+	if *deadline.MinimumWholeMacQuiescenceMS != 20000 || *deadline.MinimumNominalStabilityMS != 5000 || *deadline.MixedPrefillTokenCap != 256 || *deadline.SoloPrefillStripeTokens != 4096 || *deadline.MTP.FixedDraftTokens != 0 {
 		t.Fatal("deadline identity clone shared mutable policy")
 	}
 	clonedWork := slot.DeadlineWork.Clone()

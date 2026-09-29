@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-28 · commit `d89ef42be`
+> Last updated: 2026-09-28 · commit `973e14b7f`
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -109,6 +109,15 @@ contexts. The separate `deadline_profile` reference grants no authority over
 concurrency, whole-Mac charges or mixed-prefill caps. Those serving policy
 changes still require the complete `ServingPerformanceProfile` qualification
 matrix; narrow first-content evidence cannot certify them.
+
+A cooled profile additionally requires its measured whole-Mac idle interval,
+stable nominal posture and Automatic power mode. The provider advertises the
+reference only while these prerequisites hold. The coordinator requires
+explicit nominal thermal state and `low_power_mode=false`, and invalidates
+an old idle reference after locally tracked work, load transitions or reported
+GPU activity (`coordinator/registry/deadline_applicability.go`). This does not
+delay requests: ineligible work retains conservative admission. Provider
+retirement and the final atomic evidence guard remain authoritative.
 
 Busy calibrated forecasts require fresh `deadline_work` envelopes correlated
 with the whole-Mac reservation snapshot. Existing owners retain conservative

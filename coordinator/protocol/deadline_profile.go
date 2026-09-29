@@ -12,6 +12,9 @@ type DeadlinePerformanceProfileReference struct {
 	SoloPrefillStripeTokens      *int                `json:"solo_prefill_stripe_tokens,omitempty"`
 	MaxConcurrentPartialPrefills int                 `json:"max_concurrent_partial_prefills"`
 	MixedPrefillTokenCap         *int                `json:"mixed_prefill_token_cap,omitempty"`
+	MinimumWholeMacQuiescenceMS  *int                `json:"minimum_whole_mac_quiescence_ms"`
+	MinimumNominalStabilityMS    *int                `json:"minimum_nominal_stability_ms"`
+	PowerMode                    string              `json:"power_mode"`
 	MTP                          *ServingMTPIdentity `json:"mtp,omitempty"`
 }
 
@@ -23,5 +26,7 @@ func (p *DeadlinePerformanceProfileReference) Clone() *DeadlinePerformanceProfil
 	out.MixedPrefillTokenCap = clonePtr(p.MixedPrefillTokenCap)
 	out.SoloPrefillStripeTokens = clonePtr(p.SoloPrefillStripeTokens)
 	out.MTP = p.MTP.Clone()
+	out.MinimumWholeMacQuiescenceMS = clonePtr(p.MinimumWholeMacQuiescenceMS)
+	out.MinimumNominalStabilityMS = clonePtr(p.MinimumNominalStabilityMS)
 	return &out
 }

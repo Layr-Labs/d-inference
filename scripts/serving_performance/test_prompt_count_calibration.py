@@ -65,6 +65,15 @@ class PromptCountCalibrationTests(unittest.TestCase):
         for field in ("median_ratio", "upper_ratio", "upper_additive_tokens"):
             self.assertEqual(original[field], changed["cells"][-1]["candidate"][field])
 
+    def test_observations_cannot_be_repartitioned_after_counting(self):
+        provider, coordinator = evidence()
+        # Exchange one row in each direction, preserving both sample counts.
+        provider["observations"][0]["partition"] = "validation"
+        provider["observations"][20]["partition"] = "calibration"
+        report = evaluate(provider, coordinator)
+        self.assertFalse(report["qualified"])
+        self.assertTrue(any("predeclared corpus ID" in error for error in report["errors"]))
+
     def test_validation_domain_is_not_expanded_or_dropped(self):
         provider, coordinator = evidence()
         coordinator[-1]["shape"]["tool_definition_bytes"] = 100_000

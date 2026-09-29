@@ -116,6 +116,7 @@ public actor GlobalKVCacheBudget {
         activationReserveBytes: UInt64? = nil,
         configReserveBytes: UInt64 = 0,
         memorySnapshot: @escaping @Sendable () -> MemorySnapshot,
+        serviceBudget suppliedServiceBudget: WholeMacServiceBudget? = nil,
         clearCache: @escaping @Sendable () -> Void = {},
         selfHealMinInterval: Duration = GlobalKVCacheBudget.defaultSelfHealMinInterval,
         reclaimer: KVPoolReclaimer? = nil,
@@ -125,7 +126,7 @@ public actor GlobalKVCacheBudget {
         clockNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         emitAuditEvent: @escaping @Sendable (TelemetrySeverity, String, [String: AnyCodableValue]) -> Void = { _, _, _ in }
     ) {
-        let serviceBudget = WholeMacServiceBudget()
+        let serviceBudget = suppliedServiceBudget ?? WholeMacServiceBudget()
         self.serviceBudget = serviceBudget
         let total = memorySnapshot().total
         self.physicalMemoryBytes = total

@@ -23,7 +23,7 @@ SOURCE_FILES = (
 IGNORED_PARTS = frozenset((".git", ".build", "__pycache__", ".pytest_cache"))
 
 
-def source_tree_digest(root):
+def source_file_digests(root):
     paths = set()
     for relative in SOURCE_DIRECTORIES:
         base = root / relative
@@ -38,7 +38,12 @@ def source_tree_digest(root):
             for chunk in iter(lambda: source.read(8 * 1024 * 1024), b""):
                 hasher.update(chunk)
         sources[str(path.relative_to(root))] = hasher.hexdigest()
-    return hashlib.sha256(json.dumps(sources, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return sources
+
+
+def source_tree_digest(root):
+    return hashlib.sha256(json.dumps(source_file_digests(root), sort_keys=True,
+                                    separators=(",", ":")).encode()).hexdigest()
 
 
 def source_identity(root):

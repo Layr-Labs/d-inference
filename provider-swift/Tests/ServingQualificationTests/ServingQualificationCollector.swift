@@ -49,11 +49,12 @@ extension ServingQualificationFixture {
             // raw errors may contain request content and are never receipts.
             failure = error is CancellationError ? "cancelled" : "request_failed"
         }
-        if arrivals.isEmpty, failure == nil { failure = "no_first_content" }
         let elapsed = Self.milliseconds(start.duration(to: .now))
         await usage.waitForTerminalObservation()
         progress?.finish()
         let wireProfile = profile.wireObject()
+        failure = Self.collectionFailure(observedFailure: failure,
+            terminalReason: wireProfile.engine?.finishReason, hasContent: !arrivals.isEmpty)
         let evidence = job.firstContentBudgetMilliseconds.map { budget in
             ServingQualificationDeadlineEvidence.capture(profile: wireProfile,
                 reviewedProfileID: bundle.bridge.deadlineProfile?.id, promptWork: promptWork,
@@ -72,5 +73,15 @@ extension ServingQualificationFixture {
     static func milliseconds(_ duration: Duration) -> Double {
         let c = duration.components
         return Double(c.seconds) * 1000 + Double(c.attoseconds) / 1e15
+    }
+
+    /// Cancelling an AsyncThrowingStream consumer may end iteration without
+    /// throwing. Read the settled engine outcome before classifying that end;
+    /// a cancellation request alone does not prove the engine was cancelled.
+    static func collectionFailure(observedFailure: String?, terminalReason: EngineFinishReason?,
+                                  hasContent: Bool) -> String? {
+        if let observedFailure { return observedFailure }
+        if terminalReason == .cancelled { return "cancelled" }
+        return hasContent ? nil : "no_first_content"
     }
 }

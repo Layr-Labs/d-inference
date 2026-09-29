@@ -1,6 +1,11 @@
 import Foundation
 
 extension EngineV2Bridge {
+    func retainDeadlinePostureMonitoring() {
+        guard deadlineProfile != nil, deadlinePostureMonitoring == nil else { return }
+        deadlinePostureMonitoring = DeadlinePostureMonitor.shared.acquire()
+    }
+
     var currentPerformanceProfile: ServingPerformanceProfile? {
         currentPerformanceProfile(allowExpansion: ServingPerformanceProfiles.postureAllowsExpansion)
     }
@@ -10,7 +15,9 @@ extension EngineV2Bridge {
     }
 
     var currentDeadlineProfile: DeadlinePerformanceProfile? {
-        currentDeadlineProfile(allowQualifiedPosture: ServingPerformanceProfiles.postureAllowsExpansion)
+        guard let profile = currentDeadlineProfile(allowQualifiedPosture: ServingPerformanceProfiles.postureAllowsExpansion),
+            serviceBudget?.deadlineEligibleForAdvertisement(profile.applicability) == true else { return nil }
+        return profile
     }
 
     func currentDeadlineProfile(allowQualifiedPosture: Bool) -> DeadlinePerformanceProfile? {
@@ -62,7 +69,7 @@ extension EngineV2Bridge {
                 return .init(modelID: modelId, profileID: profileID,
                     promptTokens: prompt, maxOutputTokens: output,
                     calibratedContextTokensMax: effectiveDeadlineProfile?.calibratedContextTokensMax ?? 0)
-            } }) ?? true
+            } }, deadlineApplicability: effectiveDeadlineProfile?.applicability) ?? true
     }
 
     /// Call only at refused pre-submit cleanup or completed engine retirement.

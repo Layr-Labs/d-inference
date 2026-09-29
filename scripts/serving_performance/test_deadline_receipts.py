@@ -5,6 +5,7 @@ import unittest
 
 from .deadline_receipts import assemble_deadline_receipt
 from .qualification_build import encode_build_record
+from .posture import COOLED_DEADLINE_APPLICABILITY
 from .test_qualification_build import fixture_build_record
 
 
@@ -54,6 +55,18 @@ def assemble(*runs):
 
 
 class DeadlineReceiptTests(unittest.TestCase):
+    def test_plain_target_requires_observed_mtp_inactivity(self):
+        training, validation = run("calibration"), run("validation")
+        for report, _ in (training, validation):
+            report.pop("mtp")
+            report["trials"][0].update(mtpActive=False, mtpRounds=0, mtpProposed=0)
+        self.assertNotIn("mtp", assemble(training, validation)["identity"])
+        for field, value in (("mtpActive", True), ("mtpRounds", 1), ("mtpProposed", 1)):
+            changed = copy.deepcopy(training)
+            changed[0]["trials"][0][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "unexpected_mtp"):
+                assemble(changed, validation)
+
     def test_validation_never_selects_rates_or_expands_declared_band(self):
         value = assemble(run("calibration"), run("validation", duration=10_000_000_000))
         cell = value["deadline_calibration"]["cells"][0]
@@ -68,6 +81,7 @@ class DeadlineReceiptTests(unittest.TestCase):
         self.assertEqual(cell["samples"][0]["decode_work_tokens"], 33)
         self.assertEqual(len(cell["samples"]), 2)
         self.assertEqual(value["identity"]["configured_context_tokens"], 262144)
+        self.assertEqual(value["applicability"], COOLED_DEADLINE_APPLICABILITY)
 
     def test_source_power_and_cold_isolation_must_be_observed(self):
         for mutation in ("power", "trial_power", "missing_power", "changed", "warm", "busy", "incomplete", "old_runtime", "screen"):

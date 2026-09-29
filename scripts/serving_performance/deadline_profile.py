@@ -7,6 +7,8 @@ from .calibration import evaluate_calibration
 from .check_receipts import check_errors
 from .calibration_statistics import percentile
 from .matrix import IDENTITY_FIELDS, digest, identity_errors, positive
+from .posture import cooled_deadline_applicability
+from .deadline_evidence import verify_deadline_samples
 
 RUNTIME_FIELDS = ("configured_context_tokens", "effective_max_concurrency", "prefill_chunk_size",
                   "max_concurrent_partial_prefills", "solo_prefill_stripe_tokens", "mixed_prefill_token_cap")
@@ -21,6 +23,9 @@ def evaluate_deadline_profile(raw, *, evidence_root=None):
     if not isinstance(receipt, dict) or receipt.get("schema_version") != 1 or receipt.get("kind") != "deadline_only":
         errors.append("requires explicit deadline_only receipt version 1")
         return result
+    applicability = receipt.get("applicability")
+    if not cooled_deadline_applicability(applicability):
+        errors.append("cooled evidence requires its exact whole-Mac quiescence, stable nominal and Automatic policy")
     identity = receipt.get("identity")
     if not isinstance(identity, dict):
         errors.append("exact deadline runtime identity is required")
@@ -56,6 +61,10 @@ def evaluate_deadline_profile(raw, *, evidence_root=None):
         if not digest(build.get(key)):
             errors.append(f"verified {key} is required")
     errors.extend(check_errors(receipt.get("checks"), identity, build, evidence_root=evidence_root))
+    try:
+        verify_deadline_samples(receipt, evidence_root)
+    except (OSError, ValueError, TypeError, KeyError, OverflowError) as error:
+        errors.append(f"raw deadline evidence: {error}")
     if errors:
         return result
     calibration = evaluate_calibration(receipt.get("deadline_calibration"), result["receipt_sha256"],
@@ -79,6 +88,6 @@ def evaluate_deadline_profile(raw, *, evidence_root=None):
             errors.append(f"cell {index}: posture, retirement or actual MTP identity does not qualify")
     if not errors:
         result["qualified"] = True
-        result["profile"] = {**identity, "qualification_report_sha256": result["receipt_sha256"],
+        result["profile"] = {**identity, **applicability, "qualification_report_sha256": result["receipt_sha256"],
                              "deadline_calibration": calibration["calibration"]}
     return result

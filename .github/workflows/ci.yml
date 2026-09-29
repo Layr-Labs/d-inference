@@ -30,6 +30,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
+      - name: Test serving qualification evidence and catalogs without a GPU
+        run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
 
   docs:
     name: Docs Lint

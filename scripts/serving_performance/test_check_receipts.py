@@ -87,6 +87,21 @@ class CheckReceiptTests(unittest.TestCase):
         self.replace_raw("accounting", lambda raw: raw.update(metallibs_sha256={"other": "f" * 64}), provenance=True)
         self.assertTrue(self.errors())
 
+    def test_omitted_deadline_cap_and_stripe_are_exact_nil_not_wildcards(self):
+        original = copy.deepcopy(self.identity)
+        for field, actual in (("mixed_prefill_token_cap", 256), ("solo_prefill_stripe_tokens", 4096)):
+            for missing_on in ("candidate", "lifecycle"):
+                self.identity = copy.deepcopy(original)
+                if missing_on == "candidate": self.identity.pop(field, None)
+                else: self.identity[field] = actual
+                self.checks = references(self.identity, self.build, self.root)
+                self.assertEqual(self.errors(), [])
+                if missing_on == "candidate":
+                    self.replace_raw("retirement", lambda raw: raw["runtime"].update({field: actual}))
+                else:
+                    self.replace_raw("retirement", lambda raw: raw["runtime"].pop(field))
+                with self.subTest(field=field, missing_on=missing_on):
+                    self.assertTrue(self.errors())
     def test_sdk_receipt_cannot_assert_unrun_scope_or_certify_lifecycle(self):
         for mutation in (lambda raw: raw.update(sdk_commit="f" * 40),
                          lambda raw: raw.update(scopes=["constraints"]),
@@ -134,6 +149,8 @@ class CheckReceiptTests(unittest.TestCase):
         for mutation in (lambda raw: raw["checks"].pop(),
                          lambda raw: raw["checks"][0].update(reached=False),
                          lambda raw: raw["checks"][0].update(cancelled=False),
+                         lambda raw: raw["checks"][0].pop("engineFinishReason"),
+                         lambda raw: raw["checks"][0].update(engineFinishReason="stop"),
                          lambda raw: raw["checks"][0].update(retired=False),
                          lambda raw: raw["checks"][0].update(followupParity=False),
                          lambda raw: raw["checks"][0].update(generatedTokensAccounted=3),

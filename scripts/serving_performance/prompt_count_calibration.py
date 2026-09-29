@@ -42,6 +42,9 @@ def evaluate_prompt_counts(provider_raw, coordinator_raw):
         if len(parts) != 4 or parts[1] not in ("tools0", "tools1") or parts[2] not in ("band0", "band1", "band2"):
             result["errors"].append("observation lacks predeclared corpus group")
             continue
+        if parts[0] not in ("calibration", "validation") or observed.get("partition") != parts[0]:
+            result["errors"].append("observation partition differs from its predeclared corpus ID")
+            continue
         group = (parts[1], parts[2])
         groups.setdefault(group, []).append((observed, projection))
     if seen != set(by_hash):

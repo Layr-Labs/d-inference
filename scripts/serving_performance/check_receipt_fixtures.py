@@ -53,6 +53,7 @@ def references(identity, candidate_build, root=ROOT):
                 "buildIdentity": {"version": 1, "debugCompilationCondition": False,
                     "debugAssertionsEnabled": False, "binarySHA256": candidate_build["test_binary_sha256"]},
                 "passed": True, "checks": [{"phase": phase, "reached": True, "cancelled": True,
+                    "engineFinishReason": "cancelled",
                     "retired": True, "followupParity": True, "serviceFractionAtCancel": 1 / 24,
                     "confirmedTokens": 2, "generatedTokensAccounted": 2, "generationRetirements": 1}
                     for phase in ("prefill", "after_mtp_content" if identity.get("mtp") else "after_content")]}

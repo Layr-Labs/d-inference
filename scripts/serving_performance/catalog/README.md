@@ -21,3 +21,14 @@ source has drifted. Each runtime decodes its compiled constant once and disables
 the entire catalog on a malformed, invalid, or duplicate-ID record. No runtime
 provider/operator file is read. A deadline record cannot change serving width,
 chunk policy, throughput curves, or memory admission.
+
+`deadline_evidence.json` indexes the corresponding archived receipts for CI;
+it is not runtime configuration. Each entry names an `evidence_root` relative
+to the repository and an assembled `receipt` relative to that root. Its
+`source_runs` references bind the intact training/validation receipt and
+provenance files by archive-relative paths and actual content digests.
+The offline test reassembles every observation, verifies the real prerequisite
+files, reruns the independent coverage evaluator, and requires exact equality
+with the compiled catalog. Cooled evidence retains its measured whole-Mac
+quiescence, stable nominal and Automatic-mode requirements in the runtime
+profile; it cannot certify arbitrary nominal-start requests.

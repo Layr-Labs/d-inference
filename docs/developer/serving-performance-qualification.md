@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-28 · commit `d89ef42be`
+> Last updated: 2026-09-28 · commit `973e14b7f`
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The initial reviewed
@@ -146,7 +146,7 @@ are **not hardware evidence**.
 
 | Object | Required fields |
 |---|---|
-| Root | `schema_version: 2`, `identity`, `serving_sets` (includes `[]` and explicit competing model IDs distinct from `identity.model_id`), `qualification_cells`, `deadline_calibration`, candidate `build` identity; optional `mixed_prefill_token_cap` |
+| Root | `schema_version: 1`, `identity`, `serving_sets` (includes `[]` and explicit competing model IDs distinct from `identity.model_id`), `qualification_cells`, candidate `build` identity; optional `mixed_prefill_token_cap`. Deadline calibration uses the separate deadline-only qualifier below |
 | Identity | `id`, `model_id`, `artifact_sha256`, `provider_version`, `runtime_revision`, `kv_backend`, `chip_name`, `gpu_cores`, `memory_gb`, `context_tokens_max`; optional exact `mtp` configuration |
 | MTP identity | `enabled: true`, verified `artifact_sha256`, `max_draft_tokens`, optional `fixed_draft_tokens`, `max_speculative_batch`, `verification_mode`, `max_automatic_rectangular_tokens`; omitted for plain-target execution |
 | Cell | `width`, `prompt_tokens`, `output_tokens`, `arrival_pattern` (`fixed`/`staggered`), `cache_state` (`cold`/`reused`), `competing_models`, `failures`, `raw_measurements_sha256`, `absolute_first_content_budget_ms`, `resolved_activation_floor_bytes`, `checks`, `samples` |
@@ -185,8 +185,9 @@ requires at least 59 independent validation trials; 20/20 supplies only an
 and signed validation error p50/p95/max. These bounds assume independent,
 representative trials; changing only an ID does not make a repeated prompt an
 independent workload. Explicit relaxed-confidence receipts remain evidence
-only and cannot produce a profile. Schema 1 concurrency-only receipts remain
-readable for existing tooling; use schema 2 for new calibrated profiles.
+only and cannot produce a profile. Serving-policy receipts do not attach
+deadline calibration; only the separate deadline-only qualifier can certify
+that evidence, after reconstructing the raw measured requests.
 
 ### Verify prerequisite files
 
@@ -208,8 +209,19 @@ Use these two receipt kinds:
   verifier binds model, artifact, provider version, runtime revision, KV backend,
   actual scheduler configuration, MTP identity, source commit/tree, SDK, binary
   and metallib to the candidate. Both real cancellation phases must be present,
-  with actual work accounting, native retirement and post-cancellation greedy
-  parity. Live checks cannot transfer from another artifact or build.
+  with authoritative `engineFinishReason: "cancelled"`, actual work accounting,
+  native retirement and post-cancellation greedy parity. A task's cancellation
+  flag alone cannot prove the engine was cancelled.
+
+The reviewed lifecycle-observer correction has a narrow source-equivalence
+path in `scripts/serving_performance/lifecycle_source.py`. It accepts only the
+three explicitly allowlisted qualification-test files changing. Both complete
+file manifests must reconstruct their supervised source-tree digests; every
+production, dependency, package and supervisor file remains byte-identical.
+The exact SDK/MLX revisions, compiler, build flags, model/runtime configuration
+and metallib must also agree. Each new executable still needs its own clean
+build and real lifecycle receipt. A version label, partial manifest or an
+unrelated test change cannot substitute for this proof.
 
 The `build` object supplies `source_commit`, `sdk_commit`,
 `source_tree_sha256`, `test_binary_sha256` and `metallib_sha256`; deadline-only
@@ -242,7 +254,8 @@ gate. Correctness/lifecycle receipts and performance receipts remain distinct.
 ```bash
 python3 scripts/assemble-deadline-receipts.py /tmp/training-run /tmp/heldout-run \
   --profile-id deadline-EXACT_ID --prompt-min 4096 --prompt-max 12288 \
-  --checks /tmp/reviewed-lifecycle-checks.json --output /tmp/deadline-receipt.json
+  --checks /tmp/reviewed-lifecycle-checks.json --output /tmp/deadline-receipt.json \
+  --evidence-root /tmp
 python3 scripts/qualify-deadline-performance.py /tmp/deadline-receipt.json \
   --output /tmp/deadline-review.json
 ```
@@ -253,6 +266,18 @@ held-out data never refit them. First-content context is the incoming prompt
 plus `min(requested_output_tokens, 33)` for an isolated request; its full requested output remains an independent
 memory/context check and does not inflate the first-content work vector.
 The bounded incoming decode allowance remains in that vector.
+The aggregate retains bounded archive-relative `source_runs` receipt/provenance
+paths and actual SHA-256 digests. Qualification opens those files and
+reconstructs every sample, partition, phase rate and identity; changing a
+latency, dropping an observation or retaining only a digest-shaped string fails.
+
+The cooled collector's conditions also constrain the promoted profile. Its
+`applicability` object requires `minimum_whole_mac_quiescence_ms: 20000`,
+`minimum_nominal_stability_ms: 5000`, and `power_mode: "automatic"`. The evaluator
+preserves these fields in the compiled candidate. Nominal state at admission
+alone does not reproduce a cooled workload; a live-rate ceiling cannot predict
+a later thermal slowdown. Qualification must not discard those prerequisites
+when moving measurements into release data.
 
 A deadline-only candidate binds the clean release build, exact factory
 configuration and measured cell domain. It has no batch curve or service limit
@@ -260,7 +285,12 @@ and cannot change concurrency, mixed-prefill policy, activation reserve or
 configured context. Out-of-cell work retains the existing conservative path.
 Universal serving-profile gates above remain mandatory for actual policy
 promotion. Review and add passing deadline-only entries to the corresponding
-Swift/Go deadline catalogs together.
+Swift/Go deadline catalogs together using
+`python3 -m serving_performance.catalog_codegen` from `scripts/`. Add the
+archived assembled receipt, prerequisite files and intact training/validation
+run paths to `scripts/serving_performance/catalog/deadline_evidence.json`.
+The offline CI test reassembles every observation and reruns qualification;
+the resulting profile must exactly equal the compiled entry.
 
 ### Prompt-count fallback evidence
 

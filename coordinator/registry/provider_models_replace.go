@@ -118,6 +118,7 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 			delete(r.pendingModelLoads, key)
 			delete(r.pendingModelLoadStarted, key)
 			releasedModelLoad = true
+			p.recordDeadlineActivityLocked(time.Now())
 		}
 	}
 	p.Models = append([]protocol.ModelInfo(nil), msg.Models...)

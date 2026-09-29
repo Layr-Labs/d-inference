@@ -1,7 +1,6 @@
 package cachepersist
 
 import (
-	"container/heap"
 	"time"
 
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
@@ -33,7 +32,7 @@ func (p *Persister) Park(rec crs.HolderRecord) {
 		merged := crs.Later(parked, rec)
 		p.pending[pk][hk] = merged
 		if !merged.ExpiresAt.Equal(parked.ExpiresAt) {
-			p.pushParkedExpiryLocked(hk, merged.ExpiresAt)
+			p.parkedExpiry.set(hk, merged.ExpiresAt)
 		}
 		return
 	}
@@ -44,8 +43,8 @@ func (p *Persister) Park(rec crs.HolderRecord) {
 	p.addParkedLocked(pk, rec)
 }
 
-// addParkedLocked inserts a parked row into its bucket and the identity
-// index. Called with p.mu held; the caller has checked the cap.
+// addParkedLocked inserts a parked row into its bucket, the identity index
+// and the expiry order. Called with p.mu held; the caller has checked the cap.
 func (p *Persister) addParkedLocked(pk string, rec crs.HolderRecord) {
 	bucket := p.pending[pk]
 	if bucket == nil {
@@ -56,42 +55,17 @@ func (p *Persister) addParkedLocked(pk string, rec crs.HolderRecord) {
 	bucket[hk] = rec
 	p.parkedBucket[hk] = pk
 	p.pendingCount++
-	p.pushParkedExpiryLocked(hk, rec.ExpiresAt)
+	p.parkedExpiry.set(hk, rec.ExpiresAt)
 }
 
-// pushParkedExpiryLocked records a parked row's expiry in the expiry order
-// and compacts the order when it outgrows the parked set. Called with p.mu
-// held.
-func (p *Persister) pushParkedExpiryLocked(hk crs.HolderKey, expiry time.Time) {
-	heap.Push(&p.parkedExpiry, parkedEntry{key: hk, expiry: expiry})
-	if p.parkedExpiry.Len() > 2*p.pendingCount+1024 {
-		p.compactParkedExpiryLocked()
-	}
-}
-
-// compactParkedExpiryLocked drops expiry entries whose row is gone or has
-// been replaced by a merge with another expiry, and restores the heap order.
-// Called with p.mu held.
-func (p *Persister) compactParkedExpiryLocked() {
-	kept := p.parkedExpiry[:0]
-	for _, e := range p.parkedExpiry {
-		if rec, ok := p.pending[p.parkedBucket[e.key]][e.key]; ok && rec.ExpiresAt.Equal(e.expiry) {
-			kept = append(kept, e)
-		}
-	}
-	for i := len(kept); i < len(p.parkedExpiry); i++ {
-		p.parkedExpiry[i] = parkedEntry{}
-	}
-	p.parkedExpiry = kept
-	heap.Init(&p.parkedExpiry)
-}
-
-// removeParkedLocked removes one parked row from its bucket and the identity
-// index, dropping the bucket when it empties. Called with p.mu held.
+// removeParkedLocked removes one parked row from its bucket, the identity
+// index and the expiry order, dropping the bucket when it empties. Called
+// with p.mu held.
 func (p *Persister) removeParkedLocked(pk string, hk crs.HolderKey) {
 	bucket := p.pending[pk]
 	delete(bucket, hk)
 	delete(p.parkedBucket, hk)
+	p.parkedExpiry.remove(hk)
 	p.pendingCount--
 	if len(bucket) == 0 {
 		delete(p.pending, pk)
@@ -173,31 +147,24 @@ func (p *Persister) prunePendingLocked(now time.Time) {
 // pruneParkedBatchRows bounds the parked rows one prune lock hold examines.
 const pruneParkedBatchRows = 5_000
 
-// prunePendingBatchLocked pops up to limit expired entries (limit <= 0: no
-// bound) off the expiry heap, dropping the parked rows they name, and
-// reports whether expired entries may remain. Entries whose row is gone or
-// was merged to a later expiry are stale and skipped. Called with p.mu held.
+// prunePendingBatchLocked drops up to limit expired parked rows (limit <= 0:
+// no bound), soonest expiry first, and reports whether expired rows may
+// remain. The expiry order holds exactly one entry per parked row, so each
+// pop is one drop. Called with p.mu held.
 func (p *Persister) prunePendingBatchLocked(now time.Time, limit int) bool {
-	examined := 0
-	for p.parkedExpiry.Len() > 0 {
-		top := p.parkedExpiry[0]
-		if top.expiry.After(now) {
+	dropped := 0
+	for {
+		top, ok := p.parkedExpiry.soonest()
+		if !ok || top.expiry.After(now) {
 			return false
 		}
-		if limit > 0 && examined >= limit {
+		if limit > 0 && dropped >= limit {
 			return true
 		}
-		examined++
-		heap.Pop(&p.parkedExpiry)
-		pk, parked := p.parkedBucket[top.key]
-		rec, ok := p.pending[pk][top.key]
-		if !parked || !ok || !rec.ExpiresAt.Equal(top.expiry) {
-			continue // stale: taken, dropped, or merged to a later expiry
-		}
-		p.removeParkedLocked(pk, top.key)
+		dropped++
+		p.removeParkedLocked(p.parkedBucket[top.key], top.key)
 		p.counters.droppedPending++
 	}
-	return false
 }
 
 // prunePendingChunked drops expired parked rows in bounded chunks, releasing

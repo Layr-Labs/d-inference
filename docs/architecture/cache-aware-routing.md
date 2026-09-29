@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `73cf349e2`
+> Last updated: 2026-09-29 · commit `5cc0eff33`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -763,9 +763,10 @@ back are operator procedures, kept in the runbook
    machine (same key and epoch: two sessions overlap when the per-key holder
    cap evicts the old session's holder as the new session's receipt arrives)
    still holds the boundary, in which case the row is refreshed as that
-   session's evidence; an SSD capability change settles the rows parked for
-   the old capability the same way (a resident-tier change leaves them to
-   bind). A lookup's measured stage cost travels with
+   session's evidence; an SSD capability that disappears or moves to another
+   cache epoch settles the rows parked under the old epoch the same way (a
+   change that keeps its epoch, like a resident-tier change, leaves them to
+   the bind, which settles each row on its own identity). A lookup's measured stage cost travels with
    the row and is rebound at bind with its own deadline, so a restart inside
    that window keeps routing on the measured value rather than the Ready
    estimate. Demand and holder rows stamped up to one minute ahead of the
@@ -800,10 +801,11 @@ back are operator procedures, kept in the runbook
    so a TTL reduction never fills the cap with rows the clamp then drops; the demand
    write granularity is bounded by the TTL so a short TTL never leaves the
    durable timestamp stale. Rows are fenced by cache-key generation: the
-   store keeps a non-secret HMAC fingerprint of the master key
-   (`cache_routing_meta`), and a boot under a different key resets the
-   tables instead of parking rows that could never match a request
-   (`lifecycle.persistence.key_rotated`). Resident (memory-tier) holders are
+   store keeps a non-secret HMAC fingerprint of the master key and every
+   key-derivation version (`cache_routing_meta`), and a boot under a
+   different generation (a rotated key, or a release that changed a
+   derivation version) resets the tables instead of parking rows that could
+   never match a request (`lifecycle.persistence.key_rotated`). Resident (memory-tier) holders are
    never persisted. `lifecycle.persistence` on `GET /v1/cache/status`
    reports the restored, parked and bound counts and the flush health.
 2. **Cache routing never rejects, delays or otherwise changes ordinary

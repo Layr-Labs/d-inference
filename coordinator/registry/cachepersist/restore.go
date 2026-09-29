@@ -107,7 +107,7 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 			merged := crs.Later(parked, rec)
 			p.pending[pk][hk] = merged
 			if !merged.ExpiresAt.Equal(parked.ExpiresAt) {
-				p.pushParkedExpiryLocked(hk, merged.ExpiresAt)
+				p.parkedExpiry.set(hk, merged.ExpiresAt)
 			}
 			restored++
 			continue

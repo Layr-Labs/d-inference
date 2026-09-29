@@ -70,7 +70,8 @@ func (t *cacheRoutingTracker) persistHolderRemoval(key string, h cacheHolder, re
 }
 
 // dropParkedForCapability discards the rows parked under (epoch, model)
-// because that capability no longer exists, settling each durable row
+// because no bind will take them again (the model's SSD capability is gone or
+// moved to another cache epoch), settling each durable row
 // against the holders still live instead of deleting it outright: with
 // overlapping sessions of one machine, a row parked by a disconnected
 // session may still be a live session's evidence.

@@ -47,8 +47,8 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 ) (bool, error) {
 	changed, provider, remaining, drops, err := r.applyPrefixCacheSnapshot(providerID, replaceCapabilities, version, capabilities, memoryCapabilities, statuses, outcomes)
 	if err == nil && len(drops) > 0 {
-		// Rows parked for capabilities that just changed are settled here,
-		// outside the apply's locks and in chunks.
+		// Rows parked under epochs the capability change left behind are
+		// settled here, outside the apply's locks and in chunks.
 		r.mu.RLock()
 		tracker := r.cacheRouting
 		r.mu.RUnlock()
@@ -68,8 +68,8 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	return changed, err
 }
 
-// parkedDrop names a (cache epoch, model) whose parked rows a capability
-// change made stale.
+// parkedDrop names a (cache epoch, model) whose parked rows no bind will take
+// again: the model's SSD capability is gone or moved to another epoch.
 type parkedDrop struct {
 	epoch, model string
 }
@@ -187,24 +187,27 @@ func (r *Registry) applyPrefixCacheSnapshot(
 			tracker.invalidateProviderModels(providerID, changedModels)
 		}
 		tracker.reconcileFences(providerID, resultCapabilities, resultMemoryCapabilities)
-		// Evidence parked for a capability that just changed is as stale as
-		// the live evidence invalidated above; drop it rather than letting
-		// the bind below resurrect it. Its durable rows are settled against
-		// the holders still live: a row another session of the same machine
-		// holds is that session's evidence, not this capability's.
-		// Only for a change of the SSD capability itself: changedModels also
-		// names models whose resident-tier capability moved, and parked rows
-		// are SSD evidence under the SSD epoch. (The live invalidation above
-		// is still per model across tiers, as before this change; parked
-		// rows are settled only for the tier they belong to.) The rows are settled by the
-		// caller after these locks are released, in chunks: a bucket parked
-		// under the old epoch is never taken by the bind below (which takes
-		// the new epoch's), and one under an unchanged epoch is settled as a
-		// mismatch by the bind either way.
+		// Rows parked under an (epoch, model) no bind will take again are
+		// settled by the caller after these locks are released, in chunks:
+		// the model's SSD capability is gone, or it moved to another cache
+		// epoch, so the bind below (which takes the new epoch's bucket) would
+		// never reach them. Each durable row is settled against the holders
+		// still live: a row another session of the same machine holds is
+		// that session's evidence, not this capability's. A change under the
+		// same epoch (the artifact, contract, block-hash version or
+		// ready-boundary mode moved) keeps its bucket: the bind takes it
+		// chunk by chunk and settles each row on its own identity, so rows
+		// an overlapping session parked under the new capability bind while
+		// rows of the old one are deleted as mismatches (bindRowsLocked);
+		// sweeping the bucket here would discard them unread. Only the SSD
+		// capability counts: changedModels also names models whose
+		// resident-tier capability moved, and parked rows are SSD evidence
+		// under the SSD epoch (the live invalidation above stays per model
+		// across tiers, as before).
 		for model := range changedModels {
 			prev, had := previousCapabilities[model]
 			next, has := resultCapabilities[model]
-			if had && (!has || prev != next) {
+			if had && (!has || prev.CacheEpoch != next.CacheEpoch) {
 				drops = append(drops, parkedDrop{epoch: prev.CacheEpoch, model: model})
 			}
 		}

@@ -884,23 +884,28 @@ func TestPrunePendingPopsOnlyExpiredRowsInChunks(t *testing.T) {
 	for i := 0; i < live; i++ {
 		p.Park(rec(fmt.Sprintf("l%05d", i), "e", now, time.Minute))
 	}
-	// Extending a live row's expiry by a merge leaves its earlier entry stale.
+	// Extending a live row's expiry by a merge moves its entry in the expiry
+	// order rather than adding a second one.
 	extended := rec("l00000", "e", now, 2*time.Minute)
 	p.Park(extended)
-	// A parked row taken before the prune leaves a stale heap entry.
+	checkParkedExpiryIndex(t, p)
+	// A parked row taken before the prune takes its entry with it.
 	taken, _ := p.Take("e", "model", 1)
 	if len(taken) != 1 {
 		t.Fatal("take one row")
 	}
-	// One lock hold examines at most its chunk and reports the rest.
+	checkParkedExpiryIndex(t, p)
+	// One lock hold drops at most its chunk and reports the rest.
 	p.mu.Lock()
 	more := p.prunePendingBatchLocked(now, 5)
 	dropped := p.counters.droppedPending
 	p.mu.Unlock()
-	if !more || dropped > 5 {
-		t.Fatalf("a bounded chunk must stop early and report more: more=%v dropped=%d", more, dropped)
+	if !more || dropped != 5 {
+		t.Fatalf("a bounded chunk must drop exactly its chunk and report more: more=%v dropped=%d", more, dropped)
 	}
+	checkParkedExpiryIndex(t, p)
 	p.Prune(context.Background(), now, time.Minute) // not ready: parked prune only
+	checkParkedExpiryIndex(t, p)
 	s := p.Status()
 	wantLive := live
 	if taken[0].Key[0] == 'l' {
@@ -920,6 +925,28 @@ func TestPrunePendingPopsOnlyExpiredRowsInChunks(t *testing.T) {
 	}
 	if p.HasPending() {
 		t.Fatal("everything live was taken")
+	}
+}
+
+// checkParkedExpiryIndex asserts the expiry order holds exactly one entry per
+// parked row, at the position its index records, with the row's current
+// expiry: the invariant that lets a take, a drop or a merge touch one entry
+// instead of leaving stale ones for a later scan.
+func checkParkedExpiryIndex(t *testing.T, p *Persister) {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if n := p.parkedExpiry.Len(); n != p.pendingCount || len(p.parkedExpiry.pos) != n {
+		t.Fatalf("expiry order out of step with the parked set: entries=%d indexed=%d parked=%d", n, len(p.parkedExpiry.pos), p.pendingCount)
+	}
+	for i, e := range p.parkedExpiry.entries {
+		if p.parkedExpiry.pos[e.key] != i {
+			t.Fatalf("entry %d for %v indexed at %d", i, e.key, p.parkedExpiry.pos[e.key])
+		}
+		row, ok := p.pending[p.parkedBucket[e.key]][e.key]
+		if !ok || !row.ExpiresAt.Equal(e.expiry) {
+			t.Fatalf("entry for %v names a missing row or a stale expiry (parked=%v entry=%v row=%v)", e.key, ok, e.expiry, row.ExpiresAt)
+		}
 	}
 }
 

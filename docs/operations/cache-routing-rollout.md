@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-29 · commit `73cf349e2`
+> Last updated: 2026-09-29 · commit `5cc0eff33`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -179,9 +179,11 @@ the same request from the same account remains in or out of the cohort.
    closed and joined (providers are disconnected by the old coordinator at the
    end of a swap rather than by its exit, and reconnect as before), so a swap costs seconds of evidence rather than
    the 10–20 minute rebuild it used to. Rotating
-   `EIGENINFERENCE_CACHE_MASTER_KEY` empties the durable copy on the next boot
+   `EIGENINFERENCE_CACHE_MASTER_KEY`, or deploying a release that changes a
+   key-derivation version, empties the durable copy on the next boot
    (`lifecycle.persistence.key_rotated: true`): persisted keys are derived from
-   the master key, so a rotation is a full index rebuild, as before persistence.
+   the master key and those versions, so either is a full index rebuild, as
+   before persistence.
    Both containers of a swap share the VM's clock, which the prune's
    one-minute skew allowance assumes: of two instances whose clocks differ
    by more than that, the one whose clock lags would prune the other's

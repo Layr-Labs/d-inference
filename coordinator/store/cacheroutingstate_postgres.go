@@ -66,8 +66,9 @@ const cacheRoutingDemandDDL = `CREATE TABLE IF NOT EXISTS cache_routing_demand (
 const cacheRoutingDemandSeenIndexDDL = `CREATE INDEX IF NOT EXISTS idx_cache_routing_demand_seen ON cache_routing_demand(seen_at)`
 
 // cacheRoutingMetaDDL records the derived cache-key generation the rows were
-// written under (a non-secret fingerprint), so a master-key rotation resets
-// the tables instead of restoring rows no request can ever match.
+// written under (a non-secret fingerprint), so a change of generation (a
+// master-key rotation, a bumped derivation version) resets the tables instead
+// of restoring rows no request can ever match.
 const cacheRoutingMetaDDL = `CREATE TABLE IF NOT EXISTS cache_routing_meta (
  name TEXT PRIMARY KEY,
  value TEXT NOT NULL,

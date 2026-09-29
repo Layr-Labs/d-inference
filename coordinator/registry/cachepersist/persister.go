@@ -105,9 +105,10 @@ type Persister struct {
 	// parkedExpiry orders parked rows by expiry so a prune pops only the
 	// expired ones, in bounded chunks per lock hold, instead of scanning
 	// every parked row under p.mu (a receipt holding the tracker lock waits
-	// on this mutex, and requests wait on the tracker lock). Entries for
-	// rows taken or dropped meanwhile are stale and skipped when they
-	// surface; a compaction rebuilds the heap when it outgrows the parked set.
+	// on this mutex, and requests wait on the tracker lock). It indexes its
+	// entries by identity and holds exactly one per parked row: a take or a
+	// drop removes the row's entry and a merge moves it, so no maintenance
+	// pass ever runs under the tracker lock.
 	parkedExpiry parkedHeap
 	pendingCount int
 	counters     counters
@@ -154,6 +155,7 @@ func New(st crs.Store, logger *slog.Logger, opts Options) *Persister {
 		demandPersisted: make(map[string]time.Time),
 		pending:         make(map[string]map[crs.HolderKey]crs.HolderRecord),
 		parkedBucket:    make(map[crs.HolderKey]string),
+		parkedExpiry:    parkedHeap{pos: make(map[crs.HolderKey]int)},
 	}
 }
 
@@ -284,27 +286,70 @@ type recentDelete struct {
 	at  time.Time
 }
 
-// parkedEntry is one parked row's position in the expiry order; the bucket
-// is resolved through parkedBucket when the entry surfaces.
+// parkedEntry is one parked row's place in the expiry order; the bucket is
+// resolved through parkedBucket when the entry surfaces.
 type parkedEntry struct {
 	key    crs.HolderKey
 	expiry time.Time
 }
 
-// parkedHeap orders parked rows by expiry, soonest first.
-type parkedHeap []parkedEntry
+// parkedHeap orders parked rows by expiry, soonest first, and indexes the
+// entries by identity, so a row's entry moves when its expiry merges and
+// leaves when the row leaves the parked set, in O(log n) each. It holds
+// exactly one entry per parked row; nothing ever has to be compacted.
+type parkedHeap struct {
+	entries []parkedEntry
+	pos     map[crs.HolderKey]int
+}
 
-func (h parkedHeap) Len() int           { return len(h) }
-func (h parkedHeap) Less(i, j int) bool { return h[i].expiry.Before(h[j].expiry) }
-func (h parkedHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *parkedHeap) Push(x any)        { *h = append(*h, x.(parkedEntry)) }
+func (h *parkedHeap) Len() int           { return len(h.entries) }
+func (h *parkedHeap) Less(i, j int) bool { return h.entries[i].expiry.Before(h.entries[j].expiry) }
+func (h *parkedHeap) Swap(i, j int) {
+	h.entries[i], h.entries[j] = h.entries[j], h.entries[i]
+	h.pos[h.entries[i].key] = i
+	h.pos[h.entries[j].key] = j
+}
+func (h *parkedHeap) Push(x any) {
+	e := x.(parkedEntry)
+	h.pos[e.key] = len(h.entries)
+	h.entries = append(h.entries, e)
+}
 func (h *parkedHeap) Pop() any {
-	old := *h
+	old := h.entries
 	n := len(old)
 	e := old[n-1]
 	old[n-1] = parkedEntry{}
-	*h = old[:n-1]
+	h.entries = old[:n-1]
+	delete(h.pos, e.key)
 	return e
+}
+
+// set records a parked row's expiry, moving its entry when it has one.
+func (h *parkedHeap) set(key crs.HolderKey, expiry time.Time) {
+	if h.pos == nil {
+		h.pos = make(map[crs.HolderKey]int)
+	}
+	if i, ok := h.pos[key]; ok {
+		h.entries[i].expiry = expiry
+		heap.Fix(h, i)
+		return
+	}
+	heap.Push(h, parkedEntry{key: key, expiry: expiry})
+}
+
+// remove drops a parked row's entry, if it has one.
+func (h *parkedHeap) remove(key crs.HolderKey) {
+	if i, ok := h.pos[key]; ok {
+		heap.Remove(h, i)
+	}
+}
+
+// soonest returns the entry that expires first.
+func (h *parkedHeap) soonest() (parkedEntry, bool) {
+	if len(h.entries) == 0 {
+		return parkedEntry{}, false
+	}
+	return h.entries[0], true
 }
 
 // recentHeap orders recorded decisions by time, oldest first.

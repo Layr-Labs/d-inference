@@ -1391,6 +1391,56 @@ func TestCacheRoutingPersistenceCapabilityChangeSettlesLargeBucket(t *testing.T)
 	}
 }
 
+// A capability change that keeps its cache epoch (here the ready-boundary
+// mode moves) leaves the bucket to the bind: rows an overlapping session
+// parked under the new capability bind, across more than one chunk, and rows
+// of the old capability are settled as mismatches at bind rather than swept
+// away with them.
+func TestCacheRoutingPersistenceSameEpochChangeBindsNewCapabilityRows(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = "" // the old capability: floor boundaries
+	startPersistence(t, r, st)
+	p := persistenceTestProvider(t, r, "machine-a", capability)
+	r.mu.RLock()
+	persister := r.cachePersister
+	r.mu.RUnlock()
+	now := time.Now()
+	changed := capability
+	changed.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	park := func(prefix string, n int, mode string) {
+		for i := 0; i < n; i++ {
+			persister.Park(crs.HolderRecord{
+				Key: fmt.Sprintf("%s%05d", prefix, i), CacheEpoch: capability.CacheEpoch, Tier: "ssd", ModelID: "model",
+				ModelAggregateHash: capability.ModelAggregateHash, PromptContractID: capability.PromptContractID,
+				BlockHashVersion: capability.BlockHashVersion, ReadyBoundaryMode: mode,
+				AnchorTokenCount: 4096, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(time.Minute),
+			})
+		}
+	}
+	const fresh, stale = 2*bindChunkRows + 5, 3
+	park("n", fresh, changed.ReadyBoundaryMode)    // an overlapping session's evidence under the new capability
+	park("o", stale, capability.ReadyBoundaryMode) // evidence of the old capability
+	if err := r.UpdatePrefixCacheCapabilities(p.ID, 2, []protocol.PrefixCacheV2Capability{changed}); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 || s.BoundHolders != fresh || s.DroppedPending != stale {
+		t.Fatalf("rows under the new capability must bind and the old capability's settle at bind: %+v", s)
+	}
+	r.cacheRouting.mu.Lock()
+	live := 0
+	for key, holders := range r.cacheRouting.holders {
+		if h, ok := holders[p.ID]; ok && key[0] == 'n' && h.ReadyBoundaryMode == changed.ReadyBoundaryMode {
+			live++
+		}
+	}
+	r.cacheRouting.mu.Unlock()
+	if live != fresh {
+		t.Fatalf("%d of %d rows parked under the new capability became live holders", live, fresh)
+	}
+}
+
 // An expired holder of an older session (not yet swept) is not surviving
 // evidence: invalidating the newer session's holder deletes the durable
 // row instead of refreshing it from the expired one.

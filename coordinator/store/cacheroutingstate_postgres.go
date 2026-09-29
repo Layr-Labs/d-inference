@@ -14,8 +14,10 @@ import (
 
 // cacheRoutingHoldersDDL and cacheRoutingDemandDDL are the durable copies of
 // the registry's in-memory holder and demand indexes (see
-// cacheroutingstate/records.go). Keys and anchors are chained block hashes, never
-// prompt content. The primary key is (key, cache_epoch): a holder key names a
+// cacheroutingstate/records.go). Keys are HMACs under the route key; the
+// provider-confirmed chain hash is not stored (cacheRoutingHoldersDropChainHashDDL
+// removes the column earlier builds of this branch created), and no prompt
+// content is. The primary key is (key, cache_epoch): a holder key names a
 // boundary, an epoch names one provider's SSD root, and a boundary is held by
 // at most the configured number of providers.
 const cacheRoutingHoldersDDL = `CREATE TABLE IF NOT EXISTS cache_routing_holders (
@@ -26,7 +28,6 @@ const cacheRoutingHoldersDDL = `CREATE TABLE IF NOT EXISTS cache_routing_holders
  model_aggregate_hash TEXT NOT NULL DEFAULT '',
  prompt_contract_id TEXT NOT NULL DEFAULT '',
  block_hash_version TEXT NOT NULL DEFAULT '',
- anchor_chain_hash TEXT NOT NULL DEFAULT '',
  anchor_token_count INTEGER NOT NULL DEFAULT 0,
  required_recompute_tokens INTEGER NOT NULL DEFAULT 0,
  stage_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -36,6 +37,9 @@ const cacheRoutingHoldersDDL = `CREATE TABLE IF NOT EXISTS cache_routing_holders
  expires_at TIMESTAMPTZ NOT NULL,
  PRIMARY KEY (key, cache_epoch)
 )`
+
+// The chain hash column of earlier builds is dropped, and its values with it.
+const cacheRoutingHoldersDropChainHashDDL = `ALTER TABLE cache_routing_holders DROP COLUMN IF EXISTS anchor_chain_hash`
 
 // Tables created before the measured-stage columns existed pick them up here.
 const cacheRoutingHoldersMeasuredStageDDL = `ALTER TABLE cache_routing_holders
@@ -64,7 +68,7 @@ const cacheRoutingMetaDDL = `CREATE TABLE IF NOT EXISTS cache_routing_meta (
 
 const cacheRoutingKeyFingerprintName = "key_fingerprint"
 
-const cacheHolderInsertColumns = 15
+const cacheHolderInsertColumns = 14
 
 func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.HolderRecord) error {
 	for _, r := range records {
@@ -77,7 +81,7 @@ func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.Ho
 		end := min(start+crs.BatchRows, len(records))
 		chunk := records[start:end]
 		var sb strings.Builder
-		sb.WriteString(`INSERT INTO cache_routing_holders (key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id, block_hash_version, anchor_chain_hash, anchor_token_count, required_recompute_tokens, stage_ms, measured_stage_ms, measured_expires_at, updated_at, expires_at) VALUES `)
+		sb.WriteString(`INSERT INTO cache_routing_holders (key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id, block_hash_version, anchor_token_count, required_recompute_tokens, stage_ms, measured_stage_ms, measured_expires_at, updated_at, expires_at) VALUES `)
 		args := make([]any, 0, len(chunk)*cacheHolderInsertColumns)
 		for i, r := range chunk {
 			if i > 0 {
@@ -93,7 +97,7 @@ func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.Ho
 			}
 			sb.WriteString(")")
 			args = append(args, r.Key, r.CacheEpoch, r.Tier, r.ModelID, r.ModelAggregateHash, r.PromptContractID,
-				r.BlockHashVersion, r.AnchorChainHash, r.AnchorTokenCount, r.RequiredRecomputeTokens, r.StageMs,
+				r.BlockHashVersion, r.AnchorTokenCount, r.RequiredRecomputeTokens, r.StageMs,
 				r.MeasuredStageMs, nullableTime(r.MeasuredExpiresAt), r.UpdatedAt.UTC(), r.ExpiresAt.UTC())
 		}
 		// The newer receipt wins every descriptive column; expiry never moves
@@ -104,7 +108,6 @@ func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.Ho
  model_aggregate_hash = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.model_aggregate_hash ELSE cache_routing_holders.model_aggregate_hash END,
  prompt_contract_id = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.prompt_contract_id ELSE cache_routing_holders.prompt_contract_id END,
  block_hash_version = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.block_hash_version ELSE cache_routing_holders.block_hash_version END,
- anchor_chain_hash = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.anchor_chain_hash ELSE cache_routing_holders.anchor_chain_hash END,
  anchor_token_count = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.anchor_token_count ELSE cache_routing_holders.anchor_token_count END,
  required_recompute_tokens = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.required_recompute_tokens ELSE cache_routing_holders.required_recompute_tokens END,
  stage_ms = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.stage_ms ELSE cache_routing_holders.stage_ms END,
@@ -155,7 +158,7 @@ func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl
 		args = append(args, ttl.Microseconds())
 	}
 	query := fmt.Sprintf(`SELECT key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id,
- block_hash_version, anchor_chain_hash, anchor_token_count, required_recompute_tokens, stage_ms,
+ block_hash_version, anchor_token_count, required_recompute_tokens, stage_ms,
  measured_stage_ms, measured_expires_at, updated_at, effective_expires_at
  FROM (SELECT *, %s AS effective_expires_at FROM cache_routing_holders) h
  WHERE effective_expires_at > $1 AND updated_at <= $1 ORDER BY effective_expires_at DESC, key, cache_epoch`, expiry)
@@ -175,7 +178,7 @@ func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl
 			measuredExpires *time.Time
 		)
 		if err := rows.Scan(&r.Key, &r.CacheEpoch, &r.Tier, &r.ModelID, &r.ModelAggregateHash, &r.PromptContractID,
-			&r.BlockHashVersion, &r.AnchorChainHash, &r.AnchorTokenCount, &r.RequiredRecomputeTokens, &r.StageMs,
+			&r.BlockHashVersion, &r.AnchorTokenCount, &r.RequiredRecomputeTokens, &r.StageMs,
 			&r.MeasuredStageMs, &measuredExpires, &r.UpdatedAt, &r.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("scan cache holder: %w", err)
 		}

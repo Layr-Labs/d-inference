@@ -117,6 +117,16 @@ func (ct *challengeTracker) remove(nonce string) *pendingChallenge {
 // handleProviderWS upgrades the connection to WebSocket and manages the
 // provider's lifecycle: registration, heartbeats, and inference responses.
 func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
+	if s.providersClosing.Load() {
+		http.Error(w, "coordinator shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	s.providerHandlers.Add(1)
+	defer s.providerHandlers.Done()
+	if s.providersClosing.Load() {
+		http.Error(w, "coordinator shutting down", http.StatusServiceUnavailable)
+		return
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Allow any origin for provider connections.
 		InsecureSkipVerify: true,
@@ -135,6 +145,31 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 
 	// Run the read loop; on return the provider is disconnected.
 	s.providerReadLoop(r.Context(), conn, providerID, r)
+}
+
+// CloseProviderConnections stops the provider socket producers for shutdown:
+// no new provider socket is accepted, every connected provider's socket is
+// closed (the provider reconnects to the next coordinator, and its holders
+// park for that reconnect), and the running handlers are joined so no
+// receipt or heartbeat can arrive behind the caller. Provider sockets are
+// hijacked, so httpServer.Shutdown neither closes nor waits on them. Returns
+// false when the handlers did not all finish before ctx expired.
+func (s *Server) CloseProviderConnections(ctx context.Context) bool {
+	s.providersClosing.Store(true)
+	closed := s.registry.CloseAllProviderConnections()
+	done := make(chan struct{})
+	go func() {
+		s.providerHandlers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		s.logger.Info("provider sockets closed for shutdown", "closed", closed)
+		return true
+	case <-ctx.Done():
+		s.logger.Warn("provider socket handlers still running at the shutdown deadline", "closed", closed)
+		return false
+	}
 }
 
 // maxProviderVersionLength bounds the provider-reported binary version accepted

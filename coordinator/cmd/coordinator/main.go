@@ -273,7 +273,8 @@ func main() {
 	// The server handed the store to the registry; restore the durable cache
 	// routing indexes now so the holder index is not empty after a restart.
 	// The write-behind loop keeps running through the drain (the main ctx is
-	// cancelled before it) and stops right before the final flush.
+	// cancelled before it) and stops after the final flush, which runs once
+	// the HTTP server and the provider sockets are down.
 	persistCtx, persistCancel := context.WithCancel(context.Background())
 	defer persistCancel()
 	if cfg.RegistryCfg.CacheRouting.Persist {
@@ -1016,14 +1017,18 @@ func main() {
 		logger.Error("shutdown error", "error", err)
 	}
 
-	// Final write-behind of the cache routing indexes, after Shutdown so no new
-	// provider connection or request can produce evidence behind it; the
-	// periodic flush loop stays alive until here because provider sockets
-	// (hijacked, so not waited on by Shutdown) keep producing receipts and
-	// heartbeats through the drain. The flush repeats until the dirty sets
-	// are empty, so anything a still-open socket marks meanwhile is written.
+	// Provider sockets are hijacked, so Shutdown neither closes nor waits on
+	// them and they keep producing receipts and heartbeats; close them and
+	// join their handlers, then take the final write-behind of the cache
+	// routing indexes with no producer left behind it. The periodic flush
+	// loop stays alive until here.
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	srv.CloseProviderConnections(closeCtx)
+	closeCancel()
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := reg.FlushCacheRoutingState(flushCtx); err != nil {
+	if s := reg.CacheRoutingPersistenceStatus(); s.Enabled && !s.Ready {
+		logger.Warn("cache routing persistence never established its key generation this run; the final flush writes nothing")
+	} else if err := reg.FlushCacheRoutingState(flushCtx); err != nil {
 		logger.Warn("final cache routing persistence flush failed", "error", err)
 	}
 	flushCancel()

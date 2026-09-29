@@ -24,7 +24,8 @@ func holderRecordFor(key string, h cacheHolder) crs.HolderRecord {
 	rec := crs.HolderRecord{
 		Key: key, CacheEpoch: h.CacheEpoch, Tier: h.Tier, ModelID: h.ModelID,
 		ModelAggregateHash: h.ModelAggregateHash, PromptContractID: h.PromptContractID,
-		BlockHashVersion: h.BlockHashVersion, AnchorChainHash: h.Anchor.ChainHash,
+		BlockHashVersion: h.BlockHashVersion,
+		// The boundary is named by Key alone; the chain hash stays in memory.
 		AnchorTokenCount: h.Anchor.TokenCount, RequiredRecomputeTokens: h.RequiredRecomputeTokens,
 		StageMs: h.StageMs, UpdatedAt: h.UpdatedAt, ExpiresAt: h.ExpiresAt,
 	}
@@ -181,15 +182,21 @@ func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability prot
 			ProviderID: provider.ID, Provider: provider, ModelID: rec.ModelID,
 			ModelAggregateHash: rec.ModelAggregateHash, PromptContractID: rec.PromptContractID,
 			BlockHashVersion: rec.BlockHashVersion, CacheEpoch: rec.CacheEpoch, Tier: rec.Tier,
-			Anchor:                  protocol.PrefixCacheAnchor{ChainHash: rec.AnchorChainHash, TokenCount: rec.AnchorTokenCount},
+			// No chain hash at rest: the key bound the boundary, and a
+			// restored holder matches its plan anchor by token count
+			// (anchorMatches) until a fresh receipt replaces it.
+			Anchor:                  protocol.PrefixCacheAnchor{TokenCount: rec.AnchorTokenCount},
 			RequiredRecomputeTokens: rec.RequiredRecomputeTokens, StageMs: rec.StageMs,
 			UpdatedAt: rec.UpdatedAt, ExpiresAt: rec.ExpiresAt,
 		}
 		if rec.MeasuredStageMs > 0 && rec.MeasuredExpiresAt.After(now) {
-			// The measurement binds to the capability the row bound to; the
-			// same identity fields matched, and any other change would have
-			// invalidated the holder in memory as well. It never outlives the
-			// holder's (clamped) expiry.
+			// The measurement binds to the capability the row bound to: the
+			// identity fields (epoch, model, artifact, contract, block-hash
+			// version) matched. The row does not record the ready-boundary
+			// mode, so a mode change across the restart is not detected here
+			// (an in-session change invalidates the holder); the exposure is
+			// bounded by the holder's (clamped) expiry, which the measurement
+			// never outlives.
 			expires := rec.MeasuredExpiresAt
 			if rec.ExpiresAt.Before(expires) {
 				expires = rec.ExpiresAt

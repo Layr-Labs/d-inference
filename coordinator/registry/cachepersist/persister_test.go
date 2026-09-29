@@ -41,7 +41,7 @@ func restoreForTest(t *testing.T, p *Persister, now time.Time) {
 
 func rec(key, epoch string, now time.Time, ttl time.Duration) crs.HolderRecord {
 	return crs.HolderRecord{Key: key, CacheEpoch: epoch, Tier: "ssd", ModelID: "model",
-		AnchorChainHash: "h", AnchorTokenCount: 1024, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(ttl)}
+		AnchorTokenCount: 1024, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(ttl)}
 }
 
 func TestFlushRetriesUnwrittenRemainderAndDedupesDemand(t *testing.T) {
@@ -383,5 +383,37 @@ func TestFlushWaitsForRestore(t *testing.T) {
 	}
 	if fp, _ := mem.CacheRoutingKeyFingerprint(ctx); fp != "gen-1" {
 		t.Fatalf("generation not recorded: %q", fp)
+	}
+}
+
+// A retried restore merges the store's rows into whatever this run already
+// parked: a provider that disconnected before the retry parked newer
+// evidence the store does not hold yet, and it must survive the restore.
+func TestRestoreMergesIntoRowsParkedBeforeIt(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	older := rec("a", "e", now.Add(-30*time.Second), time.Minute)
+	older.StageMs = 20
+	if err := mem.UpsertCacheHolders(ctx, []crs.HolderRecord{older, rec("b", "e", now, time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	p := New(mem, nil, Options{MaxPending: 10})
+	newer := rec("a", "e", now, time.Minute)
+	newer.StageMs = 50
+	p.Park(newer)
+	if _, err := p.Restore(ctx, now, time.Minute, 10, 10); err != nil {
+		t.Fatal(err)
+	}
+	if s := p.Status(); s.PendingHolders != 2 || s.RestoredHolders != 2 || s.DroppedPending != 0 {
+		t.Fatalf("restore must merge into the parked rows: %+v", s)
+	}
+	rows := p.Take("e", "model")
+	byKey := map[string]crs.HolderRecord{}
+	for _, r := range rows {
+		byKey[r.Key] = r
+	}
+	if len(rows) != 2 || byKey["a"].StageMs != 50 || !byKey["a"].UpdatedAt.Equal(now) || byKey["b"].Key != "b" {
+		t.Fatalf("parked newer evidence must win over the store's older copy: %+v", rows)
 	}
 }

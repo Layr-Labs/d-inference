@@ -190,7 +190,11 @@ type releaseTrustPolicySnapshot struct {
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
 	appAttestRuntimeRefreshPending atomic.Bool
-	modelCatalogSyncMu             sync.Mutex // serialize catalog snapshots and desired-state publication
+	// providerHandlers counts running provider socket handlers so shutdown can
+	// join them after closing their sockets; providersClosing refuses new ones.
+	providerHandlers   sync.WaitGroup
+	providersClosing   atomic.Bool
+	modelCatalogSyncMu sync.Mutex // serialize catalog snapshots and desired-state publication
 
 	appAttestShadow               AppAttestShadowConfig
 	appAttest                     *attestservice.Service

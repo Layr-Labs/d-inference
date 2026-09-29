@@ -30,6 +30,10 @@ type HolderKey struct {
 }
 
 // HolderRecord is the durable form of one holder entry.
+// A HolderRecord names a boundary only through Key, an HMAC under the route
+// key: the provider-confirmed chain hash is never stored, so the durable copy
+// holds no prompt-derived identifier an offline reader could match against a
+// known prompt. A restored holder matches its plan boundary through the key.
 type HolderRecord struct {
 	Key                     string
 	CacheEpoch              string
@@ -38,7 +42,6 @@ type HolderRecord struct {
 	ModelAggregateHash      string
 	PromptContractID        string
 	BlockHashVersion        string
-	AnchorChainHash         string
 	AnchorTokenCount        int
 	RequiredRecomputeTokens int
 	StageMs                 float64

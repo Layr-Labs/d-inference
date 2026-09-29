@@ -45,7 +45,7 @@ func holderRecord(i int, epoch string, now time.Time, ttl time.Duration) crs.Hol
 	return crs.HolderRecord{
 		Key: fmt.Sprintf("k%03d", i), CacheEpoch: epoch, Tier: "ssd", ModelID: "gpt-oss-20b",
 		ModelAggregateHash: "aggr", PromptContractID: "contract", BlockHashVersion: "darkbloom-block-chain-v1",
-		AnchorChainHash: fmt.Sprintf("chain%03d", i), AnchorTokenCount: 1024 * (i%8 + 1),
+		AnchorTokenCount:        1024 * (i%8 + 1),
 		RequiredRecomputeTokens: 0, StageMs: 120, UpdatedAt: now, ExpiresAt: now.Add(ttl),
 	}
 }
@@ -113,10 +113,10 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 			if err != nil || len(top) != 1 || top[0].Key != "k006" {
 				t.Fatalf("capped load must return the longest-lived row first: %+v %v", top, err)
 			}
-			// A reduced TTL applies before the order and the cap: under a
-			// 5-minute TTL k006 (updated at now, extended to 44 min) has 5 min
-			// left while k005 (updated a minute later) has 6, and the result
-			// carries the clamped expiry.
+			// A reduced TTL applies before the order and the cap: read a
+			// minute from now under a 5-minute TTL, k006 (updated at now,
+			// extended to 44 min) has 4 min left while k005 (updated a minute
+			// later) has 5, and the result carries the clamped expiry.
 			top, err = s.LoadCacheHolders(ctx, now.Add(time.Minute), 5*time.Minute, 1)
 			if err != nil || len(top) != 1 || top[0].Key != "k005" || !top[0].ExpiresAt.Equal(now.Add(6*time.Minute)) {
 				t.Fatalf("capped load under a shorter TTL must order by the clamped expiry: %+v %v", top, err)
@@ -247,5 +247,25 @@ func TestCacheRoutingStateRejectsInvalidRecords(t *testing.T) {
 	}
 	if err := s.UpsertCacheHolders(ctx, nil); err != nil {
 		t.Fatalf("empty batch must be a no-op: %v", err)
+	}
+}
+
+// The durable copy never holds the provider-confirmed chain hash: a boundary
+// is named by its keyed identifier and token count only, and the column an
+// earlier build of this branch created is dropped by the schema loop.
+func TestCacheRoutingHoldersTableStoresNoChainHash(t *testing.T) {
+	for name, s := range cacheRoutingStateBackends(t) {
+		pg, ok := As[*PostgresStore](s)
+		if !ok {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			var n int
+			err := pg.pool.QueryRow(context.Background(),
+				`SELECT count(*) FROM information_schema.columns WHERE table_name = 'cache_routing_holders' AND column_name = 'anchor_chain_hash'`).Scan(&n)
+			if err != nil || n != 0 {
+				t.Fatalf("anchor_chain_hash must not exist: n=%d err=%v", n, err)
+			}
+		})
 	}
 }

@@ -202,7 +202,8 @@ func (r *Registry) runCacheRoutingPersistence(ctx context.Context, p *cachepersi
 // FlushCacheRoutingState writes everything marked dirty, in as many bounded
 // flushes as it takes. Flushes are serialized with the periodic loop, so a
 // shutdown flush never races a tick that is still writing. Called once on
-// shutdown after the drain, and by tests.
+// shutdown after the HTTP server and the provider sockets are down, and by
+// tests.
 func (r *Registry) FlushCacheRoutingState(ctx context.Context) error {
 	if r == nil {
 		return nil

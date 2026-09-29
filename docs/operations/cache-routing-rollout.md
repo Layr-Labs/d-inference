@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-29 · commit `b16873a0c`
+> Last updated: 2026-09-29 · commit `feeeeed99`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -175,7 +175,9 @@ the same request from the same account remains in or out of the cohort.
    `GET /v1/cache/status`) instead of from scratch (a restore that fails at
    boot, say behind a busy database, is retried every 5 s and nothing is
    written until it succeeds: `lifecycle.persistence.ready`), and the final flush runs
-   after the HTTP server has shut down (repeating until nothing is dirty), so a swap costs seconds of evidence rather than
+   after the HTTP server has shut down and the provider sockets have been
+   closed and joined (providers are disconnected by the old coordinator at the
+   end of a swap rather than by its exit, and reconnect as before), so a swap costs seconds of evidence rather than
    the 10–20 minute rebuild it used to. Rotating
    `EIGENINFERENCE_CACHE_MASTER_KEY` empties the durable copy on the next boot
    (`lifecycle.persistence.key_rotated: true`): persisted keys are derived from

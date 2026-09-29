@@ -804,6 +804,33 @@ func TestCacheRoutingPersistenceRestoresMeasuredStage(t *testing.T) {
 	if got := bound.stageCostAt(bound.stageMeasurement.expiresAt); got != estimate {
 		t.Fatalf("fallback must apply once the measurement expires: got %v", got)
 	}
+	// The row named the boundary by key and token count only (no chain hash
+	// at rest), so a Ready refresh on the restored holder must still match
+	// it and keep the measurement rather than fall back to the new estimate.
+	if bound.Anchor.ChainHash != "" {
+		t.Fatalf("restored holder must not carry a chain hash: %+v", bound.Anchor)
+	}
+	// An attempt whose lookup neither hit nor missed (the provider skipped
+	// the read) followed by its Ready: the only Ready that can meet the
+	// restored holder without first replacing or invalidating it.
+	pr2 := &PendingRequest{RequestID: "refresh", Model: "model", CachePlan: plan2}
+	if err := prepareBoundTestCacheAttempt(r2, pr2, back); err != nil {
+		t.Fatal(err)
+	}
+	nonce2 := preparedTestCacheMetadata(pr2).CacheReceiptNonce
+	skipped := testV2Lookup(nonce2, capability, plan2.Boundaries[len(plan2.Boundaries)-1], 1)
+	skipped.RequestID, skipped.Outcome = "refresh", "skipped_capacity"
+	if accepted, mismatch := r2.cacheRouting.applyLookupV2Result(back.ID, back, capability, skipped, r2.cacheRouteKeys.route, now); !accepted || mismatch {
+		t.Fatalf("skipped lookup accepted=%v mismatch=%v", accepted, mismatch)
+	}
+	refresh := testV2Ready(nonce2, capability, checkpoint, 2)
+	refresh.RequestID, refresh.StageMs = "refresh", 60
+	if accepted, mismatch := r2.cacheRouting.applyReadyV2Result(back.ID, back, capability, refresh, r2.cacheRouteKeys.route, now); !accepted || mismatch {
+		t.Fatalf("refresh accepted=%v mismatch=%v", accepted, mismatch)
+	}
+	if hints := memoryTestHints(r2, plan2, now); len(hints) != 1 || hints[back.ID].StageMs != measured {
+		t.Fatalf("Ready refresh after the restart must keep the measured stage: %+v", hints)
+	}
 }
 
 // The demand index reports which restored entries it accepted; only those
@@ -913,7 +940,7 @@ func TestCacheRoutingPersistenceRetriesRestoreBeforeWriting(t *testing.T) {
 // row reflecting the newest surviving evidence, not an arbitrary survivor.
 // Repeated because map order is random.
 func TestCacheRoutingPersistenceKeepsNewestSurvivingHolder(t *testing.T) {
-	for round := 0; round < 6; round++ {
+	for round := 0; round < 10; round++ {
 		st := store.NewMemory(store.Config{})
 		r, _, capability := exactTestRegistry(t)
 		removeTestProvider(r, "provider-a")

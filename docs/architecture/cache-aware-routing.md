@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `b16873a0c`
+> Last updated: 2026-09-29 · commit `feeeeed99`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -758,7 +758,11 @@ back are operator procedures, kept in the runbook
    estimate. Demand rows are restored only up to the current clock (a
    previous instance's fast clock cannot take the cap), and only the entries
    the index accepts count as already persisted; holder rows updated after
-   the current clock are skipped the same way. Nothing is written before
+   the current clock are skipped the same way. At shutdown the final flush
+   runs after the HTTP server has stopped and every provider socket has been
+   closed and its handler joined (`CloseProviderConnections`), so no
+   receipt arrives behind it; a restore retried after a failed boot merges
+   into rows parked meanwhile. Nothing is written before
    the restore has recorded the key generation (a failed boot restore is
    retried every flush tick, with marks held meanwhile), and the fingerprint
    covers the master key, every key-derivation label and the block contract,
@@ -800,7 +804,11 @@ back are operator procedures, kept in the runbook
    `coordinator/registry/cache_proof_fence.go`; `acceptV2SequenceLocked`,
    `coordinator/registry/cache_receipts_v2.go`).
 7. **Route keys, account identifiers, raw boundaries and prompts are never
-   persisted or attached to telemetry**; `GET /v1/cache/status` and the
+   persisted or attached to telemetry**; the durable cache routing copy keeps
+   that: a holder row names its boundary by the keyed identifier and token
+   count only, never by the provider-confirmed chain hash
+   (`holderRecordFor`), and a restored holder matches its plan boundary
+   through the key (`anchorMatches`); `GET /v1/cache/status` and the
    terminal tags carry bounded categorical values only
    (`handleExactCacheStatus`, `coordinator/api/exact_cache_status.go`;
    `cacheSelectionTerminalTags`, `coordinator/api/provider.go`).

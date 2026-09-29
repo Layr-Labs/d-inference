@@ -50,23 +50,31 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		return nil, err
 	}
 	p.mu.Lock()
-	p.pending = make(map[string][]crs.HolderRecord)
-	p.pendingCount = 0
+	// Merge into whatever is already parked: a provider that disconnected
+	// before a retried restore parked this run's evidence here, and the
+	// store may not hold it yet. The newer record wins per (key, epoch).
+	restored := 0
 	for _, rec := range holders {
 		rec, ok := ClampToTTL(rec, now, ttl)
 		if !ok {
 			p.counters.droppedPending++
 			continue
 		}
+		pk := pendingKey(rec.CacheEpoch, rec.ModelID)
+		if i := indexOfParked(p.pending[pk], rec.HolderKey()); i >= 0 {
+			p.pending[pk][i] = crs.Later(p.pending[pk][i], rec)
+			restored++
+			continue
+		}
 		if p.pendingCount >= p.maxPending {
 			p.counters.droppedPending++
 			continue
 		}
-		pk := pendingKey(rec.CacheEpoch, rec.ModelID)
 		p.pending[pk] = append(p.pending[pk], rec)
 		p.pendingCount++
+		restored++
 	}
-	p.counters.restoredHolders = p.pendingCount
+	p.counters.restoredHolders = restored
 	p.ready = true
 	p.mu.Unlock()
 	return demand, nil

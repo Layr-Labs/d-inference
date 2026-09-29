@@ -330,9 +330,13 @@ func (p *Persister) Flush(ctx context.Context) error {
 }
 
 // FlushAll flushes repeatedly until nothing is dirty, an error occurs or the
-// context ends. Used by the shutdown flush after the loop has stopped.
+// context ends. Used by the shutdown flush, after the HTTP server and the
+// provider sockets are down; the periodic loop is cancelled after it.
 func (p *Persister) FlushAll(ctx context.Context) error {
 	if p == nil {
+		return nil
+	}
+	if !p.Ready() {
 		return nil
 	}
 	for i := 0; i < 256; i++ {

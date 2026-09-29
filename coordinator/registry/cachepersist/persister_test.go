@@ -541,6 +541,15 @@ func TestTombstoneOutlivesItsFlushForOneTTL(t *testing.T) {
 	if !p.Tombstoned(k, before) {
 		t.Fatal("a pending delete outranks any row")
 	}
+	// In flight: the delete has left the dirty set but is not written yet.
+	b := p.drain()
+	if len(b.deletes) != 1 || !p.Tombstoned(k, before) {
+		t.Fatalf("a delete in flight must still outrank older evidence: %+v", b.deletes)
+	}
+	p.requeue(b)
+	if !p.Tombstoned(k, before) {
+		t.Fatal("a requeued delete must still outrank older evidence")
+	}
 	if err := p.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}

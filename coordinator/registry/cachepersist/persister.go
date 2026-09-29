@@ -75,10 +75,10 @@ type Persister struct {
 	mu            sync.Mutex
 	holderUpserts map[crs.HolderKey]crs.HolderRecord
 	// holderDeletes holds the time each pending delete was decided;
-	// recentDeletes keeps that time for one TTL after the delete was
-	// written, so a row parked before the decision (an older session of the
-	// same machine) still cannot bind once the tombstone has left the dirty
-	// set (Tombstoned).
+	// recentDeletes keeps that time from the moment the delete leaves the
+	// dirty set (in flight or written) for one TTL, so a row parked before
+	// the decision (an older session of the same machine) still cannot bind
+	// once the tombstone is no longer pending (Tombstoned).
 	holderDeletes   map[crs.HolderKey]time.Time
 	recentDeletes   map[crs.HolderKey]time.Time
 	demandTouched   map[string]time.Time
@@ -240,6 +240,11 @@ func (p *Persister) drain() batch {
 		b.deletes = append(b.deletes, k)
 		b.deleteAt[k] = at
 		delete(p.holderDeletes, k)
+		// Visible to Tombstoned from the moment the delete leaves the
+		// dirty set, so a bind during the write's round trip cannot take a
+		// parked copy the decision outranks; a failed write requeues the
+		// delete and this entry stays.
+		p.recentDeletes[k] = at
 	}
 	for key, seen := range p.demandTouched {
 		if len(b.demand) >= DemandFlushRows {
@@ -346,9 +351,6 @@ func (p *Persister) Flush(ctx context.Context) error {
 	}
 	p.counters.rowsWritten += uint64(wrote + demand)
 	p.counters.rowsDeleted += uint64(deleted)
-	for _, k := range b.deletes[:deleted] {
-		p.recentDeletes[k] = b.deleteAt[k]
-	}
 	for _, rec := range b.demand[:demand] {
 		p.demandPersisted[rec.Key] = rec.SeenAt
 	}

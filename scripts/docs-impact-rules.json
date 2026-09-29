@@ -104,6 +104,15 @@
         "docs/reference/ssd-kv-cache.md",
         "docs/architecture/prefix-cache.md"
       ]
+    },
+    {
+      "name": "datadog dashboards and monitors",
+      "source_patterns": [
+        "deploy/datadog/**"
+      ],
+      "docs_any_of": [
+        "docs/operations/coordinator-deploy.md"
+      ]
     }
   ]
 }

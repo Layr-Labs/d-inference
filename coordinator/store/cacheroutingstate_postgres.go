@@ -28,6 +28,7 @@ const cacheRoutingHoldersDDL = `CREATE TABLE IF NOT EXISTS cache_routing_holders
  model_aggregate_hash TEXT NOT NULL DEFAULT '',
  prompt_contract_id TEXT NOT NULL DEFAULT '',
  block_hash_version TEXT NOT NULL DEFAULT '',
+ ready_boundary_mode TEXT NOT NULL DEFAULT '',
  anchor_token_count INTEGER NOT NULL DEFAULT 0,
  required_recompute_tokens INTEGER NOT NULL DEFAULT 0,
  stage_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -44,7 +45,8 @@ const cacheRoutingHoldersDropChainHashDDL = `ALTER TABLE cache_routing_holders D
 // Tables created before the measured-stage columns existed pick them up here.
 const cacheRoutingHoldersMeasuredStageDDL = `ALTER TABLE cache_routing_holders
  ADD COLUMN IF NOT EXISTS measured_stage_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
- ADD COLUMN IF NOT EXISTS measured_expires_at TIMESTAMPTZ`
+ ADD COLUMN IF NOT EXISTS measured_expires_at TIMESTAMPTZ,
+ ADD COLUMN IF NOT EXISTS ready_boundary_mode TEXT NOT NULL DEFAULT ''`
 
 // The expiry index serves the prune; a load under a TTL orders by the clamped
 // expression and scans the table once at boot instead.
@@ -68,7 +70,7 @@ const cacheRoutingMetaDDL = `CREATE TABLE IF NOT EXISTS cache_routing_meta (
 
 const cacheRoutingKeyFingerprintName = "key_fingerprint"
 
-const cacheHolderInsertColumns = 14
+const cacheHolderInsertColumns = 15
 
 func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.HolderRecord) error {
 	for _, r := range records {
@@ -81,7 +83,7 @@ func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.Ho
 		end := min(start+crs.BatchRows, len(records))
 		chunk := records[start:end]
 		var sb strings.Builder
-		sb.WriteString(`INSERT INTO cache_routing_holders (key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id, block_hash_version, anchor_token_count, required_recompute_tokens, stage_ms, measured_stage_ms, measured_expires_at, updated_at, expires_at) VALUES `)
+		sb.WriteString(`INSERT INTO cache_routing_holders (key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id, block_hash_version, ready_boundary_mode, anchor_token_count, required_recompute_tokens, stage_ms, measured_stage_ms, measured_expires_at, updated_at, expires_at) VALUES `)
 		args := make([]any, 0, len(chunk)*cacheHolderInsertColumns)
 		for i, r := range chunk {
 			if i > 0 {
@@ -97,7 +99,7 @@ func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.Ho
 			}
 			sb.WriteString(")")
 			args = append(args, r.Key, r.CacheEpoch, r.Tier, r.ModelID, r.ModelAggregateHash, r.PromptContractID,
-				r.BlockHashVersion, r.AnchorTokenCount, r.RequiredRecomputeTokens, r.StageMs,
+				r.BlockHashVersion, r.ReadyBoundaryMode, r.AnchorTokenCount, r.RequiredRecomputeTokens, r.StageMs,
 				r.MeasuredStageMs, nullableTime(r.MeasuredExpiresAt), r.UpdatedAt.UTC(), r.ExpiresAt.UTC())
 		}
 		// The newer receipt wins every descriptive column; expiry never moves
@@ -108,6 +110,7 @@ func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.Ho
  model_aggregate_hash = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.model_aggregate_hash ELSE cache_routing_holders.model_aggregate_hash END,
  prompt_contract_id = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.prompt_contract_id ELSE cache_routing_holders.prompt_contract_id END,
  block_hash_version = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.block_hash_version ELSE cache_routing_holders.block_hash_version END,
+ ready_boundary_mode = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.ready_boundary_mode ELSE cache_routing_holders.ready_boundary_mode END,
  anchor_token_count = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.anchor_token_count ELSE cache_routing_holders.anchor_token_count END,
  required_recompute_tokens = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.required_recompute_tokens ELSE cache_routing_holders.required_recompute_tokens END,
  stage_ms = CASE WHEN EXCLUDED.updated_at >= cache_routing_holders.updated_at THEN EXCLUDED.stage_ms ELSE cache_routing_holders.stage_ms END,
@@ -158,7 +161,7 @@ func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl
 		args = append(args, ttl.Microseconds())
 	}
 	query := fmt.Sprintf(`SELECT key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id,
- block_hash_version, anchor_token_count, required_recompute_tokens, stage_ms,
+ block_hash_version, ready_boundary_mode, anchor_token_count, required_recompute_tokens, stage_ms,
  measured_stage_ms, measured_expires_at, updated_at, effective_expires_at
  FROM (SELECT *, %s AS effective_expires_at FROM cache_routing_holders) h
  WHERE effective_expires_at > $1 AND updated_at <= $1 ORDER BY effective_expires_at DESC, key, cache_epoch`, expiry)
@@ -178,7 +181,7 @@ func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl
 			measuredExpires *time.Time
 		)
 		if err := rows.Scan(&r.Key, &r.CacheEpoch, &r.Tier, &r.ModelID, &r.ModelAggregateHash, &r.PromptContractID,
-			&r.BlockHashVersion, &r.AnchorTokenCount, &r.RequiredRecomputeTokens, &r.StageMs,
+			&r.BlockHashVersion, &r.ReadyBoundaryMode, &r.AnchorTokenCount, &r.RequiredRecomputeTokens, &r.StageMs,
 			&r.MeasuredStageMs, &measuredExpires, &r.UpdatedAt, &r.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("scan cache holder: %w", err)
 		}
@@ -282,11 +285,17 @@ func (s *PostgresStore) ResetCacheRoutingState(ctx context.Context, fingerprint 
 
 // PruneCacheRoutingState deletes in bounded batches so a 250k-row table never
 // holds a long lock; each loop iteration is its own short statement.
-func (s *PostgresStore) PruneCacheRoutingState(ctx context.Context, now, demandNotBefore time.Time) (int64, error) {
+func (s *PostgresStore) PruneCacheRoutingState(ctx context.Context, now time.Time, ttl time.Duration, demandNotBefore time.Time) (int64, error) {
 	var total int64
+	expired := `expires_at <= $1`
+	args := []any{now.UTC(), crs.PruneBatchRows}
+	if ttl > 0 {
+		expired = `LEAST(expires_at, updated_at + $3::bigint * interval '1 microsecond') <= $1`
+		args = append(args, ttl.Microseconds())
+	}
 	for {
 		tag, err := s.pool.Exec(ctx, `DELETE FROM cache_routing_holders WHERE ctid IN (
- SELECT ctid FROM cache_routing_holders WHERE expires_at <= $1 LIMIT $2)`, now.UTC(), crs.PruneBatchRows)
+ SELECT ctid FROM cache_routing_holders WHERE `+expired+` LIMIT $2)`, args...)
 		if err != nil {
 			return total, fmt.Errorf("prune cache holders: %w", err)
 		}

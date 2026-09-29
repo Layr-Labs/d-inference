@@ -610,14 +610,16 @@ func durationStats(ds []time.Duration) (min, median, p90, max time.Duration) {
 // server has stopped, to quiesce the socket producers before the final
 // write-behind flush. Returns the number of sockets closed.
 func (r *Registry) CloseAllProviderConnections() int {
+	// Conn is assigned once at construction and published through r.mu, so
+	// r.mu alone makes the read race-free; p.mu is not taken, since a
+	// provider lock held across a blocked pending-request send would hang
+	// shutdown here, outside the caller's deadline.
 	r.mu.RLock()
 	conns := make([]*websocket.Conn, 0, len(r.providers))
 	for _, p := range r.providers {
-		p.mu.Lock()
 		if p.Conn != nil {
 			conns = append(conns, p.Conn)
 		}
-		p.mu.Unlock()
 	}
 	r.mu.RUnlock()
 	for _, c := range conns {

@@ -158,7 +158,7 @@ func (s *MemoryStore) ResetCacheRoutingState(ctx context.Context, fingerprint st
 	return nil
 }
 
-func (s *MemoryStore) PruneCacheRoutingState(ctx context.Context, now, demandNotBefore time.Time) (int64, error) {
+func (s *MemoryStore) PruneCacheRoutingState(ctx context.Context, now time.Time, ttl time.Duration, demandNotBefore time.Time) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -167,7 +167,13 @@ func (s *MemoryStore) PruneCacheRoutingState(ctx context.Context, now, demandNot
 	s.cacheRoutingMapsLocked()
 	var removed int64
 	for key, r := range s.cacheHolders {
-		if !r.ExpiresAt.After(now) {
+		expires := r.ExpiresAt
+		if ttl > 0 {
+			if clamp := r.UpdatedAt.Add(ttl); clamp.Before(expires) {
+				expires = clamp
+			}
+		}
+		if !expires.After(now) {
 			delete(s.cacheHolders, key)
 			removed++
 		}

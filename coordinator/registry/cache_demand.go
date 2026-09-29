@@ -143,27 +143,53 @@ func (d *cacheDemandTracker) observeLocked(boundaries []cacheDemandBoundary, now
 // keeps the newest.
 // restore seeds the index from the durable copy and returns the entries it
 // accepted (within the TTL, not in the future); the caller treats those as
-// already persisted.
+// already persisted. Restored entries are merged into the recency list by
+// seen time rather than appended: a restore retried after traffic has
+// populated the index (cachepersist) must not evict fresher live
+// observations to keep older durable ones, so the capped merge keeps the
+// newest entries across both sets.
 func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) []crs.DemandRecord {
 	sort.Slice(records, func(i, j int) bool { return records[i].SeenAt.Before(records[j].SeenAt) })
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	accepted := make([]crs.DemandRecord, 0, len(records))
+	// Records arrive oldest first, so the insertion point only ever moves
+	// toward the back: one pass over the list in total.
+	var after *list.Element
 	for _, rec := range records {
 		if rec.Key == "" || now.Sub(rec.SeenAt) >= d.ttl || rec.SeenAt.After(now) {
 			continue
 		}
 		accepted = append(accepted, rec)
-		if entry := d.entries[rec.Key]; entry != nil {
-			if rec.SeenAt.After(entry.Value.(cacheDemandEntry).seen) {
-				entry.Value = cacheDemandEntry{rec.Key, rec.SeenAt}
-				d.order.MoveToBack(entry)
+		if existing := d.entries[rec.Key]; existing != nil {
+			if !rec.SeenAt.After(existing.Value.(cacheDemandEntry).seen) {
+				continue
 			}
-			continue
+			if after == existing {
+				after = existing.Prev()
+			}
+			d.order.Remove(existing)
+			delete(d.entries, rec.Key)
 		}
-		d.entries[rec.Key] = d.order.PushBack(cacheDemandEntry{rec.Key, rec.SeenAt})
+		next := d.order.Front()
+		if after != nil {
+			next = after.Next()
+		}
+		for next != nil && !next.Value.(cacheDemandEntry).seen.After(rec.SeenAt) {
+			after, next = next, next.Next()
+		}
+		entry := cacheDemandEntry{rec.Key, rec.SeenAt}
+		if after == nil {
+			after = d.order.PushFront(entry)
+		} else {
+			after = d.order.InsertAfter(entry, after)
+		}
+		d.entries[rec.Key] = after
 		for len(d.entries) > d.limit {
 			first := d.order.Front()
+			if first == after {
+				after = nil
+			}
 			delete(d.entries, first.Value.(cacheDemandEntry).key)
 			d.order.Remove(first)
 		}

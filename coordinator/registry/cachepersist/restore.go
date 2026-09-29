@@ -54,6 +54,8 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 	// before a retried restore parked this run's evidence here, and the
 	// store may not hold it yet. The newer record wins per (key, epoch).
 	restored := 0
+	// Positions of the rows already parked, built once per touched bucket.
+	parked := make(map[string]map[crs.HolderKey]int)
 	for _, rec := range holders {
 		rec, ok := ClampToTTL(rec, now, ttl)
 		if !ok {
@@ -61,7 +63,15 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 			continue
 		}
 		pk := pendingKey(rec.CacheEpoch, rec.ModelID)
-		if i := indexOfParked(p.pending[pk], rec.HolderKey()); i >= 0 {
+		idx, seen := parked[pk]
+		if !seen {
+			idx = make(map[crs.HolderKey]int, len(p.pending[pk]))
+			for i, row := range p.pending[pk] {
+				idx[row.HolderKey()] = i
+			}
+			parked[pk] = idx
+		}
+		if i, ok := idx[rec.HolderKey()]; ok {
 			p.pending[pk][i] = crs.Later(p.pending[pk][i], rec)
 			restored++
 			continue
@@ -70,6 +80,7 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 			p.counters.droppedPending++
 			continue
 		}
+		idx[rec.HolderKey()] = len(p.pending[pk])
 		p.pending[pk] = append(p.pending[pk], rec)
 		p.pendingCount++
 		restored++

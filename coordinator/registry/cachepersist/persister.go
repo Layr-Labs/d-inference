@@ -359,11 +359,11 @@ func (p *Persister) FlushAll(ctx context.Context) error {
 // Prune removes expired rows from the store, drops expired parked rows and
 // forgets the persisted-demand dedupe map, which is only a write-rate
 // optimisation and may be reset freely.
-func (p *Persister) Prune(ctx context.Context, now time.Time, demandTTL time.Duration) {
+func (p *Persister) Prune(ctx context.Context, now time.Time, ttl time.Duration) {
 	if p == nil || !p.Ready() {
 		return
 	}
-	if _, err := p.store.PruneCacheRoutingState(ctx, now, now.Add(-demandTTL)); err != nil {
+	if _, err := p.store.PruneCacheRoutingState(ctx, now, ttl, now.Add(-ttl)); err != nil {
 		p.logger.Warn("cache routing persistence prune failed", "error", err)
 	}
 	p.prunePending(now)

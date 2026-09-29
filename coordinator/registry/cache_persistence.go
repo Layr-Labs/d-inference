@@ -24,7 +24,7 @@ func holderRecordFor(key string, h cacheHolder) crs.HolderRecord {
 	rec := crs.HolderRecord{
 		Key: key, CacheEpoch: h.CacheEpoch, Tier: h.Tier, ModelID: h.ModelID,
 		ModelAggregateHash: h.ModelAggregateHash, PromptContractID: h.PromptContractID,
-		BlockHashVersion: h.BlockHashVersion,
+		BlockHashVersion: h.BlockHashVersion, ReadyBoundaryMode: h.ReadyBoundaryMode,
 		// The boundary is named by Key alone; the chain hash stays in memory.
 		AnchorTokenCount: h.Anchor.TokenCount, RequiredRecomputeTokens: h.RequiredRecomputeTokens,
 		StageMs: h.StageMs, UpdatedAt: h.UpdatedAt, ExpiresAt: h.ExpiresAt,
@@ -163,6 +163,7 @@ func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability prot
 		if rec.ModelID != capability.ModelID ||
 			rec.ModelAggregateHash != capability.ModelAggregateHash ||
 			rec.PromptContractID != capability.PromptContractID ||
+			rec.ReadyBoundaryMode != capability.ReadyBoundaryMode ||
 			(rec.BlockHashVersion != "" && capability.BlockHashVersion != "" && rec.BlockHashVersion != capability.BlockHashVersion) {
 			// The provider's capability for this epoch and model no longer
 			// describes the checkpoint (a coordinator upgrade bumped the
@@ -181,7 +182,7 @@ func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability prot
 		holder := cacheHolder{
 			ProviderID: provider.ID, Provider: provider, ModelID: rec.ModelID,
 			ModelAggregateHash: rec.ModelAggregateHash, PromptContractID: rec.PromptContractID,
-			BlockHashVersion: rec.BlockHashVersion, CacheEpoch: rec.CacheEpoch, Tier: rec.Tier,
+			BlockHashVersion: rec.BlockHashVersion, ReadyBoundaryMode: rec.ReadyBoundaryMode, CacheEpoch: rec.CacheEpoch, Tier: rec.Tier,
 			// No chain hash at rest: the key bound the boundary, and a
 			// restored holder matches its plan anchor by token count
 			// (anchorMatches) until a fresh receipt replaces it.
@@ -192,11 +193,9 @@ func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability prot
 		if rec.MeasuredStageMs > 0 && rec.MeasuredExpiresAt.After(now) {
 			// The measurement binds to the capability the row bound to: the
 			// identity fields (epoch, model, artifact, contract, block-hash
-			// version) matched. The row does not record the ready-boundary
-			// mode, so a mode change across the restart is not detected here
-			// (an in-session change invalidates the holder); the exposure is
-			// bounded by the holder's (clamped) expiry, which the measurement
-			// never outlives.
+			// version, ready-boundary mode) all matched, the same contract an
+			// in-session capability change invalidates on. It never outlives
+			// the holder's (clamped) expiry.
 			expires := rec.MeasuredExpiresAt
 			if rec.ExpiresAt.Before(expires) {
 				expires = rec.ExpiresAt

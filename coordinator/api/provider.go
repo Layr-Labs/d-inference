@@ -117,16 +117,15 @@ func (ct *challengeTracker) remove(nonce string) *pendingChallenge {
 // handleProviderWS upgrades the connection to WebSocket and manages the
 // provider's lifecycle: registration, heartbeats, and inference responses.
 func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
-	if s.providersClosing.Load() {
+	s.providerAdmit.Lock()
+	if s.providersClosing {
+		s.providerAdmit.Unlock()
 		http.Error(w, "coordinator shutting down", http.StatusServiceUnavailable)
 		return
 	}
 	s.providerHandlers.Add(1)
+	s.providerAdmit.Unlock()
 	defer s.providerHandlers.Done()
-	if s.providersClosing.Load() {
-		http.Error(w, "coordinator shutting down", http.StatusServiceUnavailable)
-		return
-	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Allow any origin for provider connections.
 		InsecureSkipVerify: true,
@@ -155,7 +154,9 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 // hijacked, so httpServer.Shutdown neither closes nor waits on them. Returns
 // false when the handlers did not all finish before ctx expired.
 func (s *Server) CloseProviderConnections(ctx context.Context) bool {
-	s.providersClosing.Store(true)
+	s.providerAdmit.Lock()
+	s.providersClosing = true
+	s.providerAdmit.Unlock()
 	closed := s.registry.CloseAllProviderConnections()
 	done := make(chan struct{})
 	go func() {
@@ -170,6 +171,17 @@ func (s *Server) CloseProviderConnections(ctx context.Context) bool {
 		s.logger.Warn("provider socket handlers still running at the shutdown deadline", "closed", closed)
 		return false
 	}
+}
+
+// providerSocketsClosing reports whether shutdown has begun closing provider
+// sockets. A read loop checks it right after registering: a socket that was
+// hijacked but not yet registered when CloseAllProviderConnections ran is not
+// in the registry to be closed, so it leaves on its own instead of producing
+// receipts behind the final flush.
+func (s *Server) providerSocketsClosing() bool {
+	s.providerAdmit.Lock()
+	defer s.providerAdmit.Unlock()
+	return s.providersClosing
 }
 
 // maxProviderVersionLength bounds the provider-reported binary version accepted
@@ -460,6 +472,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				resolveAccount()
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
+			if s.providerSocketsClosing() {
+				// Registered after shutdown began closing sockets: the
+				// registry iteration missed this socket, so leave now.
+				s.logger.Info("provider registered during shutdown; closing", "provider_id", providerID)
+				return
+			}
 			if s.appAttestIdentityCandidate(regMsg, authenticatedAccountID) {
 				provider.RequireVerifiedMachineIdentity()
 			}

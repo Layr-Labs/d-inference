@@ -13,8 +13,8 @@
 // epoch rather than its connection-scoped provider ID: the provider mints one
 // epoch UUID per model SSD root, persists it, and it is unique across the
 // fleet, so a reconnecting provider (new provider ID, same epoch) can be
-// matched to its rows. Rows carry no prompt content: keys and anchors are
-// chained block hashes.
+// matched to its rows. Rows carry no prompt content: a key is an HMAC under
+// the route key and an anchor is a token count.
 package cacheroutingstate
 
 import (
@@ -42,6 +42,7 @@ type HolderRecord struct {
 	ModelAggregateHash      string
 	PromptContractID        string
 	BlockHashVersion        string
+	ReadyBoundaryMode       string
 	AnchorTokenCount        int
 	RequiredRecomputeTokens int
 	StageMs                 float64

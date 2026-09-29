@@ -995,3 +995,100 @@ func TestPersistFingerprintPinsDerivationInputs(t *testing.T) {
 		t.Fatal("fingerprint must depend on the master key")
 	}
 }
+
+// The bind identity is the full capability contract: a provider back under
+// the same epoch, model, artifact, contract and block-hash version but
+// another ready-boundary mode does not reclaim rows produced under the old
+// mode, exactly as an in-session mode change invalidates them.
+func TestCacheRoutingPersistenceModeChangeDropsRestoredRows(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r1, _, capability := exactTestRegistry(t)
+	removeTestProvider(r1, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r1, st)
+	a := persistenceTestProvider(t, r1, "machine-a", capability)
+	checkpoint := exactTestAnchor(16, "c")
+	floor := exactTestAnchor(17, "d")
+	plan := boundTestCachePlan(r1, exactTestPlan(checkpoint, floor))
+	_, ready := checkpointTestAttempt(t, r1, a, capability, "donor", plan, 1)
+	ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+	ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+	if !r1.ApplyPrefixCacheReadyV2(a.ID, ready) {
+		t.Fatal("ready receipt rejected")
+	}
+	if err := r1.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 1 || rows[0].ReadyBoundaryMode != protocol.PrefixCacheReadyBoundaryCheckpoint {
+		t.Fatalf("row must record the ready-boundary mode: %+v", rows)
+	}
+	r2, _, _ := exactTestRegistry(t)
+	removeTestProvider(r2, "provider-a")
+	if s := startPersistence(t, r2, st); s.PendingHolders != 1 {
+		t.Fatalf("restore did not park the row: %+v", s)
+	}
+	legacy := capability
+	legacy.ReadyBoundaryMode = ""
+	persistenceTestProvider(t, r2, "machine-a-legacy", legacy)
+	plan2 := boundTestCachePlan(r2, exactTestPlan(checkpoint, floor))
+	if hints := memoryTestHints(r2, plan2, time.Now()); len(hints) != 0 {
+		t.Fatalf("checkpoint evidence must not bind under another ready-boundary mode: %+v", hints)
+	}
+	if s := r2.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 || s.BoundHolders != 0 || s.DroppedPending != 1 {
+		t.Fatalf("row must be taken and dropped: %+v", s)
+	}
+	if err := r2.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 0 {
+		t.Fatalf("row produced under the old mode must be deleted: %+v", rows)
+	}
+}
+
+// A restore retried after traffic has populated the demand index merges by
+// seen time: a capped merge evicts the oldest entries across both sets,
+// never a fresher live observation to keep an older durable one.
+func TestCacheDemandRestoreMergesBySeenTimeUnderTheCap(t *testing.T) {
+	r, _, _ := exactTestRegistry(t)
+	r.mu.RLock()
+	tracker := r.cacheRouting
+	r.mu.RUnlock()
+	tracker.demand.mu.Lock()
+	tracker.demand.limit = 4
+	tracker.demand.mu.Unlock()
+	now := time.Now()
+	// Live observations from this process, the freshest evidence there is.
+	for i, key := range []string{"live-1", "live-2"} {
+		tracker.demand.restore([]crs.DemandRecord{{Key: key, SeenAt: now.Add(-time.Duration(i) * time.Second)}}, now)
+	}
+	// The durable copy holds more older entries than the cap can keep.
+	accepted := tracker.demand.restore([]crs.DemandRecord{
+		{Key: "old-1", SeenAt: now.Add(-40 * time.Second)},
+		{Key: "old-2", SeenAt: now.Add(-30 * time.Second)},
+		{Key: "old-3", SeenAt: now.Add(-20 * time.Second)},
+		{Key: "old-4", SeenAt: now.Add(-10 * time.Second)},
+	}, now)
+	if len(accepted) != 4 {
+		t.Fatalf("all durable entries are inside the window: %+v", accepted)
+	}
+	if entries, _ := tracker.demand.stats(); entries != 4 {
+		t.Fatalf("index holds %d entries, want the cap of 4", entries)
+	}
+	tracker.demand.mu.Lock()
+	var order []string
+	for e := tracker.demand.order.Front(); e != nil; e = e.Next() {
+		order = append(order, e.Value.(cacheDemandEntry).key)
+	}
+	tracker.demand.mu.Unlock()
+	if want := []string{"old-3", "old-4", "live-2", "live-1"}; fmt.Sprint(order) != fmt.Sprint(want) {
+		t.Fatalf("capped merge must keep the newest entries in seen order: got %v want %v", order, want)
+	}
+	// An entry older than everything kept never displaces fresher ones.
+	tracker.demand.restore([]crs.DemandRecord{{Key: "old-1", SeenAt: now.Add(-40 * time.Second)}}, now)
+	tracker.demand.mu.Lock()
+	entries, front := len(tracker.demand.entries), tracker.demand.order.Front().Value.(cacheDemandEntry).key
+	tracker.demand.mu.Unlock()
+	if entries != 4 || front == "old-1" {
+		t.Fatalf("re-restore of an older entry must not displace fresher ones: entries=%d front=%s", entries, front)
+	}
+}

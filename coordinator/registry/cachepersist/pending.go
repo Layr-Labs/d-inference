@@ -94,13 +94,3 @@ func (p *Persister) prunePending(now time.Time) {
 		}
 	}
 }
-
-// indexOfParked finds a parked row by its durable identity, or -1.
-func indexOfParked(rows []crs.HolderRecord, k crs.HolderKey) int {
-	for i, r := range rows {
-		if r.HolderKey() == k {
-			return i
-		}
-	}
-	return -1
-}

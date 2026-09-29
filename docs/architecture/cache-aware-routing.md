@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `feeeeed99`
+> Last updated: 2026-09-29 · commit `95efeb21d`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -740,7 +740,8 @@ back are operator procedures, kept in the runbook
    decides what is persistable and binds rows back is
    `coordinator/registry/cache_persistence.go`). Restored holders are parked by
    the provider's cache epoch and become live only when a provider applies
-   capabilities with that epoch, model, artifact and contract
+   capabilities with that epoch, model, artifact, contract, block-hash
+   version and ready-boundary mode
    (`bindPendingLocked`, run at the end of `Register` and on every capability
    apply in `UpdatePrefixCacheSnapshot`, changed or not), so a bound
    holder carries a live `*Provider` exactly like a fresh receipt. A parked
@@ -761,8 +762,11 @@ back are operator procedures, kept in the runbook
    the current clock are skipped the same way. At shutdown the final flush
    runs after the HTTP server has stopped and every provider socket has been
    closed and its handler joined (`CloseProviderConnections`), so no
-   receipt arrives behind it; a restore retried after a failed boot merges
-   into rows parked meanwhile. Nothing is written before
+   receipt arrives behind it (a socket that registers after the close
+   began leaves on its own); a restore retried after a failed boot merges
+   into rows parked meanwhile, and merges demand entries into the index by
+   seen time so a capped merge never evicts a fresher live observation for
+   an older durable one. Nothing is written before
    the restore has recorded the key generation (a failed boot restore is
    retried every flush tick, with marks held meanwhile), and the fingerprint
    covers the master key, every key-derivation label and the block contract,

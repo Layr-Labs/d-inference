@@ -41,10 +41,13 @@ type Store interface {
 	// generation. Used when the master key changed: rows derived under the
 	// old key can never match a request.
 	ResetCacheRoutingState(ctx context.Context, fingerprint string) error
-	// PruneCacheRoutingState deletes holders expired before now and demand
-	// entries seen before demandNotBefore, in bounded batches, and returns
-	// the number of rows removed.
-	PruneCacheRoutingState(ctx context.Context, now, demandNotBefore time.Time) (int64, error)
+	// PruneCacheRoutingState deletes holders whose effective expiry under ttl
+	// (the earlier of the stored expiry and UpdatedAt+ttl; ttl <= 0 applies no
+	// clamp) is not after now, and demand entries seen before demandNotBefore,
+	// in bounded batches, and returns the number of rows removed. Pruning
+	// under the active TTL keeps rows written under a longer one from
+	// outliving today's setting in the table after they stopped loading.
+	PruneCacheRoutingState(ctx context.Context, now time.Time, ttl time.Duration, demandNotBefore time.Time) (int64, error)
 }
 
 // BatchRows caps one multi-row statement so it stays far below PostgreSQL's

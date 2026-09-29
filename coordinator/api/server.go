@@ -191,9 +191,13 @@ type releaseTrustPolicySnapshot struct {
 type Server struct {
 	appAttestRuntimeRefreshPending atomic.Bool
 	// providerHandlers counts running provider socket handlers so shutdown can
-	// join them after closing their sockets; providersClosing refuses new ones.
+	// join them after closing their sockets. providerAdmit serializes a
+	// handler's registration with the closing flag: once providersClosing is
+	// set under the mutex no handler is admitted and every admitted one is
+	// already counted, so no Add can race the Wait.
 	providerHandlers   sync.WaitGroup
-	providersClosing   atomic.Bool
+	providerAdmit      sync.Mutex
+	providersClosing   bool
 	modelCatalogSyncMu sync.Mutex // serialize catalog snapshots and desired-state publication
 
 	appAttestShadow               AppAttestShadowConfig

@@ -119,6 +119,7 @@ type cacheHolder struct {
 	PromptContractID        string
 	CacheEpoch              string
 	BlockHashVersion        string
+	ReadyBoundaryMode       string
 	Tier                    string
 	Anchor                  protocol.PrefixCacheAnchor
 	RequiredRecomputeTokens int

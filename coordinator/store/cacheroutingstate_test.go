@@ -44,7 +44,7 @@ func clearCacheRoutingState(t *testing.T, s crs.Store) {
 func holderRecord(i int, epoch string, now time.Time, ttl time.Duration) crs.HolderRecord {
 	return crs.HolderRecord{
 		Key: fmt.Sprintf("k%03d", i), CacheEpoch: epoch, Tier: "ssd", ModelID: "gpt-oss-20b",
-		ModelAggregateHash: "aggr", PromptContractID: "contract", BlockHashVersion: "darkbloom-block-chain-v1",
+		ModelAggregateHash: "aggr", PromptContractID: "contract", BlockHashVersion: "darkbloom-block-chain-v1", ReadyBoundaryMode: "checkpoint",
 		AnchorTokenCount:        1024 * (i%8 + 1),
 		RequiredRecomputeTokens: 0, StageMs: 120, UpdatedAt: now, ExpiresAt: now.Add(ttl),
 	}
@@ -99,7 +99,7 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 				byKey[r.HolderKey()] = r
 			}
 			if r := byKey[crs.HolderKey{Key: "k005", CacheEpoch: "epoch-a"}]; r.StageMs != 80 || !r.UpdatedAt.Equal(now.Add(time.Minute)) ||
-				r.MeasuredStageMs != 640 || !r.MeasuredExpiresAt.Equal(now.Add(20*time.Minute)) {
+				r.MeasuredStageMs != 640 || !r.MeasuredExpiresAt.Equal(now.Add(20*time.Minute)) || r.ReadyBoundaryMode != "checkpoint" {
 				t.Fatalf("newer receipt (with its measurement) did not win: %+v", r)
 			}
 			if r := byKey[crs.HolderKey{Key: "k006", CacheEpoch: "epoch-a"}]; r.MeasuredStageMs != 0 || !r.MeasuredExpiresAt.IsZero() {
@@ -142,7 +142,7 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 			if len(got) != 0 {
 				t.Fatalf("expired rows must not load: %d", len(got))
 			}
-			removed, err := s.PruneCacheRoutingState(ctx, now.Add(time.Hour), now.Add(-time.Hour))
+			removed, err := s.PruneCacheRoutingState(ctx, now.Add(time.Hour), 0, now.Add(-time.Hour))
 			if err != nil || removed != 101 {
 				t.Fatalf("prune removed %d (err %v), want 101", removed, err)
 			}
@@ -194,7 +194,7 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			if err != nil || len(top) != 2 || top[0].Key != "d0001" || top[1].Key != "d0000" {
 				t.Fatalf("capped demand load must return the newest keys first: %+v %v", top, err)
 			}
-			removed, err := s.PruneCacheRoutingState(ctx, now, now.Add(-600*time.Second))
+			removed, err := s.PruneCacheRoutingState(ctx, now, 0, now.Add(-600*time.Second))
 			if err != nil || removed != 499 {
 				t.Fatalf("prune removed %d (err %v), want 499", removed, err)
 			}
@@ -209,6 +209,20 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			}
 			if rows, _ := s.LoadCacheHolders(ctx, now.Add(61*time.Minute), 0, 0); len(rows) != 1 || rows[0].Key != "k900" {
 				t.Fatalf("the skewed row loads once the clock has passed its update: %+v", rows)
+			}
+			// Pruning under the active TTL removes rows a longer past TTL left
+			// with a distant stored expiry once their effective expiry has
+			// passed, and keeps rows still live under it.
+			stale := holderRecord(901, "epoch-stale", now.Add(-40*time.Minute), 60*time.Minute) // effective now-11m under 29m
+			live := holderRecord(902, "epoch-live", now.Add(-5*time.Minute), 60*time.Minute)    // effective now+24m
+			if err := s.UpsertCacheHolders(ctx, []crs.HolderRecord{stale, live}); err != nil {
+				t.Fatalf("upsert prune fixtures: %v", err)
+			}
+			if removed, err := s.PruneCacheRoutingState(ctx, now, 29*time.Minute, now.Add(-time.Hour)); err != nil || removed != 1 {
+				t.Fatalf("prune under the active TTL removed %d (err %v), want 1", removed, err)
+			}
+			if rows, _ := s.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 1 || rows[0].Key != "k902" {
+				t.Fatalf("prune under the active TTL must keep the live row only: %+v", rows)
 			}
 			// Key rotation: reset empties both tables, whatever the rows' expiry
 			// (a TTL above 1,000 hours is a legal configuration), and records
@@ -260,11 +274,31 @@ func TestCacheRoutingHoldersTableStoresNoChainHash(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
-			var n int
-			err := pg.pool.QueryRow(context.Background(),
-				`SELECT count(*) FROM information_schema.columns WHERE table_name = 'cache_routing_holders' AND column_name = 'anchor_chain_hash'`).Scan(&n)
-			if err != nil || n != 0 {
-				t.Fatalf("anchor_chain_hash must not exist: n=%d err=%v", n, err)
+			ctx := context.Background()
+			count := func() int {
+				var n int
+				if err := pg.pool.QueryRow(ctx,
+					`SELECT count(*) FROM information_schema.columns WHERE table_name = 'cache_routing_holders' AND column_name = 'anchor_chain_hash'`).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				return n
+			}
+			if count() != 0 {
+				t.Fatal("anchor_chain_hash exists after the schema loop")
+			}
+			// A table an earlier build created carries the column; the
+			// schema loop's drop removes it, and its values with it.
+			if _, err := pg.pool.Exec(ctx, `ALTER TABLE cache_routing_holders ADD COLUMN IF NOT EXISTS anchor_chain_hash TEXT NOT NULL DEFAULT ''`); err != nil {
+				t.Fatal(err)
+			}
+			if count() != 1 {
+				t.Fatal("fixture column missing")
+			}
+			if _, err := pg.pool.Exec(ctx, cacheRoutingHoldersDropChainHashDDL); err != nil {
+				t.Fatalf("drop migration: %v", err)
+			}
+			if count() != 0 {
+				t.Fatal("the drop migration must remove anchor_chain_hash")
 			}
 		})
 	}

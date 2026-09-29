@@ -4,6 +4,7 @@ import json
 import unittest
 
 from serving_performance.evaluate import evaluate
+from serving_performance.check_receipt_fixtures import ROOT as EVIDENCE_ROOT, build, references
 from serving_performance.matrix import CHECKS, MIN_SAMPLES, RUNTIME_REVISION, shapes
 
 
@@ -11,7 +12,8 @@ def receipt(selected_widths=(1, 2)):
     identity = dict(id="test-profile", model_id="fixture", artifact_sha256="a" * 64,
                     provider_version="test", runtime_revision=RUNTIME_REVISION, kv_backend="contiguous",
                     chip_name="Apple M5 Max", gpu_cores=40, memory_gb=128, context_tokens_max=2048)
-    report = dict(schema_version=1, identity=identity, serving_sets=[[], ["other"]], qualification_cells=[])
+    report = dict(schema_version=1, identity=identity, build=build(), serving_sets=[[], ["other"]], qualification_cells=[])
+    checks = references(identity, report["build"])
     for width in selected_widths:
         for prompt, output, arrival, cache, models in shapes(identity, report["serving_sets"]):
             sample = dict(decode_p10_tps=40, aggregate_decode_tps=40 * width, prefill_tps=2000,
@@ -27,7 +29,7 @@ def receipt(selected_widths=(1, 2)):
                 cache_state=cache, competing_models=list(models), failures=0,
                 raw_measurements_sha256="b" * 64, absolute_first_content_budget_ms=5000,
                 resolved_activation_floor_bytes=5.5 * 2**30,
-                checks={check: dict(passed=True, receipt_sha256="c" * 64) for check in CHECKS},
+                checks=copy.deepcopy(checks),
                 samples=[dict(sample, run_id=str(i)) for i in range(MIN_SAMPLES)]))
     return report
 
@@ -48,10 +50,35 @@ def chunk_receipt(cap=128):
 
 
 def run(report):
-    return evaluate(json.dumps(report).encode())
+    return evaluate(json.dumps(report).encode(), evidence_root=EVIDENCE_ROOT)
 
 
 class QualificationTests(unittest.TestCase):
+    def test_mtp_identity_requires_actual_drafting_with_exact_configuration(self):
+        report = receipt((1,))
+        mtp = dict(enabled=True, artifact_sha256="d" * 64, max_draft_tokens=4,
+                   max_speculative_batch=4, verification_mode="automatic", max_automatic_rectangular_tokens=4)
+        report["identity"]["mtp"] = mtp
+        checks = references(report["identity"], report["build"])
+        for cell in report["qualification_cells"]:
+            cell["checks"] = copy.deepcopy(checks)
+            for sample in cell["samples"]:
+                sample.update(mtp_active=True, mtp=copy.deepcopy(mtp), mtp_rounds=20, mtp_proposed_tokens=60)
+        self.assertTrue(run(report)["qualified"])
+        report["qualification_cells"][0]["samples"][0]["mtp_proposed_tokens"] = 0
+        self.assertFalse(run(report)["qualified"])
+
+    def test_serving_policy_receipt_cannot_bypass_raw_bound_deadline_qualification(self):
+        from serving_performance.test_calibration import receipt as calibration_receipt
+        report = receipt((1,))
+        report["schema_version"] = 2
+        self.assertFalse(run(report)["qualified"])
+        report["schema_version"] = 1
+        report["deadline_calibration"] = calibration_receipt()
+        result = run(report)
+        self.assertFalse(result["qualified"])
+        self.assertTrue(any("separate raw-bound" in error for error in result["errors"]))
+
     def test_identity_cannot_inject_qualification_results_or_runtime_policy(self):
         injected = {
             "mixed_prefill_token_cap": 512,
@@ -160,7 +187,7 @@ class QualificationTests(unittest.TestCase):
             report["qualification_cells"][0]["samples"][0]["prefill_tps"] = metric
             self.assertFalse(run(report)["qualified"])
         report = receipt()
-        report["qualification_cells"][0]["checks"]["isolation"]["passed"] = "true"
+        report["qualification_cells"][0]["checks"]["isolation"] = {"passed": True, "receipt_sha256": "a" * 64}
         self.assertFalse(run(report)["qualified"])
 
     def test_duplicate_or_incomplete_serving_set_is_rejected(self):

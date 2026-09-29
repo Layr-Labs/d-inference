@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import MLXLMCommon
 
 @testable import ProviderCore
 
@@ -14,12 +15,21 @@ struct DeadlineDecisionProfileTests {
         let object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         #expect(object["deadline_decision"] == nil)
 
-        let data = Data(#"{"verdict":"future","continuation":"future","projection":"future","projection_reason":"future","future_key":"ignored"}"#.utf8)
+        let data = Data(#"{"verdict":"future","continuation":"future","projection":"future","projection_reason":"future","unbounded_reason":"future","future_key":"ignored"}"#.utf8)
         let decision = try decoder.decode(DeadlineDecisionProfile.self, from: data)
         #expect(decision.verdict == .other)
         #expect(decision.continuation == .other)
         #expect(decision.projection == .other)
         #expect(decision.projectionReason == .other)
+        #expect(decision.unboundedReason == .other)
+        #expect(Set(DeadlineUnboundedReason.allCases.map(\.rawValue)) ==
+            Set(CBv2FirstTokenUnboundedReason.allCases.map(\.rawValue) + ["other"]))
+        let legacyDecision = try decoder.decode(
+            DeadlineDecisionProfile.self, from: Data(#"{"projection":"unbounded"}"#.utf8))
+        #expect(legacyDecision.unboundedReason == nil)
+        let legacyJSON = try #require(try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(legacyDecision)) as? [String: Any])
+        #expect(legacyJSON["unbounded_reason"] == nil)
         #expect(DeadlineVerdict.allCases.map(\.rawValue) == [
             "accepted", "deadline_unreachable", "expired_before_submit", "cancelled", "other",
         ])
@@ -28,6 +38,18 @@ struct DeadlineDecisionProfileTests {
         #expect(DeadlineProjectionReason.allCases.map(\.rawValue) == [
             "no_deadline", "mode_off", "unsupported_scheduler", "multimodal", "unmeasured_prefill", "other",
         ])
+    }
+
+    @Test("unbounded reason vocabulary matches the coordinator fixture")
+    func coordinatorReasonParity() throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("coordinator/protocol/testdata/deadline_unbounded_reasons.json")
+        struct Fixture: Decodable { let reasons: [String] }
+        let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: fixtureURL))
+        #expect(DeadlineUnboundedReason.allCases.map(\.rawValue) == fixture.reasons)
     }
 
     @Test("wire bounds apply to new fields and unavailable rates stay absent")

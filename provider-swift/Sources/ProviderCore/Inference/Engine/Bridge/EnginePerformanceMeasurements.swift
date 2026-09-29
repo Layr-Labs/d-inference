@@ -44,17 +44,21 @@ final class EnginePrefillReceipt: @unchecked Sendable {
         let usage: CBv2Usage
         let at: ContinuousClock.Instant
         let overlap: EngineMeasurementActivity.Overlap
+        let deadlineRateEvidence: DeadlineRateEvidence?
     }
     let activity: EngineMeasurementActivity
     let activityID: UUID
+    let deadlineRateEvidence: DeadlineRateEvidence?
     private let lock = NSLock()
     private var sample: Sample?
     private var consumed = false
     private var ended = false
     private var retirementOwned = false
 
-    init(activity: EngineMeasurementActivity, model: String) {
+    init(activity: EngineMeasurementActivity, model: String,
+        deadlineRateEvidence: DeadlineRateEvidence? = nil) {
         self.activity = activity
+        self.deadlineRateEvidence = deadlineRateEvidence
         activityID = activity.begin(model: model)
     }
 
@@ -62,7 +66,8 @@ final class EnginePrefillReceipt: @unchecked Sendable {
         let overlap = activity.snapshot(activityID)
         lock.withLock {
             guard sample == nil else { return }
-            sample = Sample(usage: usage, at: .now, overlap: overlap)
+            sample = Sample(usage: usage, at: .now, overlap: overlap,
+                deadlineRateEvidence: deadlineRateEvidence?.currentEpoch() == nil ? nil : deadlineRateEvidence)
         }
     }
 
@@ -104,6 +109,10 @@ final class EnginePrefillReceipt: @unchecked Sendable {
 /// Actor-owned bounded EWMAs. Equal new rates still increment count and refresh
 /// age, while unchanged heartbeat snapshots never rejuvenate an observation.
 struct EnginePerformanceMeasurements {
+    private struct QualifiedRate {
+        let postureEpoch: UUID
+        var rate: Rate
+    }
     private struct Rate {
         var value: Double
         var count: Int64 = 1
@@ -129,17 +138,56 @@ struct EnginePerformanceMeasurements {
     }
     let epoch = UUID().uuidString
     private var rates: [String: Rate] = [:]
+    private var qualifiedRates: [String: QualifiedRate] = [:]
     private var buckets: [Key: Rate] = [:]
     static let maxBuckets = 32
+
+    func freshRate(_ name: String, now: ContinuousClock.Instant = .now,
+        maximumAge: Duration = .seconds(120)) -> Double? {
+        guard let rate = rates[name], now >= rate.at, now - rate.at <= maximumAge,
+            rate.value.isFinite, rate.value > 0 else { return nil }
+        return rate.value
+    }
+
+    func rateExpiration(_ name: String, maximumAge: Duration = .seconds(120)) -> ContinuousClock.Instant? {
+        rates[name]?.at.advanced(by: maximumAge)
+    }
+
+    func freshDeadlineRate(_ name: String, postureEpoch: UUID,
+        now: ContinuousClock.Instant = .now, maximumAge: Duration = .seconds(120)) -> Double? {
+        guard let qualified = qualifiedRates[name], qualified.postureEpoch == postureEpoch,
+            now >= qualified.rate.at, now - qualified.rate.at <= maximumAge else { return nil }
+        return qualified.rate.value
+    }
+
+    func deadlineRateExpiration(_ name: String, postureEpoch: UUID,
+        maximumAge: Duration = .seconds(120)) -> ContinuousClock.Instant? {
+        guard let qualified = qualifiedRates[name], qualified.postureEpoch == postureEpoch else { return nil }
+        return qualified.rate.at.advanced(by: maximumAge)
+    }
 
     mutating func observe(
         _ name: String, tps: Double, prompt: Int, context: Int,
         cache: String, overlap: EngineMeasurementActivity.Overlap,
-        at now: ContinuousClock.Instant = .now
+        at now: ContinuousClock.Instant = .now, deadlinePostureEpoch: UUID? = nil
     ) {
         guard tps.isFinite, tps > 0 else { return }
         if var rate = rates[name] { rate.observe(tps, at: now); rates[name] = rate }
         else { rates[name] = Rate(value: tps, at: now) }
+        if let deadlinePostureEpoch,
+            ["isolated_prefill", "contended_prefill", "decode"].contains(name) {
+            var rate: Rate
+            if let previous = qualifiedRates[name], previous.postureEpoch == deadlinePostureEpoch {
+                rate = previous.rate
+                rate.observe(tps, at: now)
+            } else {
+                rate = Rate(value: tps, at: now)
+            }
+            // Keep producer counts monotonic even if no heartbeat observed the
+            // transition. A new epoch starts its EWMA with only its own work.
+            rate.count = rates[name]!.count
+            qualifiedRates[name] = QualifiedRate(postureEpoch: deadlinePostureEpoch, rate: rate)
+        }
         guard name == "isolated_prefill" || name == "contended_prefill" || name == "reuse_prefill" || name == "decode" else { return }
         let key = Key(phase: name == "decode" ? "decode" : "prefill",
             prompt: Self.bucket(prompt), context: Self.bucket(context), cache: cache,
@@ -175,5 +223,21 @@ struct EnginePerformanceMeasurements {
             decode: rates["decode"]?.wire(now: now),
             deliveredDecode: rates["delivered_decode"]?.wire(now: now),
             endToEnd: rates["end_to_end"]?.wire(now: now), workloadBuckets: workload)
+    }
+
+    /// Preserve the engine/counter epoch and explicit metadata object. Missing
+    /// current-posture phase fields clear coordinator freshness; omitting the
+    /// entire object would incorrectly activate its legacy-EWMA fallback.
+    func deadlineSnapshot(now: ContinuousClock.Instant = .now, postureEpoch: UUID?) -> PerformanceMeasurements {
+        var result = snapshot(now: now)
+        func matching(_ name: String) -> PerformanceRateObservation? {
+            guard let postureEpoch, let qualified = qualifiedRates[name],
+                qualified.postureEpoch == postureEpoch else { return nil }
+            return qualified.rate.wire(now: now)
+        }
+        result.isolatedPrefill = matching("isolated_prefill")
+        result.contendedPrefill = matching("contended_prefill")
+        result.decode = matching("decode")
+        return result
     }
 }

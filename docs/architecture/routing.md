@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-09-29 · commit `e351f359c`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -186,6 +186,15 @@ estimate and the remaining weight bytes plus a valid explicit
 Missing/invalid allowance declarations retain the 1.2 load-transient padding.
 Missing/invalid offload or other-family declarations keep the existing
 catalog/measured-weight policy.
+
+Exact `mimo_v2` has a separate full-LOAD declaration with **zero** SSD offload.
+The same helper requires matching ID, checked positive source bytes/supplement,
+finite memory at least their sum, and a valid raw decimal-GB catalog size from
+the normal/swap/warm/cold caller. It retains the greater catalog/source-size
+floor and adds the supplement once. Invalid or absent declarations keep legacy
+pricing; no hardware, catalog identity, activation or request-KV gate is waived.
+See `provider-swift/Sources/ProviderCore/Models/MiMo/MiMoV26DiscoveryLoadFootprint.swift`
+(`estimate`) for the metadata-only strict native main/sidecar quote.
 
 `coordinator/registry/scheduler.go` carries this estimate into cold snapshots.
 `reportedFreeForLoadAdmitsWithOffload` in
@@ -633,7 +642,11 @@ onto the formerly cheapest provider), the admit re-check
 (`tryClaimCapacityProbe`, check-and-claim under `gate.mu`) and the pending
 debit (`addPendingLocked`). `ReserveNextFromPlan`
 (`coordinator/registry/dispatch_plan.go`) commits each plan entry the same
-way. `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
+way. The comparison also rechecks the [idle evidence-exploration
+exception](first-content-routing.md#prediction-and-freshness): newly reported
+service or an unretired terminal lease forces a rescan even if pending counts
+and numeric forecasts have not changed.
+`commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
 mode: `reserveCommitShared` as described, or `reserveCommitGlobal`, which
 takes `r.mu.Lock()` for the commit — the previous fleet-wide serialization,
 kept as the kill switch behind

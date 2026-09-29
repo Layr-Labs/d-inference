@@ -2174,7 +2174,7 @@ private final class SSDDeadlineRejectEngine: CBv2Engine, @unchecked Sendable {
         firstTokenDeadline: CBv2FirstTokenDeadlineAdmission
     ) async throws -> CBv2FirstTokenDeadlineResult {
         lock.withLock { _deadlineSubmissions += 1 }
-        return .deadlineUnreachable(projectedWork: .unbounded)
+        return .deadlineUnreachable(projectedWork: .unbounded())
     }
 
     func cancel(_ id: CBv2RequestID) {}

@@ -1,12 +1,18 @@
 # Make repeated text requests cache-friendly
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-28 · commit `05d26caaf`
 
 This how-to helps API consumers preserve identical prefixes across related text
 requests. Reuse depends on the model, a valid checkpoint, provider capacity and
 routing; sharing a prefix does not guarantee a hit.
 
 ## Prerequisites
+
+Keep audio-bearing requests out of text-only prefix planning. Typed
+`input_audio` / `audio_url` parts and audio-bearing tool outputs remain cache
+misses/refusals even when malformed; merely mentioning audio in text does not.
+This is not a media-serving capability grant. See the
+[exact cache contract](../reference/api-contracts.md#exact-cache-status).
 
 Use a model with supported prefix caching and keep requests under the same
 account. Follow the [API quickstart](quickstart.md) for authentication and SDK

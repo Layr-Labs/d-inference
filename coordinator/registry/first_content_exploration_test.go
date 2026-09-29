@@ -118,3 +118,18 @@ func TestFirstContentEvidenceGapAge(t *testing.T) {
 		t.Fatalf("unknown connection time: got %d, want -1 (never explorable)", got)
 	}
 }
+
+func TestFirstContentExplorationThreshold(t *testing.T) {
+	threshold := int32(firstContentEvidenceExplorationAfter / time.Millisecond)
+	for _, age := range []int32{-1, threshold - 1, threshold, threshold + 1} {
+		c := &routingCandidate{
+			firstContent: FirstContentEstimate{Status: FirstContentUnknown, Reason: "performance_age_unknown_or_stale"},
+			snapshot: routingSnapshot{modelLoaded: true, firstContentSnapshot: firstContentSnapshot{
+				wholeMacWorkKnown: true, evidenceGapAgeMs: age,
+			}},
+		}
+		if got, want := firstContentEvidenceExplorable(c), age >= threshold; got != want {
+			t.Errorf("age=%d: explorable=%v, want %v", age, got, want)
+		}
+	}
+}

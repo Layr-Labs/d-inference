@@ -354,12 +354,13 @@ extension ProviderLoop {
         }
         profile.mark(.parsed)
 
-        // A parsed audio part is still unsupported by this provider. Reject
-        // before acceptance or loading a cold model, while this handler still
-        // owns the lookup receipt and service reservation. Keep this separate
-        // from decode failures so the typed media rejection stays intact.
+        // Reject unknown/non-native audio before acceptance or cold loading.
+        // Only provider-owned architecture metadata selects MiMo dispatch;
+        // actual loaded slot/profile validation remains mandatory below.
+        // This handler still owns lookup and service-reservation settlement.
         do {
-            try MediaIngest.rejectUnsupportedAudio(chatRequest)
+            try MediaIngest.rejectUnsupportedAudio(chatRequest,
+                modelType: localModelTypeForAudioAdmission(chatRequest.model))
         } catch {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
@@ -415,6 +416,15 @@ extension ProviderLoop {
         // deliberately conservative: when in doubt it admits and lets the
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
+        // This metadata is provider-authored, never a caller model_type/name
+        // heuristic. Revalidate against the actual acquired slot below.
+        do {
+            try ProviderPromptContractPipeline.validateNativeControls(templateControls,
+                modelType: modelSlots[modelId]?.modelType ?? advertisedModels[modelId]?.modelType)
+        } catch {
+            rejectInvalidRequest() // Never publish raw decrypted validation details.
+            return
+        }
         if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
         // Warm/cold classification for the TTFT tracker, captured BEFORE the
@@ -604,6 +614,13 @@ extension ProviderLoop {
         // <think> tokens for a Gemma build. The slot carries the type captured at
         // load, so it is correct for startup, prefetched, AND dropped-resident.
         let modelType = slot.modelType
+        do {
+            try ProviderPromptContractPipeline.validateNativeControls(templateControls, modelType: modelType)
+        } catch {
+            await finishAcceptedRequestWithoutTask(requestId: requestId)
+            rejectInvalidRequest()
+            return
+        }
         let slotContainer = slot.container
         let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
@@ -839,6 +856,10 @@ extension ProviderLoop {
                 profile: profile,
                 serviceReservationID: serviceReservationID,
                 serviceReservation: serviceReservation,
+                nativeConsumerLeaseProvider: { [weak me] modelID, entry in
+                    guard let me else { throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelID) }
+                    return try await me.nativeMiMoConsumerLease(modelID: modelID, entry: entry)
+                },
                 promptWork: promptWork
             )
 

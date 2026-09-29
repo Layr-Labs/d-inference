@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-29 · commit `a8aa6bb33`
+> Last updated: 2026-09-29 · commit `47915a198`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -20,6 +20,13 @@ merged native SDK pin and does not require new model weights. See
 
 Docs Lint needs Git history to validate moved source links in frozen records;
 its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
+That job also initializes the exact pinned `libs/mlx-swift-lm` submodule so
+model-support documentation links are checked against real SDK files.
+
+The MiMo Rust parser/planner regression requires a public metadata fixture,
+not model weights. CI runs `scripts/prepare-mimo-prompt-fixtures.py` before
+sidecar tests; follow the [pinned fixture procedure](mimo-prompt-fixtures.md)
+for local runs. Missing inputs fail rather than silently skipping assertions.
 
 Changes to native loading estimates and retirement require a rebuilt provider
 test product, not only a new CLI. Bind both products and the SDK/metallib to the

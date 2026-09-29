@@ -103,8 +103,14 @@ public enum MediaIngest {
     // MARK: - Routing
 
     /// Reject audio before model acquisition, template rendering, or media decoding.
-    /// The SDK wire type accepts audio, but this provider has no audio serving path.
-    static func rejectUnsupportedAudio(_ request: OpenAIChatCompletionRequest) throws {
+    /// Only provider-owned architecture metadata can select native MiMo dispatch;
+    /// this is not a loaded-profile or media admission proof. Generic callers
+    /// omit the type and always refuse audio. The native bridge checks its real
+    /// issued audio binding again after acquisition.
+    static func rejectUnsupportedAudio(
+        _ request: OpenAIChatCompletionRequest, modelType: String? = nil
+    ) throws {
+        if modelType == "mimo_v2" { return }
         for message in request.messages {
             guard case .parts(let parts) = message.content else { continue }
             for part in parts {
@@ -117,9 +123,8 @@ public enum MediaIngest {
         .multimodalRejected("multimodal_rejected: input_audio is not supported")
     }
 
-    /// True when any message carries an image, video, or audio content part.
-    /// Audio is recognized as media so it cannot fall through to text serving;
-    /// `rejectUnsupportedAudio` rejects it before any serving work.
+    /// True when any message carries image, video or audio. Audio uses only
+    /// the separately issued native path, never this generic visual producer.
     /// Used by the engine to decide between the batched (text) path and
     /// this non-batched vision path.
     public static func hasMedia(_ request: OpenAIChatCompletionRequest) -> Bool {
@@ -135,6 +140,15 @@ public enum MediaIngest {
             }
         }
         return false
+    }
+
+    /// Classification only; the actual loaded native audio profile is still
+    /// required. Generic text/vision/diffusion paths must not drop this part.
+    public static func hasAudio(_ request: OpenAIChatCompletionRequest) -> Bool {
+        request.messages.contains { message in
+            guard case .parts(let parts) = message.content else { return false }
+            return parts.contains { if case .inputAudio = $0 { return true }; return false }
+        }
     }
 
     /// True when any message carries a video content part. Since v0.7.5
@@ -228,7 +242,7 @@ public enum MediaIngest {
                     case .imageURL: add(visionTokensPerImage)
                     case .videoURL: add(visionTokensPerVideo)
                     // No finite reservation exists for unsupported audio.
-                    // Serving rejects it before consulting this projection.
+                    // Native MiMo uses its separately sealed plan, not this projection.
                     case .inputAudio: return .max
                     case .unsupported: continue
                     }
@@ -617,7 +631,7 @@ public enum MediaIngest {
                 case .videoURL:
                     hasVideo = true
                 // Do not advertise a zero-cost decode for unsupported audio.
-                // Serving rejects it before consulting this projection.
+                // Native MiMo uses its separately admitted decode policy.
                 case .inputAudio:
                     return .max
                 case .text, .unsupported:

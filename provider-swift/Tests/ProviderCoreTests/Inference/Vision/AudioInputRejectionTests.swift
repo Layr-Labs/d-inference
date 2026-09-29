@@ -101,6 +101,75 @@ struct AudioInputRejectionTests {
         #expect(await probe.count == 0)
     }
 
+    @Test("cold native audio uses provider architecture metadata, never the requested name")
+    func coldNativeMetadataAndNameSpoofing() async {
+        let cases: [(String, String?, Bool)] = [
+            ("local/arbitrary-model-id", "mimo_v2", true),
+            ("XiaomiMiMo/MiMo-V2.6-Flash", nil, false),
+            ("XiaomiMiMo/MiMo-V2.6-Flash", "llama", false),
+            ("local/arbitrary-model-id", "mimo_v2_nextn", false),
+        ]
+        for (modelID, modelType, shouldAcquire) in cases {
+            let probe = AcquisitionProbe()
+            let engine = MultiModelBatchSchedulerEngine(
+                acquire: { _ in
+                    await probe.record()
+                    throw UnexpectedWork.modelAcquisition
+                },
+                tokenizerProvider: { _ in
+                    // A cold model has no resident tokenizer. The dispatch
+                    // policy must use its metadata without acquiring one.
+                    throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
+                },
+                availableModels: { [modelID] },
+                modelTypeProvider: { _ in modelType })
+            var input = request(1)
+            input.model = modelID
+            do {
+                _ = try await engine.streamChatCompletion(request: input)
+                Issue.record("acquisition probe unexpectedly returned a serving stream")
+            } catch UnexpectedWork.modelAcquisition {
+                #expect(shouldAcquire)
+            } catch {
+                if shouldAcquire {
+                    Issue.record("provider-declared cold native audio never reached acquisition")
+                } else { assertUnsupported(error) }
+            }
+            #expect(await probe.count == (shouldAcquire ? 1 : 0))
+        }
+    }
+
+    @Test("metadata cannot authorize audio after acquisition resolves a generic model")
+    func acquiredArchitectureRevalidatesMetadata() async {
+        let acquired = AcquisitionProbe(), released = AcquisitionProbe()
+        let tokenizer = TokenizerHandle(RejectingTokenizer())
+        let engine = MultiModelBatchSchedulerEngine(
+            acquire: { modelID in
+                await acquired.record()
+                return .init(tokenizer: tokenizer,
+                    releaseToken: .init(release: { _ in await released.record() }, modelId: modelID),
+                    modelType: "llama")
+            },
+            tokenizerProvider: { _ in .init(tokenizer: tokenizer, modelType: "llama") },
+            availableModels: { ["local/changed-model"] },
+            modelTypeProvider: { _ in "mimo_v2" })
+        var input = request(0)
+        input.model = "local/changed-model"
+        do {
+            _ = try await engine.streamChatCompletion(request: input)
+            Issue.record("preload metadata overrode the actual acquired architecture")
+        } catch {
+            guard let typed = error as? MultiModelBatchSchedulerEngineError,
+                case .multimodalRejected = typed else {
+                Issue.record("actual generic model was not explicitly refused before tokenization")
+                return
+            }
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
+        }
+        #expect(await acquired.count == 1)
+        #expect(await released.count == 1)
+    }
+
     @Test(
         "every role rejects audio before decoding earlier media or rendering native templates",
         arguments: [OpenAIRole.user, .assistant, .system, .tool], [false, true])

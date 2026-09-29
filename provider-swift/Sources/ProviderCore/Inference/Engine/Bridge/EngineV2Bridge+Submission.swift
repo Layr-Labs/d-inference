@@ -129,6 +129,12 @@ extension EngineV2Bridge {
         // hardening risk). See `normalizedRequestId`.
         let id = Self.normalizedRequestId(requestId)
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+        guard canSubmitWithNativeOwner() else {
+            usageSignal?.finalizeLookup(failure: .policy, fallbackTier: prefixCacheFallbackTier)
+            continuation.yield(.error("request queue full: engine is shutting down"))
+            continuation.finish()
+            return stream
+        }
 
         // Duplicate request-id guard (legacy: the planner's
         // `duplicateRequestID` rejection). Without it a second submit under
@@ -399,7 +405,31 @@ extension EngineV2Bridge {
         // those bytes twice. Until then its grant is logical, as for idle
         // contiguous slots; every reservation rechecks live headroom.
         var sharedKVReserved = false
+        // Only the genuine native MiMo TX's SAME engine, bridge and global
+        // budget can replace this R claim. A generic owner's marker is not
+        // enough, and all other contiguous paths retain their existing claim.
+        let completePrefixOwnsRequestCharge: Bool
+        if let actual = ownedEngine as? EngineV2, let kvBudget,
+           let transaction = nativeTransaction, nativeTransactionID == transaction.id {
+            completePrefixOwnsRequestCharge = transaction.ownsNativeCompletePrefixRequestCharge(
+                engine: actual, bridge: self, budget: kvBudget)
+        } else { completePrefixOwnsRequestCharge = false }
+        let nativePagedOwnsRequestCharge: Bool
+        if let actual = ownedEngine as? EngineV2, let kvBudget,
+           let transaction = nativeTransaction, nativeTransactionID == transaction.id {
+            nativePagedOwnsRequestCharge = transaction.ownsNativePagedRequestCharge(
+                engine: actual, bridge: self, budget: kvBudget)
+        } else { nativePagedOwnsRequestCharge = false }
+        if kvBackendKind == .paged, nativeTransactionID != nil, !nativePagedOwnsRequestCharge {
+            await releasePreSubmitResources(requestID: id, sharedKVReserved: false,
+                prefixCacheReceiptID: prefixCacheReceiptID, ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered, usageSignal: usageSignal, failure: .policy)
+            continuation.yield(.error("native_paged_process_owner_mismatch"))
+            continuation.finish()
+            return stream // no native submission or foreign-budget coverage inference
+        }
         if kvBackendKind == .contiguous, let kvBudget,
+            !completePrefixOwnsRequestCharge,
             (ownedEngine as? CBv2NativeBlockEngine)?.usesProcessMemoryOwner != true,
             (kvBytesPerToken > 0 || fixedRequestBytes > 0 || nativeRequestBytes != nil), cbv2Request.maxTokens > 0
         {
@@ -516,10 +546,26 @@ extension EngineV2Bridge {
 
         // Hoisted so the profiler can name the deadline mode; pure function of
         // bridge state, no suspension between here and the submit below.
-        let deadlineAdmission = firstTokenDeadlineAdmission(
-            deadline: firstContentDeadline,
-            isMultimodal: multimodal != nil,
-            requestID: id, promptTokens: promptTokens.count, promptWork: promptWork)
+        let deadlineAdmission: CBv2FirstTokenDeadlineAdmission?
+        do {
+            deadlineAdmission = try firstTokenDeadlineAdmission(
+                deadline: firstContentDeadline, multimodal: multimodal,
+                requestID: id, promptTokens: promptTokens.count, promptWork: promptWork)
+        } catch {
+            // The capability check is after shared-KV/prefix preparation.
+            // Preserve the existing cold-refusal unwind before returning.
+            await releasePreSubmitResources(
+                requestID: id,
+                sharedKVReserved: sharedKVReserved,
+                prefixCacheReceiptID: prefixCacheReceiptID,
+                ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered,
+                usageSignal: usageSignal,
+                failure: .policy)
+            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(for: error)))
+            continuation.finish()
+            return stream
+        }
         if let profile {
             // Profiler engine-submit snapshot: ONE lock for the stamp and the
             // whole occupancy posture at the submit boundary.
@@ -555,7 +601,7 @@ extension EngineV2Bridge {
         // replaces this with the engine-queue commit instant returned by the
         // admission transaction.
         var engineAdmittedAt = ContinuousClock.now
-        guard let engine = ownedEngine else {
+        guard canSubmitWithNativeOwner(), let engine = ownedEngine else {
             await releasePreSubmitResources(
                 requestID: id,
                 sharedKVReserved: sharedKVReserved,
@@ -683,6 +729,11 @@ extension EngineV2Bridge {
                 // Absolute expiry does not: it was checked immediately above.
                 if let native = engine as? CBv2NativeBlockEngine {
                     let submitted = try native.submitWithRetirement(engineRequest)
+                    events = submitted.events
+                    nativeRetirement = submitted.retirement
+                } else if let native = engine as? EngineV2,
+                    native.nativeShutdownExecutionContractID != nil {
+                    let submitted = try native.submitWithNativeRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
                 } else {

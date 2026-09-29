@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-09-29 · commit `60230b143`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -186,6 +186,15 @@ estimate and the remaining weight bytes plus a valid explicit
 Missing/invalid allowance declarations retain the 1.2 load-transient padding.
 Missing/invalid offload or other-family declarations keep the existing
 catalog/measured-weight policy.
+
+Exact `mimo_v2` has a separate full-LOAD declaration with **zero** SSD offload.
+The same helper requires matching ID, checked positive source bytes/supplement,
+finite memory at least their sum, and a valid raw decimal-GB catalog size from
+the normal/swap/warm/cold caller. It retains the greater catalog/source-size
+floor and adds the supplement once. Invalid or absent declarations keep legacy
+pricing; no hardware, catalog identity, activation or request-KV gate is waived.
+See `provider-swift/Sources/ProviderCore/Models/MiMo/MiMoV26DiscoveryLoadFootprint.swift`
+(`estimate`) for the metadata-only strict native main/sidecar quote.
 
 `coordinator/registry/scheduler.go` carries this estimate into cold snapshots.
 `reportedFreeForLoadAdmitsWithOffload` in

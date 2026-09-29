@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `a8aa6bb33`
+> Last updated: 2026-09-29 · commit `f4447e709`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -17,6 +17,85 @@ starting a localhost server. `MutableInputKernelTests` and
 exercise declared Metal writes, alias ownership and export/import. CI runs each
 selected suite through the nonzero/no-skip wrapper
 (`.github/workflows/ci.yml`, `scripts/run-nested-suite.sh`).
+
+MiMo source and tests are grouped under their existing modules' `MiMo/`
+folders; Swift target names are unchanged. The SDK's
+`MiMoV26EncodedVisualDecoderTests` covers rounded sampling bounds and compressed
+payload ceilings before real platform decoder entry. Normal provider
+`swift build --build-tests` does not compile a dependency's SDK test targets;
+compile and run the SDK package tests separately as CI does. Small selected
+native runners do not replace these whole-target compile checks.
+
+The retained-fence case in `ProviderLoopNativeMiMoLifetimeTests` also installs a
+weight-free non-native peer with a counted engine. A real native fixture fault
+in the shared registry must leave that peer's capacity/admission intact and
+permit its real bridge submission before and after the fault, while blocking
+the native owner, every cold load and reclamation. This is bridge-admission
+evidence, not peer-model generation. Keep its fresh-process selector and lane guard;
+the deliberately retained native owner must live until that test process exits.
+The audiovisual ingress cancellation test returns `Void` from its child task:
+it still checks real decode cancellation and host-reservation settlement, without
+transferring an unused non-Sendable decoded-media result across `Task.value`.
+Inside that task, call the concrete test type rather than dynamic `Self`:
+Swift 6.3's region-based isolation checker can reject the latter form. Keep
+the same plan, cancellation order, real decode and reservation assertions;
+do not add unchecked sendability or suppress cancellation to compile the test.
+
+The complete-prefix methods in `MiMoV26NativeLoadTransactionTests` require a
+strict generated **asymmetric** tiny BF16 fixture with three synthetic MTP
+heads and enough context for the unchanged 257-token prompt, eight output tokens
+and speculative padding (the qualified fixture declares 1,024). Set
+`MIMO_V26_SERIAL_LOAD_FIXTURES` to its parent, with the fixture at `tiny-bf16`,
+and `MIMO_V26_SERIAL_NATIVE_TESTS=1`; a symmetric or 128-context fixture does not
+exercise this contract. The default MTP case retains a 512-token prefill chunk
+and 2,048-token maximum work envelope. Its positive local arena is 64 MiB;
+a separate 16 MiB case must refuse without executing a native step, creating
+a duplicate bridge reservation or changing process ownership, then retire
+cleanly. The OFF and explicit 128-token interior-publication cases retain their
+16 MiB arenas. Tests assert one target KV/ring charge plus exactly one bounded
+assistant work envelope, not a second legacy per-token assistant charge.
+
+The same native suite holds an actual pre-submit caller while the SDK becomes
+quiescent: whole-Mac forecast invalidation must remain owned until that caller
+unwinds and the matching bridge drain succeeds. The retained-fence test keeps
+that activity across a repeated failed retirement and unrelated peer drain.
+Neither forecast invalidation nor these tiny-model tests certify full-checkpoint
+memory release, production cache composition or selected-model generation.
+
+`AudioInputRejectionTests` preserves early no-acquisition/no-decode refusals for
+generic or unknown models, and checks that a MiMo-looking request name grants
+nothing. A metadata-only native dispatch probe may enter normal cold acquisition;
+an actual acquired generic model must still refuse and release its lease.
+`MiMoV26ManagedAudioProviderTests` also routes typed Chat and Responses WAV input
+through the normal scheduler with a genuinely published synthetic target and
+owned audio sidecar, checking native work, host joins and retirement. Direct
+decoder or `submitDecodedAudioMedia` tests alone do not cover these ingress guards.
+
+`MiMoV26DiscoveryLoadFootprintTests` checks metadata-only quote revalidation,
+including foreign-family, SSD-discount, underpricing and changed-inventory
+refusals. The native `MiMoV26StandaloneLifecycleTests` scanner-quoted regression
+uses real `ModelScanner.parseModelInfo` output with a positive transient allowance
+and no SSD discount through ordinary loading, publication and retirement; a
+handwritten `ModelInfo` without that field does not cover this boundary.
+The same suite exercises actual preload → listener bind → same-owner stop, and
+refuses listener startup while a real native preload is held before publication.
+
+The nested SDK's `MiMoV26AudioTokenizerEncoderTests` also exercises real strict
+checkpoint installation into the indexed downsampling module array, exact
+transpose values, and missing/extra/shape/dtype refusals. Run these tests in the
+SDK package; a sidecar header audit or a provider test build does not run them.
+
+`TestReserveProviderWithPlanPrimarySelectionUnchanged` compares selection and
+costs exactly while normalizing only wall-clock profiling ages, including
+first-content capacity/performance sample ages. Two independently constructed
+fleets need not have identical elapsed milliseconds; forecast and freshness
+behavior remain covered by the separate first-content tests.
+
+`ModelScannerSnapshotSymlinkTests` covers ordinary/linked snapshot resolution
+and explicit revision selection. Missing refs retain the legacy path; existing
+bad refs cannot switch a hidden managed selection to a different visible
+snapshot. The fixtures exercise real denied reads, symlinks and a nonblocking
+FIFO refusal without reading model weights.
 
 For HF artifact downloads, `HuggingFaceDownloadTests` covers source preference,
 checksum rejection, fallback, and cancellation. Native Nemotron CI also runs
@@ -679,6 +758,15 @@ scripted compute. It does not require model downloads or production access.
 The CI formatting step checks tracked Go files with `gofmt`. It excludes
 `docs/reports/evidence/`, whose captured source bytes are immutable and bound
 by evidence manifests. Live Go source remains subject to the formatting gate.
+
+`TestCacheIndexConcurrentTrackerOperations` in
+`coordinator/registry/cache_index_invariant_test.go` races tracker operations
+with a bounded fake-clock advance while new lookup/ready transactions finish,
+then expires the late holders while the workers remain active. The initial
+advance already expires the old holders. Deferred worker shutdown also runs on
+fatal assertions, preventing leaked background allocations from contaminating
+`TestReserveProviderExAllocBudget`. The production TTLs, receipt acceptance,
+index invariants and allocation ceiling are unchanged.
 
 ```bash
 make coordinator-test                      # cd coordinator && go test ./...
@@ -1883,6 +1971,13 @@ binary that already has `mlx.metallib` beside it.
 | `e2e/benchmark_test.go` | `TestBenchmark_SingleProviderStreaming`, `_SingleProviderNonStreaming`, `_MultiModelMultiProvider`, `_HighConcurrency`, `_QueueSaturation`, `_ManyUsers`, `_SingleModelScaling`, `_HeavyLoad_100Concurrent_10KB`; config tests `TestBenchmarkSuiteConfig*`, `TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture`, `TestBenchmarkCapacitySaturationPolicy` |
 
 ### 9. Prompt-contract parity fixtures and vectors
+
+Before the MiMo Rust cases, use the [pinned metadata setup](mimo-prompt-fixtures.md).
+`scripts/test-prepare-mimo-prompt-fixtures.py` tests its allowlist, exact hashes,
+size limits and non-overwriting/no-symlink behavior without network access.
+The actual setup fetches only four public metadata files and uses the unchanged
+checked-in synthetic20-case corpus. It neither loads weights nor qualifies the
+selected serving artifact's model generation or native API path.
 
 For the registry-ID/native-context follow-up, run `Qwen4SupportPolicyTests`,
 `Qwen4OwnedVLMRoutingTests`, `Qwen4ToolChoicePromptPolicyTests`,

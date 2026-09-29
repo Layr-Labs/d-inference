@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-29 · commit `fe8fe6b9f`
+> Last updated: 2026-09-29 · commit `cf6b60b2f`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -97,12 +97,18 @@ one-image-at-a-time vision execution keep their existing geometry.
 
 ### One request through the engine
 
-The provider rejects `input_audio` parts in every message role with HTTP 400
-before model acquisition, prompt rendering or media decoding. SDK parsing of
-the wire part does not enable provider audio inference.
+The provider rejects `input_audio` parts for unknown or unsupported architectures
+in every message role with HTTP 400 before model acquisition, prompt rendering
+or media decoding. Local and encrypted ingress consult provider-owned resident
+or advertised model metadata, never a request-name heuristic or a cold tokenizer
+load. Exact `mimo_v2` metadata may select ordinary native acquisition; the acquired
+architecture and the bridge's actual issued audio profile must still validate.
+Generic vision preparation and text-only tokenization reject audio unconditionally;
+native MiMo uses its separately owned preparation path and exact media accounting.
 `MediaIngest.rejectUnsupportedAudio` in
 `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` is shared
-by scheduler ingress, prompt-contract tokenization and media preparation.
+by scheduler ingress, prompt-contract tokenization and media preparation. SDK
+parsing of the wire part alone does not authorize an audio decoder or model load.
 
 ```mermaid
 sequenceDiagram
@@ -589,6 +595,140 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `detectQuantization`). KV quantization was retired in v0.8.0. Memory sizing
 (native Qwen4's validated loading envelope, fallback padding and the load gate) is in
 [`hardware-support.md`](hardware-support.md).
+
+### Native MiMo V2.6 candidate
+
+The native `mimo_v2` path is distinct from Qwen, older MiMo Flash and a
+separately packaged DFlash assistant. It preserves unequal K/V widths, hybrid
+full/sliding attention, partial RoPE, trained sinks, native value scaling and
+sigmoid MoE routing. The embedded three-head MTP assistant consumes target
+post-final-norm features; it does not chain one predictor head's output into
+the next. See the [SDK implementation map](../../libs/mlx-swift-lm/docs/mimo-v26/README.md).
+
+`MiMoV26ServingLoad.inspect` validates the source-bound serial load plan.
+Discovery quotes that same full main LOAD request plus the ordinary installed
+audio-sidecar request through
+`provider-swift/Sources/ProviderCore/Models/MiMo/MiMoV26DiscoveryLoadFootprint.swift`
+(`estimate`). The quote validates a closed payload inventory without loading
+tensors or authenticating weight payloads. It preserves legacy scanner pricing
+when the native inventory cannot be validated; it never replaces actual load
+reservations, native source authentication or post-load KV checks.
+Before Standalone native allocation, `MiMoV26DiscoveryLoadFootprint.isCurrent`
+revalidates a declared quote against the same main-plus-sidecar inventory without
+requiring Qwen's SSD-offload field. Foreign families, positive SSD discounts and
+underpriced or incomplete declared inventories refuse. A legacy nil declaration
+is not allocation authority: the native caller still admits, claims and rechecks
+the actual fresh load requests (`StandaloneServer.prepareAndPublishNativeMiMo`
+and `buildNativeMiMoCandidate` in
+`provider-swift/Sources/ProviderCore/Server/MiMo/StandaloneServer+NativeMiMo.swift`).
+`MiMoV26NativeLoadTransaction` retains actual construction tasks, container,
+engine, bridge and consumer leases before publication. A stopped generation
+cannot publish a late load. Retirement joins real SDK/native, bridge and
+consumer completion before detaching aliases and settling the existing permit.
+Standalone CLI preloading precedes listener startup. Starting the listener keeps
+healthy published owners in their existing open generation; incomplete or closing
+loads refuse. A closed generation still requires all prior owners to retire before
+the registry can reopen it (`reopenNativeMiMoLifecycleForStart` in the same file).
+A required-completion fault retains actual owners and prevents new work or
+speculative reclamation; a timeout, zero counter or logical settlement is not
+physical release. The optional shared-manager residency ticket follows that
+same lifetime and is not memory admission authority.
+
+Ordinary serving installs the selected audio-tokenizer sidecar before publishing
+the model, even when the first request is text-only. Its indexed downsampling
+stage is registered as a one-element module array so the checkpoint's `.0.weight`
+path installs through strict SDK loading. The target-only benchmark does not
+install this sidecar; its success alone cannot validate ordinary multimodal
+startup (`MiMoV26OrdinaryServingPolicy` and `makeNativeMiMoBundle`).
+
+```mermaid
+flowchart LR
+  A[Validated source and load permit] --> B[Owned native construction]
+  B --> C[Exact engine and bridge contract]
+  C --> D[Publication generation check]
+  D --> E[Request-local rows and consumers]
+  E --> F[Native completion and consumer joins]
+  F --> G[Detach aliases then settle permits]
+  E --> H[Required completion failure]
+  H --> I[Retain owners and refuse new work]
+```
+
+| Boundary | Implemented contract | Source |
+|---|---|---|
+| Entry point | Dedicated native factory and managed benchmark; generic TokenIterator is refused | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26ModelFactory.swift` (`MiMoV26FactoryError.nativeCBv2Required`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkLoading.swift` (`loadNativeMiMoBenchmarkSession`) |
+| MTP | Embedded heads requested by default under `auto`, subject to real native inventory/owner/budget validation; explicit `off` or process kill switch disables them. Serial-target verification remains default; rectangular stays a separate unqualified experiment | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`nativeMiMoVerificationMode`) |
+| Media | Explicit decoded visual/audio profiles bind the real processor/codec, load generation and reservation; media requests stay target-only even when a text assistant is installed | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26LoadedModel.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26ServingLoad.swift` |
+| Prefix | Opt-in text-only COMPLETE checkpoints bind the exact store, observed dtypes, assistant codec, process owner and loaded validator; async store work participates in retirement | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`prepareNativeMiMoPrefix`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2NativeCompletePrefixWork.swift` |
+| Native paging / generic fast paths | Separate opt-in target-only or explicit serial-MTP paging binds the actual asymmetric pool, bank and process owner. Authenticated text-prefix composition restores target pages and assistant state before publication; rectangular verification and paged media remain refused. Generic prefix reuse, compiled decode and packed-prefill flags remain disabled | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26NativePagedProducer.swift` (`makeNativePagedExecutionResources`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`makeNativeMiMoBundle`) |
+| Fast prefill | Native-rounded NAX attention and admitted query-block grouping default on where eligible. The provider requests larger budgeted solo-text stripes, preserving explicit overrides and fallback. Runtime and matched-speed qualification remain separate | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26PrefillProfile.swift`; `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26PrefillPolicy.swift`; [SDK policy](../../libs/mlx-swift-lm/docs/mimo-v26/FAST-PREFILL-POLICY.md) |
+| Public availability | Exact `mimo_v2` is admitted by the ordinary allowlist; normal callers select bounded visual/audio policies through MiMoV26OrdinaryServingPolicy. This does not create a catalog entry or qualify all endpoints | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift` (`isSupported`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`; `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
+
+The native contiguous and paged factories use the same artifact-bound serving
+policy as generic backends:
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ServingPolicy.swift`
+(`productionServingPolicy`). Coordinator and standalone native load paths retain
+the verified artifact identity independently of SSD cache eligibility. The
+resolved scheduler width drives bridge admission and reported capacity; explicit
+operator caps, benchmark construction, and assistant-ineligible qualification
+remain distinct. This integration does not add a reviewed MiMo performance
+profile or change native load, ownership, paging or memory admission safeguards.
+
+A retained MiMo fault quarantines the registry's native owners; it does not
+overwrite unrelated resident slots' own health or routing states.
+`ProviderLoop.hasNativeMiMoOwner` follows actual containers and retained/retiring
+ownership, not model-name heuristics. `nativeMiMoRefusesRequest` leaves existing
+non-native residents subject to their normal retirement, request and KV gates.
+`EngineV2Bridge.canSubmitWithNativeOwner` applies the same ownership distinction
+at both submission boundaries, so a healthy advertised peer actually reaches
+its own engine. Native bridges still require their real serving transaction.
+Cold loads and allocator reclamation remain process-fenced; aggregate capacity
+reports zero `freeForLoadGb` and `loadUsableGb` while that fence applies. No
+retained ownership or memory credit is released by this routing distinction.
+
+Typed media support does not grant encoded audiovisual/container support,
+speech output, coordinator audio routing or media-prefix reuse. Complete
+target+assistant prefix adoption, encrypted restart, paging and composed
+lifecycle/API qualification are separate gates; a helper or component result
+does not certify them. `input_audio` remains excluded from text-only cache
+planning and is not treated as vision.
+
+Encoded MiMo visual ingress passes the existing transport ceiling
+`MediaIngest.maxMediaDecodedBytes` to the SDK decoder's `maximumEncodedBytes`.
+`MiMoV26EncodedMediaIngress.decode` enforces the same bounded input contract
+before ImageIO parsing or AVFoundation asset reads; SDK callers without a
+separate ceiling default to their declared working-byte limit. Raster/frame
+and owned-reservation checks remain additional gates.
+
+The SDK's `MemoryBackedVideoAsset` derives both its resource-loader type and
+in-memory URL suffix from the validated container. QuickTime uses `.mov`, MP4
+uses `.mp4`; neither path writes the payload to disk. AVFoundation also consults
+the suffix: a mismatched `.mp4` URL can hide valid QuickTime PCM tracks, causing
+an audio-bearing clip to appear silent despite the correct type hint. The
+container bytes, audio samples and frame sampling policy remain unchanged.
+
+Valid ready zero-sample/zero-payload AV reader markers do not count as video
+frames. The decoder bounds them independently, includes their metadata allowance
+in the immutable working-byte quote, and intersects that allowance with a reused
+caller's limit. Payload-bearing, unready or retimed markers remain typed refusals;
+real-frame limits and native sampling/timestamps are unchanged.
+
+Joint contiguous text-prefix/media issuance shares the real process/store/model
+ownership contract: text can use complete checkpoints, while media remains
+noncacheable and target-only. This does not enable media-prefix reuse or the
+separate paged profile. The [composed SDK component record](../../libs/mlx-swift-lm/docs/mimo-v26/qualified-composition-20260928.md)
+identifies selected executed checks and the still-open full-artifact gates.
+
+The newer serial-paged-prefix composition retains the real encrypted store on
+the existing paged process owner. Cancellation captures engine and execution IDs
+before a real-store closing veto; a nil-store fallback retains the same uncached
+owner. These source paths have prepared regression tests and remain unqualified
+until their actual native, encrypted-restart and lifecycle runs complete.
+
+This source candidate does not register a catalog model, change context or
+hardware limits, or activate a release. Defaults and opt-in spellings are in
+the [MiMo configuration reference](../reference/configuration.md#native-mimo-v26-candidate);
+qualification requirements and numerical boundaries are in the
+[SDK qualification contract](../../libs/mlx-swift-lm/docs/mimo-v26/qualification.md).
 
 ### Native Flash-Next ownership and admission
 

@@ -1,12 +1,12 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-29 · commit `3c12f9025`
+> Last updated: 2026-09-29 · commit `daf09f6ec`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.11` in
+version `ProviderCore.version` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
@@ -942,7 +942,7 @@ darkbloom beta disable <feature>    # turn off
 |---------|--------|
 | `gemma-prefill-layer18` | Default-on layer-18 prefill submission; disable and restart for legacy submission behavior |
 | `gemma-weighted-r1` | Default-on atomic weighted-unsort + safe-R1 pair; disable and restart to roll back both |
-| `mtp` | MTP policy. Default `auto` drafts automatically for Qwen 3.5-family checkpoints that embed their head (`mtplx_mtp` in `config.json`); auto also enables the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit`; explicit on enables other supported targets; explicit off is the rollback |
+| `mtp` | MTP policy. Default `auto` requests validated embedded Qwen-family, native Qwen4, Nemotron Lightning and native MiMo heads, and the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit`. Actual artifact/owner/budget checks remain required; explicit `off` is the rollback |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. Restart is the activation boundary for process-wide optimization
@@ -1194,6 +1194,21 @@ Pure-prefill stripes are unchanged. These variables are not forwarded to a Launc
 see the [scheduler environment reference](../reference/configuration.md#engine-and-scheduler).
 
 ## LaunchAgent environment passthrough
+
+The [MiMo candidate controls](../reference/configuration.md#native-mimo-v26-candidate)
+are process-scoped settings, not new CLI subcommands or release switches. Native
+attention and admitted grouping default on; other experimental kernels remain
+opt-in. The native factory requests larger eligible solo-text chunks without
+changing explicit stripe overrides or memory safeguards. These controls
+are not included in `LaunchAgent.inferencePassthroughEnvKeys`; do not assume a
+shell flag reaches an installed daemon. The native benchmark uses the managed
+load/retirement route. Exact native MiMo ordinary dispatch is implemented;
+benchmark success alone does not qualify API or catalog availability. `mtp_mode = "auto"` requests genuine inspected MiMo embedded heads by default;
+`mtp_mode = "off"` or `DARKBLOOM_CBV2_MTP=0` disables speculation. Actual native
+assembly and proposal/acceptance metrics—not the setting—prove activation.
+Serial-target verification remains default; the rectangular flag does not
+itself enable MTP. No documented flag enables missing paging,
+media-prefix or coordinator audio capabilities.
 
 Model-cache locations are read from `provider.toml`; Hugging Face/XDG cache
 variables are neither forwarded nor runtime overrides. The optional

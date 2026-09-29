@@ -1,7 +1,10 @@
 mod input;
 mod json;
 
-pub(crate) use input::validate_request_input;
+pub(crate) use input::{
+    validate_mimo_encoded_argument, validate_request_input_before_contract,
+    validate_request_input_for_model,
+};
 pub(crate) use json::openai_json;
 
 use crate::artifacts::LoadedArtifacts;

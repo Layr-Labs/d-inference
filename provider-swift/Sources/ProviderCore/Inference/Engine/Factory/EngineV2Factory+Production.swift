@@ -90,6 +90,11 @@ extension EngineV2Factory {
         public let pagedPoolDType: String?
         /// The engine's native Admission owns its complete process charge.
         public let usesProcessMemoryOwner: Bool
+        /// Exact engine resolution; nil preserves legacy assistant accounting.
+        public let mtpAdmissionResolution: CBv2MTPAdmissionResolution?
+        /// The old assistant-only variable term supplied by the slot factory.
+        /// A bounded result replaces this term; target charges remain intact.
+        public let legacyMTPBytesPerToken: Int
         /// Actual configured scheduler cap after serving and architecture policy.
         /// Zero only for scripted/test builds without construction metadata.
         public let effectiveMaxConcurrentRequests: Int
@@ -107,6 +112,8 @@ extension EngineV2Factory {
             kvBackendFallbackReason: String?,
             pagedPoolDType: String? = nil,
             usesProcessMemoryOwner: Bool = false,
+            mtpAdmissionResolution: CBv2MTPAdmissionResolution? = nil,
+            legacyMTPBytesPerToken: Int = 0,
             effectiveMaxConcurrentRequests: Int = 0
         ) {
             self.engine = engine
@@ -115,6 +122,8 @@ extension EngineV2Factory {
             self.kvBackendFallbackReason = kvBackendFallbackReason
             self.pagedPoolDType = pagedPoolDType
             self.usesProcessMemoryOwner = usesProcessMemoryOwner
+            self.mtpAdmissionResolution = mtpAdmissionResolution
+            self.legacyMTPBytesPerToken = legacyMTPBytesPerToken
             self.effectiveMaxConcurrentRequests = effectiveMaxConcurrentRequests
         }
     }
@@ -226,6 +235,12 @@ extension EngineV2Factory {
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             processMemoryOwner: processOwner)
+        // Direct makeProductionEngine callers discard the build metadata.
+        // Refuse here as well as in makeBridge, before an unusable engine can
+        // escape. No request has been submitted; construction owners unwind.
+        if case .unavailable(let reason)? = engine.resolvedMTPAdmission {
+            throw reason
+        }
         return ProductionBuild(
             engine: engine,
             fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
@@ -233,6 +248,8 @@ extension EngineV2Factory {
             kvBackendFallbackReason: preparedBackend.fallbackReason,
             pagedPoolDType: preparedBackend.pagedPoolDType,
             usesProcessMemoryOwner: processOwner != nil,
+            mtpAdmissionResolution: engine.resolvedMTPAdmission,
+            legacyMTPBytesPerToken: mtpDrafter?.requestStateBytesPerToken ?? 0,
             effectiveMaxConcurrentRequests: preparedBackend.effectiveMaxConcurrentRequests)
     }
 }

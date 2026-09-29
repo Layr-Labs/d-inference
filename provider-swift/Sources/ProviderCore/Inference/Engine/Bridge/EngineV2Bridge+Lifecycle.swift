@@ -137,6 +137,16 @@ extension EngineV2Bridge {
     /// can't keep a pump (and its KV reservation) alive past shutdown, then
     /// await the engine drain.
     public func shutdown() async {
+        if nativeShutdownClosed, ownedEngine == nil { return }
+        if let native = ownedEngine as? EngineV2,
+            let contractID = native.nativeShutdownExecutionContractID {
+            // Native callers must consume the reporting method below through
+            // their registered transaction. Void compatibility never clears
+            // resources after an incomplete or still-pending result.
+            _ = try? await shutdownNativeConstruction(
+                expectedEngine: native, executionContractID: contractID)
+            return
+        }
         defer {
             deadlinePostureMonitoring?.finish()
             deadlinePostureMonitoring = nil

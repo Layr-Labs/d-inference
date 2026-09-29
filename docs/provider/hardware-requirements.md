@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28 · commit `d696ebb8d`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -27,6 +27,36 @@ or throughput guarantee follows from the capability flag.
 | Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`ssdDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 | Network | Outbound `wss://api.darkbloom.dev/ws/provider` and HTTPS on 443; a heartbeat every `heartbeat_interval_secs` ([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli)); no inbound port | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
 | Security posture | SIP enabled and Full Security boot; a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |
+
+## MiMo candidate qualification scope
+
+The [native MiMo V2.6 candidate](../architecture/inference.md#native-mimo-v26-candidate)
+has no qualified minimum RAM tier or sustained-throughput guarantee. Its
+managed loader prices the complete validated load plan, including retained
+trained components; a separately loaded audio codec has its own admitted owner.
+File size, header estimates and logical permit settlement are not measured
+whole-process peak residency. The configured native context is not replaced by
+a smaller benchmark input bound.
+
+The existing load cap, operator reserve, activation reserve, KV allowance and
+live OS-headroom checks remain decisive. The optional standing-residency policy
+uses the shared MLX manager and computes its group ceiling after allowing the
+larger of 16 GiB or 10% of physical RAM for unwired system use. It does not lower
+a pre-existing manager baseline or cap other policy groups, so this is not a
+process-wide unwired-reserve guarantee. A manager return is neither proof that
+particular pages are wired nor a grant to load a model.
+
+NAX kernels additionally require the pinned core's actual device/OS/build
+capability and compatible GPU streams. An M5 label alone is not eligibility;
+non-NAX devices retain the native fallback. Neither component skips on another
+device nor benchmark completion qualifies all RAM configurations.
+
+Sources: `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26ServingLoad.swift`
+(`estimatedWeightsGb`),
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26AudioSidecarReservation.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26WiredResidency.swift` (`Bounds.safeCeiling`, `Policy`), and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26NAXGatherQMM.swift`
+(`gpuStream`, `naxAvailable`).
 
 ## Bonsai 2 qualification scope
 
@@ -123,6 +153,18 @@ out of whatever the cap leaves after weights and activations; a model that loads
 with less than `minimumLoadKVBytes` of KV headroom is unloaded again
 (`provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift`;
 [after the load](../architecture/hardware-support.md#after-the-load)).
+
+## Native MiMo loading quotation
+
+For validated exact `mimo_v2`, discovery prices the strict main and ordinary
+audio-sidecar full LOAD requests, not disk bytes times a generic multiplier or
+steady-state residency. It retains the same activation/minimum-KV headroom and
+all actual loading/post-load gates. The coordinator also keeps the raw catalog
+size floor. Unsupported or stale inventory retains conservative legacy pricing.
+See `provider-swift/Sources/ProviderCore/Models/MiMo/MiMoV26DiscoveryLoadFootprint.swift`
+(`estimate`) and `coordinator/registry/offloaded_weights.go`
+(`advertisedOffloadedMemoryGBLocked`). A corrected quotation does not prove
+hardware serviceability or full-context operation.
 
 ## Qwen4 learned-table offload
 

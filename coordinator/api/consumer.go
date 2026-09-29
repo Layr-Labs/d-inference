@@ -2282,14 +2282,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		return refreshForwardBody(forwardBytes, newModel)
 	}
-	cachePlans := &requestCachePlans{
-		body: bodies.body,
-		planWork: func(candidateModel string, candidateBody []byte) promptwork.Result {
+	cachePlans := newRequestPromptWorkPlans(
+		bodies.body,
+		func(candidateModel string, candidateBody []byte, hasMedia bool) promptwork.Result {
 			ctx, cancel := promptwork.PlanningContext(r.Context(), timingReceivedAt(timing), deadline)
 			defer cancel()
-			return s.planPromptRoute(ctx, consumerKeyFromContext(r.Context()), candidateModel, candidateBody, requiresVision, hasTools, estimatedPromptTokens)
+			return s.planPromptRoute(ctx, consumerKeyFromContext(r.Context()), candidateModel, candidateBody, hasMedia, hasTools, estimatedPromptTokens)
 		},
-	}
+		requiresVision, parsed)
 	r = r.WithContext(promptwork.WithMemo(r.Context(), &cachePlans.memo))
 	var preflightHandled bool
 	preflightStart := time.Now()
@@ -2855,17 +2855,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).
-	cachePlans := &requestCachePlans{
-		body: func(candidateModel string) ([]byte, error) {
+	cachePlans := newRequestPromptWorkPlans(
+		func(candidateModel string) ([]byte, error) {
 			_, candidateBody, err := lowerGenericBodyForModel(candidateModel)
 			return candidateBody, err
 		},
-		planWork: func(candidateModel string, candidateBody []byte) promptwork.Result {
+		func(candidateModel string, candidateBody []byte, hasMedia bool) promptwork.Result {
 			ctx, cancel := promptwork.PlanningContext(r.Context(), timingReceivedAt(timing), genericDeadline)
 			defer cancel()
-			return s.planPromptRoute(ctx, consumerKey, candidateModel, candidateBody, requiresVision, hasTools, estimatedPromptTokens)
+			return s.planPromptRoute(ctx, consumerKey, candidateModel, candidateBody, hasMedia, hasTools, estimatedPromptTokens)
 		},
-	}
+		requiresVision, parsed)
 	r = r.WithContext(promptwork.WithMemo(r.Context(), &cachePlans.memo))
 	var preflightHandled bool
 	preflightStart := time.Now()

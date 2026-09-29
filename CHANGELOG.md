@@ -8,10 +8,23 @@
 - Replace an overflowing holder backlog in O(1), wake the writer and interrupt its batch for a durable reset. Retain a process-lifetime cutoff rejecting older or equal delayed receipts, restored rows and parked rows; reset demand-write deduplication too. A durable marker lets the next boot finish an interrupted reset, but crashes before that marker and concurrent coordinator writers remain limitations.
 - `EIGENINFERENCE_CACHE_ROUTING_PERSIST=false` disables persistence. `GET /v1/cache/status` exposes restore and write-behind health under `lifecycle.persistence`; see [counter semantics](docs/reference/api-contracts.md#exact-cache-status) and [restart precautions](docs/operations/cache-routing-rollout.md#persistence-during-restarts).
 
+## Unreleased — native MiMo V2.6 candidate (not qualified or deployed)
+
+- Preserve valid QuickTime PCM tracks in memory-backed audiovisual ingress by pinning the SDK's validated-container URL suffix correction. Input bytes, audio samples, memory ownership and decoder limits are unchanged.
+- Keep unrelated resident model slots available when a MiMo owner is retained after a fault. Preserve the MiMo quarantine and process-wide new-load/reclamation fences, and report no cold-load credit while those fences apply.
+- Add native `mimo_v2` target and embedded three-head MTP integration with strict source-bound loading, actual native/bridge/consumer ownership and typed retirement. Retain required-fence failures; logical memory settlement is not physical release.
+- Add exact native MiMo ordinary dispatch with owned visual/audio policies and bounded encoded ingress. Required sidecars retain separate authenticated ownership. API/media qualification, unsupported formats, speech output and coordinator capability parity remain explicit gates.
+- Prepare opt-in text-only COMPLETE-prefix store/loaded-owner integration and bounded performance/residency candidates, preserving native precision, checkpoint topology, fallback paths and memory safeguards. Paging, media-prefix reuse and composed cache/lifecycle qualification remain separate gates.
+- Admit exact native MiMo through its dedicated ordinary loader and request its inspected embedded MTP heads by default under `mtp_mode = "auto"`. Preserve explicit `off`, the process-wide kill switch, actual owner/budget/head validation and serial-target verification. Preliminary rectangular MTP measurements include a real greedy-output divergence; that mode remains unqualified and off by default. No catalog publication, deployment or model-limit change is enabled.
+- Enable eligible native-rounded MiMo NAX attention and admitted block grouping by default, with process-start rollback controls and memory-budgeted larger solo-text stripes. Preserve explicit overrides, unsupported-device fallback and other model families; candidate runtime qualification remains open.
+- Compose explicit serial-MTP paging with authenticated text-prefix restoration and native retirement; retain rectangular and paged-media refusals. These source additions still require full-artifact cache, state and lifecycle qualification.
+- Integrate current upstream cache ownership and add separately issued target-only native paging, joint contiguous text-prefix/media ownership, and admitted scalar-shape verification candidates. A selected 114-method component cohort passes; full-model/API, complete MTP state, paging composition and production defaults remain unqualified.
+- Resolve linked snapshot directories through the normal scanner without copying weights or changing cache selection order; preserve rejection of invalid and non-directory entries. Explicit revision selections use the same canonical filesystem identity as legacy discovery.
+
 ## Unreleased — deadline projection diagnostics
 
 - Report a closed reason for unbounded provider deadline projections in the existing per-attempt profile. Distinguish scheduler state, cache geometry, capacity guarantees, missing phase rates and invalid duration without changing admission or reconstructing causes for older records.
-- Reject SDK-recognized `input_audio` parts with HTTP 400 before model acquisition, prompt rendering or media decoding. The SDK update does not enable provider audio inference.
+- Reject SDK-recognized `input_audio` parts for unsupported or unknown architectures with HTTP 400 before model acquisition, prompt rendering or media decoding. Native MiMo dispatch uses provider-owned model metadata and still requires its actual loaded audio profile; generic text/vision paths do not gain audio support.
 
 ## Unreleased — prompt accounting and first-content admission
 

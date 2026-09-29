@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-28 · commit `2afcb8a6f`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -144,6 +144,10 @@ SHA-256 before it leaves staging, and the aggregate is recomputed with
 `{cache}/models--{org}--{name}/snapshots/.revision-<identity_sha256>/`.
 The key includes registry revision identity and the file layout; see
 [model artifact revisions](model-revisions.md#mechanism). Only an explicit `refs/main` selection makes this immutable snapshot discoverable.
+`ModelScanner.findLatestSnapshot` uses legacy modification-time selection only
+when that reference is genuinely absent. An existing unreadable, malformed,
+broken or oversized reference fails closed; it must not select a different
+visible legacy snapshot. Valid reference and snapshot symlinks remain supported.
 Both manifest flows share `ModelArtifactRevision` validation/publication and a
 process-shared `ModelArtifactWriteLease`.
 

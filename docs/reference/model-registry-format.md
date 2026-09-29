@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-28 · commit `ac63cefa7`
+> Last updated: 2026-09-28 · commit `2afcb8a6f`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -47,6 +47,17 @@ and validated by `validateModelManifest` (`coordinator/api/model_registry_handle
 `video_preprocessor_config.json`), `other`.
 
 ### Aggregate hash
+
+MiMo checkpoints (`config.json` declares `model_type: "mimo_v2"`) also include
+root `conversion_manifest.json` or `artifact-provenance.json` when present.
+These are required by the native MiMo loader and retain role `other`.
+`ModelScanner.modelSpecificIntegrityFileNames` and `collectWeightFiles` in
+`provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` use the same
+model-specific list for local attestation and publish-manifest generation.
+Nested unrelated receipts and other model families do not gain these entries;
+their existing file-list policy is unchanged. Config inspection is bounded to
+one MiB and regular files, including ordinary HF blob symlinks. This file-list
+selection does not validate receipt contents or qualify the model for serving.
 
 `aggregate_sha256` = hex(SHA-256(concat(raw 32-byte digest of each file, files
 sorted by `path` ascending))). Implemented identically in

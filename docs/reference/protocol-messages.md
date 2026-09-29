@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-29 · commit `fe8fe6b9f`
+> Last updated: 2026-09-29 · commit `cf6b60b2f`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -206,9 +206,9 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `native_media_tools` | `bool` | `Bool?` | opt | Per-model forced-media/tool-result-media support; absent/false is ineligible. Requires `is_vision` and matching `tool_constraint_protocol`/`tool_constraint_models`. Carried by registration and `models_update`; Swift omits nil and preserves explicit false. See `coordinator/registry/native_media_tools.go` (`providerSupportsNativeMediaToolsLocked`) |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
-| `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Padded native-weight load estimate in GiB; used for reduced offload admission only with a valid family-matched offload declaration |
+| `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Full load estimate in GiB; explicit native Qwen4 offload or MiMo LOAD declarations require the family-matched supplement and source/catalog consistency checks |
 | `ssd_offloaded_weight_bytes` | `int64` | `UInt64?` | opt | Validated immutable payload excluded from native weight allocation; Swift omits nil/zero. It is not a KV cache byte count or a claim that OS-mapped pages use no RAM |
-| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Checkpoint-derived loading allowance for eligible native Qwen4 SSD offload; omitted by legacy/other layouts. Coordinator requires at least 1 GiB and checked addition; invalid/missing values retain 1.2 padding. This does not reduce OS, activation or request-KV reserves |
+| `native_load_transient_bytes` | `int64` | `UInt64?` | opt | Checkpoint-derived allowance for eligible native Qwen4 SSD offload, or full-LOAD supplement above all stored payload bytes for validated exact `mimo_v2` with no SSD subtraction. Requires at least 1 GiB and checked addition; invalid/missing declarations retain legacy pricing. OS, activation and request-KV reserves are unchanged |
 | `parameters` | — | `UInt64?` | Swift only | encoded by Swift, dropped by Go |
 
 Both memory fields are defined by `coordinator/protocol/messages.go`
@@ -218,7 +218,11 @@ Qwen4 types, an ID matching the requested model, finite positive memory, and a p
 payload smaller than the artifact; it floors the estimate against padded
 remaining weight bytes (`coordinator/registry/offloaded_weights.go`,
 `advertisedOffloadedMemoryGBLocked`). Missing/invalid declarations retain the
-existing catalog/measurement policy. See [offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights).
+existing catalog/measurement policy. Exact `mimo_v2` additionally requires zero
+SSD offload, positive source bytes, a checked supplement and a full estimate no
+smaller than their sum. Its load floor retains the greater raw catalog/source
+size plus the supplement once; callers supply raw decimal catalog GB, not GiB,
+minimum RAM or a padded estimate. See [offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights).
 
 #### `privacy_capabilities`
 

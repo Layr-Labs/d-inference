@@ -423,6 +423,15 @@ Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 6 + 5 + 3 + 1 + 41 + 1 = **117 registratio
 
 ## Exact cache status
 
+Typed audio content (`input_audio` / `audio_url`), including malformed audio
+parts and audio-bearing tool output, is ineligible for the text-only prefix
+planner. Ordinary text mentioning audio and opaque tool argument strings are
+not audio-presence signals. This exclusion does not enable audio routing or a
+provider capability, and does not classify audio as vision for billing.
+Sources: `coordinator/api/audio_cache_eligibility.go`,
+`coordinator/promptcontract/endpoint_lower.go` and
+`coordinator/promptsidecar/src/endpoint.rs`.
+
 `GET /v1/cache/status` returns aggregate operational state, with no provider,
 model, tenant, prompt, token, hash, scope, or epoch identifiers
 (`ExactCacheStatus`, `coordinator/api/exact_cache_status.go`). Readiness counts
@@ -898,3 +907,8 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 Promotion input is `{ "model_id": "...", "tokens": 150000000, "claim_starts_at": "RFC3339", "claim_ends_at": "RFC3339 or null", "signup_cutoff_at": "RFC3339", "max_claims": 250, "enabled": true }`. Signup eligibility is strictly before `signup_cutoff_at` using the persisted account creation timestamp. `max_claims` accepts integers in `[1, 1000000]`. A null claim end is supported, but the Bonsai launch draft has an explicit end. Only `enabled` is mutable; conflicting terms return `409 promotion_conflict`. Tokens are integers in `[1, 1000000000000]`. Grant responses have a `grants` array containing `model_id`, `total_tokens`, `used_tokens`, `reserved_tokens`, `remaining_tokens` (available after reservations), and `claimed_at`. There is no expiry field. Claiming requires `{"model_id":"..."}`, uses the server clock and does not require catalog registration. Repeated successful claims return the existing grant without consuming another slot, including after the window or cap closes. Service accounts receive no grant. Responses also include `offers` with `model_id`, `tokens`, `max_claims`, `remaining_claims`, `signup_cutoff_at`, `claim_ends_at` and `status` (`available`, `claimed`, `sold_out`, `ineligible`, or `unavailable`). Claim failures return `403 promotion_ineligible`, `409 promotion_sold_out`, `409 promotion_unavailable`, or `404 promotion_not_found`.
 
 Inference returns `402 free_tokens_exhausted` when the claimed allowance is exhausted or held by active requests and paid balance is insufficient. `402 promotion_balance_required` means remaining free tokens plus paid balance cannot cover the request's upper bound. Both carry an OpenAI-compatible `error.code` and user-facing message. Paid fallback succeeds when funded. See [operations/model-token-promotions.md](../operations/model-token-promotions.md).
+
+## MiMo prompt parity fixtures
+
+See [MiMo prompt fixture reproduction](../developer/mimo-prompt-fixtures.md)
+for the independent pinned corpus and metadata required by the Rust parity gate.

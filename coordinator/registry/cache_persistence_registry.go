@@ -255,36 +255,45 @@ func (r *Registry) runCacheRoutingPersistence(ctx context.Context, p *cachepersi
 	defer flush.Stop()
 	defer prune.Stop()
 	attempts := 0
+	flushNow := func() {
+		if !p.Ready() {
+			// The boot restore failed before the key generation was
+			// established; retry it here, and write nothing until it
+			// succeeds.
+			r.mu.RLock()
+			tracker := r.cacheRouting
+			r.mu.RUnlock()
+			if tracker == nil {
+				return
+			}
+			attempts++
+			if err := r.restoreCacheRoutingState(ctx, p, tracker); err != nil {
+				if attempts == 1 || attempts%12 == 0 {
+					r.logger.Warn("cache routing persistence restore retry failed; nothing is written until it succeeds",
+						"error", err, "attempts", attempts)
+				}
+				return
+			}
+			s := p.Status()
+			r.logger.Info("cache routing persistence restored after retry", "attempts", attempts,
+				"holders_pending", s.PendingHolders, "demand_entries", s.RestoredDemand, "key_rotated", s.KeyRotated)
+		}
+		flushCtx, cancel := context.WithTimeout(context.Background(), cachepersist.FlushInterval*2)
+		_ = p.Flush(flushCtx)
+		cancel()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-flush.C:
-			if !p.Ready() {
-				// The boot restore failed before the key generation was
-				// established; retry it here, and write nothing until it
-				// succeeds.
-				r.mu.RLock()
-				tracker := r.cacheRouting
-				r.mu.RUnlock()
-				if tracker == nil {
-					continue
-				}
-				attempts++
-				if err := r.restoreCacheRoutingState(ctx, p, tracker); err != nil {
-					if attempts == 1 || attempts%12 == 0 {
-						r.logger.Warn("cache routing persistence restore retry failed; nothing is written until it succeeds",
-							"error", err, "attempts", attempts)
-					}
-					continue
-				}
-				s := p.Status()
-				r.logger.Info("cache routing persistence restored after retry", "attempts", attempts,
-					"holders_pending", s.PendingHolders, "demand_entries", s.RestoredDemand, "key_rotated", s.KeyRotated)
-			}
-			flushCtx, cancel := context.WithTimeout(context.Background(), cachepersist.FlushInterval*2)
-			_ = p.Flush(flushCtx)
-			cancel()
+			flushNow()
+		case <-p.Wake():
+			// The delete backlog overflowed: the durable copy must be reset
+			// before anything else is written, and the sooner the reset's
+			// marker lands the shorter the window in which a crash would
+			// leave the condemned rows restorable.
+			flushNow()
 		case <-prune.C:
 			r.mu.RLock()
 			tracker := r.cacheRouting

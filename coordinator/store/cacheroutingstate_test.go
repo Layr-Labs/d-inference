@@ -409,8 +409,8 @@ func TestCacheRoutingStateResetLeavesMarkerWhenInterrupted(t *testing.T) {
 	if fp, err := pg.CacheRoutingKeyFingerprint(ctx); err != nil || fp != crs.ResetInProgress {
 		t.Fatalf("an interrupted reset must leave the marker recorded: %q %v", fp, err)
 	}
-	if rows, _ := pg.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 1 {
-		t.Fatalf("the interrupted reset stopped before its deletes: %d rows", len(rows))
+	if rows, err := pg.LoadCacheHolders(ctx, now, 0, 0); err != nil || len(rows) != 1 {
+		t.Fatalf("the interrupted reset stopped before its deletes: %d rows, %v", len(rows), err)
 	}
 	if err := pg.ResetCacheRoutingState(ctx, "gen-2"); err != nil {
 		t.Fatalf("retry: %v", err)
@@ -418,7 +418,7 @@ func TestCacheRoutingStateResetLeavesMarkerWhenInterrupted(t *testing.T) {
 	if fp, _ := pg.CacheRoutingKeyFingerprint(ctx); fp != "gen-2" {
 		t.Fatalf("the completed reset must record the generation: %q", fp)
 	}
-	if rows, _ := pg.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 0 {
-		t.Fatalf("the completed reset must empty the table: %d rows", len(rows))
+	if rows, err := pg.LoadCacheHolders(ctx, now, 0, 0); err != nil || len(rows) != 0 {
+		t.Fatalf("the completed reset must empty the table: %d rows, %v", len(rows), err)
 	}
 }

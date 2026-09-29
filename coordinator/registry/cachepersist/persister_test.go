@@ -1306,6 +1306,67 @@ func TestUpsertsDrainedAfterAHandledOverflowAreRequeued(t *testing.T) {
 	}
 }
 
+// A drain never proceeds while a reset is pending: the check and the drain
+// share one lock hold, so nothing drained after an overflow can be written
+// before the reset.
+func TestDrainRefusesWhileAResetIsPending(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	now := time.Now()
+	p := New(mem, nil, Options{MaxPending: 2}) // dirty cap 8
+	restoreForTest(t, p, now)
+	p.MarkHolderUpsert(rec("live", "e", now, time.Minute))
+	for i := 0; i <= p.dirtyCap; i++ { // the last one overflows
+		p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+	}
+	b, pending := p.drainUnlessReset()
+	if !pending || len(b.upserts) != 0 || len(b.deletes) != 0 {
+		t.Fatalf("a pending reset must refuse the drain: pending=%v upserts=%d deletes=%d", pending, len(b.upserts), len(b.deletes))
+	}
+	p.mu.Lock()
+	upserts, deletes := len(p.holderUpserts), len(p.holderDeletes)
+	p.mu.Unlock()
+	if upserts != 1 || deletes != 1 {
+		t.Fatalf("a refused drain must leave the dirty sets intact: upserts=%d deletes=%d", upserts, deletes)
+	}
+	if err := p.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if b, pending := p.drainUnlessReset(); pending || len(b.upserts) != 0 {
+		t.Fatalf("after the reset the flush must have drained and written the batch: pending=%v upserts=%d", pending, len(b.upserts))
+	}
+}
+
+// An overflow wakes the flush loop once, however many overflows pile up
+// before it runs, and never blocks the mark.
+func TestOverflowWakesTheFlushLoop(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	now := time.Now()
+	p := New(mem, nil, Options{MaxPending: 2}) // dirty cap 8
+	select {
+	case <-p.Wake():
+		t.Fatal("no wake-up before an overflow")
+	default:
+	}
+	for round := 0; round < 2; round++ { // two overflows, one token
+		for i := 0; i <= p.dirtyCap; i++ {
+			p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("r%d-%03d", round, i), CacheEpoch: "e"}, now)
+		}
+	}
+	select {
+	case <-p.Wake():
+	default:
+		t.Fatal("an overflow must wake the flush loop")
+	}
+	select {
+	case <-p.Wake():
+		t.Fatal("overflows before the loop ran must coalesce into one wake-up")
+	default:
+	}
+	if s := p.Status(); s.OverflowResets != 2 {
+		t.Fatalf("both overflows must be counted: %+v", s)
+	}
+}
+
 // A delete requeued by a failed flush is never dropped either, even when
 // request-path decisions filled the dirty set during the failing write.
 func TestRequeuedDeleteIsNeverDroppedAtTheCap(t *testing.T) {

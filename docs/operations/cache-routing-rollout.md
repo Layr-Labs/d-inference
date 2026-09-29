@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-29 · commit `ec78a5f4b`
+> Last updated: 2026-09-29 · commit `1985e86d9`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -196,7 +196,9 @@ the same request from the same account remains in or out of the cohort.
    reset the delete backlog forces (`lifecycle.persistence.overflow_resets`):
    rows an old container still flushes between that reset's deletes and its
    fingerprint stay under a complete generation until their TTL, as that
-   container's own evidence under the same keys.
+   container's own evidence under the same keys; a row the new container's
+   released decisions condemned is among them and is restored at the next
+   boot (tombstones do not survive a restart).
 
    ```bash
    sudo docker logs coordinator 2>&1 | grep -E 'cache routing configuration rejected|provider-confirmed cache routing configured'

@@ -130,6 +130,11 @@ type Persister struct {
 	// count was in flight when decisions were released, so its upserts are
 	// not requeued: one may be evidence a released decision condemned.
 	overflowSeq uint64
+	// resetWake carries one token per overflow to the flush loop (Wake), so
+	// the reset lands at the next flush rather than the next tick: the time
+	// between the overflow and the reset's marker is the window in which a
+	// crash leaves the condemned rows restorable.
+	resetWake chan struct{}
 }
 
 // Options shape a persister for the registry's current configuration.
@@ -171,7 +176,18 @@ func New(st crs.Store, logger *slog.Logger, opts Options) *Persister {
 		pending:         make(map[string]map[crs.HolderKey]crs.HolderRecord),
 		parkedBucket:    make(map[crs.HolderKey]string),
 		parkedExpiry:    keyedTimeHeap{pos: make(map[crs.HolderKey]int)},
+		resetWake:       make(chan struct{}, 1),
 	}
+}
+
+// Wake delivers a token when the delete backlog overflowed and the durable
+// copy must be reset before anything else is written; the flush loop flushes
+// at once instead of waiting for its tick.
+func (p *Persister) Wake() <-chan struct{} {
+	if p == nil {
+		return nil
+	}
+	return p.resetWake
 }
 
 // MarkHolderUpsert schedules a row write. Nil-safe. The caller has already
@@ -234,6 +250,10 @@ func (p *Persister) MarkHolderDelete(k crs.HolderKey, decidedAt time.Time) {
 		p.overflowSeq++
 		p.counters.overflowResets++
 		p.holderDeletes = make(map[crs.HolderKey]time.Time)
+		select {
+		case p.resetWake <- struct{}{}:
+		default: // a wake-up is already pending
+		}
 	}
 	// decidedAt comes from the tracker's clock, the same clock receipt
 	// times are sampled from, so Tombstoned compares like with like.
@@ -387,6 +407,23 @@ type batch struct {
 func (p *Persister) drain() batch {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.drainLocked()
+}
+
+// drainUnlessReset drains one batch unless a reset is pending, in which
+// case it drains nothing and reports so. The check and the drain share one
+// lock hold: a batch is never drained, and so never written, between an
+// overflow and the reset it requires.
+func (p *Persister) drainUnlessReset() (batch, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.resetPending {
+		return batch{}, true
+	}
+	return p.drainLocked(), false
+}
+
+func (p *Persister) drainLocked() batch {
 	b := batch{
 		upserts:     make([]crs.HolderRecord, 0, min(len(p.holderUpserts), HolderFlushRows)),
 		deletes:     make([]crs.HolderKey, 0, min(len(p.holderDeletes), HolderFlushRows)),
@@ -508,7 +545,17 @@ func (p *Persister) Flush(ctx context.Context) error {
 	if err := p.resetIfPending(ctx); err != nil {
 		return err
 	}
-	b := p.drain()
+	b, pending := p.drainUnlessReset()
+	if pending {
+		// The backlog overflowed after the check above: reset first, then
+		// drain. Overflowed again during that reset, the next flush resets.
+		if err := p.resetIfPending(ctx); err != nil {
+			return err
+		}
+		if b, pending = p.drainUnlessReset(); pending {
+			return nil
+		}
+	}
 	if len(b.upserts) == 0 && len(b.deletes) == 0 && len(b.demand) == 0 {
 		return nil
 	}

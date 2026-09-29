@@ -1467,6 +1467,7 @@ private func fullInferenceProfile() -> InferenceProfile {
     d.continuation = .cancelled
     d.projection = .notAttempted
     d.projectionReason = .unsupportedScheduler
+    d.unboundedReason = .invalidProjectionTransition
     d.observedUs = maxUs
     d.remainingUs = maxUs
     d.submitRemainingUs = maxUs

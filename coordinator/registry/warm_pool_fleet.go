@@ -282,6 +282,7 @@ func (r *Registry) pendingModelLoadCount(now time.Time) int {
 	count := 0
 	for key, expiresAt := range r.pendingModelLoads {
 		if now.After(expiresAt) {
+			r.recordDeadlineLoadActivityLocked(key.ProviderID, now)
 			delete(r.pendingModelLoads, key)
 			delete(r.pendingModelLoadStarted, key)
 			continue

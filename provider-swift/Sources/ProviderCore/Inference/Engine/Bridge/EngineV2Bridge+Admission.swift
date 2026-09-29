@@ -31,33 +31,37 @@ extension EngineV2Bridge {
     /// unchanged; only the engine queue reads "now" for the final verdict.
     func firstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
-        isMultimodal: Bool
+        isMultimodal: Bool,
+        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
     ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
             prefillDeadlineProjectionEnabled,
             !isMultimodal,
-            let deadline,
-            isolatedPrefillEwmaInitialized
+            let deadline
         else {
             return nil
         }
 
-        let prefillRate =
-            isolatedPrefillTpsEwma * Self.deadlineProjectionRateHaircut
-        let decodeCandidate =
-            observedDecodeTpsEwma * Self.deadlineProjectionRateHaircut
+        // Use observed phase rates directly. The engine still prices its
+        // actual queue/cache work against the original absolute deadline;
+        // optional reviewed calibration supplies only measured error bounds.
+        let prefillRate = isolatedPrefillEwmaInitialized
+            && isolatedPrefillTpsEwma.isFinite && isolatedPrefillTpsEwma > 0
+            ? isolatedPrefillTpsEwma : nil
         let decodeRate =
-            ewmaInitialized && decodeCandidate.isFinite && decodeCandidate > 0
-            ? decodeCandidate
+            ewmaInitialized && observedDecodeTpsEwma.isFinite && observedDecodeTpsEwma > 0
+            ? observedDecodeTpsEwma
             : nil
-        guard prefillRate.isFinite, prefillRate > 0 else {
-            return nil
+        let calibration = requestID.flatMap {
+            calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
+        guard prefillRate != nil || calibration != nil else { return nil }
 
         return CBv2FirstTokenDeadlineAdmission(
             deadline: deadline.instant,
             conservativePrefillTokensPerSecond: prefillRate,
-            conservativeDecodeTokensPerSecond: decodeRate)
+            conservativeDecodeTokensPerSecond: decodeRate,
+            calibration: calibration)
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

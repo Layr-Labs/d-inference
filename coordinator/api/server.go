@@ -37,6 +37,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/promptwork"
 	"github.com/eigeninference/d-inference/coordinator/apns"
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/auth"
@@ -230,6 +231,7 @@ type Server struct {
 	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
 	promptArtifacts               *promptcontract.Provisioner
 	promptContract                *promptcontract.Client
+	promptWorkGate                *promptwork.Gate
 	promptSupervisor              *promptcontract.Supervisor
 	promptPreloader               *promptcontract.PreloadController
 	exactCacheGaugeMu             sync.RWMutex

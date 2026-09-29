@@ -1231,6 +1231,8 @@ public actor StandaloneServer {
 
         evictingModels.insert(evictKey)
         defer { evictingModels.remove(evictKey) }
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         // Drain the v2 bridge (running requests finish, new submissions are
         // rejected by the engine), then release the container reference.
         await bridge.shutdown()
@@ -1541,6 +1543,8 @@ public actor StandaloneServer {
             }
         }
         isLoadingAny = true
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         // Re-validate membership AFTER the suspensions above (spec-dec
         // preparation, the load-gate wait): a concurrent `setModels` can
         // have removed this model and relaxed the reserve to the remaining
@@ -1623,6 +1627,7 @@ public actor StandaloneServer {
                 modelId: modelId, modelDirectory: modelPath)
             let artifactIdentityRequired = reusableSSDRequested
                 || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
+                || DeadlinePerformanceProfiles.requiresArtifactHash(modelID: modelId)
             let preLoadArtifactHash = await computeStandaloneWeightHash(
                 modelPath: modelPath, modelId: modelId, required: artifactIdentityRequired)
             // Hard-fail without Metal: CPU inference is not acceptable, and

@@ -1538,6 +1538,8 @@ public enum CoordinatorMessage: Sendable, Equatable {
         /// Positive time remaining for this dispatch attempt to produce its
         /// first content-bearing chunk. Nil preserves the legacy wire shape.
         public var firstContentBudgetMs: Int64?
+        /// Artifact-bound prompt accounting; the provider reconciles it after tokenization.
+        public var promptWork: PromptWork?
         public var cacheReceiptNonce: String?
         public var cacheScope: String?
         public var prefixCacheProtocol: Int?
@@ -1563,7 +1565,8 @@ public enum CoordinatorMessage: Sendable, Equatable {
             cacheReceiptBoundaryMode: String? = nil,
             cacheRepeatedPrefixTokens: Int? = nil,
             toolSchemaMetadataProtocol: Int? = nil,
-            serviceReservationID: String? = nil
+            serviceReservationID: String? = nil,
+            promptWork: PromptWork? = nil
         ) {
             self.requestId = requestId
             self.encryptedBody = encryptedBody
@@ -1575,6 +1578,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.cacheRepeatedPrefixTokens = cacheRepeatedPrefixTokens.map { max(0, $0) }
             self.toolSchemaMetadataProtocol = toolSchemaMetadataProtocol
             self.serviceReservationID = serviceReservationID
+            self.promptWork = promptWork
         }
     }
 
@@ -1751,6 +1755,7 @@ extension CoordinatorMessage: Codable {
         case requestId = "request_id"
         case encryptedBody = "encrypted_body"
         case firstContentBudgetMs = "first_content_budget_ms"
+        case promptWork = "prompt_work"
         case serviceReservationID = "service_reservation_id"
         case cacheReceiptNonce = "cache_receipt_nonce"
         case cacheScope = "cache_scope"
@@ -1806,6 +1811,7 @@ extension CoordinatorMessage: Codable {
                 r.toolSchemaMetadataProtocol,
                 forKey: .toolSchemaMetadataProtocol)
             try container.encodeIfPresent(r.serviceReservationID, forKey: .serviceReservationID)
+            try container.encodeIfPresent(r.promptWork, forKey: .promptWork)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -1902,7 +1908,11 @@ extension CoordinatorMessage: Codable {
                 toolSchemaMetadataProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .toolSchemaMetadataProtocol),
                 serviceReservationID: try container.decodeIfPresent(
-                    String.self, forKey: .serviceReservationID)
+                    String.self, forKey: .serviceReservationID),
+                // Advisory evidence must never discard the request itself.
+                // Missing/malformed evidence keeps actual tokenization and
+                // ordinary observed-rate deadline admission authoritative.
+                promptWork: try? container.decodeIfPresent(PromptWork.self, forKey: .promptWork)
             ))
 
         case .cancel:

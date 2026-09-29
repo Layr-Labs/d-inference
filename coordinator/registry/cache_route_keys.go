@@ -117,6 +117,8 @@ const (
 )
 
 type CachePlanResult struct {
+	// PromptWork is valid tokenizer accounting even when there are no reusable boundaries.
+	PromptWork    *protocol.PromptWork
 	Plan          CachePlan
 	Outcome       CachePlanOutcome
 	PlanLatency   time.Duration
@@ -233,10 +235,16 @@ func (r *Registry) PlanCacheRouteWithResult(
 			Outcome: CachePlanInvalid, PlanLatency: latency, SidecarCalled: true,
 		}
 	}
+	work := &protocol.PromptWork{Version: protocol.PromptWorkVersion, Source: protocol.PromptWorkExact,
+		PromptTokens: int(sidecarPlan.PromptTokenCount), UpperBoundTokens: int(sidecarPlan.PromptTokenCount),
+		PromptContractID: input.PromptContractID, ModelArtifactHash: aggregateHash}
+	if !work.IsQualifiedFor(aggregateHash, input.PromptContractID) {
+		work = nil
+	}
 	if len(sidecarPlan.BlockBoundaries) == 0 {
 		activation.recordPlan(CachePlanNoBoundaries)
 		return CachePlanResult{
-			Outcome: CachePlanNoBoundaries, PlanLatency: latency, SidecarCalled: true,
+			PromptWork: work, Outcome: CachePlanNoBoundaries, PlanLatency: latency, SidecarCalled: true,
 		}
 	}
 	boundaries := make([]protocol.PrefixCacheAnchor, 0, len(sidecarPlan.BlockBoundaries))
@@ -263,7 +271,7 @@ func (r *Registry) PlanCacheRouteWithResult(
 	}
 	tracker.observeCacheDemand(&plan, keys.route, time.Now())
 	activation.recordPlan(CachePlanPlanned)
-	return CachePlanResult{Plan: plan, Outcome: CachePlanPlanned, PlanLatency: latency, SidecarCalled: true}
+	return CachePlanResult{Plan: plan, PromptWork: work, Outcome: CachePlanPlanned, PlanLatency: latency, SidecarCalled: true}
 }
 
 // providerCacheScope is the only provider-visible routing value. It binds the

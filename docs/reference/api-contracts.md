@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-29 · commit `99185c517`
+> Last updated: 2026-09-29 · commit `5e2006b6e`
 
 The complete public HTTP surface of the coordinator, derived from the 115 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -496,6 +496,13 @@ Existing tabs running an older bundle must reload. The updated console also
 accepts older responses containing the extra field.
 
 ## First-content routing and retry behavior
+
+Inference planning may obtain exact input work from the verified model/template
+tokenizer before dispatch. The internal numeric provenance is not a client
+request field. Planning, retries and provider reconciliation spend the same
+original first-content clock; neither corrected counts nor a calibrated margin
+extend it. Unsupported shapes keep conservative fallback, and billing continues
+to settle actual provider usage (`planPromptRoute`, `coordinator/api/prompt_work.go`).
 
 Public inference uses [first-content routing](../architecture/first-content-routing.md)
 by default across chat completions, Responses, completions and Anthropic messages.

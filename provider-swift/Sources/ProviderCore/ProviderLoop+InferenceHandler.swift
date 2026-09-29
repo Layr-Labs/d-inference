@@ -183,6 +183,7 @@ extension ProviderLoop {
         receivedAt: ContinuousClock.Instant = .now,
         profile requestProfile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
+        promptWork: PromptWork? = nil,
         send: SendHandle
     ) async {
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
@@ -352,6 +353,23 @@ extension ProviderLoop {
             return
         }
         profile.mark(.parsed)
+
+        // A parsed audio part is still unsupported by this provider. Reject
+        // before acceptance or loading a cold model, while this handler still
+        // owns the lookup receipt and service reservation. Keep this separate
+        // from decode failures so the typed media rejection stays intact.
+        do {
+            try MediaIngest.rejectUnsupportedAudio(chatRequest)
+        } catch {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: Self.sanitizedInferenceFailure(from: error, phase: .request),
+                    profile: profile),
+                fallbackFailure: .policy,
+                send: send)
+            return
+        }
 
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -820,7 +838,8 @@ extension ProviderLoop {
                 firstContentDeadline: firstContentDeadline,
                 profile: profile,
                 serviceReservationID: serviceReservationID,
-                serviceReservation: serviceReservation
+                serviceReservation: serviceReservation,
+                promptWork: promptWork
             )
 
             // Force-stream so we get SSE frames even if the original request

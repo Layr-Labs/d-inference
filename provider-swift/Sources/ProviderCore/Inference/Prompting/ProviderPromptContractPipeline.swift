@@ -27,6 +27,7 @@ enum ProviderPromptContractPipeline {
         modelType: String?,
         templateControls: ChatTemplateControls
     ) throws -> [Int] {
+        try MediaIngest.rejectUnsupportedAudio(request)
         try DiffusionGemmaReasoningControl.validate(
             request: request, controls: templateControls, modelType: modelType)
         let messages = prepared.messages.map { $0.templateMessageDict() }

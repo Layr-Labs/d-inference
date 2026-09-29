@@ -10,6 +10,8 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 	s.capacityAcceptedAt, s.capacitySeq = p.CapacityAcceptedAt, p.capacitySeq
 	s.transportMs, s.conservativeTransportMs, s.transportAgeMs = transportForecast(p.transport, now)
 	s.capacityAgeMs, s.performanceAgeMs = -1, -1
+	s.contendedPerformanceAgeMs = -1
+	s.promptWorkArtifactHash, s.promptWorkContractID = providerPromptWorkIdentityLocked(p, s.model)
 	if !p.CapacityAcceptedAt.IsZero() {
 		s.capacityAgeMs = heartbeatAgeMs(now, p.CapacityAcceptedAt)
 	}
@@ -20,6 +22,10 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 	if capacity == nil {
 		return
 	}
+	// Weight loading can execute before the new model appears in Slots. It
+	// cannot establish an idle, fully observed workload for either predictor.
+	s.wholeMacBusy = capacity.LoadTransitionActive != nil && *capacity.LoadTransitionActive
+	fillCalibratedWorkSnapshot(s, p, now)
 	s.wholeMacWorkKnown = len(capacity.Slots) > 0
 	for i := range capacity.Slots {
 		slot := &capacity.Slots[i]

@@ -321,7 +321,10 @@ type HeartbeatMessage struct {
 // BackendSlotCapacity describes the capacity state of a single backend slot
 // (one MLX-Swift in-process model serving one model).
 type BackendSlotCapacity struct {
-	PerformanceProfile *ServingPerformanceProfileReference `json:"performance_profile,omitempty"`
+	PromptWorkIdentity *PromptWorkIdentity                  `json:"prompt_work_identity,omitempty"`
+	PerformanceProfile *ServingPerformanceProfileReference  `json:"performance_profile,omitempty"`
+	DeadlineProfile    *DeadlinePerformanceProfileReference `json:"deadline_profile,omitempty"`
+	DeadlineWork       *DeadlineWork                        `json:"deadline_work,omitempty"`
 	// Transient routing observations; not part of persisted numeric SlotTelemetry.
 	PerformanceMeasurements *PerformanceMeasurements `json:"performance_measurements,omitempty"`
 	Model                   string                   `json:"model"`                     // model ID for this slot
@@ -761,10 +764,11 @@ type InferenceRequestMessage struct {
 	// FirstContentBudgetMS is the positive time remaining for this dispatch
 	// attempt to produce its first content-bearing chunk. Zero preserves the
 	// legacy wire shape by omitting the field.
-	FirstContentBudgetMS int64  `json:"first_content_budget_ms,omitempty"`
-	CacheReceiptNonce    string `json:"cache_receipt_nonce,omitempty"`
-	CacheScope           string `json:"cache_scope,omitempty"`
-	PrefixCacheProtocol  int    `json:"prefix_cache_protocol,omitempty"`
+	FirstContentBudgetMS int64       `json:"first_content_budget_ms,omitempty"`
+	PromptWork           *PromptWork `json:"prompt_work,omitempty"`
+	CacheReceiptNonce    string      `json:"cache_receipt_nonce,omitempty"`
+	CacheScope           string      `json:"cache_scope,omitempty"`
+	PrefixCacheProtocol  int         `json:"prefix_cache_protocol,omitempty"`
 	// Echoed only for a negotiated checkpoint receipt attempt. An older
 	// coordinator omits this, so new providers suppress checkpoint receipts.
 	CacheReceiptBoundaryMode string `json:"cache_receipt_boundary_mode,omitempty"`

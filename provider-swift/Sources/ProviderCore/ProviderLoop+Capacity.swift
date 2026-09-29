@@ -219,7 +219,13 @@ extension ProviderLoop {
         for index in allSlots.indices where mtpAdmissionDrains.contains(allSlots[index].model) {
             allSlots[index].state = "reloading"
         }
-        let serviceSnapshot = kvBudget.serviceBudget.snapshot()
+        // Work totals and exact reservation IDs must describe one ledger
+        // epoch. Independent per-slot actor snapshots can otherwise pair old
+        // work with a new owner having the same service fraction.
+        let serviceSnapshot = kvBudget.serviceBudget.capacitySnapshot(slots: allSlots)
+        for index in allSlots.indices {
+            allSlots[index].deadlineWork = serviceSnapshot.deadlineWorkByModel[allSlots[index].model]
+        }
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             wholeMacServiceUsed: serviceSnapshot.usedFraction,

@@ -1,9 +1,9 @@
 package analyticssnapshot_test
 
 import (
-	. "github.com/eigeninference/d-inference/coordinator/analyticssnapshot"
 	"bytes"
 	"fmt"
+	. "github.com/eigeninference/d-inference/coordinator/analyticssnapshot"
 	"testing"
 	"time"
 
@@ -131,5 +131,24 @@ func TestAnonymousSignedCorrectionsDoNotCreateFalseCountBounds(t *testing.T) {
 	s.Windows["all"] = w
 	if _, err := Decode(bytes.NewReader(data(t, s)), now); err != nil {
 		t.Fatal("signed monetary/token adjustments must not be bounded like job counts", err)
+	}
+}
+
+func TestSignedTokenCorrectionsRemainValid(t *testing.T) {
+	now := time.Now().UTC()
+	s := fixture(now)
+	w := s.Windows["all"]
+	w.Totals = store.NetworkTotalsRow{ActiveAccounts: 1, Jobs: 1, Tokens: -3}
+	for _, metric := range Metrics {
+		w.Leaderboards[metric] = []store.LeaderboardRow{{AccountID: "a", Jobs: 1, Tokens: -3}}
+	}
+	s.Windows["all"] = w
+	if _, err := Decode(bytes.NewReader(data(t, s)), now); err != nil {
+		t.Fatal("signed corrected token totals must be accepted", err)
+	}
+	w.Leaderboards["jobs"][0].Jobs = -1
+	s.Windows["all"] = w
+	if _, err := Decode(bytes.NewReader(data(t, s)), now); err == nil {
+		t.Fatal("negative job count must still be rejected")
 	}
 }

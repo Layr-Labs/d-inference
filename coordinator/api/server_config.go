@@ -17,7 +17,8 @@ import (
 // ServerConfig holds coordinator HTTP server and URL configuration applied
 // when NewServer constructs an instance.
 type ServerConfig struct {
-	AnalyticsSnapshotPath string // Empty keeps database-backed analytics.
+	AnalyticsSnapshotPath      string // Empty keeps database-backed analytics.
+	AnalyticsSnapshotStatePath string // Durable accepted-generation record; required with snapshot mode.
 	// Non-positive values retain the safe defaults; limits cannot be disabled.
 	NonStreamingResponseMaxBytes  int
 	NonStreamingResponseMaxChunks int
@@ -69,6 +70,7 @@ type BaseRewardsConfig struct {
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
 		AnalyticsSnapshotPath:         os.Getenv(env.EnvPrefix + "_ANALYTICS_SNAPSHOT_PATH"),
+		AnalyticsSnapshotStatePath:    os.Getenv(env.EnvPrefix + "_ANALYTICS_SNAPSHOT_STATE_PATH"),
 		NonStreamingResponseMaxBytes:  env.EnvInt(env.EnvPrefix+"_NONSTREAM_RESPONSE_MAX_BYTES", responselimit.DefaultMaxBytes),
 		NonStreamingResponseMaxChunks: env.EnvInt(env.EnvPrefix+"_NONSTREAM_RESPONSE_MAX_CHUNKS", responselimit.DefaultMaxChunks),
 
@@ -119,8 +121,18 @@ type AppAttestShadowConfig = attestservice.Config
 
 // CheckAnalyticsSnapshot validates the opt-in local snapshot path before startup.
 func (c ServerConfig) CheckAnalyticsSnapshot() error {
-	if c.AnalyticsSnapshotPath != "" && !filepath.IsAbs(c.AnalyticsSnapshotPath) {
+	if c.AnalyticsSnapshotPath == "" {
+		if c.AnalyticsSnapshotStatePath != "" {
+			return fmt.Errorf("EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH requires snapshot mode")
+		}
+		return nil
+	}
+	if !filepath.IsAbs(c.AnalyticsSnapshotPath) {
 		return fmt.Errorf("EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH must be absolute")
+	}
+	if !filepath.IsAbs(c.AnalyticsSnapshotStatePath) ||
+		filepath.Clean(c.AnalyticsSnapshotStatePath) == filepath.Clean(c.AnalyticsSnapshotPath) {
+		return fmt.Errorf("EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH must be a distinct absolute path")
 	}
 	return nil
 }

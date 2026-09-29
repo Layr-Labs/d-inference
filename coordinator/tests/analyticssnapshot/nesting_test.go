@@ -1,8 +1,9 @@
-package analyticssnapshot
+package analyticssnapshot_test
 
 import (
 	"bytes"
 	"fmt"
+	. "github.com/eigeninference/d-inference/coordinator/analyticssnapshot"
 	"strings"
 	"testing"
 	"time"

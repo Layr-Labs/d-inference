@@ -2,6 +2,10 @@
 
 > Last updated: 2026-10-04
 
+## Optional archived analytics mode
+
+`EIGENINFERENCE_ANALYTICS_SNAPSHOT_PATH` is unset by default. Enable it only in a specifically approved deployment after the [snapshot pipeline](analytics-snapshots.md) has qualified complete, fresh results and its separate `EIGENINFERENCE_ANALYTICS_SNAPSHOT_STATE_PATH` has been initialized on a persistent writable mount. It replaces leaderboard/network-totals/network-series reads with a validated local snapshot and disables their database fallback. Cold/missing/expired data or missing accepted state on startup returns 503. Other stats and billing readers continue using PostgreSQL; this setting does not enable source deletion.
+
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
 verifying it, and rolling back. Every VM mutation here is **human-only**; agents

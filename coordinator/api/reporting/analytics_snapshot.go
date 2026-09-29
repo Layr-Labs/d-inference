@@ -16,7 +16,7 @@ func (s *Owner) startAnalyticsSnapshots(ctx context.Context) {
 	}
 	saferun.Go(s.logger, "api.analyticsSnapshots", func() {
 		refresh := func() {
-			if err := s.analyticsSnapshot.Load(s.analyticsSnapshotPath, time.Now()); err != nil && s.logger != nil {
+			if err := s.analyticsSnapshot.LoadPersistent(s.analyticsSnapshotPath, s.analyticsSnapshotStatePath, time.Now()); err != nil && s.logger != nil {
 				s.logger.Warn("analytics snapshot refresh failed", "error", err)
 				s.ddIncr("cache.refresh_failed", []string{"key:archive_analytics"})
 			}

@@ -2,6 +2,12 @@
 
 > Last updated: 2026-10-05
 
+## Optional archived public analytics reader
+
+`coordinator/analyticssnapshot` validates and atomically caches a private local generation. A separate private persistent file records accepted source cutoffs and generation checksums before the cache serves them, so a coordinator restart cannot accept a rolled-back pointer when the record survives. `coordinator/api/reporting/analytics_snapshot.go` polls the file; when configured, leaderboard, network totals and network series bypass PostgreSQL and its totals refresher. Financial amounts retain integer semantics and IDs remain pseudonymized by the API. The copy-only archive cannot qualify production snapshots; continuous capture and reconciliation remain rollout gates. See [operations and rollback](../operations/analytics-snapshots.md). Source-retention behavior is unchanged.
+
+In default database mode, `coordinator/internal/api/reporting/ranking/leaderboard_cache.go` coalesces concurrent requests and shares one top-200 ranking per metric/canonical window across limits and aliases, retaining the failure cooldown. `PostgresStore.Leaderboard` returns errors on query, scan or iteration failure; the handler never caches a partial ranking. Network totals refresh every 5 minutes with a 15-minute maximum success TTL. Network series caches successful results for 5 minutes. Core stats retain their independent 30-second cadence and 5-minute safety TTL.
+
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
 disk and in its Keychain. Read this to understand what survives a restart, what

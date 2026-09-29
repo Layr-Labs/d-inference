@@ -59,8 +59,12 @@ func TestArchiveAnalyticsNeverScansSourceAndKeepsPseudonyms(t *testing.T) {
 		t.Fatal(e)
 	}
 	cache := readcache.New()
+	statePath := filepath.Join(t.TempDir(), "accepted.json")
+	if err := os.WriteFile(statePath, []byte(`{"version":1,"checksums":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := reporting.New(reporting.Dependencies{AnalyticsSnapshotPath: path, Store: noAnalyticsScan{Store: memory.NewMemory(store.Config{}), t: t}, Cache: cache, Registry: registry.New(logger), Logger: logger})
+	s := reporting.New(reporting.Dependencies{AnalyticsSnapshotPath: path, AnalyticsSnapshotStatePath: statePath, Store: noAnalyticsScan{Store: memory.NewMemory(store.Config{}), t: t}, Cache: cache, Registry: registry.New(logger), Logger: logger})
 	// No valid snapshot must fail closed even if an old ordinary cache was populated.
 	cache.Set("leaderboard:earnings:all:50", []byte(`{"entries":[]}`), time.Hour)
 	missing := httptest.NewRecorder()

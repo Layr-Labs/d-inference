@@ -17,20 +17,22 @@ import (
 )
 
 type Dependencies struct {
-	AnalyticsSnapshotPath string
-	Store                 store.Store
-	Registry              *registry.Registry
-	Cache                 *readcache.Cache
-	Logger                *slog.Logger
-	Incr                  func(string, []string)
-	RequireAdminKey       func(http.ResponseWriter, *http.Request) bool
+	AnalyticsSnapshotPath      string
+	AnalyticsSnapshotStatePath string
+	Store                      store.Store
+	Registry                   *registry.Registry
+	Cache                      *readcache.Cache
+	Logger                     *slog.Logger
+	Incr                       func(string, []string)
+	RequireAdminKey            func(http.ResponseWriter, *http.Request) bool
 }
 
 // Owner holds reporting's mutable state. Cache is supplied by the composition
 // root and shared with the other read domains, never cloned here.
 type Owner struct {
-	analyticsSnapshotPath string
-	analyticsSnapshot     analyticssnapshot.Cache
+	analyticsSnapshotPath      string
+	analyticsSnapshotStatePath string
+	analyticsSnapshot          analyticssnapshot.Cache
 	*refresher.Service
 	*statsview.Stats
 	*totalsview.Totals
@@ -51,12 +53,13 @@ func New(deps Dependencies) *Owner {
 	}
 	refresh := refresher.New(deps.Cache, deps.Logger, incr)
 	return &Owner{
-		analyticsSnapshotPath: deps.AnalyticsSnapshotPath,
-		Service:               refresh,
-		Stats:                 statsview.New(deps.Store, deps.Registry, deps.Cache, deps.Logger, incr, refresh),
-		Totals:                totalsview.New(deps.Store, refresh),
-		Ranking:               ranking.New(deps.Store, deps.Cache, deps.Logger, incr),
-		store:                 deps.Store, registry: deps.Registry, readCache: deps.Cache,
+		analyticsSnapshotPath:      deps.AnalyticsSnapshotPath,
+		analyticsSnapshotStatePath: deps.AnalyticsSnapshotStatePath,
+		Service:                    refresh,
+		Stats:                      statsview.New(deps.Store, deps.Registry, deps.Cache, deps.Logger, incr, refresh),
+		Totals:                     totalsview.New(deps.Store, refresh),
+		Ranking:                    ranking.New(deps.Store, deps.Cache, deps.Logger, incr),
+		store:                      deps.Store, registry: deps.Registry, readCache: deps.Cache,
 		logger: deps.Logger, ddIncr: incr, requireAdminKey: deps.RequireAdminKey,
 	}
 }

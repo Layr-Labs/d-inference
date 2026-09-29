@@ -1016,59 +1016,93 @@ func TestPruneForgetsExpiredDecisionsInChunks(t *testing.T) {
 	}
 }
 
-// A delete is never dropped at the dirty cap: an overflowing backlog during
-// a store outage discards the whole durable copy at the next flush, so a
-// restart cannot restore a row a delete decided against, and a restore that
-// runs after an overflow resets instead of loading.
+// resetCountingStore counts the durable-copy resets a persister asks for.
+type resetCountingStore struct {
+	crs.Store
+	resets int
+}
+
+func (s *resetCountingStore) ResetCacheRoutingState(ctx context.Context, fingerprint string) error {
+	s.resets++
+	return s.Store.ResetCacheRoutingState(ctx, fingerprint)
+}
+
+// deleteHookStore fails the first delete batch after running a hook during
+// the failing call: the window in which request-path decisions can fill the
+// dirty set before the failed batch is requeued.
+type deleteHookStore struct {
+	crs.Store
+	onFirstDelete func()
+}
+
+func (s *deleteHookStore) DeleteCacheHolders(ctx context.Context, keys []crs.HolderKey) error {
+	if hook := s.onFirstDelete; hook != nil {
+		s.onFirstDelete = nil
+		hook()
+		return fmt.Errorf("store unavailable")
+	}
+	return s.Store.DeleteCacheHolders(ctx, keys)
+}
+
+// A delete is never dropped at the dirty cap: the decision that overflows
+// the backlog during a store outage discards the whole durable copy at the
+// next flush, so a restart cannot restore the row it condemned, and a
+// restore that runs after an overflow resets instead of loading.
 func TestDeleteBacklogOverflowResetsDurableCopy(t *testing.T) {
 	mem := store.NewMemory(store.Config{})
+	st := &resetCountingStore{Store: mem}
 	ctx := context.Background()
 	now := time.Now()
-	p := New(mem, nil, Options{MaxPending: 2}) // dirty cap 8
+	p := New(st, nil, Options{MaxPending: 2}) // dirty cap 8
 	restoreForTest(t, p, now)
 	stale := rec("stale", "e", now, time.Minute)
 	p.MarkHolderUpsert(stale)
 	if err := p.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// The store goes away; deletes pile up past the budget, the row's own
-	// among them: released with the rest, never dropped.
-	p.MarkHolderDelete(stale.HolderKey(), now.Add(time.Second))
+	// The store goes away; deletes fill the budget, and the row's own
+	// decision is the one that overflows it: the one a cap would drop.
 	for i := 0; i < p.dirtyCap; i++ {
 		p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
 	}
+	p.MarkHolderDelete(stale.HolderKey(), now.Add(time.Second))
 	if s := p.Status(); s.OverflowResets != 1 || s.DroppedDirty != 0 {
 		t.Fatalf("an overflowing delete backlog must schedule a reset, not drop: %+v", s)
 	}
 	p.mu.Lock()
-	queued := len(p.holderDeletes)
+	queued, pending := len(p.holderDeletes), p.resetPending
 	p.mu.Unlock()
-	if queued != 1 {
-		t.Fatalf("the overflow must release the backlog and queue the new decision: queued=%d", queued)
+	if queued != 1 || !pending {
+		t.Fatalf("the overflow must release the backlog and queue the new decision: queued=%d pending=%v", queued, pending)
 	}
 	if err := p.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 {
-		t.Fatalf("the reset must remove the row the released delete condemned: %+v", rows)
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 || st.resets != 1 {
+		t.Fatalf("the reset must remove the row the overflowing delete condemned: rows=%+v resets=%d", rows, st.resets)
 	}
 	fresh := rec("fresh", "e", now.Add(2*time.Second), time.Minute)
 	p.MarkHolderUpsert(fresh)
 	if err := p.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 1 || rows[0].Key != "fresh" {
-		t.Fatalf("evidence after the reset must be written: %+v", rows)
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 1 || rows[0].Key != "fresh" || st.resets != 1 {
+		t.Fatalf("evidence after the reset must be written, without another reset: rows=%+v resets=%d", rows, st.resets)
 	}
-	// An overflow before any restore succeeded: the restore resets instead
-	// of loading the rows the released deletes condemned.
-	next := New(mem, nil, Options{MaxPending: 2})
-	for i := 0; i <= next.dirtyCap; i++ {
+	// An overflow before any restore succeeded, the seeded row's own
+	// decision overflowing: the restore resets instead of loading the row.
+	seeded := rec("seeded", "e", now.Add(2*time.Second), time.Minute)
+	if err := mem.UpsertCacheHolders(ctx, []crs.HolderRecord{seeded}); err != nil {
+		t.Fatal(err)
+	}
+	next := New(st, nil, Options{MaxPending: 2})
+	for i := 0; i < next.dirtyCap; i++ {
 		next.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("x%03d", i), CacheEpoch: "e"}, now.Add(3*time.Second))
 	}
+	next.MarkHolderDelete(seeded.HolderKey(), now.Add(3*time.Second))
 	restoreForTest(t, next, now)
-	if s := next.Status(); s.RestoredHolders != 0 || s.OverflowResets != 1 || !s.Ready {
-		t.Fatalf("a restore after an overflow must reset, not load: %+v", s)
+	if s := next.Status(); s.RestoredHolders != 0 || s.OverflowResets != 1 || !s.Ready || st.resets != 2 {
+		t.Fatalf("a restore after an overflow must reset, not load: %+v resets=%d", s, st.resets)
 	}
 	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 {
 		t.Fatalf("the restore-time reset must empty the store: %+v", rows)
@@ -1076,8 +1110,98 @@ func TestDeleteBacklogOverflowResetsDurableCopy(t *testing.T) {
 	if err := next.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if s := next.Status(); s.OverflowResets != 1 || s.FlushErrors != 0 {
-		t.Fatalf("the restore-time reset must not be repeated by the flush: %+v", s)
+	next.mu.Lock()
+	pending = next.resetPending
+	next.mu.Unlock()
+	if s := next.Status(); st.resets != 2 || pending || s.FlushErrors != 0 {
+		t.Fatalf("the restore-time reset must not be repeated by the flush: resets=%d pending=%v %+v", st.resets, pending, s)
+	}
+}
+
+// loadHookStore runs a hook inside the holder load (the window between a
+// restore's first overflow check and its merge) and counts resets.
+type loadHookStore struct {
+	crs.Store
+	onLoadHolders func()
+	resets        int
+}
+
+func (s *loadHookStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl time.Duration, limit int) ([]crs.HolderRecord, error) {
+	if hook := s.onLoadHolders; hook != nil {
+		s.onLoadHolders = nil
+		hook()
+	}
+	return s.Store.LoadCacheHolders(ctx, now, ttl, limit)
+}
+
+func (s *loadHookStore) ResetCacheRoutingState(ctx context.Context, fingerprint string) error {
+	s.resets++
+	return s.Store.ResetCacheRoutingState(ctx, fingerprint)
+}
+
+// A backlog overflow while the rows are loading releases decisions that
+// condemn rows no per-row check can see: the restore resets instead of
+// parking them.
+func TestRestoreResetsWhenTheBacklogOverflowsDuringTheLoad(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	condemned := rec("condemned", "e", now, time.Minute)
+	if err := mem.UpsertCacheHolders(ctx, []crs.HolderRecord{condemned}); err != nil {
+		t.Fatal(err)
+	}
+	st := &loadHookStore{Store: mem}
+	p := New(st, nil, Options{MaxPending: 2}) // dirty cap 8
+	st.onLoadHolders = func() {
+		// The row's decision is released by the overflow the fillers cause.
+		p.MarkHolderDelete(condemned.HolderKey(), now.Add(time.Second))
+		for i := 0; i < p.dirtyCap; i++ {
+			p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+		}
+	}
+	restoreForTest(t, p, now)
+	if s := p.Status(); s.RestoredHolders != 0 || s.PendingHolders != 0 || s.OverflowResets != 1 || !s.Ready || st.resets != 1 {
+		t.Fatalf("an overflow during the load must turn the restore into a reset: %+v resets=%d", s, st.resets)
+	}
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 {
+		t.Fatalf("the reset must remove the condemned row: %+v", rows)
+	}
+}
+
+// A delete requeued by a failed flush is never dropped either, even when
+// request-path decisions filled the dirty set during the failing write.
+func TestRequeuedDeleteIsNeverDroppedAtTheCap(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	st := &deleteHookStore{Store: mem}
+	p := New(st, nil, Options{MaxPending: 2}) // dirty cap 8
+	restoreForTest(t, p, now)
+	victim := rec("victim", "e", now, time.Minute)
+	if err := mem.UpsertCacheHolders(ctx, []crs.HolderRecord{victim}); err != nil {
+		t.Fatal(err)
+	}
+	p.MarkHolderDelete(victim.HolderKey(), now.Add(time.Second))
+	st.onFirstDelete = func() {
+		for i := 0; i < p.dirtyCap; i++ {
+			p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+		}
+	}
+	if err := p.Flush(ctx); err == nil {
+		t.Fatal("the first delete batch must fail")
+	}
+	p.mu.Lock()
+	queued := len(p.holderDeletes)
+	_, requeued := p.holderDeletes[victim.HolderKey()]
+	p.mu.Unlock()
+	if s := p.Status(); !requeued || queued != p.dirtyCap+1 || s.DroppedDirty != 0 || s.OverflowResets != 0 {
+		t.Fatalf("a requeued delete must be kept past the cap: requeued=%v queued=%d %+v", requeued, queued, s)
+	}
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 {
+		t.Fatalf("the requeued delete must reach the store: %+v", rows)
 	}
 }
 

@@ -32,13 +32,15 @@ type Status struct {
 	FlushErrors     uint64 `json:"flush_errors"`
 	RowsWritten     uint64 `json:"rows_written"`
 	RowsDeleted     uint64 `json:"rows_deleted"`
-	// DroppedDirty counts upserts dropped at the dirty cap (the next receipt
-	// re-marks the row). Deletes are never dropped: see OverflowResets.
+	// DroppedDirty counts upserts and demand marks dropped at the dirty cap
+	// (the next receipt or observation re-marks them). Deletes are never
+	// dropped, at a mark or a requeue: see OverflowResets.
 	DroppedDirty uint64 `json:"dropped_dirty"`
 	// OverflowResets counts the times the delete backlog outgrew its budget
 	// during a store outage and the durable copy was discarded at the next
 	// flush (or by the restore) instead of a delete being dropped, so a
-	// restart never restores a row a miss or proof mismatch invalidated.
+	// restart after the reset lands never restores a row a miss or proof
+	// mismatch invalidated.
 	OverflowResets uint64 `json:"overflow_resets"`
 	// StaleUpserts counts receipts whose evidence predated a delete this run
 	// decided for the same row: they neither cancel the tombstone nor reach

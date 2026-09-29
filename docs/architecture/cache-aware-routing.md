@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `413d5b87d`
+> Last updated: 2026-09-29 · commit `701ddc704`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -785,8 +785,10 @@ back are operator procedures, kept in the runbook
    flight has then either succeeded or been cancelled), so
    no receipt arrives behind it (if the join times out, the flush repeats
    after a further bounded wait and any remaining loss is logged); a restore retried after a failed boot merges
-   into rows parked meanwhile (a row this run already tombstoned is dropped by
-   the restore itself, before anything is written; a tombstone outranks
+   into rows parked meanwhile, in bounded lock holds (a row this run already
+   tombstoned is dropped as the restore merges, before anything is written,
+   and a delete backlog that overflowed while the rows were loading turns
+   the restore into a reset; a tombstone outranks
    older parked evidence from the moment it leaves the dirty set until one
    TTL after the decision, bounded by the holder budget, and a receipt whose
    evidence predates the decision is counted as stale rather than written;
@@ -804,12 +806,14 @@ back are operator procedures, kept in the runbook
    so a TTL reduction never fills the cap with rows the clamp then drops; the demand
    write granularity is bounded by the TTL so a short TTL never leaves the
    durable timestamp stale. The dirty sets hold four times the holder cap;
-   past that an upsert is dropped (the next receipt re-marks the row), but a
-   delete never is: a delete backlog that outgrows the cap during a store
-   outage discards the whole durable copy at the next flush, or at the
-   restore if none has succeeded yet, so a restart never restores a row a
+   past that an upsert or demand mark is dropped (the next receipt or
+   observation re-marks it), but a delete never is, at a mark or a requeue:
+   a delete backlog that outgrows the cap during a store outage discards
+   the whole durable copy at the next flush, or at the restore if none has
+   succeeded yet, so a restart after the reset lands never restores a row a
    miss or proof mismatch already invalidated
-   (`lifecycle.persistence.overflow_resets`). Rows are fenced by cache-key generation: the
+   (`lifecycle.persistence.overflow_resets`; rows bound from the parked set
+   after the reset are rewritten only once re-proved). Rows are fenced by cache-key generation: the
    store keeps a non-secret HMAC fingerprint of the master key and every
    key-derivation version (`cache_routing_meta`), and a boot under a
    different generation (a rotated key, or a release that changed a

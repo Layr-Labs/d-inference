@@ -440,17 +440,17 @@ func (p *Persister) requeue(b batch) {
 		if _, newer := p.holderUpserts[k]; newer {
 			continue
 		}
-		if len(p.holderDeletes) >= p.dirtyCap {
-			p.counters.droppedDirty++
-			continue
-		}
+		// Never dropped at the cap, unlike an upsert: a delete lost here
+		// would leave its durable row to be restored (the reason
+		// MarkHolderDelete resets the copy instead of dropping), and the
+		// batch was under the cap when it was drained, so the overshoot is
+		// bounded by one flush batch.
 		// Flush always carries the decision times through; a batch without
 		// them would give a requeued delete a later decision, which rejects
 		// receipts it should not and widens the tombstone's window.
 		at, ok := b.deleteAt[k]
 		if !ok {
 			at = time.Now()
-			p.counters.droppedDirty++
 		}
 		// The row may have been re-proved and invalidated again while the
 		// write was failing: the later decision is the one that stands.
@@ -604,6 +604,12 @@ func (p *Persister) resetIfPending(ctx context.Context) error {
 		return nil
 	}
 	if err := p.store.ResetCacheRoutingState(ctx, p.fingerprint); err != nil {
+		// A failed flush attempt, for the health counters.
+		p.mu.Lock()
+		p.counters.flushes++
+		p.counters.flushErrors++
+		p.counters.lastFlushAt = time.Now()
+		p.mu.Unlock()
 		p.logger.Warn("cache routing persistence: the durable copy could not be reset after the delete backlog overflowed; retrying", "error", err)
 		return err
 	}

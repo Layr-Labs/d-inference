@@ -39,7 +39,7 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		case "":
 			p.logger.Info("cache routing persistence: recorded the cache-key generation; the durable copy starts empty")
 		case crs.ResetInProgress:
-			p.logger.Warn("cache routing persistence: a reset the previous run did not finish was completed; the durable copy starts empty")
+			p.logger.Warn("cache routing persistence: a reset an earlier attempt did not finish was completed; the durable copy starts empty")
 		default:
 			p.logger.Warn("cache routing persistence: the cache-key generation changed (a rotated master key or a bumped derivation version); the durable copy was reset instead of restored")
 		}

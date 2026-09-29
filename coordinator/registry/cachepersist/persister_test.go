@@ -1270,6 +1270,42 @@ func TestUpsertsDrainedBeforeAnOverflowAreNotRequeued(t *testing.T) {
 	}
 }
 
+// A batch drained after an overflow was handled is requeued in full on a
+// later failure: the fence keys on the overflow count the batch was drained
+// under, not on whether an overflow ever happened.
+func TestUpsertsDrainedAfterAHandledOverflowAreRequeued(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	st := &upsertHookStore{Store: mem}
+	p := New(st, nil, Options{MaxPending: 2}) // dirty cap 8
+	restoreForTest(t, p, now)
+	for i := 0; i <= p.dirtyCap; i++ { // the last one overflows
+		p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+	}
+	if err := p.Flush(ctx); err != nil { // the reset lands
+		t.Fatal(err)
+	}
+	live := rec("live", "e", now.Add(2*time.Second), time.Minute)
+	p.MarkHolderUpsert(live)
+	st.onFirstUpsert = func() {} // the batch fails with no overflow in flight
+	if err := p.Flush(ctx); err == nil {
+		t.Fatal("the upsert batch must fail")
+	}
+	p.mu.Lock()
+	_, requeued := p.holderUpserts[live.HolderKey()]
+	p.mu.Unlock()
+	if s := p.Status(); !requeued || s.DroppedDirty != 0 {
+		t.Fatalf("a batch drained after the handled overflow must be requeued: requeued=%v %+v", requeued, s)
+	}
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 1 || rows[0].Key != "live" {
+		t.Fatalf("the requeued upsert must reach the store: %+v", rows)
+	}
+}
+
 // A delete requeued by a failed flush is never dropped either, even when
 // request-path decisions filled the dirty set during the failing write.
 func TestRequeuedDeleteIsNeverDroppedAtTheCap(t *testing.T) {

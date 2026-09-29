@@ -36,6 +36,11 @@ var _ Store = (*PostgresStore)(nil)
 type PostgresStore struct {
 	pool *pgxpool.Pool
 
+	// afterCacheRoutingResetMarker, when set (tests only), runs once
+	// ResetCacheRoutingState has recorded the in-progress marker and before
+	// it deletes anything: the point an interrupted reset is observed from.
+	afterCacheRoutingResetMarker func()
+
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
 	// platform pricing lookups (which change rarely).

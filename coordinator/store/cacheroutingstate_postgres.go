@@ -274,16 +274,20 @@ func (s *PostgresStore) CacheRoutingKeyFingerprint(ctx context.Context) (string,
 	return value, nil
 }
 
-// ResetCacheRoutingState empties both tables with unconditional bounded
-// deletes (not TRUNCATE, whose exclusive lock a still-draining old container
-// could block on, and not an expiry cutoff, which a long TTL could exceed)
-// and records the new key generation last, so a crash mid-way leaves the old
-// fingerprint and the next boot resets again.
+// ResetCacheRoutingState records the in-progress marker as the generation
+// first, then empties both tables with unconditional bounded deletes (not
+// TRUNCATE, whose exclusive lock a still-draining old container could block
+// on, and not an expiry cutoff, which a long TTL could exceed), and records
+// the new key generation last, so a crash mid-way leaves the marker and the
+// next boot resets again.
 func (s *PostgresStore) ResetCacheRoutingState(ctx context.Context, fingerprint string) error {
 	// The marker goes first, on its own: a reset interrupted between the
 	// batched deletes below must not read as complete at the next boot.
 	if err := s.recordCacheRoutingKeyFingerprint(ctx, crs.ResetInProgress); err != nil {
 		return err
+	}
+	if s.afterCacheRoutingResetMarker != nil {
+		s.afterCacheRoutingResetMarker()
 	}
 	for _, table := range []string{"cache_routing_holders", "cache_routing_demand"} {
 		stmt := fmt.Sprintf(`DELETE FROM %s WHERE ctid IN (SELECT ctid FROM %s LIMIT $1)`, table, table)

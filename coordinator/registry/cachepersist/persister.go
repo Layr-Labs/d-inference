@@ -549,7 +549,7 @@ func (p *Persister) Flush(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 	if err != nil {
-		p.requeue(batch{upserts: b.upserts[wrote:], deletes: b.deletes[deleted:], deleteAt: b.deleteAt, demand: b.demand[demand:]})
+		p.requeue(batch{upserts: b.upserts[wrote:], deletes: b.deletes[deleted:], deleteAt: b.deleteAt, demand: b.demand[demand:], overflowSeq: b.overflowSeq})
 		p.logger.Warn("cache routing persistence flush failed; unwritten rows requeued", "error", err,
 			"upserts_left", len(b.upserts)-wrote, "deletes_left", len(b.deletes)-deleted,
 			"demand_left", len(b.demand)-demand)

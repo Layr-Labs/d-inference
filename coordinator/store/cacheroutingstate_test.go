@@ -383,3 +383,42 @@ func TestCacheRoutingHoldersTableStoresNoChainHash(t *testing.T) {
 		})
 	}
 }
+
+// A reset interrupted after its marker and before its deletes leaves the
+// marker as the recorded generation, so a boot reads the reset as unfinished
+// and repeats it; the retry completes it.
+func TestCacheRoutingStateResetLeavesMarkerWhenInterrupted(t *testing.T) {
+	pg := testPostgresStoreOrNil(t)
+	if pg == nil {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	clearCacheRoutingState(t, pg)
+	now := time.Now()
+	if err := pg.UpsertCacheHolders(ctx, []crs.HolderRecord{holderRecord(0, "epoch", now, time.Hour)}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	interrupted, cancel := context.WithCancel(ctx)
+	defer cancel()
+	pg.afterCacheRoutingResetMarker = cancel
+	err := pg.ResetCacheRoutingState(interrupted, "gen-2")
+	pg.afterCacheRoutingResetMarker = nil
+	if err == nil {
+		t.Fatal("a reset interrupted after its marker must report the failure")
+	}
+	if fp, err := pg.CacheRoutingKeyFingerprint(ctx); err != nil || fp != crs.ResetInProgress {
+		t.Fatalf("an interrupted reset must leave the marker recorded: %q %v", fp, err)
+	}
+	if rows, _ := pg.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 1 {
+		t.Fatalf("the interrupted reset stopped before its deletes: %d rows", len(rows))
+	}
+	if err := pg.ResetCacheRoutingState(ctx, "gen-2"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if fp, _ := pg.CacheRoutingKeyFingerprint(ctx); fp != "gen-2" {
+		t.Fatalf("the completed reset must record the generation: %q", fp)
+	}
+	if rows, _ := pg.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 0 {
+		t.Fatalf("the completed reset must empty the table: %d rows", len(rows))
+	}
+}

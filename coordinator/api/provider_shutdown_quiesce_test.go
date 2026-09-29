@@ -198,6 +198,11 @@ func TestLateRegistrationDuringShutdownIsStampedCoordinatorShutdown(t *testing.T
 	if row.DisconnectReason != sessionDisconnectReasonCoordinatorShutdown {
 		t.Fatalf("late registration stamped %q, want %q", row.DisconnectReason, sessionDisconnectReasonCoordinatorShutdown)
 	}
+	// Counted like a socket the close reached: a graceful close, not a drop.
+	key := metricKey("ws_disconnects_total", []MetricLabel{{"reason", "peer_close"}})
+	if got := srv.metrics.Snapshot().Counters[key]; got != 1 {
+		t.Fatalf("ws_disconnects_total{reason=peer_close} = %d, want 1", got)
+	}
 }
 
 // A socket the coordinator closed for shutdown reads as going-away, the

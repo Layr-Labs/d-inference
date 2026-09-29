@@ -347,6 +347,24 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 	}
 }
 
+// countCloseDisconnect counts a disconnect the read loop classified by a
+// close status: the peer's close frame, or going-away for a socket the
+// coordinator closed for shutdown (and for a registration processed after
+// that close began). Peer-initiated closes were once unmetered — only
+// read_error incremented ws_disconnects_total — so dashboards could not
+// split graceful closes (update, shutdown) from drops.
+func (s *Server) countCloseDisconnect(closeStatus websocket.StatusCode) {
+	if s.metrics != nil {
+		s.metrics.IncCounter("ws_disconnects_total",
+			MetricLabel{"reason", "peer_close"},
+		)
+	}
+	s.ddIncr("ws.disconnects", []string{
+		"reason:peer_close",
+		"code:" + strconv.Itoa(int(closeStatus)),
+	})
+}
+
 // closeSessionOffline flips the provider offline and stamps its session row
 // with reason, ahead of the deferred registry.Disconnect (first close wins
 // requires that order). Offline first — StatusOffline fails every
@@ -411,18 +429,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				peerCloseStatus = closeStatus
 				s.logger.Info("provider websocket closed",
 					"provider_id", providerID, "close_code", int(closeStatus))
-				// Peer-initiated closes were previously unmetered — only
-				// read_error incremented ws_disconnects_total — so dashboards
-				// could not split graceful closes (update/shutdown) from drops.
-				if s.metrics != nil {
-					s.metrics.IncCounter("ws_disconnects_total",
-						MetricLabel{"reason", "peer_close"},
-					)
-				}
-				s.ddIncr("ws.disconnects", []string{
-					"reason:peer_close",
-					"code:" + strconv.Itoa(int(closeStatus)),
-				})
+				s.countCloseDisconnect(closeStatus)
 			} else {
 				readReason = readErrorDisconnectReason(err)
 				s.logger.Error("provider websocket read error",
@@ -568,6 +575,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				// close wins), so the stamp holds either way.
 				peerCloseStatus = websocket.StatusGoingAway
 				s.logger.Info("provider registered during shutdown; closing", "provider_id", providerID)
+				s.countCloseDisconnect(peerCloseStatus)
 				if ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
 					s.closeSessionOffline(providerID, provider, sessionDisconnectReasonCoordinatorShutdown)
 				}

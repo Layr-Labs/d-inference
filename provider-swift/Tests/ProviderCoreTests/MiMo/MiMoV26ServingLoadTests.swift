@@ -257,7 +257,10 @@ final class MiMoV26ServingLoadTests: XCTestCase {
             // backing file, so a lazy Load never reads a truncated source.
             try withError { error in eval(Array(transformed.values)); try error.check() }
             let replacement = root.appendingPathComponent("replacement-" + UUID().uuidString + ".safetensors")
-            try MLX.save(arrays: transformed, url: replacement, stream: .cpu)
+            // Keep optional safetensors metadata a string map: the native
+            // writer otherwise emits null for an empty metadata dictionary.
+            try MLX.save(arrays: transformed, metadata: ["fixture": "mimo-admission-geometry"],
+                url: replacement, stream: .cpu)
             _ = try FileManager.default.replaceItemAt(original, withItemAt: replacement)
         }
         index["metadata"] = ["total_size": total]

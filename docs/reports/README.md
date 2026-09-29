@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-28 · commit `1f664f507`
+> Last updated: 2026-09-29 · commit `d4fb81079`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -158,6 +158,7 @@ freshness stamp carries its own date, not the current one.
 
 | Date | Report | One line |
 |---|---|---|
+| 2026-09-21 | [M4 Max solo-TPS seed calibration](2026-09-21-m4-max-solo-tps-seeds.md) | Released-v0.9.7 production-engine B=1 measurements for five downloaded catalog models and the conservative class-qualified seed decisions |
 | 2026-09-06 | [admission-calibration-baseline](2026-09-06-admission-calibration-baseline.md) | Coordinator/provider timing audit, pending-prompt correction, synthetic comparison and remaining evidence gaps for #846 |
 | 2026-09-05 | [qwen-moe-checkpoint-prerequisite](2026-09-05-qwen-moe-checkpoint-prerequisite.md) | Native and provider MoE checkpoint tests; full-size models and paging remain separate gates |
 | 2026-09-05 | [gptoss20b-improvement-estimate](2026-09-05-gptoss20b-improvement-estimate.md) | Estimated optimization upside and corrected compiled-operation attribution |

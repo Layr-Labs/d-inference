@@ -682,8 +682,9 @@ func TestSoloSeedReachesProductionEnv(t *testing.T) {
 }
 
 // classProvider is a single-model provider on a named chip class whose slot
-// reports the production MaxConcurrency of 8 — the `base` operand of the cap's
-// MIN, so the numbers here are the ones prod actually grants.
+// explicitly reports MaxConcurrency 8. The released provider default is 4;
+// tests use 8 when they need to exercise the coordinator's higher configured
+// ceiling.
 func classProvider(t *testing.T, reg *Registry, id, model, family, tier string) *Provider {
 	t.Helper()
 	p := makeSchedulerProvider(t, reg, id, model, 0) // no registration benchmark
@@ -739,6 +740,57 @@ func TestSoloSeedIsChipClassScoped(t *testing.T) {
 					tc.family, tc.tier, got.tps)
 			}
 		})
+	}
+}
+
+// TestProductionM4MaxSeedsCoverBenchmarkedCatalogModels pins the class-only
+// production entries supported by the 2026-09-21 M4 Max B=1 sweep. The three
+// fast models use 65 tok/s, which preserves the released provider default cap
+// of 4 and clears the modeled strict 61.8 tok/s threshold when a provider is
+// explicitly configured for 8. Bonsai uses 24 tok/s, which preserves 35%
+// margin and limits either provider configuration to effective cold-start cap
+// 2. No unqualified entry is justified by one chip class, so an unmeasured
+// class must report no seed.
+func TestProductionM4MaxSeedsCoverBenchmarkedCatalogModels(t *testing.T) {
+	cases := []struct {
+		model            string
+		wantTPS          float64
+		wantDefaultCap   int
+		wantExplicit8Cap int
+	}{
+		{model: "qwen3.6-35b-a3b-vl-mtp-mxfp8", wantTPS: 65, wantDefaultCap: 4, wantExplicit8Cap: 8},
+		{model: "qwen3.5-35b-a3b", wantTPS: 65, wantDefaultCap: 4, wantExplicit8Cap: 8},
+		{model: "nvidia-nemotron-3.5-lightning", wantTPS: 65, wantDefaultCap: 4, wantExplicit8Cap: 8},
+		{model: "ternary-bonsai-2-27b", wantTPS: 24, wantDefaultCap: 2, wantExplicit8Cap: 2},
+	}
+
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, prodSoloTPSSeed(t), "", "")
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			p := classProvider(t, reg, "m4-max-"+tc.model, tc.model, "M4", "Max")
+			got := resolveSolo(reg, p, tc.model)
+			if got.tps != tc.wantTPS || !got.perModel {
+				t.Fatalf("M4|Max resolved %+v, want tps %v perModel true", got, tc.wantTPS)
+			}
+			if cap := effCapResolved(reg, p, tc.model); cap != tc.wantExplicit8Cap {
+				t.Fatalf("M4|Max explicit-8 cap = %d, want %d", cap, tc.wantExplicit8Cap)
+			}
+
+			p.mu.Lock()
+			p.BackendCapacity.Slots[0].MaxConcurrency = 4
+			p.mu.Unlock()
+			if cap := effCapResolved(reg, p, tc.model); cap != tc.wantDefaultCap {
+				t.Fatalf("M4|Max released-default-4 cap = %d, want %d", cap, tc.wantDefaultCap)
+			}
+			if seed, ok := soloTPSSeedForClass(tc.model, "M3|Max"); ok {
+				t.Fatalf("unmeasured M3|Max inherited seed %v — want no cross-class fallback", seed)
+			}
+		})
+	}
+
+	if seed, ok := soloTPSSeedForClass("qwen3-vl-30b-a3b-instruct", "M4|Max"); ok {
+		t.Fatalf("retired Qwen3-VL retained M4|Max seed %v", seed)
 	}
 }
 

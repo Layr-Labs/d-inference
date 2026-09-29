@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — self-route routing diagnostics
+
+- Return `model_routing_blocked` with owner-scoped coordinator reasons when an advertised or reported-loaded model is excluded by routing checks. Reserve `model_not_loaded` for absent models, avoiding misleading reload advice.
+
 ## Unreleased — SSD cache write budget
 
 - Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.

@@ -1475,8 +1475,8 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 		online++
 		// Owner-servability (not bare advertisement) so the self-route error
 		// messaging matches what routing would actually admit: an owned box
-		// advertising a stale-hash catalog build reports "model not loaded"
-		// instead of proceeding into a dispatch that can only be rejected.
+		// advertising a stale-hash catalog build fails preflight instead of
+		// proceeding into a dispatch that can only be rejected.
 		serves := r.providerServesOwnedRoutableModelLocked(p, model) &&
 			r.providerEligibleForTraitsLocked(p, model, traits) &&
 			(!requiresVision || r.providerServesVisionModelLocked(p, model, true)) &&

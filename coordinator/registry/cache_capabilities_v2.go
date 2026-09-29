@@ -171,6 +171,8 @@ func (r *Registry) UpdatePrefixCacheCapabilities(
 	version int,
 	capabilities []protocol.PrefixCacheV2Capability,
 ) error {
+	// The snapshot binds one chunk of parked rows under its own locks; the
+	// rest binds below, chunk by chunk, outside them.
 	_, err := r.UpdatePrefixCacheSnapshot(
 		providerID,
 		true,
@@ -180,5 +182,14 @@ func (r *Registry) UpdatePrefixCacheCapabilities(
 		nil,
 		nil,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	r.mu.RLock()
+	p := r.providers[providerID]
+	r.mu.RUnlock()
+	if p != nil {
+		r.bindChunksWhileOwned(p)
+	}
+	return nil
 }

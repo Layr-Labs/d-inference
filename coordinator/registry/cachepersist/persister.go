@@ -22,6 +22,7 @@
 package cachepersist
 
 import (
+	"container/heap"
 	"context"
 	"log/slog"
 	"sync"
@@ -81,13 +82,12 @@ type Persister struct {
 	// once the tombstone is no longer pending (Tombstoned).
 	holderDeletes map[crs.HolderKey]time.Time
 	recentDeletes map[crs.HolderKey]time.Time
-	// recentOrder lists the decisions in the order they were recorded, so
-	// the retention can be bounded by the holder budget as well as by the
-	// TTL: under sustained churn with a long TTL the oldest decisions go
-	// first. A key decided again is appended again with its new time; the
-	// earlier entry is then stale (its time no longer matches the map) and
-	// is skipped when it reaches the front.
-	recentOrder []recentDelete
+	// recentOrder is a min-heap of the recorded decisions by decision time,
+	// so the retention bound evicts the oldest decision first whatever order
+	// the flushes recorded them in. A key decided again is pushed again with
+	// its new time; the earlier entry is then stale (its time no longer
+	// matches the map) and is skipped when it surfaces.
+	recentOrder recentHeap
 	// retentionLimit bounds recentDeletes: the holder budget, but never
 	// below one flush batch, or the cap could evict a tombstone whose
 	// delete is still in flight.
@@ -243,6 +243,22 @@ func (p *Persister) MarkDemand(keys []string, now time.Time) {
 type recentDelete struct {
 	key crs.HolderKey
 	at  time.Time
+}
+
+// recentHeap orders recorded decisions by time, oldest first.
+type recentHeap []recentDelete
+
+func (h recentHeap) Len() int           { return len(h) }
+func (h recentHeap) Less(i, j int) bool { return h[i].at.Before(h[j].at) }
+func (h recentHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *recentHeap) Push(x any)        { *h = append(*h, x.(recentDelete)) }
+func (h *recentHeap) Pop() any {
+	old := *h
+	n := len(old)
+	e := old[n-1]
+	old[n-1] = recentDelete{}
+	*h = old[:n-1]
+	return e
 }
 
 type batch struct {
@@ -410,7 +426,7 @@ func (p *Persister) Flush(ctx context.Context) error {
 
 // FlushAll flushes repeatedly until nothing is dirty, an error occurs or the
 // context ends. Used by the shutdown flush, after the HTTP server and the
-// provider sockets are down; the periodic loop is cancelled after it.
+// provider sockets are down and the periodic loop has been stopped.
 func (p *Persister) FlushAll(ctx context.Context) error {
 	if p == nil {
 		return nil
@@ -485,31 +501,30 @@ func (p *Persister) Ready() bool {
 }
 
 // rememberDeleteLocked records a delete decision for Tombstoned, bounded by
-// the holder budget: beyond maxPending live entries the oldest decisions are
-// forgotten first (the TTL bound is applied by Prune). A key decided again
-// moves to the retention tail with its new time. Called with p.mu held.
+// the holder budget: beyond the limit the oldest decisions are forgotten
+// first, by decision time (the TTL bound is applied by Prune). A key decided
+// again moves to its new time. Called with p.mu held.
 func (p *Persister) rememberDeleteLocked(k crs.HolderKey, at time.Time) {
 	if cur, present := p.recentDeletes[k]; present && !at.After(cur) {
 		return
 	}
 	p.recentDeletes[k] = at
-	p.recentOrder = append(p.recentOrder, recentDelete{key: k, at: at})
+	heap.Push(&p.recentOrder, recentDelete{key: k, at: at})
 	limit := p.retentionLimit
-	for len(p.recentDeletes) > limit && len(p.recentOrder) > 0 {
-		oldest := p.recentOrder[0]
-		p.recentOrder = p.recentOrder[1:]
+	for len(p.recentDeletes) > limit && p.recentOrder.Len() > 0 {
+		oldest := heap.Pop(&p.recentOrder).(recentDelete)
 		if cur, ok := p.recentDeletes[oldest.key]; ok && cur.Equal(oldest.at) {
 			delete(p.recentDeletes, oldest.key)
 		}
 	}
-	if len(p.recentOrder) > 2*limit {
+	if p.recentOrder.Len() > 2*len(p.recentDeletes)+1024 {
 		p.compactRecentOrderLocked()
 	}
 }
 
 // compactRecentOrderLocked drops retention entries whose decision the map no
 // longer holds (expired, evicted, or superseded by a newer decision for the
-// same key). Called with p.mu held.
+// same key) and restores the heap order. Called with p.mu held.
 func (p *Persister) compactRecentOrderLocked() {
 	kept := p.recentOrder[:0]
 	for _, e := range p.recentOrder {
@@ -521,4 +536,5 @@ func (p *Persister) compactRecentOrderLocked() {
 		p.recentOrder[i] = recentDelete{}
 	}
 	p.recentOrder = kept
+	heap.Init(&p.recentOrder)
 }

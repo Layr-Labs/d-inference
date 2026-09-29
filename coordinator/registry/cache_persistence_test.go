@@ -1250,3 +1250,42 @@ func TestCacheRoutingPersistenceLoopJoinsOnCancel(t *testing.T) {
 		t.Fatal("the loop must exit once its context is cancelled")
 	}
 }
+
+// One tracker-lock hold binds at most one chunk across all of a provider's
+// capabilities; the rest is reported as remaining for the next hold.
+func TestCacheRoutingPersistenceChunkBudgetSpansCapabilities(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r, st)
+	r.mu.RLock()
+	persister := r.cacheRouting.persister
+	tracker := r.cacheRouting
+	r.mu.RUnlock()
+	now := time.Now()
+	other := capability
+	other.ModelID = "model-b"
+	for _, c := range []protocol.PrefixCacheV2Capability{capability, other} {
+		for i := 0; i < 700; i++ {
+			persister.Park(crs.HolderRecord{
+				Key: fmt.Sprintf("%s-k%04d", c.ModelID, i), CacheEpoch: c.CacheEpoch, Tier: "ssd", ModelID: c.ModelID,
+				ModelAggregateHash: c.ModelAggregateHash, PromptContractID: c.PromptContractID,
+				BlockHashVersion: c.BlockHashVersion, ReadyBoundaryMode: c.ReadyBoundaryMode,
+				AnchorTokenCount: 4096, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(time.Minute),
+			})
+		}
+	}
+	p := makeSchedulerProvider(t, r, "machine-a", "model", 100)
+	caps := map[string]protocol.PrefixCacheV2Capability{"model": capability, "model-b": other}
+	remaining := tracker.bindRestoredHolders(p, caps)
+	if s := r.CacheRoutingPersistenceStatus(); !remaining || s.BoundHolders != bindChunkRows || s.PendingHolders != 1400-bindChunkRows {
+		t.Fatalf("one hold binds one chunk across capabilities: remaining=%v %+v", remaining, s)
+	}
+	if remaining = tracker.bindRestoredHolders(p, caps); remaining {
+		t.Fatal("the second hold must finish the remainder")
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.BoundHolders != 1400 || s.PendingHolders != 0 {
+		t.Fatalf("every row bound after two holds: %+v", s)
+	}
+}

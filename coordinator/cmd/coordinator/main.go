@@ -273,8 +273,9 @@ func main() {
 	// The server handed the store to the registry; restore the durable cache
 	// routing indexes now so the holder index is not empty after a restart.
 	// The write-behind loop keeps running through the drain (the main ctx is
-	// cancelled before it) and stops after the final flush, which runs once
-	// the HTTP server and the provider sockets are down.
+	// cancelled before it) and is stopped and joined right before the final
+	// flush, which runs once the HTTP server and the provider sockets are
+	// down.
 	persistCtx, persistCancel := context.WithCancel(context.Background())
 	defer persistCancel()
 	if cfg.RegistryCfg.CacheRouting.Persist {

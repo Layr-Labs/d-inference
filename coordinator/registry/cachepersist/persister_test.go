@@ -758,3 +758,28 @@ func TestTakeInChunks(t *testing.T) {
 		t.Fatalf("all rows must be taken exactly once: total=%d pending=%v", total, p.HasPending())
 	}
 }
+
+// Retention evicts by decision time whatever order the decisions were
+// recorded in: a newer tombstone is never forgotten before an older one.
+func TestRecentDeletesEvictOldestDecisionFirst(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	p := New(mem, nil, Options{MaxPending: 2})
+	p.retentionLimit = 2
+	now := time.Now()
+	keys := []string{"c", "a", "b"}
+	times := []time.Time{now.Add(3 * time.Second), now.Add(1 * time.Second), now.Add(2 * time.Second)}
+	p.mu.Lock()
+	for i, k := range keys { // recorded out of time order, as one flush may
+		p.rememberDeleteLocked(crs.HolderKey{Key: k, CacheEpoch: "e"}, times[i])
+	}
+	p.mu.Unlock()
+	before := now
+	if p.Tombstoned(crs.HolderKey{Key: "a", CacheEpoch: "e"}, before) {
+		t.Fatal("the oldest decision (a) must be the one evicted")
+	}
+	for _, k := range []string{"b", "c"} {
+		if !p.Tombstoned(crs.HolderKey{Key: k, CacheEpoch: "e"}, before) {
+			t.Fatalf("newer decision %s must be retained", k)
+		}
+	}
+}

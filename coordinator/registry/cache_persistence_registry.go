@@ -123,9 +123,9 @@ func (r *Registry) restoreCacheRoutingState(ctx context.Context, persister *cach
 // the provider.mu → tracker.mu order the receipt path uses. It is called from
 // UpdatePrefixCacheSnapshot (provider.mu already held), from Register, and
 // for every connected provider after a (retried) restore.
-func (t *cacheRoutingTracker) bindRestoredHolders(provider *Provider, capabilities map[string]protocol.PrefixCacheV2Capability) {
+func (t *cacheRoutingTracker) bindRestoredHolders(provider *Provider, capabilities map[string]protocol.PrefixCacheV2Capability) (remaining bool) {
 	if t == nil || len(capabilities) == 0 {
-		return
+		return false
 	}
 	// Heartbeats carry capabilities every few seconds; in the steady state
 	// nothing is parked, so check the leaf lock first and take tracker.mu
@@ -134,18 +134,16 @@ func (t *cacheRoutingTracker) bindRestoredHolders(provider *Provider, capabiliti
 	p := t.persister
 	t.mu.Unlock()
 	if !p.HasPending() {
-		return
+		return false
 	}
-	// In chunks, releasing the tracker lock between them: a request that
-	// needs the lock waits for at most one chunk.
-	for {
-		t.mu.Lock()
-		remaining := t.bindPendingLocked(provider, capabilities, t.now())
-		t.mu.Unlock()
-		if !remaining {
-			return
-		}
-	}
+	// One chunk per call: the callers that own a large bucket (registration,
+	// a retried restore) loop, re-taking the registry read lock and
+	// re-checking session ownership around each chunk, so neither the
+	// tracker lock nor the registry lock is held across a whole rebuild.
+	t.mu.Lock()
+	remaining = t.bindPendingLocked(provider, capabilities, t.now())
+	t.mu.Unlock()
+	return remaining
 }
 
 // bindRegisteredProvider runs at the end of Register: registration carries
@@ -160,16 +158,31 @@ func (r *Registry) bindRegisteredProvider(p *Provider) {
 	// eviction included) removes the provider under r.mu and cleans the
 	// tracker up afterwards, so rows bound here can never land on a
 	// session whose cleanup already ran.
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	tracker := r.cacheRouting
-	if tracker == nil || r.providers[p.ID] != p {
-		return
+	r.bindChunksWhileOwned(p)
+}
+
+// bindChunksWhileOwned binds a provider's parked rows chunk by chunk, taking
+// the registry read lock and re-checking that the registry still owns the
+// session around each chunk, so neither a queued writer (Register,
+// disconnectProvider) nor a request on the tracker lock waits behind a
+// whole rebuild.
+func (r *Registry) bindChunksWhileOwned(p *Provider) {
+	for {
+		r.mu.RLock()
+		tracker := r.cacheRouting
+		owned := tracker != nil && r.providers[p.ID] == p
+		var remaining bool
+		if owned {
+			p.mu.Lock()
+			caps := clonePrefixCacheCapabilities(p.PrefixCacheV2Models)
+			p.mu.Unlock()
+			remaining = tracker.bindRestoredHolders(p, caps)
+		}
+		r.mu.RUnlock()
+		if !owned || !remaining {
+			return
+		}
 	}
-	p.mu.Lock()
-	caps := clonePrefixCacheCapabilities(p.PrefixCacheV2Models)
-	p.mu.Unlock()
-	tracker.bindRestoredHolders(p, caps)
 }
 
 func (r *Registry) bindRestoredHoldersForConnectedProviders() {
@@ -191,16 +204,7 @@ func (r *Registry) bindRestoredHoldersForConnectedProviders() {
 		return
 	}
 	for _, p := range providers {
-		// Per provider, so a queued writer never waits behind the whole
-		// pass: the membership check and the bind share one read hold.
-		r.mu.RLock()
-		if r.providers[p.ID] == p {
-			p.mu.Lock()
-			caps := clonePrefixCacheCapabilities(p.PrefixCacheV2Models)
-			p.mu.Unlock()
-			tracker.bindRestoredHolders(p, caps)
-		}
-		r.mu.RUnlock()
+		r.bindChunksWhileOwned(p)
 	}
 }
 
@@ -247,7 +251,10 @@ func (r *Registry) runCacheRoutingPersistence(ctx context.Context, p *cachepersi
 			if tracker == nil {
 				continue
 			}
-			pruneCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			// Derived from the loop's context: a prune of expired rows is
+			// safe to abort, and one in flight must not outlive the
+			// shutdown join.
+			pruneCtx, cancel := context.WithTimeout(ctx, time.Minute)
 			p.Prune(pruneCtx, tracker.now(), tracker.ttl)
 			cancel()
 		}

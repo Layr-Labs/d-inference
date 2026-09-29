@@ -10,6 +10,11 @@
 - Add optional workload-bounded measured deadline calibration with exact MTP identity and ordinary rate fallback for stale, unmatched or incomplete evidence and unqualified runtime overrides. The timing catalog remains empty; removing the fixed rate reduction is active without it. Preserve measured idle/thermal/power prerequisites and posture-bound rate freshness without delaying requests. Correlate whole-Mac work through pre-submit and retirement before pricing contention.
 - Add production-path qualification receipts with actual MTP and individual mixed-prefill step timings; profile promotion remains tied to reviewed hardware and held-out prediction evidence.
 
+## Unreleased — advisory threat-model review
+
+- Restore PR threat-model review through OpenRouter. Scan every changed file with complete before/after text and a cross-file pass against the full threat model. Findings update one advisory comment; incomplete coverage is explicit, clean first scans stay quiet, and model/service failures do not block merging. The workflow executes only the trusted base revision.
+- Combine independent Opus 5.5 and GPT-6 Astra full scans through the same OpenRouter key. Attribute findings to their reviewers, preserve differing advice, and retain completed feedback if the other model fails.
+
 ## Unreleased — SSD cache write budget
 
 - Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.

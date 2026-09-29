@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `67b0e77ea`
+> Last updated: 2026-09-29 · commit `a8aa6bb33`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2442,6 +2442,49 @@ go test -race ./api ./modelpolicy \
 
 `coordinator/api/first_content_accounts_test.go` covers exact account/email selection, unrelated service accounts, header spoofing, public-model override precedence, disabled clocks and identity-store failures. `coordinator/api/first_content_accounts_integration_test.go` runs streaming and non-streaming requests through chat, Responses, completions and messages past the old deadline with hard TTFT rejection enabled; exempt requests omit their wire budget and scheduler ceiling, while the configured OpenRouter email still times out. The existing deadline/queue/retry/provider-wire suites explicitly opt their fixture account into the SLA. `coordinator/api/media_resolve_test.go` verifies a pinned exemption cannot be recomputed during media fetch.
 
+### Adversarial numeric parsing
+
+`coordinator/api/tool_constraints_test.go`
+(`TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals`) checks exact
+integer results and rejects fractional, negative, huge-exponent and multi-megabyte
+inputs. The original 250 ms per-call budget remains enforced by normal tests
+and a separate uninstrumented step in the Coordinator Tests CI job. Covered
+runs use a five-second catastrophic-stall ceiling to allow for race and
+atomic-coverage overhead. The benchmark below supplements that enforced CI gate;
+it does not replace it. Neither wall-clock budget proves linear complexity.
+No production parser limit or acceptance rule changes.
+
+Run the enforced performance gate with
+`go test -race=false -cover=false ./coordinator/api -run '^TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals$' -count=1`.
+The following full CI suite still runs with race detection and atomic coverage.
+
+Measure size scaling separately with
+`coordinator/api/tool_constraint_numbers_bench_test.go`
+(`BenchmarkConstrainedExactNonnegativeIntAdversarialLiterals`):
+
+```sh
+go test ./coordinator/api -run '^$' \
+  -bench '^BenchmarkConstrainedExactNonnegativeIntAdversarialLiterals$' -benchmem
+```
+
+Run this benchmark without race or coverage instrumentation. Fixtures are built
+outside the timed loop; bytes/second and allocations are reported for digit and
+fractional literals from 1,000 to 4,000,000 digits. Compare growth across sizes
+and revisions on the same machine; shared-runner wall time is not a complexity
+measurement.
+
+### Routing plan equivalence
+
+`coordinator/registry/dispatch_plan_test.go`
+(`TestReserveProviderWithPlanPrimarySelectionUnchanged`) compares provider
+selection and routing decisions with and without retained alternatives. It
+uses a controlled clock and different fresh evidence ages, then normalizes
+wall-clock telemetry, including known capacity/performance/transport evidence ages on
+the decision and candidate summaries; unknown-age sentinels, selection, forecast values and reservations
+remain subject to exact comparison. Repeat the focused test with
+`go test ./coordinator/registry -run '^TestReserveProviderWithPlanPrimarySelectionUnchanged$' -count=500`
+from the repository root to check for timing-dependent comparison failures.
+
 ### Replacement and reconnect coverage
 
 `PlannedProviderDisconnectTests` exercises late-APNs and inventory reconnects
@@ -2451,3 +2494,17 @@ against a mock WebSocket coordinator while accepted work is held open.
 `ProcessLifecycleTests` verifies that lock acquisition cannot kill a live PID owner.
 `TestRestartStatusReportsOwnerAuthorizationWithoutPublicGrant` checks explicit
 owner authorization while retaining runtime/security denials.
+
+## Advisory threat-model review checks
+
+Run `python3 .github/scripts/test-threat-model-review.py` for the review input,
+OpenRouter response validation, credential isolation, pagination, stale-head and
+comment lifecycle tests. The suite opens a temporary loopback HTTP server and
+uses no external service or real key. Also run
+`python3 .github/scripts/test-threat-full-scan.py` for full-source retrieval,
+batching beyond the former cutoffs, cross-file review, and explicit incomplete
+coverage. Run `python3 .github/scripts/test-threat-ensemble.py` for independent
+reviewer coverage, disagreement, attribution, partial failures and deadline
+retention. Release Integrity runs all three suites in normal CI.
+Model findings and live API failures remain non-blocking in the separate
+[advisory review workflow](threat-model-review.md).

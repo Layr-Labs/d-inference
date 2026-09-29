@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `d2a7b6431`
+> Last updated: 2026-09-29 · commit `d102265bc`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -886,6 +886,7 @@ To measure it locally:
 ```bash
 cd provider-swift
 swift build --build-tests --enable-code-coverage
+swift build --product darkbloom-fan-helper --enable-code-coverage
 bin=$(swift build --show-bin-path)
 ../scripts/stage-test-metallib.sh "$bin"
 rm -rf .build/provider-profiles

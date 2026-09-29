@@ -401,6 +401,7 @@ jobs:
             echo "::error::No provider coverage profiles in $PROVIDER_COVERAGE_DIR"
             exit 1
           fi
+          echo "Merging ${#profiles[@]} provider coverage profiles"
           out="$RUNNER_TEMP/provider-coverage"
           mkdir -p "$out"
           xcrun llvm-profdata merge -sparse -o "$out/provider.profdata" "${profiles[@]}"

@@ -1,7 +1,9 @@
 # Reviewed deadline catalog
 
 `deadline_profiles.json` is the sole reviewed data source for the Go and Swift
-compiled deadline catalogs. It starts empty. Only copy a qualified **real**
+compiled deadline catalogs. Its initial reviewed record covers cooled, isolated
+Qwen3.8 MTP on the measured M5 Max, with independent validation and lifecycle
+receipts indexed below. Only copy a qualified **real**
 evaluator candidate here after reviewing its raw receipt, independent holdout,
 exact runtime identity, and evidence hashes. The generator does not qualify,
 promote, retune, or synthesize records.

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-28 · commit `973e14b7f`
+> Last updated: 2026-09-28 · commit `21d762c4a`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -79,7 +79,7 @@ publishes the newest evidence without sending one heartbeat per token.
 `provider-swift/Sources/ProviderCore/Inference/Performance/ServingPerformanceProfile.swift`
 matches reviewed data to verified model weights, provider/runtime revision,
 resolved KV backend, GPU/RAM bin and the entire configured context limit.
-Unknown profiles retain the legacy policy. The initial catalogs are empty;
+Unknown profiles retain the legacy policy. The concurrency/chunk catalogs remain empty;
 the [qualification procedure](../developer/serving-performance-qualification.md)
 is required before any higher default or model-specific chunk policy activates.
 Qualified engines share one whole-Mac service allowance and retain physical KV,
@@ -208,6 +208,13 @@ or throughput curves; those still require the separate full-context serving
 qualification. Once a request is existing work, its full prompt/output bound
 must fit its deadline profile's measured context envelope or calibration falls
 back.
+
+The compiled deadline catalog contains a Qwen3.8 MTP cell for Apple M5 Max
+40-GPU/128-GiB hardware, cold isolated prompts of 4,096–12,288 tokens and its
+exact production scheduler configuration. The
+[qualification report](../reports/2026-09-28-calibrated-admission-qualification.md)
+binds its frozen training fit, independent validation and lifecycle evidence.
+Other cells and hardware retain the fallback.
 
 Cooled deadline profiles preserve the collection prerequisites: whole-Mac
 quiescence for 20 seconds after all request leases and unbounded GPU activity

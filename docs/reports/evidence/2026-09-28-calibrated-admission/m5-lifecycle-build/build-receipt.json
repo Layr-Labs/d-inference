@@ -1,0 +1,53 @@
+{
+  "build_log_sha256": "f687764b440694650c2355890ac20fc101111457b2fa41152d826d32b497ae2b",
+  "clean_build": true,
+  "commands": [
+    [
+      "swift",
+      "package",
+      "clean"
+    ],
+    [
+      "swift",
+      "build",
+      "-c",
+      "release",
+      "--build-tests",
+      "-Xswiftc",
+      "-enable-testing"
+    ],
+    [
+      "/Users/gaj/first-content-qualification-20260928/scripts/stage-test-metallib.sh",
+      "/Users/gaj/first-content-qualification-20260928/provider-swift/.build/arm64-apple-macosx/release"
+    ],
+    [
+      "swift",
+      "test",
+      "--skip-build",
+      "-c",
+      "release",
+      "--filter",
+      "qualificationBuildIdentityMatchesExecutingImage"
+    ]
+  ],
+  "configuration": "release",
+  "identity_test_passed": true,
+  "metallibs_sha256": {
+    "/Users/gaj/first-content-qualification-20260928/provider-swift/.build/arm64-apple-macosx/release/DarkbloomProviderPackageTests.xctest/Contents/MacOS/mlx.metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+  },
+  "schema_version": 1,
+  "source": {
+    "dependency_head": "748db5d967350dfdf17036bec3615a312090fd1e",
+    "dirty": false,
+    "head": "1719b40b1aaea0ea5b0d80855034a886f855cabd",
+    "mlx_c_head": "02cf6f4d099023e4e0c0357248b8b3f83110e29d",
+    "mlx_head": "3fa8f25e6451174d7b06be372c3a24272b77d88e",
+    "mlx_swift_head": "0f4fe403bef6899e8a72882bc6d4036a7a62ae31",
+    "source_tree_sha256": "5aef55fbf5e67b96351008102df45e2087d9ec547ed46e4a7da07d4bd5ac062c",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "test_binaries_sha256": {
+    "/Users/gaj/first-content-qualification-20260928/provider-swift/.build/arm64-apple-macosx/release/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests": "b8276aad27accb191adcfe6e02c7a1c5fdf71424e7b55971afd5a118bbc9eef2"
+  },
+  "toolchain": "Apple Swift version 6.3.1 (swiftlang-6.3.1.1.2 clang-2100.0.123.102)\nTarget: arm64-apple-macosx26.0"
+}

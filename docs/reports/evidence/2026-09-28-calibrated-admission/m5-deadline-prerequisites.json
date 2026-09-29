@@ -1,0 +1,66 @@
+{
+  "accounting": {
+    "provenance_path": "m5-lifecycle/provenance.json",
+    "provenance_sha256": "abe3973066efd8fc949dd5dc8da89b19639ef7738ed1ef3657af18ee47b88a00",
+    "receipt_path": "m5-lifecycle/receipt.json",
+    "receipt_sha256": "525fedec6ab8c38a9a03577c7011a0901b8cbe7d9c2a588b4e802459059acd06",
+    "source_equivalence": {
+      "lifecycle_manifest_path": "m5-lifecycle-source-manifest.json",
+      "lifecycle_manifest_sha256": "f28f3c488ad5312b8356da9b32291604206871993978f045e4b2e70015fca25a",
+      "measured_manifest_path": "m5-cohort-source-manifest.json",
+      "measured_manifest_sha256": "b40bd8f26e38376258c67a4cb721777c81a7932d57c3e0bb4ae43b642d79c6a8",
+      "measured_provenance_path": "m5-cooled-training/provenance.json",
+      "measured_provenance_sha256": "a2ba62ddaf320a8cb6fd8baaf012d0df1077524f1783caf707ce9fbb15a5b235"
+    }
+  },
+  "cancellation": {
+    "provenance_path": "m5-lifecycle/provenance.json",
+    "provenance_sha256": "abe3973066efd8fc949dd5dc8da89b19639ef7738ed1ef3657af18ee47b88a00",
+    "receipt_path": "m5-lifecycle/receipt.json",
+    "receipt_sha256": "525fedec6ab8c38a9a03577c7011a0901b8cbe7d9c2a588b4e802459059acd06",
+    "source_equivalence": {
+      "lifecycle_manifest_path": "m5-lifecycle-source-manifest.json",
+      "lifecycle_manifest_sha256": "f28f3c488ad5312b8356da9b32291604206871993978f045e4b2e70015fca25a",
+      "measured_manifest_path": "m5-cohort-source-manifest.json",
+      "measured_manifest_sha256": "b40bd8f26e38376258c67a4cb721777c81a7932d57c3e0bb4ae43b642d79c6a8",
+      "measured_provenance_path": "m5-cooled-training/provenance.json",
+      "measured_provenance_sha256": "a2ba62ddaf320a8cb6fd8baaf012d0df1077524f1783caf707ce9fbb15a5b235"
+    }
+  },
+  "constraints": {
+    "receipt_path": "constraint-isolation-merged-receipt.json",
+    "receipt_sha256": "d4ad55bd3d3cdc5bb194d5e96a923b13fa920922f7bfc69ccf501214635627a6"
+  },
+  "correctness": {
+    "provenance_path": "m5-lifecycle/provenance.json",
+    "provenance_sha256": "abe3973066efd8fc949dd5dc8da89b19639ef7738ed1ef3657af18ee47b88a00",
+    "receipt_path": "m5-lifecycle/receipt.json",
+    "receipt_sha256": "525fedec6ab8c38a9a03577c7011a0901b8cbe7d9c2a588b4e802459059acd06",
+    "source_equivalence": {
+      "lifecycle_manifest_path": "m5-lifecycle-source-manifest.json",
+      "lifecycle_manifest_sha256": "f28f3c488ad5312b8356da9b32291604206871993978f045e4b2e70015fca25a",
+      "measured_manifest_path": "m5-cohort-source-manifest.json",
+      "measured_manifest_sha256": "b40bd8f26e38376258c67a4cb721777c81a7932d57c3e0bb4ae43b642d79c6a8",
+      "measured_provenance_path": "m5-cooled-training/provenance.json",
+      "measured_provenance_sha256": "a2ba62ddaf320a8cb6fd8baaf012d0df1077524f1783caf707ce9fbb15a5b235"
+    }
+  },
+  "isolation": {
+    "receipt_path": "constraint-isolation-merged-receipt.json",
+    "receipt_sha256": "d4ad55bd3d3cdc5bb194d5e96a923b13fa920922f7bfc69ccf501214635627a6"
+  },
+  "retirement": {
+    "provenance_path": "m5-lifecycle/provenance.json",
+    "provenance_sha256": "abe3973066efd8fc949dd5dc8da89b19639ef7738ed1ef3657af18ee47b88a00",
+    "receipt_path": "m5-lifecycle/receipt.json",
+    "receipt_sha256": "525fedec6ab8c38a9a03577c7011a0901b8cbe7d9c2a588b4e802459059acd06",
+    "source_equivalence": {
+      "lifecycle_manifest_path": "m5-lifecycle-source-manifest.json",
+      "lifecycle_manifest_sha256": "f28f3c488ad5312b8356da9b32291604206871993978f045e4b2e70015fca25a",
+      "measured_manifest_path": "m5-cohort-source-manifest.json",
+      "measured_manifest_sha256": "b40bd8f26e38376258c67a4cb721777c81a7932d57c3e0bb4ae43b642d79c6a8",
+      "measured_provenance_path": "m5-cooled-training/provenance.json",
+      "measured_provenance_sha256": "a2ba62ddaf320a8cb6fd8baaf012d0df1077524f1783caf707ce9fbb15a5b235"
+    }
+  }
+}

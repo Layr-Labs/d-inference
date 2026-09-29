@@ -1,6 +1,6 @@
 # Qwen3.8 calibrated admission qualification
 
-> Last updated: 2026-09-28 · commit `973e14b7f`
+> Last updated: 2026-09-28 · commit `21d762c4a`
 
 The initial dedicated M5 Max screen completed real Qwen3.8 inference with active
 MTP. It is **screening evidence, not a qualified serving profile**: the initial
@@ -10,8 +10,9 @@ fallback cells after the initial smaller corpus failed. A fresh cooled cohort
 completed all 40 training trials; its independently generated 100-trial
 validation cohort completed with all 100 observations covered by the frozen
 bound and no posture/runtime failures. The closest observation retained
-1,047.625 ms of coverage margin. Deadline timing profiles still require
-lifecycle qualification and final-build proof; no concurrency/chunk default is certified.
+1,047.625 ms of coverage margin. Authoritative lifecycle checks passed on the isolated observer correction.
+Strict evaluation qualified the narrow cooled deadline profile; final-build
+admission proof remains outstanding, and no concurrency/chunk default is certified.
 
 ## Hardware and artifact
 
@@ -100,9 +101,10 @@ Fresh training and validation use a predeclared minimum 20-second cooldown
 before each measured request, ending with at least five continuous nominal,
 non-Low-Power seconds, with a 180-second recovery limit. Before/after posture
 and 500-ms observations during inference are retained; any observed fair state
-invalidates the cohort. This qualification applies only while the provider's
-existing nominal-only activation gate holds. It does not change fan policy or
-claim a sustained fair-temperature serving default.
+invalidates the cohort. Applying this evidence requires the same whole-Mac
+quiescence, stable nominal posture and Automatic power conditions described
+below. It does not change fan policy or claim a sustained fair-temperature
+serving default.
 
 ## Cooled training cohort
 
@@ -152,6 +154,65 @@ the runtime must retain the measured 20-second whole-Mac quiescence and
 five-second stable nominal/Automatic prerequisites. New admission checks enforce
 those conditions without waiting and invalidate stale idle references after
 request, retirement or load activity.
+
+## Independent cooled validation
+
+The fixed 100-request validation cohort completed on the same `78889be8` source,
+release image, model artifact, MTP configuration and Metal library as training.
+All 100 independent tool/history bodies stayed inside the frozen training bound;
+none were dropped or used to refit it. All cooldowns and before/during/after
+posture checks passed, with no request, retirement, instrumentation or foreign
+work failures. The [raw validation receipt](evidence/2026-09-28-calibrated-admission/m5-cooled-validation/receipt.json),
+[supervisor provenance](evidence/2026-09-28-calibrated-admission/m5-cooled-validation/provenance.json),
+[derived results](evidence/2026-09-28-calibrated-admission/m5-cooled-validation/summary.json)
+and [execution log](evidence/2026-09-28-calibrated-admission/m5-cooled-validation/run.txt)
+retain the complete cohort.
+
+Actual prompt counts span both endpoints, 4,096–12,288. First content ranges
+from 4,489.233 to 14,848.442 ms; p50 is 9,975.199 ms and p95 is 14,142.536 ms.
+These percentiles combine different prompt lengths and are not a fixed-size
+latency promise. The closest observation remains 1,047.625 ms below its own
+frozen prediction. The minimum measured confirmed-token decode rate is
+67.308 tokens/s, and its p10 is 71.749 tokens/s.
+
+Cancellation remains a separate prerequisite. A task's cancellation flag does
+not prove that the engine cancelled before a natural terminal. The isolated
+signed correction `1719b40b1aaea0ea5b0d80855034a886f855cabd` records the settled
+engine finish reason and accepts only `cancelled`. The
+[measured source manifest](evidence/2026-09-28-calibrated-admission/m5-cohort-source-manifest.json)
+and [lifecycle source manifest](evidence/2026-09-28-calibrated-admission/m5-lifecycle-source-manifest.json)
+rehash to their respective source-tree identities. Only three qualification
+test files differ; every production, dependency, package and script file is
+identical. The [managed lifecycle build receipt](evidence/2026-09-28-calibrated-admission/m5-lifecycle-build/build-receipt.json)
+and [build log](evidence/2026-09-28-calibrated-admission/m5-lifecycle-build/build.txt)
+bind that source to executing image SHA-256
+`b8276aad27accb191adcfe6e02c7a1c5fdf71424e7b55971afd5a118bbc9eef2`,
+with the same compiler, release flags and Metal library.
+
+The [real lifecycle receipt](evidence/2026-09-28-calibrated-admission/m5-lifecycle/receipt.json),
+[provenance](evidence/2026-09-28-calibrated-admission/m5-lifecycle/provenance.json)
+and [execution log](evidence/2026-09-28-calibrated-admission/m5-lifecycle/run.txt)
+passed both phases. Prefill cancellation confirmed/accounted zero output tokens;
+after-MTP cancellation confirmed/accounted seven. Each phase recorded the
+engine's `cancelled` terminal, exactly one workload retirement, no remaining KV
+or whole-Mac service ownership, and an identical subsequent greedy result.
+All five cooldowns and all control/request posture observations passed.
+
+The [assembled qualification receipt](evidence/2026-09-28-calibrated-admission/m5-deadline-qualification-receipt.json)
+references the unchanged raw 40/100 runs and scoped prerequisite files. Its
+SHA-256 is `6d3b6a5e48171689dff6b1a4053c5103464536d5f214764f61e86d19013603cb`.
+The [strict review result](evidence/2026-09-28-calibrated-admission/m5-deadline-qualification-review.json)
+qualified the exact cooled, isolated, cold 4,096–12,288-token profile with no
+errors. Empirical coverage is 100/100; the one-sided 95%-confidence lower bound
+is 0.9704869503929601. Every fitted cell, runtime identity and measured-build
+field equals the training-only record frozen before validation. Actual context
+bounds include only the bounded 33 early decode tokens: 4,129–12,321.
+
+This profile certifies deadline prediction under its recorded prerequisites.
+It does not change concurrency, chunk size or universal serving policy, and it
+does not certify reused/contended requests, prompts beyond the measured band,
+or a sustained hot workload. The final catalog-containing runtime still needs
+the original 8,828-token/14,369-ms admission proof.
 
 ## Initial rendered-count corpus
 

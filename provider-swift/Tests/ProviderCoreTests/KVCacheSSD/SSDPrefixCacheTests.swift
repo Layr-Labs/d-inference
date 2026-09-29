@@ -744,7 +744,7 @@ struct SSDPrefixCacheModeTests {
                 environment: ["DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS": "0"]) == 1_800)
         #expect(
             SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: [:])
-                == 150 * 1_000_000_000)
+                == 750 * 1_000_000_000)
         #expect(
             SSDPrefixCachePolicy.maxWriteBytesPerDay(
                 environment: ["DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY": "0"]) == 0)

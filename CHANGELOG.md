@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — SSD cache write budget
+
+- Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.
+
 ## Unreleased — automatic model artifact revisions
 
 - Reject cached or staged revisions with unmanifested integrity files, so an added template, tokenizer or weight file cannot be activated under the original approved hash.

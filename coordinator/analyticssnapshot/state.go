@@ -82,7 +82,7 @@ func (s *durableState) validate() error {
 	return nil
 }
 
-func withStateLock(path string, fn func(*durableState) error) error {
+func withStateLock(path string, fn func(*durableState) error) (err error) {
 	if !filepath.IsAbs(path) {
 		return errors.New("analytics accepted state path must be absolute")
 	}
@@ -90,7 +90,11 @@ func withStateLock(path string, fn func(*durableState) error) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer func() {
+		if closeErr := lock.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close analytics accepted state lock: %w", closeErr)
+		}
+	}()
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		return fmt.Errorf("lock analytics accepted state: %w", err)
 	}

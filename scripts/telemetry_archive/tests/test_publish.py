@@ -2,7 +2,9 @@
 
 from types import SimpleNamespace
 
+import pytest
 from google.api_core.exceptions import NotFound
+from google.cloud import bigquery
 
 from telemetry_archive import publish as publisher
 from telemetry_archive.backfill_plan import make_plan
@@ -36,8 +38,20 @@ class BigQuery:
 
     def create_table(self, table, exists_ok):
         key = f"{table.project}.{table.dataset_id}.{table.table_id}"
+        schema = (
+            [bigquery.SchemaField(*field) for field in publisher.FILE_SCHEMA]
+            if table.external_data_configuration
+            else table.schema
+        )
         self.tables.setdefault(
-            key, SimpleNamespace(description=table.description, labels=table.labels, num_rows=0)
+            key,
+            SimpleNamespace(
+                description=table.description,
+                labels=table.labels,
+                num_rows=0,
+                external_data_configuration=table.external_data_configuration,
+                schema=schema,
+            ),
         )
 
     def load_table_from_json(self, rows, name, job_config):
@@ -101,3 +115,52 @@ def test_publisher_recovers_empty_window_coverage_and_deduplicates_manifest(monk
     assert list(manifests.values()) == [first["source_uri"] + "\n"]
     assert ".archive_coverage` AS SELECT" in client.statements[-1]
     assert publisher.publish(args)["catalog_version"] == result["catalog_version"]
+
+
+@pytest.mark.parametrize("mismatch", ["manifest", "schema"])
+def test_publisher_rejects_reused_external_table_mismatch(monkeypatch, mismatch):
+    plan = make_plan(
+        [
+            {
+                "table": "request_outcomes",
+                "start": "2026-09-01T00:00:00Z",
+                "end": "2026-09-01T01:00:00Z",
+            }
+        ]
+    )
+    entry = coverage_row(plan_id=plan["plan_id"])
+    client = BigQuery([])
+    bucket = SimpleNamespace(labels={}, get_blob=lambda *a, **k: SimpleNamespace(generation="1"))
+    monkeypatch.setattr(publisher.cloud, "storage_client", lambda *_: object())
+    monkeypatch.setattr(publisher.cloud, "bigquery_client", lambda *_: client)
+    monkeypatch.setattr(publisher, "archive_bucket", lambda *_: bucket)
+    monkeypatch.setattr(publisher, "read_json", lambda *_: plan)
+    monkeypatch.setattr(publisher, "verified_entries", lambda *_: iter([entry]))
+    monkeypatch.setattr(publisher, "put_verified", lambda *_args, **_kwargs: None)
+    args = SimpleNamespace(
+        project="archive-test",
+        dataset="telemetry_history",
+        bucket="archive-bucket",
+        location="us-east4",
+        plan_ids=[plan["plan_id"]],
+    )
+    version = publisher.publish(args)["catalog_version"]
+    external_id = f"archive-test.telemetry_history.request_outcomes_files_{version}"
+    existing = client.tables[external_id]
+    if mismatch == "manifest":
+        existing.external_data_configuration = bigquery.ExternalConfig.from_api_repr(
+            {
+                "sourceFormat": "PARQUET",
+                "autodetect": True,
+                "fileSetSpecType": "FILE_SET_SPEC_TYPE_NEW_LINE_DELIMITED_MANIFEST",
+                "sourceUris": ["gs://archive-bucket/query-manifests/v1/wrong.txt"],
+            }
+        )
+    else:
+        existing.schema = [bigquery.SchemaField("source_id", "STRING")]
+    aliases_before = [s for s in client.statements if s.startswith("CREATE OR REPLACE VIEW")]
+    with pytest.raises(publisher.ArchiveError, match="external table"):
+        publisher.publish(args)
+    assert [
+        s for s in client.statements if s.startswith("CREATE OR REPLACE VIEW")
+    ] == aliases_before

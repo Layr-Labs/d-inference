@@ -193,6 +193,9 @@ windows that share identical Parquet bytes. External manifests list each URI onc
 reader queries group catalog observations per file before joining. `verified_windows`
 and `data_files` are separate counters. Snapshot row/file sums still require overlap
 reconciliation; they are not automatically distinct business rows.
+Reusing a versioned BigQuery external table requires its manifest URI, external
+configuration and inferred archive schema to match before any stable alias or
+coverage pointer switches. A mismatched existing table stops publication.
 
 The catalog digest includes a format-version domain and tables carry the label
 `archive_coverage=plan_windows_v2`. Existing pinned workers keep their prior behavior.

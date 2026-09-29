@@ -1163,7 +1163,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 
 	migrations = append(migrations, appAttestShadowDDL, machineInventoryDDL, appAttestArchiveDDL, appAttestEnrollmentDDL, appAttestReceiptDDL)
 	migrations = append(migrations, appAttestRevocationDDL, appAttestBuildDDL, appAttestKeyRotationDDL, modelTokenPromotionDDL)
-	migrations = append(migrations, cacheRoutingHoldersDDL, cacheRoutingHoldersMeasuredStageDDL, cacheRoutingHoldersDropChainHashDDL, cacheRoutingHoldersExpiryIndexDDL, cacheRoutingDemandDDL, cacheRoutingDemandSeenIndexDDL, cacheRoutingMetaDDL)
+	migrations = append(migrations, cacheRoutingHoldersDDL, cacheRoutingHoldersBackfillColumnsDDL, cacheRoutingHoldersDropChainHashDDL, cacheRoutingHoldersExpiryIndexDDL, cacheRoutingHoldersUpdatedIndexDDL, cacheRoutingDemandDDL, cacheRoutingDemandSeenIndexDDL, cacheRoutingMetaDDL)
 	for i, m := range migrations {
 		started := time.Now()
 		_, err := s.pool.Exec(ctx, m)

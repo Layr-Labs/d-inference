@@ -152,7 +152,7 @@ func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) 
 	sort.Slice(records, func(i, j int) bool { return records[i].SeenAt.Before(records[j].SeenAt) })
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	accepted := make([]crs.DemandRecord, 0, len(records))
+	valid := make([]crs.DemandRecord, 0, len(records))
 	// Records arrive oldest first, so the insertion point only ever moves
 	// toward the back: one pass over the list in total.
 	var after *list.Element
@@ -160,7 +160,7 @@ func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) 
 		if rec.Key == "" || now.Sub(rec.SeenAt) >= d.ttl || rec.SeenAt.After(now) {
 			continue
 		}
-		accepted = append(accepted, rec)
+		valid = append(valid, rec)
 		if existing := d.entries[rec.Key]; existing != nil {
 			if !rec.SeenAt.After(existing.Value.(cacheDemandEntry).seen) {
 				continue
@@ -192,6 +192,15 @@ func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) 
 			}
 			delete(d.entries, first.Value.(cacheDemandEntry).key)
 			d.order.Remove(first)
+		}
+	}
+	// Only an entry the index still holds at the end counts as persisted;
+	// one the cap evicted, even by a later record of this same restore,
+	// must be written again when it is next observed.
+	accepted := valid[:0]
+	for _, rec := range valid {
+		if _, kept := d.entries[rec.Key]; kept {
+			accepted = append(accepted, rec)
 		}
 	}
 	return accepted

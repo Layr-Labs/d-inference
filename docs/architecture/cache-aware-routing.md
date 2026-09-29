@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `95efeb21d`
+> Last updated: 2026-09-29 · commit `0ac850408`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -746,7 +746,8 @@ back are operator procedures, kept in the runbook
    apply in `UpdatePrefixCacheSnapshot`, changed or not), so a bound
    holder carries a live `*Provider` exactly like a fresh receipt. A parked
    row whose provider returns under the same epoch and model but another
-   artifact or contract is deleted at bind, not reloaded on every boot. A
+   artifact, contract, block-hash version or ready-boundary mode is deleted
+   at bind, not reloaded on every boot. A
    disconnect parks the holder instead of deleting its row; every other
    removal reason deletes the row unless another live session of the same
    machine (same key and epoch: two sessions overlap when the per-key holder

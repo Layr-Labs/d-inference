@@ -42,15 +42,21 @@ const cacheRoutingHoldersDDL = `CREATE TABLE IF NOT EXISTS cache_routing_holders
 // The chain hash column of earlier builds is dropped, and its values with it.
 const cacheRoutingHoldersDropChainHashDDL = `ALTER TABLE cache_routing_holders DROP COLUMN IF EXISTS anchor_chain_hash`
 
-// Tables created before the measured-stage columns existed pick them up here.
-const cacheRoutingHoldersMeasuredStageDDL = `ALTER TABLE cache_routing_holders
+// Tables created by earlier builds of this branch pick up the columns added
+// since; each ADD is a no-op once present.
+const cacheRoutingHoldersBackfillColumnsDDL = `ALTER TABLE cache_routing_holders
  ADD COLUMN IF NOT EXISTS measured_stage_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
  ADD COLUMN IF NOT EXISTS measured_expires_at TIMESTAMPTZ,
  ADD COLUMN IF NOT EXISTS ready_boundary_mode TEXT NOT NULL DEFAULT ''`
 
-// The expiry index serves the prune; a load under a TTL orders by the clamped
-// expression and scans the table once at boot instead.
+// The prune deletes rows whose effective expiry under the active TTL has
+// passed, written as `expires_at <= now OR updated_at <= now - ttl` so both
+// halves are index-served (a bitmap OR over the two indexes) instead of a
+// full scan every five minutes; a boot-time load orders by the clamped
+// expression and scans the table once.
 const cacheRoutingHoldersExpiryIndexDDL = `CREATE INDEX IF NOT EXISTS idx_cache_routing_holders_expires ON cache_routing_holders(expires_at)`
+
+const cacheRoutingHoldersUpdatedIndexDDL = `CREATE INDEX IF NOT EXISTS idx_cache_routing_holders_updated ON cache_routing_holders(updated_at)`
 
 const cacheRoutingDemandDDL = `CREATE TABLE IF NOT EXISTS cache_routing_demand (
  key TEXT PRIMARY KEY,
@@ -287,11 +293,13 @@ func (s *PostgresStore) ResetCacheRoutingState(ctx context.Context, fingerprint 
 // holds a long lock; each loop iteration is its own short statement.
 func (s *PostgresStore) PruneCacheRoutingState(ctx context.Context, now time.Time, ttl time.Duration, demandNotBefore time.Time) (int64, error) {
 	var total int64
+	// Equivalent to LEAST(expires_at, updated_at + ttl) <= now, in a form the
+	// expires_at and updated_at indexes both serve.
 	expired := `expires_at <= $1`
 	args := []any{now.UTC(), crs.PruneBatchRows}
 	if ttl > 0 {
-		expired = `LEAST(expires_at, updated_at + $3::bigint * interval '1 microsecond') <= $1`
-		args = append(args, ttl.Microseconds())
+		expired = `(expires_at <= $1 OR updated_at <= $3)`
+		args = append(args, now.Add(-ttl).UTC())
 	}
 	for {
 		tag, err := s.pool.Exec(ctx, `DELETE FROM cache_routing_holders WHERE ctid IN (

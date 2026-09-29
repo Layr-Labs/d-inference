@@ -88,6 +88,7 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 			newer.MeasuredExpiresAt = now.Add(20 * time.Minute)
 			older := holderRecord(6, "epoch-a", now.Add(-time.Minute), 45*time.Minute)
 			older.StageMs = 999
+			older.ReadyBoundaryMode = "legacy"
 			if err := s.UpsertCacheHolders(ctx, []crs.HolderRecord{newer, older}); err != nil {
 				t.Fatalf("merge upsert: %v", err)
 			}
@@ -105,7 +106,7 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 			if r := byKey[crs.HolderKey{Key: "k006", CacheEpoch: "epoch-a"}]; r.MeasuredStageMs != 0 || !r.MeasuredExpiresAt.IsZero() {
 				t.Fatalf("a row without a measurement must read back zero values: %+v", r)
 			}
-			if r := byKey[crs.HolderKey{Key: "k006", CacheEpoch: "epoch-a"}]; r.StageMs != 120 || !r.ExpiresAt.Equal(now.Add(-time.Minute).Add(45*time.Minute)) {
+			if r := byKey[crs.HolderKey{Key: "k006", CacheEpoch: "epoch-a"}]; r.StageMs != 120 || r.ReadyBoundaryMode != "checkpoint" || !r.ExpiresAt.Equal(now.Add(-time.Minute).Add(45*time.Minute)) {
 				t.Fatalf("older receipt must keep descriptive columns but extend expiry: %+v", r)
 			}
 			// A capped load keeps the longest-lived rows: k006 was extended to 44 min.
@@ -300,6 +301,27 @@ func TestCacheRoutingHoldersTableStoresNoChainHash(t *testing.T) {
 			if count() != 0 {
 				t.Fatal("the drop migration must remove anchor_chain_hash")
 			}
+			// The other direction: a table from before a column existed
+			// picks it up from the backfill ALTER, and rows load afterwards.
+			if _, err := pg.pool.Exec(ctx, `ALTER TABLE cache_routing_holders DROP COLUMN IF EXISTS ready_boundary_mode`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pg.pool.Exec(ctx, cacheRoutingHoldersBackfillColumnsDDL); err != nil {
+				t.Fatalf("backfill migration: %v", err)
+			}
+			var n int
+			if err := pg.pool.QueryRow(ctx,
+				`SELECT count(*) FROM information_schema.columns WHERE table_name = 'cache_routing_holders' AND column_name = 'ready_boundary_mode'`).Scan(&n); err != nil || n != 1 {
+				t.Fatalf("backfill must add ready_boundary_mode: n=%d err=%v", n, err)
+			}
+			now := time.Now()
+			if err := pg.UpsertCacheHolders(ctx, []crs.HolderRecord{holderRecord(1, "epoch-backfill", now, time.Minute)}); err != nil {
+				t.Fatal(err)
+			}
+			if rows, err := pg.LoadCacheHolders(ctx, now, 0, 0); err != nil || len(rows) == 0 {
+				t.Fatalf("load after backfill: %+v %v", rows, err)
+			}
+			_, _ = pg.PruneCacheRoutingState(ctx, now.Add(2*time.Minute), 0, now.Add(2*time.Minute))
 		})
 	}
 }

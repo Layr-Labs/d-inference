@@ -1068,8 +1068,8 @@ func TestCacheDemandRestoreMergesBySeenTimeUnderTheCap(t *testing.T) {
 		{Key: "old-3", SeenAt: now.Add(-20 * time.Second)},
 		{Key: "old-4", SeenAt: now.Add(-10 * time.Second)},
 	}, now)
-	if len(accepted) != 4 {
-		t.Fatalf("all durable entries are inside the window: %+v", accepted)
+	if len(accepted) != 2 || accepted[0].Key != "old-3" || accepted[1].Key != "old-4" {
+		t.Fatalf("only the entries the cap kept count as persisted: %+v", accepted)
 	}
 	if entries, _ := tracker.demand.stats(); entries != 4 {
 		t.Fatalf("index holds %d entries, want the cap of 4", entries)

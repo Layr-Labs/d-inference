@@ -1,14 +1,15 @@
 # Qwen3.8 calibrated admission qualification
 
-> Last updated: 2026-09-28 · commit `78889be8c`
+> Last updated: 2026-09-28 · commit `c9bdb401c`
 
 The initial dedicated M5 Max screen completed real Qwen3.8 inference with active
 MTP. It is **screening evidence, not a qualified serving profile**: the initial
 host was in High Power mode, and independent deadline/lifecycle qualification
 had not completed. A fresh 9,000-body prompt-count corpus passed all six bounded
-fallback cells after the initial smaller corpus failed. Deadline timing profiles
-still require final-candidate qualification; no concurrency/chunk default is
-certified by this screen.
+fallback cells after the initial smaller corpus failed. A fresh cooled cohort
+completed all 40 training trials; its independently generated 100-trial
+validation cohort is running. Deadline timing profiles still require held-out
+and lifecycle qualification; no concurrency/chunk default is certified.
 
 ## Hardware and artifact
 
@@ -93,13 +94,52 @@ and [failed qualification status](evidence/2026-09-28-calibrated-admission/m5-au
 retain every observation. No held-out cohort was run against this failing
 training cohort, and its hot observations are not removed to obtain a pass.
 
-Fresh training and validation will use a predeclared minimum 20-second cooldown
-before each measured request, followed by at least five continuous nominal,
+Fresh training and validation use a predeclared minimum 20-second cooldown
+before each measured request, ending with at least five continuous nominal,
 non-Low-Power seconds, with a 180-second recovery limit. Before/after posture
 and 500-ms observations during inference are retained; any observed fair state
 invalidates the cohort. This qualification applies only while the provider's
 existing nominal-only activation gate holds. It does not change fan policy or
 claim a sustained fair-temperature serving default.
+
+## Cooled training cohort
+
+Signed candidate `78889be8cd55363ab4926aef2fb333c0448392c4`, with merged SDK
+`748db5d967350dfdf17036bec3615a312090fd1e`, completed a managed clean release
+build and the executing-image identity test. The
+[build receipt](evidence/2026-09-28-calibrated-admission/m5-clean-build/build-receipt.json)
+and [build log](evidence/2026-09-28-calibrated-admission/m5-clean-build/build.txt)
+bind source-tree SHA-256
+`54e69e0ab2bd4f5691ec0a2a9e8b1164c9fbab6b4456bc709c326de3f49c98df`
+to actual executable SHA-256
+`15675d3afe7e3f6e3d3ca44e72e06cb3cdf5eecba114f1dc22ee654edd7bd304`.
+The image reported both `DEBUG` and debug assertions disabled. The build log
+is archived as `build.txt`; its bytes match the original `build.log` digest.
+
+All 40 independent tool/history training trials passed the fixed cooldown,
+whole-trial nominal/Low-Power checks, actual MTP observation and request
+retirement checks. Source, executable and artifact hashes were unchanged;
+the supervisor observed no foreign work. The full
+[receipt](evidence/2026-09-28-calibrated-admission/m5-cooled-training/receipt.json),
+[provenance](evidence/2026-09-28-calibrated-admission/m5-cooled-training/provenance.json)
+and [derived measurements](evidence/2026-09-28-calibrated-admission/m5-cooled-training/summary.json)
+retain all observations. Actual first-content times ranged from 4.489 to
+15.325 seconds across the declared 4,096–12,288-token band.
+
+The [training fit](evidence/2026-09-28-calibrated-admission/m5-cooled-training/training-fit.json)
+was frozen before starting independent validation. It uses the minimum
+training prefill rate, 779.752 tokens/s, and minimum confirmed-token decode
+rate, 55.842 tokens/s. The measured error envelope selected a ratio of
+`1.0000000000000002` and zero additive milliseconds. For 8,828 prompt tokens
+plus the bounded 33 early decode tokens, this gives 11,912.506 ms, inside the
+incident's 14,369-ms remaining budget by 2,456.494 ms. This is a fitted estimate
+from new dedicated hardware evidence, not a replay of the historical request.
+
+The [collection plan](evidence/2026-09-28-calibrated-admission/m5-cooled-plan.json)
+preserves the failed sustained cohort and fixes the new 40/100 split. The 100
+held-out requests use new independently generated bodies on the same exact
+binary. Their results cannot refit the frozen rates or margin. Training alone
+does not qualify a deadline profile or any concurrency/chunk change.
 
 ## Initial rendered-count corpus
 
@@ -178,6 +218,29 @@ All six records are promoted unchanged in `coordinator/api/promptwork/catalog/`.
 Regression tests reproduce every held-out covered count and exercise all 6,000
 training shapes through the production estimator.
 
+## SDK validation scope
+
+Focused deadline, constraint, isolation and checkpoint tests pass on the merged
+SDK. Its hosted full suite is not green: the
+[pre-172 baseline](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36487630997),
+[PR 172 run](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36503042824),
+and [merged-main run](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36505279055)
+report the same 112 issues in four DiffusionGemma suites, with identical
+per-test totals. The [numeric comparison](evidence/2026-09-28-calibrated-admission/sdk-ci-baseline-comparison.json)
+retains all three revisions, run links, log hashes, totals and separate XCTest
+failures. The merged-main run has no XCTest failures.
+These existing failures remain unresolved; they are not reported as passing
+SDK coverage or used as qualification prerequisites.
+
+A separate intermittent checkpoint assertion observed one live host-manifest
+permit after request/GPU retirement. The same test passed in the full-suite
+rerun and on merged-main hosted CI; the pre-172 baseline exposed the same
+fixture lifetime issue in its MoE test. Test-only
+[SDK PR 173](https://github.com/Layr-Labs/mlx-swift-lm/pull/173) adds a deterministic
+held-callback regression and waits for final callback owners before checking a
+zero total ledger. Immediate GPU/request retirement assertions remain intact.
+It changes no runtime code and does not change this qualification's SDK pin.
+
 ## Qualification boundaries and reproduction
 
 The [qualification procedure](../developer/serving-performance-qualification.md)
@@ -192,7 +255,7 @@ matrix, actual forward widths and the original throughput/gap/tail gates.
 Separate deadline-only profiles can cover a narrower measured prompt/context
 band while binding the full engine configuration. They cannot raise concurrency,
 change chunk policy, lower memory reserves or qualify out-of-cell work. The
-next cohort declares 4k–12k, both endpoints and varied actual tool/history
+new cohorts declare 4k–12k, both endpoints and varied actual tool/history
 bodies, covering the incident's 8,828-token example without extrapolating 4k.
 
 Actual cancellation checks must prove prefill and post-MTP-content cancellation,

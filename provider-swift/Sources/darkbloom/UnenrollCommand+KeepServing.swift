@@ -20,12 +20,18 @@ extension Unenroll {
         let now = Date().timeIntervalSince1970
         let authorization = DaemonStateFile.read()?.currentProviderAuthorization(
             coordinatorURL: coordinator, now: now)
+        // Cheap unprivileged probe (`profiles status`), read before the readiness
+        // guard so the not-ready message can name this Mac's actual management
+        // state instead of implying a Darkbloom profile exists. The slow
+        // privileged inventory (`installedTarget`) still runs after the guard.
+        let enrollment = checkMDMEnrollment(coordinatorURL: coordinator)
         guard ProviderAuthorizationReadiness.removalReady(authorization, now: now) else {
-            printError(ProviderAuthorizationReadiness.summary(authorization, now: now))
+            printError(ProviderAuthorizationReadiness.summary(
+                authorization, enrollment: enrollment, now: now))
             throw ExitCode.failure
         }
 
-        switch checkMDMEnrollment(coordinatorURL: coordinator) {
+        switch enrollment {
         case .notEnrolled:
             print("App Attest authorizes this connection. No Darkbloom MDM enrollment needs removal.")
             return

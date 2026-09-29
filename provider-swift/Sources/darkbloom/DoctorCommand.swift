@@ -339,7 +339,10 @@ func buildCoordinatorDoctorChecks(
         detail: !linked ? "not logged in; run darkbloom login" : "auth token present"
     ))
 
-    switch checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url) {
+    // Probed once and reused by the serving-authorization check below, which must
+    // not advertise removal of a profile this Mac doesn't have.
+    let enrollment = checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url)
+    switch enrollment {
     case .enrolledDarkbloom:
         checks.append(.init(
             name: "mdm enrollment", status: .pass, detail: "Darkbloom profile installed"))
@@ -377,7 +380,8 @@ func buildCoordinatorDoctorChecks(
     if let authorization {
         checks.append(.init(name: "serving authorization",
                             status: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
-                            detail: ProviderAuthorizationReadiness.summary(authorization, now: now)))
+                            detail: ProviderAuthorizationReadiness.summary(
+                                authorization, enrollment: enrollment, now: now)))
         return checks
     }
 

@@ -54,10 +54,16 @@ enum DoctorRunner {
         }
 
         // ---- Coordinator trust (from the daemon's last trust_status) ----
+        // This Mac's MDM enrollment, probed once and shared with the enrollment
+        // hint below. The serving-authorization message needs it so removal is
+        // only advertised when a Darkbloom profile is actually installed —
+        // `mdm_removal_ready` is a fleet-wide rollout flag and cannot say.
+        let enrollment = checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url)
         if let authorization {
             out.append(Diagnostic(section: .trust, name: "serving authorization",
                                   level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
-                                  message: ProviderAuthorizationReadiness.summary(authorization, now: now),
+                                  message: ProviderAuthorizationReadiness.summary(
+                                      authorization, enrollment: enrollment, now: now),
                                   fix: nil))
         } else if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
@@ -91,7 +97,6 @@ enum DoctorRunner {
         if !alreadyHardwareTrusted && !appAttestAuthorized {
             let liveTrustLevel = stateFresh ? state?.trust?.trustLevel : nil
             let liveStatus = stateFresh ? state?.trust?.status : nil
-            let enrollment = checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url)
             if let diag = MDMTrustDiagnosis.diagnose(trustLevel: liveTrustLevel, status: liveStatus, enrollment: enrollment) {
                 out.append(diag)
             }

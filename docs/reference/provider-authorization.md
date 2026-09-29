@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-27 · commit `ca4eb0b16`
+> Last updated: 2026-09-29 · commit `01d3439ea`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -76,11 +76,11 @@ The additive `trust_status.authorization` object is coordinator-to-provider only
 | `app_attest_available` | Coordinator supports the enabled path; not proof of this Mac's eligibility |
 | `path` | `legacy`, `app_attest`, or `none` |
 | `expires_at` | Exclusive Unix-seconds deadline for current App Attest authorization |
-| `mdm_removal_ready` | Current full App Attest authorization plus explicit removal rollout |
+| `mdm_removal_ready` | Current full App Attest authorization plus explicit removal rollout (`EIGENINFERENCE_APP_ATTEST_MDM_REMOVAL`). Fleet-wide, not per-machine: the coordinator does not know which profiles a Mac has, so this alone never means "there is a Darkbloom profile here to remove" |
 | `reason` | Operator-facing bounded policy explanation |
 | `session_id`, `machine_id` | Current connection and verified canonical machine; never caller-selected authorization |
 
-`darkbloom status` and `darkbloom doctor` distinguish App Attest authorization from legacy verification. `darkbloom unenroll` offers full exit or App Attest migration. The migration option and direct `--keep-serving` shortcut require macOS 27 or later and a fresh running-provider snapshot, matching coordinator and process identity, and an unexpired removal-ready authorization. Both the state-file write and receipt of the coordinator decision must be at most `snapshotMaxAge = 10` seconds old (`provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift`, `currentStatus`); periodic local writes cannot refresh an old removal decision. It preserves account/config/key data and opens System Settings only after identifying the exact Darkbloom enrollment. It never removes a company profile or the app's embedded signing profile. Full exit stops the provider service before offering profile removal and optional cleanup. Enter/EOF cancels; noninteractive use requires an explicit mode flag. Code: `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` and `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift`.
+`darkbloom status` and `darkbloom doctor` distinguish App Attest authorization from legacy verification. Because `mdm_removal_ready` is a fleet-wide rollout flag, neither command advertises removal off that flag alone: the removal sentence is chosen from this Mac's `checkMDMEnrollment` state, so `enrolledOtherMDM` is told to keep the organization's profile, `notEnrolled` that there is nothing to remove, and `checkFailed` gets no removal guidance at all — matching what `unenroll --keep-serving` would decide (`provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift`, `removalAdvice`). `darkbloom unenroll` offers full exit or App Attest migration. The migration option and direct `--keep-serving` shortcut require macOS 27 or later and a fresh running-provider snapshot, matching coordinator and process identity, and an unexpired removal-ready authorization. Both the state-file write and receipt of the coordinator decision must be at most `snapshotMaxAge = 10` seconds old (`provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift`, `currentStatus`); periodic local writes cannot refresh an old removal decision. It preserves account/config/key data and opens System Settings only after identifying the exact Darkbloom enrollment. It never removes a company profile or the app's embedded signing profile. Full exit stops the provider service before offering profile removal and optional cleanup. Enter/EOF cancels; noninteractive use requires an explicit mode flag. Code: `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` and `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift`.
 
 ## Owner dashboard and upgrade guidance
 

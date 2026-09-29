@@ -46,6 +46,7 @@
 ## Unreleased — provider readiness diagnostics
 
 - Explain cold model-load memory failures in `darkbloom status`, a color-coded `darkbloom doctor` readiness summary, and the owner My Macs page. The provider reports live no-eviction usable memory and serving headroom separately from the eviction-aware routing capacity; older providers remain compatible and show unknown rather than a guessed verdict.
+- Stop `darkbloom status` and `darkbloom doctor` from offering Darkbloom MDM removal on Macs that have no Darkbloom enrollment profile. `mdm_removal_ready` is a fleet-wide rollout flag, so the removal sentence is now chosen from this Mac's MDM enrollment: a machine managed by another MDM is told to keep that organization's profile, an unenrolled machine that there is nothing to remove, and an unreadable profile inventory gets no removal guidance. Previously a corporate- or university-managed Mac was told to run `darkbloom unenroll`, which would have walked the operator to their organization's profile; `unenroll` itself already refused to act on a foreign profile. Fixes #1198.
 
 ## Release candidate v0.9.12 — model download cache recovery (not shipped; 2026-09-27)
 

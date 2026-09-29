@@ -155,14 +155,17 @@ func (p *Persister) MarkHolderDelete(k crs.HolderKey) {
 	p.mu.Unlock()
 }
 
-// CancelDelete forgets a pending delete for a row that is live again.
-func (p *Persister) CancelDelete(k crs.HolderKey) {
+// HasPendingDelete reports whether this run has decided to delete the row
+// and not written that yet. A row loaded from the store while such a
+// tombstone is queued is older than the decision and must not bind.
+func (p *Persister) HasPendingDelete(k crs.HolderKey) bool {
 	if p == nil {
-		return
+		return false
 	}
 	p.mu.Lock()
-	delete(p.holderDeletes, k)
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	_, pending := p.holderDeletes[k]
+	return pending
 }
 
 // MarkDemand records keys the demand index just observed, skipping keys whose

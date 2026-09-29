@@ -427,22 +427,29 @@ func TestRestoreDropsExpiredParkedRowsBeforeTheCap(t *testing.T) {
 	if err := mem.UpsertCacheHolders(ctx, []crs.HolderRecord{rec("durable", "e", now, time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
-	p := New(mem, nil, Options{MaxPending: 1})
+	p := New(mem, nil, Options{MaxPending: 2})
 	// Not ready: the prune loop cannot reach the store, but parked rows
 	// still expire in process.
-	p.Park(rec("expired", "e", now.Add(-2*time.Minute), time.Minute))
-	p.Prune(ctx, now.Add(-90*time.Second), time.Minute) // still live then
-	if s := p.Status(); s.PendingHolders != 1 || s.Ready {
-		t.Fatalf("parked row must survive an early prune while not ready: %+v", s)
+	p.Park(rec("expired", "e", now.Add(-2*time.Minute), time.Minute))       // expires now-60s
+	p.Park(rec("expired-too", "e", now.Add(-100*time.Second), time.Minute)) // expires now-40s
+	p.Prune(ctx, now.Add(-90*time.Second), time.Minute)                     // both still live then
+	if s := p.Status(); s.PendingHolders != 2 || s.Ready {
+		t.Fatalf("parked rows must survive an early prune while not ready: %+v", s)
 	}
-	if _, err := p.Restore(ctx, now, time.Minute, 1, 0); err != nil {
+	// A prune tick drops expired parked rows even while the store is
+	// unreachable (the persister is not ready).
+	p.Prune(ctx, now.Add(-50*time.Second), time.Minute) // "expired" has lapsed, "expired-too" not yet
+	if s := p.Status(); s.PendingHolders != 1 || s.DroppedPending != 1 || s.Ready {
+		t.Fatalf("prune must drop expired parked rows before the restore succeeds: %+v", s)
+	}
+	if _, err := p.Restore(ctx, now, time.Minute, 2, 0); err != nil {
 		t.Fatal(err)
 	}
 	rows := p.Take("e", "model")
 	if len(rows) != 1 || rows[0].Key != "durable" {
 		t.Fatalf("the expired parked row must not take the cap from the durable row: %+v", rows)
 	}
-	if s := p.Status(); s.RestoredHolders != 1 || s.DroppedPending != 1 {
+	if s := p.Status(); s.RestoredHolders != 1 || s.DroppedPending != 2 {
 		t.Fatalf("expired parked row dropped, durable row restored: %+v", s)
 	}
 }

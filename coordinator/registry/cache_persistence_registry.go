@@ -131,17 +131,20 @@ func (r *Registry) bindRegisteredProvider(p *Provider) {
 }
 
 func (r *Registry) bindRestoredHoldersForConnectedProviders() {
+	// Held across the binds: disconnectProvider removes a provider under
+	// r.mu and runs the tracker cleanup that parks its holders afterwards,
+	// so a provider seen here is either still connected when its rows bind
+	// or is removed, and cleaned up, only after they bound. Binding a
+	// provider a concurrent disconnect had already cleaned up would strand
+	// the rows on a dead provider ID. The order r.mu → provider.mu →
+	// tracker.mu is the capability-apply order.
 	r.mu.RLock()
+	defer r.mu.RUnlock()
 	tracker := r.cacheRouting
-	providers := make([]*Provider, 0, len(r.providers))
-	for _, p := range r.providers {
-		providers = append(providers, p)
-	}
-	r.mu.RUnlock()
 	if tracker == nil {
 		return
 	}
-	for _, p := range providers {
+	for _, p := range r.providers {
 		p.mu.Lock()
 		caps := clonePrefixCacheCapabilities(p.PrefixCacheV2Models)
 		p.mu.Unlock()

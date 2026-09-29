@@ -53,6 +53,19 @@ func TestCloseProviderConnectionsJoinsHandlersAndRefusesNewOnes(t *testing.T) {
 		t.Fatalf("write register: %v", err)
 	}
 	waitFor(t, 5*time.Second, "provider registered", func() bool { return len(reg.ProviderIDs()) == 1 })
+	// A second socket that never sends its register frame: the registry
+	// does not know it, so the close must reach it through the server's
+	// own tracking or the join would wait for it until exit.
+	silent, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial (silent): %v", err)
+	}
+	t.Cleanup(func() { _ = silent.CloseNow() })
+	waitFor(t, 5*time.Second, "silent socket tracked", func() bool {
+		srv.providerAdmit.Lock()
+		defer srv.providerAdmit.Unlock()
+		return len(srv.providerConns) == 2
+	})
 
 	closeCtx, closeCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer closeCancel()
@@ -78,6 +91,9 @@ func TestCloseProviderConnectionsJoinsHandlersAndRefusesNewOnes(t *testing.T) {
 		}
 		break
 	}
+	if _, _, err := silent.Read(readCtx); err == nil {
+		t.Fatal("the unregistered socket must be closed too")
+	}
 	// No new provider socket is accepted behind the final flush.
 	_, resp, err := websocket.Dial(ctx, wsURL, nil)
 	if err == nil || resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
@@ -86,4 +102,32 @@ func TestCloseProviderConnectionsJoinsHandlersAndRefusesNewOnes(t *testing.T) {
 	if reg.ProviderIDs() != nil && len(reg.ProviderIDs()) != 0 {
 		t.Fatalf("refused socket registered a provider: %v", reg.ProviderIDs())
 	}
+}
+
+// WaitProviderHandlers may be called again after a timed-out join; it
+// reports true once the last admitted handler has returned.
+func TestWaitProviderHandlersReportsLateHandlers(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	// An admitted handler that is still running when the close begins.
+	srv.providerAdmit.Lock()
+	srv.providerHandlers.Add(1)
+	srv.providerAdmit.Unlock()
+	if srv.CloseProviderConnections(shortCtx(t, 50*time.Millisecond)) {
+		t.Fatal("close must report the running handler")
+	}
+	if srv.WaitProviderHandlers(shortCtx(t, 50*time.Millisecond)) {
+		t.Fatal("wait must time out while the handler runs")
+	}
+	srv.providerHandlers.Done()
+	if !srv.WaitProviderHandlers(shortCtx(t, time.Second)) {
+		t.Fatal("wait must return true once the handler has returned")
+	}
+}
+
+func shortCtx(t *testing.T, d time.Duration) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	t.Cleanup(cancel)
+	return ctx
 }

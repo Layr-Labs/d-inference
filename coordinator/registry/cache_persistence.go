@@ -160,6 +160,13 @@ func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability prot
 		if !ok {
 			continue
 		}
+		if t.persister.HasPendingDelete(rec.HolderKey()) {
+			// This run already invalidated the holder (a miss, a proof
+			// mismatch, an eviction) while the store was unreachable; the
+			// row a retried restore loaded is older than that decision and
+			// the queued delete still applies.
+			continue
+		}
 		if rec.ModelID != capability.ModelID ||
 			rec.ModelAggregateHash != capability.ModelAggregateHash ||
 			rec.PromptContractID != capability.PromptContractID ||
@@ -206,7 +213,6 @@ func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability prot
 		}
 		t.upsertHolderLocked(rec.Key, holder)
 		if _, present := t.holders[rec.Key][provider.ID]; present {
-			t.persister.CancelDelete(rec.HolderKey())
 			bound++
 		}
 	}

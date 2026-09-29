@@ -603,27 +603,3 @@ func durationStats(ds []time.Duration) (min, median, p90, max time.Duration) {
 	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
 	return s[0], s[len(s)/2], s[(len(s)*9)/10], s[len(s)-1]
 }
-
-// CloseAllProviderConnections closes every connected provider's socket without
-// a close handshake, so each read loop returns and tears its provider down
-// through the ordinary disconnect path. Used at shutdown, after the HTTP
-// server has stopped, to quiesce the socket producers before the final
-// write-behind flush. Returns the number of sockets closed.
-func (r *Registry) CloseAllProviderConnections() int {
-	// Conn is assigned once at construction and published through r.mu, so
-	// r.mu alone makes the read race-free; p.mu is not taken, since a
-	// provider lock held across a blocked pending-request send would hang
-	// shutdown here, outside the caller's deadline.
-	r.mu.RLock()
-	conns := make([]*websocket.Conn, 0, len(r.providers))
-	for _, p := range r.providers {
-		if p.Conn != nil {
-			conns = append(conns, p.Conn)
-		}
-	}
-	r.mu.RUnlock()
-	for _, c := range conns {
-		_ = c.CloseNow()
-	}
-	return len(conns)
-}

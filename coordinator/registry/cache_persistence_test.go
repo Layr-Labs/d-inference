@@ -1092,3 +1092,75 @@ func TestCacheDemandRestoreMergesBySeenTimeUnderTheCap(t *testing.T) {
 		t.Fatalf("re-restore of an older entry must not displace fresher ones: entries=%d front=%s", entries, front)
 	}
 }
+
+// A holder invalidated in this run while the store was unreachable leaves a
+// tombstone queued; a retried restore that still finds the old durable row
+// must not resurrect the holder or discard the tombstone.
+func TestCacheRoutingPersistenceRetriedRestoreKeepsTombstones(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	r1, _, capability := exactTestRegistry(t)
+	removeTestProvider(r1, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r1, mem)
+	a := persistenceTestProvider(t, r1, "machine-a", capability)
+	checkpoint := exactTestAnchor(16, "c")
+	floor := exactTestAnchor(17, "d")
+	plan := boundTestCachePlan(r1, exactTestPlan(checkpoint, floor))
+	_, ready := checkpointTestAttempt(t, r1, a, capability, "donor", plan, 1)
+	ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+	ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+	if !r1.ApplyPrefixCacheReadyV2(a.ID, ready) {
+		t.Fatal("ready receipt rejected")
+	}
+	if err := r1.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, mem); len(rows) != 1 {
+		t.Fatalf("run 1 must leave one durable row: %+v", rows)
+	}
+
+	// Run 2 boots while the store's key-generation read fails.
+	st := &fingerprintFlakyStore{MemoryStore: mem}
+	st.fail.Store(true)
+	r2, _, _ := exactTestRegistry(t)
+	removeTestProvider(r2, "provider-a")
+	r2.SetStore(st)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if _, err := r2.StartCacheRoutingPersistence(ctx); err == nil {
+		t.Fatal("boot restore must fail against the broken store")
+	}
+	back := persistenceTestProvider(t, r2, "machine-a-back", capability)
+	plan2 := boundTestCachePlan(r2, exactTestPlan(checkpoint, floor))
+	_, ready2 := checkpointTestAttempt(t, r2, back, capability, "donor-2", plan2, 1)
+	ready2.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+	ready2.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+	if !r2.ApplyPrefixCacheReadyV2(back.ID, ready2) {
+		t.Fatal("ready receipt rejected")
+	}
+	// The provider's copy proves bad: the holder goes and its row is tombstoned.
+	r2.cacheRouting.invalidateProviderEvidence(back.ID, cacheHolderRemovalProofMismatch, true)
+	if hints := memoryTestHints(r2, plan2, time.Now()); len(hints) != 0 {
+		t.Fatalf("invalidated holder still routable: %+v", hints)
+	}
+	// The store recovers and the retried restore finds run 1's row.
+	st.fail.Store(false)
+	r2.mu.RLock()
+	tracker, persister := r2.cacheRouting, r2.cachePersister
+	r2.mu.RUnlock()
+	if err := r2.restoreCacheRoutingState(ctx, persister, tracker); err != nil {
+		t.Fatalf("retried restore: %v", err)
+	}
+	if hints := memoryTestHints(r2, plan2, time.Now()); len(hints) != 0 {
+		t.Fatalf("retried restore resurrected an invalidated holder: %+v", hints)
+	}
+	if s := r2.CacheRoutingPersistenceStatus(); s.BoundHolders != 0 || s.PendingHolders != 0 || s.DroppedPending != 1 {
+		t.Fatalf("the tombstoned row must be dropped at bind: %+v", s)
+	}
+	if err := r2.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, mem); len(rows) != 0 {
+		t.Fatalf("the tombstone must still delete the durable row: %+v", rows)
+	}
+}

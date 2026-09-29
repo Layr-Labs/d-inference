@@ -135,6 +135,9 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.trackProviderConn(conn, true)
+	defer s.trackProviderConn(conn, false)
+
 	// Raise the read limit to 10 MB. The default 32 KB is too small for
 	// large inference responses.
 	conn.SetReadLimit(10 * 1024 * 1024)
@@ -156,14 +159,42 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) CloseProviderConnections(ctx context.Context) bool {
 	s.providerAdmit.Lock()
 	s.providersClosing = true
+	conns := make([]*websocket.Conn, 0, len(s.providerConns))
+	for c := range s.providerConns {
+		conns = append(conns, c)
+	}
 	s.providerAdmit.Unlock()
-	closed := s.registry.CloseAllProviderConnections()
+	// Every hijacked socket, whether or not its provider registered; the
+	// read loops return and tear their providers down through the ordinary
+	// disconnect path, which parks their holders.
+	for _, c := range conns {
+		_ = c.CloseNow()
+	}
 	if s.WaitProviderHandlers(ctx) {
-		s.logger.Info("provider sockets closed for shutdown", "closed", closed)
+		s.logger.Info("provider sockets closed for shutdown", "closed", len(conns))
 		return true
 	}
-	s.logger.Warn("provider socket handlers still running at the shutdown deadline", "closed", closed)
+	s.logger.Warn("provider socket handlers still running at the shutdown deadline", "closed", len(conns))
 	return false
+}
+
+// trackProviderConn records a hijacked provider socket for the shutdown
+// close (add) or forgets it when its handler exits (remove). A socket
+// accepted after the close began is closed here at once.
+func (s *Server) trackProviderConn(conn *websocket.Conn, add bool) {
+	s.providerAdmit.Lock()
+	defer s.providerAdmit.Unlock()
+	if s.providerConns == nil {
+		s.providerConns = make(map[*websocket.Conn]struct{})
+	}
+	if !add {
+		delete(s.providerConns, conn)
+		return
+	}
+	s.providerConns[conn] = struct{}{}
+	if s.providersClosing {
+		_ = conn.CloseNow()
+	}
 }
 
 // WaitProviderHandlers waits until every admitted provider socket handler
@@ -172,6 +203,12 @@ func (s *Server) CloseProviderConnections(ctx context.Context) bool {
 // in its read-error close and its deferred teardown, and evidence it marks
 // meanwhile is only safe once a flush runs after it has returned.
 func (s *Server) WaitProviderHandlers(ctx context.Context) bool {
+	if !s.providerSocketsClosing() {
+		// Before the close, a handler may still be admitted (an Add from
+		// zero would race this Wait); the call is a programming error.
+		s.logger.Error("WaitProviderHandlers called before CloseProviderConnections")
+		return false
+	}
 	done := make(chan struct{})
 	go func() {
 		s.providerHandlers.Wait()

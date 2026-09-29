@@ -1025,11 +1025,15 @@ func main() {
 	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	joined := srv.CloseProviderConnections(closeCtx)
 	closeCancel()
+	warnedNotReady := false
 	finalFlush := func() {
 		flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer flushCancel()
 		if s := reg.CacheRoutingPersistenceStatus(); s.Enabled && !s.Ready {
-			logger.Warn("cache routing persistence never established its key generation this run; the final flush writes nothing")
+			if !warnedNotReady {
+				logger.Warn("cache routing persistence never established its key generation this run; the final flush writes nothing")
+				warnedNotReady = true
+			}
 		} else if err := reg.FlushCacheRoutingState(flushCtx); err != nil {
 			logger.Warn("final cache routing persistence flush failed", "error", err)
 		}

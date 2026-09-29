@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"nhooyr.io/websocket"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -195,9 +196,14 @@ type Server struct {
 	// handler's registration with the closing flag: once providersClosing is
 	// set under the mutex no handler is admitted and every admitted one is
 	// already counted, so no Add can race the Wait.
-	providerHandlers   sync.WaitGroup
-	providerAdmit      sync.Mutex
-	providersClosing   bool
+	providerHandlers sync.WaitGroup
+	providerAdmit    sync.Mutex
+	providersClosing bool
+	// providerConns holds every hijacked provider socket from accept to
+	// handler exit, registered or not, so shutdown can close the ones the
+	// registry does not know yet (a peer that never sent its register frame
+	// would otherwise hold the join open until exit).
+	providerConns      map[*websocket.Conn]struct{}
 	modelCatalogSyncMu sync.Mutex // serialize catalog snapshots and desired-state publication
 
 	appAttestShadow               AppAttestShadowConfig

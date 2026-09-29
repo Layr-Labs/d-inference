@@ -161,6 +161,8 @@ func (s *MemoryStore) ResetCacheRoutingState(ctx context.Context, fingerprint st
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Same order as the Postgres store: the marker, the rows, the generation.
+	s.cacheRoutingFingerprint = crs.ResetInProgress
 	s.cacheHolders = make(map[crs.HolderKey]crs.HolderRecord)
 	s.cacheDemand = make(map[string]time.Time)
 	s.cacheRoutingFingerprint = fingerprint

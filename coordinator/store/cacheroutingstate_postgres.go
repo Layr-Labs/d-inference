@@ -280,6 +280,11 @@ func (s *PostgresStore) CacheRoutingKeyFingerprint(ctx context.Context) (string,
 // and records the new key generation last, so a crash mid-way leaves the old
 // fingerprint and the next boot resets again.
 func (s *PostgresStore) ResetCacheRoutingState(ctx context.Context, fingerprint string) error {
+	// The marker goes first, on its own: a reset interrupted between the
+	// batched deletes below must not read as complete at the next boot.
+	if err := s.recordCacheRoutingKeyFingerprint(ctx, crs.ResetInProgress); err != nil {
+		return err
+	}
 	for _, table := range []string{"cache_routing_holders", "cache_routing_demand"} {
 		stmt := fmt.Sprintf(`DELETE FROM %s WHERE ctid IN (SELECT ctid FROM %s LIMIT $1)`, table, table)
 		for {
@@ -292,6 +297,10 @@ func (s *PostgresStore) ResetCacheRoutingState(ctx context.Context, fingerprint 
 			}
 		}
 	}
+	return s.recordCacheRoutingKeyFingerprint(ctx, fingerprint)
+}
+
+func (s *PostgresStore) recordCacheRoutingKeyFingerprint(ctx context.Context, fingerprint string) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO cache_routing_meta (name, value, updated_at) VALUES ($1, $2, now())
  ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, cacheRoutingKeyFingerprintName, fingerprint)
 	if err != nil {

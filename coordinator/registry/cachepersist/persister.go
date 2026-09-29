@@ -126,6 +126,10 @@ type Persister struct {
 	// the next flush, or by the restore if none has succeeded yet, and
 	// rewritten from the evidence that flows afterwards.
 	resetPending bool
+	// overflowSeq counts backlog overflows. A batch drained under an earlier
+	// count was in flight when decisions were released, so its upserts are
+	// not requeued: one may be evidence a released decision condemned.
+	overflowSeq uint64
 }
 
 // Options shape a persister for the registry's current configuration.
@@ -227,6 +231,7 @@ func (p *Persister) MarkHolderDelete(k crs.HolderKey, decidedAt time.Time) {
 		// were dropped when they were decided, and the residual is the
 		// retention bound's.
 		p.resetPending = true
+		p.overflowSeq++
 		p.counters.overflowResets++
 		p.holderDeletes = make(map[crs.HolderKey]time.Time)
 	}
@@ -375,16 +380,19 @@ type batch struct {
 	deletes  []crs.HolderKey
 	deleteAt map[crs.HolderKey]time.Time
 	demand   []crs.DemandRecord
+	// overflowSeq is the overflow count the batch was drained under.
+	overflowSeq uint64
 }
 
 func (p *Persister) drain() batch {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	b := batch{
-		upserts:  make([]crs.HolderRecord, 0, min(len(p.holderUpserts), HolderFlushRows)),
-		deletes:  make([]crs.HolderKey, 0, min(len(p.holderDeletes), HolderFlushRows)),
-		deleteAt: make(map[crs.HolderKey]time.Time, min(len(p.holderDeletes), HolderFlushRows)),
-		demand:   make([]crs.DemandRecord, 0, min(len(p.demandTouched), DemandFlushRows)),
+		upserts:     make([]crs.HolderRecord, 0, min(len(p.holderUpserts), HolderFlushRows)),
+		deletes:     make([]crs.HolderKey, 0, min(len(p.holderDeletes), HolderFlushRows)),
+		deleteAt:    make(map[crs.HolderKey]time.Time, min(len(p.holderDeletes), HolderFlushRows)),
+		demand:      make([]crs.DemandRecord, 0, min(len(p.demandTouched), DemandFlushRows)),
+		overflowSeq: p.overflowSeq,
 	}
 	for k, rec := range p.holderUpserts {
 		if len(b.upserts) >= HolderFlushRows {
@@ -422,6 +430,18 @@ func (p *Persister) drain() batch {
 func (p *Persister) requeue(b batch) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if b.overflowSeq != p.overflowSeq {
+		// The batch was in flight when a backlog overflow released delete
+		// decisions: an upsert in it may be evidence one of them condemned
+		// (the queued copy is removed at decision time, the drained copy
+		// was already out), and the reset that follows would write it back
+		// to be restored later. None of them outranks a released decision
+		// (a receipt newer than a decision cancels it before it can be
+		// released), so they are dropped; the next receipt re-marks a row
+		// that is still live.
+		p.counters.droppedDirty += uint64(len(b.upserts))
+		b.upserts = nil
+	}
 	for _, rec := range b.upserts {
 		k := rec.HolderKey()
 		if _, deleted := p.holderDeletes[k]; deleted {

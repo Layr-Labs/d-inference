@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `1848ee58f`
+> Last updated: 2026-09-29 · commit `1527efbf6`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -813,7 +813,11 @@ back are operator procedures, kept in the runbook
    succeeded yet, so a restart after the reset lands never restores a row a
    miss or proof mismatch already invalidated
    (`lifecycle.persistence.overflow_resets`; rows bound from the parked set
-   after the reset are rewritten only once re-proved). Rows are fenced by cache-key generation: the
+   after the reset are rewritten only once re-proved). The reset records an
+   in-progress marker as the generation before it clears the tables, so a
+   reset a crash or a shutdown deadline interrupted is completed by the
+   next boot rather than read as complete, and upserts drained before an
+   overflow are not requeued after it. Rows are fenced by cache-key generation: the
    store keeps a non-secret HMAC fingerprint of the master key and every
    key-derivation version (`cache_routing_meta`), and a boot under a
    different generation (a rotated key, or a release that changed a

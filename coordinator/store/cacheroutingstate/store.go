@@ -39,10 +39,15 @@ type Store interface {
 	// key generation the stored rows were written under, or "" when none was
 	// recorded.
 	CacheRoutingKeyFingerprint(ctx context.Context) (string, error)
-	// ResetCacheRoutingState deletes every holder and demand row, whatever
-	// their expiry, and then records fingerprint as the current key
-	// generation. Used when the master key changed: rows derived under the
-	// old key can never match a request.
+	// ResetCacheRoutingState records ResetInProgress as the key generation,
+	// then deletes every holder and demand row, whatever their expiry, and
+	// then records fingerprint as the generation. A reset interrupted
+	// between its batched deletes (a crash, a shutdown deadline) therefore
+	// leaves the marker behind, and the next boot repeats the reset instead
+	// of restoring the residual rows. Used when the key generation changed
+	// (rows derived under the old keys can never match a request) and when
+	// the persister's delete backlog overflowed, under the same generation,
+	// where only the marker tells an interrupted reset from a complete one.
 	ResetCacheRoutingState(ctx context.Context, fingerprint string) error
 	// PruneCacheRoutingState deletes holders whose effective expiry under ttl
 	// (the earlier of the stored expiry and UpdatedAt+ttl; ttl <= 0 applies no
@@ -68,3 +73,7 @@ const PruneBatchRows = 10_000
 // FutureSkew is how far ahead of the pruning clock a row's timestamp may be
 // before the prune treats it as another instance's skew and removes it.
 const FutureSkew = time.Minute
+
+// ResetInProgress is the key generation recorded while ResetCacheRoutingState
+// clears the tables; a boot that reads it completes the interrupted reset.
+const ResetInProgress = "reset-in-progress"

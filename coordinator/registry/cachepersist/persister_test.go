@@ -1190,6 +1190,86 @@ func TestRestoreResetsWhenTheBacklogOverflowsDuringAnEmptyLoad(t *testing.T) {
 	}
 }
 
+// A reset interrupted between its batched deletes leaves the in-progress
+// marker as the recorded generation, so the next boot completes it instead
+// of restoring the rows it had condemned, without counting a key rotation.
+func TestRestoreCompletesAnInterruptedReset(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	// The crash left the marker recorded and a residual row behind.
+	if err := mem.ResetCacheRoutingState(ctx, crs.ResetInProgress); err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.UpsertCacheHolders(ctx, []crs.HolderRecord{rec("residual", "e", now, time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	p := New(mem, nil, Options{MaxPending: 10, Fingerprint: "fp"})
+	restoreForTest(t, p, now)
+	if s := p.Status(); s.RestoredHolders != 0 || s.KeyRotated || !s.Ready {
+		t.Fatalf("an interrupted reset must be completed, not counted as a rotation: %+v", s)
+	}
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 {
+		t.Fatalf("the residual row must be gone: %+v", rows)
+	}
+	if fp, _ := mem.CacheRoutingKeyFingerprint(ctx); fp != "fp" {
+		t.Fatalf("the generation must be recorded once the reset completed: %q", fp)
+	}
+}
+
+// upsertHookStore fails the first upsert batch after running a hook during
+// the failing call: the window in which the batch is in flight.
+type upsertHookStore struct {
+	crs.Store
+	onFirstUpsert func()
+}
+
+func (s *upsertHookStore) UpsertCacheHolders(ctx context.Context, rows []crs.HolderRecord) error {
+	if hook := s.onFirstUpsert; hook != nil {
+		s.onFirstUpsert = nil
+		hook()
+		return fmt.Errorf("store unavailable")
+	}
+	return s.Store.UpsertCacheHolders(ctx, rows)
+}
+
+// An upsert drained before a backlog overflow is not requeued after it: its
+// row may be one a released decision condemned, and the reset that follows
+// would write it back.
+func TestUpsertsDrainedBeforeAnOverflowAreNotRequeued(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	st := &upsertHookStore{Store: mem}
+	p := New(st, nil, Options{MaxPending: 2}) // dirty cap 8
+	restoreForTest(t, p, now)
+	condemned := rec("condemned", "e", now, time.Minute)
+	p.MarkHolderUpsert(condemned)
+	st.onFirstUpsert = func() {
+		// While the batch is in flight: the row is invalidated, then the
+		// backlog overflows and releases that decision.
+		p.MarkHolderDelete(condemned.HolderKey(), now.Add(time.Second))
+		for i := 0; i < p.dirtyCap; i++ {
+			p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+		}
+	}
+	if err := p.Flush(ctx); err == nil {
+		t.Fatal("the first upsert batch must fail")
+	}
+	p.mu.Lock()
+	_, requeued := p.holderUpserts[condemned.HolderKey()]
+	p.mu.Unlock()
+	if s := p.Status(); requeued || s.DroppedDirty != 1 || s.OverflowResets != 1 {
+		t.Fatalf("an upsert drained before the overflow must not be requeued: requeued=%v %+v", requeued, s)
+	}
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := mem.LoadCacheHolders(ctx, now, time.Minute, 0); len(rows) != 0 {
+		t.Fatalf("the condemned row must not be written back after the reset: %+v", rows)
+	}
+}
+
 // A delete requeued by a failed flush is never dropped either, even when
 // request-path decisions filled the dirty set during the failing write.
 func TestRequeuedDeleteIsNeverDroppedAtTheCap(t *testing.T) {

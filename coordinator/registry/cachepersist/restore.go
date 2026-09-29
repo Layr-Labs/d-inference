@@ -35,13 +35,16 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		if err := p.store.ResetCacheRoutingState(ctx, p.fingerprint); err != nil {
 			return nil, err
 		}
-		if stored == "" {
+		switch stored {
+		case "":
 			p.logger.Info("cache routing persistence: recorded the cache-key generation; the durable copy starts empty")
-		} else {
+		case crs.ResetInProgress:
+			p.logger.Warn("cache routing persistence: a reset the previous run did not finish was completed; the durable copy starts empty")
+		default:
 			p.logger.Warn("cache routing persistence: the cache-key generation changed (a rotated master key or a bumped derivation version); the durable copy was reset instead of restored")
 		}
 		p.mu.Lock()
-		p.counters.keyRotated = stored != ""
+		p.counters.keyRotated = stored != "" && stored != crs.ResetInProgress
 		p.resetPending = false // the reset covered any overflowed backlog
 		p.ready = true
 		p.mu.Unlock()

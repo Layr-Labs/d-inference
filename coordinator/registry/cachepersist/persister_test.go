@@ -987,8 +987,13 @@ func TestPruneForgetsExpiredDecisionsInChunks(t *testing.T) {
 	for i := 0; i < fresh; i++ {
 		p.rememberDeleteLocked(crs.HolderKey{Key: fmt.Sprintf("f%05d", i), CacheEpoch: "e"}, now)
 	}
-	// Decided again, later: the entry moves to the fresh end.
+	// Decided again, later: the entry moves to the fresh end. Decided again,
+	// earlier: ignored, the later decision stands.
 	p.rememberDeleteLocked(crs.HolderKey{Key: "o00000", CacheEpoch: "e"}, now)
+	p.rememberDeleteLocked(crs.HolderKey{Key: "f00000", CacheEpoch: "e"}, now.Add(-3*time.Minute))
+	if at := p.recentDeletes[crs.HolderKey{Key: "f00000", CacheEpoch: "e"}]; !at.Equal(now) {
+		t.Fatalf("an earlier re-decision must not move a retained decision back: %v", at)
+	}
 	p.mu.Unlock()
 	checkRetentionOrder(t, p)
 	// One lock hold forgets at most its chunk and reports the rest.

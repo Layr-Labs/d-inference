@@ -1396,8 +1396,9 @@ func TestCacheRoutingPersistenceCapabilityChangeSettlesLargeBucket(t *testing.T)
 // parked under the new capability bind, across more than one chunk, and rows
 // of the old capability are settled as mismatches at bind rather than swept
 // away with them. Parked rows for keys the changing session itself held live
-// under the old capability are the exception: their invalidation is a delete
-// decision that outranks the older parked evidence, whatever its identity.
+// under the old capability are the exception: unless another live session
+// holds the key, their invalidation is a delete decision that outranks the
+// older parked evidence, whatever its identity.
 func TestCacheRoutingPersistenceSameEpochChangeBindsNewCapabilityRows(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	r, _, capability := exactTestRegistry(t)
@@ -1505,14 +1506,20 @@ func TestCacheRoutingPersistenceStaleDropYieldsToRepublishedEpoch(t *testing.T) 
 	if s := r.CacheRoutingPersistenceStatus(); s.BoundHolders != parked || s.PendingHolders != 0 || s.DroppedPending != 0 {
 		t.Fatalf("every row must bind: %+v", s)
 	}
-	// A session that lost its ID stops settling: the rows its disconnect
-	// parks stay parked for the next session with that epoch.
+	// A session that lost its ID stops settling, whatever its last apply
+	// left behind: the rows its disconnect parks stay parked for the next
+	// session with that epoch or the TTL prune.
 	removeTestProvider(r, p.ID)
 	r.cacheRouting.invalidateProviderEvidence(p.ID, cacheHolderRemovalDisconnect, true)
-	before := r.CacheRoutingPersistenceStatus()
+	p.mu.Lock()
+	p.PrefixCacheV2Models["model"] = other // the dead session's last apply left A behind
+	p.mu.Unlock()
+	if before := r.CacheRoutingPersistenceStatus(); before.PendingHolders != parked {
+		t.Fatalf("the disconnect must park every bound row: %+v", before)
+	}
 	r.dropParkedWhileStale(p, parkedDrop{epoch: capability.CacheEpoch, model: "model"})
-	if after := r.CacheRoutingPersistenceStatus(); after.PendingHolders != before.PendingHolders || after.DroppedPending != before.DroppedPending {
-		t.Fatalf("a replaced session must not settle parked rows: before=%+v after=%+v", before, after)
+	if after := r.CacheRoutingPersistenceStatus(); after.PendingHolders != parked || after.DroppedPending != 0 {
+		t.Fatalf("a replaced session must not settle parked rows: %+v", after)
 	}
 }
 

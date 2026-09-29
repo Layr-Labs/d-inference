@@ -5,6 +5,10 @@
 - Restore PR threat-model review through OpenRouter. Scan every changed file with complete before/after text and a cross-file pass against the full threat model. Findings update one advisory comment; incomplete coverage is explicit, clean first scans stay quiet, and model/service failures do not block merging. The workflow executes only the trusted base revision.
 - Combine independent Opus 5.5 and GPT-6 Astra full scans through the same OpenRouter key. Attribute findings to their reviewers, preserve differing advice, and retain completed feedback if the other model fails.
 
+## Unreleased — SSD cache write budget
+
+- Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.
+
 ## Unreleased — automatic model artifact revisions
 
 - Reject cached or staged revisions with unmanifested integrity files, so an added template, tokenizer or weight file cannot be activated under the original approved hash.

@@ -46,12 +46,10 @@ enum SSDPrefixCachePolicy {
 
     // MARK: - Endurance (daily write cap)
 
-    /// Token-bucket cap on encrypted bytes written per day (endurance
-    /// guard — the uncapped hot-box worst case is <6 months to rated wear
-    /// on a 512 GB disk; at expected volumes this never binds). `0` ⇒
-    /// unlimited; malformed/negative ⇒ default 150 GB/day.
+    /// Token-bucket budget for SSD write endurance. `0` ⇒ unlimited;
+    /// malformed/negative ⇒ default 750 GB/day.
     static let writeCapEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY"
-    static let defaultMaxWriteBytesPerDay = 150 * 1_000_000_000
+    static let defaultMaxWriteBytesPerDay = 750 * 1_000_000_000
 
     static func maxWriteBytesPerDay(
         environment: [String: String] = ProcessInfo.processInfo.environment

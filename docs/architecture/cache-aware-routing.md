@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `0dae54e64`
+> Last updated: 2026-09-29 · commit `83bdf0a7e`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -745,9 +745,10 @@ back are operator procedures, kept in the runbook
    (`bindPendingLocked`, run at the end of `Register` and on every capability
    apply in `UpdatePrefixCacheSnapshot`, changed or not, in chunks of 1,000
    rows per tracker-lock hold, with the registry read lock and the session's
-   ownership re-taken around each chunk at registration and after a retried
-   restore, so a request waits for at most one chunk on the tracker lock and
-   a queued registration or disconnect never waits behind a whole rebuild),
+   ownership re-taken around each chunk at registration, on every
+   capability apply and after a retried restore, so a request waits for at
+   most one chunk on the tracker lock and a queued registration or
+   disconnect never waits behind a whole rebuild),
    so a bound
    holder carries a live `*Provider` exactly like a fresh receipt. A parked
    row whose provider returns under the same epoch and model but another

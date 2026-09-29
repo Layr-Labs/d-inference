@@ -783,3 +783,34 @@ func TestRecentDeletesEvictOldestDecisionFirst(t *testing.T) {
 		}
 	}
 }
+
+// A row another instance stamped ahead of this clock is removed at restore,
+// so this run's receipts for the same key reach the store instead of being
+// outranked by the future timestamp.
+func TestRestoreRemovesFutureDatedRows(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	future := rec("a", "e", now.Add(2*time.Hour), time.Minute)
+	future.StageMs = 999
+	if err := mem.UpsertCacheHolders(ctx, []crs.HolderRecord{future}); err != nil {
+		t.Fatal(err)
+	}
+	p := New(mem, nil, Options{MaxPending: 10})
+	if _, err := p.Restore(ctx, now, time.Minute, 10, 10); err != nil {
+		t.Fatal(err)
+	}
+	if s := p.Status(); s.RestoredHolders != 0 {
+		t.Fatalf("a future-dated row must not restore: %+v", s)
+	}
+	current := rec("a", "e", now, time.Minute)
+	current.StageMs = 50
+	p.MarkHolderUpsert(current)
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := mem.LoadCacheHolders(ctx, now, 0, 0)
+	if len(rows) != 1 || rows[0].StageMs != 50 || !rows[0].UpdatedAt.Equal(now) {
+		t.Fatalf("this run's receipt must replace the future-dated row: %+v", rows)
+	}
+}

@@ -179,12 +179,29 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			if rows, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), now, 1); err != nil || len(rows) != 1 || rows[0].Key == "future" {
 				t.Fatalf("future row must not take the cap: %+v %v", rows, err)
 			}
+			// The prune removes it so a current observation is not outranked.
+			if removed, err := s.PruneCacheRoutingState(ctx, now, 0, now.Add(-2*time.Hour)); err != nil || removed != 1 {
+				t.Fatalf("prune must remove the future-dated demand row: removed=%d err=%v", removed, err)
+			}
+			if err := s.UpsertCacheDemand(ctx, []crs.DemandRecord{{Key: "future", SeenAt: now}}); err != nil {
+				t.Fatal(err)
+			}
+			rows, _ := s.LoadCacheDemand(ctx, now.Add(-time.Second), now, 0)
+			replaced := false
+			for _, r := range rows {
+				if r.Key == "future" && r.SeenAt.Equal(now) {
+					replaced = true
+				}
+			}
+			if !replaced {
+				t.Fatalf("a current observation must replace the pruned future row: %+v", rows)
+			}
 			got, err := s.LoadCacheDemand(ctx, now.Add(-600*time.Second), now.Add(time.Hour), 0)
 			if err != nil {
 				t.Fatalf("load: %v", err)
 			}
-			if len(got) != 601 {
-				t.Fatalf("loaded %d rows within the window, want 601", len(got))
+			if len(got) != 602 { // 601 + the "future" key re-observed at now
+				t.Fatalf("loaded %d rows within the window, want 602", len(got))
 			}
 			sort.Slice(got, func(i, j int) bool { return got[i].Key < got[j].Key })
 			if !got[0].SeenAt.Equal(now) || !got[1].SeenAt.Equal(now.Add(time.Minute)) {
@@ -210,6 +227,21 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			}
 			if rows, _ := s.LoadCacheHolders(ctx, now.Add(61*time.Minute), 0, 0); len(rows) != 1 || rows[0].Key != "k900" {
 				t.Fatalf("the skewed row loads once the clock has passed its update: %+v", rows)
+			}
+			// A prune removes it (it is more than FutureSkew ahead), so a
+			// current receipt for the same key is not outranked by it.
+			if removed, err := s.PruneCacheRoutingState(ctx, now, 0, now.Add(-time.Hour)); err != nil || removed != 1 {
+				t.Fatalf("prune must remove the future-dated row: removed=%d err=%v", removed, err)
+			}
+			current := holderRecord(900, "epoch-skew", now, 29*time.Minute)
+			if err := s.UpsertCacheHolders(ctx, []crs.HolderRecord{current}); err != nil {
+				t.Fatal(err)
+			}
+			if rows, _ := s.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 1 || !rows[0].UpdatedAt.Equal(now) {
+				t.Fatalf("a current receipt must replace the pruned future row: %+v", rows)
+			}
+			if err := s.DeleteCacheHolders(ctx, []crs.HolderKey{current.HolderKey()}); err != nil {
+				t.Fatal(err)
 			}
 			// Pruning under the active TTL removes rows a longer past TTL left
 			// with a distant stored expiry once their effective expiry has

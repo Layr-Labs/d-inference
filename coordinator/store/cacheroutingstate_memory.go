@@ -166,6 +166,7 @@ func (s *MemoryStore) PruneCacheRoutingState(ctx context.Context, now time.Time,
 	defer s.mu.Unlock()
 	s.cacheRoutingMapsLocked()
 	var removed int64
+	future := now.Add(crs.FutureSkew)
 	for key, r := range s.cacheHolders {
 		expires := r.ExpiresAt
 		if ttl > 0 {
@@ -173,13 +174,13 @@ func (s *MemoryStore) PruneCacheRoutingState(ctx context.Context, now time.Time,
 				expires = clamp
 			}
 		}
-		if !expires.After(now) {
+		if !expires.After(now) || r.UpdatedAt.After(future) {
 			delete(s.cacheHolders, key)
 			removed++
 		}
 	}
 	for key, seen := range s.cacheDemand {
-		if seen.Before(demandNotBefore) {
+		if seen.Before(demandNotBefore) || seen.After(future) {
 			delete(s.cacheDemand, key)
 			removed++
 		}

@@ -41,6 +41,13 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		p.mu.Unlock()
 		return nil, nil
 	}
+	// Expired rows, and rows another instance stamped ahead of this clock,
+	// go before the load: a future-dated row is quarantined by the load, and
+	// left in place its timestamp would outrank every receipt this run
+	// writes for the same key until the clock caught up.
+	if _, err := p.store.PruneCacheRoutingState(ctx, now, ttl, now.Add(-ttl)); err != nil {
+		return nil, err
+	}
 	demand, err := p.store.LoadCacheDemand(ctx, now.Add(-ttl), now, maxDemand)
 	if err != nil {
 		return nil, err

@@ -295,10 +295,13 @@ func (s *PostgresStore) PruneCacheRoutingState(ctx context.Context, now time.Tim
 	var total int64
 	// Equivalent to LEAST(expires_at, updated_at + ttl) <= now, in a form the
 	// expires_at and updated_at indexes both serve.
-	expired := `expires_at <= $1`
-	args := []any{now.UTC(), crs.PruneBatchRows}
+	// A row stamped ahead of the clock by more than FutureSkew is another
+	// instance's skew: loads quarantine it, and its future updated_at would
+	// outrank every current receipt in the merge, so it is removed.
+	expired := `(expires_at <= $1 OR updated_at > $3)`
+	args := []any{now.UTC(), crs.PruneBatchRows, now.Add(crs.FutureSkew).UTC()}
 	if ttl > 0 {
-		expired = `(expires_at <= $1 OR updated_at <= $3)`
+		expired = `(expires_at <= $1 OR updated_at > $3 OR updated_at <= $4)`
 		args = append(args, now.Add(-ttl).UTC())
 	}
 	for {
@@ -314,7 +317,8 @@ func (s *PostgresStore) PruneCacheRoutingState(ctx context.Context, now time.Tim
 	}
 	for {
 		tag, err := s.pool.Exec(ctx, `DELETE FROM cache_routing_demand WHERE ctid IN (
- SELECT ctid FROM cache_routing_demand WHERE seen_at < $1 LIMIT $2)`, demandNotBefore.UTC(), crs.PruneBatchRows)
+ SELECT ctid FROM cache_routing_demand WHERE seen_at < $1 OR seen_at > $3 LIMIT $2)`,
+			demandNotBefore.UTC(), crs.PruneBatchRows, now.Add(crs.FutureSkew).UTC())
 		if err != nil {
 			return total, fmt.Errorf("prune cache demand: %w", err)
 		}

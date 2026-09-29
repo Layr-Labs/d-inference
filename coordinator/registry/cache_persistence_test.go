@@ -1289,3 +1289,36 @@ func TestCacheRoutingPersistenceChunkBudgetSpansCapabilities(t *testing.T) {
 		t.Fatalf("every row bound after two holds: %+v", s)
 	}
 }
+
+// Rows parked for an already-connected session (an older session of the
+// same machine was disconnected after this one registered) bind completely
+// on the next capability snapshot, the heartbeat path, not one chunk per
+// heartbeat.
+func TestCacheRoutingPersistenceHeartbeatBindsLargeBucketCompletely(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r, st)
+	p := persistenceTestProvider(t, r, "machine-a", capability)
+	r.mu.RLock()
+	persister := r.cachePersister
+	r.mu.RUnlock()
+	now := time.Now()
+	const parked = 2*bindChunkRows + 5
+	for i := 0; i < parked; i++ {
+		persister.Park(crs.HolderRecord{
+			Key: fmt.Sprintf("k%05d", i), CacheEpoch: capability.CacheEpoch, Tier: "ssd", ModelID: "model",
+			ModelAggregateHash: capability.ModelAggregateHash, PromptContractID: capability.PromptContractID,
+			BlockHashVersion: capability.BlockHashVersion, ReadyBoundaryMode: capability.ReadyBoundaryMode,
+			AnchorTokenCount: 4096, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(time.Minute),
+		})
+	}
+	// The next heartbeat: the production apply path, capabilities unchanged.
+	if _, err := r.UpdatePrefixCacheSnapshot(p.ID, true, 2, []protocol.PrefixCacheV2Capability{capability}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 || s.BoundHolders != parked {
+		t.Fatalf("a heartbeat must bind the whole bucket, in chunks: %+v", s)
+	}
+}

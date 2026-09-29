@@ -47,6 +47,10 @@ type Store interface {
 	// in bounded batches, and returns the number of rows removed. Pruning
 	// under the active TTL keeps rows written under a longer one from
 	// outliving today's setting in the table after they stopped loading.
+	// Rows stamped more than FutureSkew ahead of now (a previous instance's
+	// clock ran ahead) are removed too: loads quarantine them, and the merge
+	// would otherwise let their future timestamps outrank every current
+	// receipt for the same row until the clock caught up.
 	PruneCacheRoutingState(ctx context.Context, now time.Time, ttl time.Duration, demandNotBefore time.Time) (int64, error)
 }
 
@@ -57,3 +61,7 @@ const BatchRows = 512
 // PruneBatchRows bounds one DELETE so pruning a 250k-row table never holds a
 // long lock.
 const PruneBatchRows = 10_000
+
+// FutureSkew is how far ahead of the pruning clock a row's timestamp may be
+// before the prune treats it as another instance's skew and removes it.
+const FutureSkew = time.Minute

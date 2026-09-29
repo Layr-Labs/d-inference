@@ -474,7 +474,7 @@ func (p *Persister) Prune(ctx context.Context, now time.Time, ttl time.Duration)
 	if !p.Ready() {
 		return
 	}
-	if _, err := p.store.PruneCacheRoutingState(ctx, now, ttl, now.Add(-ttl)); err != nil {
+	if _, err := p.store.PruneCacheRoutingState(ctx, now, ttl, now.Add(-ttl)); err != nil && ctx.Err() == nil {
 		p.logger.Warn("cache routing persistence prune failed", "error", err)
 	}
 	p.mu.Lock()

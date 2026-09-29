@@ -35,28 +35,50 @@ func clonePrefixCacheStatuses(
 // visible, so /v1/cache/status cannot observe a transient contradiction.
 func (r *Registry) UpdatePrefixCacheSnapshot(
 	providerID string,
-	replaceCapabilities bool,
+	present bool,
 	version int,
 	capabilities []protocol.PrefixCacheV2Capability,
 	memoryCapabilities *[]protocol.PrefixCacheV2Capability,
 	statuses *[]protocol.PrefixCacheModelStatus,
 	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
 ) (bool, error) {
+	changed, provider, remaining, err := r.applyPrefixCacheSnapshot(providerID, present, version, capabilities, memoryCapabilities, statuses, outcomes)
+	if err == nil && remaining && provider != nil {
+		// The snapshot bound one chunk of parked rows under its locks (the
+		// heartbeat path); the rest binds here, chunk by chunk, with the
+		// registry read lock and the session's ownership re-taken around
+		// each chunk, so a large bucket parked for an already-connected
+		// session binds on its next heartbeat rather than one chunk per
+		// heartbeat.
+		r.bindChunksWhileOwned(provider)
+	}
+	return changed, err
+}
+
+func (r *Registry) applyPrefixCacheSnapshot(
+	providerID string,
+	replaceCapabilities bool,
+	version int,
+	capabilities []protocol.PrefixCacheV2Capability,
+	memoryCapabilities *[]protocol.PrefixCacheV2Capability,
+	statuses *[]protocol.PrefixCacheModelStatus,
+	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
+) (changed bool, boundProvider *Provider, remaining bool, err error) {
 	if r == nil {
-		return false, nil
+		return false, nil, false, nil
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	provider := r.providers[providerID]
 	if provider == nil {
-		return false, errInvalidPrefixCacheCapability
+		return false, nil, false, errInvalidPrefixCacheCapability
 	}
 
 	provider.mu.Lock()
 	models, err := uniqueProviderModels(provider.Models)
 	if err != nil {
 		provider.mu.Unlock()
-		return false, err
+		return false, nil, false, err
 	}
 
 	resultVersion := provider.PrefixCacheProtocol
@@ -67,7 +89,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 			version, capabilities, models)
 		if err != nil {
 			provider.mu.Unlock()
-			return false, err
+			return false, nil, false, err
 		}
 		resultVersion = version
 	}
@@ -76,7 +98,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 			resultVersion, *memoryCapabilities, models)
 		if err != nil {
 			provider.mu.Unlock()
-			return false, err
+			return false, nil, false, err
 		}
 	} else if resultVersion < 2 {
 		resultMemoryCapabilities = nil
@@ -161,12 +183,13 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 		// Rows restored from the durable copy that name one of these epochs
 		// become live holders now (cache_persistence.go). Not gated on a
 		// change: registration already carries the capabilities, so the first
-		// apply after a reconnect is an unchanged one.
-		tracker.bindRestoredHolders(provider, resultCapabilities)
+		// apply after a reconnect is an unchanged one. One chunk here, under
+		// the locks; the caller completes the rest outside them.
+		remaining = tracker.bindRestoredHolders(provider, resultCapabilities)
 	}
 	provider.mu.Unlock()
 	if tracker != nil {
 		tracker.recordDonationOutcomes(deltas)
 	}
-	return capabilitiesChanged, nil
+	return capabilitiesChanged, provider, remaining, nil
 }

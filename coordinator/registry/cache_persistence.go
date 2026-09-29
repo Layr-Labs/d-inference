@@ -57,18 +57,26 @@ func (t *cacheRoutingTracker) persistHolderRemoval(key string, h cacheHolder, re
 	case cacheHolderRemovalTTL:
 		// Loads filter expired rows and the store prune removes them.
 	default:
-		// Two overlapping sessions of one machine share the durable identity
-		// (key, epoch). If another live session still holds this boundary
-		// under the same epoch, the row is its evidence now: refresh it
-		// instead of deleting it.
-		for providerID, other := range t.holders[key] {
-			if providerID != h.ProviderID && other.CacheEpoch == h.CacheEpoch && other.persistable() {
-				t.persister.MarkHolderUpsert(holderRecordFor(key, other))
-				return
-			}
-		}
-		t.persister.MarkHolderDelete(crs.HolderKey{Key: key, CacheEpoch: h.CacheEpoch})
+		t.persistRowAfterLossLocked(key, h.CacheEpoch, h.ProviderID)
 	}
+}
+
+// persistRowAfterLossLocked settles the durable row (key, epoch) after one
+// holder for it is gone. Two sessions of one machine share that identity and
+// can overlap: the per-key holder cap evicts the old session's holder as the
+// new session's receipt arrives (capacity_eviction), or a row parked for the
+// old session is taken by the new one and fails to match. If another live
+// session (any provider but except) still holds the boundary under the same
+// epoch, the row is its evidence now and is refreshed; otherwise it is
+// deleted. Called with t.mu held.
+func (t *cacheRoutingTracker) persistRowAfterLossLocked(key, epoch, except string) {
+	for providerID, other := range t.holders[key] {
+		if providerID != except && other.CacheEpoch == epoch && other.persistable() {
+			t.persister.MarkHolderUpsert(holderRecordFor(key, other))
+			return
+		}
+	}
+	t.persister.MarkHolderDelete(crs.HolderKey{Key: key, CacheEpoch: epoch})
 }
 
 // bindPendingLocked runs under tracker.mu (and the provider's lock, in the
@@ -112,9 +120,11 @@ func (t *cacheRoutingTracker) bindRowsLocked(provider *Provider, capability prot
 			rec.PromptContractID != capability.PromptContractID ||
 			(rec.BlockHashVersion != "" && capability.BlockHashVersion != "" && rec.BlockHashVersion != capability.BlockHashVersion) {
 			// The provider's capability for this epoch and model no longer
-			// describes the checkpoint; the durable row would only be
-			// reloaded and rejected again on every boot.
-			t.persister.MarkHolderDelete(rec.HolderKey())
+			// describes the checkpoint (a coordinator upgrade bumped the
+			// block-hash version, or the artifact or contract moved); the
+			// durable row would only be reloaded and rejected again on every
+			// boot, unless a live holder still owns it.
+			t.persistRowAfterLossLocked(rec.Key, rec.CacheEpoch, "")
 			continue
 		}
 		if live, ok := t.holders[rec.Key][provider.ID]; ok && !rec.UpdatedAt.After(live.UpdatedAt) {

@@ -56,7 +56,7 @@ func (s *MemoryStore) DeleteCacheHolders(ctx context.Context, keys []crs.HolderK
 	return nil
 }
 
-func (s *MemoryStore) LoadCacheHolders(ctx context.Context, now time.Time, limit int) ([]crs.HolderRecord, error) {
+func (s *MemoryStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl time.Duration, limit int) ([]crs.HolderRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -64,6 +64,13 @@ func (s *MemoryStore) LoadCacheHolders(ctx context.Context, now time.Time, limit
 	defer s.mu.RUnlock()
 	out := make([]crs.HolderRecord, 0, len(s.cacheHolders))
 	for _, r := range s.cacheHolders {
+		// Effective expiry under the current TTL, applied before the order
+		// and the cap exactly as the Postgres query does.
+		if ttl > 0 {
+			if clamp := r.UpdatedAt.Add(ttl); clamp.Before(r.ExpiresAt) {
+				r.ExpiresAt = clamp
+			}
+		}
 		if r.ExpiresAt.After(now) {
 			out = append(out, r)
 		}

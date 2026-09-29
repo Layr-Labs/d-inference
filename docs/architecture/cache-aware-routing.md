@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-29 · commit `2fea54f1c`
+> Last updated: 2026-09-29 · commit `4cd59d618`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -748,10 +748,13 @@ back are operator procedures, kept in the runbook
    artifact or contract is deleted at bind, not reloaded on every boot. A
    disconnect parks the holder instead of deleting its row; every other
    removal reason deletes the row unless another live session of the same
-   machine (same key and epoch, as during an overlapping reconnect) still
-   holds the boundary, in which case the row is refreshed as that session's
-   evidence. Restores are bounded by the index caps (holders longest-lived
-   first, demand newest first) and clamped to the current TTL; the demand
+   machine (same key and epoch: two sessions overlap when the per-key holder
+   cap evicts the old session's holder as the new session's receipt arrives)
+   still holds the boundary, in which case the row is refreshed as that
+   session's evidence. Restores are bounded by the index caps and clamped to
+   the current TTL before the cap applies (the store orders holders by their
+   expiry under today's TTL, longest-lived first, and demand newest first),
+   so a TTL reduction never fills the cap with rows the clamp then drops; the demand
    write granularity is bounded by the TTL so a short TTL never leaves the
    durable timestamp stale. Rows are fenced by cache-key generation: the
    store keeps a non-secret HMAC fingerprint of the master key

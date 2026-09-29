@@ -51,7 +51,7 @@ func startPersistence(t *testing.T, r *Registry, st store.Store) CacheRoutingPer
 
 func storedHolders(t *testing.T, st crs.Store) []crs.HolderRecord {
 	t.Helper()
-	rows, err := st.LoadCacheHolders(context.Background(), time.Now(), 0)
+	rows, err := st.LoadCacheHolders(context.Background(), time.Now(), 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +539,7 @@ func TestCacheRoutingPersistenceDeletesMismatchedRestoredRows(t *testing.T) {
 	}
 	changed := capability
 	changed.PromptContractID = strings.Repeat("e", 64)
-	back := persistenceTestProvider(t, r2, "machine-a-back", changed)
+	persistenceTestProvider(t, r2, "machine-a-back", changed)
 	plan2 := boundTestCachePlan(r2, exactTestPlan(checkpoint, floor))
 	if hints := memoryTestHints(r2, plan2, time.Now()); len(hints) != 0 {
 		t.Fatalf("mismatched row must not become a live holder: %+v", hints)
@@ -562,7 +562,6 @@ func TestCacheRoutingPersistenceDeletesMismatchedRestoredRows(t *testing.T) {
 	if s := startPersistence(t, r3, st); s.PendingHolders != 0 || s.RestoredHolders != 0 {
 		t.Fatalf("deleted row came back: %+v", s)
 	}
-	_ = back
 }
 
 // Two overlapping sessions of one machine share one durable row (same key and
@@ -617,5 +616,54 @@ func TestCacheRoutingPersistenceKeepsRowOwnedByOtherLiveSession(t *testing.T) {
 	}
 	if rows := storedHolders(t, st); len(rows) != 0 {
 		t.Fatalf("row must be deleted once no live session holds it: %+v", rows)
+	}
+}
+
+// A parked row from another block-hash generation (a coordinator upgrade
+// bumped promptcontract.BlockHashVersion while the provider's epoch stayed)
+// is rejected at bind without deleting the row the same session holds live.
+func TestCacheRoutingPersistenceMismatchAtBindKeepsLiveRow(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	startPersistence(t, r, st)
+	checkpoint := exactTestAnchor(16, "c")
+	floor := exactTestAnchor(17, "d")
+	plan := boundTestCachePlan(r, exactTestPlan(checkpoint, floor))
+	a := persistenceTestProvider(t, r, "session-1", capability)
+	_, ready := checkpointTestAttempt(t, r, a, capability, "donor", plan, 1)
+	ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+	ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+	if !r.ApplyPrefixCacheReadyV2(a.ID, ready) {
+		t.Fatal("ready receipt rejected")
+	}
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rows := storedHolders(t, st)
+	if len(rows) != 1 {
+		t.Fatalf("expected one durable row: %+v", rows)
+	}
+	// The same row as an older generation would have restored and parked it.
+	legacy := rows[0]
+	legacy.BlockHashVersion = "legacy-v0"
+	legacy.UpdatedAt = legacy.UpdatedAt.Add(-time.Second)
+	r.cacheRouting.persister.Park(legacy)
+	// The next heartbeat re-applies the same capabilities and takes the row.
+	if err := r.UpdatePrefixCacheCapabilities(a.ID, 2, []protocol.PrefixCacheV2Capability{capability}); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 || s.DroppedPending != 1 {
+		t.Fatalf("legacy row must be taken and dropped: %+v", s)
+	}
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows := storedHolders(t, st); len(rows) != 1 || rows[0].BlockHashVersion != capability.BlockHashVersion {
+		t.Fatalf("the live session's row must survive the mismatched parked row: %+v", rows)
+	}
+	if hints := memoryTestHints(r, plan, time.Now()); len(hints) != 1 || hints[a.ID].Tier != "ssd" {
+		t.Fatalf("live holder lost: %+v", hints)
 	}
 }

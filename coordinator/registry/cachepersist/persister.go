@@ -161,7 +161,8 @@ func (p *Persister) CancelDelete(k crs.HolderKey) {
 }
 
 // MarkDemand records keys the demand index just observed, skipping keys whose
-// persisted seen time is within DemandPersistGranularity. Nil-safe.
+// persisted seen time is within the demand granularity (DemandPersistGranularity
+// bounded by the TTL, see New). Nil-safe.
 func (p *Persister) MarkDemand(keys []string, now time.Time) {
 	if p == nil || len(keys) == 0 {
 		return

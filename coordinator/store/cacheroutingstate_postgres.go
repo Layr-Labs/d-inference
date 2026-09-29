@@ -130,15 +130,23 @@ func (s *PostgresStore) DeleteCacheHolders(ctx context.Context, keys []crs.Holde
 	return nil
 }
 
-func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, limit int) ([]crs.HolderRecord, error) {
-	// Longest-lived first so a capped restore keeps the rows that still have
-	// the most life; a limit of 0 or less loads everything.
-	query := `SELECT key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id,
- block_hash_version, anchor_chain_hash, anchor_token_count, required_recompute_tokens, stage_ms, updated_at, expires_at
- FROM cache_routing_holders WHERE expires_at > $1 ORDER BY expires_at DESC, key, cache_epoch`
+func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, ttl time.Duration, limit int) ([]crs.HolderRecord, error) {
+	// The effective expiry applies the current TTL before the filter, the
+	// order and the limit, so a capped load after a TTL reduction is over
+	// rows that are still valid. Longest-lived first; a limit of 0 or less
+	// loads everything.
+	expiry := "expires_at"
 	args := []any{now.UTC()}
+	if ttl > 0 {
+		expiry = "LEAST(expires_at, updated_at + $2::bigint * interval '1 microsecond')"
+		args = append(args, ttl.Microseconds())
+	}
+	query := fmt.Sprintf(`SELECT key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id,
+ block_hash_version, anchor_chain_hash, anchor_token_count, required_recompute_tokens, stage_ms, updated_at, effective_expires_at
+ FROM (SELECT *, %s AS effective_expires_at FROM cache_routing_holders) h
+ WHERE effective_expires_at > $1 ORDER BY effective_expires_at DESC, key, cache_epoch`, expiry)
 	if limit > 0 {
-		query += ` LIMIT $2`
+		query += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
 		args = append(args, limit)
 	}
 	rows, err := s.pool.Query(ctx, query, args...)
@@ -222,13 +230,23 @@ func (s *PostgresStore) CacheRoutingKeyFingerprint(ctx context.Context) (string,
 	return value, nil
 }
 
-// ResetCacheRoutingState empties both tables in bounded batches and records
-// the new key generation last, so a crash mid-way leaves the old fingerprint
-// and the next boot resets again.
+// ResetCacheRoutingState empties both tables with unconditional bounded
+// deletes (not TRUNCATE, whose exclusive lock a still-draining old container
+// could block on, and not an expiry cutoff, which a long TTL could exceed)
+// and records the new key generation last, so a crash mid-way leaves the old
+// fingerprint and the next boot resets again.
 func (s *PostgresStore) ResetCacheRoutingState(ctx context.Context, fingerprint string) error {
-	far := time.Now().Add(1000 * time.Hour)
-	if _, err := s.PruneCacheRoutingState(ctx, far, far); err != nil {
-		return err
+	for _, table := range []string{"cache_routing_holders", "cache_routing_demand"} {
+		stmt := fmt.Sprintf(`DELETE FROM %s WHERE ctid IN (SELECT ctid FROM %s LIMIT $1)`, table, table)
+		for {
+			tag, err := s.pool.Exec(ctx, stmt, crs.PruneBatchRows)
+			if err != nil {
+				return fmt.Errorf("reset %s: %w", table, err)
+			}
+			if tag.RowsAffected() < crs.PruneBatchRows {
+				break
+			}
+		}
 	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO cache_routing_meta (name, value, updated_at) VALUES ($1, $2, now())
  ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, cacheRoutingKeyFingerprintName, fingerprint)

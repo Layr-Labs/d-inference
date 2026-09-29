@@ -52,7 +52,7 @@ func TestFlushRetriesUnwrittenRemainderAndDedupesDemand(t *testing.T) {
 	if err := p.Flush(context.Background()); err != nil {
 		t.Fatalf("retry flush: %v", err)
 	}
-	if rows, _ := mem.LoadCacheHolders(context.Background(), now, 0); len(rows) != 1 {
+	if rows, _ := mem.LoadCacheHolders(context.Background(), now, 0, 0); len(rows) != 1 {
 		t.Fatalf("requeued holder not written: %d", len(rows))
 	}
 	if d, _ := mem.LoadCacheDemand(context.Background(), now.Add(-time.Minute), 0); len(d) != 2 {
@@ -85,7 +85,7 @@ func TestFlushWritesInBoundedChunksAndKeepsPartialProgress(t *testing.T) {
 	if err := p.FlushAll(context.Background()); err != nil || !p.dirtyEmpty() {
 		t.Fatalf("FlushAll must drain the remainder: %v", err)
 	}
-	if rows, _ := mem.LoadCacheHolders(context.Background(), now, 0); len(rows) != HolderFlushRows+300 {
+	if rows, _ := mem.LoadCacheHolders(context.Background(), now, 0, 0); len(rows) != HolderFlushRows+300 {
 		t.Fatalf("rows written: %d", len(rows))
 	}
 }
@@ -141,8 +141,10 @@ func TestRestoreClampsToCurrentTTLAndKeepsLongestLived(t *testing.T) {
 	if err != nil || len(demand) != 1 {
 		t.Fatalf("restore: %v %+v", err, demand)
 	}
-	if s := p.Status(); s.RestoredHolders != 2 || s.DroppedPending != 1 {
-		t.Fatalf("stale row must be dropped, old row clamped: %+v", s)
+	// The store applies the clamp itself: the stale row never loads, the old
+	// row arrives clamped.
+	if s := p.Status(); s.RestoredHolders != 2 || s.DroppedPending != 0 {
+		t.Fatalf("stale row must not load, old row clamped: %+v", s)
 	}
 	rows := p.Take("e", "model")
 	for _, r := range rows {
@@ -150,13 +152,42 @@ func TestRestoreClampsToCurrentTTLAndKeepsLongestLived(t *testing.T) {
 			t.Fatalf("old row not clamped to the current TTL: %+v", r)
 		}
 	}
-	// A capped restore keeps the longest-lived rows.
+	// A capped restore keeps the rows that live longest under today's TTL:
+	// old's stored expiry is later, but clamped it has 9 minutes left against
+	// fresh's 29.
 	p2 := New(mem, nil, Options{MaxPending: 1000})
 	if _, err := p2.Restore(ctx, now, 29*time.Minute, 1, 0); err != nil {
 		t.Fatal(err)
 	}
-	if rows := p2.Take("e", "model"); len(rows) != 1 || rows[0].Key != "old" {
-		t.Fatalf("capped restore must keep the longest-lived row (old expires latest before clamping): %+v", rows)
+	if rows := p2.Take("e", "model"); len(rows) != 1 || rows[0].Key != "fresh" {
+		t.Fatalf("capped restore must keep the row with the most life under the current TTL: %+v", rows)
+	}
+}
+
+// After a TTL reduction, rows written under the old TTL sort first by their
+// stored expiry although the clamp drops them. The cap must apply after the
+// clamp, or a cap-sized set of such rows hides every valid row behind it.
+func TestRestoreCapAppliesCurrentTTLBeforeLimit(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	rows := []crs.HolderRecord{
+		rec("stale-1", "e", now.Add(-35*time.Minute), 60*time.Minute), // stored expiry now+25m; expired under 29m
+		rec("stale-2", "e", now.Add(-33*time.Minute), 60*time.Minute), // stored expiry now+27m; expired under 29m
+		rec("valid", "e", now.Add(-5*time.Minute), 29*time.Minute),    // stored expiry now+24m; 24m left
+	}
+	if err := mem.UpsertCacheHolders(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	p := New(mem, nil, Options{MaxPending: 10})
+	if _, err := p.Restore(ctx, now, 29*time.Minute, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if s := p.Status(); s.RestoredHolders != 1 || s.DroppedPending != 0 {
+		t.Fatalf("the cap must be filled with rows valid under the current TTL: %+v", s)
+	}
+	if got := p.Take("e", "model"); len(got) != 1 || got[0].Key != "valid" || !got[0].ExpiresAt.Equal(now.Add(24*time.Minute)) {
+		t.Fatalf("capped restore hid the valid row behind clamped-away rows: %+v", got)
 	}
 }
 
@@ -192,7 +223,7 @@ func TestRestoreResetsRowsFromAnotherKeyGeneration(t *testing.T) {
 	if fp, err := mem.CacheRoutingKeyFingerprint(ctx); err != nil || fp != "gen-2" {
 		t.Fatalf("new generation not recorded: %q %v", fp, err)
 	}
-	if rows, _ := mem.LoadCacheHolders(ctx, now, 0); len(rows) != 0 {
+	if rows, _ := mem.LoadCacheHolders(ctx, now, 0, 0); len(rows) != 0 {
 		t.Fatalf("old-generation holder rows survived the reset: %d", len(rows))
 	}
 	if rows, _ := mem.LoadCacheDemand(ctx, now.Add(-time.Minute), 0); len(rows) != 0 {

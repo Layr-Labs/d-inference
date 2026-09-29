@@ -15,10 +15,15 @@ type Store interface {
 	UpsertCacheHolders(context.Context, []HolderRecord) error
 	// DeleteCacheHolders removes rows; missing rows are not an error.
 	DeleteCacheHolders(context.Context, []HolderKey) error
-	// LoadCacheHolders returns up to limit rows whose ExpiresAt is after now,
-	// longest-lived first, so a capped restore keeps the most valuable rows.
-	// A limit of 0 or less means no limit.
-	LoadCacheHolders(ctx context.Context, now time.Time, limit int) ([]HolderRecord, error)
+	// LoadCacheHolders returns up to limit rows that are live at now under the
+	// current routing ttl. A row's effective expiry is the earlier of its
+	// stored ExpiresAt and UpdatedAt+ttl (ttl <= 0 applies no clamp); rows
+	// past it are skipped, ExpiresAt in the result carries the effective
+	// value, and rows are ordered longest-lived first by that value. The
+	// clamp runs before the limit, so a capped restore after a TTL reduction
+	// keeps rows that are still valid rather than rows that only looked
+	// long-lived under the old TTL. A limit of 0 or less means no limit.
+	LoadCacheHolders(ctx context.Context, now time.Time, ttl time.Duration, limit int) ([]HolderRecord, error)
 	// UpsertCacheDemand inserts or refreshes rows, keeping the later SeenAt.
 	UpsertCacheDemand(context.Context, []DemandRecord) error
 	// LoadCacheDemand returns up to limit rows whose SeenAt is at or after
@@ -28,8 +33,8 @@ type Store interface {
 	// key generation the stored rows were written under, or "" when none was
 	// recorded.
 	CacheRoutingKeyFingerprint(ctx context.Context) (string, error)
-	// ResetCacheRoutingState deletes every holder and demand row and records
-	// fingerprint as the current key generation. Used when the master key
+	// ResetCacheRoutingState deletes every holder and demand row, whatever
+	// their expiry, and then records fingerprint as the current key generation. Used when the master key
 	// changed: rows derived under the old key can never match a request.
 	ResetCacheRoutingState(ctx context.Context, fingerprint string) error
 	// PruneCacheRoutingState deletes holders expired before now and demand

@@ -65,7 +65,7 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 			if err := s.UpsertCacheHolders(ctx, recs); err != nil {
 				t.Fatalf("upsert: %v", err)
 			}
-			got, err := s.LoadCacheHolders(ctx, now, 0)
+			got, err := s.LoadCacheHolders(ctx, now, 0, 0)
 			if err != nil {
 				t.Fatalf("load: %v", err)
 			}
@@ -88,7 +88,7 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 			if err := s.UpsertCacheHolders(ctx, []crs.HolderRecord{newer, older}); err != nil {
 				t.Fatalf("merge upsert: %v", err)
 			}
-			got, _ = s.LoadCacheHolders(ctx, now, 0)
+			got, _ = s.LoadCacheHolders(ctx, now, 0, 0)
 			byKey = map[crs.HolderKey]crs.HolderRecord{}
 			for _, r := range got {
 				byKey[r.HolderKey()] = r
@@ -100,9 +100,20 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 				t.Fatalf("older receipt must keep descriptive columns but extend expiry: %+v", r)
 			}
 			// A capped load keeps the longest-lived rows: k006 was extended to 44 min.
-			top, err := s.LoadCacheHolders(ctx, now, 1)
+			top, err := s.LoadCacheHolders(ctx, now, 0, 1)
 			if err != nil || len(top) != 1 || top[0].Key != "k006" {
 				t.Fatalf("capped load must return the longest-lived row first: %+v %v", top, err)
+			}
+			// A reduced TTL applies before the order and the cap: under a
+			// 5-minute TTL k006 (updated at now, extended to 44 min) has 5 min
+			// left while k005 (updated a minute later) has 6, and the result
+			// carries the clamped expiry.
+			top, err = s.LoadCacheHolders(ctx, now, 5*time.Minute, 1)
+			if err != nil || len(top) != 1 || top[0].Key != "k005" || !top[0].ExpiresAt.Equal(now.Add(6*time.Minute)) {
+				t.Fatalf("capped load under a shorter TTL must order by the clamped expiry: %+v %v", top, err)
+			}
+			if rows, _ := s.LoadCacheHolders(ctx, now.Add(10*time.Minute), 5*time.Minute, 0); len(rows) != 0 {
+				t.Fatalf("rows past their clamped expiry must not load: %d", len(rows))
 			}
 			// Delete a chunk-spanning set of keys.
 			var del []crs.HolderKey
@@ -113,12 +124,12 @@ func TestCacheRoutingStateRoundTripAndMerge(t *testing.T) {
 			if err := s.DeleteCacheHolders(ctx, del); err != nil {
 				t.Fatalf("delete: %v", err)
 			}
-			got, _ = s.LoadCacheHolders(ctx, now, 0)
+			got, _ = s.LoadCacheHolders(ctx, now, 0, 0)
 			if len(got) != 101 { // 100 epoch-a survivors (k600..k699) + k000/epoch-b
 				t.Fatalf("after delete %d rows, want 101", len(got))
 			}
 			// Expired rows are invisible to Load and removed by Prune.
-			got, _ = s.LoadCacheHolders(ctx, now.Add(time.Hour), 0)
+			got, _ = s.LoadCacheHolders(ctx, now.Add(time.Hour), 0, 0)
 			if len(got) != 0 {
 				t.Fatalf("expired rows must not load: %d", len(got))
 			}
@@ -170,12 +181,21 @@ func TestCacheRoutingDemandRoundTrip(t *testing.T) {
 			if err != nil || removed != 499 {
 				t.Fatalf("prune removed %d (err %v), want 499", removed, err)
 			}
-			// Key rotation: reset empties both tables and records the generation.
+			// Key rotation: reset empties both tables, whatever the rows' expiry
+			// (a TTL above 1,000 hours is a legal configuration), and records
+			// the generation.
+			far := holderRecord(0, "epoch-far", now, 2000*time.Hour)
+			if err := s.UpsertCacheHolders(ctx, []crs.HolderRecord{far}); err != nil {
+				t.Fatalf("upsert far-future row: %v", err)
+			}
 			if fp, err := s.CacheRoutingKeyFingerprint(ctx); err != nil || fp != "" {
 				t.Fatalf("fingerprint before reset: %q %v", fp, err)
 			}
 			if err := s.ResetCacheRoutingState(ctx, "gen-2"); err != nil {
 				t.Fatalf("reset: %v", err)
+			}
+			if rest, _ := s.LoadCacheHolders(ctx, now, 0, 0); len(rest) != 0 {
+				t.Fatalf("reset must empty the holder table regardless of expiry: %+v", rest)
 			}
 			if fp, _ := s.CacheRoutingKeyFingerprint(ctx); fp != "gen-2" {
 				t.Fatalf("fingerprint after reset: %q", fp)

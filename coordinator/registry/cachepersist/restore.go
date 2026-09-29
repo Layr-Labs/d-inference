@@ -11,10 +11,12 @@ import (
 // different cache-key generation (the master key changed), both tables are
 // reset first: their HMAC-derived keys can never match a request. Demand
 // entries within ttl are returned, newest first up to maxDemand, for the
-// registry to seed its index directly. Holder rows are clamped to the current
-// ttl (a row written under a longer TTL must not outlive today's setting),
-// loaded longest-lived first up to maxHolders, and parked until the registry
-// binds them to a provider whose capabilities match.
+// registry to seed its index directly. Holder rows are loaded under the
+// current ttl (the store clamps each row's expiry to UpdatedAt+ttl before it
+// orders and caps, so a row written under a longer TTL neither outlives
+// today's setting nor crowds a valid row out of the cap), longest-lived first
+// up to maxHolders, and parked until the registry binds them to a provider
+// whose capabilities match.
 func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duration, maxHolders, maxDemand int) ([]crs.DemandRecord, error) {
 	if p == nil {
 		return nil, nil
@@ -27,6 +29,11 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		if err := p.store.ResetCacheRoutingState(ctx, p.fingerprint); err != nil {
 			return nil, err
 		}
+		if stored == "" {
+			p.logger.Info("cache routing persistence: recorded the cache-key generation; the durable copy starts empty")
+		} else {
+			p.logger.Warn("cache routing persistence: the cache master key changed; the durable copy was reset instead of restored")
+		}
 		p.mu.Lock()
 		p.counters.keyRotated = stored != ""
 		p.mu.Unlock()
@@ -36,7 +43,7 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 	if err != nil {
 		return nil, err
 	}
-	holders, err := p.store.LoadCacheHolders(ctx, now, maxHolders)
+	holders, err := p.store.LoadCacheHolders(ctx, now, ttl, maxHolders)
 	if err != nil {
 		return nil, err
 	}

@@ -33,8 +33,9 @@ type Status struct {
 	DroppedDirty    uint64 `json:"dropped_dirty"`
 	LastFlushMs     int64  `json:"last_flush_ms"`
 	LastFlushAt     string `json:"last_flush_at,omitempty"`
-	// KeyRotated is true when this boot found rows written under another
-	// cache-key generation and reset the tables instead of restoring them.
+	// KeyRotated is true when this boot found a recorded cache-key generation
+	// that differs from its own and reset the tables instead of restoring
+	// them; a first boot with nothing recorded does not count.
 	KeyRotated bool `json:"key_rotated"`
 }
 

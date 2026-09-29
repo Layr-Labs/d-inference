@@ -38,6 +38,9 @@ catalogs are incomplete and cannot supply a qualified production snapshot.
    min(active_accounts,200) rows for each metric, ranked descending with account
    ID ascending as the tie breaker. When there are at most 200 active accounts,
    all metrics must contain the same account-ID set. Empty rankings must be arrays, not null.
+   Across 24h/7d/30d/all at the same `as_of`, network job and active-account
+   counts cannot decrease. A ranked account's job count cannot decrease when
+   that account appears in both windows; an account may leave a wider top 200.
    Use integer JSON amounts within signed INT64; never float-round or truncate.
    Include `series` for 30m/24h/7d/30d with `start_at`, `end_at`,
    `bucket_seconds` (60/1800/14400/43200), and `buckets` shaped as
@@ -68,9 +71,9 @@ catalogs are incomplete and cannot supply a qualified production snapshot.
 The `coordinator/analyticssnapshot` package validates an 8 MiB cap, complete windows
 and ranks, exact work+reward sums without overflow, source/result freshness,
 cohort cardinality, cross-metric values, unique ranked job counts bounded by
-network job totals, deterministic rank order and generation
-monotonicity. Every different generation must advance `as_of` or
-`source_complete_through`, and neither may regress. Publish corrections with the
+network job totals, nested nonnegative counts across windows, deterministic
+rank order and generation monotonicity. Every different generation must advance
+`as_of` or `source_complete_through`, and neither may regress. Publish corrections with the
 next qualified source cut.
 It retains checksums for every accepted generation during the process lifetime and
 rejects changed content even if an older generation ID reappears. An invalid

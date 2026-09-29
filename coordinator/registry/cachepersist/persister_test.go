@@ -1126,6 +1126,34 @@ func TestDeleteBacklogOverflowResetsDurableCopy(t *testing.T) {
 	}
 }
 
+// A flush whose reset leaves nothing to drain still counts as a flush, so
+// a reset-only flush is visible in the health counters.
+func TestResetOnlyFlushIsCounted(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	ctx := context.Background()
+	now := time.Now()
+	p := New(mem, nil, Options{MaxPending: 2}) // dirty cap 8
+	restoreForTest(t, p, now)
+	for i := 0; i <= p.dirtyCap; i++ { // the last one overflows
+		p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+	}
+	// The overflowing decision is drained with the reset's flush; a second
+	// flush with a reset and nothing behind it must still be counted.
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	p.resetPending = true
+	p.mu.Unlock()
+	before := p.Status()
+	if err := p.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := p.Status(); s.Flushes != before.Flushes+1 || s.LastFlushAt == "" {
+		t.Fatalf("a reset-only flush must be counted: before=%+v after=%+v", before, s)
+	}
+}
+
 // loadHookStore runs a hook inside the holder load (the window between a
 // restore's first overflow check and its merge) and counts resets.
 type loadHookStore struct {
@@ -1479,6 +1507,7 @@ func TestFlushRetriesAFailedResetAfterAMidFlushOverflow(t *testing.T) {
 		}
 		st.failNext = 1 // the reset this flush attempts fails
 	}
+	stamped := p.Status().LastFlushAt
 	if err := p.Flush(ctx); err == nil {
 		t.Fatal("a failed reset must fail the flush")
 	}
@@ -1486,7 +1515,7 @@ func TestFlushRetriesAFailedResetAfterAMidFlushOverflow(t *testing.T) {
 	pending := p.resetPending
 	_, requeued := p.holderDeletes[gone.HolderKey()]
 	p.mu.Unlock()
-	if s := p.Status(); st.resets != 1 || !pending || !requeued || s.Flushes != 2 || s.FlushErrors != 1 {
+	if s := p.Status(); st.resets != 1 || !pending || !requeued || s.Flushes != 2 || s.FlushErrors != 1 || s.LastFlushAt < stamped {
 		t.Fatalf("a failed mid-flush reset must be counted once and leave the reset pending with the delete requeued: resets=%d pending=%v requeued=%v %+v", st.resets, pending, requeued, s)
 	}
 	if err := p.Flush(ctx); err != nil {

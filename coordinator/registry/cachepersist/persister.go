@@ -548,7 +548,8 @@ func (p *Persister) Flush(ctx context.Context) error {
 		return nil
 	}
 	started := time.Now()
-	if err := p.resetIfPending(ctx); err != nil {
+	reset, err := p.resetIfPending(ctx)
+	if err != nil {
 		p.countFailedFlush(started)
 		return err
 	}
@@ -560,21 +561,23 @@ func (p *Persister) Flush(ctx context.Context) error {
 		// The backlog overflowed after the check above: reset first, then
 		// drain. Overflowed once more between that reset's clear and this
 		// drain, the next flush resets again.
-		if err := p.resetIfPending(ctx); err != nil {
+		if reset, err = p.resetIfPending(ctx); err != nil {
 			p.countFailedFlush(started)
 			return err
 		}
 		if b, pending = p.drainUnlessReset(); pending {
+			p.countFlush(started)
 			return nil
 		}
 	}
 	if len(b.upserts) == 0 && len(b.deletes) == 0 && len(b.demand) == 0 {
+		if reset {
+			// A reset with nothing to drain behind it is still a flush.
+			p.countFlush(started)
+		}
 		return nil
 	}
-	var (
-		err                    error
-		wrote, deleted, demand int
-	)
+	var wrote, deleted, demand int
 	// Before every store call: an overflow since the drain released
 	// decisions that may condemn the upserts not yet written, and the reset
 	// must land before anything else is written, so the flush stops at its
@@ -629,13 +632,16 @@ func (p *Persister) Flush(ctx context.Context) error {
 		// fails here is counted against this flush, already counted above,
 		// and retried by the next.
 		p.requeue(batch{upserts: b.upserts[wrote:], deletes: b.deletes[deleted:], deleteAt: b.deleteAt, demand: b.demand[demand:], overflowSeq: b.overflowSeq})
-		if err := p.resetIfPending(ctx); err != nil {
-			p.mu.Lock()
+		_, resetErr := p.resetIfPending(ctx)
+		p.mu.Lock()
+		// The reset is part of this flush: its duration and outcome stamp it.
+		p.counters.lastFlushMs = time.Since(started).Milliseconds()
+		p.counters.lastFlushAt = time.Now()
+		if resetErr != nil {
 			p.counters.flushErrors++
-			p.mu.Unlock()
-			return err
 		}
-		return nil
+		p.mu.Unlock()
+		return resetErr
 	}
 	if err != nil {
 		p.requeue(batch{upserts: b.upserts[wrote:], deletes: b.deletes[deleted:], deleteAt: b.deleteAt, demand: b.demand[demand:], overflowSeq: b.overflowSeq})
@@ -644,6 +650,15 @@ func (p *Persister) Flush(ctx context.Context) error {
 			"demand_left", len(b.demand)-demand)
 	}
 	return err
+}
+
+// countFlush records a flush that wrote nothing but did work (a reset).
+func (p *Persister) countFlush(started time.Time) {
+	p.mu.Lock()
+	p.counters.flushes++
+	p.counters.lastFlushMs = time.Since(started).Milliseconds()
+	p.counters.lastFlushAt = time.Now()
+	p.mu.Unlock()
 }
 
 // countFailedFlush records a flush that failed before it drained anything: a
@@ -731,17 +746,17 @@ func (p *Persister) Prune(ctx context.Context, now time.Time, ttl time.Duration)
 // an overflow during the reset itself releases only decisions against rows
 // the reset removes or that were never written, so clearing the flag
 // afterwards is safe.
-func (p *Persister) resetIfPending(ctx context.Context) error {
+func (p *Persister) resetIfPending(ctx context.Context) (bool, error) {
 	p.mu.Lock()
 	pending := p.resetPending
 	p.mu.Unlock()
 	if !pending {
-		return nil
+		return false, nil
 	}
 	if err := p.store.ResetCacheRoutingState(ctx, p.fingerprint); err != nil {
 		// The caller counts the failed attempt against its flush.
 		p.logger.Warn("cache routing persistence: the durable copy could not be reset after the delete backlog overflowed; retrying", "error", err)
-		return err
+		return false, err
 	}
 	p.logger.Warn("cache routing persistence: the delete backlog outgrew its budget during a store outage; the durable copy was reset and is rewritten from live evidence")
 	p.mu.Lock()
@@ -750,7 +765,7 @@ func (p *Persister) resetIfPending(ctx context.Context) error {
 	// suppress their rewrite.
 	p.demandPersisted = make(map[string]time.Time)
 	p.mu.Unlock()
-	return nil
+	return true, nil
 }
 
 // dirtyEmpty is for tests.

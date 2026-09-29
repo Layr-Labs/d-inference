@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-29 · commit `61de2e9a8`
+> Last updated: 2026-09-29 · commit `42524ace4`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -597,6 +597,13 @@ Encoded MiMo visual ingress passes the existing transport ceiling
 before ImageIO parsing or AVFoundation asset reads; SDK callers without a
 separate ceiling default to their declared working-byte limit. Raster/frame
 and owned-reservation checks remain additional gates.
+
+The SDK's `MemoryBackedVideoAsset` derives both its resource-loader type and
+in-memory URL suffix from the validated container. QuickTime uses `.mov`, MP4
+uses `.mp4`; neither path writes the payload to disk. AVFoundation also consults
+the suffix: a mismatched `.mp4` URL can hide valid QuickTime PCM tracks, causing
+an audio-bearing clip to appear silent despite the correct type hint. The
+container bytes, audio samples and frame sampling policy remain unchanged.
 
 Valid ready zero-sample/zero-payload AV reader markers do not count as video
 frames. The decoder bounds them independently, includes their metadata allowance

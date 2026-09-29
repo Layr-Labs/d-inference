@@ -10,6 +10,13 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 	s.capacityAcceptedAt, s.capacitySeq = p.CapacityAcceptedAt, p.capacitySeq
 	s.transportMs, s.conservativeTransportMs, s.transportAgeMs = transportForecast(p.transport, now)
 	s.capacityAgeMs, s.performanceAgeMs = -1, -1
+	s.contendedPerformanceAgeMs = -1
+	for _, model := range p.Models {
+		if model.ID == s.model {
+			s.promptWorkArtifactHash = model.WeightHash
+			break
+		}
+	}
 	if !p.CapacityAcceptedAt.IsZero() {
 		s.capacityAgeMs = heartbeatAgeMs(now, p.CapacityAcceptedAt)
 	}
@@ -20,6 +27,7 @@ func (r *Registry) fillFirstContentSnapshot(s *routingSnapshot, p *Provider, now
 	if capacity == nil {
 		return
 	}
+	fillCalibratedWorkSnapshot(s, p, now)
 	s.wholeMacWorkKnown = len(capacity.Slots) > 0
 	for i := range capacity.Slots {
 		slot := &capacity.Slots[i]

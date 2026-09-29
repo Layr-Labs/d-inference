@@ -677,6 +677,7 @@ func cloneBackendSlot(slot, in *protocol.BackendSlotCapacity) {
 	*slot = *in
 	if in.PerformanceProfile != nil {
 		profile := *in.PerformanceProfile
+		profile.MTP = in.PerformanceProfile.MTP.Clone()
 		slot.PerformanceProfile = &profile
 	}
 	if slot.KVBackend != nil {
@@ -689,6 +690,8 @@ func cloneBackendSlot(slot, in *protocol.BackendSlotCapacity) {
 	}
 	slot.Telemetry = slot.Telemetry.Clone()
 	slot.PerformanceMeasurements = slot.PerformanceMeasurements.Clone()
+	slot.DeadlineWork = slot.DeadlineWork.Clone()
+	slot.DeadlineProfile = slot.DeadlineProfile.Clone()
 	slot.PrefixCache = in.PrefixCache.Clone()
 	slot.PagedStorage = in.PagedStorage.Clone()
 }

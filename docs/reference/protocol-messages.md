@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `cbf98076b`
+> Last updated: 2026-09-28 · commit `d89ef42be`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -336,6 +336,8 @@ routing on them.
 | `num_running`, `num_waiting` | `int` | `UInt32` | req | |
 | `max_concurrency` | `int` | `UInt32` | opt | |
 | `performance_profile` | `*ServingPerformanceProfileReference` | `ServingPerformanceProfileReference?` | opt | Reviewed profile identity; omitted when no exact qualified profile applies |
+| `deadline_profile` | `*DeadlinePerformanceProfileReference` | `DeadlinePerformanceProfileReference?` | opt | Exact scheduler identity for measured first-content cells; grants no concurrency or chunk-policy change |
+| `deadline_work` | `*DeadlineWork` | `DeadlineWork?` | opt | Coherent existing-owner work bounds; [schema below](#slotsdeadline_work) |
 | `performance_measurements` | `*PerformanceMeasurements` | `PerformanceMeasurements?` | opt | Transient routing observations; [schema below](#slotsperformance_measurements) |
 | `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
 | `max_tokens_potential` | `int64` | `Int64` | req | Σ `max_tokens` over running requests |
@@ -459,7 +461,11 @@ Clamped by `registry.clampBackendCapacity`; persisted to `fleet_snapshots`
 #### `slots[].performance_measurements`
 
 `slots[].performance_profile` optionally names reviewed release data with `id`,
-`runtime_revision` and `context_tokens`; it carries no self-certified curve.
+`runtime_revision` and `context_tokens`; optional `mtp` binds the actual verified
+assistant artifact and effective decode settings (`enabled`, `artifact_sha256`,
+`max_draft_tokens`, optional `fixed_draft_tokens`, `max_speculative_batch`,
+`verification_mode`, `max_automatic_rectangular_tokens`). Omission means plain
+target execution. The reference carries no self-certified curve or margin.
 The coordinator resolves the reference against its own catalog and registered
 model artifact. Go `coordinator/protocol/performance_profile.go` and Swift
 `provider-swift/Sources/ProviderCore/Protocol/ServingPerformanceProfileReference.swift`
@@ -490,6 +496,46 @@ Go/Swift shape; these are transient capacity fields, not persisted profiler
 telemetry or telemetry-event fields. Numeric work counters remain in
 `slots[].telemetry`; the epoch and bucket list are excluded from persisted
 numeric-only provider telemetry.
+
+#### `slots[].deadline_profile`
+
+Go `DeadlinePerformanceProfileReference` in
+`coordinator/protocol/deadline_profile.go` mirrors
+`provider-swift/Sources/ProviderCore/Protocol/DeadlinePerformanceProfileReference.swift`.
+The coordinator resolves this reference against a separate reviewed deadline
+catalog. It cannot change serving width, mixed-prefill policy or memory limits.
+
+| Key | Meaning |
+|---|---|
+| `id`, `runtime_revision` | Immutable reviewed deadline profile and serving runtime |
+| `configured_context_tokens` | Exact constructed context limit; individual measured cells may cover a smaller domain |
+| `effective_max_concurrency` | Actual constructed scheduler width, not a requested override |
+| `prefill_chunk_size`, `solo_prefill_stripe_tokens`, `max_concurrent_partial_prefills`, `mixed_prefill_token_cap` | Exact scheduler settings; optional fields preserve absence versus explicit values |
+| `mtp` | Optional verified assistant identity/settings, with the same shape as `performance_profile.mtp` |
+
+Changing any scheduler identity field withdraws the profile. Neither the
+reference nor a heartbeat supplies calibrated rates or claims measured coverage
+for the full configured context. Unsupported cells retain conservative fallback.
+
+#### `slots[].deadline_work`
+
+Optional Go `DeadlineWork` / Swift `DeadlineWork`, defined in
+`coordinator/protocol/deadline_work.go` and
+`provider-swift/Sources/ProviderCore/Protocol/DeadlineWork.swift`.
+
+| Key | Meaning |
+|---|---|
+| `version` | `1`; unknown versions cannot qualify |
+| `epoch` | Must match the slot's performance-measurement lifetime |
+| `known` | False means ownership/work is incomplete; zero work must not be inferred |
+| `prefill_tokens`, `decode_tokens` | Conservative work bounds of existing owners, including pre-submit and retiring leases |
+| `request_count`, `context_tokens_max` | Existing owner count and maximum committed context |
+| `service_fraction` | Held whole-Mac service fraction for these owners |
+
+The provider snapshots these fields with aggregate service use and reservation
+IDs under one lock. The coordinator validates freshness, counts and correlated
+ownership before using a qualified contended cell. This optional object cannot
+certify a profile, reduce memory reservations or change the request clock.
 
 #### `backend_capacity.telemetry`
 
@@ -854,12 +900,30 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `service_reservation_id` | `string` | `String?` | opt | Fresh opaque UUID for the committed service reservation, including retries of the same request; omitted by older coordinators. The provider echoes it with the actual held charge in [`whole_mac_service_reservations`](#service-reservation-correlation) until retirement. Distinct from `request_id`; missing or invalid IDs receive no overlap credit but still consume provider allowance |
 | `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; the only request body. There is no plaintext `body` key: the coordinator never sends one and Swift rejects a request without `encrypted_body` |
 | `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding |
+| `prompt_work` | `*PromptWork` | `PromptWork?` | opt | Numeric artifact/template-bound count provenance; older peers may omit it. Validated after provider tokenization; never changes billing usage or the inherited deadline |
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
 | `cache_scope` | `string` | `String?` | opt | |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | |
 | `cache_receipt_boundary_mode` | `string` | `String?` | opt | `checkpoint` echoes support for the selected SSD capability. A provider emits checkpoint-mode receipts only with this echo; an older coordinator omits it and remains cold for this format. Copied from the prepared attempt and cleared on retry/fallback; `coordinator/api/provider_wire.go`, `snapshotProviderInferenceFrame` / `wireMessage`; `coordinator/registry/cache_receipts.go`, `ForgetCacheAttempt` |
 | `cache_repeated_prefix_tokens` | `*int` | `Int?` | ptr | Coordinator-observed fleet-wide repeat demand: the deepest boundary another plan shared within the routing TTL among those a plan observes (multiples of 1,024 tokens, the final boundary, and a power-of-two ladder for very long prompts), 0 when none. Sent only with a granted scope; absent from older coordinators (providers then write every checkpoint) and cleared on retry/fallback (`CacheAttemptSnapshot.ApplyTo`, `coordinator/registry/cache_attempt_ownership.go`). Integer count only, never a key, hash or boundary. Providers gate complete-checkpoint donations on it (`skipped_novel`; `SSDCheckpointDemand.admitsWrite`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointDemand.swift`). Swift clamps a negative value to 0. The e2e wire relay projects it for `inference_request` (`copyFields`, `e2e/testbed/provider_wire_relay.go`) |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
+
+`prompt_work` is defined in `coordinator/protocol/prompt_work.go` and
+`provider-swift/Sources/ProviderCore/Protocol/PromptWork.swift`:
+
+| Key | Meaning |
+|---|---|
+| `version` | `1`; unknown versions remain decodable but unqualified |
+| `source` | `exact_contract`, `calibrated_template`, or `heuristic` |
+| `prompt_tokens` | Positive central input count, bounded by 1,048,576 tokens |
+| `upper_bound_tokens` | Exact count for exact provenance; measured upper bound for qualified calibration; `0` denotes unknown heuristic uncertainty |
+| `model_artifact_hash`, `prompt_contract_id` | Lowercase SHA-256 identities required for qualified provenance |
+| `calibration_id` | Required printable reviewed-corpus identity for `calibrated_template`; absent for exact counts |
+
+The fields contain no content, token IDs, cache keys or consumer identity.
+An exact count must equal the provider's actual tokenization; a calibrated
+count must bound it. Invalid identity, unknown source or an exceeded bound
+withdraws calibrated admission and preserves the conservative fallback.
 
 ### `cancel`
 

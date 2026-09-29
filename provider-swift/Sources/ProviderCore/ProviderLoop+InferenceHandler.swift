@@ -183,6 +183,7 @@ extension ProviderLoop {
         receivedAt: ContinuousClock.Instant = .now,
         profile requestProfile: RequestProfileBuilder? = nil,
         serviceReservationID: String? = nil,
+        promptWork: PromptWork? = nil,
         send: SendHandle
     ) async {
         let serviceReservation = ServiceReservationLifetime(id: serviceReservationID) { id in
@@ -820,7 +821,8 @@ extension ProviderLoop {
                 firstContentDeadline: firstContentDeadline,
                 profile: profile,
                 serviceReservationID: serviceReservationID,
-                serviceReservation: serviceReservation
+                serviceReservation: serviceReservation,
+                promptWork: promptWork
             )
 
             // Force-stream so we get SSE frames even if the original request

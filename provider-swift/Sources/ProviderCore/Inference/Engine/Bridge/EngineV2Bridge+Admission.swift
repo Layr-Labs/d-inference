@@ -31,33 +31,36 @@ extension EngineV2Bridge {
     /// unchanged; only the engine queue reads "now" for the final verdict.
     func firstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
-        isMultimodal: Bool
+        isMultimodal: Bool,
+        requestID: String? = nil, promptTokens: Int = 0, promptWork: PromptWork? = nil
     ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
             prefillDeadlineProjectionEnabled,
             !isMultimodal,
-            let deadline,
-            isolatedPrefillEwmaInitialized
+            let deadline
         else {
             return nil
         }
 
-        let prefillRate =
-            isolatedPrefillTpsEwma * Self.deadlineProjectionRateHaircut
+        let prefillCandidate = isolatedPrefillTpsEwma * Self.deadlineProjectionRateHaircut
+        let prefillRate = isolatedPrefillEwmaInitialized && prefillCandidate.isFinite && prefillCandidate > 0
+            ? prefillCandidate : nil
         let decodeCandidate =
             observedDecodeTpsEwma * Self.deadlineProjectionRateHaircut
         let decodeRate =
             ewmaInitialized && decodeCandidate.isFinite && decodeCandidate > 0
             ? decodeCandidate
             : nil
-        guard prefillRate.isFinite, prefillRate > 0 else {
-            return nil
+        let calibration = requestID.flatMap {
+            calibratedDeadlinePolicy(requestID: $0, promptTokens: promptTokens, promptWork: promptWork)
         }
+        guard prefillRate != nil || calibration != nil else { return nil }
 
         return CBv2FirstTokenDeadlineAdmission(
             deadline: deadline.instant,
             conservativePrefillTokensPerSecond: prefillRate,
-            conservativeDecodeTokensPerSecond: decodeRate)
+            conservativeDecodeTokensPerSecond: decodeRate,
+            calibration: calibration)
     }
 
     /// Move post-commit cancellation cleanup out of the cancelling task. The

@@ -52,6 +52,36 @@ def run(report):
 
 
 class QualificationTests(unittest.TestCase):
+    def test_mtp_identity_requires_actual_drafting_with_exact_configuration(self):
+        report = receipt((1,))
+        mtp = dict(enabled=True, artifact_sha256="d" * 64, max_draft_tokens=4,
+                   max_speculative_batch=4, verification_mode="automatic", max_automatic_rectangular_tokens=4)
+        report["identity"]["mtp"] = mtp
+        for cell in report["qualification_cells"]:
+            for sample in cell["samples"]:
+                sample.update(mtp_active=True, mtp=copy.deepcopy(mtp), mtp_rounds=20, mtp_proposed_tokens=60)
+        self.assertTrue(run(report)["qualified"])
+        report["qualification_cells"][0]["samples"][0]["mtp_proposed_tokens"] = 0
+        self.assertFalse(run(report)["qualified"])
+
+    def test_new_receipt_requires_held_out_calibration_and_copies_only_derived_cell(self):
+        from serving_performance.test_calibration import receipt as calibration_receipt
+        report = receipt((1,))
+        report["schema_version"] = 2
+        self.assertFalse(run(report)["qualified"])
+        calibration = calibration_receipt()
+        cell = calibration["cells"][0]
+        cell.update(prompt_tokens_min=1024, prompt_tokens_max=1024,
+                    context_tokens_min=1152, context_tokens_max=1152, max_prefill_work_tokens=1024)
+        for sample in cell["samples"]:
+            sample.update(prompt_tokens=1024, context_tokens=1152, prefill_work_tokens=1024)
+        report["deadline_calibration"] = calibration
+        result = run(report)
+        self.assertTrue(result["qualified"], result["errors"])
+        derived = result["profile"]["deadline_calibration"]["cells"][0]
+        self.assertNotIn("samples", derived)
+        self.assertEqual(derived["report_sha256"], result["receipt_sha256"])
+
     def test_identity_cannot_inject_qualification_results_or_runtime_policy(self):
         injected = {
             "mixed_prefill_token_cap": 512,

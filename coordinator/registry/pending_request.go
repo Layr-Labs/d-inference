@@ -113,6 +113,9 @@ type PendingRequest struct {
 	// Calibrated conservative prompt-work estimate; a trusted CachePlan
 	// supplies exact counts instead. Physical commitment estimates are separate.
 	FirstContentPromptTokens int
+	// Immutable request-local count evidence, rebound to each selected model.
+	// It never extends the first-content deadline or replaces billed usage.
+	PromptWork *protocol.PromptWork
 	// Request-local retry/hedge policy; no wire protocol change.
 	RequireFreshFeasible      bool
 	RequireFreshFeasibleAfter time.Time

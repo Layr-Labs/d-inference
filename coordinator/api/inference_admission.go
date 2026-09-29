@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -230,6 +231,7 @@ type inferenceAdmissionParams struct {
 	deadline                  time.Duration
 	receivedAt                time.Time
 	cachePlanForModel         func(string) registry.CachePlan
+	promptWorkForModel        func(string) *protocol.PromptWork
 	policy                    selfRoutePolicy
 	// refundReservation releases any pre-flight balance reservation before a
 	// terminal rejection. Must be non-nil (a no-op closure on the free paths).

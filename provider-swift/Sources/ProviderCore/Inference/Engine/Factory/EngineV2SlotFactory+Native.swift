@@ -83,6 +83,8 @@ extension EngineV2SlotFactory {
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> ProviderEngineBundle {
+        let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity?.finish() }
         switch container {
         case .autoregressive(let target):
             return try await makeProductionBundle(

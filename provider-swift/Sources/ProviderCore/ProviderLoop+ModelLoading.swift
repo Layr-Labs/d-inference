@@ -301,6 +301,8 @@ extension ProviderLoop {
             return
         }
         isLoadingAny = true
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
 
         // Re-check slot cap after gate (another load may have consumed a slot)
         if modelSlots.count >= maxModelSlots {
@@ -418,6 +420,7 @@ extension ProviderLoop {
             let reusableSSDRequested = PrefixCachePolicy.isEnabled(modelId: modelId)
             let artifactIdentityRequired = reusableSSDRequested
                 || ServingPerformanceProfiles.requiresArtifactHash(modelID: modelId)
+                || DeadlinePerformanceProfiles.requiresArtifactHash(modelID: modelId)
             let preLoadHash = try await captureWeightHash(
                 modelId: modelId,
                 modelPath: modelPath,
@@ -870,6 +873,8 @@ extension ProviderLoop {
             !modelsUnloading.contains(modelId)
         else { return false }
         let engineV2 = engineBundle.bridge
+        let deviceActivity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { deviceActivity.finish() }
         let isQwen4 = Qwen4SupportPolicy.isQwen4ModelType(advertisedModels[modelId]?.modelType)
             || Qwen4SupportPolicy.isOwnedModelID(modelId)
         modelsUnloading.insert(modelId)

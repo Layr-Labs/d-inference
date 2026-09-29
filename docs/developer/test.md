@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-09-28 · commit `d89ef42be`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -266,6 +266,15 @@ service admission, warm-load ownership and transport freshness.
 regressions. For real hardware coverage and required evidence, follow
 [serving performance qualification](serving-performance-qualification.md).
 Synthetic tests never certify M5 concurrency or a mixed-prefill default.
+Calibrated admission adds `DeadlineCalibrationTests`, `PromptWorkTests`, the
+shared calibrated-capacity fixture, and SDK `CBv2CalibratedFirstContentTests`.
+Go and Swift also consume the same synthetic deadline-decision fixture for
+cache reuse, existing-owner bounds, live-rate ceilings and the remaining clock;
+it tests arithmetic agreement and does not qualify hardware.
+`coordinator/api/promptwork` tests body/model memoization, original-clock planner
+bounds and measured shape restrictions. The optional API corpus projection
+uses the production heuristic and writes numeric data only; the qualification
+guide documents its environment variables and paired tokenizer run.
 
 Run `make provider-test` to build tests and install the source-matched Metal
 library beside the runner. Focused suites include `ProviderLifecycleTests`,

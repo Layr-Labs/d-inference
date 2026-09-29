@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — calibrated first-content admission
+
+- Share verified model/template prompt counts across preflight, retries and provider reconciliation while preserving the original deadline, completion limits and billing usage. Keep unsupported counts explicitly uncertain.
+- Add workload-bounded measured deadline calibration with exact MTP identity and conservative fallback for stale, unmatched or incomplete evidence. Correlate whole-Mac work through pre-submit and retirement before pricing contention.
+- Add production-path qualification receipts with actual MTP and individual mixed-prefill step timings; profile promotion remains tied to reviewed hardware and held-out prediction evidence.
+
 ## Unreleased — SSD cache write budget
 
 - Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.

@@ -1168,6 +1168,28 @@ func TestRestoreResetsWhenTheBacklogOverflowsDuringTheLoad(t *testing.T) {
 	}
 }
 
+// An overflow during a load that returns nothing still turns the restore
+// into a reset: only the check after the merge loop sees it, and the copy
+// must not count as established with released decisions outstanding.
+func TestRestoreResetsWhenTheBacklogOverflowsDuringAnEmptyLoad(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	now := time.Now()
+	st := &loadHookStore{Store: mem}
+	p := New(st, nil, Options{MaxPending: 2}) // dirty cap 8
+	st.onLoadHolders = func() {
+		for i := 0; i <= p.dirtyCap; i++ {
+			p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(time.Second))
+		}
+	}
+	restoreForTest(t, p, now)
+	p.mu.Lock()
+	pending := p.resetPending
+	p.mu.Unlock()
+	if s := p.Status(); !s.Ready || s.OverflowResets != 1 || st.resets != 1 || pending {
+		t.Fatalf("an overflow during an empty load must reset before the copy counts as established: %+v resets=%d pending=%v", s, st.resets, pending)
+	}
+}
+
 // A delete requeued by a failed flush is never dropped either, even when
 // request-path decisions filled the dirty set during the failing write.
 func TestRequeuedDeleteIsNeverDroppedAtTheCap(t *testing.T) {

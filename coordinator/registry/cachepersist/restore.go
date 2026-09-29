@@ -82,7 +82,11 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 	p.prunePendingChunked(now)
 	// The parked set holds nothing a pending delete condemns: a decision
 	// drops the parked copy it outranks when it is made (MarkHolderDelete)
-	// and Park refuses evidence a pending decision outranks. The loaded
+	// and Park refuses evidence a pending or retained decision outranks.
+	// The premise is that nothing drains before the copy is established
+	// (Flush gates on ready): no decision has left the pending set, so none
+	// could have been evicted from retention while its write was in
+	// flight; a flush before ready would break it. The loaded
 	// rows are checked against the pending decisions below, chunk by chunk.
 	// A backlog overflow meanwhile releases decisions no check can see any
 	// more, so every chunk starts by looking for one, and the copy is only
@@ -95,6 +99,9 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 		end := min(start+restoreMergeRows, len(holders))
 		p.mu.Lock()
 		if p.resetPending {
+			// The rows merged so far stay parked (checked against the
+			// decisions then pending) and count as restored.
+			p.counters.restoredHolders = restored
 			p.mu.Unlock()
 			return nil, p.resetOverflowedRestore(ctx, "while the durable copy was being restored")
 		}
@@ -131,8 +138,10 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 	p.mu.Lock()
 	if p.resetPending {
 		// Released since the last chunk (or with nothing loaded): the rows
-		// merged so far were checked against the decisions then pending,
-		// but the copy must not be read as established.
+		// merged so far were checked against the decisions then pending
+		// and count as restored, but the copy must not be read as
+		// established.
+		p.counters.restoredHolders = restored
 		p.mu.Unlock()
 		return nil, p.resetOverflowedRestore(ctx, "while the durable copy was being restored")
 	}

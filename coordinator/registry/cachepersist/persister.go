@@ -56,8 +56,9 @@ type Persister struct {
 	store  crs.Store
 	logger *slog.Logger
 	// maxPending bounds parked rows; dirtyCap bounds each dirty set when the
-	// store is unavailable (beyond it the incoming mark is dropped and
-	// counted).
+	// store is unavailable: beyond it an incoming upsert or demand mark is
+	// dropped and counted, while a delete resets the durable copy instead
+	// (MarkHolderDelete) and a requeued delete is kept (requeue).
 	maxPending int
 	dirtyCap   int
 	// demandGranularity is DemandPersistGranularity bounded by the demand
@@ -130,7 +131,8 @@ type Persister struct {
 // Options shape a persister for the registry's current configuration.
 type Options struct {
 	// MaxPending is the registry's holder index cap; the dirty sets allow
-	// four times that before dropping marks.
+	// four times that before dropping upsert and demand marks (a delete is
+	// never dropped: past the cap it resets the durable copy instead).
 	MaxPending int
 	// DemandTTL is the routing TTL the demand index uses; it bounds the
 	// demand persistence granularity.
@@ -414,8 +416,9 @@ func (p *Persister) drain() batch {
 	return b
 }
 
-// requeue merges an unwritten remainder back so the next flush retries it,
-// bounded by the dirty cap. Marks made meanwhile win.
+// requeue merges an unwritten remainder back so the next flush retries it:
+// upserts and demand bounded by the dirty cap, deletes never dropped. Marks
+// made meanwhile win.
 func (p *Persister) requeue(b batch) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -603,11 +606,13 @@ func (p *Persister) resetIfPending(ctx context.Context) error {
 	if !pending {
 		return nil
 	}
+	started := time.Now()
 	if err := p.store.ResetCacheRoutingState(ctx, p.fingerprint); err != nil {
 		// A failed flush attempt, for the health counters.
 		p.mu.Lock()
 		p.counters.flushes++
 		p.counters.flushErrors++
+		p.counters.lastFlushMs = time.Since(started).Milliseconds()
 		p.counters.lastFlushAt = time.Now()
 		p.mu.Unlock()
 		p.logger.Warn("cache routing persistence: the durable copy could not be reset after the delete backlog overflowed; retrying", "error", err)

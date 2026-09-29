@@ -3,7 +3,6 @@ import hashlib
 import json
 
 from .matrix import CHECKS, IDENTITY_FIELDS, MIN_SAMPLES, cell_key, digest, identity_errors, positive, shapes, widths
-from .calibration import evaluate_calibration
 from .check_receipts import check_errors
 
 METRICS = ("decode_p10_tps", "aggregate_decode_tps", "prefill_tps",
@@ -103,8 +102,10 @@ def evaluate(raw, *, evidence_root=None):
     if (isinstance(serving_sets, list) and
             any(isinstance(models, list) and identity.get("model_id") in models for models in serving_sets)):
         errors.append("serving_sets cannot use the target model as a competing model")
-    if report.get("schema_version") not in (1, 2):
+    if report.get("schema_version") != 1:
         errors.append("unsupported receipt schema_version")
+    if report.get("deadline_calibration") is not None:
+        errors.append("deadline calibration requires the separate raw-bound deadline-only qualifier")
     result = {"qualified": False, "receipt_sha256": hashlib.sha256(raw).hexdigest(),
               "errors": errors, "widths": [], "profile": None}
     if errors:
@@ -197,13 +198,4 @@ def evaluate(raw, *, evidence_root=None):
         if limit > 1 and report.get("mixed_prefill_token_cap") is not None:
             profile["mixed_prefill_token_cap"] = report["mixed_prefill_token_cap"]
         result.update(qualified=True, profile=profile)
-        if report.get("schema_version") == 2 or report.get("deadline_calibration") is not None:
-            calibration = evaluate_calibration(
-                report.get("deadline_calibration"), result["receipt_sha256"], identity["context_tokens_max"])
-            result["deadline_calibration"] = calibration
-            if calibration["qualified"]:
-                profile["deadline_calibration"] = calibration["calibration"]
-            else:
-                result.update(qualified=False, profile=None)
-                errors.extend(calibration["errors"])
     return result

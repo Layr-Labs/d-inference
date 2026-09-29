@@ -97,7 +97,7 @@ struct ServingQualificationLifecycleTests {
                 #expect(generations == 1, "exactly one generation workload retirement")
                 #expect(generated == Int64(confirmed), "all actually committed partial output work remains accounted")
                 if phase == "after_mtp_content" { #expect(confirmed > 0) }
-                receipts.append(.init(phase: phase, reached: reached, cancelled: consumer.cancelled,
+                receipts.append(.init(phase: phase, reached: reached, cancelled: consumer.cancelled, engineFinishReason: consumer.engineFinishReason,
                     confirmedTokens: confirmed, generatedTokensAccounted: generated, generationRetirements: generations,
                     serviceFractionAtCancel: fractionBeforeCancel, retired: retired, followupParity: false, posture: posture))
                 try write(passed: false)
@@ -137,11 +137,11 @@ private final class LifecycleProgress: @unchecked Sendable {
     func finish() { lock.withLock { terminal = true } }
 }
 
-private struct LifecycleConsumer: Sendable { let cancelled: Bool }
 private struct LifecycleReceipt: Codable {
     let phase: String
     let reached: Bool
     let cancelled: Bool
+    let engineFinishReason: EngineFinishReason?
     let confirmedTokens: Int
     let generatedTokensAccounted: Int64
     let generationRetirements: Int64
@@ -168,10 +168,9 @@ private struct LifecycleReport: Encodable {
 }
 
 private extension ServingQualificationFixture {
-    func consumeForCancellation(request: OpenAIChatCompletionRequest, progress: LifecycleProgress) async -> LifecycleConsumer {
+    func consumeForCancellation(request: OpenAIChatCompletionRequest, progress: LifecycleProgress) async -> ServingQualificationLifecycleOutcome {
         let usage = EngineV2RequestUsageSignal()
         let profile = RequestProfileBuilder()
-        var cancelled = false
         do {
             let frames = try await service(profile: profile, usage: usage).streamChatCompletionFrames(request: request)
             for try await frame in frames {
@@ -184,12 +183,12 @@ private extension ServingQualificationFixture {
                     progress.observeContent()
                 }
             }
-            cancelled = Task.isCancelled
         } catch {
-            cancelled = Task.isCancelled || error is CancellationError
+            // A consumer error or cancelled task is not an engine terminal.
+            // The settled profile below owns cancellation classification.
         }
         await usage.waitForTerminalObservation()
         progress.finish()
-        return LifecycleConsumer(cancelled: cancelled)
+        return ServingQualificationLifecycleOutcome(engineFinishReason: profile.wireObject().engine?.finishReason)
     }
 }

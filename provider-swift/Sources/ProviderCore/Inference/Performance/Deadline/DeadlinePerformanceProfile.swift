@@ -18,6 +18,9 @@ public struct DeadlinePerformanceProfile: Codable, Sendable, Equatable {
     public var maxConcurrentPartialPrefills: Int
     public var mixedPrefillTokenCap: Int?
     public var soloPrefillStripeTokens: Int?
+    public var minimumWholeMacQuiescenceMs: Int
+    public var minimumNominalStabilityMs: Int
+    public var powerMode: String
     public var qualificationReportSha256: String
     public var deadlineCalibration: DeadlineCalibration
     public var mtp: ServingMTPConfiguration? = nil
@@ -38,6 +41,9 @@ public struct DeadlinePerformanceProfile: Codable, Sendable, Equatable {
         case maxConcurrentPartialPrefills = "max_concurrent_partial_prefills"
         case mixedPrefillTokenCap = "mixed_prefill_token_cap"
         case soloPrefillStripeTokens = "solo_prefill_stripe_tokens"
+        case minimumWholeMacQuiescenceMs = "minimum_whole_mac_quiescence_ms"
+        case minimumNominalStabilityMs = "minimum_nominal_stability_ms"
+        case powerMode = "power_mode"
         case qualificationReportSha256 = "qualification_report_sha256"
         case deadlineCalibration = "deadline_calibration"
         case mtp
@@ -50,6 +56,11 @@ public struct DeadlinePerformanceProfile: Codable, Sendable, Equatable {
             mixedPrefillTokenCap: mixedPrefillTokenCap, soloPrefillStripeTokens: soloPrefillStripeTokens)
     }
 
+    var applicability: DeadlineApplicability {
+        .init(minimumWholeMacQuiescenceMs: minimumWholeMacQuiescenceMs,
+            minimumNominalStabilityMs: minimumNominalStabilityMs, powerMode: powerMode)
+    }
+
     var calibratedContextTokensMax: Int {
         deadlineCalibration.cells.map(\.contextTokensMax).max() ?? 0
     }
@@ -60,7 +71,7 @@ public struct DeadlinePerformanceProfile: Codable, Sendable, Equatable {
             && ServingPerformanceProfiles.validDigest(qualificationReportSha256)
             && runtimeRevision == ServingPerformanceProfiles.runtimeRevision
             && ["paged", "contiguous"].contains(kvBackend) && gpuCores > 0 && memoryGb > 0
-            && runtimeConfiguration.isValid && (mtp?.isValid ?? true)
+            && runtimeConfiguration.isValid && applicability.isValid && (mtp?.isValid ?? true)
             && deadlineCalibration.isValid && deadlineCalibration.cells.allSatisfy {
                 $0.promptTokensMax <= configuredContextTokens && $0.contextTokensMax <= configuredContextTokens
             }

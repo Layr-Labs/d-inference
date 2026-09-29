@@ -2,30 +2,9 @@ import json
 import unittest
 
 from .deadline_profile import evaluate_deadline_profile
-from .check_receipt_fixtures import ROOT as EVIDENCE_ROOT, references
-from .matrix import RUNTIME_REVISION
-from .test_calibration import receipt as calibration_receipt
-
-
-def receipt():
-    calibration = calibration_receipt()
-    for sample in calibration["cells"][0]["samples"]:
-        sample.update(engine_decode_tps=60, thermal_state="nominal", power_mode="automatic", retired=True)
-    result = {"schema_version": 1, "kind": "deadline_only", "identity": {
-        "id": "deadline-fixture", "model_id": "fixture", "artifact_sha256": "a" * 64,
-        "provider_version": "test", "runtime_revision": RUNTIME_REVISION, "kv_backend": "paged",
-        "chip_name": "Apple M5 Max", "gpu_cores": 40, "memory_gb": 128,
-        "configured_context_tokens": 262144, "effective_max_concurrency": 4,
-        "prefill_chunk_size": 1024, "max_concurrent_partial_prefills": 1,
-        "solo_prefill_stripe_tokens": 4096, "mixed_prefill_token_cap": None},
-        "build": {"configuration": "release", "dirty": False, "debug_condition": False,
-                  "debug_assertions_enabled": False, "build_identity_version": 1,
-                  "source_commit": "a" * 40, "sdk_commit": "b" * 40,
-                  "source_tree_sha256": "c" * 64, "test_binary_sha256": "d" * 64,
-                  "metallib_sha256": "e" * 64},
-        "deadline_calibration": calibration}
-    result["checks"] = references(result["identity"], result["build"])
-    return result
+from .check_receipt_fixtures import ROOT as EVIDENCE_ROOT
+from .posture import COOLED_DEADLINE_APPLICABILITY
+from .deadline_receipt_fixtures import receipt
 
 
 def evaluate(value):
@@ -38,9 +17,24 @@ class DeadlineProfileTests(unittest.TestCase):
         self.assertTrue(result["qualified"], result["errors"])
         profile = result["profile"]
         self.assertEqual(profile["configured_context_tokens"], 262144)
-        self.assertEqual(profile["deadline_calibration"]["cells"][0]["context_tokens_max"], 4224)
+        self.assertEqual(profile["deadline_calibration"]["cells"][0]["context_tokens_max"], 4129)
+        for field, value in COOLED_DEADLINE_APPLICABILITY.items():
+            self.assertEqual(profile[field], value)
         for field in ("batch_curve", "max_concurrency", "whole_mac_concurrency"):
             self.assertNotIn(field, profile)
+
+    def test_cooled_evidence_cannot_certify_general_nominal_start_admission(self):
+        for policy in (None, {},
+                       dict(COOLED_DEADLINE_APPLICABILITY, minimum_whole_mac_quiescence_ms=0),
+                       dict(COOLED_DEADLINE_APPLICABILITY, minimum_nominal_stability_ms=0),
+                       dict(COOLED_DEADLINE_APPLICABILITY, minimum_nominal_stability_ms=5000.0),
+                       dict(COOLED_DEADLINE_APPLICABILITY, power_mode="high")):
+            value = receipt()
+            value["applicability"] = policy
+            result = evaluate(value)
+            with self.subTest(policy=policy):
+                self.assertFalse(result["qualified"])
+                self.assertIsNone(result["profile"])
 
     def test_cannot_smuggle_universal_policy(self):
         for field in ("batch_curve", "max_concurrency", "whole_mac_concurrency", "context_tokens_max"):

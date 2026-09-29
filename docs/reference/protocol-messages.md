@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-28 · commit `d89ef42be`
+> Last updated: 2026-09-28 · commit `973e14b7f`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -512,10 +512,16 @@ catalog. It cannot change serving width, mixed-prefill policy or memory limits.
 | `effective_max_concurrency` | Actual constructed scheduler width, not a requested override |
 | `prefill_chunk_size`, `solo_prefill_stripe_tokens`, `max_concurrent_partial_prefills`, `mixed_prefill_token_cap` | Exact scheduler settings; optional fields preserve absence versus explicit values |
 | `mtp` | Optional verified assistant identity/settings, with the same shape as `performance_profile.mtp` |
+| `minimum_whole_mac_quiescence_ms` | Required explicit measured idle prerequisite; zero is distinct from absence |
+| `minimum_nominal_stability_ms` | Required observed nominal/non-Low-Power stability interval |
+| `power_mode` | Required exact measured power policy, currently `automatic` |
 
 Changing any scheduler identity field withdraws the profile. Neither the
 reference nor a heartbeat supplies calibrated rates or claims measured coverage
 for the full configured context. Unsupported cells retain conservative fallback.
+Missing applicability fields invalidate the reference. The provider withdraws
+it during ineligible posture or activity; the coordinator also requires explicit
+nominal thermal state and `backend_capacity.telemetry.low_power_mode=false`.
 
 #### `slots[].deadline_work`
 

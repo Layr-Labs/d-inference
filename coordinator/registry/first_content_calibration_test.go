@@ -16,7 +16,9 @@ import (
 func calibratedCandidateFixture(t *testing.T, now time.Time) (*Registry, *Provider, *deadlinePerformanceProfile, *PendingRequest) {
 	t.Helper()
 	p, serving := reviewedProfileFixture(t)
+	quiescence, stability := 0, 5000
 	profile := &deadlinePerformanceProfile{
+		MinimumWholeMacQuiescenceMS: &quiescence, MinimumNominalStabilityMS: &stability, PowerMode: "automatic",
 		ID: "test-only-deadline", ModelID: serving.ModelID, ArtifactSHA256: serving.ArtifactSHA256,
 		ProviderVersion: serving.ProviderVersion, RuntimeRevision: serving.RuntimeRevision,
 		KVBackend: serving.KVBackend, ChipName: serving.ChipName, GPUCores: serving.GPUCores, MemoryGB: serving.MemoryGB,
@@ -38,9 +40,12 @@ func calibratedCandidateFixture(t *testing.T, now time.Time) (*Registry, *Provid
 	profile.DeadlineCalibration.Cells = append(profile.DeadlineCalibration.Cells, cell)
 	p.pendingReqs = make(map[string]*PendingRequest)
 	p.CapacityAcceptedAt = now
+	p.SystemMetrics.ThermalState = "nominal"
+	p.BackendCapacity.Telemetry = &protocol.CapacityTelemetry{LowPowerMode: new(bool)}
 	p.BackendCapacity.WholeMacServiceUsed = new(float64)
 	slot := &p.BackendCapacity.Slots[0]
 	slot.DeadlineProfile = &protocol.DeadlinePerformanceProfileReference{
+		MinimumWholeMacQuiescenceMS: &quiescence, MinimumNominalStabilityMS: &stability, PowerMode: "automatic",
 		ID: profile.ID, RuntimeRevision: profile.RuntimeRevision, ConfiguredContextTokens: profile.ConfiguredContextTokens,
 		EffectiveMaxConcurrency: profile.EffectiveMaxConcurrency, PrefillChunkSize: profile.PrefillChunkSize,
 		MaxConcurrentPartialPrefills: profile.MaxConcurrentPartialPrefills,

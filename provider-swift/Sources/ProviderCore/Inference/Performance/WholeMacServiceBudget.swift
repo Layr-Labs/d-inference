@@ -13,11 +13,17 @@ final class WholeMacServiceBudget: @unchecked Sendable {
         let maxOutputTokens: Int
         var calibratedContextTokensMax: Int = .max
     }
+    private struct DeadlineProof {
+        let applicability: DeadlineApplicability
+        let postureEpoch: UUID
+        let activityEpoch: UInt64
+    }
     private struct Charge {
         let fraction: Double
         let reservationID: String?
         let lifetime: ServiceReservationLifetime?
         let work: Work?
+        let deadlineProof: DeadlineProof?
     }
     struct Snapshot: Sendable, Equatable {
         let usedFraction: Double
@@ -31,14 +37,65 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             self.deadlineWorkByModel = deadlineWorkByModel
         }
     }
+    private let clockNow: @Sendable () -> ContinuousClock.Instant
+    private let posture: DeadlinePostureState
+    private var postureObserver: UUID?
+    private var idleSince: ContinuousClock.Instant
+    private var activityEpoch: UInt64 = 0
+    private var advertisedEligibility: [DeadlineApplicability: Bool] = [:]
     private var charges: [String: Charge] = [:]
     private var unboundedActivities: Set<UUID> = []
     private var evidenceGuard = CBv2FirstContentEvidenceGuard()
     private var observerID: UUID?
     private var observer: AsyncStream<Void>.Continuation?
 
+    init(clockNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+        posture: DeadlinePostureState = DeadlinePostureMonitor.shared.state) {
+        self.clockNow = clockNow
+        self.posture = posture
+        self.idleSince = clockNow()
+        postureObserver = posture.observeChanges { [weak self] in
+            guard let self else { return }
+            self.postureChanged()
+        }
+    }
+
+    deinit { if let postureObserver { posture.removeObserver(postureObserver) } }
+
+    func deadlineEligibleForAdvertisement(_ requirement: DeadlineApplicability) -> Bool {
+        lock.withLock {
+            let now = clockNow()
+            let ready = quiescenceSatisfiedLocked(requirement, at: now)
+                && posture.snapshot(requirement: requirement, at: now) != nil
+            advertisedEligibility[requirement] = ready
+            return ready
+        }
+    }
+
+    private func postureChanged() {
+        let notification = lock.withLock { () -> AsyncStream<Void>.Continuation? in
+            let now = clockNow()
+            var changed = false
+            for (requirement, previous) in advertisedEligibility {
+                let ready = quiescenceSatisfiedLocked(requirement, at: now)
+                    && posture.snapshot(requirement: requirement, at: now) != nil
+                if ready != previous { advertisedEligibility[requirement] = ready; changed = true }
+            }
+            return changed ? observer : nil
+        }
+        notification?.yield()
+    }
+
+    private func quiescenceSatisfiedLocked(_ requirement: DeadlineApplicability,
+        at now: ContinuousClock.Instant) -> Bool {
+        requirement.minimumWholeMacQuiescenceMs == 0 ||
+            (charges.isEmpty && unboundedActivities.isEmpty
+                && now >= idleSince.advanced(by: .milliseconds(requirement.minimumWholeMacQuiescenceMs)))
+    }
+
     func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil,
-        serviceReservation: ServiceReservationLifetime? = nil, work: Work? = nil) -> Bool {
+        serviceReservation: ServiceReservationLifetime? = nil, work: Work? = nil,
+        deadlineApplicability: DeadlineApplicability? = nil) -> Bool {
         // Correlation is optional. Malformed input gets no overlap credit; it
         // never bypasses the actual provider-side service allowance.
         let reservationID = serviceReservation?.id
@@ -51,9 +108,19 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             let charge = 1 / Double(concurrency)
             guard charges.values.reduce(0, { $0 + $1.fraction }) + charge <= 1 + 1e-12 else { return (false, nil) }
             guard serviceReservation?.acquireLease() ?? true else { return (false, nil) }
-            charges[ownerID] = Charge(fraction: charge, reservationID: reservationID,
-                lifetime: serviceReservation, work: work)
+            let now = clockNow()
+            let captured = deadlineApplicability.flatMap { requirement in
+                quiescenceSatisfiedLocked(requirement, at: now)
+                    ? posture.snapshot(requirement: requirement, at: now) : nil
+            }
             invalidateEvidenceLocked()
+            let proof: DeadlineProof?
+            if let captured, let deadlineApplicability {
+                proof = .init(applicability: deadlineApplicability,
+                    postureEpoch: captured.epoch, activityEpoch: activityEpoch)
+            } else { proof = nil }
+            charges[ownerID] = Charge(fraction: charge, reservationID: reservationID,
+                lifetime: serviceReservation, work: work, deadlineProof: proof)
             return (true, observer)
         }
         notification?.yield()
@@ -63,6 +130,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     func release(ownerID: String) {
         let (charge, notification) = lock.withLock { () -> (Charge?, AsyncStream<Void>.Continuation?) in
             guard let charge = charges.removeValue(forKey: ownerID) else { return (nil, nil) }
+            if charges.isEmpty && unboundedActivities.isEmpty { idleSince = clockNow() }
             invalidateEvidenceLocked()
             return (charge, observer)
         }
@@ -132,6 +200,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     private func endUnboundedActivity(_ id: UUID) {
         let notification = lock.withLock { () -> AsyncStream<Void>.Continuation? in
             guard unboundedActivities.remove(id) != nil else { return nil }
+            if charges.isEmpty && unboundedActivities.isEmpty { idleSince = clockNow() }
             invalidateEvidenceLocked()
             return observer
         }
@@ -139,11 +208,13 @@ final class WholeMacServiceBudget: @unchecked Sendable {
     }
 
     private func invalidateEvidenceLocked() {
+        activityEpoch &+= 1
         evidenceGuard.invalidate()
         evidenceGuard = CBv2FirstContentEvidenceGuard()
     }
 
     struct CalibrationSnapshot: Sendable {
+        let postureValidUntil: ContinuousClock.Instant?
         let evidenceGuard: CBv2FirstContentEvidenceGuard
         let sameModelRequests: Int
         let otherModelRequests: Int
@@ -156,10 +227,21 @@ final class WholeMacServiceBudget: @unchecked Sendable {
         let sameModelDecodeTokens: Int
     }
 
-    func calibrationSnapshot(ownerID: String, modelID: String, profileID: String) -> CalibrationSnapshot? {
+    func calibrationSnapshot(ownerID: String, modelID: String, profileID: String,
+        applicability: DeadlineApplicability? = nil) -> CalibrationSnapshot? {
         lock.withLock {
             guard unboundedActivities.isEmpty,
                 charges[ownerID]?.work?.modelID == modelID else { return nil }
+            var postureValidUntil: ContinuousClock.Instant?
+            if let applicability {
+                guard let proof = charges[ownerID]?.deadlineProof, proof.applicability == applicability,
+                    applicability.minimumWholeMacQuiescenceMs == 0 ||
+                        (charges.count == 1 && proof.activityEpoch == activityEpoch) else { return nil }
+                if !evidenceGuard.isValid { evidenceGuard = CBv2FirstContentEvidenceGuard() }
+                guard let observed = posture.snapshot(requirement: applicability, at: clockNow(),
+                    registering: evidenceGuard), observed.epoch == proof.postureEpoch else { return nil }
+                postureValidUntil = observed.validUntil
+            }
             var same = 0, other = 0
             var fraction = 0.0
             var competitors = Set<String>()
@@ -196,7 +278,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
                     competitors.insert(actualProfile)
                 }
             }
-            return CalibrationSnapshot(evidenceGuard: evidenceGuard, sameModelRequests: same,
+            return CalibrationSnapshot(postureValidUntil: postureValidUntil, evidenceGuard: evidenceGuard, sameModelRequests: same,
                 otherModelRequests: other, otherModelServiceFraction: fraction,
                 competitorProfileIDs: competitors.sorted(), existingContextTokensMax: contextMax,
                 otherModelPrefillTokens: otherPrefill, otherModelDecodeTokens: otherDecode,

@@ -309,6 +309,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// from reaching clamp diagnostics or TPS/KV observations.
 	clampBackendCapacity(r.logger, id, backendCapacity)
 	now := time.Now()
+	// Inspect the accepted wire snapshot before catalog filtering can hide an
+	// unrelated model's activity. A stale sequence never changes these clocks.
+	p.reconcileDeadlineApplicabilityLocked(msg.BackendCapacity, systemMetrics, now)
 	prevHB := p.LastHeartbeat
 	p.reconcileFirstContentMeasurementsLocked(backendCapacity, now)
 	p.reconcileWarmPoolWorkLocked(backendCapacity, now, warmController, workModels)

@@ -20,9 +20,9 @@ extension EngineV2Bridge {
             let decodeExpiration = performanceMeasurements.rateExpiration("decode"),
             let work = serviceBudget?.calibrationSnapshot(
                 ownerID: serviceOwnerPrefix + ":" + requestID,
-                modelID: modelId, profileID: profile.id)
+                modelID: modelId, profileID: profile.id, applicability: profile.applicability)
         else { return nil }
-        var validUntil = decodeExpiration
+        var validUntil = min(decodeExpiration, work.postureValidUntil ?? decodeExpiration)
         let cells = profile.deadlineCalibration.cells.compactMap { cell -> CBv2FirstContentCalibrationCell? in
             let phase = cell.contention == "isolated" ? "isolated_prefill" : "contended_prefill"
             guard let prefill = performanceMeasurements.freshRate(phase, now: now),

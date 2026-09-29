@@ -2,6 +2,20 @@
 import math
 
 
+COOLED_DEADLINE_APPLICABILITY = {
+    "minimum_whole_mac_quiescence_ms": 20000,
+    "minimum_nominal_stability_ms": 5000,
+    "power_mode": "automatic",
+}
+
+
+def cooled_deadline_applicability(value):
+    """The measured recovery conditions must survive promotion into runtime policy."""
+    return (isinstance(value, dict) and value == COOLED_DEADLINE_APPLICABILITY
+            and all(type(value.get(key)) is int for key in
+                    ("minimum_whole_mac_quiescence_ms", "minimum_nominal_stability_ms")))
+
+
 def nominal_snapshot(value):
     return (isinstance(value, dict) and type(value.get('thermalState')) is int
             and value['thermalState'] == 0 and value.get('lowPowerMode') is False)

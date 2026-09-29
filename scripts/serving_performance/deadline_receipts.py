@@ -4,7 +4,7 @@ import json
 
 from .live_receipts import summarize
 from .build_identity import verified_build_identity
-from .posture import nominal_trial, valid_cooldown
+from .posture import COOLED_DEADLINE_APPLICABILITY, nominal_trial, valid_cooldown
 from .matrix import positive
 
 
@@ -108,4 +108,5 @@ def assemble_deadline_receipt(runs, *, profile_id, prompt_min, prompt_max, check
         "competitor_profile_ids": [], "max_other_model_requests": 0, "max_other_model_service_fraction": 0,
         "samples": samples}
     return {"schema_version": 1, "kind": "deadline_only", "identity": identity, "build": build, "checks": checks,
+        "applicability": dict(COOLED_DEADLINE_APPLICABILITY),
         "deadline_calibration": {"version": 1, "prompt_contract_id": contract, "cells": [cell]}}

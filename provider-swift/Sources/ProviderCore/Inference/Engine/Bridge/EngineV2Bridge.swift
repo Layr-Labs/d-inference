@@ -76,6 +76,7 @@ public actor EngineV2Bridge {
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
+    var deadlinePostureMonitoring: DeadlinePostureLease?
     public nonisolated let deadlineRuntimeConfiguration: DeadlineRuntimeConfiguration?
     nonisolated let promptWorkIdentity: PromptWorkIdentity?
     let unqualifiedMaxConcurrentRequests: Int

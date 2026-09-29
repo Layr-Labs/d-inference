@@ -510,6 +510,7 @@ enum EngineV2SlotFactory {
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
 
+        if deadlineProfile != nil { await bridge.retainDeadlinePostureMonitoring() }
         if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }
         await bridge.configureMTPStatus(mtpStatus,
             metricsInterval: startServingTelemetry ? .seconds(60) : .zero)

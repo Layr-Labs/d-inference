@@ -49,6 +49,8 @@ import Testing
     #expect(deadline.configuredContextTokens == 262144 && deadline.effectiveMaxConcurrency == 16)
     #expect(deadline.prefillChunkSize == 512 && deadline.soloPrefillStripeTokens == 4096)
     #expect(deadline.mixedPrefillTokenCap == 256 && deadline.maxConcurrentPartialPrefills == 1)
+    #expect(deadline.minimumWholeMacQuiescenceMs == 20_000)
+    #expect(deadline.minimumNominalStabilityMs == 5_000 && deadline.powerMode == "automatic")
     #expect(deadline.mtp == profile.mtp)
     let work = try #require(slot.deadlineWork)
     #expect(work.version == 1 && work.known)

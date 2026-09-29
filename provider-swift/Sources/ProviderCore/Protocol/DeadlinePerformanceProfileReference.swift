@@ -11,6 +11,9 @@ public struct DeadlinePerformanceProfileReference: Codable, Sendable, Equatable 
     public var maxConcurrentPartialPrefills: Int
     public var mixedPrefillTokenCap: Int?
     public var soloPrefillStripeTokens: Int?
+    public var minimumWholeMacQuiescenceMs: Int
+    public var minimumNominalStabilityMs: Int
+    public var powerMode: String
     public var mtp: ServingMTPConfiguration? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -22,6 +25,9 @@ public struct DeadlinePerformanceProfileReference: Codable, Sendable, Equatable 
         case maxConcurrentPartialPrefills = "max_concurrent_partial_prefills"
         case mixedPrefillTokenCap = "mixed_prefill_token_cap"
         case soloPrefillStripeTokens = "solo_prefill_stripe_tokens"
+        case minimumWholeMacQuiescenceMs = "minimum_whole_mac_quiescence_ms"
+        case minimumNominalStabilityMs = "minimum_nominal_stability_ms"
+        case powerMode = "power_mode"
         case mtp
     }
 
@@ -34,6 +40,9 @@ public struct DeadlinePerformanceProfileReference: Codable, Sendable, Equatable 
         maxConcurrentPartialPrefills = profile.maxConcurrentPartialPrefills
         mixedPrefillTokenCap = profile.mixedPrefillTokenCap
         soloPrefillStripeTokens = profile.soloPrefillStripeTokens
+        minimumWholeMacQuiescenceMs = profile.minimumWholeMacQuiescenceMs
+        minimumNominalStabilityMs = profile.minimumNominalStabilityMs
+        powerMode = profile.powerMode
         mtp = profile.mtp
     }
 }

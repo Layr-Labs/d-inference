@@ -140,6 +140,7 @@ func (r *Registry) expirePendingModelLoads(now time.Time) {
 	defer r.mu.Unlock()
 	for key, expiresAt := range r.pendingModelLoads {
 		if now.After(expiresAt) {
+			r.recordDeadlineLoadActivityLocked(key.ProviderID, now)
 			delete(r.pendingModelLoads, key)
 			delete(r.pendingModelLoadStarted, key)
 		}
@@ -335,6 +336,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 			continue
 		}
 		key := modelLoadKey{ProviderID: action.providerID, ModelID: action.modelID}
+		r.recordDeadlineLoadActivityLocked(action.providerID, now)
 		r.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
 		r.pendingModelLoadStarted[key] = now
 		action.reservation = pendingModelLoadSendAttempt{
@@ -395,6 +397,7 @@ func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 		}
 		delete(r.pendingModelLoads, key)
 		delete(r.pendingModelLoadStarted, key)
+		p.recordDeadlineActivityLocked(time.Now())
 		cleared++
 	}
 	p.mu.Unlock()
@@ -472,6 +475,9 @@ func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Durati
 	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
 	_, released := r.pendingModelLoads[key]
 	started := r.pendingModelLoadStarted[key]
+	if released {
+		r.recordDeadlineLoadActivityLocked(providerID, time.Now())
+	}
 	delete(r.pendingModelLoads, key)
 	delete(r.pendingModelLoadStarted, key)
 	r.mu.Unlock()
@@ -523,6 +529,7 @@ func (r *Registry) backoffPendingModelLoad(providerID, modelID string, backoff t
 	}
 	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
 	now := time.Now()
+	r.recordDeadlineLoadActivityLocked(providerID, now)
 	r.pendingModelLoads[key] = now.Add(backoff)
 	if r.pendingModelLoadStarted[key].IsZero() {
 		r.pendingModelLoadStarted[key] = now

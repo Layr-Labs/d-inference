@@ -24,6 +24,7 @@ func deadlineCalibrationProfileFixture() -> DeadlinePerformanceProfile {
         configuredContextTokens: 32_768, effectiveMaxConcurrency: 4,
         prefillChunkSize: 512, maxConcurrentPartialPrefills: 1,
         mixedPrefillTokenCap: nil, soloPrefillStripeTokens: 4096,
+        minimumWholeMacQuiescenceMs: 0, minimumNominalStabilityMs: 5_000, powerMode: "automatic",
         qualificationReportSha256: String(repeating: "c", count: 64),
         deadlineCalibration: .init(version: 1, promptContractId: calibrationContract, cells: [calibrationCell()]))
 }
@@ -107,7 +108,7 @@ func deadlineCalibrationProfileFixture() -> DeadlinePerformanceProfile {
     let profile = deadlineCalibrationProfileFixture()
     let budget = GlobalKVCacheBudget(memorySnapshot: {
         .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
-    })
+    }, serviceBudget: deadlineReadyServiceBudgetFixture())
     let bridge = EngineV2Bridge(engine: PrefillScriptEngine(), modelId: profile.modelId,
         tokenizer: TokenizerHandle(CalibrationTokenizer()), eosTokenIds: [],
         deadlineProfile: profile,
@@ -195,7 +196,7 @@ func deadlineCalibrationProfileFixture() -> DeadlinePerformanceProfile {
     otherProfile.deadlineCalibration.cells[0].contextTokensMax = 4_096
     let budget = GlobalKVCacheBudget(memorySnapshot: {
         .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
-    })
+    }, serviceBudget: deadlineReadyServiceBudgetFixture())
     let target = EngineV2Bridge(engine: PrefillScriptEngine(), modelId: targetProfile.modelId,
         tokenizer: TokenizerHandle(CalibrationTokenizer()), eosTokenIds: [],
         deadlineProfile: targetProfile, kvBudget: budget)
@@ -268,7 +269,7 @@ private struct CalibrationTokenizer: MLXLMCommon.Tokenizer {
     }
     let budget = GlobalKVCacheBudget(memorySnapshot: {
         .init(total: 64 << 30, active: 0, cache: 0, systemAvailable: 64 << 30)
-    })
+    }, serviceBudget: deadlineReadyServiceBudgetFixture())
     let bridge = EngineV2Bridge(engine: PrefillScriptEngine(), modelId: profile.modelId,
         tokenizer: TokenizerHandle(CalibrationTokenizer()), eosTokenIds: [],
         deadlineProfile: profile,

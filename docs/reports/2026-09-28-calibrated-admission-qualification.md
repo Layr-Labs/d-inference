@@ -1,6 +1,6 @@
 # Qwen3.8 calibrated admission qualification
 
-> Last updated: 2026-09-28 · commit `c9bdb401c`
+> Last updated: 2026-09-28 · commit `973e14b7f`
 
 The initial dedicated M5 Max screen completed real Qwen3.8 inference with active
 MTP. It is **screening evidence, not a qualified serving profile**: the initial
@@ -8,8 +8,10 @@ host was in High Power mode, and independent deadline/lifecycle qualification
 had not completed. A fresh 9,000-body prompt-count corpus passed all six bounded
 fallback cells after the initial smaller corpus failed. A fresh cooled cohort
 completed all 40 training trials; its independently generated 100-trial
-validation cohort is running. Deadline timing profiles still require held-out
-and lifecycle qualification; no concurrency/chunk default is certified.
+validation cohort completed with all 100 observations covered by the frozen
+bound and no posture/runtime failures. The closest observation retained
+1,047.625 ms of coverage margin. Deadline timing profiles still require
+lifecycle qualification and final-build proof; no concurrency/chunk default is certified.
 
 ## Hardware and artifact
 
@@ -141,6 +143,16 @@ held-out requests use new independently generated bodies on the same exact
 binary. Their results cannot refit the frozen rates or margin. Training alone
 does not qualify a deadline profile or any concurrency/chunk change.
 
+Review found that nominal state at admission alone does not reproduce this
+cooled distribution. An exploratory replay of sustained-cohort iteration 2,
+which ended nominal, gives a frozen/live-capped bound of 15,087.866 ms against
+15,322.195 ms observed first content (15,293.784 ms from engine submit).
+That earlier cohort does not become validation evidence; it demonstrates why
+the runtime must retain the measured 20-second whole-Mac quiescence and
+five-second stable nominal/Automatic prerequisites. New admission checks enforce
+those conditions without waiting and invalidate stale idle references after
+request, retirement or load activity.
+
 ## Initial rendered-count corpus
 
 The actual tokenizer/template rendered 504 synthetic chat bodies in 39.94
@@ -224,11 +236,12 @@ Focused deadline, constraint, isolation and checkpoint tests pass on the merged
 SDK. Its hosted full suite is not green: the
 [pre-172 baseline](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36487630997),
 [PR 172 run](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36503042824),
-and [merged-main run](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36505279055)
+[merged-172 run](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36505279055),
+and [PR 173 run](https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/36508355311)
 report the same 112 issues in four DiffusionGemma suites, with identical
 per-test totals. The [numeric comparison](evidence/2026-09-28-calibrated-admission/sdk-ci-baseline-comparison.json)
-retains all three revisions, run links, log hashes, totals and separate XCTest
-failures. The merged-main run has no XCTest failures.
+retains all four revisions, run links, log hashes, totals and separate XCTest
+failures. The merged-172 and PR 173 runs have no XCTest failures.
 These existing failures remain unresolved; they are not reported as passing
 SDK coverage or used as qualification prerequisites.
 
@@ -239,7 +252,17 @@ fixture lifetime issue in its MoE test. Test-only
 [SDK PR 173](https://github.com/Layr-Labs/mlx-swift-lm/pull/173) adds a deterministic
 held-callback regression and waits for final callback owners before checking a
 zero total ledger. Immediate GPU/request retirement assertions remain intact.
-It changes no runtime code and does not change this qualification's SDK pin.
+It merged as `71678411330e37cb76d1a10134411433dfa5c9a9`, which is now the final
+provider pin. Comparing with `748db5d` shows only its two test files changed;
+runtime libraries and package files are byte-identical. Historical timing
+receipts retain their actual `748db5d` revision; final-build proof uses the new pin.
+On merged `7167841`, local checkpoint suites pass all 15 XCTest cases, and
+constraint/isolation coverage passes 37 XCTest plus 23 Swift Testing cases.
+The full provider suite also passes on this pin: 208 XCTest cases (eight
+expected skips), 3,442 Swift Testing cases in 458 suites, and 12 isolated checks.
+The separate [scoped receipt](evidence/2026-09-28-calibrated-admission/constraint-isolation-sdk173-receipt.json)
+and [test log](evidence/2026-09-28-calibrated-admission/constraint-isolation-sdk173-tests.txt)
+preserve that exact revision without replacing the earlier cohort's evidence.
 
 ## Qualification boundaries and reproduction
 

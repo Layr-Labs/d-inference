@@ -39,6 +39,9 @@
       },
       "deadline_profile": {
         "id": "test-reviewed-deadline",
+        "minimum_whole_mac_quiescence_ms": 20000,
+        "minimum_nominal_stability_ms": 5000,
+        "power_mode": "automatic",
         "runtime_revision": "cbv2-first-content-v2",
         "configured_context_tokens": 262144,
         "effective_max_concurrency": 16,

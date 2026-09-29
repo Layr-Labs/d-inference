@@ -3,6 +3,7 @@ package cachepersist
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -867,5 +868,80 @@ func TestDeleteDecisionDiscardsOutrankedParkedCopy(t *testing.T) {
 	p.Park(older)
 	if s := p.Status(); s.PendingHolders != 1 {
 		t.Fatalf("residual: a forgotten decision no longer refuses older evidence: %+v", s)
+	}
+}
+
+// A prune pops only the expired parked rows off the expiry order, in
+// bounded chunks, skipping entries for rows taken or merged meanwhile.
+func TestPrunePendingPopsOnlyExpiredRowsInChunks(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	p := New(mem, nil, Options{MaxPending: 100_000})
+	now := time.Now()
+	const expired, live = 2*pruneParkedBatchRows + 7, 100
+	for i := 0; i < expired; i++ {
+		p.Park(rec(fmt.Sprintf("x%05d", i), "e", now.Add(-2*time.Minute), time.Minute)) // expired
+	}
+	for i := 0; i < live; i++ {
+		p.Park(rec(fmt.Sprintf("l%05d", i), "e", now, time.Minute))
+	}
+	// A parked row taken before the prune leaves a stale heap entry.
+	taken, _ := p.Take("e", "model", 1)
+	if len(taken) != 1 {
+		t.Fatal("take one row")
+	}
+	// Extending a live row's expiry by a merge leaves its earlier entry stale.
+	extended := rec("l00000", "e", now, 2*time.Minute)
+	p.Park(extended)
+	p.Prune(context.Background(), now, time.Minute) // not ready: parked prune only
+	s := p.Status()
+	wantLive := live
+	if taken[0].Key[0] == 'l' {
+		wantLive--
+	}
+	if s.PendingHolders != wantLive || s.DroppedPending != uint64(expired)-uint64(map[bool]int{true: 1, false: 0}[taken[0].Key[0] == 'x']) {
+		t.Fatalf("prune must drop exactly the expired rows: %+v (taken %s)", s, taken[0].Key)
+	}
+	rows, _ := p.Take("e", "model", 0)
+	for _, r := range rows {
+		if r.Key[0] != 'l' {
+			t.Fatalf("expired row survived the prune: %+v", r)
+		}
+		if r.Key == "l00000" && !r.ExpiresAt.Equal(now.Add(2*time.Minute)) {
+			t.Fatalf("the merged expiry must stand: %+v", r)
+		}
+	}
+	if p.HasPending() {
+		t.Fatal("everything live was taken")
+	}
+}
+
+// Timestamp ties go to the delete decision, whether pending or retained.
+func TestDeleteDecisionWinsTimestampTies(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	p := New(mem, nil, Options{MaxPending: 10})
+	now := time.Now()
+	restoreForTest(t, p, now)
+	k := crs.HolderKey{Key: "a", CacheEpoch: "e"}
+	p.MarkHolderDelete(k, now)
+	same := rec("a", "e", now, time.Minute) // sampled the same clock value
+	p.MarkHolderUpsert(same)
+	if b := p.drain(); len(b.deletes) != 1 || len(b.upserts) != 0 {
+		t.Fatalf("an equal-time receipt must not cancel the decision: %+v %+v", b.deletes, b.upserts)
+	}
+	if !p.Tombstoned(k, now) {
+		t.Fatal("an equal-time row is tombstoned while the delete is in flight")
+	}
+	if err := p.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !p.Tombstoned(k, now) {
+		t.Fatal("an equal-time row is tombstoned after the delete was written")
+	}
+	p.MarkHolderUpsert(same)
+	if !p.dirtyEmpty() {
+		t.Fatal("an equal-time receipt must not be queued after the delete was written")
+	}
+	if p.Tombstoned(k, now.Add(time.Nanosecond)) {
+		t.Fatal("evidence strictly after the decision is not tombstoned")
 	}
 }

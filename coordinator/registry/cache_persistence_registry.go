@@ -174,10 +174,14 @@ func (r *Registry) bindChunksWhileOwned(p *Provider) {
 		owned := tracker != nil && r.providers[p.ID] == p
 		var remaining bool
 		if owned {
+			// provider.mu is held through the chunk, the order the receipt
+			// and capability-apply paths use: a heartbeat cannot publish a
+			// new capability and invalidate the old holders between this
+			// snapshot of the capabilities and the bind that uses it.
 			p.mu.Lock()
 			caps := clonePrefixCacheCapabilities(p.PrefixCacheV2Models)
-			p.mu.Unlock()
 			remaining = tracker.bindRestoredHolders(p, caps)
+			p.mu.Unlock()
 		}
 		r.mu.RUnlock()
 		if !owned || !remaining {

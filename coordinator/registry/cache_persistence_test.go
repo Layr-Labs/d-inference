@@ -1390,3 +1390,45 @@ func TestCacheRoutingPersistenceCapabilityChangeSettlesLargeBucket(t *testing.T)
 		t.Fatalf("every row parked for the old epoch must be settled: %+v", s)
 	}
 }
+
+// An expired holder of an older session (not yet swept) is not surviving
+// evidence: invalidating the newer session's holder deletes the durable
+// row instead of refreshing it from the expired one.
+func TestCacheRoutingPersistenceExpiredSessionDoesNotPreserveRow(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	removeTestProvider(r, "provider-a")
+	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
+	base := time.Now().Add(-10 * time.Second)
+	clock := base
+	r.SetCacheRoutingClockForTest(func() time.Time { return clock })
+	startPersistence(t, r, st)
+	checkpoint := exactTestAnchor(16, "c")
+	floor := exactTestAnchor(17, "d")
+	plan := boundTestCachePlan(r, exactTestPlan(checkpoint, floor))
+	older := persistenceTestProvider(t, r, "session-older", capability)
+	newer := persistenceTestProvider(t, r, "session-newer", capability)
+	receipt := func(p *Provider, id string) {
+		_, ready := checkpointTestAttempt(t, r, p, capability, id, plan, 1)
+		ready.ReadyAnchors = []protocol.PrefixCacheAnchor{checkpoint}
+		ready.ExpectedPrefillTokensSaved = checkpoint.TokenCount
+		if !r.ApplyPrefixCacheReadyV2(p.ID, ready) {
+			t.Fatalf("receipt for %s rejected", p.ID)
+		}
+	}
+	receipt(older, "donor-older") // expires at base + 1 min (the test TTL)
+	clock = base.Add(50 * time.Second)
+	receipt(newer, "donor-newer") // expires at base + 110 s
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Past the older holder's expiry, but before any sweep removed it.
+	clock = base.Add(65 * time.Second)
+	r.cacheRouting.invalidateProviderEvidence(newer.ID, cacheHolderRemovalProofMismatch, true)
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := st.LoadCacheHolders(context.Background(), base.Add(65*time.Second), 0, 0); len(rows) != 0 {
+		t.Fatalf("an expired session must not preserve the durable row: %+v", rows)
+	}
+}

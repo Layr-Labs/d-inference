@@ -115,9 +115,16 @@ func (t *cacheRoutingTracker) persistRowAfterLossLocked(key, epoch, except strin
 	var (
 		newest cacheHolder
 		found  bool
+		now    = t.now()
 	)
 	for providerID, other := range t.holders[key] {
 		if providerID == except || other.CacheEpoch != epoch || !other.persistable() {
+			continue
+		}
+		if !other.ExpiresAt.After(now) {
+			// Expired but not yet swept: no longer evidence, and refreshing
+			// the row from it would keep the durable copy past any live
+			// session's ownership.
 			continue
 		}
 		if !found || other.UpdatedAt.After(newest.UpdatedAt) {

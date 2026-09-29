@@ -102,6 +102,13 @@ type Persister struct {
 	// a delete decision can discard the parked copy it outranks at once
 	// (MarkHolderDelete) without knowing the model.
 	parkedBucket map[crs.HolderKey]string
+	// parkedExpiry orders parked rows by expiry so a prune pops only the
+	// expired ones, in bounded chunks per lock hold, instead of scanning
+	// every parked row under p.mu (a receipt holding the tracker lock waits
+	// on this mutex, and requests wait on the tracker lock). Entries for
+	// rows taken or dropped meanwhile are stale and skipped when they
+	// surface; a compaction rebuilds the heap when it outgrows the parked set.
+	parkedExpiry parkedHeap
 	pendingCount int
 	counters     counters
 	// ready is set once Restore has established the key generation (and
@@ -163,11 +170,14 @@ func (p *Persister) MarkHolderUpsert(rec crs.HolderRecord) {
 	// than a delete this run decided (pending, or written within the TTL)
 	// is stale evidence and must neither cancel the tombstone nor reach the
 	// store. A newer receipt re-proves the row and cancels the tombstone.
-	if at, pending := p.holderDeletes[k]; pending && at.After(rec.UpdatedAt) {
+	// Ties go to the delete: a receipt that sampled the same clock value as
+	// the invalidation, before waiting on the tracker lock, was sampled
+	// before the decision.
+	if at, pending := p.holderDeletes[k]; pending && !rec.UpdatedAt.After(at) {
 		p.counters.staleUpserts++
 		return
 	}
-	if at, ok := p.recentDeletes[k]; ok && at.After(rec.UpdatedAt) {
+	if at, ok := p.recentDeletes[k]; ok && !rec.UpdatedAt.After(at) {
 		p.counters.staleUpserts++
 		return
 	}
@@ -221,15 +231,16 @@ func (p *Persister) dropParkedIfOutrankedLocked(k crs.HolderKey, decidedAt time.
 
 // tombstonedLocked is Tombstoned with p.mu held.
 func (p *Persister) tombstonedLocked(k crs.HolderKey, updatedAt time.Time) bool {
-	if decided, pending := p.holderDeletes[k]; pending && decided.After(updatedAt) {
+	// Ties go to the delete, as in MarkHolderUpsert.
+	if decided, pending := p.holderDeletes[k]; pending && !updatedAt.After(decided) {
 		return true
 	}
 	decided, ok := p.recentDeletes[k]
-	return ok && decided.After(updatedAt)
+	return ok && !updatedAt.After(decided)
 }
 
 // Tombstoned reports whether a row whose evidence dates from updatedAt is
-// outranked by a delete this run decided after that evidence: one still
+// outranked by a delete this run decided at or after that time: one still
 // pending, in flight, or written within the last TTL. Such a row (loaded by
 // a retried restore, or parked by an older session before the decision) must
 // not bind.
@@ -271,6 +282,29 @@ func (p *Persister) MarkDemand(keys []string, now time.Time) {
 type recentDelete struct {
 	key crs.HolderKey
 	at  time.Time
+}
+
+// parkedEntry is one parked row's position in the expiry order.
+type parkedEntry struct {
+	bucket string
+	key    crs.HolderKey
+	expiry time.Time
+}
+
+// parkedHeap orders parked rows by expiry, soonest first.
+type parkedHeap []parkedEntry
+
+func (h parkedHeap) Len() int           { return len(h) }
+func (h parkedHeap) Less(i, j int) bool { return h[i].expiry.Before(h[j].expiry) }
+func (h parkedHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *parkedHeap) Push(x any)        { *h = append(*h, x.(parkedEntry)) }
+func (h *parkedHeap) Pop() any {
+	old := *h
+	n := len(old)
+	e := old[n-1]
+	old[n-1] = parkedEntry{}
+	*h = old[:n-1]
+	return e
 }
 
 // recentHeap orders recorded decisions by time, oldest first.
@@ -490,7 +524,7 @@ func (p *Persister) Prune(ctx context.Context, now time.Time, ttl time.Duration)
 	// is reachable; dropping them never waits for the restore. A written
 	// tombstone outranks older parked evidence for one TTL, after which any
 	// such row has expired on its own.
-	p.prunePending(now)
+	p.prunePendingChunked(now)
 	p.mu.Lock()
 	for k, at := range p.recentDeletes {
 		if now.Sub(at) >= ttl {

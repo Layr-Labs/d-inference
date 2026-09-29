@@ -151,4 +151,12 @@ func TestShutdownCloseStatusIsRestartNeutral(t *testing.T) {
 	if registry.ClassifyPeerClose(shutdownCloseStatus(-1, true), false) != registry.DisconnectReasonPeerClose {
 		t.Fatal("the shutdown close must classify as a peer close")
 	}
+	// The session row records a coordinator shutdown as such, not as a
+	// close frame the peer sent.
+	if got := sessionDisconnectReason(websocket.StatusGoingAway, false, readErrorReasonGeneric, true); got != sessionDisconnectReasonCoordinatorShutdown {
+		t.Fatalf("shutdown session reason: %s", got)
+	}
+	if got := sessionDisconnectReason(websocket.StatusGoingAway, false, readErrorReasonGeneric, false); got != "ws_close_1001" {
+		t.Fatalf("peer going-away session reason: %s", got)
+	}
 }

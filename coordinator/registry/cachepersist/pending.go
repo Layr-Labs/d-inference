@@ -1,6 +1,7 @@
 package cachepersist
 
 import (
+	"container/heap"
 	"time"
 
 	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
@@ -29,7 +30,11 @@ func (p *Persister) Park(rec crs.HolderRecord) {
 	// Overlapping sessions of one machine park the same durable row more
 	// than once; one parked copy per (key, epoch), the newer evidence.
 	if parked, ok := p.pending[pk][hk]; ok {
-		p.pending[pk][hk] = crs.Later(parked, rec)
+		merged := crs.Later(parked, rec)
+		p.pending[pk][hk] = merged
+		if !merged.ExpiresAt.Equal(parked.ExpiresAt) {
+			heap.Push(&p.parkedExpiry, parkedEntry{bucket: pk, key: hk, expiry: merged.ExpiresAt})
+		}
 		return
 	}
 	if p.pendingCount >= p.maxPending {
@@ -51,6 +56,27 @@ func (p *Persister) addParkedLocked(pk string, rec crs.HolderRecord) {
 	bucket[hk] = rec
 	p.parkedBucket[hk] = pk
 	p.pendingCount++
+	heap.Push(&p.parkedExpiry, parkedEntry{bucket: pk, key: hk, expiry: rec.ExpiresAt})
+	if p.parkedExpiry.Len() > 2*p.pendingCount+1024 {
+		p.compactParkedExpiryLocked()
+	}
+}
+
+// compactParkedExpiryLocked drops expiry entries whose row is gone or has
+// been replaced by a merge with another expiry, and restores the heap order.
+// Called with p.mu held.
+func (p *Persister) compactParkedExpiryLocked() {
+	kept := p.parkedExpiry[:0]
+	for _, e := range p.parkedExpiry {
+		if rec, ok := p.pending[e.bucket][e.key]; ok && rec.ExpiresAt.Equal(e.expiry) {
+			kept = append(kept, e)
+		}
+	}
+	for i := len(kept); i < len(p.parkedExpiry); i++ {
+		p.parkedExpiry[i] = parkedEntry{}
+	}
+	p.parkedExpiry = kept
+	heap.Init(&p.parkedExpiry)
 }
 
 // removeParkedLocked removes one parked row from its bucket and the identity
@@ -134,12 +160,49 @@ func (p *Persister) prunePending(now time.Time) {
 }
 
 func (p *Persister) prunePendingLocked(now time.Time) {
-	for pk, bucket := range p.pending {
-		for hk, rec := range bucket {
-			if !rec.ExpiresAt.After(now) {
-				p.removeParkedLocked(pk, hk)
-				p.counters.droppedPending++
-			}
+	for p.prunePendingBatchLocked(now, 0) {
+	}
+}
+
+// pruneParkedBatchRows bounds the parked rows one prune lock hold examines.
+const pruneParkedBatchRows = 5_000
+
+// prunePendingBatchLocked pops up to limit expired entries (limit <= 0: no
+// bound) off the expiry heap, dropping the parked rows they name, and
+// reports whether expired entries may remain. Entries whose row is gone or
+// was merged to a later expiry are stale and skipped. Called with p.mu held.
+func (p *Persister) prunePendingBatchLocked(now time.Time, limit int) bool {
+	examined := 0
+	for p.parkedExpiry.Len() > 0 {
+		top := p.parkedExpiry[0]
+		if top.expiry.After(now) {
+			return false
+		}
+		if limit > 0 && examined >= limit {
+			return true
+		}
+		examined++
+		heap.Pop(&p.parkedExpiry)
+		rec, ok := p.pending[top.bucket][top.key]
+		if !ok || !rec.ExpiresAt.Equal(top.expiry) {
+			continue // stale: taken, dropped, or merged to a later expiry
+		}
+		p.removeParkedLocked(top.bucket, top.key)
+		p.counters.droppedPending++
+	}
+	return false
+}
+
+// prunePendingChunked drops expired parked rows in bounded chunks, releasing
+// p.mu between them, so a receipt holding the tracker lock (and behind it
+// the request path) never waits behind a full scan.
+func (p *Persister) prunePendingChunked(now time.Time) {
+	for {
+		p.mu.Lock()
+		more := p.prunePendingBatchLocked(now, pruneParkedBatchRows)
+		p.mu.Unlock()
+		if !more {
+			return
 		}
 	}
 }

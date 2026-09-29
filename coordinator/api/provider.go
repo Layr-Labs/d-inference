@@ -280,10 +280,17 @@ const maxProviderVersionLength = 128
 // The registry's own generic "disconnect" remains the reason for closes the
 // read loop did NOT observe first — in practice the stale-eviction sweep —
 // so post-fix, lingering "disconnect" rows ≈ silent drops reaped by eviction.
-func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string) string {
+// sessionDisconnectReasonCoordinatorShutdown stamps a session whose socket
+// the coordinator itself closed for shutdown: distinct from ws_close_<code>,
+// which means the peer sent that close frame.
+const sessionDisconnectReasonCoordinatorShutdown = "coordinator_shutdown"
+
+func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string, closing bool) string {
 	switch {
 	case oomSuspected:
 		return string(registry.DisconnectReasonOOMSuspected)
+	case closing:
+		return sessionDisconnectReasonCoordinatorShutdown
 	case closeStatus != -1:
 		return "ws_close_" + strconv.Itoa(int(closeStatus))
 	default:
@@ -377,7 +384,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	for {
 		_, data, err := conn.Read(loopCtx)
 		if err != nil {
-			closeStatus := shutdownCloseStatus(websocket.CloseStatus(err), s.providerSocketsClosing())
+			closing := s.providerSocketsClosing()
+			closeStatus := shutdownCloseStatus(websocket.CloseStatus(err), closing)
 			oomSuspected := false
 			readReason := readErrorReasonGeneric
 			if closeStatus != -1 {
@@ -451,8 +459,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// no-op. Skipped when:
 			//   - provider == nil: never registered, so no session row exists
 			//     (writing would fabricate a zero-duration row);
-			//   - ctx.Err() != nil: coordinator shutdown — the next instance's
-			//     startup reconcile labels these "coordinator_restart";
+			//   - ctx.Err() != nil: the loop's context was cancelled (a
+			//     hijacked socket's request context is not cancelled by
+			//     httpServer.Shutdown; a socket the coordinator closed for
+			//     shutdown reads as going-away and is stamped
+			//     coordinator_shutdown above);
 			//   - the registry no longer has the provider: registry.Disconnect
 			//     already ran (stale eviction, duplicate-serial kick) and owns
 			//     the reason for that path.
@@ -470,7 +481,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.Status = registry.StatusOffline
 				}
 				provider.Mu().Unlock()
-				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected, readReason))
+				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected, readReason, closing))
 			}
 			return
 		}
@@ -541,7 +552,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			provider = s.registry.Register(providerID, conn, regMsg)
 			if s.providerSocketsClosing() {
 				// Registered after shutdown began closing sockets; the
-				// socket is being closed, so leave before reading anything.
+				// socket is being closed, so leave before reading anything,
+				// with the same restart-neutral classification a closed
+				// socket gets.
+				peerCloseStatus = websocket.StatusGoingAway
 				s.logger.Info("provider registered during shutdown; closing", "provider_id", providerID)
 				return
 			}

@@ -700,3 +700,35 @@ func TestFailedDeleteWriteKeepsTheDecisionTime(t *testing.T) {
 		t.Fatalf("a receipt newer than the decision is not stale: %+v", s)
 	}
 }
+
+// A delete decided again while its earlier write was failing keeps the later
+// decision when the failed batch is requeued.
+func TestRequeueKeepsTheLaterDeleteDecision(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	p := New(mem, nil, Options{MaxPending: 10})
+	restoreForTest(t, p, time.Now())
+	k := crs.HolderKey{Key: "a", CacheEpoch: "e"}
+	first := time.Now()
+	second := first.Add(time.Second)
+	// The second invalidation was queued while the first's write failed.
+	p.MarkHolderDelete(k, second)
+	p.requeue(batch{deletes: []crs.HolderKey{k}, deleteAt: map[crs.HolderKey]time.Time{k: first}})
+	p.mu.Lock()
+	at := p.holderDeletes[k]
+	p.mu.Unlock()
+	if !at.Equal(second) {
+		t.Fatalf("requeue must keep the later decision: got %v want %v", at, second)
+	}
+	if !p.Tombstoned(k, first.Add(500*time.Millisecond)) {
+		t.Fatal("evidence between the two decisions must still be outranked")
+	}
+	// And a requeue never moves a decision earlier than the drained one either.
+	p.MarkHolderDelete(k, first)
+	p.requeue(batch{deletes: []crs.HolderKey{k}, deleteAt: map[crs.HolderKey]time.Time{k: second}})
+	p.mu.Lock()
+	at = p.holderDeletes[k]
+	p.mu.Unlock()
+	if !at.Equal(second) {
+		t.Fatalf("requeue must keep the later of the two decisions: got %v want %v", at, second)
+	}
+}

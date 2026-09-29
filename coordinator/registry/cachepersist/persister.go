@@ -329,6 +329,11 @@ func (p *Persister) requeue(b batch) {
 			at = time.Now()
 			p.counters.droppedDirty++
 		}
+		// The row may have been re-proved and invalidated again while the
+		// write was failing: the later decision is the one that stands.
+		if cur, present := p.holderDeletes[k]; present && cur.After(at) {
+			at = cur
+		}
 		p.holderDeletes[k] = at
 	}
 	for _, rec := range b.demand {

@@ -311,17 +311,10 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 		actions := allocateWarmPoolLoads(model, f.eligibleCold, need, assigned, now, activeReserve)
 		loadsRemaining -= len(actions)
 		c.state.rememberTarget(model, target, now)
-		// Surface why cold boxes aren't warmable (counts only). For a dedicated pool
-		// this explains a gap between the raw cold count and what we can actually warm.
-		if f.coldIneligible > 0 && c.registry != nil && c.registry.logger != nil && c.registry.IsDedicatedModel(model) {
-			c.registry.logger.Info("warm-pool cold-ineligible (dedicated)",
-				"model", model,
-				"warm", f.warm,
-				"eligible_cold", len(f.eligibleCold),
-				"cold_ineligible", f.coldIneligible,
-				"reasons", warmColdReasonStrings(f.coldDisq),
-			)
-		}
+		// Why cold boxes aren't warmable is carried by the snapshot's
+		// ColdIneligible / ColdDisqualifiers below, for every model. The
+		// dedicated-only log line this replaced withheld the reasons from
+		// exactly the non-dedicated models whose eviction churn needs them.
 		out = append(out, WarmPoolSnapshot{
 			Model:                model,
 			TargetWarm:           target,

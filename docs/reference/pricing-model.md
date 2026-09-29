@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-28 · commit `18fad5efe`
+> Last updated: 2026-09-28
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the

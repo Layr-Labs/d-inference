@@ -1,6 +1,8 @@
 # Qwen checkpoint cache with normal MTP: model check
 
-> Last updated: 2026-09-05 · commit `1cbeb87cb` (immutable artifact source manifests below).
+> Last updated: 2026-09-05
+
+(immutable artifact source manifests below).
 
 The resident checkpoint prototype preserves complete generated token IDs with the normal Qwen inline MTP assistant. A compact fallback makes a 12,091-token conversation reusable within the same 1 GiB bank: its repeat saves 8,192 prompt tokens and reduces measured TTFT from 15.115 to 5.086 seconds. These are single ordered groups on one provider, not repeated-run medians or measurements of the subsequently requested SSD-default implementation.
 

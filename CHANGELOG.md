@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — CI and contributor workflow
+
+- Separate prerequisite-dependent MiMo qualification from ordinary provider tests, retaining required prepared-fixture checks and explicit qualification gaps. Normalize the rollback test's filesystem identity and synchronize the zombie-stream timing test with the initial cancellation.
+- Keep documentation freshness stamps date-only, preserving existing dates, immutable source links and historical evidence. Historical source validation reads committed provenance rather than requiring a hash in the stamp.
+- Document topic-local changelog updates and conflict resolution that preserves other PRs' entries, keeping release assignment separate from ordinary contributions.
+
 ## Unreleased — cache routing state persistence
 
 - Preserve a write-behind copy of SSD cache holders and observed demand across coordinator restarts while routing reads stay in memory. Restore is bounded by TTL, index caps, clock-skew checks and the cache-key generation; holders bind only to matching live provider capabilities, retaining measured stage-cost deadlines. Disconnects park holders, and shutdown joins provider sockets and the periodic writer before the final bounded flush. No prompts, raw chain hashes or memory-tier holders are persisted.

@@ -52,7 +52,7 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
         + "WElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAAB"
         + "AAAAAaADAAQAAAABAAAAAQAAAAD5Ip3+AAAADElEQVQIHWP4z8AAAAMBAQBb2/lEAAAA"
         + "AElFTkSuQmCC"
-    private enum FixtureError: Error { case nativeLaneRequired, payloadFixtureRequired, unexpectedRetirement }
+    private enum FixtureError: Error { case payloadFixtureRequired, unexpectedRetirement }
     private var allowedFault: String?
     private let literal = "<|im_start|>{% for message in messages %}{% if message.content is string %}{{ message.content }}{% else %}{% for item in message.content %}{% if item.type == 'image' %}<|vision_start|><|image_pad|><|vision_end|>{% elif item.type == 'video' %}<|vision_start|><|video_pad|><|vision_end|>{% else %}{{ item.text }}{% endif %}{% endfor %}{% endif %}{% endfor %}<think>{% if enable_thinking is false %}</think>{% endif %}"
     private let environment = ["DARKBLOOM_PREFIX_CACHE":"0","DARKBLOOM_PREFIX_CACHE_MEMORY":"0"]
@@ -135,9 +135,9 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
     }
 
     private func lane() throws {
-        guard ProcessInfo.processInfo.environment["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1",
-              ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_MEDIA_FAULT_CASE"] == allowedFault else {
-            throw FixtureError.nativeLaneRequired
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS")
+        guard ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_MEDIA_FAULT_CASE"] == allowedFault else {
+            throw XCTSkip("Retained-fault selectors run alone in their own process")
         }
     }
 
@@ -514,6 +514,7 @@ final class MiMoV26EncodedMediaIngressTests: XCTestCase {
     }
 
     func testActualAudioTrackRequiresAudiovisualProfileBeforeNativeFrameWork() async throws {
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_INGRESS_AUDIO_VIDEO_TESTS")
         // Required future qualification input, not synthesized track flags.
         // Root/audio worker supplies a bounded valid MP4 with actual audio.
         let path = try XCTUnwrap(ProcessInfo.processInfo.environment["MIMO_V26_INGRESS_AUDIO_VIDEO_FIXTURE"])

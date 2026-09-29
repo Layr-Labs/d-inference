@@ -1,6 +1,6 @@
 # Qwen MoE complete-checkpoint prerequisite
 
-> Last updated: 2026-09-05 · commit `6e90514f5`
+> Last updated: 2026-09-05
 
 The complete-checkpoint codec now accepts Qwen MoE targets with supported native
 activation dtypes. Focused native and provider tests pass. This is a prerequisite

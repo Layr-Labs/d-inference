@@ -169,22 +169,19 @@ private extension ProviderLoop {
 final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
     private let modelID = "synthetic-native-mimo-loop"
     private func metadataLane() throws {
-        guard ProcessInfo.processInfo.environment["MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS"] == "1" else {
-            throw XCTSkip("Explicit metadata/fixture opt-in required")
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS")
     }
     private func nativeLane(fault: String? = nil) throws {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1",
-            environment["MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS"] == "1" else {
-            throw XCTSkip("Requires a separately authorized exclusive native lane")
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS", environment: environment)
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS", environment: environment)
         guard environment["MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE"] == fault else {
             throw XCTSkip("Retained-fault selector must run alone in its own process")
         }
         guard environment["DARKBLOOM_PREFIX_CACHE"] == "0",
             environment["DARKBLOOM_PREFIX_CACHE_MEMORY"] == "0" else {
-            throw XCTSkip("Explicit cold native profile required; no cache credentials are permitted")
+            XCTFail("Explicit cold native profile required; no cache credentials are permitted")
+            throw NativeLoopTestFailure()
         }
     }
     private func budget(native: Bool = false) -> GlobalKVCacheBudget {

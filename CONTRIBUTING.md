@@ -122,9 +122,43 @@ The PR template will prompt you about this.
 
 ## Release cadence
 
-Releases are cut by maintainers, not contributors. Don't bump versions or create tags in your PR — the release workflow handles that. If your change should land in a specific upcoming release, set the milestone on the PR.
+Releases are cut by maintainers, not contributors. Don't bump versions or create tags in an ordinary PR. Maintainers prepare the version constants and changelog, then tag the reviewed source for the release workflow. If your change should land in a specific upcoming release, set the milestone on the PR.
 
 The release runbook is [`docs/operations/provider-release.md`](docs/operations/provider-release.md); production coordinator deploys are [`docs/operations/coordinator-deploy.md`](docs/operations/coordinator-deploy.md).
+
+### Changelog entries with less merge contention
+
+User-visible changes need an entry in the root [`CHANGELOG.md`](CHANGELOG.md).
+Keep the entry in the same PR as the change; it does not replace the canonical
+documentation required by [`docs/AGENTS.md`](docs/AGENTS.md).
+
+1. Read the target branch's current changelog before editing. For an ordinary
+   PR, add a small, self-contained section near the top using the existing
+   `## Unreleased — <topic>` style. Describe observable changes and important
+   limitations, not a commit-by-commit implementation log.
+2. Keep review updates inside your topic's section. Do not keep moving it back
+   to the top as other PRs land, rename a shared `Unreleased` heading for your
+   feature, or reorder, rewrap or clean up unrelated entries. Extend an existing
+   topic only when your change actually belongs to it.
+3. Leave version assignment, release dates and consolidation to an explicitly
+   requested release-preparation change. A current version constant or an
+   unshipped release-candidate heading is not a reason to add an ordinary PR
+   to that release. Do not change shipped history or claim publication from a
+   source merge or version bump.
+4. When updating your branch, resolve changelog conflicts by preserving the
+   target branch's entries and your topic's intended changes. Do not take the
+   whole file from either side. If release preparation has moved your topic,
+   check the new release boundary rather than duplicating it or putting new
+   work into an already shipped section.
+5. Review the final changelog diff against the current target branch, not just
+   the last commit: unrelated entries must remain intact and your change must
+   appear once. Run `git diff --check` and the documentation checks before
+   requesting review.
+
+Small topic-local edits reduce contention and make resolution easier; they do
+not eliminate conflicts when parallel PRs insert at the same location. Keep
+the existing single-file changelog rather than introducing per-PR fragments
+or a new release-generation process for an ordinary contribution.
 
 ## Code of conduct
 

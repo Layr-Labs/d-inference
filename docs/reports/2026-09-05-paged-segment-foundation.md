@@ -1,6 +1,6 @@
 # Segmented paged KV foundation validation
 
-> Last updated: 2026-09-05 · commit `28c2635c`
+> Last updated: 2026-09-05
 
 The explicit segmented-storage prototype passes six native test functions with 19 parameterized cases after correcting two GPU dependency hazards and a small-metadata binding error. This milestone validates storage mechanics and exact fixture outputs. It does not change the production backend default or establish five-model paged serving, capacity, or throughput.
 

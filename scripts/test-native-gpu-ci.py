@@ -18,7 +18,8 @@ args = sys.argv[1:]
 selected = args[args.index('--filter') + 1] if '--filter' in args else 'general'
 flag = os.environ.get('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
 with open(os.environ['FAKE_SWIFT_LOG'], 'a') as log:
-    log.write(json.dumps({'filter': selected, 'args': args, 'exclusive': flag}) + '\n')
+    log.write(json.dumps({'filter': selected, 'args': args, 'exclusive': flag,
+                         'mimo_native': os.environ.get('MIMO_V26_SERIAL_NATIVE_TESTS')}) + '\n')
 if selected == os.environ.get('FAKE_SWIFT_FAIL'):
     print('simulated assertion failure')
     raise SystemExit(17)
@@ -86,6 +87,11 @@ class NativeGPUTestRouting(unittest.TestCase):
             self.assertIn('--no-parallel', row['args'])
             self.assertEqual(row['exclusive'], '1' if row['filter'] == MEMORY else None)
 
+    def test_general_provider_runner_does_not_enable_mimo_native_suites(self):
+        result, calls = self.run_script('run-provider-tests.sh', MIMO_V26_SERIAL_NATIVE_TESTS='1')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(all(row['mimo_native'] is None for row in calls))
+
     def test_kernel_suite_and_composition_use_separate_invocations(self):
         result, calls = self.run_script('run-paged-kernel-tests.sh')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -137,6 +143,21 @@ class NativeGPUTestRouting(unittest.TestCase):
                                             FAKE_SWIFT_EMPTY=selected)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('executed ZERO tests', result.stdout)
+
+    def test_mimo_gate_rejects_empty_and_skipped_runs(self):
+        self.env.pop('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
+        selected = 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix'
+        result, calls = self.run_script('run-nested-suite.sh', selected, '--no-parallel',
+                                        FAKE_SWIFT_EMPTY=selected)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('executed ZERO tests', result.stdout)
+        self.assertEqual(len(calls), 1)
+        for style in ('swift-testing', 'xctest'):
+            with self.subTest(style=style):
+                result, _ = self.run_script('run-nested-suite.sh', selected, '--no-parallel',
+                                            FAKE_SWIFT_SKIP=selected, FAKE_SWIFT_SKIP_STYLE=style)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('skipped one or more tests', result.stdout)
 
     def test_exclusive_helper_rejects_broad_or_extra_selectors_before_swift(self):
         for args in [(), ('CBv2PagedKernelTests',), (MEMORY, '--filter', 'anything')]:

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `f4447e709`
+> Last updated: 2026-09-29
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -874,6 +874,79 @@ A number measured on macOS can differ from the Linux number in CI.
 
 CI also applies the [restored-resource cleanup](build.md#restored-swiftpm-runtime-resources)
 before building the debug test product.
+
+#### MiMo provider CI fixtures
+
+Provider Tests provisions the pinned public prompt metadata and original corpus
+with `scripts/prepare-mimo-prompt-fixtures.py`, exporting
+`MIMO_PROMPT_ARTIFACT_DIRECTORY` and `MIMO_PROMPT_REFERENCE_VECTORS` in that job.
+These remain required for the routine tokenizer/prompt/consumer tests; a skip or
+a fabricated recorded-divergence corpus is not a replacement.
+
+`scripts/prepare-mimo-provider-fixtures.py` creates the separate synthetic
+193-tensor, four-shard inventory offline. Its default is symmetric K32/V32,
+128-context BF16; `--asymmetric` creates K64/V128 with 1,024 context for the
+complete-prefix selectors. Both have three synthetic MTP heads and each shard is
+below 1 MiB. No selected codec, model-quality oracle or payload-verification
+receipt is generated. Prepare fresh directories before a local run:
+
+```bash
+python3 scripts/prepare-mimo-prompt-fixtures.py --output /absolute/fresh/mimo-prompt
+python3 scripts/prepare-mimo-provider-fixtures.py --output /absolute/fresh/mimo-provider
+python3 scripts/prepare-mimo-provider-fixtures.py --output /absolute/fresh/mimo-prefix --asymmetric
+export MIMO_PROMPT_ARTIFACT_DIRECTORY=/absolute/fresh/mimo-prompt
+export MIMO_PROMPT_REFERENCE_VECTORS="$PWD/fixtures/prompt-contract/mimo-v26-additional20.json"
+export MIMO_V26_SERIAL_LOAD_FIXTURES=/absolute/fresh/mimo-provider
+export MIMO_V26_WIRED_METADATA_FIXTURE=/absolute/fresh/mimo-provider/tiny-bf16
+export MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS=1
+```
+
+After rebuilding tests and staging the source-matched metallib, the general
+`scripts/run-provider-tests.sh` invocation runs metadata, prompt and non-native
+unit tests with `MIMO_V26_SERIAL_NATIVE_TESTS` unset. Its existing invocation
+and isolated-test behavior remain unchanged. CI separately runs the following
+small native gates in fresh serial processes; each uses
+`scripts/run-nested-suite.sh` to reject zero executed tests and every skip:
+
+```bash
+cd provider-swift
+MIMO_V26_SERIAL_NATIVE_TESTS=1 ../scripts/run-nested-suite.sh \
+  'MiMoV26StandaloneLifecycleTests.test(ActualScannerPreloadStartsListenerWithSameNativeOwner|StartRefusesActualUnpublishedPreloadWithoutReplacingOwner)' --no-parallel
+MIMO_V26_SERIAL_NATIVE_TESTS=1 MIMO_V26_SERIAL_LOAD_FIXTURES=/absolute/fresh/mimo-prefix \
+  ../scripts/run-nested-suite.sh 'MiMoV26NativeLoadTransactionTests.testNativeCompletePrefix' --no-parallel
+MIMO_V26_SERIAL_NATIVE_TESTS=1 MIMO_V26_PROVIDER_LIFETIME_NATIVE_TESTS=1 \
+  MIMO_V26_PROVIDER_LIFETIME_FAULT_CASE=testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim \
+  DARKBLOOM_PREFIX_CACHE=0 DARKBLOOM_PREFIX_CACHE_MEMORY=0 \
+  ../scripts/run-nested-suite.sh testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim --no-parallel
+```
+
+Reserve the native lane before these commands. The retained-fault selector must
+run alone and preserve its actual native owner until process exit. CI runs these
+gates even after an unrelated test failure, provided fixture/build/metallib
+prerequisites succeeded. Tiny-model control-flow passes do not qualify the full
+selected checkpoint, paging composition or audio generation.
+
+Native and selected-evidence tests skip only when their required opt-in is absent;
+an invalid opt-in value or missing/malformed enabled fixture fails. Fault selectors
+still deliberately isolate incompatible cases. `MiMoTestPrerequisitesTests`
+pins absent/enabled/malformed opt-ins. Selected tests remain additional explicit
+gates, not routine CI downloads:
+
+| Gate | Opt-In And Required Inputs |
+|---|---|
+| Managed selected audio and combined prefix/media | `MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS=1`, `MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT`; native methods also require `MIMO_V26_SERIAL_NATIVE_TESTS=1`. The fixture must meet their own target/context constraints and retain the actual selected ~1.8 GB codec. |
+| Selected discovery load quote | `MIMO_V26_DISCOVERY_AUDIO_TESTS=1`, `MIMO_V26_DISCOVERY_AUDIO_FIXTURE_ROOT`; actual selected target/sidecar metadata and inventory, not synthetic sizes. |
+| Recorded normalization divergence | `MIMO_CONSUMER_DIVERGENCE_TESTS=1`, `MIMO_CONSUMER_DIVERGENCE_VECTORS`; the original external/private recorded corpus plus pinned prompt metadata. |
+| Recorded audiovisual ingress | `MIMO_V26_INGRESS_AUDIO_VIDEO_TESTS=1`, `MIMO_V26_INGRESS_AUDIO_VIDEO_FIXTURE`; a bounded valid MP4 with an actual audio track, not synthetic track flags. |
+
+The managed-audio retained-fault method additionally requires
+`MIMO_V26_MANAGED_AUDIO_PROVIDER_FAULT_TEST=1` in its own process. Do not replace
+missing selected files or recorded cases with synthetic evidence, download large
+weights in routine CI, or loosen production admission/reserve defaults.
+`python3 scripts/test-prepare-mimo-provider-fixtures.py` checks complete inventory,
+offsets, bounded deterministic bytes, geometry, provenance and CI prerequisite
+wiring offline; `python3 scripts/test-native-gpu-ci.py` checks runner isolation
+without executing Swift or a GPU.
 
 `BetaCommandTests` and `IdleCommandTests` drive `setBetaFeature` and
 `setIdleUnloadMinutes` with an explicit `configPath` in a unique temporary
@@ -1898,20 +1971,27 @@ apply `docs-not-needed` when a mapped source change does not alter documented
 behavior; the PR must explain the exception in its Documentation impact
 section.
 
-The historical-link regression checks run in isolated temporary Git repositories:
+The historical-link and freshness-stamping regression checks run in isolated
+temporary Git repositories:
 
 ```bash
 python3 scripts/test-docs-check-historical-links.py
+python3 scripts/test-docs-stamp.py
 ```
 
 Docs Lint also runs these checks before validating the documentation tree.
-Frozen source references resolve against the exact stamped commit when the
-file has moved; current missing links still fail. See
+Frozen source references resolve against the exact legacy commit recovered from
+document history, or the particular link's introduction commit for new date-only
+records, when the file has moved. Shallow history, invalid or missing provenance,
+copied-record backdating, and current missing links still fail. Freshness dates
+never select commits. Stamping tests check date preservation, unchanged body
+evidence, tracked-file scope, and idempotence. See
 [historical source references](historical-references.md).
 
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans
 make docs-stamp FILES="docs/developer/test.md"   # refresh a stamp after editing
+scripts/docs-stamp.sh --from-git docs/reports/example.md   # preserve an existing date
 ```
 
 ### 8. End-to-end suite

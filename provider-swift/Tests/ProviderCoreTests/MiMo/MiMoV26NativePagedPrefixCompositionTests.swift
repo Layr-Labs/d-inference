@@ -41,12 +41,10 @@ final class MiMoV26NativePagedPrefixCompositionTests: XCTestCase {
 
     private func noStoreFallback(mtp: Bool) async throws {
         let flags = ProcessInfo.processInfo.environment
-        guard flags["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1",
-              flags["MIMO_V26_NATIVE_PAGED_TESTS"] == "1",
-              flags["MIMO_V26_PAGED_PREFIX_TESTS"] == "1",
-              let path = flags["MIMO_V26_NATIVE_PAGED_FIXTURE_ROOT"] else {
-            throw XCTSkip("Requires the genuine strict fixture, bound runtime identity and exclusive native lane")
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS", environment: flags)
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_NATIVE_PAGED_TESTS", environment: flags)
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_PAGED_PREFIX_TESTS", environment: flags)
+        let path = try XCTUnwrap(flags["MIMO_V26_NATIVE_PAGED_FIXTURE_ROOT"])
         guard flags["MIMO_V26_HOST_FAULT_CASE"] == nil, flags["MIMO_V26_PAGED_PREFIX_FAULT"] == nil else {
             throw XCTSkip("Retained native faults run separately")
         }
@@ -272,12 +270,10 @@ final class MiMoV26NativePagedPrefixCompositionTests: XCTestCase {
 
     private func lateRetirement(mtp: Bool) async throws {
         let env = ProcessInfo.processInfo.environment
-        guard env["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1",
-              env["MIMO_V26_NATIVE_PAGED_TESTS"] == "1",
-              env["MIMO_V26_PAGED_PREFIX_TESTS"] == "1",
-              let path = env["MIMO_V26_NATIVE_PAGED_FIXTURE_ROOT"] else {
-            throw XCTSkip("Requires a genuine bounded strict MiMo paging fixture and the exclusive native lane")
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS", environment: env)
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_NATIVE_PAGED_TESTS", environment: env)
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_PAGED_PREFIX_TESTS", environment: env)
+        let path = try XCTUnwrap(env["MIMO_V26_NATIVE_PAGED_FIXTURE_ROOT"])
         guard env["MIMO_V26_HOST_FAULT_CASE"] == nil,
               env["MIMO_V26_PAGED_PREFIX_FAULT"] == nil else {
             throw XCTSkip("Retained native faults run alone; do not share this healthy retirement process")

@@ -11,7 +11,7 @@ import XCTest
 /// small selected-audio-compatible fixture, not a full target. Pure ledger/
 /// claim selectors below do not authenticate/materialize sidecar payloads.
 final class MiMoV26ManagedAudioProviderTests: XCTestCase {
-    private enum Failure: Error { case inputRequired, nativeLaneRequired, afterInstallation, injected, retirement }
+    private enum Failure: Error { case inputRequired, debugSeamsRequired, afterInstallation, injected, retirement }
     private struct Loaded: Sendable {
         let root: URL
         let load: MiMoV26ServingLoad
@@ -42,10 +42,8 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
             additionalSystemReserveBytes:4 << 30)
     }
     private func metadataLoad() throws -> (URL,MiMoV26ServingLoad) {
-        guard ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS"] == "1",
-              let path = ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT"] else {
-            throw Failure.inputRequired
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS")
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_AUDIO_FIXTURE_ROOT"])
         let root = URL(fileURLWithPath:path)
         let configData = try MiMoV26ServingLoad.readMetadata(root.appendingPathComponent("config.json"),limit:1 << 20).bytes
         let config = try JSONDecoder().decode(MiMoV26Configuration.self,from:configData)
@@ -57,9 +55,7 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
         return (root,load)
     }
     private func loaded() async throws -> Loaded {
-        guard ProcessInfo.processInfo.environment["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1" else {
-            throw Failure.nativeLaneRequired
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS")
         let (root,load) = try metadataLoad(), registry = MiMoV26NativeLoadRegistry()
         registries.append(registry)
         // Real allocator/OS reader and ordinary floors. No synthetic usage
@@ -354,10 +350,8 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
     }
 
     func testActualInnerRequiredFailureKeepsProviderRequestAndSidecarChargesSticky() async throws {
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_MANAGED_AUDIO_PROVIDER_FAULT_TEST")
         #if DEBUG
-        guard ProcessInfo.processInfo.environment["MIMO_V26_MANAGED_AUDIO_PROVIDER_FAULT_TEST"] == "1" else {
-            throw Failure.nativeLaneRequired
-        }
         let (value,bundle,actual) = try await published()
         try await value.container.autoregressive!.perform { context in
             let model = try XCTUnwrap(context.model as? MiMoV26LoadedModel)
@@ -383,7 +377,7 @@ final class MiMoV26ManagedAudioProviderTests: XCTestCase {
         _ = Unmanaged.passRetained(value.registry)
         // Required readback refusal after actual work, not a physical fault claim.
         #else
-        throw Failure.nativeLaneRequired
+        throw Failure.debugSeamsRequired
         #endif
     }
 }

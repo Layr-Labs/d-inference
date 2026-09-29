@@ -31,11 +31,9 @@ final class MiMoV26PagedMTPCompositionTests: XCTestCase {
 
     private func loaded(mtp: Bool) async throws -> Loaded {
         let env = ProcessInfo.processInfo.environment
-        guard env["MIMO_V26_PAGED_MTP_PROVIDER_TESTS"] == "1",
-              env["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1",
-              let path = env["MIMO_V26_PAGED_MTP_PROVIDER_FIXTURE_ROOT"] else {
-            throw XCTSkip("Requires root-owned native lane and a genuine strict provider fixture")
-        }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_PAGED_MTP_PROVIDER_TESTS", environment: env)
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS", environment: env)
+        let path = try XCTUnwrap(env["MIMO_V26_PAGED_MTP_PROVIDER_FIXTURE_ROOT"])
         let root = URL(fileURLWithPath: path)
         let bytes = try MiMoV26ServingLoad.readMetadata(root.appendingPathComponent("config.json"), limit: 1 << 20).bytes
         let config = try JSONDecoder().decode(MiMoV26Configuration.self, from: bytes)

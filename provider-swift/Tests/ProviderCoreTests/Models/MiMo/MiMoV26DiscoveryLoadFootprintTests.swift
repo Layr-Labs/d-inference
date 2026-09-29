@@ -229,8 +229,9 @@ final class MiMoV26DiscoveryLoadFootprintTests: XCTestCase {
     }
 
     func testRealSelectedAudioMetadataQuoteMatchesOrdinaryFullLoadRequest() throws {
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_DISCOVERY_AUDIO_TESTS")
         // Metadata-only fixture input, not native load authorization. No payload
-        // is copied, authenticated, loaded or fabricated; a missing input FAILS.
+        // is copied, authenticated, loaded or fabricated; enabled missing inputs fail.
         let root = URL(fileURLWithPath: try XCTUnwrap(
             ProcessInfo.processInfo.environment["MIMO_V26_DISCOVERY_AUDIO_FIXTURE_ROOT"]))
         let size = ModelScanner.collectWeightFiles(in: root).sizeBytes

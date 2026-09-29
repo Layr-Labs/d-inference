@@ -68,7 +68,7 @@ private final class MiMoHostWeakBundleProbe: @unchecked Sendable {
 /// allocation/eval, successful fake drain or materialized-M credit. Fixture setup
 /// copies the existing bounded synthetic files; it creates no new weights.
 final class MiMoV26NativeLoadTransactionTests: XCTestCase {
-    private enum FixtureError: Error { case fixtureRequired, nativeLaneRequired }
+    private enum FixtureError: Error { case fixtureRequired }
     private let gib: UInt64 = 1 << 30
 
     private func allowMetadata() throws {
@@ -78,7 +78,7 @@ final class MiMoV26NativeLoadTransactionTests: XCTestCase {
     }
     private func nativeLane(faultCase: String? = nil) throws {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["MIMO_V26_SERIAL_NATIVE_TESTS"] == "1" else { throw FixtureError.nativeLaneRequired }
+        try MiMoTestPrerequisites.requireOptIn("MIMO_V26_SERIAL_NATIVE_TESTS", environment: environment)
         guard environment["MIMO_V26_HOST_FAULT_CASE"] == faultCase else {
             throw XCTSkip("Run the exact retained-fault selector alone")
         }

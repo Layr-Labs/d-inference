@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-29 · commit `47915a198`
+> Last updated: 2026-09-29
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -20,13 +20,27 @@ merged native SDK pin and does not require new model weights. See
 
 Docs Lint needs Git history to validate moved source links in frozen records;
 its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
-That job also initializes the exact pinned `libs/mlx-swift-lm` submodule so
+Freshness stamps contain only dates. The checker recovers legacy verification
+commits from document history, or the particular link's introduction commit for
+new date-only records; it never selects a commit by date. A format-only migration
+uses `scripts/docs-stamp.sh --from-git` to preserve existing dates and evidence.
+The job also initializes the exact pinned `libs/mlx-swift-lm` submodule so
 model-support documentation links are checked against real SDK files.
 
-The MiMo Rust parser/planner regression requires a public metadata fixture,
-not model weights. CI runs `scripts/prepare-mimo-prompt-fixtures.py` before
-sidecar tests; follow the [pinned fixture procedure](mimo-prompt-fixtures.md)
-for local runs. Missing inputs fail rather than silently skipping assertions.
+The MiMo Rust parser/planner and provider prompt regressions require public
+metadata, not model weights. Both CI jobs run
+`scripts/prepare-mimo-prompt-fixtures.py`; follow the
+[pinned fixture procedure](mimo-prompt-fixtures.md) for local runs. Missing
+inputs fail rather than silently skipping assertions.
+
+Provider CI also runs `scripts/prepare-mimo-provider-fixtures.py` offline. It
+writes a deterministic, bounded synthetic BF16 target/vision/audio-patch/three-head
+inventory, not the selected model or its audio codec. Routine metadata tests use
+the symmetric 128-context fixture; the separate complete-prefix process uses
+`--asymmetric` for K64/V128 and 1,024-context geometry. No Python MLX installation,
+native evaluation, model download, private corpus or verification receipt is
+needed to provision these files. See [MiMo provider CI tests](test.md#mimo-provider-ci-fixtures)
+for environment bindings and the isolated native selections.
 
 Changes to native loading estimates and retirement require a rebuilt provider
 test product, not only a new CLI. Bind both products and the SDK/metallib to the

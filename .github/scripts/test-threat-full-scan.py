@@ -10,10 +10,10 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location("fixtures", Path(__file__).with_name("test-threat-model-review.py"))
 fixtures = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixtures)
-from threat_review.client import GitHub, ReviewUnavailable, ScanTimeout
+from threat_review.client import GitHub, ReviewUnavailable, ScanTimeout, SourceBudgetExceeded
 from threat_review.review import prepare, review, validate_findings
 from threat_review.report import render
-from threat_review.source import SourceBudgetExceeded, Sources, complete_files
+from threat_review.source import Sources, complete_files
 from threat_review.scan import units
 
 

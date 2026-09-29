@@ -119,8 +119,9 @@ GitHub's file-list ceiling is 3,000 files, each API JSON response is bounded to
 4,000,000 bytes, and the canonical threat model must fit 220,000 characters. Source
 collection also caps combined before/after UTF-8 content at 8,000,000 bytes,
 counting repeated uses of a cached blob again because each file can produce its
-own diff and evidence. Cached Git trees have a separate 8,000,000-byte serialized
-JSON budget. Exceeding either aggregate budget stops collection and posts an
+own diff and evidence. The PR file inventory (including fallback patches) and
+cached Git trees each have a separate 8,000,000-byte serialized JSON budget.
+Exceeding any aggregate budget stops collection and posts an
 incomplete result asking the author to split the PR; no partial scan is called complete.
 Source
 units contain up to 32,000 characters split at whole lines; a single longer line

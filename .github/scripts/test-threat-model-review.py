@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from threat_review.client import GitHub, NoRedirects, ReviewUnavailable, request_json
+from threat_review.client import GitHub, NoRedirects, ReviewUnavailable, SourceBudgetExceeded, request_json
 from threat_review.report import MARKER, LEGACY_MARKER, render
 from threat_review.review import prepare, review, validate_findings
 from threat_review.runner import run
@@ -491,6 +491,19 @@ class TransportTests(unittest.TestCase):
         for count in (3001, 1):
             with self.assertRaises(ReviewUnavailable):
                 github.files(count)
+
+    def test_file_list_patch_budget_stops_pagination(self):
+        calls = []
+        first = [{"filename": str(i), "patch": "+content"} for i in range(100)]
+        def transport(url, *args):
+            calls.append(url)
+            return first if len(calls) == 1 else [{"filename": "extra", "patch": "+more"}]
+        github = GitHub("example/repo", 12, "key", transport)
+        limit = len(json.dumps(first).encode("utf-8"))
+        with patch("threat_review.client.MAX_FILE_LIST_BYTES", limit):
+            with self.assertRaises(SourceBudgetExceeded):
+                github.files(101)
+        self.assertEqual(len(calls), 2)
 
 
 class WorkflowBoundaryTests(unittest.TestCase):

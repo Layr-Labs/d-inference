@@ -4,9 +4,15 @@ import re
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
+MAX_FILE_LIST_BYTES = 8_000_000
+
 
 class ReviewUnavailable(Exception):
     """Safe, credential-free failure suitable for an Actions summary."""
+
+
+class SourceBudgetExceeded(ReviewUnavailable):
+    """Stop collection before aggregate source data grows further."""
 
 
 class ScanTimeout(Exception):
@@ -57,9 +63,14 @@ class GitHub:
     def files(self, count):
         if count > 3000:
             raise ReviewUnavailable("GitHub cannot enumerate more than 3000 PR files; scan incomplete")
-        files = []
+        files, size = [], 0
         for page in range(1, 31):
             batch = self.call(f"/pulls/{self.number}/files?per_page=100&page={page}")
+            # Patches remain available as fallback when a blob cannot be read.
+            # Bound their total before extending the retained file inventory.
+            size += len(json.dumps(batch).encode("utf-8"))
+            if size > MAX_FILE_LIST_BYTES:
+                raise SourceBudgetExceeded("Aggregate PR file-list budget exceeded; scan incomplete")
             files.extend(batch)
             if len(batch) < 100:
                 break

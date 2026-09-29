@@ -3,14 +3,10 @@ import base64
 import difflib
 import json
 import re
-from .client import ReviewUnavailable
+from .client import ReviewUnavailable, SourceBudgetExceeded
 
 MAX_SOURCE_BYTES = 8_000_000
 MAX_TREE_BYTES = 8_000_000
-
-
-class SourceBudgetExceeded(ReviewUnavailable):
-    """Stop the entire collection before aggregate source memory grows further."""
 
 
 class Sources:

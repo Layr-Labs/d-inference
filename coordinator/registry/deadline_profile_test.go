@@ -72,6 +72,7 @@ func TestDeadlineOnlyProfileDoesNotGrantServingPolicy(t *testing.T) {
 	for i := range profile.DeadlineCalibration.Cells {
 		profile.DeadlineCalibration.Cells[i].PromptTokensMax = 4096
 		profile.DeadlineCalibration.Cells[i].ContextTokensMax = 4096
+		profile.DeadlineCalibration.Cells[i].MaxActiveRequests = min(profile.DeadlineCalibration.Cells[i].MaxActiveRequests, profile.EffectiveMaxConcurrency)
 	}
 	ref := slot.DeadlineProfile
 	slot.DeadlineProfile = nil

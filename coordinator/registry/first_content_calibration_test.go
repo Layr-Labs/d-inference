@@ -16,7 +16,7 @@ import (
 func calibratedCandidateFixture(t *testing.T, now time.Time) (*Registry, *Provider, *deadlinePerformanceProfile, *PendingRequest) {
 	t.Helper()
 	p, serving := reviewedProfileFixture(t)
-	quiescence, stability := 0, 5000
+	quiescence, stability := 20000, 5000
 	profile := &deadlinePerformanceProfile{
 		MinimumWholeMacQuiescenceMS: &quiescence, MinimumNominalStabilityMS: &stability, PowerMode: "automatic",
 		ID: "test-only-deadline", ModelID: serving.ModelID, ArtifactSHA256: serving.ArtifactSHA256,
@@ -33,7 +33,7 @@ func calibratedCandidateFixture(t *testing.T, now time.Time) (*Registry, *Provid
 		CacheState: "cold", Contention: "isolated", PrefillTPS: 2000, DecodeTPS: 100,
 		MaxPrefillWorkTokens: 65536, MaxDecodeWorkTokens: 4096, MaxActiveRequests: 1,
 		ErrorRatio: 1.1, ErrorAdditiveMS: 100, CalibrationSampleCount: 20,
-		ValidationSampleCount: 100, ValidationCoveredCount: 100, TailCoverage: .95, ReportSHA256: strings.Repeat("d", 64),
+		ValidationSampleCount: 100, ValidationCoveredCount: 100, TailCoverage: .95, ReportSHA256: profile.QualificationReportSHA256,
 	}}}
 	cell := profile.DeadlineCalibration.Cells[0]
 	cell.Contention, cell.MaxActiveRequests = "same_model", 16
@@ -152,27 +152,39 @@ func TestCalibratedFirstContentBoundsBusyWorkAndContext(t *testing.T) {
 	r, p, profile, pr := calibratedCandidateFixture(t, now)
 	slot := &p.BackendCapacity.Slots[0]
 	slot.State, slot.NumRunning = "running", 1
-	slot.DeadlineWork.PrefillTokens, slot.DeadlineWork.DecodeTokens = 2000, 500
+	slot.DeadlineWork.PrefillTokens, slot.DeadlineWork.DecodeTokens = 15500, 500
 	slot.DeadlineWork.RequestCount, slot.DeadlineWork.ContextTokensMax = 1, 16000
 	slot.DeadlineWork.ServiceFraction = .0625
 	*p.BackendCapacity.WholeMacServiceUsed = .0625
 	*slot.Telemetry.PartialPrefillRows = 1
 	pr.FirstContentDeadline = now.Add(20 * time.Second)
 	got := calibratedForecast(r, p, pr, now).firstContent
-	if got.Status != FirstContentFeasible || got.PredictionSource != "qualified_calibration" || math.Abs(got.ConservativeMs-13563) > 1e-8 {
-		t.Fatalf("bounded busy work did not qualify: %+v", got)
+	if got.PredictionSource != "" || got.Status != FirstContentUnknown {
+		t.Fatalf("busy provider bypassed cooled applicability: %+v", got)
 	}
+	// Exercise bounded-work pricing independently of the current idle-only
+	// promotion policy. Production routing above must still use its fallback.
+	predict := func() (firstcontent.Prediction, bool) {
+		snapshot := calibratedForecast(r, p, pr, now).snapshot
+		snapshot.deadlineProfile = profile
+		prediction, _, ok := calibratedFirstContentPrediction(&snapshot, pr, pr.PromptWork.UpperBoundTokens, 0)
+		return prediction, ok
+	}
+	if prediction, ok := predict(); !ok || math.Abs(prediction.ConservativeMS-27413) > 1e-8 {
+		t.Fatalf("bounded busy work lost its priced envelope: %+v, %v", prediction, ok)
+	}
+	profile.DeadlineCalibration.Cells[1].PromptTokensMax = 8000
 	profile.DeadlineCalibration.Cells[1].ContextTokensMax = 8000
-	got = calibratedForecast(r, p, pr, now).firstContent
-	if got.Status != FirstContentUnknown || got.Reason != "competing_work_unknown" || got.PredictionSource != "" {
-		t.Fatalf("long existing context borrowed short-context cell: %+v", got)
+	if prediction, ok := predict(); ok {
+		t.Fatalf("long existing context borrowed short-context cell: %+v", prediction)
 	}
+	profile.DeadlineCalibration.Cells[1].PromptTokensMax = 32768
 	profile.DeadlineCalibration.Cells[1].ContextTokensMax = 32768
 	m := p.firstContentMeasurements["model"]
 	m.contendedObservedAfter = now.Add(-3 * time.Minute)
 	p.firstContentMeasurements["model"] = m
-	if got = calibratedForecast(r, p, pr, now).firstContent; got.PredictionSource != "" || got.Status != FirstContentUnknown {
-		t.Fatalf("busy work used stale contended rate: %+v", got)
+	if prediction, ok := predict(); ok {
+		t.Fatalf("busy work used stale contended rate: %+v", prediction)
 	}
 }
 
@@ -187,6 +199,7 @@ func TestCalibratedFirstContentFallsBackUntilModelLoadTransitionEnds(t *testing.
 	// Slots. The target's fresh, idle workload snapshot cannot bound that work.
 	loading := true
 	p.BackendCapacity.LoadTransitionActive = &loading
+	p.reconcileDeadlineApplicabilityLocked(p.BackendCapacity, p.SystemMetrics, now)
 	during := calibratedForecast(r, p, pr, now)
 	if during.snapshot.calibratedWorkKnown || during.firstContent.PredictionSource != "" ||
 		!during.snapshot.wholeMacBusy || during.firstContent.Status != FirstContentUnknown ||
@@ -195,9 +208,21 @@ func TestCalibratedFirstContentFallsBackUntilModelLoadTransitionEnds(t *testing.
 		t.Fatalf("load transition borrowed idle calibration or changed deadline: %+v", during.firstContent)
 	}
 	loading = false
-	after := calibratedForecast(r, p, pr, now)
-	if !after.snapshot.calibratedWorkKnown || after.firstContent != before.firstContent {
-		t.Fatalf("completed transition did not restore qualified evidence: %+v vs %+v", after.firstContent, before.firstContent)
+	p.reconcileDeadlineApplicabilityLocked(p.BackendCapacity, p.SystemMetrics, now.Add(time.Second))
+	if got := calibratedForecast(r, p, pr, now.Add(time.Second)).firstContent; got.PredictionSource != "" {
+		t.Fatalf("load completion bypassed cooldown: %+v", got)
+	}
+	ready := now.Add(20 * time.Second)
+	p.CapacityAcceptedAt = ready
+	// A new arrival after cooldown gets its own clock. The earlier 4s deadline
+	// cannot be extended by waiting for the provider to recover.
+	next := &PendingRequest{Model: pr.Model, EstimatedPromptTokens: pr.EstimatedPromptTokens,
+		FirstContentPromptTokens: pr.FirstContentPromptTokens, RequestedMaxTokens: pr.RequestedMaxTokens,
+		PromptWork: pr.PromptWork, FirstContentDeadline: ready.Add(4 * time.Second)}
+	after := calibratedForecast(r, p, next, ready)
+	if !after.snapshot.calibratedWorkKnown || after.firstContent.PredictionSource != "qualified_calibration" ||
+		after.firstContent.ConservativeMs != before.firstContent.ConservativeMs || after.firstContent.BudgetMs != before.firstContent.BudgetMs {
+		t.Fatalf("cooled transition did not restore qualified evidence: %+v vs %+v", after.firstContent, before.firstContent)
 	}
 }
 

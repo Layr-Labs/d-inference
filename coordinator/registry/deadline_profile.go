@@ -38,7 +38,7 @@ type deadlinePerformanceProfile struct {
 var reviewedDeadlinePerformanceProfiles = decodeDeadlineProfileCatalog(reviewedDeadlineProfilesJSON)
 
 func (p *deadlinePerformanceProfile) valid() bool {
-	return p != nil && p.ID != "" && len(p.ID) <= 256 && p.ModelID != "" &&
+	valid := p != nil && p.ID != "" && len(p.ID) <= 256 && p.ModelID != "" &&
 		validProfileDigest(p.ArtifactSHA256) && validProfileDigest(p.QualificationReportSHA256) &&
 		p.ProviderVersion != "" && p.RuntimeRevision == servingPerformanceRuntimeRevision && validMTPIdentity(p.MTP) &&
 		(p.KVBackend == "paged" || p.KVBackend == "contiguous") && p.ChipName != "" && p.GPUCores > 0 && p.MemoryGB > 0 &&
@@ -46,10 +46,19 @@ func (p *deadlinePerformanceProfile) valid() bool {
 		p.EffectiveMaxConcurrency > 0 && p.EffectiveMaxConcurrency <= 16 &&
 		p.PrefillChunkSize > 0 && p.PrefillChunkSize <= 1<<20 &&
 		(p.SoloPrefillStripeTokens == nil || (*p.SoloPrefillStripeTokens > 0 && *p.SoloPrefillStripeTokens <= 1<<20)) &&
-		p.MaxConcurrentPartialPrefills > 0 && p.MaxConcurrentPartialPrefills <= 16 &&
-		(p.MixedPrefillTokenCap == nil || (*p.MixedPrefillTokenCap > 0 && *p.MixedPrefillTokenCap <= 1<<20)) &&
+		p.MaxConcurrentPartialPrefills == 1 &&
+		(p.MixedPrefillTokenCap == nil || *p.MixedPrefillTokenCap == 128 || *p.MixedPrefillTokenCap == 256 || *p.MixedPrefillTokenCap == 512) &&
 		validDeadlineApplicability(p.MinimumWholeMacQuiescenceMS, p.MinimumNominalStabilityMS, p.PowerMode) &&
 		p.DeadlineCalibration.Valid(p.ConfiguredContextTokens)
+	if !valid {
+		return false
+	}
+	for _, cell := range p.DeadlineCalibration.Cells {
+		if cell.MaxActiveRequests > p.EffectiveMaxConcurrency || cell.ReportSHA256 != p.QualificationReportSHA256 {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *deadlinePerformanceProfile) measuredContextTokensMax() int {

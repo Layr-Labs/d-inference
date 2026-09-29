@@ -137,5 +137,17 @@ func validDeadlineWork(w *protocol.DeadlineWork, measurements *protocol.Performa
 	if w.RequestCount == 0 {
 		return w.PrefillTokens == 0 && w.DecodeTokens == 0 && w.ContextTokensMax == 0 && w.ServiceFraction == 0
 	}
-	return w.ContextTokensMax > 0 && w.ServiceFraction > 0
+	// The producer retains each lease's full original positive prompt through
+	// cache reuse and retirement. Zero output is valid; zero prompt work for a
+	// nonempty owner set cannot be a known envelope from that producer.
+	if w.PrefillTokens < int64(w.RequestCount) || w.ContextTokensMax <= 0 || w.ServiceFraction <= 0 {
+		return false
+	}
+	// Context is the maximum of each owner's full prompt+output; every other
+	// owner still contributes at least one token. The validated field caps above
+	// keep both this sum and count*context within int64 bounds.
+	total := w.PrefillTokens + w.DecodeTokens
+	context := int64(w.ContextTokensMax)
+	count := int64(w.RequestCount)
+	return context <= total-(count-1) && total <= count*context
 }

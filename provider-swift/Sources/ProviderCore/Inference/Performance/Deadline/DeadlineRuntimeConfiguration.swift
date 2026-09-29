@@ -27,4 +27,11 @@ public struct DeadlineRuntimeConfiguration: Codable, Sendable, Equatable {
             && (mixedPrefillTokenCap.map { (1...1_048_576).contains($0) } ?? true)
             && (soloPrefillStripeTokens.map { (1...1_048_576).contains($0) } ?? true)
     }
+
+    /// Eligibility for current reviewed timing evidence is narrower than a
+    /// structurally valid scheduler configuration. This never changes settings.
+    var supportsQualifiedDeadline: Bool {
+        isValid && maxConcurrentPartialPrefills == 1
+            && (mixedPrefillTokenCap.map { [128, 256, 512].contains($0) } ?? true)
+    }
 }

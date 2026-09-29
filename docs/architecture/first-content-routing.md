@@ -1,6 +1,6 @@
 # First-content routing
 
-> Last updated: 2026-09-29 · commit `fa731637a`
+> Last updated: 2026-09-29 · commit `b650124a1`
 
 The coordinator selects providers by expected time to delivered content, with a
 separate conservative forecast for deadline feasibility. The selection policy applies by
@@ -147,8 +147,11 @@ entry. Enabling reviewed timing profiles requires independently qualified
 evidence with continuous power observations. Concurrency, chunk and memory
 defaults remain unchanged.
 
-A cooled profile additionally requires its measured whole-Mac idle interval,
-stable nominal posture and Automatic power mode on AC. This deadline-policy
+A compiled profile must match the qualifier's current scheduler and posture
+domain: one partial prefill at a time, an absent mixed cap or exactly 128, 256
+or 512 tokens, 20 seconds of whole-Mac quiescence, 5 seconds of stable nominal
+posture, and Automatic power mode on AC. Every cell must fit the declared
+scheduler width and carry the profile's qualification-report digest. This deadline-policy
 revision cannot transfer AC measurements to Battery Automatic. The provider advertises the
 reference only while these prerequisites hold. The coordinator requires
 explicit nominal thermal state and `low_power_mode=false`, and invalidates
@@ -159,10 +162,15 @@ retirement and the final atomic evidence guard remain authoritative. Phase
 rates from earlier posture epochs are omitted from profiled capacity snapshots,
 so recovered power/thermal eligibility cannot revive old measured rates.
 
-Busy calibrated forecasts require fresh `deadline_work` envelopes correlated
-with the whole-Mac reservation snapshot. Existing owners retain conservative
+Busy work accounting requires fresh `deadline_work` envelopes correlated
+with the whole-Mac reservation snapshot. The currently permitted cooled policy
+withdraws calibration while the Mac is busy; a different applicability policy
+needs separate qualification and a reviewed validator change. Existing owners retain conservative
 prompt/output bounds through pre-submit and retirement. Missing owners, changed
 epochs, unrepresented GPU work or unmatched competing profiles stay unknown.
+A nonempty work envelope must retain positive original prompt work, including
+cache-reused requests. Its aggregate token counts, owner count and maximum
+context must also agree; an impossible report cannot certify existing work.
 The provider takes the larger of actual scheduler work and existing same-model
 lease bounds, adds qualified competing work, then prices only the incoming work
 to first content. The cell's context bound includes the bounded incoming early

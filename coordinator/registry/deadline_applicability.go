@@ -7,8 +7,10 @@ import (
 )
 
 func validDeadlineApplicability(quiescence, stability *int, powerMode string) bool {
-	return quiescence != nil && *quiescence >= 0 && *quiescence <= 180000 &&
-		stability != nil && *stability >= 5000 && *stability <= 180000 && powerMode == "automatic"
+	// The sole promoter certifies this exact recovery policy. Other windows
+	// require a new measured policy, not edits to compiled release data.
+	return quiescence != nil && *quiescence == 20000 &&
+		stability != nil && *stability == 5000 && powerMode == "automatic"
 }
 
 // An advertised exact profile is the producer's proof of its reviewed power
@@ -69,15 +71,12 @@ func (p *Provider) reconcileDeadlineApplicabilityLocked(capacity *protocol.Backe
 
 // Caller holds r.mu and p.mu. Provider proof cannot override intervening local
 // work, including a terminal whose real engine retirement is still outstanding.
-// Explicit zero quiescence preserves independently reviewed contended cells.
 func (r *Registry) deadlineProfileApplicableLocked(p *Provider, profile *deadlinePerformanceProfile, now time.Time) bool {
-	if profile == nil || !elapsedDeadlineWindow(now, p.deadlinePostureInvalidAt, *profile.MinimumNominalStabilityMS) {
+	if profile == nil || !validDeadlineApplicability(profile.MinimumWholeMacQuiescenceMS, profile.MinimumNominalStabilityMS, profile.PowerMode) ||
+		!elapsedDeadlineWindow(now, p.deadlinePostureInvalidAt, *profile.MinimumNominalStabilityMS) {
 		return false
 	}
 	quiescence := *profile.MinimumWholeMacQuiescenceMS
-	if quiescence == 0 {
-		return true
-	}
 	if len(p.pendingReqs) != 0 || len(p.serviceRetirementShadows) != 0 || r.providerHasPendingLoad(p.ID) ||
 		!deadlineReportedQuiescent(p.BackendCapacity) {
 		return false

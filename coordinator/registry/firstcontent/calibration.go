@@ -42,7 +42,7 @@ type Cell struct {
 }
 
 func (c *Calibration) Valid(contextLimit int) bool {
-	if c == nil || c.Version != Version || !digest(c.PromptContractID) || len(c.Cells) == 0 || len(c.Cells) > 256 {
+	if c == nil || c.Version != Version || !digest(c.PromptContractID) || len(c.Cells) == 0 || len(c.Cells) > 128 {
 		return false
 	}
 	for _, cell := range c.Cells {
@@ -55,7 +55,7 @@ func (c *Calibration) Valid(contextLimit int) bool {
 
 func (c Cell) Valid(contextLimit int) bool {
 	if c.PromptTokensMin < 1 || c.PromptTokensMax < c.PromptTokensMin || c.PromptTokensMax > contextLimit ||
-		c.ContextTokensMin < 1 || c.ContextTokensMax < c.ContextTokensMin || c.ContextTokensMax > contextLimit ||
+		c.ContextTokensMin < 1 || c.ContextTokensMax < c.ContextTokensMin || c.ContextTokensMax > contextLimit || c.PromptTokensMax > c.ContextTokensMax ||
 		(c.CacheState != "cold" && c.CacheState != "reused") ||
 		!positive(c.PrefillTPS) || c.PrefillTPS > 20000 || !positive(c.DecodeTPS) || c.DecodeTPS > 20000 ||
 		c.MaxPrefillWorkTokens < 0 || c.MaxDecodeWorkTokens < 1 || c.MaxActiveRequests < 1 || c.MaxActiveRequests > 64 ||

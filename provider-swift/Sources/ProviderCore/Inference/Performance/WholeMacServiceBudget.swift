@@ -96,9 +96,8 @@ final class WholeMacServiceBudget: @unchecked Sendable {
 
     private func quiescenceSatisfiedLocked(_ requirement: DeadlineApplicability,
         at now: ContinuousClock.Instant) -> Bool {
-        requirement.minimumWholeMacQuiescenceMs == 0 ||
-            (charges.isEmpty && unboundedActivities.isEmpty
-                && now >= idleSince.advanced(by: .milliseconds(requirement.minimumWholeMacQuiescenceMs)))
+        charges.isEmpty && unboundedActivities.isEmpty
+                && now >= idleSince.advanced(by: .milliseconds(requirement.minimumWholeMacQuiescenceMs))
     }
 
     func acquire(ownerID: String, concurrency: Int, serviceReservationID: String? = nil,
@@ -245,8 +244,7 @@ final class WholeMacServiceBudget: @unchecked Sendable {
             var postureValidUntil: ContinuousClock.Instant?
             if let applicability {
                 guard let proof = charges[ownerID]?.deadlineProof, proof.applicability == applicability,
-                    applicability.minimumWholeMacQuiescenceMs == 0 ||
-                        (charges.count == 1 && proof.activityEpoch == activityEpoch) else { return nil }
+                    charges.count == 1 && proof.activityEpoch == activityEpoch else { return nil }
                 if !evidenceGuard.isValid { evidenceGuard = CBv2FirstContentEvidenceGuard() }
                 guard let observed = posture.snapshot(requirement: applicability, at: clockNow(),
                     registering: evidenceGuard), observed.epoch == proof.postureEpoch else { return nil }

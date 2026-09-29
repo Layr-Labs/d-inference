@@ -24,7 +24,7 @@ func deadlineCalibrationProfileFixture() -> DeadlinePerformanceProfile {
         configuredContextTokens: 32_768, effectiveMaxConcurrency: 4,
         prefillChunkSize: 512, maxConcurrentPartialPrefills: 1,
         mixedPrefillTokenCap: nil, soloPrefillStripeTokens: 4096,
-        minimumWholeMacQuiescenceMs: 0, minimumNominalStabilityMs: 5_000, powerMode: "automatic",
+        minimumWholeMacQuiescenceMs: 20_000, minimumNominalStabilityMs: 5_000, powerMode: "automatic",
         qualificationReportSha256: String(repeating: "c", count: 64),
         deadlineCalibration: .init(version: 1, promptContractId: calibrationContract, cells: [calibrationCell()]))
 }

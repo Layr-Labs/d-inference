@@ -16,7 +16,7 @@ public struct DeadlineCalibration: Codable, Sendable, Equatable {
 
     var isValid: Bool {
         version == 1 && ServingPerformanceProfiles.validDigest(promptContractId) && !cells.isEmpty
-            && cells.count <= 256 && cells.allSatisfy(\.isValid)
+            && cells.count <= 128 && cells.allSatisfy(\.isValid)
     }
 }
 
@@ -70,6 +70,7 @@ public struct DeadlineCalibrationCell: Codable, Sendable, Equatable {
     var isValid: Bool {
         guard promptTokensMin > 0, promptTokensMax >= promptTokensMin,
             contextTokensMin > 0, contextTokensMax >= contextTokensMin,
+            promptTokensMax <= contextTokensMax,
             ["cold", "reused"].contains(cacheState),
             ["isolated", "same_model", "other_model"].contains(contention),
             prefillTps.isFinite, prefillTps > 0, prefillTps <= 20_000,

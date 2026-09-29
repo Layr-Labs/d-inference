@@ -73,7 +73,8 @@ func TestDeadlineApplicabilityRejectsMissingAndOutOfRangeCatalogPolicy(t *testin
 		power                 string
 		valid                 bool
 	}{
-		{0, 5000, "automatic", true}, {20000, 5000, "automatic", true}, {180000, 180000, "automatic", true},
+		{0, 5000, "automatic", false}, {20000, 5000, "automatic", true}, {180000, 180000, "automatic", false},
+		{19999, 5000, "automatic", false}, {20001, 5000, "automatic", false}, {20000, 5001, "automatic", false},
 		{-1, 5000, "automatic", false}, {180001, 5000, "automatic", false}, {0, 4999, "automatic", false},
 		{0, 180001, "automatic", false}, {0, 5000, "", false}, {0, 5000, "high", false},
 	} {
@@ -179,9 +180,8 @@ func TestDeadlineHeartbeatInvalidationRequiresNewQuietAndStableWindows(t *testin
 	if r.deadlineProfileApplicableLocked(p, profile, now.Add(19*time.Second)) || !r.deadlineProfileApplicableLocked(p, profile, now.Add(20*time.Second)) {
 		t.Fatal("fresh idle frame erased previous unknown activity")
 	}
-	zero := 0
-	profile.MinimumWholeMacQuiescenceMS = &zero
-	p.BackendCapacity.Slots[0].DeadlineProfile.MinimumWholeMacQuiescenceMS = &zero
+	// The Mac has already been idle beyond 20s when the separate posture
+	// invalidation starts; recovery still needs the full 5s stability window.
 	lowPower := p.BackendCapacitySnapshot()
 	*lowPower.Telemetry.LowPowerMode = true
 	p.reconcileDeadlineApplicabilityLocked(lowPower, p.SystemMetrics, now.Add(30*time.Second))

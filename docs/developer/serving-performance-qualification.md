@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-29 · commit `fa731637a`
+> Last updated: 2026-09-29 · commit `b650124a1`
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -290,7 +290,12 @@ Use `--serving-policy --scheduler-max-concurrency 4 --width 1` when the verified
 ordinary configuration is four running slots but the observed cell is isolated.
 The receipt records the factory's actual effective width, prefill chunk,
 partial-prefill cap, solo stripe, mixed cap and full configured context; a
-requested value alone is insufficient. `--prompt-band 4096:12288 --iterations
+requested value alone is insufficient. Both compiled validators enforce the
+current qualifier's serial partial prefill and absent-or-128/256/512 mixed cap.
+Every cell must fit the runtime's effective width and bind the same report
+digest as its containing profile. At most 128 cells are accepted, and a cell's
+prompt maximum cannot exceed its context maximum.
+`--prompt-band 4096:12288 --iterations
 40 --partition calibration --tool-history` declares varied bodies across that
 band, including its endpoints. Collect a separate `validation` job with new
 bodies and enough independent samples for the confidence gate.
@@ -325,7 +330,9 @@ latency, dropping an observation or retaining only a digest-shaped string fails.
 The cooled collector's conditions also constrain the promoted profile. Its
 `applicability` object requires `minimum_whole_mac_quiescence_ms: 20000`,
 `minimum_nominal_stability_ms: 5000`, and `power_mode: "automatic"`. The evaluator
-preserves these fields in the compiled candidate. Nominal state at admission
+preserves these fields in the compiled candidate, and both compiled validators
+require these exact values. Other applicability policies require separate
+qualification and a reviewed validator change. Nominal state at admission
 alone does not reproduce a cooled workload; a live-rate ceiling cannot predict
 a later thermal slowdown. Qualification must not discard those prerequisites
 when moving measurements into release data.

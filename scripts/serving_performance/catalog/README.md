@@ -28,6 +28,14 @@ validation count is bounded at 10,000 per cell. No runtime
 provider/operator file is read. A deadline record cannot change serving width,
 chunk policy, throughput curves, or memory admission.
 
+Compiled eligibility also mirrors the current promoter's policy: serial partial
+prefill, mixed cap absent or 128/256/512, exactly 20,000 ms of whole-Mac quiescence
+and 5,000 ms of stable nominal posture under Automatic power. Cells must fit the
+profile's effective width, share its report digest, and keep prompt bounds inside
+context bounds; the catalog accepts at most 128 cells per profile. Other
+scheduler or applicability policies need their own evidence and reviewed
+validator changes before promotion.
+
 `deadline_evidence.json` indexes the corresponding archived receipts;
 it is not runtime configuration. Each entry names an assembled `receipt`
 relative to the external `DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT` directory and

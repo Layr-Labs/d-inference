@@ -71,9 +71,10 @@ public struct DeadlinePerformanceProfile: Codable, Sendable, Equatable {
             && ServingPerformanceProfiles.validDigest(qualificationReportSha256)
             && runtimeRevision == ServingPerformanceProfiles.runtimeRevision
             && ["paged", "contiguous"].contains(kvBackend) && gpuCores > 0 && memoryGb > 0
-            && runtimeConfiguration.isValid && applicability.isValid && (mtp?.isValid ?? true)
+            && runtimeConfiguration.supportsQualifiedDeadline && applicability.isValid && (mtp?.isValid ?? true)
             && deadlineCalibration.isValid && deadlineCalibration.cells.allSatisfy {
                 $0.promptTokensMax <= configuredContextTokens && $0.contextTokensMax <= configuredContextTokens
+                    && $0.maxActiveRequests <= effectiveMaxConcurrency && $0.reportSha256 == qualificationReportSha256
             }
     }
 }

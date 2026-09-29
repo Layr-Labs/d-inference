@@ -1,10 +1,11 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func TestCalibratedFirstContentRequiresExactCompetingProfile(t *testing.T) {
@@ -18,7 +19,7 @@ func TestCalibratedFirstContentRequiresExactCompetingProfile(t *testing.T) {
 	cloneBackendSlot(&slot, &p.BackendCapacity.Slots[0])
 	slot.Model, slot.State, slot.NumRunning = other.ModelID, "running", 1
 	slot.DeadlineProfile.ID = other.ID
-	slot.DeadlineWork = &protocol.DeadlineWork{Version: 1, Epoch: "epoch", Known: true, PrefillTokens: 1000, DecodeTokens: 100, RequestCount: 1, ContextTokensMax: 8192, ServiceFraction: .0625}
+	slot.DeadlineWork = &protocol.DeadlineWork{Version: 1, Epoch: "epoch", Known: true, PrefillTokens: 1000, DecodeTokens: 100, RequestCount: 1, ContextTokensMax: 1100, ServiceFraction: .0625}
 	p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, slot)
 	*p.BackendCapacity.WholeMacServiceUsed = .0625
 	cell := profile.DeadlineCalibration.Cells[0]
@@ -26,18 +27,29 @@ func TestCalibratedFirstContentRequiresExactCompetingProfile(t *testing.T) {
 	cell.MaxActiveRequests, cell.MaxOtherModelRequests, cell.MaxOtherModelServiceFraction = 2, 1, .0625
 	profile.DeadlineCalibration.Cells = append(profile.DeadlineCalibration.Cells, cell)
 	pr.FirstContentDeadline = now.Add(10 * time.Second)
+	// The current cooled policy excludes busy routing. Test the pure bound
+	// matcher separately so exact competitor/fraction checks remain exercised.
+	boundedPrediction := func(c *routingCandidate) bool {
+		snapshot := c.snapshot
+		snapshot.deadlineProfile = profile
+		_, _, ok := calibratedFirstContentPrediction(&snapshot, pr, pr.PromptWork.UpperBoundTokens, 0)
+		return ok
+	}
 	c := calibratedForecast(r, p, pr, now)
-	if c.firstContent.Status != FirstContentFeasible || c.firstContent.PredictionSource != "qualified_calibration" || c.snapshot.calibratedWork.OtherModelRequests != 1 {
-		t.Fatalf("bounded exact competitor rejected: %+v", c.firstContent)
+	if c.firstContent.Status != FirstContentUnknown || c.firstContent.PredictionSource != "" ||
+		!c.snapshot.calibratedWorkKnown || c.snapshot.calibratedWork.OtherModelRequests != 1 || !boundedPrediction(c) {
+		t.Fatalf("bounded exact competitor lost its work or bypassed cooled admission: %+v", c.firstContent)
 	}
 	p.BackendCapacity.Slots[1].DeadlineProfile.ID = "unknown-runtime"
-	if c = calibratedForecast(r, p, pr, now); c.firstContent.Status != FirstContentUnknown || c.firstContent.PredictionSource != "" {
+	if c = calibratedForecast(r, p, pr, now); c.firstContent.Status != FirstContentUnknown || c.firstContent.PredictionSource != "" ||
+		c.snapshot.calibratedWorkKnown || boundedPrediction(c) {
 		t.Fatalf("unreviewed competitor borrowed envelope: %+v", c.firstContent)
 	}
 	p.BackendCapacity.Slots[1].DeadlineProfile.ID = other.ID
 	p.BackendCapacity.Slots[1].DeadlineWork.ServiceFraction = .125
 	*p.BackendCapacity.WholeMacServiceUsed = .125
-	if c = calibratedForecast(r, p, pr, now); c.firstContent.Status != FirstContentUnknown || c.firstContent.PredictionSource != "" {
+	if c = calibratedForecast(r, p, pr, now); c.firstContent.Status != FirstContentUnknown || c.firstContent.PredictionSource != "" ||
+		!c.snapshot.calibratedWorkKnown || boundedPrediction(c) {
 		t.Fatalf("heavier competitor borrowed envelope: %+v", c.firstContent)
 	}
 }

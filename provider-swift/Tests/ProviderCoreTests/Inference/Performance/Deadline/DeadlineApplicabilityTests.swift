@@ -15,13 +15,11 @@ private let cooledRequirement = DeadlineApplicability(minimumWholeMacQuiescenceM
 
 func deadlineReadyServiceBudgetFixture() -> WholeMacServiceBudget {
     let posture = DeadlinePostureState()
-    let now = ContinuousClock.now
-    for halfSecond in 0...10 {
-        let sample = now.advanced(by: .milliseconds((halfSecond - 10) * 500))
-        posture.observe(nominal: true, lowPower: false, automatic: true, source: "ac",
-            powerReadAt: sample, at: sample)
-    }
-    return WholeMacServiceBudget(posture: posture)
+    let clock = DeadlineTestClock(ContinuousClock.now.advanced(by: .seconds(-20)))
+    let budget = WholeMacServiceBudget(clockNow: { clock.now }, posture: posture)
+    sample(posture, clock)
+    elapse(20_000, posture: posture, clock: clock)
+    return budget
 }
 
 private func sample(_ posture: DeadlinePostureState, _ clock: DeadlineTestClock,
@@ -257,5 +255,5 @@ private final class DeadlineSampleCounter: @unchecked Sendable {
     raw["minimum_whole_mac_quiescence_ms"] = 0
     let explicit = try JSONDecoder().decode(DeadlinePerformanceProfile.self,
         from: JSONSerialization.data(withJSONObject: raw))
-    #expect(explicit.isValid)
+    #expect(!explicit.isValid)
 }

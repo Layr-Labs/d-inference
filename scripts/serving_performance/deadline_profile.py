@@ -44,7 +44,9 @@ def evaluate_deadline_profile(raw):
     build = receipt.get("build", {})
     if not isinstance(build, dict):
         build = {}
-    if build.get("configuration") != "release" or build.get("dirty") is not False or build.get("debug_condition") is not False:
+    if (build.get("configuration") != "release" or build.get("dirty") is not False
+            or build.get("debug_condition") is not False or build.get("debug_assertions_enabled") is not False
+            or type(build.get("build_identity_version")) is not int or build["build_identity_version"] != 1):
         errors.append("qualification requires the clean release candidate without DEBUG")
     for key in ("source_commit", "sdk_commit"):
         if not isinstance(build.get(key), str) or re.fullmatch(r"[0-9a-f]{40}", build[key]) is None:

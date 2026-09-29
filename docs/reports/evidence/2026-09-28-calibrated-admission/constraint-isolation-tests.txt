@@ -1,0 +1,145 @@
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-09-28 17:31:53.557.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-09-28 17:31:53.557.
+Test Suite 'CBv2SchedulerLoopTests' started at 2026-09-28 17:31:53.558.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testAbandonedAdoptionReleasesItsExactReceiptID]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testAbandonedAdoptionReleasesItsExactReceiptID]' passed (0.150 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testBackpressurePausesExactlyTheSlowStream]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testBackpressurePausesExactlyTheSlowStream]' passed (0.042 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testBankReleaseBoundRowsDropsRowRetention]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testBankReleaseBoundRowsDropsRowRetention]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testBatchmatesDoNotChangeEachOthersOutput]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testBatchmatesDoNotChangeEachOthersOutput]' passed (0.011 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testCancelImmediatelyAfterSubmitIsHonored]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testCancelImmediatelyAfterSubmitIsHonored]' passed (0.205 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testCancelRunningRequestFinishesPromptlyAndFreesKV]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testCancelRunningRequestFinishesPromptlyAndFreesKV]' passed (0.007 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testCapacityLoserIsRequeuedNotErrored]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testCapacityLoserIsRequeuedNotErrored]' passed (0.007 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testChainedDecodeProducesCorrectTokensOneStepLate]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testChainedDecodeProducesCorrectTokensOneStepLate]' passed (0.007 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testConcurrentIdenticalPrefixesReleaseTheirExactReceiptIDs]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testConcurrentIdenticalPrefixesReleaseTheirExactReceiptIDs]' passed (0.004 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testConstrainedSubmitRejectsConstraintUnawareSampler]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testConstrainedSubmitRejectsConstraintUnawareSampler]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testConstrainedSubmitRejectsDivergentOutputBudget]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testConstrainedSubmitRejectsDivergentOutputBudget]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testDegenerateConstrainedRequestsPreserveImmediateEvents]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testDegenerateConstrainedRequestsPreserveImmediateEvents]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testDegenerateSubmissionsFinishImmediately]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testDegenerateSubmissionsFinishImmediately]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testDuplicateSubmitThrowsAndFirstStreamStillDelivers]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testDuplicateSubmitThrowsAndFirstStreamStillDelivers]' passed (0.017 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testFinishNotifiesSamplerOfRetiredID]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testFinishNotifiesSamplerOfRetiredID]' passed (0.003 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testIdleEngineDropsEagerBankRowBindings]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testIdleEngineDropsEagerBankRowBindings]' passed (0.002 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testLegacyDeadlineTerminalCarriesReconciledUsage]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testLegacyDeadlineTerminalCarriesReconciledUsage]' passed (0.251 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testLegacyKillSwitchRestoresSingleWall]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testLegacyKillSwitchRestoresSingleWall]' passed (0.067 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testMultiChunkPrefillThenDecode]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testMultiChunkPrefillThenDecode]' passed (0.004 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testNeverAdmittedRequestExpiresWithAdmissionTimeout]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testNeverAdmittedRequestExpiresWithAdmissionTimeout]' passed (10.025 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testOversizedRequestThrowsCapacityExhausted]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testOversizedRequestThrowsCapacityExhausted]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testPolicySkippedAdoptionReleasesItsExactReceiptID]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testPolicySkippedAdoptionReleasesItsExactReceiptID]' passed (0.004 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testPreemptedAdoptedRequestReportsZeroPrefixHitTokens]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testPreemptedAdoptedRequestReportsZeroPrefixHitTokens]' passed (0.009 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testPreemptionRequeuesVictimWhichStillCompletesCorrectly]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testPreemptionRequeuesVictimWhichStillCompletesCorrectly]' passed (0.006 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testRequestInsideWatermarkBandRejectedAtSubmit]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testRequestInsideWatermarkBandRejectedAtSubmit]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testReusedIDGetsFreshCapacityRequeueBudget]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testReusedIDGetsFreshCapacityRequeueBudget]' passed (0.084 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testReusedSchedulerIDDoesNotReusePrefixReceiptIdentity]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testReusedSchedulerIDDoesNotReusePrefixReceiptIdentity]' passed (0.005 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testSafetyCeilingFiresDespiteProgress]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testSafetyCeilingFiresDespiteProgress]' passed (0.002 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testShutdownDrainsRunningCancelsWaitingAndRejectsNew]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testShutdownDrainsRunningCancelsWaitingAndRejectsNew]' passed (0.012 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testShutdownTimesOutWhenEngineQueueIsWedged]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testShutdownTimesOutWhenEngineQueueIsWedged]' passed (0.514 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testSingleRequestGeneratesExactSequence]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testSingleRequestGeneratesExactSequence]' passed (0.003 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testSlowDecodeSurvivesFarPastLegacyWall]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testSlowDecodeSurvivesFarPastLegacyWall]' passed (0.005 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testStopStringViaDetokenizerHoldback]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testStopStringViaDetokenizerHoldback]' passed (0.003 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testStopTokenHonoredWithAtMostOneWastedStepAndKVTailRollback]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testStopTokenHonoredWithAtMostOneWastedStepAndKVTailRollback]' passed (0.002 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testWaitingQueueBackstopEmitsCanonicalQueueFullMarker]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testWaitingQueueBackstopEmitsCanonicalQueueFullMarker]' passed (0.026 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testWatchdogFiresOnWedgedStepAndErrorsStreams]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testWatchdogFiresOnWedgedStepAndErrorsStreams]' passed (0.509 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testWatchdogTerminalCarriesReconciledUsage]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerLoopTests testWatchdogTerminalCarriesReconciledUsage]' passed (0.061 seconds).
+Test Suite 'CBv2SchedulerLoopTests' passed at 2026-09-28 17:32:05.607.
+	 Executed 37 tests, with 0 failures (0 unexpected) in 12.047 (12.050) seconds
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-09-28 17:32:05.607.
+	 Executed 37 tests, with 0 failures (0 unexpected) in 12.047 (12.050) seconds
+Test Suite 'Selected tests' passed at 2026-09-28 17:32:05.607.
+	 Executed 37 tests, with 0 failures (0 unexpected) in 12.047 (12.051) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "CBv2 row-local token constraints" started.
+◇ Suite "Qwen inline MTP draft trim" started.
+◇ Test "impossible state fails closed on the stop fallback" started.
+◇ Test "B1 B2 B4 constraint masking overhead stays bounded" started.
+◇ Test "finished request id reuse rebuilds fresh constraint state" started.
+◇ Test "sampling transforms cannot resurrect forbidden logits" started.
+◇ Test "mixed constrained and ordinary rows never share grammar state" started.
+◇ Test "grammar masking runs before top-k filtering" started.
+◇ Test "greedy sampler enforces token constraints" started.
+◇ Test "dense allowlists mask their excluded token" started.
+◇ Test "single-forward reject rounds match the double-forward staging oracle" started.
+✔ Test "impossible state fails closed on the stop fallback" passed after 0.043 seconds.
+✔ Test "dense allowlists mask their excluded token" passed after 0.044 seconds.
+✔ Test "greedy sampler enforces token constraints" passed after 0.044 seconds.
+✔ Test "grammar masking runs before top-k filtering" passed after 0.059 seconds.
+✔ Test "sampling transforms cannot resurrect forbidden logits" passed after 0.062 seconds.
+✔ Test "finished request id reuse rebuilds fresh constraint state" passed after 0.065 seconds.
+✔ Test "mixed constrained and ordinary rows never share grammar state" passed after 0.069 seconds.
+✔ Test "single-forward reject rounds match the double-forward staging oracle" passed after 0.131 seconds.
+◇ Test "reject-0 leaves canonical head KV intact" started.
+✔ Test "reject-0 leaves canonical head KV intact" passed after 0.027 seconds.
+◇ Test "acceptance queues trusted target rows for one-time next-round flush" started.
+✔ Test "acceptance queues trusted target rows for one-time next-round flush" passed after 0.024 seconds.
+◇ Test "discard restores trusted round inputs" started.
+✔ Test "discard restores trusted round inputs" passed after 0.021 seconds.
+◇ Test "target final norm is applied exactly once at trusted-history ingress" started.
+✔ Test "target final norm is applied exactly once at trusted-history ingress" passed after 0.039 seconds.
+◇ Test "prompt observations preserve cross-chunk order and flush once" started.
+✔ Test "prompt observations preserve cross-chunk order and flush once" passed after 0.024 seconds.
+◇ Test "prefix restoration preserves full trusted history and exact draft chains" started.
+◇ Test case passing 1 argument experts → 0 to "prefix restoration preserves full trusted history and exact draft chains" started.
+[tool-constraint-perf] B=1 baseline_median_ms=13.260166 constrained_median_ms=14.532708 ratio=1.0959672752211398 overhead_median_ms_per_step=0.09286981250000004 paired_overheads=[0.011145812500000019, 0.2774166874999999, 0.3425989374999999, 0.09286981250000004, -0.123046875, -0.03363793749999999, 0.31493487500000006, 0.33932031250000005, 0.06211974999999992]
+◇ Test case passing 1 argument experts → 4 to "prefix restoration preserves full trusted history and exact draft chains" started.
+✔ Test "prefix restoration preserves full trusted history and exact draft chains" with 2 test cases passed after 0.341 seconds.
+◇ Test "disk codec rebinds exact trusted history to a fresh loaded assistant" started.
+◇ Test case passing 1 argument experts → 0 to "disk codec rebinds exact trusted history to a fresh loaded assistant" started.
+◇ Test case passing 1 argument experts → 4 to "disk codec rebinds exact trusted history to a fresh loaded assistant" started.
+✔ Test "disk codec rebinds exact trusted history to a fresh loaded assistant" with 2 test cases passed after 0.093 seconds.
+◇ Test "depths one through four trim reject, partial, and full prefixes" started.
+[tool-constraint-perf] B=2 baseline_median_ms=11.441667 constrained_median_ms=20.062833 ratio=1.75348863063398 overhead_median_ms_per_step=0.40893225 paired_overheads=[0.16617187499999997, 0.3764635625, 0.8884140625000001, 0.6104035625, 0.40893225, 0.32423962500000003, 0.6701770625, 0.244523375, 0.7205156250000001]
+✔ Test "depths one through four trim reject, partial, and full prefixes" passed after 0.086 seconds.
+◇ Test "discard restores trusted inputs, release drops every owned byte" started.
+✔ Test "discard restores trusted inputs, release drops every owned byte" passed after 0.021 seconds.
+◇ Test "auxiliary accounting includes hidden/token history and isolates requests" started.
+✔ Test "auxiliary accounting includes hidden/token history and isolates requests" passed after 0.018 seconds.
+◇ Test "first history flush stays within advertised rounded residency" started.
+✔ Test "first history flush stays within advertised rounded residency" passed after 0.019 seconds.
+◇ Test "multi-layer KV-only history fails closed before cache mutation" started.
+✔ Test "multi-layer KV-only history fails closed before cache mutation" passed after 0.018 seconds.
+◇ Test "full-coverage shortlist reproduces the full-head draft (float path)" started.
+✔ Test "full-coverage shortlist reproduces the full-head draft (float path)" passed after 0.026 seconds.
+◇ Test "shortlisted rows equal the full quantized head rows (gathered qmv)" started.
+✔ Test "shortlisted rows equal the full quantized head rows (gathered qmv)" passed after 0.026 seconds.
+✔ Suite "Qwen inline MTP draft trim" passed after 0.924 seconds.
+[tool-constraint-perf] B=4 baseline_median_ms=6.386042 constrained_median_ms=15.087875 ratio=2.362633224147289 overhead_median_ms_per_step=0.5818176250000001 paired_overheads=[0.9874088125, 0.7956458750000001, 0.5818176250000001, 1.21981775, 0.566466125, 0.48836456250000004, 0.6024140625000001, 0.5378645625, 0.5458229375000001]
+✔ Test "B1 B2 B4 constraint masking overhead stays bounded" passed after 1.040 seconds.
+✔ Suite "CBv2 row-local token constraints" passed after 1.040 seconds.
+✔ Test run with 23 tests in 2 suites passed after 1.041 seconds.

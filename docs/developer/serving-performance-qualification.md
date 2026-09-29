@@ -87,6 +87,10 @@ Qwen3.8 text/tool shapes; they grant no hardware scheduling authority.
    `-enable-testing` flag exposes internal production APIs to this isolated
    harness. Do not add `-DDEBUG`: unrelated correctness tests intentionally use
    debug-only seams and are excluded from the qualification build graph.
+   The executing test image reports its compile-time `DEBUG` condition, debug
+   assertion mode and own binary SHA-256. The supervisor checks that hash against
+   the staged binary; qualification rejects missing identity or debug behavior,
+   even if the command-line build label says `release`.
 
    The collector records actual OpenAI content-frame arrivals and opt-in
    engine forward shapes. Its summaries label delivered throughput and frame

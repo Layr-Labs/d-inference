@@ -18,6 +18,7 @@ import time
 import uuid
 
 from serving_performance.live_receipts import summarize
+from serving_performance.build_identity import verified_build_identity
 from serving_performance.power_posture import read_posture
 from serving_performance.exclusive_host import foreign_work
 from serving_performance.source_provenance import source_identity as identify_source
@@ -117,8 +118,7 @@ def main():
         provenance = dict(source=source_identity(), files=before,
                           lease_sha256=hashlib.sha256(args.exclusive_gpu_lease.encode()).hexdigest(),
                           build_configuration=args.build_configuration,
-                          qualification_test_graph=True, swift_enable_testing=True,
-                          debug_compilation_condition=False)
+                          qualification_test_graph=True, swift_enable_testing=True)
         provenance["power_posture_before"] = read_posture()
         binaries = ([args.test_executable.resolve(strict=True)] if args.test_executable else
                     sorted((ROOT / "provider-swift/.build").glob(
@@ -182,6 +182,16 @@ def main():
                           power_posture_after=read_posture())
         provenance["binary_unchanged"] = all(Path(p).is_file() and digest(Path(p)) == expected
             for p, expected in {**provenance["test_binaries_sha256"], **provenance["metallibs_sha256"]}.items())
+        if receipt.is_file():
+            try:
+                observed_build = verified_build_identity(json.loads(receipt.read_bytes()), provenance,
+                    require_release=args.build_configuration == "release")
+                provenance["actual_build_identity"] = observed_build
+                provenance["debug_compilation_condition"] = observed_build["debugCompilationCondition"]
+            except ValueError as error:
+                provenance["build_identity_error"] = str(error)
+                status = status or 1
+                provenance["return_code"] = status
         (run / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
         if receipt.is_file():
             collected = json.loads(receipt.read_bytes())

@@ -56,6 +56,7 @@ struct ServingQualificationTrial: Codable, Sendable {
 }
 
 struct ServingQualificationRun: Codable, Sendable {
+    let buildIdentity: ServingQualificationBuildIdentity
     let schemaVersion: Int
     let job: ServingQualificationJob
     let providerVersion: String

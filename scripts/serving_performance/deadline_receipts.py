@@ -3,6 +3,7 @@ import hashlib
 import json
 
 from .live_receipts import summarize
+from .build_identity import verified_build_identity
 from .matrix import positive
 
 
@@ -46,17 +47,22 @@ def assemble_deadline_receipt(runs, *, profile_id, prompt_min, prompt_max, check
             "memory_gb": report["memoryBytes"] // 1024**3, **runtime}
         if report.get("mtp") is not None:
             current_identity["mtp"] = report["mtp"]
+        actual_build = verified_build_identity(report, provenance)
         source = provenance["source"]
         current_build = {"configuration": provenance["build_configuration"], "dirty": source.get("dirty", True),
-            "debug_condition": provenance.get("debug_compilation_condition", True), "source_commit": source["head"],
+            "debug_condition": actual_build["debugCompilationCondition"],
+            "debug_assertions_enabled": actual_build["debugAssertionsEnabled"],
+            "build_identity_version": actual_build["version"], "source_commit": source["head"],
             "sdk_commit": source["dependency_head"], "source_tree_sha256": source["source_tree_sha256"],
-            "test_binary_sha256": _only_digest(provenance["test_binaries_sha256"], "test binary"),
+            "test_binary_sha256": actual_build["binarySHA256"],
             "metallib_sha256": _only_digest(provenance["metallibs_sha256"], "metallib")}
         if identity is not None and (identity != current_identity or build != current_build or contract != report["promptContractID"]):
             raise ValueError("all calibration/heldout runs must use the same exact artifact/runtime/build/template")
         identity, build, contract = current_identity, current_build, report["promptContractID"]
         summary = summarize(report)
         for trial, measured in zip(report["trials"], summary["cells"]):
+            if trial.get("lowPowerMode") is not False:
+                raise ValueError("each measured trial must explicitly exclude Low Power mode")
             if measured["failures"]:
                 raise ValueError(f"failed observation remains ineligible: {measured['failures']}")
             row = trial["rows"][0]

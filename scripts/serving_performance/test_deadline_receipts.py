@@ -15,12 +15,13 @@ def run(partition, duration=1_000_000_000):
         "firstContentMs": 1100., "contentArrivalMs": [1100., 1110.], "cachedTokens": 0,
         "profile": {"running_at_admit": 0, "waiting_at_admit": 0,
                     "engine": {"prompt_computed_ns": duration + 1, "prefill_first_launch_ns": 1}}}
-    report = {"complete": True, "job": {"width": 1, "reused": False, "servingPolicy": True,
+    report = {"buildIdentity": {"version": 1, "debugCompilationCondition": False,
+        "debugAssertionsEnabled": False, "binarySHA256": "d" * 64}, "complete": True, "job": {"width": 1, "reused": False, "servingPolicy": True,
         "partition": partition, "modelID": "fixture", "artifactSHA256": "c" * 64, "runID": partition,
         "toolHistory": True}, "deadlineRuntimeConfiguration": runtime, "providerVersion": "test",
         "runtimeRevision": "cbv2-first-content-v2", "actualKVBackend": "paged", "chipName": "Apple M5 Max",
         "gpuCores": 40, "memoryBytes": 128 * 1024**3, "promptContractID": "d" * 64, "mtp": mtp,
-        "trials": [{"rows": [row], "iteration": 0, "promptTarget": 4096, "thermalState": 0,
+        "trials": [{"rows": [row], "iteration": 0, "promptTarget": 4096, "thermalState": 0, "lowPowerMode": False,
             "retired": True, "mtpActive": True, "mtpRounds": 1, "mtpProposed": 1,
             "forwardShapes": {"completedStepTimings": [], "droppedStepTimings": 0,
                 "droppedTokenTimings": 0, "entries": [], "confirmedTokenTimings": [
@@ -57,9 +58,11 @@ class DeadlineReceiptTests(unittest.TestCase):
         self.assertEqual(value["identity"]["configured_context_tokens"], 262144)
 
     def test_source_power_and_cold_isolation_must_be_observed(self):
-        for mutation in ("power", "changed", "warm", "busy", "incomplete", "old_runtime", "screen"):
+        for mutation in ("power", "trial_power", "missing_power", "changed", "warm", "busy", "incomplete", "old_runtime", "screen"):
             report, provenance = run("calibration")
             if mutation == "power": provenance["power_posture_before"]["mode"] = "high"
+            elif mutation == "trial_power": report["trials"][0]["lowPowerMode"] = True
+            elif mutation == "missing_power": report["trials"][0].pop("lowPowerMode")
             elif mutation == "changed": provenance["source_unchanged"] = False
             elif mutation == "warm": report["trials"][0]["rows"][0]["cachedTokens"] = 128
             elif mutation == "busy": report["trials"][0]["rows"][0]["profile"]["running_at_admit"] = 1

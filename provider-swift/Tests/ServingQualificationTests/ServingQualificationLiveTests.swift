@@ -20,6 +20,7 @@ struct ServingQualificationLiveTests {
         try #require(job.promptLengths.allSatisfy { $0 > 0 } && !job.promptLengths.isEmpty)
         try #require(job.mixedPrefillTokenCap == nil || [128, 256, 512].contains(job.mixedPrefillTokenCap!))
         try #require(job.outputTokens > 0 && job.staggerMilliseconds >= 0)
+        let buildIdentity = try ServingQualificationBuildIdentity.capture()
         let fixture = try await ServingQualificationFixture.load(job)
         let hardware = try HardwareDetector.detect()
         let backend = await fixture.bundle.bridge.kvBackendKind.rawValue
@@ -29,7 +30,7 @@ struct ServingQualificationLiveTests {
         }
         var trials: [ServingQualificationTrial] = []
         func write(complete: Bool) throws {
-            let report = ServingQualificationRun(schemaVersion: 1, job: job,
+            let report = ServingQualificationRun(buildIdentity: buildIdentity, schemaVersion: 1, job: job,
                 providerVersion: ProviderCore.version, runtimeRevision: ServingPerformanceProfiles.runtimeRevision,
                 promptContractID: fixture.promptContractID, actualKVBackend: backend,
                 deadlineRuntimeConfiguration: fixture.bundle.bridge.deadlineRuntimeConfiguration,

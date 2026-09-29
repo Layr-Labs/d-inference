@@ -216,7 +216,53 @@
             "mtp_accepted_total": 146496,
             "kv_bytes_in_use": 2415919104,
             "kv_bytes_capacity": 8589934592,
-            "eval_in_flight_ms": 12
+            "eval_in_flight_ms": 12,
+            "prefill_requests_total": 512,
+            "generated_tokens_total": 153220,
+            "generation_requests_total": 510
+          },
+          "performance_measurements": {
+            "epoch": "engine-measurement-fixture",
+            "isolated_prefill": {
+              "tokens_per_second": 1655.2,
+              "sample_count": 20,
+              "sample_age_ms": 1200
+            },
+            "contended_prefill": {
+              "tokens_per_second": 960,
+              "sample_count": 8,
+              "sample_age_ms": 400
+            },
+            "decode": {
+              "tokens_per_second": 60,
+              "sample_count": 18,
+              "sample_age_ms": 1400
+            },
+            "delivered_decode": {
+              "tokens_per_second": 52,
+              "sample_count": 18,
+              "sample_age_ms": 1400
+            },
+            "end_to_end": {
+              "tokens_per_second": 30,
+              "sample_count": 19,
+              "sample_age_ms": 1400
+            },
+            "workload_buckets": [
+              {
+                "phase": "prefill",
+                "prompt_token_bucket": 4096,
+                "context_token_bucket": 4096,
+                "cache_state": "cold",
+                "contention": "contended",
+                "other_model_activity": true,
+                "observation": {
+                  "tokens_per_second": 960,
+                  "sample_count": 8,
+                  "sample_age_ms": 400
+                }
+              }
+            ]
           }
         }
       ],

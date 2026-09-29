@@ -212,6 +212,10 @@ type Provider struct {
 	// frames prove liveness but must not erase elapsed sample age. Guarded by p.mu.
 	capacitySamplesAt        time.Time
 	firstContentMeasurements map[string]firstContentMeasurement
+	warmWorkCounters         map[string]warmWorkCounters
+	lastWarmPlacementAt      time.Time
+	modelLoadSendRetryAt     time.Time // Session-local proactive-load write backoff; guarded by p.mu.
+	transport                transportMeasurement
 
 	// capacitySeq is the highest BackendCapacity.CapacitySeq applied on THIS
 	// connection; capacityQuoteCapable latches true the first time a heartbeat
@@ -317,9 +321,13 @@ type Provider struct {
 	lastDesiredModels                 []protocol.DesiredModelEntry
 	desiredModelsSendMu               sync.Mutex
 
-	mu               sync.Mutex
-	pendingReqs      map[string]*PendingRequest
-	drainPendingDone chan struct{} // allocated only while a committed drain has reservations
+	mu          sync.Mutex
+	pendingReqs map[string]*PendingRequest
+	// Sticky per connection. Terminal request cleanup does not retire a service
+	// lease; only explicit producer proof or a definitive unsent handoff can.
+	serviceRetirementProtocol bool
+	serviceRetirementShadows  map[string]float64
+	drainPendingDone          chan struct{} // allocated only while a committed drain has reservations
 
 	// registry back-pointer, set once in Register (nil for bare test Providers).
 	// SetAttestationResult uses it to bind this session's id to its stable
@@ -347,6 +355,12 @@ func (p *Provider) AddPending(pr *PendingRequest) {
 func (p *Provider) addPendingLocked(pr *PendingRequest) {
 	pr.providerAuthorizationBinding = providerRequestAuthorizationBindingLocked(p)
 	pr.reservedAt = time.Now()
+	pr.reservedServiceCharge = p.serviceChargeForModelLocked(pr.Model)
+	pr.serviceRetirementTracked = p.serviceRetirementProtocol
+	pr.serviceHandoffAuthorized = false
+	pr.serviceHandoffAborted = false
+	pr.serviceReservationReleased = false
+	pr.serviceReservationID.Store(newServiceReservationIdentity())
 	p.pendingReqs[pr.RequestID] = pr
 	if p.drainCommitted && p.drainPendingDone == nil {
 		p.drainPendingDone = make(chan struct{})
@@ -389,6 +403,7 @@ func (p *Provider) RemovePendingForFirstContentTimeout(
 // removePendingLocked removes and returns a pending request. Caller must hold p.mu.
 func (p *Provider) removePendingLocked(requestID string) *PendingRequest {
 	pr := p.pendingReqs[requestID]
+	p.retainServiceRetirementShadowLocked(pr)
 	delete(p.pendingReqs, requestID)
 	if len(p.pendingReqs) == 0 {
 		p.settleDrainPendingLocked()

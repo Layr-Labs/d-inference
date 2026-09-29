@@ -214,6 +214,7 @@ extension ProviderLoop {
                 kvBytesCapacity: grant,
                 specDecPreparation: rebuildPreparation,
                 preparedModel: prepared,
+                modelArtifactSHA256: slot.modelArtifactSHA256,
                 cacheEligibleWeightHash: slot.cacheEligibleWeightHash)
             // The replacement bundle now owns the moved handle.
             recoveryAssistant = nil
@@ -261,6 +262,7 @@ extension ProviderLoop {
                     kvBytesCapacity: grant,
                     specDecPreparation: rebuildPreparation,
                     preparedModel: prepared,
+                    modelArtifactSHA256: slot.modelArtifactSHA256,
                     cacheEligibleWeightHash: slot.cacheEligibleWeightHash)
                 newBridge = newBundle.bridge
                 MLX.Memory.clearCache()
@@ -308,6 +310,7 @@ extension ProviderLoop {
                 modelContainer: slot.modelContainer,
                 tokenizer: slot.tokenizer,
                 sizing: rebuiltSizing,
+                modelArtifactSHA256: slot.modelArtifactSHA256,
                 cacheEligibleWeightHash: slot.cacheEligibleWeightHash,
                 isVLM: slot.isVLM,
                 modelType: slot.modelType,

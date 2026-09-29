@@ -19,9 +19,13 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		return nil, nil, 0, errors.New("disconnected")
 	}
 	p.mu.Lock()
+	releasedModelLoad := false
 	defer func() {
 		p.mu.Unlock()
 		r.mu.Unlock()
+		if releasedModelLoad {
+			r.RequestWarmPoolTrigger()
+		}
 	}()
 	if msg.RequestID == "" || len(msg.RequestID) > 64 || msg.DrainRequestID == "" ||
 		!p.drainCommitted || !p.drainReady || p.drainRequestID != msg.DrainRequestID {
@@ -113,6 +117,7 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		if key.ProviderID == p.ID && !keepRuntime(key.ModelID) {
 			delete(r.pendingModelLoads, key)
 			delete(r.pendingModelLoadStarted, key)
+			releasedModelLoad = true
 		}
 	}
 	p.Models = append([]protocol.ModelInfo(nil), msg.Models...)
@@ -123,6 +128,7 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 	p.CapacityModelIDs = nil
 	p.CapacityAcceptedAt = time.Time{}
 	p.firstContentMeasurements = nil
+	p.warmWorkCounters = nil
 	p.ToolConstraintProtocol = msg.ToolConstraintProtocol
 	p.ToolConstraintModels = tools
 	if len(invalidated) > 0 {

@@ -130,7 +130,8 @@ extension EngineV2Factory {
                 modelId: modelId, modelType: declaration.modelType, isVLM: isVLM,
                 modelDirectory: modelDirectory, container: container, tokenizer: tokenizer,
                 sizing: sizing, kvBytesCapacity: selectedGrant,
-                maxConcurrentRequests: maxConcurrentRequests, kvBudget: budget,
+                maxConcurrentRequests: maxConcurrentRequests, constructionPurpose: .benchmark,
+                kvBudget: budget,
                 activationReserveBytes: reserve, kvBackendConfig: kvBackendConfig,
                 weightHash: verifiedWeightHash, specDecPreparation: preparation,
                 preparedModel: prepared,
@@ -188,6 +189,7 @@ extension EngineV2Factory {
             return EngineV2BenchmarkSession(
                 bundle: bundle, engine: engine,
                 backend: backend, fallback: fallback,
+                effectiveMaxConcurrentRequests: await bundle.bridge.maxConcurrentRequests,
                 memoryEnabled: PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
                 activationReserveBytes: reserve, postLoadMaximumKVBytes: maximumKVBytes,
                 budget: budget, assistantIdentity: benchmarkAssistantIdentity(preparation.artifact),

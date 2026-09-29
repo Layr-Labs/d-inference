@@ -1,0 +1,19 @@
+{
+  "actual_artifact_verified_before_and_after": true,
+  "artifact_sha256": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+  "combined_evidence_sha256": "73b526e3df76ee31f409e8a6e74a228c419a85342d67cdd9bbf4b1f3bbf12ad9",
+  "duration_seconds": 1660.671,
+  "exit_code": 0,
+  "kind": "prompt_count_artifact_reverification",
+  "log_path": "docs/reports/evidence/2026-09-28-calibrated-admission/prompt-count-artifact-reverification-tests.txt",
+  "log_sha256": "c66279f33186b689633cbe3c9a335ec3ef41916e1102beb2575fbfac1d8c21e3",
+  "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+  "observations": 9000,
+  "qualified_cohorts": 6,
+  "receipt_byte_identical_to_prior": true,
+  "receipt_path": "docs/reports/evidence/2026-09-28-calibrated-admission/prompt-count-qualified-receipt.json",
+  "receipt_sha256": "333807e1899620390559a0464f45792ef8360c77a4dfbd9e68d00552d5b762f8",
+  "schema_version": 1,
+  "scope": "CPU-only tokenizer and template counts; does not qualify inference timing or serving policy",
+  "test_filter": "ServingPromptCountQualificationTests.collectTemplateCounts"
+}

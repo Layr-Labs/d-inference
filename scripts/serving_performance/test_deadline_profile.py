@@ -3,7 +3,7 @@ import unittest
 
 from .deadline_profile import evaluate_deadline_profile
 from .check_receipt_fixtures import ROOT as EVIDENCE_ROOT, references
-from .matrix import CHECKS, RUNTIME_REVISION
+from .matrix import RUNTIME_REVISION
 from .test_calibration import receipt as calibration_receipt
 
 

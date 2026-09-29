@@ -66,6 +66,7 @@ def run_owned(command, cwd, environment, log, timeout):
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=10)
         except ProcessLookupError:
+            # The owned process already exited; preserve the original build error.
             pass
         raise
     if status:

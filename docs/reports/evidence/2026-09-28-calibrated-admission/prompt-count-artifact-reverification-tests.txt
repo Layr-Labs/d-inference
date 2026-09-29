@@ -1,0 +1,22 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/first-content-calibrated-admission/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/documents/builds/first-content-calibrated-admission/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/documents/builds/first-content-calibrated-admission/provider-swift->/users/gaj/documents/builds/first-content-calibrated-admission/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/documents/builds/first-content-calibrated-admission/provider-swift->/users/gaj/documents/builds/first-content-calibrated-admission/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-09-28 17:55:33.463.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-09-28 17:55:33.464.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-09-28 17:55:33.464.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-28 17:55:33.464.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Dedicated prompt count qualification" started.
+◇ Test collectTemplateCounts() started.
+2026-09-28T17:55:33-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for EigenLabs/Qwen3.8-27B-4bit-mtp (14 files)...
+2026-09-28T17:55:37-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for EigenLabs/Qwen3.8-27B-4bit-mtp: bbd0e0adcfe74e09
+2026-09-28T18:23:11-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for EigenLabs/Qwen3.8-27B-4bit-mtp (14 files)...
+2026-09-28T18:23:14-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for EigenLabs/Qwen3.8-27B-4bit-mtp: bbd0e0adcfe74e09
+✔ Test collectTemplateCounts() passed after 1660.671 seconds.
+✔ Suite "Dedicated prompt count qualification" passed after 1660.671 seconds.
+✔ Test run with 1 test in 1 suite passed after 1660.671 seconds.

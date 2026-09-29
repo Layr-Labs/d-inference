@@ -216,6 +216,7 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
 
     private func makeServer(
         mtp: MTPMode = .off, witness: NativeStandaloneWitness = .init(),
+        scannerQuoted: Bool = false,
         observe: (@Sendable (StandaloneNativeMiMoTestHooks.Phase, UUID?) async throws -> Void)? = nil
     ) async throws -> (StandaloneServer, String, MiMoV26NativeLoadRegistry) {
         try lane()
@@ -229,9 +230,18 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
         retainedServers.append(server)
         var hooks = StandaloneNativeMiMoTestHooks(modelID: id, directory: root, observe: observe)
         hooks.didClearCache = { witness.cleared() }
-        try await server.installSyntheticNativeMiMoForTesting(
-            .init(id: id, modelType: "mimo_v2", sizeBytes: 1,
-                estimatedMemoryGb: declaration.estimatedWeightsGb), hooks: hooks)
+        let info: ModelInfo
+        if scannerQuoted {
+            info = try XCTUnwrap(ModelScanner.parseModelInfo(snapshotDir: root, modelName: id))
+            XCTAssertEqual(info.modelType, "mimo_v2")
+            XCTAssertGreaterThan(info.sizeBytes, 1)
+            XCTAssertGreaterThan(try XCTUnwrap(info.nativeLoadTransientBytes), 0)
+            XCTAssertNil(info.ssdOffloadedWeightBytes)
+        } else {
+            info = .init(id: id, modelType: "mimo_v2", sizeBytes: 1,
+                estimatedMemoryGb: declaration.estimatedWeightsGb)
+        }
+        try await server.installSyntheticNativeMiMoForTesting(info, hooks: hooks)
         return (server, id, registry)
     }
 
@@ -278,6 +288,25 @@ final class MiMoV26StandaloneLifecycleTests: XCTestCase {
         XCTAssertFalse(witness.modelAlive)
         // No physical/M equality is inferred from this wrapper lifetime.
         XCTAssertGreaterThan(witness.clearCount, 0)
+    }
+
+    func testActualScannerQuotedCallerPublishesAndRetiresWithoutSSDDiscount() async throws {
+        let witness = NativeStandaloneWitness()
+        let (server, id, registry) = try await makeServer(witness: witness, scannerQuoted: true)
+        try await server.ensureModelLoaded(id)
+        await server.watchNative(id, witness: witness)
+        let published = await server.nativeView(id)
+        XCTAssertTrue(published.resident); XCTAssertTrue(published.hasBundle)
+        XCTAssertEqual(published.transactionPhase, .published)
+        XCTAssertEqual(published.charge, 0)
+        await server.stop()
+        let receipt = try await actualReceipt(witness)
+        XCTAssertEqual(receipt.transactionID, published.transactionID)
+        XCTAssertNotNil(receipt.engine)
+        XCTAssertTrue(registry.retainedTransactionIDs.isEmpty)
+        let stopped = await server.nativeView(id)
+        XCTAssertFalse(stopped.resident); XCTAssertEqual(stopped.charge, 0)
+        witness.dropTransaction()
     }
 
     func testActualOnCallerUsesBuiltEmbeddedHeadAndRetiresWithoutWarmRebuild() async throws {

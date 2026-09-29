@@ -98,6 +98,10 @@ jobs:
           # The profile also holds e2e/testbed and a frozen docs evidence
           # package. The reported number counts coordinator packages only.
           scoped="$RUNNER_TEMP/coverage-coordinator.out"
+          if ! grep -q '^github.com/eigeninference/d-inference/coordinator/' "$RUNNER_TEMP/coverage.out"; then
+            echo "coverage.out has no coordinator rows"
+            exit 1
+          fi
           {
             head -n 1 "$RUNNER_TEMP/coverage.out"
             grep '^github.com/eigeninference/d-inference/coordinator/' "$RUNNER_TEMP/coverage.out"
@@ -184,7 +188,9 @@ jobs:
           cargo llvm-cov report --json --summary-only --output-path "$json"
           # Read each total by its field name. jq -e fails when it is missing.
           percent() {
-            jq -er --arg k "$1" '.data[0].totals[$k].percent | select(type == "number") | "\(. * 100 | round / 100)%"' "$json"
+            local value
+            value=$(jq -er --arg k "$1" '.data[0].totals[$k].percent | select(type == "number")' "$json") || return 1
+            printf '%.2f%%' "$value"
           }
           lines=$(percent lines)
           regions=$(percent regions)
@@ -197,7 +203,7 @@ jobs:
             echo
             echo "Denominator: lines and regions in \`coordinator/promptsidecar/src\`, from a \`cargo test --all-targets\` run."
             echo
-            echo "Excluded: the tests under \`tests/\`, \`src/artifacts/tests.rs\`, dependencies and generated code (the crate has none); unit-test modules inside other \`src\` files are counted. Branch counters need a nightly toolchain, so branches are not reported."
+            echo "Excluded: the tests under \`tests/\`, every \`tests.rs\` test module under \`src/\`, dependencies and generated code (the crate has none); inline unit-test modules inside other \`src\` files are counted. Branch counters need a nightly toolchain, so branches are not reported."
           } >> "$GITHUB_STEP_SUMMARY"
 
   test-provider:

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-29 · commit `d2a7b6431`
+> Last updated: 2026-09-29 · commit `6fda0bc8a`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -752,11 +752,11 @@ table shape as the coordinator job: lines, regions and functions, with an 80%
 report-only target. The step reads each value by its field name from the JSON
 report and fails if one is missing. A low number does not fail the job. The
 denominator is `coordinator/promptsidecar/src`. The tests under `tests/`,
-`src/artifacts/tests.rs` and dependencies are left out; unit-test modules
-inside other `src` files are counted. Branch counters need a nightly toolchain,
-so branches are not reported. `cargo llvm-cov` runs the sidecar tests a second
-time, with coverage instrumentation, so a test failure can first appear in the
-Report coverage step. To measure it locally:
+every `tests.rs` test module under `src/` and dependencies are left out;
+inline unit-test modules inside other `src` files are counted. Branch counters
+need a nightly toolchain, so branches are not reported. `cargo llvm-cov` runs
+the sidecar tests a second time, with coverage instrumentation, so a test
+failure can first appear in the Report coverage step. To measure it locally:
 
 ```bash
 rustup component add llvm-tools-preview --toolchain 1.88.0

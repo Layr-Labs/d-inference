@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-29 · commit `3c12f9025`
+> Last updated: 2026-09-29 · commit `6f1dbba59`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -64,6 +64,21 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 
 
 ## Where values are set
+
+Provider model selection and residency are separate settings. The interactive
+`darkbloom start` resident-limit review writes an explicitly changed
+`[backend] max_model_slots` to the resolved `provider.toml`; its compiled
+default remains `3`. Enter keeps the existing value. The provider reads it
+on the next process start, including the background process launched by that
+onboarding flow. Selected model IDs are persisted separately as `--model`
+arguments in the LaunchAgent; the review does not change `enabled_models` or
+request concurrency. See the [CLI onboarding behavior](../provider/cli-reference.md#darkbloom-start).
+Sources: `provider-swift/Sources/darkbloom/ModelSlotSettings.swift`
+(`setModelSlotLimit`), `provider-swift/Sources/darkbloom/ConfigMutation.swift`
+(`withMutableConfig`, shared path resolution and locked reload),
+`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`
+(`BackendSettings`), `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`
+(`serviceProgramArguments`).
 
 | Component | Where the process gets its environment |
 |---|---|

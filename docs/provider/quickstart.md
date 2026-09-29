@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-09-27 · commit `a2ccc2499`
+> Last updated: 2026-09-29 · commit `6f1dbba59`
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
@@ -93,6 +93,15 @@ watchdog `io.darkbloom.watchdog`
 (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). The service
 starts again at every login.
 
+In the interactive picker, select the models you intend to serve. Review
+the **resident-model limit** before downloading: keep the existing limit,
+enter a new limit, or return to selection. Only an explicit limit change
+writes `backend.max_model_slots` to your config. The selected models are
+saved separately in the LaunchAgent. More selected models than resident
+slots can cause replacements as demand changes; increasing the limit can
+use more memory and does not guarantee the models fit together. See
+[the CLI reference](cli-reference.md#darkbloom-start) for unattended behavior.
+
 ### 6. Confirm verification
 
 On **macOS 27 or later**, the installer and `darkbloom enroll` skip MDM profile
@@ -182,6 +191,9 @@ private_only = false         # true = serve only your own self-route traffic
   interactively; change it later with `darkbloom idle keep-loaded` /
   `darkbloom idle unload-after <minutes>`.
 - `backend.max_model_slots` — maximum resident models at once (default 3).
+  Change it through the interactive `darkbloom start` resident-limit review,
+  or edit it here and restart. This is separate from model selection and
+  per-model request concurrency; memory checks may permit fewer residents.
 - `backend.engine_v2_max_concurrent` — box-wide concurrent-request cap per
   engine slot (default **4**, clamped to `[1, 8]`). 4 is the knee of the
   measured contiguous curve — aggregate throughput is flat from B=4 to B=8 and

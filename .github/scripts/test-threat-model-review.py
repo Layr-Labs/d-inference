@@ -27,7 +27,7 @@ FILES = [{"filename": "coordinator/auth.go", "status": "modified", "additions": 
 FINDING = {"severity": "high", "title": "Missing authorization", "detail": "An unauthenticated request reaches the operation; retain the authorization check.",
            "file": "coordinator/auth.go", "line": 4, "side": "head", "threat_ids": ["T-001"]}
 EVENT = {"repository": {"full_name": "example/repo"}, "pull_request": {
-    "number": 12, "head": {"sha": HEAD}, "base": {"sha": BASE}, "draft": False}}
+    "number": 12, "head": {"sha": HEAD}, "base": {"sha": BASE, "ref": "master"}, "draft": False}}
 
 
 def completion(findings, reason="stop", body=None):
@@ -177,7 +177,7 @@ class FakeGitHub:
     def pull(self):
         self.reads += 1
         return {"state": "open", "head": {"sha": "c" * 40 if self.stale and self.reads > 1 else HEAD},
-                "base": {"sha": BASE}, "changed_files": 1}
+                "base": {"sha": BASE, "ref": "master"}, "changed_files": 1}
 
     def comparison_base(self, base, head):
         return BASE
@@ -369,6 +369,64 @@ class RunnerTests(unittest.TestCase):
         result = run(EVENT, self.root, self.env, github, self.reviewer([FINDING]))
         self.assertIn("no stale comment", result)
         self.assertEqual(github.posts, [])
+
+    def test_base_tip_advance_before_or_during_scan_keeps_review(self):
+        for advance_on_read in (1, 2):
+            with self.subTest(advance_on_read=advance_on_read):
+                github = FakeGitHub()
+                pull = github.pull
+                def advancing():
+                    current = pull()
+                    if github.reads >= advance_on_read:
+                        current["base"]["sha"] = "d" * 40
+                    return current
+                github.pull = advancing
+                result = run(EVENT, self.root, self.env, github, self.reviewer([FINDING]))
+                self.assertIn("Full PR scan completed", result)
+                self.assertEqual(len(github.posts), 1)
+                self.assertIn(FINDING["title"], github.posts[0][1])
+                self.assertIn(f"against base `{BASE[:12]}`", github.posts[0][1])
+
+    def test_retarget_or_close_before_or_during_scan_suppresses_review(self):
+        for change_on_read in (1, 2):
+            for change in ("retarget", "close"):
+                with self.subTest(change_on_read=change_on_read, change=change):
+                    github = FakeGitHub()
+                    pull = github.pull
+                    def changed():
+                        current = pull()
+                        if github.reads >= change_on_read:
+                            if change == "retarget":
+                                current["base"]["ref"] = "release"
+                            else:
+                                current["state"] = "closed"
+                        return current
+                    github.pull = changed
+                    result = run(EVENT, self.root, self.env, github, self.reviewer([FINDING]))
+                    self.assertIn("Skipped", result)
+                    self.assertEqual(github.posts, [])
+
+    def test_base_advance_changing_diff_or_unverifiable_is_incomplete(self):
+        for unavailable in (False, True):
+            with self.subTest(unavailable=unavailable):
+                github = FakeGitHub(self.prior_report())
+                pull = github.pull
+                def advancing():
+                    current = pull()
+                    current["base"]["sha"] = "d" * 40
+                    return current
+                def comparison(base, head):
+                    if base == BASE:
+                        return BASE
+                    if unavailable:
+                        raise ReviewUnavailable("private-test-key")
+                    return "e" * 40
+                github.pull, github.comparison_base = advancing, comparison
+                result = run(EVENT, self.root, self.env, github, self.reviewer([]))
+                self.assertIn("Scan incomplete", result)
+                self.assertIn(FINDING["title"], github.posts[0][1])
+                self.assertNotIn("No actionable findings", github.posts[0][1])
+                self.assertNotIn("private-test-key", result + github.posts[0][1])
 
     def test_fork_head_is_data_and_never_a_checkout(self):
         event = copy.deepcopy(EVENT)

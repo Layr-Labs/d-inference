@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/cachepersist"
 )
 
 const (
@@ -319,7 +320,7 @@ type cacheRoutingTracker struct {
 	// persister keeps the durable copy (cache_persistence.go); nil when the
 	// store cannot persist or persistence is off. restoring is set while
 	// bound rows re-enter through upsertHolderLocked so they are not re-marked.
-	persister           *cacheRoutingPersister
+	persister           *cachepersist.Persister
 	restoring           bool
 	holders             map[string]map[string]cacheHolder
 	attempts            map[string]cacheAttempt
@@ -466,7 +467,7 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 		FencesApplied:    tracker.fencesApplied, FencesExpired: tracker.fencesExpired,
 		FencedCapabilities: fenced,
 		DemandEntries:      demandEntries, DemandCapEvictions: demandCapEvictions,
-		Persistence: persister.status(),
+		Persistence: persister.Status(),
 	}
 }
 
@@ -533,7 +534,7 @@ func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
 	// retired tracker stops marking because its generation is revoked.
 	tracker.persister = r.cachePersister
 	if tracker.persister != nil {
-		tracker.demand.setOnTouched(tracker.persister.markDemand)
+		tracker.demand.setOnTouched(tracker.persister.MarkDemand)
 	}
 	r.cacheRouting = tracker
 	r.cacheActivation = activation

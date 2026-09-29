@@ -5,27 +5,35 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/cachepersist"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
+
+// Registry wiring for cache routing state persistence: start (restore +
+// loops), bind on registration and capability apply, final flush, status.
 
 // cacheRoutingRestoreTimeout bounds the boot-time load of the durable copy.
 const cacheRoutingRestoreTimeout = 30 * time.Second
 
-// Registry-side wiring for cache routing state persistence: start (restore +
-// loops), bind on capability apply, final flush, and status.
+// CacheRoutingPersistenceStatus is the persister's status as exposed on the
+// cache status lifecycle block.
+type CacheRoutingPersistenceStatus = cachepersist.Status
 
 // cacheRoutingStateStore returns the store's persistence surface, if any.
-func (r *Registry) cacheRoutingStateStore() (store.CacheRoutingStateStore, bool) {
+func (r *Registry) cacheRoutingStateStore() (crs.Store, bool) {
 	if r == nil || r.store == nil {
 		return nil, false
 	}
-	return store.As[store.CacheRoutingStateStore](r.store)
+	return store.As[crs.Store](r.store)
 }
 
 // StartCacheRoutingPersistence restores the durable copy into the current
 // tracker and starts the flush and prune loops. It is a no-op when cache
-// routing is off, when the store cannot persist, or when persistence is
-// disabled by configuration. Call it after ConfigureCacheRouting and SetStore.
+// routing is off, when the store cannot persist, or when it already started.
+// Call it after ConfigureCacheRouting and SetStore. A failed restore is
+// reported but still leaves write-behind on, so the next boot has something
+// to restore.
 func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRoutingPersistenceStatus, error) {
 	if r == nil {
 		return CacheRoutingPersistenceStatus{}, nil
@@ -40,23 +48,23 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 	existing := r.cachePersister
 	r.mu.RUnlock()
 	if existing != nil {
-		return existing.status(), nil
+		return existing.Status(), nil
 	}
 	if tracker == nil || mode == CacheRoutingOff {
 		return CacheRoutingPersistenceStatus{}, nil
 	}
-	persister := newCacheRoutingPersister(st, r.logger)
+	persister := cachepersist.New(st, r.logger, tracker.maxEntries)
 	now := tracker.now()
-	// The restore is bounded so a slow store cannot hold the process before it
-	// listens; a failed restore still leaves write-behind on, so the next boot
-	// has something to restore.
 	restoreCtx, cancel := context.WithTimeout(ctx, cacheRoutingRestoreTimeout)
-	restoreErr := persister.restore(restoreCtx, tracker, now)
+	demand, restoreErr := persister.Restore(restoreCtx, now, tracker.ttl, tracker.maxEntries)
 	cancel()
+	if restoreErr == nil {
+		tracker.demand.restore(demand, now)
+	}
 	tracker.mu.Lock()
 	tracker.persister = persister
 	tracker.mu.Unlock()
-	tracker.demand.setOnTouched(persister.markDemand)
+	tracker.demand.setOnTouched(persister.MarkDemand)
 	r.mu.Lock()
 	r.cachePersister = persister
 	r.mu.Unlock()
@@ -64,7 +72,7 @@ func (r *Registry) StartCacheRoutingPersistence(ctx context.Context) (CacheRouti
 	// and reconfigures may) bind now.
 	r.bindRestoredHoldersForConnectedProviders()
 	go r.runCacheRoutingPersistence(ctx, persister)
-	return persister.status(), restoreErr
+	return persister.Status(), restoreErr
 }
 
 // bindRestoredHolders binds parked rows for one provider's capabilities in
@@ -80,7 +88,7 @@ func (t *cacheRoutingTracker) bindRestoredHolders(provider *Provider, capabiliti
 	t.mu.Lock()
 	p := t.persister
 	t.mu.Unlock()
-	if p == nil || !p.hasPending() {
+	if !p.HasPending() {
 		return
 	}
 	t.mu.Lock()
@@ -126,9 +134,9 @@ func (r *Registry) bindRestoredHoldersForConnectedProviders() {
 	}
 }
 
-func (r *Registry) runCacheRoutingPersistence(ctx context.Context, p *cacheRoutingPersister) {
-	flush := time.NewTicker(cacheRoutingFlushInterval)
-	prune := time.NewTicker(cacheRoutingPruneInterval)
+func (r *Registry) runCacheRoutingPersistence(ctx context.Context, p *cachepersist.Persister) {
+	flush := time.NewTicker(cachepersist.FlushInterval)
+	prune := time.NewTicker(cachepersist.PruneInterval)
 	defer flush.Stop()
 	defer prune.Stop()
 	for {
@@ -136,8 +144,8 @@ func (r *Registry) runCacheRoutingPersistence(ctx context.Context, p *cacheRouti
 		case <-ctx.Done():
 			return
 		case <-flush.C:
-			flushCtx, cancel := context.WithTimeout(context.Background(), cacheRoutingFlushInterval*2)
-			_ = p.flush(flushCtx)
+			flushCtx, cancel := context.WithTimeout(context.Background(), cachepersist.FlushInterval*2)
+			_ = p.Flush(flushCtx)
 			cancel()
 		case <-prune.C:
 			r.mu.RLock()
@@ -147,14 +155,16 @@ func (r *Registry) runCacheRoutingPersistence(ctx context.Context, p *cacheRouti
 				continue
 			}
 			pruneCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			p.prune(pruneCtx, tracker.now(), tracker.ttl)
+			p.Prune(pruneCtx, tracker.now(), tracker.ttl)
 			cancel()
 		}
 	}
 }
 
 // FlushCacheRoutingState writes everything marked dirty, in as many bounded
-// flushes as it takes. Called once on shutdown after the drain, and by tests.
+// flushes as it takes. Flushes are serialized with the periodic loop, so a
+// shutdown flush never races a tick that is still writing. Called once on
+// shutdown after the drain, and by tests.
 func (r *Registry) FlushCacheRoutingState(ctx context.Context) error {
 	if r == nil {
 		return nil
@@ -162,7 +172,7 @@ func (r *Registry) FlushCacheRoutingState(ctx context.Context) error {
 	r.mu.RLock()
 	p := r.cachePersister
 	r.mu.RUnlock()
-	return p.flushAll(ctx)
+	return p.FlushAll(ctx)
 }
 
 // CacheRoutingPersistenceStatus reports the persister's counters; Enabled is
@@ -174,5 +184,5 @@ func (r *Registry) CacheRoutingPersistenceStatus() CacheRoutingPersistenceStatus
 	r.mu.RLock()
 	p := r.cachePersister
 	r.mu.RUnlock()
-	return p.status()
+	return p.Status()
 }

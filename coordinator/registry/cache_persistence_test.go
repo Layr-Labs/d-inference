@@ -2,14 +2,18 @@ package registry
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
 
 // persistenceTestProvider registers a provider the way the wire path does:
@@ -45,9 +49,9 @@ func startPersistence(t *testing.T, r *Registry, st store.Store) CacheRoutingPer
 	return status
 }
 
-func storedHolders(t *testing.T, st store.CacheRoutingStateStore) []store.CacheHolderRecord {
+func storedHolders(t *testing.T, st crs.Store) []crs.HolderRecord {
 	t.Helper()
-	rows, err := st.LoadCacheHolders(context.Background(), time.Now())
+	rows, err := st.LoadCacheHolders(context.Background(), time.Now(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,27 +61,56 @@ func storedHolders(t *testing.T, st store.CacheRoutingStateStore) []store.CacheH
 func TestCacheRoutingPersistenceSurvivesRestart(t *testing.T) {
 	t.Run("memory", func(t *testing.T) { testCacheRoutingPersistenceSurvivesRestart(t, store.NewMemory(store.Config{})) })
 	t.Run("postgres", func(t *testing.T) {
-		dbURL := os.Getenv("DATABASE_URL")
-		if dbURL == "" {
-			t.Skip("DATABASE_URL not set — skipping PostgreSQL integration test")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		pg, err := store.NewPostgres(ctx, store.Config{DatabaseURL: dbURL})
-		if err != nil {
-			t.Fatalf("NewPostgres: %v", err)
-		}
-		far := time.Now().Add(1000 * time.Hour)
-		if _, err := pg.PruneCacheRoutingState(ctx, far, far); err != nil {
-			t.Fatalf("clear: %v", err)
-		}
-		testCacheRoutingPersistenceSurvivesRestart(t, pg)
+		testCacheRoutingPersistenceSurvivesRestart(t, isolatedPostgresStore(t))
 	})
+}
+
+// isolatedPostgresStore opens a throwaway database created from DATABASE_URL,
+// so this package's row-count assertions never collide with the store
+// package's contract test, which runs concurrently in CI against the shared
+// database. The database is dropped on cleanup.
+func isolatedPostgresStore(t *testing.T) store.Store {
+	t.Helper()
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set — skipping PostgreSQL integration test")
+	}
+	parsed, err := url.Parse(dbURL)
+	if err != nil {
+		t.Fatalf("parse DATABASE_URL: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := pgx.Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	name := fmt.Sprintf("cachepersist_%d_%d", time.Now().UnixNano(), os.Getpid())
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		admin.Close(ctx)
+		t.Fatalf("create database: %v", err)
+	}
+	isolated := *parsed
+	isolated.Path = "/" + name
+	pg, err := store.NewPostgres(ctx, store.Config{DatabaseURL: isolated.String()})
+	if err != nil {
+		_, _ = admin.Exec(ctx, "DROP DATABASE "+name+" WITH (FORCE)")
+		admin.Close(ctx)
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(func() {
+		pg.Close()
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer dropCancel()
+		_, _ = admin.Exec(dropCtx, "DROP DATABASE "+name+" WITH (FORCE)")
+		admin.Close(dropCtx)
+	})
+	return pg
 }
 
 func testCacheRoutingPersistenceSurvivesRestart(t *testing.T, st store.Store) {
 	t.Helper()
-	cacheStore, ok := store.As[store.CacheRoutingStateStore](st)
+	cacheStore, ok := store.As[crs.Store](st)
 	if !ok {
 		t.Fatal("store cannot persist cache routing state")
 	}
@@ -271,69 +304,6 @@ func TestCacheRoutingPersistenceOffWithoutStore(t *testing.T) {
 	}
 }
 
-// flakyCacheStore fails every write while broken is set.
-type flakyCacheStore struct {
-	store.CacheRoutingStateStore
-	broken bool
-}
-
-func (f *flakyCacheStore) UpsertCacheHolders(ctx context.Context, r []store.CacheHolderRecord) error {
-	if f.broken {
-		return errors.New("store down")
-	}
-	return f.CacheRoutingStateStore.UpsertCacheHolders(ctx, r)
-}
-
-func (f *flakyCacheStore) UpsertCacheDemand(ctx context.Context, r []store.CacheDemandRecord) error {
-	if f.broken {
-		return errors.New("store down")
-	}
-	return f.CacheRoutingStateStore.UpsertCacheDemand(ctx, r)
-}
-
-func TestCacheRoutingPersisterRetriesAndDedupesDemand(t *testing.T) {
-	mem := store.NewMemory(store.Config{})
-	flaky := &flakyCacheStore{CacheRoutingStateStore: mem, broken: true}
-	p := newCacheRoutingPersister(flaky, testLogger())
-	now := time.Now()
-	holder := cacheHolder{ProviderID: "p", ModelID: "model", CacheEpoch: "e", Tier: "ssd",
-		Anchor: protocol.PrefixCacheAnchor{ChainHash: "h", TokenCount: 1024}, StageMs: 50,
-		UpdatedAt: now, ExpiresAt: now.Add(time.Minute)}
-	p.markHolderUpsert("key-1", holder)
-	p.markDemand([]string{"d-1", "d-2"}, now)
-	if err := p.flush(context.Background()); err == nil {
-		t.Fatal("flush must report the store failure")
-	}
-	if s := p.status(); s.FlushErrors != 1 || s.RowsWritten != 0 {
-		t.Fatalf("failure counters: %+v", s)
-	}
-	flaky.broken = false
-	if err := p.flush(context.Background()); err != nil {
-		t.Fatalf("retry flush: %v", err)
-	}
-	if rows, _ := mem.LoadCacheHolders(context.Background(), now); len(rows) != 1 {
-		t.Fatalf("requeued holder not written: %d", len(rows))
-	}
-	if d, _ := mem.LoadCacheDemand(context.Background(), now.Add(-time.Minute)); len(d) != 2 {
-		t.Fatalf("requeued demand not written: %d", len(d))
-	}
-	// Within the granularity window the same key is not written again.
-	p.markDemand([]string{"d-1"}, now.Add(10*time.Second))
-	if batch := p.drain(); len(batch.demand) != 0 {
-		t.Fatalf("demand key re-marked inside the granularity window: %+v", batch.demand)
-	}
-	p.markDemand([]string{"d-1"}, now.Add(2*time.Minute))
-	if batch := p.drain(); len(batch.demand) != 1 {
-		t.Fatalf("demand key not re-marked after the window: %+v", batch.demand)
-	}
-	// Memory-tier holders never reach the store.
-	p.markHolderUpsert("memory:key", cacheHolder{ProviderID: "p", ModelID: "model", CacheEpoch: "e", Tier: "memory",
-		UpdatedAt: now, ExpiresAt: now.Add(time.Second)})
-	if batch := p.drain(); len(batch.upserts) != 0 {
-		t.Fatalf("memory-tier holder marked for persistence: %+v", batch.upserts)
-	}
-}
-
 // The wire order: capabilities arrive inside the RegisterMessage, and the
 // heartbeat that follows re-applies the same set, so nothing "changes". A
 // restored holder must bind on that path, not only on a capability change.
@@ -511,5 +481,27 @@ func TestCacheRoutingPersistenceParkedRowNeverOverwritesNewerLiveHolder(t *testi
 	}
 	if rows := storedHolders(t, st); len(rows) != 1 || !rows[0].UpdatedAt.Equal(liveUpdated) {
 		t.Fatalf("durable row must carry the newer receipt: %+v", rows)
+	}
+}
+
+// The registry decides what is persistable: resident (memory-tier) holders
+// never reach the store.
+func TestCacheRoutingPersistenceSkipsMemoryTier(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	r, _, capability := exactTestRegistry(t)
+	startPersistence(t, r, st)
+	now := time.Now()
+	r.cacheRouting.mu.Lock()
+	r.cacheRouting.persistHolderUpsert("memory:key", cacheHolder{ProviderID: "p", ModelID: "model", CacheEpoch: capability.CacheEpoch,
+		Tier: "memory", UpdatedAt: now, ExpiresAt: now.Add(time.Second)})
+	r.cacheRouting.persistHolderUpsert("ssd-key", cacheHolder{ProviderID: "p", ModelID: "model", CacheEpoch: capability.CacheEpoch,
+		Tier: "ssd", Anchor: protocol.PrefixCacheAnchor{ChainHash: "h", TokenCount: 1024}, StageMs: 50, UpdatedAt: now, ExpiresAt: now.Add(time.Minute)})
+	r.cacheRouting.mu.Unlock()
+	if err := r.FlushCacheRoutingState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rows := storedHolders(t, st)
+	if len(rows) != 1 || rows[0].Key != "ssd-key" {
+		t.Fatalf("only the SSD holder may be persisted: %+v", rows)
 	}
 }

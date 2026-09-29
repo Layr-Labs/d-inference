@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"sort"
 	"time"
+
+	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
 
 // The in-memory store keeps the same durable copy so the dev/test path
@@ -10,19 +13,19 @@ import (
 
 func (s *MemoryStore) cacheRoutingMapsLocked() {
 	if s.cacheHolders == nil {
-		s.cacheHolders = make(map[CacheHolderKey]CacheHolderRecord)
+		s.cacheHolders = make(map[crs.HolderKey]crs.HolderRecord)
 	}
 	if s.cacheDemand == nil {
 		s.cacheDemand = make(map[string]time.Time)
 	}
 }
 
-func (s *MemoryStore) UpsertCacheHolders(ctx context.Context, records []CacheHolderRecord) error {
+func (s *MemoryStore) UpsertCacheHolders(ctx context.Context, records []crs.HolderRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	for _, r := range records {
-		if err := r.validate(); err != nil {
+		if err := r.Validate(); err != nil {
 			return err
 		}
 	}
@@ -32,7 +35,7 @@ func (s *MemoryStore) UpsertCacheHolders(ctx context.Context, records []CacheHol
 	for _, r := range records {
 		key := r.HolderKey()
 		if existing, ok := s.cacheHolders[key]; ok {
-			s.cacheHolders[key] = laterHolder(existing, r)
+			s.cacheHolders[key] = crs.Later(existing, r)
 		} else {
 			s.cacheHolders[key] = r
 		}
@@ -40,7 +43,7 @@ func (s *MemoryStore) UpsertCacheHolders(ctx context.Context, records []CacheHol
 	return nil
 }
 
-func (s *MemoryStore) DeleteCacheHolders(ctx context.Context, keys []CacheHolderKey) error {
+func (s *MemoryStore) DeleteCacheHolders(ctx context.Context, keys []crs.HolderKey) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -53,27 +56,41 @@ func (s *MemoryStore) DeleteCacheHolders(ctx context.Context, keys []CacheHolder
 	return nil
 }
 
-func (s *MemoryStore) LoadCacheHolders(ctx context.Context, now time.Time) ([]CacheHolderRecord, error) {
+func (s *MemoryStore) LoadCacheHolders(ctx context.Context, now time.Time, limit int) ([]crs.HolderRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]CacheHolderRecord, 0, len(s.cacheHolders))
+	out := make([]crs.HolderRecord, 0, len(s.cacheHolders))
 	for _, r := range s.cacheHolders {
 		if r.ExpiresAt.After(now) {
 			out = append(out, r)
 		}
 	}
+	// Longest-lived first, then a stable key order, matching the Postgres
+	// ORDER BY so a capped restore keeps the same rows on both backends.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].ExpiresAt.Equal(out[j].ExpiresAt) {
+			return out[i].ExpiresAt.After(out[j].ExpiresAt)
+		}
+		if out[i].Key != out[j].Key {
+			return out[i].Key < out[j].Key
+		}
+		return out[i].CacheEpoch < out[j].CacheEpoch
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
 }
 
-func (s *MemoryStore) UpsertCacheDemand(ctx context.Context, records []CacheDemandRecord) error {
+func (s *MemoryStore) UpsertCacheDemand(ctx context.Context, records []crs.DemandRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	for _, r := range records {
-		if err := r.validate(); err != nil {
+		if err := r.Validate(); err != nil {
 			return err
 		}
 	}
@@ -88,16 +105,16 @@ func (s *MemoryStore) UpsertCacheDemand(ctx context.Context, records []CacheDema
 	return nil
 }
 
-func (s *MemoryStore) LoadCacheDemand(ctx context.Context, notBefore time.Time) ([]CacheDemandRecord, error) {
+func (s *MemoryStore) LoadCacheDemand(ctx context.Context, notBefore time.Time) ([]crs.DemandRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]CacheDemandRecord, 0, len(s.cacheDemand))
+	out := make([]crs.DemandRecord, 0, len(s.cacheDemand))
 	for key, seen := range s.cacheDemand {
 		if !seen.Before(notBefore) {
-			out = append(out, CacheDemandRecord{Key: key, SeenAt: seen})
+			out = append(out, crs.DemandRecord{Key: key, SeenAt: seen})
 		}
 	}
 	return out, nil

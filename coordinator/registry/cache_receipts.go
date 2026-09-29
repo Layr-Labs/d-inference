@@ -221,9 +221,7 @@ func (t *cacheRoutingTracker) upsertHolderLocked(key string, holder cacheHolder)
 	}
 	holders[holder.ProviderID] = holder
 	t.trackHolderOrderLocked(key, holder.ProviderID, holder.ExpiresAt)
-	if !t.restoring {
-		t.persister.markHolderUpsert(key, holder)
-	}
+	t.persistHolderUpsert(key, holder)
 	// Every receipt stamps UpdatedAt with the tracker clock it was applied at.
 	now := holder.UpdatedAt
 	if len(holders) > t.maxHolders {
@@ -302,15 +300,7 @@ func (t *cacheRoutingTracker) removeHolderLocked(
 		if removed, exists := holders[providerID]; exists {
 			// A disconnect keeps the durable row: the file is still on the
 			// provider and its epoch identifies it again on reconnect.
-			// TTL expiry needs no delete: loads filter expired rows and the
-			// store prune removes them.
-			switch reason {
-			case cacheHolderRemovalDisconnect:
-				t.persister.parkHolder(key, removed)
-			case cacheHolderRemovalTTL:
-			default:
-				t.persister.markHolderDelete(key, removed)
-			}
+			t.persistHolderRemoval(key, removed, reason)
 			delete(holders, providerID)
 			t.holderCount--
 			t.holderRemoved[string(reason)]++

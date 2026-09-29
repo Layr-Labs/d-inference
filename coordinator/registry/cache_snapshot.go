@@ -151,7 +151,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 		// rather than letting the bind below resurrect it.
 		for model := range changedModels {
 			if prev, ok := previousCapabilities[model]; ok {
-				tracker.persister.dropPending(prev.CacheEpoch, model)
+				tracker.persister.Drop(prev.CacheEpoch, model)
 			}
 		}
 	}

@@ -13,6 +13,7 @@
 package registry
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/registry/cachepersist"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -223,7 +224,7 @@ type Registry struct {
 	cacheRouting                 *cacheRoutingTracker
 	cacheActivation              *cacheActivationGate
 	cacheRoutingMode             string
-	cachePersister               *cacheRoutingPersister
+	cachePersister               *cachepersist.Persister
 	cacheRoutingAllowedArtifacts cacheArtifactAllowlist
 	cacheRouteKeys               cacheRouteKeys
 	cacheRoutingMaxDiscountMs    *float64

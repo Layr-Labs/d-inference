@@ -9,7 +9,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/store"
+	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
 
 // Demand is advisory, never cache evidence. Only keyed, tenant/build-scoped
@@ -141,7 +141,7 @@ func (d *cacheDemandTracker) observeLocked(boundaries []cacheDemandBoundary, now
 // restore seeds the index from durable rows, oldest first so the eviction
 // order matches the seen order. Rows past the TTL are skipped; the entry cap
 // keeps the newest.
-func (d *cacheDemandTracker) restore(records []store.CacheDemandRecord, now time.Time) int {
+func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) int {
 	sort.Slice(records, func(i, j int) bool { return records[i].SeenAt.Before(records[j].SeenAt) })
 	d.mu.Lock()
 	defer d.mu.Unlock()

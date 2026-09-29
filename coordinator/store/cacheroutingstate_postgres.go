@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 )
 
 // cacheRoutingHoldersDDL and cacheRoutingDemandDDL are the durable copies of
 // the registry's in-memory holder and demand indexes (see
-// cache_routing_state.go). Keys and anchors are chained block hashes, never
+// cacheroutingstate/records.go). Keys and anchors are chained block hashes, never
 // prompt content. The primary key is (key, cache_epoch): a holder key names a
 // boundary, an epoch names one provider's SSD root, and a boundary is held by
 // at most the configured number of providers.
@@ -41,48 +43,15 @@ const cacheRoutingDemandSeenIndexDDL = `CREATE INDEX IF NOT EXISTS idx_cache_rou
 
 const cacheHolderInsertColumns = 13
 
-// dedupeHolderRecords keeps one row per (key, epoch) in a batch, merging the
-// way the ON CONFLICT clause would: PostgreSQL rejects a statement that
-// touches the same conflict target twice.
-func dedupeHolderRecords(records []CacheHolderRecord) []CacheHolderRecord {
-	seen := make(map[CacheHolderKey]int, len(records))
-	out := make([]CacheHolderRecord, 0, len(records))
+func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []crs.HolderRecord) error {
 	for _, r := range records {
-		if i, ok := seen[r.HolderKey()]; ok {
-			out[i] = laterHolder(out[i], r)
-			continue
-		}
-		seen[r.HolderKey()] = len(out)
-		out = append(out, r)
-	}
-	return out
-}
-
-func dedupeDemandRecords(records []CacheDemandRecord) []CacheDemandRecord {
-	seen := make(map[string]int, len(records))
-	out := make([]CacheDemandRecord, 0, len(records))
-	for _, r := range records {
-		if i, ok := seen[r.Key]; ok {
-			if r.SeenAt.After(out[i].SeenAt) {
-				out[i].SeenAt = r.SeenAt
-			}
-			continue
-		}
-		seen[r.Key] = len(out)
-		out = append(out, r)
-	}
-	return out
-}
-
-func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []CacheHolderRecord) error {
-	for _, r := range records {
-		if err := r.validate(); err != nil {
+		if err := r.Validate(); err != nil {
 			return err
 		}
 	}
-	records = dedupeHolderRecords(records)
-	for start := 0; start < len(records); start += CacheRoutingStateBatchRows {
-		end := min(start+CacheRoutingStateBatchRows, len(records))
+	records = crs.DedupeHolders(records)
+	for start := 0; start < len(records); start += crs.BatchRows {
+		end := min(start+crs.BatchRows, len(records))
 		chunk := records[start:end]
 		var sb strings.Builder
 		sb.WriteString(`INSERT INTO cache_routing_holders (key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id, block_hash_version, anchor_chain_hash, anchor_token_count, required_recompute_tokens, stage_ms, updated_at, expires_at) VALUES `)
@@ -125,9 +94,9 @@ func (s *PostgresStore) UpsertCacheHolders(ctx context.Context, records []CacheH
 	return nil
 }
 
-func (s *PostgresStore) DeleteCacheHolders(ctx context.Context, keys []CacheHolderKey) error {
-	for start := 0; start < len(keys); start += CacheRoutingStateBatchRows {
-		end := min(start+CacheRoutingStateBatchRows, len(keys))
+func (s *PostgresStore) DeleteCacheHolders(ctx context.Context, keys []crs.HolderKey) error {
+	for start := 0; start < len(keys); start += crs.BatchRows {
+		end := min(start+crs.BatchRows, len(keys))
 		chunk := keys[start:end]
 		ks := make([]string, 0, len(chunk))
 		epochs := make([]string, 0, len(chunk))
@@ -147,17 +116,25 @@ func (s *PostgresStore) DeleteCacheHolders(ctx context.Context, keys []CacheHold
 	return nil
 }
 
-func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time) ([]CacheHolderRecord, error) {
-	rows, err := s.pool.Query(ctx, `SELECT key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id,
+func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time, limit int) ([]crs.HolderRecord, error) {
+	// Longest-lived first so a capped restore keeps the rows that still have
+	// the most life; a limit of 0 or less loads everything.
+	query := `SELECT key, cache_epoch, tier, model_id, model_aggregate_hash, prompt_contract_id,
  block_hash_version, anchor_chain_hash, anchor_token_count, required_recompute_tokens, stage_ms, updated_at, expires_at
- FROM cache_routing_holders WHERE expires_at > $1`, now.UTC())
+ FROM cache_routing_holders WHERE expires_at > $1 ORDER BY expires_at DESC, key, cache_epoch`
+	args := []any{now.UTC()}
+	if limit > 0 {
+		query += ` LIMIT $2`
+		args = append(args, limit)
+	}
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load cache holders: %w", err)
 	}
 	defer rows.Close()
-	out := []CacheHolderRecord{}
+	out := []crs.HolderRecord{}
 	for rows.Next() {
-		var r CacheHolderRecord
+		var r crs.HolderRecord
 		if err := rows.Scan(&r.Key, &r.CacheEpoch, &r.Tier, &r.ModelID, &r.ModelAggregateHash, &r.PromptContractID,
 			&r.BlockHashVersion, &r.AnchorChainHash, &r.AnchorTokenCount, &r.RequiredRecomputeTokens, &r.StageMs,
 			&r.UpdatedAt, &r.ExpiresAt); err != nil {
@@ -168,15 +145,15 @@ func (s *PostgresStore) LoadCacheHolders(ctx context.Context, now time.Time) ([]
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) UpsertCacheDemand(ctx context.Context, records []CacheDemandRecord) error {
+func (s *PostgresStore) UpsertCacheDemand(ctx context.Context, records []crs.DemandRecord) error {
 	for _, r := range records {
-		if err := r.validate(); err != nil {
+		if err := r.Validate(); err != nil {
 			return err
 		}
 	}
-	records = dedupeDemandRecords(records)
-	for start := 0; start < len(records); start += CacheRoutingStateBatchRows {
-		end := min(start+CacheRoutingStateBatchRows, len(records))
+	records = crs.DedupeDemand(records)
+	for start := 0; start < len(records); start += crs.BatchRows {
+		end := min(start+crs.BatchRows, len(records))
 		chunk := records[start:end]
 		keys := make([]string, 0, len(chunk))
 		seen := make([]time.Time, 0, len(chunk))
@@ -194,15 +171,15 @@ func (s *PostgresStore) UpsertCacheDemand(ctx context.Context, records []CacheDe
 	return nil
 }
 
-func (s *PostgresStore) LoadCacheDemand(ctx context.Context, notBefore time.Time) ([]CacheDemandRecord, error) {
+func (s *PostgresStore) LoadCacheDemand(ctx context.Context, notBefore time.Time) ([]crs.DemandRecord, error) {
 	rows, err := s.pool.Query(ctx, `SELECT key, seen_at FROM cache_routing_demand WHERE seen_at >= $1`, notBefore.UTC())
 	if err != nil {
 		return nil, fmt.Errorf("load cache demand: %w", err)
 	}
 	defer rows.Close()
-	out := []CacheDemandRecord{}
+	out := []crs.DemandRecord{}
 	for rows.Next() {
-		var r CacheDemandRecord
+		var r crs.DemandRecord
 		if err := rows.Scan(&r.Key, &r.SeenAt); err != nil {
 			return nil, fmt.Errorf("scan cache demand: %w", err)
 		}
@@ -217,23 +194,23 @@ func (s *PostgresStore) PruneCacheRoutingState(ctx context.Context, now, demandN
 	var total int64
 	for {
 		tag, err := s.pool.Exec(ctx, `DELETE FROM cache_routing_holders WHERE ctid IN (
- SELECT ctid FROM cache_routing_holders WHERE expires_at <= $1 LIMIT $2)`, now.UTC(), cacheRoutingPruneBatchRows)
+ SELECT ctid FROM cache_routing_holders WHERE expires_at <= $1 LIMIT $2)`, now.UTC(), crs.PruneBatchRows)
 		if err != nil {
 			return total, fmt.Errorf("prune cache holders: %w", err)
 		}
 		total += tag.RowsAffected()
-		if tag.RowsAffected() < cacheRoutingPruneBatchRows {
+		if tag.RowsAffected() < crs.PruneBatchRows {
 			break
 		}
 	}
 	for {
 		tag, err := s.pool.Exec(ctx, `DELETE FROM cache_routing_demand WHERE ctid IN (
- SELECT ctid FROM cache_routing_demand WHERE seen_at < $1 LIMIT $2)`, demandNotBefore.UTC(), cacheRoutingPruneBatchRows)
+ SELECT ctid FROM cache_routing_demand WHERE seen_at < $1 LIMIT $2)`, demandNotBefore.UTC(), crs.PruneBatchRows)
 		if err != nil {
 			return total, fmt.Errorf("prune cache demand: %w", err)
 		}
 		total += tag.RowsAffected()
-		if tag.RowsAffected() < cacheRoutingPruneBatchRows {
+		if tag.RowsAffected() < crs.PruneBatchRows {
 			break
 		}
 	}

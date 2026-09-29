@@ -735,8 +735,10 @@ back are operator procedures, kept in the runbook
    empties the index: with `EIGENINFERENCE_CACHE_ROUTING_PERSIST` on
    (the default) and a store that can persist, SSD-tier holders and the
    observed-demand index are written behind the tracker in 5-second batches
-   and reloaded at boot (`coordinator/registry/cache_persistence.go`,
-   `coordinator/store/cache_routing_state.go`). Restored holders are parked by
+   and reloaded at boot (`coordinator/registry/cachepersist/persister.go`,
+   `coordinator/store/cacheroutingstate/records.go`; the registry glue that
+   decides what is persistable and binds rows back is
+   `coordinator/registry/cache_persistence.go`). Restored holders are parked by
    the provider's cache epoch and become live only when a provider applies
    capabilities with that epoch, model, artifact and contract
    (`bindPendingLocked`, run at the end of `Register` and on every capability

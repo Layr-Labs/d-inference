@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	crs "github.com/eigeninference/d-inference/coordinator/store/cacheroutingstate"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,7 +64,7 @@ type MemoryStore struct {
 	appAttestEvidence    map[string]memoryAppAttestEvidence
 	appAttestEnrollments map[string]AppAttestEnrollment
 	appAttestBuilds      map[string]AppAttestBuildQualification
-	cacheHolders         map[CacheHolderKey]CacheHolderRecord
+	cacheHolders         map[crs.HolderKey]crs.HolderRecord
 	cacheDemand          map[string]time.Time
 	appAttestRotations   map[string]AppAttestKeyRotation
 

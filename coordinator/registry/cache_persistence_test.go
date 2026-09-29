@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -1083,6 +1084,30 @@ func TestCacheDemandRestoreMergesBySeenTimeUnderTheCap(t *testing.T) {
 	if want := []string{"old-3", "old-4", "live-2", "live-1"}; fmt.Sprint(order) != fmt.Sprint(want) {
 		t.Fatalf("capped merge must keep the newest entries in seen order: got %v want %v", order, want)
 	}
+	// The live list can be out of timestamp order (clocks are sampled before
+	// the lock): a delayed older observation behind a newer one. The merge
+	// still keeps the newest entries, not the tail of the list.
+	tracker.demand.mu.Lock()
+	tracker.demand.order.Init()
+	tracker.demand.entries = map[string]*list.Element{}
+	for _, e := range []cacheDemandEntry{{"live-new", now}, {"live-delayed", now.Add(-25 * time.Second)}} {
+		tracker.demand.entries[e.key] = tracker.demand.order.PushBack(e)
+	}
+	tracker.demand.mu.Unlock()
+	tracker.demand.restore([]crs.DemandRecord{
+		{Key: "mid-1", SeenAt: now.Add(-15 * time.Second)},
+		{Key: "mid-2", SeenAt: now.Add(-10 * time.Second)},
+		{Key: "mid-3", SeenAt: now.Add(-5 * time.Second)},
+	}, now)
+	tracker.demand.mu.Lock()
+	order = order[:0]
+	for e := tracker.demand.order.Front(); e != nil; e = e.Next() {
+		order = append(order, e.Value.(cacheDemandEntry).key)
+	}
+	tracker.demand.mu.Unlock()
+	if want := []string{"mid-1", "mid-2", "mid-3", "live-new"}; fmt.Sprint(order) != fmt.Sprint(want) {
+		t.Fatalf("merge over an unsorted live list must keep the newest entries: got %v want %v", order, want)
+	}
 	// An entry older than everything kept never displaces fresher ones.
 	tracker.demand.restore([]crs.DemandRecord{{Key: "old-1", SeenAt: now.Add(-40 * time.Second)}}, now)
 	tracker.demand.mu.Lock()
@@ -1143,7 +1168,12 @@ func TestCacheRoutingPersistenceRetriedRestoreKeepsTombstones(t *testing.T) {
 	if hints := memoryTestHints(r2, plan2, time.Now()); len(hints) != 0 {
 		t.Fatalf("invalidated holder still routable: %+v", hints)
 	}
-	// The store recovers and the retried restore finds run 1's row.
+	// The provider is away when the store recovers and the retried restore
+	// finds run 1's row: the tombstone must keep it out of the pending set,
+	// not only out of a bind, because the flush that follows drains the
+	// tombstone and a later reconnect would otherwise bind the stale row.
+	r2.cacheRouting.disconnect(back.ID, cacheHolderRemovalDisconnect)
+	removeTestProvider(r2, back.ID)
 	st.fail.Store(false)
 	r2.mu.RLock()
 	tracker, persister := r2.cacheRouting, r2.cachePersister
@@ -1151,16 +1181,20 @@ func TestCacheRoutingPersistenceRetriedRestoreKeepsTombstones(t *testing.T) {
 	if err := r2.restoreCacheRoutingState(ctx, persister, tracker); err != nil {
 		t.Fatalf("retried restore: %v", err)
 	}
-	if hints := memoryTestHints(r2, plan2, time.Now()); len(hints) != 0 {
-		t.Fatalf("retried restore resurrected an invalidated holder: %+v", hints)
-	}
-	if s := r2.CacheRoutingPersistenceStatus(); s.BoundHolders != 0 || s.PendingHolders != 0 || s.DroppedPending != 1 {
-		t.Fatalf("the tombstoned row must be dropped at bind: %+v", s)
+	if s := r2.CacheRoutingPersistenceStatus(); s.PendingHolders != 0 || s.DroppedPending != 1 {
+		t.Fatalf("the tombstoned row must not be parked: %+v", s)
 	}
 	if err := r2.FlushCacheRoutingState(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if rows := storedHolders(t, mem); len(rows) != 0 {
 		t.Fatalf("the tombstone must still delete the durable row: %+v", rows)
+	}
+	again := persistenceTestProvider(t, r2, "machine-a-again", capability)
+	if hints := memoryTestHints(r2, plan2, time.Now()); len(hints) != 0 {
+		t.Fatalf("reconnect after the retried restore resurrected an invalidated holder: %+v", hints)
+	}
+	if s := r2.CacheRoutingPersistenceStatus(); s.BoundHolders != 0 {
+		t.Fatalf("nothing may bind to %s: %+v", again.ID, s)
 	}
 }

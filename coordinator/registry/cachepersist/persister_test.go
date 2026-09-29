@@ -453,3 +453,23 @@ func TestRestoreDropsExpiredParkedRowsBeforeTheCap(t *testing.T) {
 		t.Fatalf("expired parked row dropped, durable row restored: %+v", s)
 	}
 }
+
+// Receipt times are sampled before the tracker lock: a delayed older receipt
+// for a row shared by overlapping sessions must not overwrite the newer
+// evidence already queued for the same (key, epoch).
+func TestMarkHolderUpsertKeepsTheNewerQueuedRecord(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	p := New(mem, nil, Options{MaxPending: 10})
+	now := time.Now()
+	newer := rec("a", "e", now, time.Minute)
+	newer.StageMs = 900
+	older := rec("a", "e", now.Add(-time.Second), 2*time.Minute) // longer stored lifetime, older evidence
+	older.StageMs = 50
+	p.MarkHolderUpsert(newer)
+	p.MarkHolderUpsert(older)
+	b := p.drain()
+	if len(b.upserts) != 1 || b.upserts[0].StageMs != 900 || !b.upserts[0].UpdatedAt.Equal(now) ||
+		!b.upserts[0].ExpiresAt.Equal(now.Add(-time.Second).Add(2*time.Minute)) {
+		t.Fatalf("queued upsert must keep the newer record and the later expiry: %+v", b.upserts)
+	}
+}

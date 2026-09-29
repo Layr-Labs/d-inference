@@ -109,6 +109,10 @@ func TestCloseProviderConnectionsJoinsHandlersAndRefusesNewOnes(t *testing.T) {
 func TestWaitProviderHandlersReportsLateHandlers(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	// Before the close the wait is a programming error and reports false.
+	if srv.WaitProviderHandlers(shortCtx(t, 50*time.Millisecond)) {
+		t.Fatal("wait before the close must be refused")
+	}
 	// An admitted handler that is still running when the close begins.
 	srv.providerAdmit.Lock()
 	srv.providerHandlers.Add(1)

@@ -54,6 +54,29 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 	// meanwhile; drop them first so they never take the cap from rows
 	// still valid.
 	p.prunePendingLocked(now)
+	// Rows this run already decided to delete (tombstones queued while the
+	// store was unreachable; nothing has been written yet, so every one of
+	// them is still pending here) are older than that decision: neither a
+	// parked copy nor the loaded copy may enter the pending set, or the
+	// flush that drains the tombstone would let a later reconnect bind it.
+	if len(p.holderDeletes) > 0 {
+		for pk, rows := range p.pending {
+			kept := rows[:0]
+			for _, row := range rows {
+				if _, dead := p.holderDeletes[row.HolderKey()]; dead {
+					p.counters.droppedPending++
+					p.pendingCount--
+					continue
+				}
+				kept = append(kept, row)
+			}
+			if len(kept) == 0 {
+				delete(p.pending, pk)
+			} else {
+				p.pending[pk] = kept
+			}
+		}
+	}
 	// Merge into whatever is already parked: a provider that disconnected
 	// before a retried restore parked this run's evidence here, and the
 	// store may not hold it yet. The newer record wins per (key, epoch).
@@ -63,6 +86,10 @@ func (p *Persister) Restore(ctx context.Context, now time.Time, ttl time.Duratio
 	for _, rec := range holders {
 		rec, ok := ClampToTTL(rec, now, ttl)
 		if !ok {
+			p.counters.droppedPending++
+			continue
+		}
+		if _, dead := p.holderDeletes[rec.HolderKey()]; dead {
 			p.counters.droppedPending++
 			continue
 		}

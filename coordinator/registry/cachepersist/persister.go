@@ -132,7 +132,12 @@ func (p *Persister) MarkHolderUpsert(rec crs.HolderRecord) {
 	k := rec.HolderKey()
 	p.mu.Lock()
 	delete(p.holderDeletes, k)
-	if _, present := p.holderUpserts[k]; present || len(p.holderUpserts) < p.dirtyCap {
+	if existing, present := p.holderUpserts[k]; present {
+		// Receipt times are sampled before the tracker lock, so a delayed
+		// older receipt for a row shared by overlapping sessions can arrive
+		// after a newer one: keep the newer evidence, as the store would.
+		p.holderUpserts[k] = crs.Later(existing, rec)
+	} else if len(p.holderUpserts) < p.dirtyCap {
 		p.holderUpserts[k] = rec
 	} else {
 		p.counters.droppedDirty++

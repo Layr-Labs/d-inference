@@ -142,61 +142,49 @@ func (d *cacheDemandTracker) observeLocked(boundaries []cacheDemandBoundary, now
 // order matches the seen order. Rows past the TTL are skipped; the entry cap
 // keeps the newest.
 // restore seeds the index from the durable copy and returns the entries it
-// accepted (within the TTL, not in the future); the caller treats those as
-// already persisted. Restored entries are merged into the recency list by
-// seen time rather than appended: a restore retried after traffic has
-// populated the index (cachepersist) must not evict fresher live
-// observations to keep older durable ones, so the capped merge keeps the
-// newest entries across both sets.
+// accepted (within the TTL, not in the future) and still holds afterwards;
+// the caller treats those as already persisted. The live list may be out of
+// timestamp order (observeLocked samples the clock before taking d.mu), so
+// the merge rebuilds the list from the union sorted by seen time and caps it
+// from the oldest end: a capped merge keeps the newest entries across both
+// sets and never evicts a fresher live observation for an older durable one.
 func (d *cacheDemandTracker) restore(records []crs.DemandRecord, now time.Time) []crs.DemandRecord {
-	sort.Slice(records, func(i, j int) bool { return records[i].SeenAt.Before(records[j].SeenAt) })
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	valid := make([]crs.DemandRecord, 0, len(records))
-	// Records arrive oldest first, so the insertion point only ever moves
-	// toward the back: one pass over the list in total.
-	var after *list.Element
+	merged := make(map[string]time.Time, len(d.entries)+len(records))
+	for key, el := range d.entries {
+		merged[key] = el.Value.(cacheDemandEntry).seen
+	}
 	for _, rec := range records {
 		if rec.Key == "" || now.Sub(rec.SeenAt) >= d.ttl || rec.SeenAt.After(now) {
 			continue
 		}
 		valid = append(valid, rec)
-		if existing := d.entries[rec.Key]; existing != nil {
-			if !rec.SeenAt.After(existing.Value.(cacheDemandEntry).seen) {
-				continue
-			}
-			if after == existing {
-				after = existing.Prev()
-			}
-			d.order.Remove(existing)
-			delete(d.entries, rec.Key)
-		}
-		next := d.order.Front()
-		if after != nil {
-			next = after.Next()
-		}
-		for next != nil && !next.Value.(cacheDemandEntry).seen.After(rec.SeenAt) {
-			after, next = next, next.Next()
-		}
-		entry := cacheDemandEntry{rec.Key, rec.SeenAt}
-		if after == nil {
-			after = d.order.PushFront(entry)
-		} else {
-			after = d.order.InsertAfter(entry, after)
-		}
-		d.entries[rec.Key] = after
-		for len(d.entries) > d.limit {
-			first := d.order.Front()
-			if first == after {
-				after = nil
-			}
-			delete(d.entries, first.Value.(cacheDemandEntry).key)
-			d.order.Remove(first)
+		if seen, ok := merged[rec.Key]; !ok || rec.SeenAt.After(seen) {
+			merged[rec.Key] = rec.SeenAt
 		}
 	}
-	// Only an entry the index still holds at the end counts as persisted;
-	// one the cap evicted, even by a later record of this same restore,
-	// must be written again when it is next observed.
+	all := make([]cacheDemandEntry, 0, len(merged))
+	for key, seen := range merged {
+		all = append(all, cacheDemandEntry{key, seen})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].seen.Equal(all[j].seen) {
+			return all[i].seen.Before(all[j].seen)
+		}
+		return all[i].key < all[j].key
+	})
+	if d.limit > 0 && len(all) > d.limit {
+		all = all[len(all)-d.limit:]
+	}
+	d.order.Init()
+	d.entries = make(map[string]*list.Element, len(all))
+	for _, e := range all {
+		d.entries[e.key] = d.order.PushBack(e)
+	}
+	// Only an entry the index still holds counts as persisted; one the cap
+	// evicted must be written again when it is next observed.
 	accepted := valid[:0]
 	for _, rec := range valid {
 		if _, kept := d.entries[rec.Key]; kept {

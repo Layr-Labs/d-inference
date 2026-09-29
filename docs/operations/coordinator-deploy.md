@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-29 · commit `25201a6e6`
+> Last updated: 2026-09-29 · commit `c7e7ffe09`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,

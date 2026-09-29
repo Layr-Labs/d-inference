@@ -150,12 +150,13 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 }
 
 // CloseProviderConnections stops the provider socket producers for shutdown:
-// no new provider socket is accepted, every connected provider's socket is
-// closed (the provider reconnects to the next coordinator, and its holders
-// park for that reconnect), and the running handlers are joined so no
-// receipt or heartbeat can arrive behind the caller. Provider sockets are
-// hijacked, so httpServer.Shutdown neither closes nor waits on them. Returns
-// false when the handlers did not all finish before ctx expired.
+// no new provider socket is admitted, every hijacked socket the server has
+// tracked since accept is closed (registered or not; the provider reconnects
+// to the next coordinator, and its holders park for that reconnect), and the
+// running handlers are joined so no receipt or heartbeat can arrive behind
+// the caller. Provider sockets are hijacked, so httpServer.Shutdown neither
+// closes nor waits on them. Returns false when the handlers did not all
+// finish before ctx expired.
 func (s *Server) CloseProviderConnections(ctx context.Context) bool {
 	s.providerAdmit.Lock()
 	s.providersClosing = true
@@ -166,9 +167,11 @@ func (s *Server) CloseProviderConnections(ctx context.Context) bool {
 	s.providerAdmit.Unlock()
 	// Every hijacked socket, whether or not its provider registered; the
 	// read loops return and tear their providers down through the ordinary
-	// disconnect path, which parks their holders.
+	// disconnect path, which parks their holders. In parallel: CloseNow
+	// waits for the socket's goroutines, and one mid-handshake close must
+	// not hold the others; the join below is what ctx bounds.
 	for _, c := range conns {
-		_ = c.CloseNow()
+		go func(c *websocket.Conn) { _ = c.CloseNow() }(c)
 	}
 	if s.WaitProviderHandlers(ctx) {
 		s.logger.Info("provider sockets closed for shutdown", "closed", len(conns))
@@ -183,16 +186,19 @@ func (s *Server) CloseProviderConnections(ctx context.Context) bool {
 // accepted after the close began is closed here at once.
 func (s *Server) trackProviderConn(conn *websocket.Conn, add bool) {
 	s.providerAdmit.Lock()
-	defer s.providerAdmit.Unlock()
 	if s.providerConns == nil {
 		s.providerConns = make(map[*websocket.Conn]struct{})
 	}
 	if !add {
 		delete(s.providerConns, conn)
+		s.providerAdmit.Unlock()
 		return
 	}
 	s.providerConns[conn] = struct{}{}
-	if s.providersClosing {
+	closing := s.providersClosing
+	s.providerAdmit.Unlock()
+	if closing {
+		// Outside the mutex: CloseNow waits for the socket's goroutines.
 		_ = conn.CloseNow()
 	}
 }
@@ -223,10 +229,10 @@ func (s *Server) WaitProviderHandlers(ctx context.Context) bool {
 }
 
 // providerSocketsClosing reports whether shutdown has begun closing provider
-// sockets. A read loop checks it right after registering: a socket that was
-// hijacked but not yet registered when CloseAllProviderConnections ran is not
-// in the registry to be closed, so it leaves on its own instead of producing
-// receipts behind the final flush.
+// sockets. A read loop checks it right after registering and leaves at once:
+// its socket is being closed, and nothing it could read now may produce a
+// receipt behind the final flush. WaitProviderHandlers refuses to run before
+// it is set.
 func (s *Server) providerSocketsClosing() bool {
 	s.providerAdmit.Lock()
 	defer s.providerAdmit.Unlock()
@@ -522,8 +528,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
 			if s.providerSocketsClosing() {
-				// Registered after shutdown began closing sockets: the
-				// registry iteration missed this socket, so leave now.
+				// Registered after shutdown began closing sockets; the
+				// socket is being closed, so leave before reading anything.
 				s.logger.Info("provider registered during shutdown; closing", "provider_id", providerID)
 				return
 			}

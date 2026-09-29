@@ -118,10 +118,15 @@ func (r *Registry) bindRegisteredProvider(p *Provider) {
 	if r == nil || p == nil {
 		return
 	}
+	// Under the read lock, and only while the registry still owns this
+	// session: a disconnect that won the race (the deliberate reconnect
+	// eviction included) removes the provider under r.mu and cleans the
+	// tracker up afterwards, so rows bound here can never land on a
+	// session whose cleanup already ran.
 	r.mu.RLock()
+	defer r.mu.RUnlock()
 	tracker := r.cacheRouting
-	r.mu.RUnlock()
-	if tracker == nil {
+	if tracker == nil || r.providers[p.ID] != p {
 		return
 	}
 	p.mu.Lock()
@@ -139,16 +144,26 @@ func (r *Registry) bindRestoredHoldersForConnectedProviders() {
 	// the rows on a dead provider ID. The order r.mu → provider.mu →
 	// tracker.mu is the capability-apply order.
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	tracker := r.cacheRouting
+	providers := make([]*Provider, 0, len(r.providers))
+	for _, p := range r.providers {
+		providers = append(providers, p)
+	}
+	r.mu.RUnlock()
 	if tracker == nil {
 		return
 	}
-	for _, p := range r.providers {
-		p.mu.Lock()
-		caps := clonePrefixCacheCapabilities(p.PrefixCacheV2Models)
-		p.mu.Unlock()
-		tracker.bindRestoredHolders(p, caps)
+	for _, p := range providers {
+		// Per provider, so a queued writer never waits behind the whole
+		// pass: the membership check and the bind share one read hold.
+		r.mu.RLock()
+		if r.providers[p.ID] == p {
+			p.mu.Lock()
+			caps := clonePrefixCacheCapabilities(p.PrefixCacheV2Models)
+			p.mu.Unlock()
+			tracker.bindRestoredHolders(p, caps)
+		}
+		r.mu.RUnlock()
 	}
 }
 

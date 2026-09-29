@@ -128,12 +128,13 @@ func (t *cacheRoutingTracker) persistRowAfterLossLocked(key, epoch, except strin
 // same order the receipt path uses) whenever a provider's SSD capabilities are
 // applied, whether or not they changed: registration already carries them, so
 // a reconnecting provider's first apply is an unchanged one. Every parked row
-// whose epoch, model, artifact and contract match the capability becomes a
-// live holder through the ordinary upsert path, so the per-key cap, the
-// expiry heap and the per-provider index all apply. A parked row never
-// overwrites a newer live holder the same provider already produced, and any
-// pending delete for the row is cancelled because the row is live again. The
-// restoring flag keeps the upsert from re-marking a row the store already has.
+// whose epoch, model, artifact, contract, block-hash version and ready-boundary
+// mode match the capability becomes a live holder through the ordinary upsert
+// path, so the per-key cap, the expiry heap and the per-provider index all
+// apply. A parked row never overwrites a newer live holder the same provider
+// already produced, and a row this run already decided to delete is skipped.
+// The restoring flag keeps the upsert from re-marking a row the store already
+// has.
 func (t *cacheRoutingTracker) bindPendingLocked(provider *Provider, capabilities map[string]protocol.PrefixCacheV2Capability, now time.Time) {
 	p := t.persister
 	if p == nil || provider == nil || len(capabilities) == 0 {

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-29 · commit `3c12f9025`
+> Last updated: 2026-09-29 · commit `ff8fc4415`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -275,7 +275,7 @@ Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../
 | `EIGENINFERENCE_CACHE_ROUTING_PERSIST` | bool | `true` | `coordinator/registry/config.go` (`env.EnvBool`) | Keep the holder and observed-demand indexes in the store across coordinator restarts (`coordinator/registry/cachepersist/persister.go`). Memory stays the serving copy; the store is a write-behind copy flushed every 5 s and reloaded at boot. `false` serves from an empty index after every restart. No effect when the store cannot persist. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS` | optional float 0–10000 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional millisecond cap on avoidable-prefill score credit; explicit `0` grants no credit. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION` | optional float 0–1 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional cap as a fraction of baseline total cost, alongside the prefill-work bound; explicit `0` grants no credit. |
-| `EIGENINFERENCE_CACHE_MASTER_KEY` | secret key material | unset; required when mode is `on` | `coordinator/registry/config.go` (`decodeCacheMasterKey`) | Keys the affinity digests so raw identity and prefix bytes are never stored. |
+| `EIGENINFERENCE_CACHE_MASTER_KEY` | secret key material | unset; required when mode is `on` | `coordinator/registry/config.go` (`decodeCacheMasterKey`) | Keys the affinity digests so raw identity and prefix bytes are never stored. Rotating it empties the durable holder and demand copy on the next boot (`lifecycle.persistence.key_rotated`); persisted keys are derived from it. |
 
 The optional artifact array uses exactly `model_id`, `model_aggregate_sha256`
 and `prompt_contract_id` string fields. Model IDs match resolved catalog IDs

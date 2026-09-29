@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — cache routing state persistence
+
+- Keep the exact prefix-cache holder index and the observed-demand index across coordinator restarts. The registry writes SSD-tier holders and demand keys behind its in-memory index to the store in 5-second batches (two new Postgres tables, mirrored on the memory store), reloads them at boot, and binds restored holders to a provider the moment it applies capabilities with the same cache epoch, model, artifact and contract; a disconnect parks a holder instead of deleting it. `EIGENINFERENCE_CACHE_ROUTING_PERSIST=false` restores the old empty-index-after-restart behaviour. `GET /v1/cache/status` gains `lifecycle.persistence` with restored, parked, bound and flush counters. Restores are bounded by the index caps and clamped to the current TTL, a parked row whose provider returns with a different artifact or contract is deleted rather than reloaded every boot, a row shared by two overlapping sessions of one machine survives the older session's invalidation, and the tables are fenced by a fingerprint of the cache-key generation (`cache_routing_meta`) so a master-key rotation resets them instead of restoring unusable rows. A lookup's measured stage cost survives the restart with its own deadline, demand rows stamped ahead of the clock are not restored, and the final flush runs after the HTTP server shutdown. Nothing is written before the key generation is recorded (a failed boot restore is retried), and the generation fingerprint covers every key-derivation version, not only the master key.
+
 ## Unreleased — SSD cache write budget
 
 - Raise the default SSD prefix-cache write budget from 150 to 750 GB/day. Explicit environment overrides and unlimited mode remain available.

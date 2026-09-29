@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-28 · commit `914dc4e53`
+> Last updated: 2026-09-29 · commit `a8aa6bb33`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -12,7 +12,10 @@ and the event contract in [`../reference/telemetry-schema.md`](../reference/tele
 Per-attempt prediction/refusal evidence travels on existing terminal profiles
 to PostgreSQL, separately from telemetry events. Its
 [field reference](../reference/prediction-decision-telemetry.md) describes the
-closed values, timing boundaries and rollout.
+closed values, timing boundaries and rollout. Optional `unbounded_reason`
+separates engine projection failure families without changing admission.
+The coordinator stores only recognized closed values or `other`, while
+older reasonless records remain absent.
 
 ## Context
 

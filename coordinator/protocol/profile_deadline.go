@@ -70,7 +70,7 @@ func (v DeadlineProjection) Valid() bool {
 func (v DeadlineProjection) Fold() DeadlineProjection { return foldEnum(v, DeadlineProjectionOther) }
 
 // DeadlineProjectionReason describes why projection was not attempted. The
-// engine currently supplies no reason for an unbounded prediction.
+// separate UnboundedReason records why an attempted projection was unbounded.
 type DeadlineProjectionReason string
 
 const (
@@ -107,6 +107,7 @@ type DeadlineDecision struct {
 	Continuation           DeadlineContinuation     `json:"continuation,omitempty"`
 	Projection             DeadlineProjection       `json:"projection,omitempty"`
 	ProjectionReason       DeadlineProjectionReason `json:"projection_reason,omitempty"`
+	UnboundedReason        DeadlineUnboundedReason  `json:"unbounded_reason,omitempty"`
 	ObservedUS             *int64                   `json:"observed_us,omitempty"`
 	RemainingUS            *int64                   `json:"remaining_us,omitempty"`
 	SubmitRemainingUS      *int64                   `json:"submit_remaining_us,omitempty"`

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — deadline projection diagnostics
+
+- Report a closed reason for unbounded provider deadline projections in the existing per-attempt profile. Distinguish scheduler state, cache geometry, capacity guarantees, missing phase rates and invalid duration without changing admission or reconstructing causes for older records.
+
 ## Unreleased — prompt accounting and first-content admission
 
 - Share verified model/template prompt counts across preflight, retries and provider reconciliation while preserving the original deadline, completion limits and billing usage. Match count and cache evidence to the candidate provider's advertised template contract; keep unsupported counts explicitly uncertain.

@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-28 · commit `1902940eb`
+> Last updated: 2026-09-29 · commit `c7e541e9a`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -308,6 +308,12 @@ KV blocks under a per-model key, not tokens.
 7. **Provider secrets never leave the Keychain in the clear.** The KV KEK is
    wrapped by a Secure Enclave key and the SSD cache is unreadable without it
    (`provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift`).
+8. **A failed aggregate is an error, never an empty result.** The public
+   analytics reads (`NetworkTotals`, `UsageTimeSeries`, `Leaderboard`) return
+   an error on both backends, and `Leaderboard` also fails on scan or iteration
+   errors, so a query that times out on `provider_earnings` cannot reach an API
+   handler as a zero row or an empty board and be published and cached as fact
+   (`coordinator/store/interface_domains.go`, `coordinator/store/postgres.go`).
 
 ## Failure modes
 

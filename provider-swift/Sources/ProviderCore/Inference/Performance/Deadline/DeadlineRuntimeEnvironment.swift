@@ -16,9 +16,15 @@ enum DeadlineRuntimeEnvironment {
         "DARKBLOOM_WATCHDOG_STATE",
     ]
 
-    static func permitsQualification(_ environment: [String: String]) -> Bool {
-        !environment.keys.contains { key in
-            key.hasPrefix("MLX_") || key.hasPrefix("MTPLX_") || key.hasPrefix("QWEN_")
+    static func permitsQualification(_ environment: [String: String],
+        cacheIsolation: DeadlineQualificationCacheIsolation? = nil) -> Bool {
+        if let cacheIsolation {
+            do { try cacheIsolation.validate(environment: environment) }
+            catch { return false }
+        }
+        return !environment.keys.contains { key in
+            if cacheIsolation != nil && DeadlineQualificationCacheIsolation.isPlumbingKey(key) { return false }
+            return key.hasPrefix("MLX_") || key.hasPrefix("MTPLX_") || key.hasPrefix("QWEN_")
                 || (key.hasPrefix("DARKBLOOM_") && !operationalKeys.contains(key))
         }
     }

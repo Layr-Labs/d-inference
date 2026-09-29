@@ -26,10 +26,16 @@ chunk policy, throughput curves, or memory admission.
 
 `deadline_evidence.json` indexes the corresponding archived receipts;
 it is not runtime configuration. Each entry names an assembled `receipt`
-relative to the external `DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT` directory. Its
+relative to the external `DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT` directory and
+binds it to the corresponding ordered catalog row through `profile_id`,
+`qualification_report_sha256` and `profile_sha256`. The last digest covers the
+entire profile serialized as UTF-8 JSON with sorted keys, compact separators,
+unescaped Unicode, finite numbers and no trailing newline; array order remains
+significant. IDs and canonical relative receipt paths must be unique. Its
 `source_runs` references bind the intact training/validation receipt and
 provenance files by archive-relative paths and actual content digests.
-Normal CI checks that the index matches the compiled catalog. With the explicit
+Normal CI checks every ID, report digest and full-profile digest against the
+compiled catalog before any optional archive replay can skip. With the explicit
 archive root, the offline test reassembles every observation, verifies the real prerequisite
 files, reruns the independent coverage evaluator, and requires exact equality
 with the compiled catalog. Missing indexed files and paths escaping the archive

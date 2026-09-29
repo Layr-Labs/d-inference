@@ -43,6 +43,7 @@ enum EngineV2SlotFactory {
     struct AssemblyOverrides {
         var gemmaMTPVerification: EngineV2BenchmarkMTPVerification? = nil
         var promptContractID: String? = nil
+        var deadlineProfiles: [DeadlinePerformanceProfile]? = nil
         var completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil
         var pagedPreflight: (([CBv2LayerKind]) throws -> Void)? = nil
         var makePrefixCache:
@@ -186,6 +187,7 @@ enum EngineV2SlotFactory {
         assemblyOverrides: AssemblyOverrides = AssemblyOverrides(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
+        deadlineQualificationCacheIsolation: DeadlineQualificationCacheIsolation? = nil,
         startServingTelemetry: Bool = true,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngineOverride: (@Sendable (String, Int) throws -> any CBv2Engine)? = nil,
@@ -193,6 +195,8 @@ enum EngineV2SlotFactory {
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> ProviderEngineBundle {
+        // Check explicit fixture ownership before any cache or model preparation.
+        try deadlineQualificationCacheIsolation?.validate(environment: environment)
         let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
         defer { deviceActivity?.finish() }
         try persistentTestNamespace?.validate(environment: environment)
@@ -454,13 +458,15 @@ enum EngineV2SlotFactory {
                 mixedPrefillTokenCap: backend.schedulerConfig.mixedStepPrefillTokenCap,
                 soloPrefillStripeTokens: backend.schedulerConfig.soloPrefillStripeTokens)
         }
+        let deadlineProfiles = assemblyOverrides.deadlineProfiles ?? DeadlinePerformanceProfiles.reviewed
         let deadlineProfile = deadlineRuntime.flatMap { runtime in
             constructionPurpose == .serving && (!mtpConfig.effectiveEnabled || mtpPerformanceConfiguration != nil)
                 ? DeadlinePerformanceProfiles.resolve(modelID: modelId,
                     artifactSHA256: modelArtifactSHA256 ?? weightHash,
                     kvBackend: preparedBackend!.kind.rawValue, runtime: runtime,
-                    hardware: DeadlinePerformanceProfiles.reviewed.isEmpty ? nil : DeadlinePerformanceProfiles.detectedHardware,
-                    environment: environment, mtp: mtpPerformanceConfiguration)
+                    hardware: deadlineProfiles.isEmpty ? nil : DeadlinePerformanceProfiles.detectedHardware,
+                    environment: environment, mtp: mtpPerformanceConfiguration,
+                    cacheIsolation: deadlineQualificationCacheIsolation, profiles: deadlineProfiles)
                 : nil
         }
 

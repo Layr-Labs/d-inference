@@ -1,21 +1,44 @@
 """Replay reviewed deadline records from an explicitly supplied local archive."""
-from pathlib import Path
+import hashlib
+import json
+from pathlib import Path, PurePosixPath
 
 from .deadline_profile import evaluate_deadline_profile
 from .evidence_files import MAX_RECEIPT_BYTES
+from .matrix import digest
+
+
+def canonical_profile_sha256(profile):
+    """Bind all reviewed values, using the catalog generator's JSON convention."""
+    canonical = json.dumps(profile, ensure_ascii=False, allow_nan=False,
+                           sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def validate_evidence_index(reviewed, index):
     if not isinstance(reviewed, list) or not isinstance(index, list) or len(reviewed) != len(index):
         raise ValueError("every compiled record requires exactly one indexed receipt")
-    receipts = set()
-    for entry in index:
-        if not isinstance(entry, dict) or set(entry) != {"receipt"}:
-            raise ValueError("each evidence index entry must name an archive-relative receipt")
+    receipts, identifiers = set(), set()
+    for profile, entry in zip(reviewed, index):
+        if (not isinstance(profile, dict) or not isinstance(profile.get("id"), str)
+                or not profile["id"] or profile["id"] in identifiers
+                or not digest(profile.get("qualification_report_sha256"))):
+            raise ValueError("reviewed profiles require unique ids and valid qualification report digests")
+        identifiers.add(profile["id"])
+        if not isinstance(entry, dict) or set(entry) != {
+                "receipt", "profile_id", "qualification_report_sha256", "profile_sha256"}:
+            raise ValueError("each evidence index entry must bind a profile and its archive-relative receipt")
+        if (entry["profile_id"] != profile["id"]
+                or entry["qualification_report_sha256"] != profile["qualification_report_sha256"]
+                or entry["profile_sha256"] != canonical_profile_sha256(profile)):
+            raise ValueError("indexed profile identity, report and full digest must exactly match the catalog order")
         relative = entry["receipt"]
-        if (not isinstance(relative, str) or not relative or Path(relative).is_absolute()
-                or ".." in Path(relative).parts or relative in receipts):
-            raise ValueError("receipt paths must be unique and relative to the local archive")
+        if not isinstance(relative, str) or not relative or "\x00" in relative or "\\" in relative:
+            raise ValueError("receipt paths must be canonical POSIX paths relative to the local archive")
+        path = PurePosixPath(relative)
+        if (path.is_absolute() or not path.parts or ".." in path.parts
+                or path.as_posix() != relative or relative in receipts):
+            raise ValueError("receipt paths must be unique canonical paths relative to the local archive")
         receipts.add(relative)
 
 

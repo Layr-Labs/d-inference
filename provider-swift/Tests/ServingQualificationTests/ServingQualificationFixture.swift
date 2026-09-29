@@ -34,6 +34,9 @@ final class ServingQualificationFixture: @unchecked Sendable {
         kvGrantUpperBound: UInt64? = nil, activationReserveBytes: UInt64? = nil,
         requireInlineMTP: Bool = true
     ) async throws -> ServingQualificationFixture {
+        let cacheRoot = URL(fileURLWithPath: job.outputPath)
+            .deletingLastPathComponent().appendingPathComponent("prefix-cache")
+        let cacheIsolation = try DeadlineQualificationCacheIsolation(cacheRoot: cacheRoot)
         // Use the same bounded background power-policy reader as production,
         // including when collecting fresh evidence with an empty catalog.
         let postureLease = DeadlinePostureMonitor.shared.acquire()
@@ -66,8 +69,7 @@ final class ServingQualificationFixture: @unchecked Sendable {
         var environment: [String: String] = [:]
         // Never read or populate the installed provider's SSD prefix-cache
         // namespace. The isolated encrypted test root exists only for this job.
-        environment["DARKBLOOM_PREFIX_CACHE_TEST_ROOT"] = URL(fileURLWithPath: job.outputPath)
-            .deletingLastPathComponent().appendingPathComponent("prefix-cache").path
+        environment["DARKBLOOM_PREFIX_CACHE_TEST_ROOT"] = cacheRoot.path
         environment["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL"] = "1"
         if let cap = job.mixedPrefillTokenCap {
             environment["DARKBLOOM_CBV2_MIXED_PREFILL_CAP"] = String(cap)
@@ -92,7 +94,8 @@ final class ServingQualificationFixture: @unchecked Sendable {
                 kvBudget: budget, activationReserveBytes: activationReserveBytes, kvBackendConfig: job.kvBackend,
                 prefillDeadlineMode: .enforce, modelArtifactSHA256: hash, weightHash: hash,
                 specDecPreparation: preparation, preparedModel: prepared,
-                environment: environment, startServingTelemetry: false)
+                environment: environment, deadlineQualificationCacheIsolation: cacheIsolation,
+                startServingTelemetry: false)
         } catch {
             prepared.assistant?.release()
             throw error

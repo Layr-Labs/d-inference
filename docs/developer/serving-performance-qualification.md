@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-09-29 · commit `cc5d11360`
+> Last updated: 2026-09-29 · commit `67b0e77ea`
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -38,11 +38,13 @@ collects new GPU measurements or changes runtime behavior.
 ## Prerequisites
 
 - Before promoting a deadline profile, qualify the actual execution environment
-  and its resolver identity together. The current strict runtime guard also
-  rejects CLI-projected MLX controls and the qualification fixture's isolated
-  prefix-cache environment keys. Fresh measurement collection remains available,
-  but a future calibrated-admission proof requires reviewed handling of those
-  settings; adding a catalog record alone does not activate that path.
+  and its resolver identity together. The strict runtime guard rejects
+  unqualified performance overrides, including CLI-projected MLX controls.
+  The supervised fixture passes an explicit cache-isolation context through the
+  production factory, validating its owned root and exact ephemeral-key setting
+  before cache construction. Only that validated pair is exempted for fixture
+  resolution; ordinary production callers receive no exemption from environment
+  settings alone. All other runtime overrides remain ineligible.
 - Include SSD prefix staging in any future cooled-profile qualification. A
   request's own staging advances the whole-Mac activity epoch and invalidates
   its earlier quiescence proof; current admission then uses ordinary rates.

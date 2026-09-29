@@ -91,10 +91,11 @@ public enum DeadlinePerformanceProfiles {
         modelID: String, artifactSHA256: String?, kvBackend: String,
         runtime: DeadlineRuntimeConfiguration, hardware: HardwareInfo?,
         environment: [String: String] = [:], mtp: ServingMTPConfiguration? = nil,
+        cacheIsolation: DeadlineQualificationCacheIsolation? = nil,
         providerVersion: String = ProviderCore.version,
         profiles: [DeadlinePerformanceProfile] = reviewed
     ) -> DeadlinePerformanceProfile? {
-        guard DeadlineRuntimeEnvironment.permitsQualification(environment),
+        guard DeadlineRuntimeEnvironment.permitsQualification(environment, cacheIsolation: cacheIsolation),
             let hash = artifactSHA256, let hardware, runtime.isValid else { return nil }
         return profiles.first {
             $0.isValid && $0.modelId == modelID && $0.artifactSha256 == hash

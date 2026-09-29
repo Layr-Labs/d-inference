@@ -26,7 +26,7 @@ class ReviewedDeadlineEvidenceTests(unittest.TestCase):
     def test_catalog_reproduces_the_qualified_raw_hardware_receipts(self):
         reviewed = json.loads((ROOT / SOURCE).read_bytes())
         index = json.loads((ROOT / INDEX).read_bytes())
-        # Catalog/index omissions remain failures even without local archives.
+        # Exact profile/index bindings are checked even without local archives.
         validate_evidence_index(reviewed, index)
         archive = os.environ.get("DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT")
         if index and not archive:

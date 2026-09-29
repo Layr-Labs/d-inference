@@ -1019,12 +1019,16 @@ func TestPruneForgetsExpiredDecisionsInChunks(t *testing.T) {
 // resetCountingStore counts the durable-copy resets a persister asks for.
 type resetCountingStore struct {
 	crs.Store
-	resets   int // attempts, failed ones included
-	failNext int // resets to fail before letting one through
+	resets   int           // attempts, failed ones included
+	failNext int           // resets to fail before letting one through
+	slow     time.Duration // how long each attempt takes
 }
 
 func (s *resetCountingStore) ResetCacheRoutingState(ctx context.Context, fingerprint string) error {
 	s.resets++
+	if s.slow > 0 {
+		time.Sleep(s.slow)
+	}
 	if s.failNext > 0 {
 		s.failNext--
 		return fmt.Errorf("store unavailable")
@@ -1505,7 +1509,8 @@ func TestFlushRetriesAFailedResetAfterAMidFlushOverflow(t *testing.T) {
 		for i := 0; i <= p.dirtyCap; i++ {
 			p.MarkHolderDelete(crs.HolderKey{Key: fmt.Sprintf("d%03d", i), CacheEpoch: "e"}, now.Add(2*time.Second))
 		}
-		st.failNext = 1 // the reset this flush attempts fails
+		st.failNext = 1 // the reset this flush attempts fails, slowly
+		st.slow = 30 * time.Millisecond
 	}
 	stamped := p.Status().LastFlushAt
 	if err := p.Flush(ctx); err == nil {
@@ -1515,7 +1520,8 @@ func TestFlushRetriesAFailedResetAfterAMidFlushOverflow(t *testing.T) {
 	pending := p.resetPending
 	_, requeued := p.holderDeletes[gone.HolderKey()]
 	p.mu.Unlock()
-	if s := p.Status(); st.resets != 1 || !pending || !requeued || s.Flushes != 2 || s.FlushErrors != 1 || s.LastFlushAt < stamped {
+	// The reset is part of the flush: its duration lands in the stamp.
+	if s := p.Status(); st.resets != 1 || !pending || !requeued || s.Flushes != 2 || s.FlushErrors != 1 || s.LastFlushAt < stamped || s.LastFlushMs < 30 {
 		t.Fatalf("a failed mid-flush reset must be counted once and leave the reset pending with the delete requeued: resets=%d pending=%v requeued=%v %+v", st.resets, pending, requeued, s)
 	}
 	if err := p.Flush(ctx); err != nil {

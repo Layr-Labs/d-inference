@@ -613,8 +613,11 @@ func (p *Persister) Flush(ctx context.Context) error {
 	}
 	p.mu.Lock()
 	p.counters.flushes++
-	p.counters.lastFlushMs = time.Since(started).Milliseconds()
-	p.counters.lastFlushAt = time.Now()
+	if err != errOverflowedMidFlush {
+		// The mid-flush path stamps once, after its reset has run.
+		p.counters.lastFlushMs = time.Since(started).Milliseconds()
+		p.counters.lastFlushAt = time.Now()
+	}
 	if err != nil && err != errOverflowedMidFlush {
 		p.counters.flushErrors++
 	}

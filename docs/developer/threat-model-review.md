@@ -137,7 +137,8 @@ full 32-finding response are treated as incomplete. A report exceeding the singl
 comment's 60,000-character budget asks the author to split the PR. The process has
 a shared 50-minute scan deadline within a 60-minute workflow timeout. Models run
 sequentially, so a first scan that uses the whole budget leaves the second incomplete.
-If that one-shot deadline interrupts final verification or publication, the runner
+If that one-shot deadline interrupts initial identity/comment lookup, final
+verification or publication, the runner
 refreshes the comment identity and retries delivery once with an incomplete status,
 retaining completed findings. Refreshing first avoids blindly repeating a POST
 whose response was interrupted after GitHub created the comment.

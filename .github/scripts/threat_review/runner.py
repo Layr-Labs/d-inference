@@ -37,16 +37,18 @@ def run(event, root, env, github=None, reviewer=review):
     github = github or GitHub(repository, number, env["GH_TOKEN"])
     if pr.get("draft"):
         return "Skipped: draft PR."
-    current = github.pull()
-    if not same_revision(current, head, base_ref):
-        return "Skipped: PR revision changed or PR closed."
-    existing = github.existing_comment((MARKER, LEGACY_MARKER))
+    existing, comment_loaded = None, False
     findings, evidence, limits, error = [], {}, [], None
     outcomes = []
     diff_base = None
     try:
+        current = github.pull()
+        if not same_revision(current, head, base_ref):
+            return "Skipped: PR revision changed or PR closed."
         diff_base = github.comparison_base(base, head)
         verify_diff(github, current, base, head, diff_base)
+        existing = github.existing_comment((MARKER, LEGACY_MARKER))
+        comment_loaded = True
         key = env.get("OPENROUTER_API_KEY")
         if not key:
             raise ReviewUnavailable("OPENROUTER_API_KEY is not configured")
@@ -79,6 +81,8 @@ def run(event, root, env, github=None, reviewer=review):
     args = (github, repository, head, base, base_ref, model, findings, evidence,
             limits, diff_base, outcomes)
     try:
+        if not comment_loaded:
+            existing = github.existing_comment((MARKER, LEGACY_MARKER))
         return publish_result(*args, existing=existing, error=error)
     except ScanTimeout:
         # SIGALRM is one-shot. Its scan budget leaves ten minutes for delivery.

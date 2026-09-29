@@ -407,6 +407,39 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("no stale comment", result)
         self.assertEqual(github.posts, [])
 
+    def test_deadline_during_initial_lookup_recovers_prior_report(self):
+        github = FakeGitHub(self.prior_report())
+        lookups = []
+        def lookup(markers):
+            lookups.append(markers)
+            if len(lookups) == 1:
+                raise ScanTimeout("initial lookup deadline")
+            return github.existing
+        github.existing_comment = lookup
+        result = run(EVENT, self.root, self.env, github,
+                     lambda *args: self.fail("deadline must prevent model calls"))
+        self.assertEqual(len(lookups), 2)
+        self.assertEqual(len(github.posts), 1)
+        self.assertIn("runtime limit reached", result)
+        self.assertIn(FINDING["title"], github.posts[0][1])
+        self.assertIn("Retry incomplete", github.posts[0][1])
+
+    def test_deadline_during_initial_identity_lookup_posts_incomplete(self):
+        github = FakeGitHub()
+        pull = github.pull
+        def current():
+            value = pull()
+            if github.reads == 1:
+                raise ScanTimeout("initial identity deadline")
+            return value
+        github.pull = current
+        result = run(EVENT, self.root, self.env, github,
+                     lambda *args: self.fail("deadline must prevent model calls"))
+        self.assertIn("runtime limit reached", result)
+        self.assertEqual(len(github.posts), 1)
+        self.assertIn("Review not completed", github.posts[0][1])
+        self.assertNotIn("No actionable findings", github.posts[0][1])
+
     def test_deadline_during_final_read_preserves_completed_and_prior_findings(self):
         github = FakeGitHub(self.prior_report())
         pull = github.pull

@@ -5,6 +5,14 @@
 # Keep both outcomes: a failure in the general suite must not silence this gate.
 set -uo pipefail
 script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Coverage runs set PROVIDER_COVERAGE_DIR after an instrumented build
+# (`swift build --build-tests --enable-code-coverage`). Each test process then
+# writes its own profile there. `swift test --enable-code-coverage` is not used:
+# it deletes earlier profiles and replaces LLVM_PROFILE_FILE on every call.
+if [[ -n "${PROVIDER_COVERAGE_DIR:-}" ]]; then
+  mkdir -p "$PROVIDER_COVERAGE_DIR"
+  export LLVM_PROFILE_FILE="$PROVIDER_COVERAGE_DIR/%p-%m.profraw"
+fi
 provider_test_status=0
 isolated_filters=(
   emptyNativePoolTeardownUsesActualRetiredAdapter

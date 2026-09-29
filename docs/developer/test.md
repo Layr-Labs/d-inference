@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-28 · commit `9b2a28f59`
+> Last updated: 2026-09-29 · commit `d2a7b6431`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -857,6 +857,49 @@ Without it kernel-backed tests fail or silently exercise a different kernel
 set than production. To run a subset: `cd provider-swift && swift test
 --skip-build --filter <Suite>` after `make provider-test` has staged the
 metallib once.
+
+#### Provider coverage (report-only)
+
+CI builds the provider tests with `swift build --build-tests
+--enable-code-coverage` and sets `PROVIDER_COVERAGE_DIR` for the Run Swift
+tests and Verify production prompt parity steps. `scripts/run-provider-tests.sh`
+and `scripts/verify-prompt-parity.sh` then point `LLVM_PROFILE_FILE` at that
+directory with `%p-%m.profraw`, so each test process writes its own profile.
+The `swift test` calls do not pass `--enable-code-coverage`: with that flag,
+SwiftPM deletes the profiles of earlier calls and replaces `LLVM_PROFILE_FILE`.
+In coverage mode, the parity script adds `--skip-build`, because a plain
+`swift test` would rebuild the tests without instrumentation.
+
+The last steps of the Provider Tests job merge the profiles with
+`xcrun llvm-profdata merge`, run `xcrun llvm-cov` on the test bundle and the
+four executables, and write a table to the job summary: lines, regions,
+functions and an 80% target. The full report is kept for 14 days as the
+`provider-coverage` artifact. The denominator is the Swift code in
+`provider-swift/Sources`. `Tests/`, `.build/`, the `libs/` checkouts and the
+nested `libs/mlx-swift-lm` suites do not count. The one C++ file in
+`ProviderMetallibControl` is not instrumented. Swift has no branch counters.
+A low number does not fail the job. The report step fails only when there are
+no profiles or a value is missing; the test steps keep their own results.
+
+To measure it locally:
+
+```bash
+cd provider-swift
+swift build --build-tests --enable-code-coverage
+bin=$(swift build --show-bin-path)
+../scripts/stage-test-metallib.sh "$bin"
+rm -rf .build/provider-profiles
+PROVIDER_COVERAGE_DIR="$PWD/.build/provider-profiles" ../scripts/run-provider-tests.sh
+xcrun llvm-profdata merge -sparse -o .build/provider.profdata .build/provider-profiles/*.profraw
+xcrun llvm-cov report \
+  "$bin/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests" \
+  -object "$bin/darkbloom" -object "$bin/darkbloom-fan-helper" \
+  -object "$bin/darkbloom-enclave" -object "$bin/darkbloom-publish" \
+  -instr-profile .build/provider.profdata \
+  -ignore-filename-regex '/(Tests|\.build|libs)/' "$PWD/Sources" | tail -n 1
+```
+
+The CI number also includes the production prompt parity test.
 
 For a custom SwiftPM `--scratch-path`, stage the authoritative `mlx.metallib`
 in the active `debug` or `release` directory containing the `.xctest` bundle.
@@ -1972,7 +2015,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm test` (vitest run), `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run) with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests --enable-code-coverage`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh`, then a job-summary coverage table (lines, regions and functions over Swift code in `provider-swift/Sources`, 80% report-only target, no branch counters; nested `libs/mlx-swift-lm` suites excluded), full report kept 14 days as the `provider-coverage` artifact · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm test` (vitest run), `npm run build` |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

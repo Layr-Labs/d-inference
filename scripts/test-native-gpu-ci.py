@@ -18,7 +18,8 @@ args = sys.argv[1:]
 selected = args[args.index('--filter') + 1] if '--filter' in args else 'general'
 flag = os.environ.get('DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST')
 with open(os.environ['FAKE_SWIFT_LOG'], 'a') as log:
-    log.write(json.dumps({'filter': selected, 'args': args, 'exclusive': flag}) + '\n')
+    log.write(json.dumps({'filter': selected, 'args': args, 'exclusive': flag,
+                          'profile': os.environ.get('LLVM_PROFILE_FILE')}) + '\n')
 if selected == os.environ.get('FAKE_SWIFT_FAIL'):
     print('simulated assertion failure')
     raise SystemExit(17)
@@ -85,6 +86,19 @@ class NativeGPUTestRouting(unittest.TestCase):
         for row in calls:
             self.assertIn('--no-parallel', row['args'])
             self.assertEqual(row['exclusive'], '1' if row['filter'] == MEMORY else None)
+
+    def test_coverage_dir_gives_every_provider_test_process_a_profile_path(self):
+        result, calls = self.run_script('run-provider-tests.sh')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual({row['profile'] for row in calls}, {None})
+        profiles = self.work / 'profiles'
+        result, calls = self.run_script('run-provider-tests.sh', PROVIDER_COVERAGE_DIR=str(profiles))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(calls), 7)
+        self.assertEqual({row['profile'] for row in calls}, {f'{profiles}/%p-%m.profraw'})
+        # swift test --enable-code-coverage would delete earlier profiles.
+        self.assertTrue(all('--enable-code-coverage' not in row['args'] for row in calls))
+        self.assertTrue(profiles.is_dir())
 
     def test_kernel_suite_and_composition_use_separate_invocations(self):
         result, calls = self.run_script('run-paged-kernel-tests.sh')

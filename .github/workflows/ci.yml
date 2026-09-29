@@ -220,11 +220,13 @@ jobs:
         working-directory: provider-swift
         # Build the TEST bundle too, so the .xctest bundle exists before we
         # place the metallib next to its runner binary (see next step).
+        # Swift code is instrumented for the coverage report at the end of
+        # this job. Both builds use the flag so neither rebuilds the other.
         run: |
-          swift build --build-tests
+          swift build --build-tests --enable-code-coverage
           # The root helper is a separately packaged executable product and is
           # not guaranteed to be linked merely because the test bundle builds.
-          swift build --product darkbloom-fan-helper
+          swift build --product darkbloom-fan-helper --enable-code-coverage
       - name: Build and stage source-matched mlx.metallib
         run: |
           set -euo pipefail
@@ -233,11 +235,16 @@ jobs:
           METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
             ./scripts/stage-test-metallib.sh "$provider_bin"
       - name: Run Swift tests
+        id: provider-tests
         working-directory: provider-swift
+        env:
+          PROVIDER_COVERAGE_DIR: ${{ runner.temp }}/provider-profiles
         # Reuse the built bundle and matched metallib. The exact allocator
         # suite runs in its own process even if the general suite fails.
         run: ../scripts/run-provider-tests.sh
       - name: Verify production prompt parity
+        env:
+          PROVIDER_COVERAGE_DIR: ${{ runner.temp }}/provider-profiles
         run: ./scripts/verify-prompt-parity.sh
       # FLAKE-ORDERING GUARD (audit fix, v0.8.0): every nested step below runs
       # under `if: ${{ !cancelled() && ... }}`. Before this, the nested paged
@@ -378,6 +385,79 @@ jobs:
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh
+      # Report-only. The test steps above keep their own exit codes, so a
+      # coverage failure here cannot hide or replace a test failure.
+      - name: Report provider coverage
+        id: provider-coverage
+        if: ${{ !cancelled() && steps.provider-tests.outcome != 'skipped' }}
+        working-directory: provider-swift
+        env:
+          PROVIDER_COVERAGE_DIR: ${{ runner.temp }}/provider-profiles
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          profiles=("$PROVIDER_COVERAGE_DIR"/*.profraw)
+          if [ "${#profiles[@]}" -eq 0 ]; then
+            echo "::error::No provider coverage profiles in $PROVIDER_COVERAGE_DIR"
+            exit 1
+          fi
+          out="$RUNNER_TEMP/provider-coverage"
+          mkdir -p "$out"
+          xcrun llvm-profdata merge -sparse -o "$out/provider.profdata" "${profiles[@]}"
+          bin=$(swift build --show-bin-path)
+          # The test bundle holds the libraries and the executables the tests
+          # import; the executables are added so their own code also counts.
+          bundles=("$bin"/*.xctest)
+          if [ "${#bundles[@]}" -eq 0 ]; then
+            echo "::error::No test bundle in $bin"
+            exit 1
+          fi
+          binaries=()
+          for bundle in "${bundles[@]}"; do
+            binaries+=("$bundle/Contents/MacOS/$(basename "$bundle" .xctest)")
+          done
+          for tool in darkbloom darkbloom-fan-helper darkbloom-enclave darkbloom-publish; do
+            binaries+=("$bin/$tool")
+          done
+          # llvm-cov takes the first binary as an argument, the rest as -object.
+          args=("${binaries[0]}")
+          for binary in "${binaries[@]:1}"; do
+            args+=(-object "$binary")
+          done
+          args+=(-instr-profile "$out/provider.profdata"
+            -ignore-filename-regex '/(Tests|\.build|libs)/'
+            "$PWD/Sources")
+          xcrun llvm-cov report "${args[@]}" > "$out/provider-coverage.txt"
+          tail -n 1 "$out/provider-coverage.txt"
+          xcrun llvm-cov export -summary-only "${args[@]}" > "$out/provider-coverage.json"
+          # Read each total by its field name; fail when one is missing.
+          read -r lines regions functions < <(python3 - "$out/provider-coverage.json" <<'PY'
+          import json, sys
+          totals = json.load(open(sys.argv[1]))["data"][0]["totals"]
+          print(" ".join(f'{totals[k]["percent"]:.2f}%' for k in ("lines", "regions", "functions")))
+          PY
+          )
+          test -n "$functions"
+          echo "Provider (Swift) coverage: lines $lines, regions $regions, functions $functions"
+          {
+            echo "| Component | Statements or Lines | Regions or Branches | Functions | Target |"
+            echo "|---|---|---|---|---|"
+            echo "| Provider (Swift) | $lines lines | $regions regions | $functions | 80% (report-only) |"
+            echo
+            echo "Denominator: Swift lines and regions in \`provider-swift/Sources\`, from every provider test process in this job; the nested \`libs/mlx-swift-lm\` suites run in another package and do not count."
+            echo
+            echo "Excluded: \`Tests/\`, \`.build/\` (dependencies and generated code), the \`libs/\` checkouts, and the one C++ file in \`ProviderMetallibControl\`, which is not instrumented; Swift has no branch counters, so branches are not reported."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload provider coverage report
+        if: ${{ !cancelled() && steps.provider-coverage.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-coverage
+          path: |
+            ${{ runner.temp }}/provider-coverage/provider-coverage.txt
+            ${{ runner.temp }}/provider-coverage/provider-coverage.json
+          if-no-files-found: error
+          retention-days: 14
 
   cache-swift:
     name: Swift Build + Cache

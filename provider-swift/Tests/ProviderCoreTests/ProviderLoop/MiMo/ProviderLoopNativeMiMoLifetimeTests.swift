@@ -35,7 +35,7 @@ private actor NativeLoopGate {
 
 private struct NativeLoopTestFailure: Error {}
 
-// Routing-only peer: never generates or stands in for a real-model smoke pass.
+// Admission-only peer: never generates or stands in for a real-model smoke pass.
 // The MiMo failure below still uses the actual native fixture/owner/retirement.
 private final class NativeFaultPeerModel: Module, LanguageModel {
     func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
@@ -45,6 +45,43 @@ private final class NativeFaultPeerModel: Module, LanguageModel {
 }
 private struct NativeFaultPeerProcessor: UserInputProcessor {
     func prepare(input: UserInput) async throws -> LMInput { throw NativeLoopTestFailure() }
+}
+
+private final class NativeFaultPeerEngine: CBv2Engine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var submitted = 0
+    private var kvBytesCapacity = 1 << 20
+    var submissions: Int { lock.withLock { submitted } }
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        lock.withLock { submitted += 1 }
+        return AsyncStream {
+            $0.yield(.finished(reason: .stop, usage: CBv2Usage(promptTokens: 1, completionTokens: 0)))
+            $0.finish()
+        }
+    }
+    func cancel(_ id: CBv2RequestID) {}
+    func capacity() -> CBv2CapacitySnapshot {
+        lock.withLock {
+            .init(activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+                kvBytesCapacity: kvBytesCapacity, activeTokens: 0)
+        }
+    }
+    func updateKVBytesCapacity(_ bytes: Int) { lock.withLock { kvBytesCapacity = bytes } }
+    func shutdown() async {}
+}
+
+private func nativeFaultPeerSubmitErrors(
+    _ bridge: EngineV2Bridge, modelID: String, requestID: String
+) async -> [String] {
+    let request = ChatCompletionRequest(model: modelID,
+        messages: [ChatMessage(role: "user", content: "peer admission")], max_tokens: 1)
+    let stream = await bridge.submitTokenized(promptTokens: [1], request: request,
+        requestId: requestID, cacheEnabled: false)
+    var errors: [String] = []
+    for await event in stream {
+        if case .error(let message) = event { errors.append(message) }
+    }
+    return errors
 }
 
 private final class NativeLoopObservation: @unchecked Sendable {
@@ -66,16 +103,21 @@ private extension ProviderLoop {
         nativeMiMoBoundaryForTesting = body
     }
     func nativeLifetimeSlotCount() -> Int { modelSlots.count }
-    func nativeLifetimeInstallRoutingPeer(_ id: String, runtime: EngineV2Runtime) async {
-        let stub = makeInertStubBridge(modelId: id, kvBytesCapacity: 1 << 20)
+    func nativeLifetimeSlotIDs() -> [String] { modelSlots.keys.sorted() }
+    func nativeLifetimeInstallRoutingPeer(_ id: String, runtime: EngineV2Runtime) async
+        -> (bridge: EngineV2Bridge, engine: NativeFaultPeerEngine) {
+        let engine = NativeFaultPeerEngine()
         let tokenizer = StubBridgeTokenizer()
+        let bridge = EngineV2Bridge(engine: engine, modelId: id,
+            tokenizer: TokenizerHandle(tokenizer), eosTokenIds: [])
         let container = ModelContainer(context: ModelContext(
             configuration: ModelConfiguration(id: id), model: NativeFaultPeerModel(),
             processor: NativeFaultPeerProcessor(), tokenizer: tokenizer))
         installModelSlotForTesting(modelId: id, container: container,
-            tokenizer: TokenizerHandle(tokenizer), engineV2: stub.bridge,
+            tokenizer: TokenizerHandle(tokenizer), engineV2: bridge,
             modelType: "non-native-routing-fixture")
-        await runtime.register(modelId: id, bridge: stub.bridge)
+        await runtime.register(modelId: id, bridge: bridge)
+        return (bridge, engine)
     }
     func nativeLifetimeAttachUnstartedCoordinator() -> CoordinatorClient {
         let client = CoordinatorClient(config: .init(url: "ws://127.0.0.1:0/not-started",
@@ -744,11 +786,17 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
 
     func testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim() async throws {
         try nativeLane(fault: "testNativeFenceRefusalKeepsActualBundlePermitAndBlocksOtherOwnerReclaim")
-        let registry = MiMoV26NativeLoadRegistry(), actualBudget = budget(native: true)
+        let registry = MiMoV26NativeLoadRegistry.shared, actualBudget = budget(native: true)
         let owner = try loop(registry: registry, budget: actualBudget)
         let runtime = EngineV2Runtime()
         await owner.setEngineV2RuntimeForTesting(runtime)
         defer { _ = Unmanaged.passRetained(registry) } // exact fault owner until process exit
+        let peerID = "native-fault-routing-peer"
+        let peer = await owner.nativeLifetimeInstallRoutingPeer(peerID, runtime: runtime)
+        let beforeErrors = await nativeFaultPeerSubmitErrors(peer.bridge, modelID: peerID,
+            requestID: "peer-before-native-fault")
+        XCTAssertEqual(beforeErrors, [])
+        XCTAssertEqual(peer.engine.submissions, 1)
         let directory = try fixture(), load = try XCTUnwrap(MiMoV26ServingLoad.inspect(directory: directory))
         await owner.nativeLifetimeBoundary { point in
             guard point == "afterNativeConstruction", let transaction = load.transaction,
@@ -772,20 +820,27 @@ final class ProviderLoopNativeMiMoLifetimeTests: XCTestCase {
         XCTAssertGreaterThan(actualBudget.processLedger.snapshot().chargedBytes, 0)
         let allowed = await owner.nativeMiMoAllowsReclamation()
         let retired = await owner.retireNativeMiMoOwner(modelID: modelID)
-        let slots = await owner.nativeLifetimeSlotCount()
+        let slotIDs = await owner.nativeLifetimeSlotIDs()
         XCTAssertFalse(allowed)
         XCTAssertFalse(retired)
-        XCTAssertEqual(slots, 0)
-        // Regression: a real retained native fault must not poison an unrelated
-        // resident slot's routing state. This checks ProviderLoop, not generation.
-        let peerID = "native-fault-routing-peer"
-        await owner.nativeLifetimeInstallRoutingPeer(peerID, runtime: runtime)
+        XCTAssertEqual(slotIDs, [peerID], "failed native construction must not publish a slot")
+        // A real SHARED retained native fault must not poison the already
+        // resident peer's routing or its downstream bridge submit guards.
         let peerRejected = await owner.fastAdmissionReject(modelId: peerID)
         let nativeRejected = await owner.fastAdmissionReject(modelId: modelID)
         let coldRejected = await owner.fastAdmissionReject(modelId: "cold-routing-peer")
         XCTAssertFalse(peerRejected)
         XCTAssertTrue(nativeRejected)
         XCTAssertTrue(coldRejected, "new loads must remain fenced")
+        let peerBridgeAllowed = await peer.bridge.canSubmitWithNativeOwner()
+        let nativeBridge = try XCTUnwrap(transaction.registeredBridgeForRetirement())
+        let nativeBridgeAllowed = await nativeBridge.canSubmitWithNativeOwner()
+        XCTAssertTrue(peerBridgeAllowed)
+        XCTAssertFalse(nativeBridgeAllowed)
+        let afterErrors = await nativeFaultPeerSubmitErrors(peer.bridge, modelID: peerID,
+            requestID: "peer-after-native-fault")
+        XCTAssertEqual(afterErrors, [])
+        XCTAssertEqual(peer.engine.submissions, 2, "the real peer bridge must reach engine admission")
         await owner.updateAggregateCapacity()
         let capacity = await owner.backendCapacityForTesting()
         XCTAssertEqual(capacity?.slots.first(where: { $0.model == peerID })?.state, "idle")

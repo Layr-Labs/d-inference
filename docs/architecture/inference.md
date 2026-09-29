@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-29 · commit `42524ace4`
+> Last updated: 2026-09-29 · commit `47915a198`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -580,6 +580,9 @@ overwrite unrelated resident slots' own health or routing states.
 `ProviderLoop.hasNativeMiMoOwner` follows actual containers and retained/retiring
 ownership, not model-name heuristics. `nativeMiMoRefusesRequest` leaves existing
 non-native residents subject to their normal retirement, request and KV gates.
+`EngineV2Bridge.canSubmitWithNativeOwner` applies the same ownership distinction
+at both submission boundaries, so a healthy advertised peer actually reaches
+its own engine. Native bridges still require their real serving transaction.
 Cold loads and allocator reclamation remain process-fenced; aggregate capacity
 reports zero `freeForLoadGb` and `loadUsableGb` while that fence applies. No
 retained ownership or memory credit is released by this routing distinction.

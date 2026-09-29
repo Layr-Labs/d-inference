@@ -9,7 +9,7 @@
 - Enable eligible native-rounded MiMo NAX attention and admitted block grouping by default, with process-start rollback controls and memory-budgeted larger solo-text stripes. Preserve explicit overrides, unsupported-device fallback and other model families; candidate runtime qualification remains open.
 - Compose explicit serial-MTP paging with authenticated text-prefix restoration and native retirement; retain rectangular and paged-media refusals. These source additions still require full-artifact cache, state and lifecycle qualification.
 - Integrate current upstream cache ownership and add separately issued target-only native paging, joint contiguous text-prefix/media ownership, and admitted scalar-shape verification candidates. A selected 114-method component cohort passes; full-model/API, complete MTP state, paging composition and production defaults remain unqualified.
-- Resolve linked snapshot directories through the normal scanner without copying weights or changing cache selection order; preserve rejection of invalid and non-directory entries.
+- Resolve linked snapshot directories through the normal scanner without copying weights or changing cache selection order; preserve rejection of invalid and non-directory entries. Explicit revision selections use the same canonical filesystem identity as legacy discovery.
 
 ## Unreleased — automatic model artifact revisions
 

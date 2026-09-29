@@ -131,7 +131,9 @@ public struct ModelScanner: Sendable {
             let selected = snapshotsDir.appendingPathComponent(name, isDirectory: true)
             var isDirectory: ObjCBool = false
             guard fm.fileExists(atPath: selected.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
-            return selected.resolvingSymlinksInPath()
+            // Use the same POSIX canonicalization as legacy discovery so one
+            // selected directory cannot acquire two cache/ownership identities.
+            return resolved(selected)
         case .absent:
             break
         }
